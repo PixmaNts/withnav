@@ -76,11 +76,20 @@ async fn run_bash(
         .process_group(0)
         .spawn()?;
 
-    let pid = child.id().expect("child has a pid before wait") as i32;
+    let pid = child.id().ok_or_else(|| ToolError::Denied {
+        code: "spawn_failed".into(),
+        message: "child process exited before a pid was available".into(),
+    })? as i32;
     let pgid = Pid::from_raw(pid);
 
-    let stdout = child.stdout.take().expect("stdout piped");
-    let stderr = child.stderr.take().expect("stderr piped");
+    let stdout = child.stdout.take().ok_or_else(|| ToolError::Denied {
+        code: "spawn_failed".into(),
+        message: "child stdout pipe missing".into(),
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| ToolError::Denied {
+        code: "spawn_failed".into(),
+        message: "child stderr pipe missing".into(),
+    })?;
     let mut out_reader = spawn_reader(stdout);
     let mut err_reader = spawn_reader(stderr);
 

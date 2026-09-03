@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use crate::error::ToolError;
 use crate::provider::openai::ToolDef;
 
+pub mod bash;
 pub mod control;
 pub mod native;
 

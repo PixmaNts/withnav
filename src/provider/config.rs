@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{ConfigError, ProviderError};
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningHistory {
     #[default]

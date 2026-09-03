@@ -94,6 +94,10 @@ pub enum BusError {
     SequencerClosed,
     #[error("session not found: {0}")]
     SessionNotFound(String),
+    #[error("session event sequence space exhausted")]
+    SeqSpaceExhausted,
+    #[error("actor inbox is full; command rejected")]
+    InboxFull,
 }
 
 #[derive(Debug, Error)]

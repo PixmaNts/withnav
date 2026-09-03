@@ -28,6 +28,8 @@ pub enum ProviderError {
     },
     #[error("no API key found for provider")]
     MissingApiKey,
+    #[error("auth store error: {0}")]
+    Auth(String),
     #[error("unknown model alias: {0}")]
     UnknownModelAlias(String),
     #[error("unexpected content-type (expected text/event-stream): {0}")]

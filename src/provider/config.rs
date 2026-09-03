@@ -188,6 +188,25 @@ mod tests {
     }
 
     #[test]
+    fn repo_models_json_is_strict_and_resolves_both_aliases() {
+        let repo_models = include_str!("../../models.json");
+        let cfg = ModelsConfig::parse(repo_models).expect("repo models.json must be strict JSON");
+        let fast = cfg.resolve("fast").unwrap();
+        let default = cfg.resolve("default").unwrap();
+        assert_eq!(fast.model.model, "opencode-go/deepseek-v4-flash");
+        assert!(!default.model.model.is_empty());
+        assert_eq!(fast.model.reasoning_history, ReasoningHistory::Preserve);
+        assert!(!repo_models.contains("\"api_key\""));
+        assert!(!repo_models.contains("sk-"));
+        assert!(
+            !repo_models
+                .lines()
+                .any(|l| l.trim_start().starts_with("//")),
+            "strict JSON must not contain // comment lines"
+        );
+    }
+
+    #[test]
     fn models_path_precedence_workspace_wins() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().join("ws");

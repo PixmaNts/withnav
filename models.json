@@ -1,0 +1,33 @@
+{
+  "providers": {
+    "omniroute": {
+      "base_url": "http://localhost:20128/v1",
+      "api_key_env": "OMNIROUTE_API_KEY",
+      "headers": {},
+      "connect_timeout_ms": 5000,
+      "request_timeout_ms": 600000
+    }
+  },
+  "models": {
+    "default": {
+      "provider": "omniroute",
+      "model": "opencode-go/deepseek-v4-flash",
+      "context_window": 128000,
+      "max_output_tokens": 16000,
+      "supports_tools": true,
+      "supports_parallel_tool_calls": true,
+      "thinking": "low",
+      "reasoning_history": "preserve"
+    },
+    "fast": {
+      "provider": "omniroute",
+      "model": "opencode-go/deepseek-v4-flash",
+      "context_window": 128000,
+      "max_output_tokens": 16000,
+      "supports_tools": true,
+      "supports_parallel_tool_calls": true,
+      "thinking": "low",
+      "reasoning_history": "preserve"
+    }
+  }
+}

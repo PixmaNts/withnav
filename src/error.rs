@@ -82,6 +82,30 @@ pub enum AgentError {
     Config(#[from] ConfigError),
     #[error(transparent)]
     Sse(#[from] SseError),
+    #[error(transparent)]
+    Bus(#[from] BusError),
+    #[error(transparent)]
+    Server(#[from] ServerError),
+}
+
+#[derive(Debug, Error)]
+pub enum BusError {
+    #[error("event sequencer is closed for this session")]
+    SequencerClosed,
+    #[error("session not found: {0}")]
+    SessionNotFound(String),
+}
+
+#[derive(Debug, Error)]
+pub enum ServerError {
+    #[error("server bind error: {0}")]
+    Bind(#[from] std::io::Error),
+    #[error("session not found: {0}")]
+    SessionNotFound(String),
+    #[error("inbox is full; command rejected")]
+    InboxFull,
+    #[error("message content must be text")]
+    NonTextContent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,6 +198,46 @@ mod tests {
         let e: AgentError = ProviderError::MissingApiKey.into();
         assert!(matches!(e, AgentError::Provider(_)));
         assert!(!e.to_string().is_empty());
+    }
+
+    #[test]
+    fn error_agent_wraps_bus_via_from() {
+        let e: AgentError = BusError::SequencerClosed.into();
+        assert!(matches!(e, AgentError::Bus(_)));
+        assert!(!e.to_string().is_empty());
+    }
+
+    #[test]
+    fn error_agent_wraps_server_via_from() {
+        let e: AgentError = ServerError::InboxFull.into();
+        assert!(matches!(e, AgentError::Server(_)));
+        assert!(!e.to_string().is_empty());
+    }
+
+    #[test]
+    fn error_bus_session_not_found_display_contains_id() {
+        let e = BusError::SessionNotFound("sess_1".into());
+        assert!(e.to_string().contains("sess_1"));
+    }
+
+    #[test]
+    fn error_server_bind_wraps_io_error() {
+        let e = ServerError::Bind(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "address in use",
+        ));
+        assert!(e.to_string().contains("address in use"));
+        let a: AgentError = e.into();
+        assert!(matches!(a, AgentError::Server(_)));
+    }
+
+    #[test]
+    fn error_server_variants_display_non_empty() {
+        assert!(!ServerError::SessionNotFound("s".into())
+            .to_string()
+            .is_empty());
+        assert!(!ServerError::InboxFull.to_string().is_empty());
+        assert!(!ServerError::NonTextContent.to_string().is_empty());
     }
 
     #[test]

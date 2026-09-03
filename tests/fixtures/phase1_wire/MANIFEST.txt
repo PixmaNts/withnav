@@ -1,0 +1,7 @@
+phase1_wire golden fixtures — LOCKED by phase-2 todo 1
+base_commit: 641e4d2284fa3a9721fe0b13ef8cf39dd839ff25
+
+SHA-256  no_tool_completion.json  0843699aa02d5801fb462b31fa97e329f300f6b346e08b88d6cb8ae407781774
+SHA-256  tool_continuation.json  4da312fcd355e0567098d877b5674fd57064b763d3455c96df9a72c3b01813b7
+SHA-256  unicode_and_bigint.json  5bb19c0ae1f3cbd2ff119e2f6e87f3372796fdb0290fdaacedd0a353d9e00ecf
+SHA-256  reasoning_content_replay.json  86ab536264914c458bd3e17b1e1fb898dceedd84652657ae15d08aa4632c159b

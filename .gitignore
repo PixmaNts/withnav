@@ -1,0 +1,24 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock
+
+# Reference clones (inspiration only — not part of this project)
+/refs/
+
+# Local config / secrets
+.env
+models.json
+
+# Data / runtime
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+/data/
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/

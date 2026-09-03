@@ -4,6 +4,7 @@ use serde_json::Value;
 pub mod auth;
 pub mod config;
 pub mod openai;
+pub mod sse;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {

@@ -1,0 +1,1 @@
+{"id":"chatcmpl-1788437485637","object":"chat.completion.chunk","created":1788437485,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":365,"completion_tokens":63,"total_tokens":428,"prompt_tokens_details":{"cached_tokens":256},"completion_tokens_details":{"reasoning_tokens":18}}}

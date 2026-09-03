@@ -3,6 +3,7 @@ use serde_json::Value;
 
 pub mod auth;
 pub mod config;
+pub mod openai;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
@@ -14,9 +15,11 @@ pub struct ToolCall {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Usage {
     #[serde(default)]
-    pub input_tokens: u64,
+    pub prompt_tokens: u64,
     #[serde(default)]
-    pub output_tokens: u64,
+    pub completion_tokens: u64,
+    #[serde(default)]
+    pub total_tokens: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

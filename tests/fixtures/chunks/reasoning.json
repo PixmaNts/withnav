@@ -1,0 +1,1 @@
+{"id":"chatcmpl-1788437499782","object":"chat.completion.chunk","created":1788437499,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"We"},"finish_reason":null}]}

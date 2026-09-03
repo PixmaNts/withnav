@@ -1,0 +1,1 @@
+{"id":"chatcmpl-1788437485637","object":"chat.completion.chunk","created":1788437485,"model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_00_199TsKpFMjN3EXHTQZFE3344","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}

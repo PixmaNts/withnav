@@ -8,7 +8,7 @@ Cargo.lock
 
 # Local config / secrets
 .env
-models.json
+auth.json
 
 # Data / runtime
 *.db
@@ -22,3 +22,6 @@ models.json
 *.swp
 .idea/
 .vscode/
+
+# Agent evidence (local only)
+/.omo/

@@ -12,8 +12,8 @@ An agent is a ~200-line loop: send transcript + tools to an LLM, execute the too
 asks for, feed results back, and either **Continue**, **Done**, or **Yield** (pause for a
 human). Everything else — plugins, subagents, a meta-loop co-agent, persistence, MCP tools,
 memory (contextd) — is a facet of **one** unifying primitive: an **event bus + multiprocess
-actor model**. That single mechanism is what makes an ambitious feature set feasible in a
-few focused weekends.
+actor model**. That single mechanism is what makes an ambitious feature set feasible as a
+handful of focused vertical phases.
 
 ## Core decisions
 
@@ -44,12 +44,12 @@ refs/               cloned reference projects (inspiration, gitignored)
   rig/              0xPlaygrounds — Rust LLM framework (used by contextd)
 ```
 
-## Weekend-decomposed MVP roadmap
+## Vertical-phase MVP roadmap
 
-- **WE1** — single-agent vertical slice: loop + 5 tools + OmniRoute + streaming SSE.
-- **WE2** — event bus + plugin JSON-RPC protocol + MCP (rmcp) + hooks + server API.
-- **WE3** — non-blocking subagents + event-sourced SQLite persistence.
-- **WE4** — co-agent/meta-loop + AGENTS.md/persona loading + Ratatui client.
+- **Phase 1** — single-agent vertical slice: loop + 5 tools + OmniRoute + streaming SSE.
+- **Phase 2** — event bus + plugin JSON-RPC protocol + MCP (rmcp) + hooks + server API.
+- **Phase 3** — non-blocking subagents + event-sourced SQLite persistence.
+- **Phase 4** — co-agent/meta-loop + AGENTS.md/persona loading + Ratatui client.
 
 Strict scope fence: **core + event bus + MCP + server, nothing else in v1.** Every feature
 must be expressible through the four foundational primitives (loop, bus, plugin boundary,

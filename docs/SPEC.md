@@ -4,7 +4,7 @@
 **Audience:** Pixma and coding agents implementing the project  
 **Project location:** `~/dev/rust-agent`  
 **Primary artifact:** A headless, single-binary Rust coding-agent core with an event API  
-**Target implementation window:** Four focused weekends
+**Delivery model:** Four vertical phases, each a demonstrable end-to-end slice
 
 ## 1. Vision
 
@@ -2051,15 +2051,15 @@ rust-agent/
 
 Modules SHOULD remain small and explicit. The project SHOULD avoid creating generic `manager`, `engine`, or `framework` abstractions unless a concrete second implementation requires them.
 
-## 28. Weekend-Decomposed MVP Roadmap
+## 28. Vertical-Phase MVP Roadmap
 
-The roadmap is a sequence of vertical slices. Each weekend ends with a usable or demonstrable system. A weekend is not complete merely because types compile.
+The roadmap is a sequence of vertical slices. Each phase ends with a usable or demonstrable system. A phase is not complete merely because types compile.
 
-### Weekend 1: Single-Agent Vertical Slice
+### Phase 1: Single-Agent Vertical Slice
 
 **Goal:** One headless agent can edit a Rust project through OmniRoute.
 
-#### Day 1
+#### Foundation
 
 1. Create the crate, configuration types, tracing, and CLI entry points.
 2. Implement `models.json` loading with environment-based credentials.
@@ -2067,7 +2067,7 @@ The roadmap is a sequence of vertical slices. Each weekend ends with a usable or
 4. Implement and test the SSE decoder.
 5. Stream normalized assistant text to stdout.
 
-#### Day 2
+#### Loop and Tools
 
 1. Implement tool-call accumulation.
 2. Implement `read`, `write`, `edit`, `bash`, and `grep`.
@@ -2084,11 +2084,11 @@ The roadmap is a sequence of vertical slices. Each weekend ends with a usable or
 - SSE tests cover split frames, CRLF, multi-line data, tool-call fragments, `[DONE]`, and malformed JSON.
 - The core loop remains directly readable and does not depend on Rig.
 
-### Weekend 2: Bus, Plugins, MCP, and Server
+### Phase 2: Bus, Plugins, MCP, and Server
 
 **Goal:** Convert the vertical slice into a headless multi-client core without changing its reasoning behavior.
 
-#### Day 1
+#### Bus and Server
 
 1. Add event envelopes, session sequencing, and bounded subscribers.
 2. Add per-actor inboxes and command routing.
@@ -2096,7 +2096,7 @@ The roadmap is a sequence of vertical slices. Each weekend ends with a usable or
 4. Add Axum session, message, SSE, WebSocket, and health endpoints.
 5. Verify two clients can observe the same session.
 
-#### Day 2
+#### Plugins and MCP
 
 1. Add the hook-plugin supervisor and JSON-RPC stdio framing.
 2. Implement handshake, subscriptions, timeouts, and failure policies.
@@ -2114,11 +2114,11 @@ The roadmap is a sequence of vertical slices. Each weekend ends with a usable or
 - An MCP tool appears namespaced and can be called by the model.
 - A crashed enrichment plugin does not crash the session.
 
-### Weekend 3: Non-Blocking Subagents and Persistence
+### Phase 3: Non-Blocking Subagents and Persistence
 
 **Goal:** Establish asynchronous delegation and durable continuity using the same bus.
 
-#### Day 1
+#### Subagents
 
 1. Refactor the main loop into a reusable actor constructor.
 2. Implement `spawn_agent`.
@@ -2127,7 +2127,7 @@ The roadmap is a sequence of vertical slices. Each weekend ends with a usable or
 5. Test N concurrent subagents completing out of order.
 6. Implement next-turn, steer, and interrupt eligibility.
 
-#### Day 2
+#### Persistence
 
 1. Add SQLite migrations and the single writer subscriber.
 2. Persist sessions, actors, inbox commands, messages, and durable events.
@@ -2146,11 +2146,11 @@ The roadmap is a sequence of vertical slices. Each weekend ends with a usable or
 - Steer waits for a natural boundary.
 - Interrupt cancels a model stream and starts from the new message.
 
-### Weekend 4: Personal Usability Layer
+### Phase 4: Personal Usability Layer
 
 **Goal:** Add the user-facing behaviors without introducing new architectural primitives.
 
-#### Day 1
+#### Config Loading and Co-Agent
 
 1. Implement hierarchical `AGENTS.md` and `rules.md` loading.
 2. Implement persona frontmatter and `agents/<name>.md`.
@@ -2158,7 +2158,7 @@ The roadmap is a sequence of vertical slices. Each weekend ends with a usable or
 4. Add `notify`-based hot reload.
 5. Implement the reference co-agent plugin with summaries and goal reminders.
 
-#### Day 2
+#### Ratatui Client
 
 1. Build the Ratatui WebSocket client.
 2. Show actor state, streaming text, tool activity, yields, and subagent completion.

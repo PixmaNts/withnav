@@ -142,6 +142,10 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/sessions/{id}", get(get_session))
         .route("/v1/sessions/{id}/messages", post(post_message))
         .route("/v1/sessions/{id}/stop", post(stop_session))
+        .route(
+            "/v1/sessions/{id}/events",
+            get(crate::server::sse::get_events),
+        )
         .with_state(state)
 }
 
@@ -398,7 +402,7 @@ async fn stop_session(State(state): State<AppState>, Path(id): Path<String>) -> 
 /// [`ServerError`] mapped onto a status code + JSON body. The full-inbox
 /// rejection carries the FROZEN `{accepted:false, reason:"inbox_full"}`
 /// body (wayfinder ticket 02); every other failure shares `{"error": ...}`.
-fn error_response(err: ServerError) -> Response {
+pub(crate) fn error_response(err: ServerError) -> Response {
     let status = match &err {
         ServerError::SessionNotFound(_) => StatusCode::NOT_FOUND,
         ServerError::SessionStopping => StatusCode::CONFLICT,

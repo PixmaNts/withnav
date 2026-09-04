@@ -235,6 +235,12 @@ impl AppState {
         }
     }
 
+    /// A cloned slot (live handle vs tombstone) for the SSE endpoint, so it
+    /// can distinguish a stopped session from an unknown id; `None` unknown.
+    pub fn slot(&self, id: SessionId) -> Option<SessionSlot> {
+        self.lock_sessions().get(&id).cloned()
+    }
+
     /// A clone of the LIVE handle, gated on the lifecycle: `Err(404)` for
     /// unknown ids and tombstones, `Err(409 SessionStopping)` for a
     /// Stopping session (todo 7's command routes consume this). No lock is

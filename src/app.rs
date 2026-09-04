@@ -192,7 +192,13 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
             }
             StreamDelta::ToolCallArgs { .. } => {}
         };
-        run_agent(&mut actor, &mut on_delta).await
+        run_agent(
+            &mut actor,
+            &mut on_delta,
+            &mut |_e: crate::agent::run_loop::ToolEvent| {},
+            &mut |_s: crate::agent::run_loop::StepEvent| {},
+        )
+        .await
     };
     finish(outcome, &mut renderer)
 }

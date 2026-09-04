@@ -233,14 +233,28 @@ async fn mock_full_loop_exercises_all_five_tools_and_ask() {
 
     let mut noop = |_d: StreamDelta| {};
 
-    let first = run_agent(&mut actor, &mut noop).await.unwrap();
+    let first = run_agent(
+        &mut actor,
+        &mut noop,
+        &mut |_e: rust_agent::agent::run_loop::ToolEvent| {},
+        &mut |_s: rust_agent::agent::run_loop::StepEvent| {},
+    )
+    .await
+    .unwrap();
     match first {
         RunOutcome::Yielded(req) => assert_eq!(req.question, "proceed?"),
         other => panic!("expected Yielded at ask, got {other:?}"),
     }
 
     actor.push_user("yes proceed");
-    let second = run_agent(&mut actor, &mut noop).await.unwrap();
+    let second = run_agent(
+        &mut actor,
+        &mut noop,
+        &mut |_e: rust_agent::agent::run_loop::ToolEvent| {},
+        &mut |_s: rust_agent::agent::run_loop::StepEvent| {},
+    )
+    .await
+    .unwrap();
     assert!(matches!(second, RunOutcome::Done(m) if m.text == "all tools exercised"));
 
     assert!(actor.tool_context.workspace.join("NOTES.txt").is_file());
@@ -336,7 +350,14 @@ async fn live_omniroute_edit_and_test() {
                 saw2.store(true, std::sync::atomic::Ordering::SeqCst);
             }
         };
-        run_agent(&mut actor, &mut on_delta).await.unwrap()
+        run_agent(
+            &mut actor,
+            &mut on_delta,
+            &mut |_e: rust_agent::agent::run_loop::ToolEvent| {},
+            &mut |_s: rust_agent::agent::run_loop::StepEvent| {},
+        )
+        .await
+        .unwrap()
     };
 
     let lib = std::fs::read_to_string(ws.join("src").join("lib.rs")).unwrap();

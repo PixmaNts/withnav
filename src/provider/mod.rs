@@ -76,7 +76,7 @@ impl Accumulator {
     fn apply_chunk(
         &mut self,
         chunk: ChatChunk,
-        on_delta: &mut dyn FnMut(StreamDelta),
+        on_delta: &mut (dyn FnMut(StreamDelta) + Send),
     ) -> Result<(), ProviderError> {
         if let Some(err) = chunk.error {
             return Err(ProviderError::Api {
@@ -167,7 +167,7 @@ impl Accumulator {
 pub async fn consume_event_stream<S>(
     events: S,
     cancel: &CancellationToken,
-    on_delta: &mut dyn FnMut(StreamDelta),
+    on_delta: &mut (dyn FnMut(StreamDelta) + Send),
 ) -> Result<AssistantMessage, ProviderError>
 where
     S: Stream<Item = Result<String, SseError>> + Unpin,
@@ -234,7 +234,7 @@ fn nonempty(msg: AssistantMessage) -> Option<Box<AssistantMessage>> {
 pub async fn start_and_consume(
     response: reqwest::Response,
     cancel: &CancellationToken,
-    on_delta: &mut dyn FnMut(StreamDelta),
+    on_delta: &mut (dyn FnMut(StreamDelta) + Send),
 ) -> Result<AssistantMessage, ProviderError> {
     let status = response.status();
     if !status.is_success() {

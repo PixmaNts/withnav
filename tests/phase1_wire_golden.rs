@@ -186,7 +186,14 @@ fn lock_fixture(name: &str, bodies: &[String]) {
 
 async fn run_once(actor: &mut AgentActor) -> RunOutcome {
     let mut noop = |_d: StreamDelta| {};
-    run_agent(actor, &mut noop).await.unwrap()
+    run_agent(
+        actor,
+        &mut noop,
+        &mut |_e: rust_agent::agent::run_loop::ToolEvent| {},
+        &mut |_s: rust_agent::agent::run_loop::StepEvent| {},
+    )
+    .await
+    .unwrap()
 }
 
 #[tokio::test]

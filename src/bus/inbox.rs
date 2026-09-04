@@ -7,6 +7,7 @@
 //! module exposes the methods it calls.
 
 use tokio::sync::mpsc;
+use ulid::Ulid;
 
 use crate::agent::actor::AgentActor;
 use crate::bus::command::{Command, DowngradeNotice};
@@ -67,6 +68,12 @@ impl ActorInbox {
         !self.commands.is_empty()
     }
 
+    /// The command_id of the FIRST buffered command — the task_id source for
+    /// the todo-5 runtime (`active_task_id.or(first command_id)`).
+    pub fn peek_first_buffered_command_id(&self) -> Option<Ulid> {
+        self.commands.first().map(|cmd| cmd.command_id)
+    }
+
     /// Drain everything currently in the transport into the in-actor buffer
     /// (FIFO). Returns how many commands were drained. The todo-5 drive loop
     /// calls this ONLY at a turn boundary — while the actor runs this stays
@@ -77,6 +84,23 @@ impl ActorInbox {
             self.commands.push(cmd);
         }
         self.commands.len()
+    }
+
+    /// The todo-5 drive loop's WAIT primitive: await the first command
+    /// (yielding `None` only when all senders are gone), then scoop up
+    /// everything already queued behind it into the in-actor buffer as one
+    /// FIFO batch. The batch itself is applied by the existing
+    /// `apply_batch_to_actor` — this only refills the buffer, so the runtime
+    /// must never call it while a turn is mid-flight.
+    pub async fn next_batch(&mut self) -> Option<usize> {
+        if self.commands.is_empty() {
+            let first = self._rx.recv().await?;
+            self.commands.push(first);
+        }
+        while let Ok(cmd) = self._rx.try_recv() {
+            self.commands.push(cmd);
+        }
+        Some(self.commands.len())
     }
 
     /// Map the drained FIFO batch onto `push_user` semantics: the FIRST
@@ -332,6 +356,32 @@ mod tests {
             user_texts(&actor),
             vec!["first", "halt", "third"],
             "mode never reorders or drops the FIFO batch"
+        );
+    }
+
+    // Given a parked next_batch() call with one command already queued
+    // When a second command arrives before the wait is served
+    // Then the buffer refills with BOTH commands in arrival order and
+    //      apply_batch_to_actor applies them FIFO; a later
+    //      all-senders-dropped resolves to None
+    #[tokio::test]
+    async fn next_batch_returns_one_fifo_batch_then_none_when_senders_drop() {
+        let (tx, mut inbox) = ActorInbox::channel();
+        send(&tx, text_command(DeliveryMode::NextTurn, "one"));
+        send(&tx, text_command(DeliveryMode::NextTurn, "two"));
+
+        assert_eq!(inbox.next_batch().await, Some(2));
+        assert!(inbox.has_buffered(), "the batch stays buffered for apply");
+
+        let mut actor = test_actor();
+        inbox.apply_batch_to_actor(&mut actor);
+        assert_eq!(user_texts(&actor), vec!["one", "two"]);
+        assert!(!inbox.has_buffered());
+
+        drop(tx);
+        assert!(
+            inbox.next_batch().await.is_none(),
+            "all senders dropped ends the drive loop"
         );
     }
 }

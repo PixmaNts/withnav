@@ -62,6 +62,10 @@ pub enum Ingress {
         cursor: Option<u64>,
         reply: oneshot::Sender<crate::bus::SubscribeReply>,
     },
+    /// Session teardown (todo 5): sequence + emit `session.end`, pin
+    /// `final_seq`, then the sequencer task EXITS — the fence that guarantees
+    /// no event is ever sequenced after `session.end`.
+    CloseSession { reason: String },
 }
 
 /// An unsequenced event candidate submitted by any producer.
@@ -176,6 +180,19 @@ impl Sequencer {
             .await
             .map_err(|_| BusError::SessionNotFound(self.session_id.to_string()))
     }
+
+    /// Sequence + emit `session.end{reason, final_seq}` and END the sequencer
+    /// task. Every later publish (even from a clone of this handle) fails
+    /// with `BusError::SequencerClosed` — the fence that keeps `session.end`
+    /// the last event the session ever sequences.
+    pub fn close_session(&self, reason: impl Into<String>) -> Result<(), BusError> {
+        ingress_send(
+            &self.ingress_tx,
+            Ingress::CloseSession {
+                reason: reason.into(),
+            },
+        )
+    }
 }
 
 /// Ingress send: the ONLY failure mode is a closed session, never loss.
@@ -224,6 +241,26 @@ async fn run(
                 // The atomic handshake: no await between the replay snapshot
                 // and the live registration (both live inside `emitter`).
                 emitter.subscribe_since(cursor, next_seq, reply);
+            }
+            Ingress::CloseSession { reason } => {
+                let Some(seq) = take_seq(&mut next_seq) else {
+                    break;
+                };
+                emitter.emit(stamp(
+                    session_id,
+                    seq,
+                    Candidate::new(
+                        EventKind::SessionEnd,
+                        serde_json::json!({
+                            "reason": reason,
+                            "final_seq": seq,
+                        }),
+                    ),
+                ));
+                // The fence: the task exits, so nothing can ever be
+                // sequenced after session.end. Queued candidates behind
+                // this CloseSession are dropped (the session is over).
+                break;
             }
         }
     }
@@ -514,6 +551,42 @@ mod tests {
         drop(rx);
         let err = ingress_send(&tx, Ingress::Candidate(turn_candidate("late")));
         assert!(matches!(err, Err(BusError::SequencerClosed)));
+    }
+
+    /// close_session emits session.end{final_seq} as the LAST event and the
+    /// fence holds: any later publish (from the same handle or a clone)
+    /// fails with SequencerClosed, and nothing further is emitted.
+    #[tokio::test]
+    async fn close_session_emits_session_end_then_fences_all_publishes() {
+        let (seq, mut rx) = spawn_with_collector();
+
+        seq.publish(start_candidate()).unwrap();
+        seq.close_session("stop requested").unwrap();
+
+        let first = rx.recv().await.unwrap();
+        assert_eq!((first.seq, first.kind.as_str()), (0, "session.start"));
+        let end = rx.recv().await.unwrap();
+        assert_eq!(end.seq, 1);
+        assert_eq!(end.kind, "session.end");
+        assert_eq!(end.payload["reason"], "stop requested");
+        assert_eq!(end.payload["final_seq"], 1);
+
+        // The fence: a candidate racing the task exit may still land in the
+        // (dropped-on-exit) ingress void or fail Closed; deterministically,
+        // every publish fails SequencerClosed once the task is gone, and
+        // NOTHING is ever emitted after session.end.
+        let mut saw_closed = false;
+        for _ in 0..200 {
+            match seq.publish(turn_candidate("late")) {
+                Err(BusError::SequencerClosed) => {
+                    saw_closed = true;
+                    break;
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_millis(5)).await,
+            }
+        }
+        assert!(saw_closed, "publish must fail closed once the fence is up");
+        assert!(rx.recv().await.is_none(), "nothing after session.end");
     }
 
     /// Seq assignment is strictly monotonic and panic-free: the seq space is

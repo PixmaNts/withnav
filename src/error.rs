@@ -108,6 +108,8 @@ pub enum ServerError {
     SessionNotFound(String),
     #[error("inbox is full; command rejected")]
     InboxFull,
+    #[error("session is stopping; command rejected")]
+    SessionStopping,
     #[error("message content must be text")]
     NonTextContent,
     #[error("non-loopback bind refused: {0} (pass --allow-non-loopback to override)")]

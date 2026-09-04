@@ -22,11 +22,23 @@ pub type SessionId = Ulid;
 /// How the sender wants the command timed. All three variants are frozen wire
 /// vocabulary now; Phase 2 only implements NextTurn timing and downgrades the
 /// other two (never rejects on mode).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum DeliveryMode {
     NextTurn,
     Steer,
     Interrupt,
+}
+
+impl DeliveryMode {
+    /// The wire string (`next-turn` / `steer` / `interrupt`).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            DeliveryMode::NextTurn => "next-turn",
+            DeliveryMode::Steer => "steer",
+            DeliveryMode::Interrupt => "interrupt",
+        }
+    }
 }
 
 /// Transcript content blocks. PROVISIONAL shape (PLAN §7.5): Phase 2 accepts

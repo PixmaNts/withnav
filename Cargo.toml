@@ -53,6 +53,7 @@ axum = { version = "0.8.9", features = ["ws", "macros"] }
 futures = "0.3"
 
 [dev-dependencies]
+tokio = { version = "1.53", features = ["test-util"] }
 proptest = "1"
 wiremock = "0.6"
 tokio-tungstenite = "0.24"

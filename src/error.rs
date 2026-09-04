@@ -110,6 +110,14 @@ pub enum ServerError {
     InboxFull,
     #[error("message content must be text")]
     NonTextContent,
+    #[error("non-loopback bind refused: {0} (pass --allow-non-loopback to override)")]
+    NonLoopbackBind(std::net::SocketAddr),
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    #[error("model resolution error: {0}")]
+    Model(#[from] crate::error::ProviderError),
+    #[error("malformed request body: {0}")]
+    MalformedBody(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -66,6 +66,10 @@ pub enum Ingress {
     /// `final_seq`, then the sequencer task EXITS — the fence that guarantees
     /// no event is ever sequenced after `session.end`.
     CloseSession { reason: String },
+    /// Head query (todo 6): reply with the next unassigned seq.
+    CurrentSeq {
+        reply: oneshot::Sender<Result<u64, BusError>>,
+    },
 }
 
 /// An unsequenced event candidate submitted by any producer.
@@ -181,6 +185,18 @@ impl Sequencer {
             .map_err(|_| BusError::SessionNotFound(self.session_id.to_string()))
     }
 
+    /// Head accessor (todo 6's `GET /sessions/:id` `current_seq`): replies
+    /// with the next unassigned seq, so the last-EMITTED seq is
+    /// `current - 1` (the pinned `current_seq` = last emitted seq, ticket
+    /// 04). A closed session maps to `BusError::SessionNotFound`.
+    pub async fn current_seq(&self) -> Result<u64, BusError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        ingress_send(&self.ingress_tx, Ingress::CurrentSeq { reply: reply_tx })?;
+        reply_rx
+            .await
+            .map_err(|_| BusError::SessionNotFound(self.session_id.to_string()))?
+    }
+
     /// Sequence + emit `session.end{reason, final_seq}` and END the sequencer
     /// task. Every later publish (even from a clone of this handle) fails
     /// with `BusError::SequencerClosed` — the fence that keeps `session.end`
@@ -241,6 +257,9 @@ async fn run(
                 // The atomic handshake: no await between the replay snapshot
                 // and the live registration (both live inside `emitter`).
                 emitter.subscribe_since(cursor, next_seq, reply);
+            }
+            Ingress::CurrentSeq { reply } => {
+                let _ = reply.send(Ok(next_seq));
             }
             Ingress::CloseSession { reason } => {
                 let Some(seq) = take_seq(&mut next_seq) else {

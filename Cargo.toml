@@ -56,6 +56,8 @@ futures = "0.3"
 proptest = "1"
 wiremock = "0.6"
 tokio-tungstenite = "0.24"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
 
 [profile.release]
 lto = "thin"

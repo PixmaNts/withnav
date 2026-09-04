@@ -20,6 +20,7 @@ use ulid::Ulid;
 
 use crate::bus::event::EventEnvelope;
 use crate::bus::event::EventKind;
+use crate::bus::SubscribeReply;
 use crate::error::BusError;
 
 /// A command still unsequenced by the runtime (todo 4 freezes the full shape).
@@ -55,6 +56,12 @@ pub enum Ingress {
         command: PendingCommand,
         reply: oneshot::Sender<Result<AcceptReceipt, BusError>>,
     },
+    /// Atomic subscribe-then-replay (todo 3): resolve the cursor against the
+    /// ring and register a live queue in ONE synchronous mailbox step.
+    SubscribeSince {
+        cursor: Option<u64>,
+        reply: oneshot::Sender<crate::bus::SubscribeReply>,
+    },
 }
 
 /// An unsequenced event candidate submitted by any producer.
@@ -82,10 +89,22 @@ impl Candidate {
     }
 }
 
-/// Per-event downstream seam. Todo 2 tests collect into a channel; todo 3
-/// implements ring append + bounded fan-out here.
+/// Per-event downstream seam. Todo 2 tests collect into a channel; the
+/// concrete [`crate::bus::SessionBus`] implements ring append + bounded
+/// fan-out here.
 pub trait Emitter: Send + 'static {
     fn emit(&mut self, envelope: EventEnvelope);
+
+    /// Atomic subscribe-then-replay (todo 8 consumes this): called from the
+    /// single mailbox handler with NO await around it, so the replay snapshot
+    /// and the live registration share one synchronous step (exactly-once at
+    /// the seam). `next_seq` is the session head + 1 for cursor sanity.
+    fn subscribe_since(
+        &mut self,
+        cursor: Option<u64>,
+        next_seq: u64,
+        reply: oneshot::Sender<crate::bus::SubscribeReply>,
+    );
 }
 
 /// Handle to a running sequencer task. Cloning clones the ingress sender;
@@ -137,6 +156,26 @@ impl Sequencer {
             .await
             .map_err(|_| BusError::SessionNotFound(self.session_id.to_string()))?
     }
+
+    /// Atomic subscribe-then-replay: ONE control op on the sequencer task.
+    /// The mailbox handler, without awaiting, resolves the cursor against the
+    /// ring (per the todo-3 resume contract), registers a bounded live queue,
+    /// and returns the replay-through-head snapshot + live receiver — an
+    /// event published after this returns is live-only (exactly once).
+    /// A closed session maps to `BusError::SessionNotFound`.
+    pub async fn subscribe_since(&self, cursor: Option<u64>) -> Result<SubscribeReply, BusError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        ingress_send(
+            &self.ingress_tx,
+            Ingress::SubscribeSince {
+                cursor,
+                reply: reply_tx,
+            },
+        )?;
+        reply_rx
+            .await
+            .map_err(|_| BusError::SessionNotFound(self.session_id.to_string()))
+    }
 }
 
 /// Ingress send: the ONLY failure mode is a closed session, never loss.
@@ -180,6 +219,11 @@ async fn run(
                 emitter.emit(stamp(session_id, seq, candidate));
                 commit();
                 let _ = reply.send(Ok(AcceptReceipt { seq }));
+            }
+            Ingress::SubscribeSince { cursor, reply } => {
+                // The atomic handshake: no await between the replay snapshot
+                // and the live registration (both live inside `emitter`).
+                emitter.subscribe_since(cursor, next_seq, reply);
             }
         }
     }
@@ -231,6 +275,18 @@ mod tests {
             // The receiver outlives the task in these tests; a closed
             // receiver means the test is already gone — dropping is correct.
             let _ = self.tx.send(envelope);
+        }
+
+        fn subscribe_since(
+            &mut self,
+            _cursor: Option<u64>,
+            _next_seq: u64,
+            reply: oneshot::Sender<SubscribeReply>,
+        ) {
+            // Subscribe is a fan-out concern (todo 3); this collector emitter
+            // has no subscriber registry, so the request fails like a closed
+            // session would.
+            drop(reply);
         }
     }
 
@@ -380,6 +436,15 @@ mod tests {
             fn emit(&mut self, envelope: EventEnvelope) {
                 self.timeline.lock().unwrap().push(Step::Emit(envelope.seq));
                 let _ = self.tx.send(envelope);
+            }
+
+            fn subscribe_since(
+                &mut self,
+                _cursor: Option<u64>,
+                _next_seq: u64,
+                reply: oneshot::Sender<SubscribeReply>,
+            ) {
+                drop(reply);
             }
         }
 

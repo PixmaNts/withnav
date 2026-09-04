@@ -19,7 +19,7 @@ use std::time::SystemTime;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde::Serialize;
@@ -110,8 +110,8 @@ impl From<&WireContentBlock> for ContentBlock {
 
 /// The frozen message ack (ticket 04 Q3): `notice` carries the visible
 /// steer/interrupt downgrade and is absent for next-turn.
-#[derive(Debug, Serialize, PartialEq)]
-pub struct MessageAccepted {
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub(crate) struct MessageAccepted {
     pub command_id: String,
     pub accepted: bool,
     pub actor_state: String,
@@ -145,6 +145,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/v1/sessions/{id}/events",
             get(crate::server::sse::get_events),
+        )
+        .route(
+            "/v1/sessions/{id}/ws",
+            any(crate::server::websocket::get_ws),
         )
         .with_state(state)
 }
@@ -257,7 +261,11 @@ async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> R
 const HTTP_USER_ACTOR_ID: &str = "user:http";
 
 /// Builds the Command for a posted message with a server-assigned sender.
-fn build_command(session_id: Ulid, request: &PostMessageRequest, mode: DeliveryMode) -> Command {
+pub(crate) fn build_command(
+    session_id: Ulid,
+    request: &PostMessageRequest,
+    mode: DeliveryMode,
+) -> Command {
     Command {
         command_id: Ulid::new(),
         session_id,
@@ -269,7 +277,7 @@ fn build_command(session_id: Ulid, request: &PostMessageRequest, mode: DeliveryM
     }
 }
 
-fn parse_mode(mode: Option<&str>) -> Result<DeliveryMode, ServerError> {
+pub(crate) fn parse_mode(mode: Option<&str>) -> Result<DeliveryMode, ServerError> {
     match mode.unwrap_or("next-turn") {
         "next-turn" => Ok(DeliveryMode::NextTurn),
         "steer" => Ok(DeliveryMode::Steer),
@@ -330,7 +338,7 @@ async fn post_message(
 /// there is nothing to un-publish — the rejected permit releases its slot),
 /// sequence `message.received` via `accept_command`, commit the command into
 /// the reserved permit, ack.
-async fn route_message(
+pub(crate) async fn route_message(
     handle: &SessionHandle,
     command: Command,
 ) -> Result<MessageAccepted, ServerError> {

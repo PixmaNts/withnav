@@ -4,19 +4,15 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::actor::AgentActor;
+#[cfg(test)]
 use crate::agent::response::HumanRequest;
-use crate::agent::run_loop::{run_agent, RunOutcome};
+#[cfg(test)]
+use crate::agent::run_loop::RunOutcome;
 use crate::bus::event::{AgentYield, EventEnvelope, EventKind, LlmDelta, TurnEnd, TurnEndOutcome};
+#[cfg(test)]
 use crate::error::AgentError;
 use crate::provider::auth;
-use crate::provider::config::{resolve_models_path, ModelsConfig};
-use crate::provider::StreamDelta;
 use crate::render::{Renderer, UiEvent};
-use crate::tools::bash::BashTool;
-use crate::tools::control::AskTool;
-use crate::tools::native::{EditTool, GrepTool, ReadTool, WriteTool};
-use crate::tools::{Registry, ToolContext};
 
 pub const EXIT_DONE: i32 = 0;
 pub const EXIT_ERROR: i32 = 1;
@@ -38,9 +34,24 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     Run(RunArgs),
-    Serve,
+    Serve(ServeArgs),
     Tui,
     Auth(AuthArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ServeArgs {
+    /// Bind address; loopback-only unless `--allow-non-loopback` is also set.
+    #[arg(long, default_value = "127.0.0.1:7310")]
+    pub bind: String,
+
+    /// Permit a non-loopback bind (still NO auth/TLS this slice — operator's
+    /// reverse-proxy / private-network responsibility).
+    #[arg(long)]
+    pub allow_non_loopback: bool,
+
+    #[arg(long)]
+    pub models: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -82,10 +93,7 @@ pub fn init_tracing() {
 pub async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
     match cli.command {
         Commands::Run(args) => run_command(args).await,
-        Commands::Serve => {
-            println!("not yet implemented (Phase 2/4)");
-            Ok(EXIT_DONE)
-        }
+        Commands::Serve(args) => serve_command(args).await,
         Commands::Tui => {
             println!("not yet implemented (Phase 2/4)");
             Ok(EXIT_DONE)
@@ -130,79 +138,197 @@ fn rpassword_prompt(provider: &str) -> anyhow::Result<String> {
     Ok(line.trim().to_string())
 }
 
+/// `run`: a one-shot IN-PROCESS CLIENT of the same core `serve` uses (SPEC
+/// §6.2). It starts the session manager (sequencer + runtime task, NO HTTP
+/// server), subscribes to the session's event stream BEFORE posting the
+/// prompt (so no initial `llm.delta` is lost — deltas are not in the replay
+/// ring), renders each event through the byte-identical `event_to_ui` adapter,
+/// and derives the exit code from the terminal events — NOT from a direct
+/// `run_agent` call (no shortcut, §6.2). Order: create -> subscribe -> post ->
+/// render-until-terminal -> close.
 async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
+    use crate::server::session::ServerConfig;
+
     let workspace = match args.workspace {
         Some(w) => w,
         None => std::env::current_dir()?,
     };
     let cfg_dir = config_dir()?;
-
-    let models_path = resolve_models_path(args.models.as_deref(), &workspace, &cfg_dir)
-        .ok_or_else(|| {
-            anyhow::anyhow!("no models.json found (workspace, --models, or config dir)")
-        })?;
-    let config = ModelsConfig::load(&models_path)?;
-
-    let alias = args.model.unwrap_or_else(|| "default".to_string());
-    let resolved = config.resolve(&alias)?;
-
-    let api_key = auth::resolve_key(
-        &cfg_dir,
-        &resolved.provider_name,
-        resolved.provider.api_key_env.as_deref(),
-    )?;
-
     let prompt = read_prompt(args.prompt)?;
 
-    let cancel = CancellationToken::new();
-    install_sigint_handler(cancel.clone());
+    let state = crate::server::session::AppState::new(ServerConfig {
+        bind: "127.0.0.1:0".parse().expect("loopback"),
+        models_path: args.models.clone(),
+        config_dir: cfg_dir,
+        allow_non_loopback: false,
+    });
+    let session_id = state.create_session(&workspace, args.model.as_deref())?;
+    let handle = state
+        .handle(session_id)
+        .ok_or_else(|| anyhow::anyhow!("session vanished immediately after creation"))?;
 
-    let mut registry = Registry::new();
-    registry.register(Box::new(ReadTool));
-    registry.register(Box::new(WriteTool));
-    registry.register(Box::new(EditTool));
-    registry.register(Box::new(BashTool));
-    registry.register(Box::new(GrepTool));
-    registry.register(Box::new(AskTool));
+    // Ctrl-C cancels the SESSION token the runtime watches, so the in-flight
+    // turn is interrupted and the runtime emits turn.end{interrupted} — the
+    // render loop then exits 130. (Cancelling a standalone token would not
+    // reach the runtime.)
+    install_sigint_handler(handle.session_cancel.clone());
 
-    let tool_context = ToolContext {
-        workspace: workspace.clone(),
-        writable_roots: vec![workspace.clone(), cfg_dir.clone()],
-    };
+    // Subscribe BEFORE posting (O5): deltas are live-only, so a late
+    // subscriber would drop the initial streamed text.
+    let mut sub = handle
+        .sequencer
+        .subscribe_since(None)
+        .await
+        .map_err(|e| anyhow::anyhow!("subscribe failed: {e}"))?;
 
-    let mut actor = AgentActor::new(
-        registry,
-        tool_context,
-        resolved.provider.clone(),
-        api_key,
-        resolved.model.model.clone(),
-        resolved.model.reasoning_history,
-        resolved.model.max_output_tokens,
-        cancel,
-    );
-    actor.push_user(prompt);
+    post_prompt(&handle, session_id, &prompt).await?;
 
     let mut renderer = Renderer::new(args.show_thinking);
-    let outcome = {
-        let mut on_delta = |d: StreamDelta| match d {
-            StreamDelta::Text(t) => renderer.render(UiEvent::AssistantText(t)),
-            StreamDelta::Thinking(t) => renderer.render(UiEvent::Thinking(t)),
-            StreamDelta::ToolCallStarted { name, .. } => {
-                renderer.render(UiEvent::ToolStarted { name })
-            }
-            StreamDelta::ToolCallArgs { .. } => {}
-        };
-        run_agent(
-            &mut actor,
-            &mut on_delta,
-            &mut |_e: crate::agent::run_loop::ToolEvent| {},
-            &mut |_s: crate::agent::run_loop::StepEvent| {},
-        )
-        .await
-    };
-    finish(outcome, &mut renderer)
+    let exit = render_until_terminal(&mut sub, &mut renderer).await;
+
+    let _ = state.close_session(session_id).await;
+    Ok(exit)
 }
 
+/// Post the user prompt as a `next-turn` command through the in-process
+/// inbox, sequencing `message.received` before the command is consumed.
+async fn post_prompt(
+    handle: &crate::server::session::SessionHandle,
+    session_id: ulid::Ulid,
+    prompt: &str,
+) -> anyhow::Result<()> {
+    use crate::bus::command::{Command, ContentBlock, DeliveryMode};
+    use crate::bus::event::ROOT_ACTOR_ID;
+    use crate::bus::sequencer::PendingCommand;
+
+    let permit = handle
+        .inbox_tx
+        .clone()
+        .try_reserve_owned()
+        .map_err(|_| anyhow::anyhow!("inbox unavailable"))?;
+    let command = Command {
+        command_id: ulid::Ulid::new(),
+        session_id,
+        source_actor_id: "user:cli".to_string(),
+        target_actor_id: ROOT_ACTOR_ID.to_string(),
+        mode: DeliveryMode::NextTurn,
+        content: vec![ContentBlock::Text {
+            text: prompt.to_string(),
+        }],
+        created_at: std::time::SystemTime::now(),
+    };
+    let pending = PendingCommand {
+        command_id: command.command_id,
+        content: command.text_content(),
+        source: command.source_actor_id.clone(),
+        target: command.target_actor_id.clone(),
+        mode: command.mode.as_str().to_string(),
+    };
+    let committed = command.clone();
+    handle
+        .sequencer
+        .accept_command(
+            pending,
+            Box::new(move || {
+                permit.send(committed);
+            }),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("post failed: {e}"))?;
+    Ok(())
+}
+
+/// Render events through the `event_to_ui` adapter until a terminal
+/// `turn.end`, reproducing the Phase-1 `finish` behavior (stdout via the
+/// UiEvents, plus the stderr line + exit code for interrupted/error) from the
+/// event stream instead of the raw `RunOutcome`.
+async fn render_until_terminal(
+    sub: &mut crate::bus::SubscribeReply,
+    renderer: &mut Renderer,
+) -> i32 {
+    if let crate::bus::ResumeOutcome::Replay(events) = &sub.replay {
+        for env in events {
+            if let Some(ui) = event_to_ui(env) {
+                renderer.render(ui);
+            }
+        }
+    }
+    let Some(live) = sub.live.as_mut() else {
+        return EXIT_ERROR;
+    };
+    // Ctrl-C cancels the session token, so cancellation arrives here as a real
+    // turn.end{interrupted} event — just read the live stream to the terminal.
+    while let Some(env) = live.recv().await {
+        if let Some(ui) = event_to_ui(&env) {
+            renderer.render(ui);
+        }
+        if env.kind == EventKind::TurnEnd.as_str() {
+            return exit_code_for(&env);
+        }
+    }
+    EXIT_ERROR
+}
+
+/// Derive the process exit code from a `turn.end` envelope AND print the same
+/// stderr line Phase-1 `finish` did (Interrupted/Error). The exact stderr text
+/// is produced by [`terminal_stderr_line`] so a parity test can assert the
+/// REAL string the production path prints. Done->0, Yielded->2,
+/// Interrupted->130 (+stderr), Error->1 (+stderr with the bounded summary).
+pub fn exit_code_for(env: &EventEnvelope) -> i32 {
+    let Ok(payload) = serde_json::from_value::<TurnEnd>(env.payload.clone()) else {
+        return EXIT_ERROR;
+    };
+    if let Some(line) = terminal_stderr_line(&payload) {
+        eprint!("{line}");
+    }
+    match payload.outcome {
+        TurnEndOutcome::Done => EXIT_DONE,
+        TurnEndOutcome::Yielded => EXIT_YIELDED,
+        TurnEndOutcome::Interrupted => EXIT_INTERRUPTED,
+        TurnEndOutcome::Error => EXIT_ERROR,
+    }
+}
+
+/// The stderr line the terminal outcome prints, matching Phase-1 `finish`:
+/// `\ninterrupted` for Interrupted, `\nerror: {message}` for Error, and
+/// nothing (stdout-only via `event_to_ui`) for Done/Yielded.
+pub fn terminal_stderr_line(payload: &TurnEnd) -> Option<String> {
+    match payload.outcome {
+        TurnEndOutcome::Interrupted => Some("\ninterrupted".to_string()),
+        TurnEndOutcome::Error => {
+            let msg = payload
+                .error
+                .as_ref()
+                .map(|e| e.message.clone())
+                .unwrap_or_default();
+            Some(format!("\nerror: {msg}"))
+        }
+        TurnEndOutcome::Done | TurnEndOutcome::Yielded => None,
+    }
+}
+
+async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
+    use crate::server::session::ServerConfig;
+
+    let bind: std::net::SocketAddr = args
+        .bind
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid --bind address {:?}: {e}", args.bind))?;
+    let cfg_dir = config_dir()?;
+    let config = ServerConfig {
+        bind,
+        models_path: args.models,
+        config_dir: cfg_dir,
+        allow_non_loopback: args.allow_non_loopback,
+    };
+    crate::server::routes::serve(config).await?;
+    Ok(EXIT_DONE)
+}
+
+/// The Phase-1 exit-code + rendering oracle. `run` now derives the same
+/// mapping from the event stream via [`exit_code_for`] + [`event_to_ui`],
+/// so this stays as the reference the parity test checks against.
+#[cfg(test)]
 fn finish(outcome: Result<RunOutcome, AgentError>, renderer: &mut Renderer) -> anyhow::Result<i32> {
     match outcome {
         Ok(RunOutcome::Done(_)) => {
@@ -231,6 +357,7 @@ fn finish(outcome: Result<RunOutcome, AgentError>, renderer: &mut Renderer) -> a
     }
 }
 
+#[cfg(test)]
 fn print_yield(renderer: &mut Renderer, req: &HumanRequest) {
     renderer.render(UiEvent::Yielded {
         question: req.question.clone(),

@@ -42,7 +42,7 @@ pub use ports::{
 pub use protocol::{
     ClearParams, FeedbackParams, InlineCompletionItem, InlineCompletionParams,
     InlineCompletionResult, IntentParams, Range, ReflexShownParams, Remark, RemarkParams,
-    StatusParams,
+    ServerInfoParams, StatusParams,
 };
 pub use reflex::{
     SuggestOutcome, Suggestion, DEBOUNCE_MS, MAX_CONTEXT_BYTES, MAX_PREFIX_BYTES, MAX_SUFFIX_BYTES,
@@ -96,6 +96,9 @@ pub struct NavigatorDeps {
     pub workspace: Option<PathBuf>,
     /// The user-level navigator dir (`~/.config/rust-agent/navigator/`).
     pub user_dir: Option<PathBuf>,
+    /// The cognition chat server's endpoint: when set, `initialized` sends
+    /// `navigator/serverInfo` with the loopback port and bearer token.
+    pub server_info: Option<ServerInfoParams>,
     /// Human-readable notes about layers that were disabled at startup;
     /// surfaced as one status message after initialize.
     pub disabled_layers: Vec<String>,
@@ -114,6 +117,7 @@ impl NavigatorDeps {
             metacognition_model: None,
             workspace: None,
             user_dir: None,
+            server_info: None,
             disabled_layers: Vec::new(),
             log_path: log_path.into(),
         }
@@ -130,6 +134,7 @@ impl NavigatorDeps {
             metacognition_model: None,
             workspace: None,
             user_dir: None,
+            server_info: None,
             disabled_layers: Vec::new(),
             log_path: log_path.into(),
         }
@@ -165,6 +170,13 @@ impl NavigatorDeps {
     pub fn with_dirs(mut self, workspace: Option<PathBuf>, user_dir: Option<PathBuf>) -> Self {
         self.workspace = workspace;
         self.user_dir = user_dir;
+        self
+    }
+
+    /// Builder-style: the cognition chat server's endpoint, announced as
+    /// `navigator/serverInfo` after `initialized`.
+    pub fn with_server_info(mut self, info: ServerInfoParams) -> Self {
+        self.server_info = Some(info);
         self
     }
 

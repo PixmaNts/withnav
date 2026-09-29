@@ -85,6 +85,17 @@ export interface ReflexShownParams {
   shownAtMs: number;
 }
 
+// --- Cognition chat server ---
+
+export interface ServerInfoParams {
+  port: number;
+  token: string;
+}
+
+export namespace ServerInfoNotification {
+  export const type = new NotificationType<ServerInfoParams>("navigator/serverInfo");
+}
+
 export namespace RemarkNotification {
   export const type = new NotificationType<RemarkParams>("navigator/remark");
 }

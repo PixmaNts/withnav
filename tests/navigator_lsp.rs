@@ -812,3 +812,45 @@ async fn trigger_records_carry_replay_fields() {
     assert!(trigger["answers"].is_object());
     assert_eq!(trigger["branch"], 1);
 }
+
+/// With `server_info` in the deps, `initialized` delivers
+/// `navigator/serverInfo` with exactly those values: the extension learns
+/// the cognition chat server's port and bearer token.
+#[tokio::test(start_paused = true)]
+async fn server_info_arrives_after_initialized_with_the_configured_values() {
+    let mock = MockCommenter::new(vec![]);
+    let tmp = tempfile::tempdir().unwrap();
+    let deps = NavigatorDeps::new(Arc::new(mock), tmp.path().join("nav.jsonl"))
+        .with_server_info(navigator::ServerInfoParams {
+            port: 45678,
+            token: "tok-123".to_string(),
+        });
+    let mut client = spawn_server(deps);
+
+    client.initialize(json!({})).await;
+    let mut seen = Vec::new();
+    let info = client.expect("navigator/serverInfo", &mut seen).await;
+    assert_eq!(info["params"]["port"], 45678);
+    assert_eq!(info["params"]["token"], "tok-123");
+}
+
+/// Without `server_info` in the deps, NO `navigator/serverInfo` ever leaves
+/// the server (the chat stays unannounced when its server failed to bind).
+#[tokio::test(start_paused = true)]
+async fn without_server_info_no_notification_is_sent() {
+    let mock = MockCommenter::new(vec![]);
+    let tmp = tempfile::tempdir().unwrap();
+    let mut client = spawn_server(NavigatorDeps::new(Arc::new(mock), tmp.path().join("nav.jsonl")));
+
+    client.initialize(json!({})).await;
+    client.did_open(URI, &base_text(), 1).await;
+    client.did_change(URI, &big_edit(), 2).await;
+    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let msgs = client.collect_for(Duration::from_millis(100)).await;
+    assert!(
+        msgs.iter()
+            .all(|m| m.get("method").and_then(|m| m.as_str()) != Some("navigator/serverInfo")),
+        "no serverInfo without server_info deps: {msgs:?}"
+    );
+}

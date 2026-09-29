@@ -4,6 +4,16 @@
 use serde::{Deserialize, Serialize};
 use tower_lsp_server::ls_types::notification::Notification;
 
+/// Server -> client: the cognition chat server's endpoint, sent after
+/// `initialized` (and again whenever the server is restarted). The loopback
+/// port of the in-process session server plus the per-process bearer token
+/// its routes require.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerInfoParams {
+    pub port: u16,
+    pub token: String,
+}
+
 /// Server -> client: a new remark for a uri. Replaces any previous one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemarkParams {
@@ -124,6 +134,13 @@ impl Notification for RemarkNotification {
     const METHOD: &'static str = "navigator/remark";
 }
 
+pub enum ServerInfoNotification {}
+
+impl Notification for ServerInfoNotification {
+    type Params = ServerInfoParams;
+    const METHOD: &'static str = "navigator/serverInfo";
+}
+
 pub enum ClearNotification {}
 
 impl Notification for ClearNotification {
@@ -181,6 +198,17 @@ mod tests {
         assert_eq!(RemarkNotification::METHOD, "navigator/remark");
         assert_eq!(ClearNotification::METHOD, "navigator/clear");
         assert_eq!(StatusNotification::METHOD, "navigator/status");
+        assert_eq!(ServerInfoNotification::METHOD, "navigator/serverInfo");
+    }
+
+    #[test]
+    fn server_info_params_serialize_the_wire_shape() {
+        let p = ServerInfoParams {
+            port: 41235,
+            token: "secret".into(),
+        };
+        let s = serde_json::to_string(&p).unwrap();
+        assert_eq!(s, r#"{"port":41235,"token":"secret"}"#);
     }
 
     #[test]

@@ -32,7 +32,7 @@ use crate::navigator::ports::DecisionModel;
 use crate::navigator::protocol::{
     ClearNotification, ClearParams, DiagnosticItem, DiagnosticsParams, FeedbackParams,
     InlineCompletionResult, IntentParams, Position, ReflexShownParams, RemarkNotification,
-    RemarkParams, StatusNotification, StatusParams,
+    RemarkParams, ServerInfoNotification, ServerInfoParams, StatusNotification, StatusParams,
 };
 use crate::navigator::reflex::{to_result, ReflexService, SuggestOutcome};
 use crate::navigator::{Metacognition, NavigatorDeps};
@@ -68,6 +68,9 @@ struct Inner {
     reflex_model: Option<String>,
     /// The reflex service; None keeps the layer disabled (empty answers).
     reflex: Option<ReflexService>,
+    /// The cognition chat server's endpoint; sent as `navigator/serverInfo`
+    /// after `initialized`. None keeps the chat unannounced.
+    server_info: Option<ServerInfoParams>,
     /// Startup notes about disabled layers, surfaced once after initialize.
     disabled_layers: Vec<String>,
 }
@@ -103,6 +106,7 @@ impl NavigatorBackend {
                 metacognition_model: deps.metacognition_model,
                 reflex,
                 reflex_model: deps.reflex_model,
+                server_info: deps.server_info,
                 disabled_layers: deps.disabled_layers,
             }),
         }
@@ -971,6 +975,17 @@ impl LanguageServer for NavigatorBackend {
 
     async fn shutdown(&self) -> tower_lsp_server::jsonrpc::Result<()> {
         Ok(())
+    }
+
+    /// `initialized`: announce the cognition chat server's endpoint when the
+    /// binary started one, so the extension can bridge the chat panel.
+    async fn initialized(&self, _params: InitializedParams) {
+        if let Some(info) = self.inner.server_info.clone() {
+            self.inner
+                .client
+                .send_notification::<ServerInfoNotification>(info)
+                .await;
+        }
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {

@@ -16,7 +16,10 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": { "activitybar": [{ "id": "navigator", "title": "Navigator", "icon": "media/navigator.svg" }] },
+    "views": { "navigator": [{ "id": "navigator.chat", "name": "Cognition" }] },
     "commands": [
+      { "command": "navigator.focusChat", "title": "Focus Cognition Chat", "category": "Navigator" },
       {
         "command": "navigator.markUseful",
         "title": "Mark Last Remark as Useful",

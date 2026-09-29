@@ -176,6 +176,13 @@ pub struct SessionSummary {
     pub current_seq: u64,
 }
 
+/// Session profile selecting the navigator's cognition: the `cognition`
+/// model alias by default and the pair-programmer system prompt.
+pub const NAVIGATOR_PROFILE: &str = "navigator";
+
+/// The cognition's role in a navigator session, editable as Markdown.
+pub const COGNITION_PROMPT: &str = include_str!("../navigator/cognition.md");
+
 /// Immutable server configuration, validated at bind time.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -188,6 +195,9 @@ pub struct ServerConfig {
     /// Auth store directory for API-key resolution.
     pub config_dir: PathBuf,
     pub allow_non_loopback: bool,
+    /// When set, every route except health requires
+    /// `Authorization: Bearer <token>` (the navigator's in-process server).
+    pub bearer_token: Option<String>,
 }
 
 impl ServerConfig {
@@ -274,8 +284,10 @@ impl AppState {
         &self,
         workspace: &Path,
         model: Option<&str>,
+        profile: Option<&str>,
     ) -> Result<SessionId, ServerError> {
-        let alias = model.unwrap_or("default");
+        let navigator = profile == Some(NAVIGATOR_PROFILE);
+        let alias = model.unwrap_or(if navigator { "cognition" } else { "default" });
         let resolved = self.resolve_model(workspace, alias)?;
         let api_key = auth::resolve_key(
             &self.config.config_dir,
@@ -285,9 +297,14 @@ impl AppState {
 
         let session_id = Ulid::new();
         let session_cancel = CancellationToken::new();
-        let actor = build_actor(workspace, &self.config.config_dir, resolved, api_key, {
-            session_cancel.child_token()
-        });
+        let actor = build_actor(
+            workspace,
+            &self.config.config_dir,
+            resolved,
+            api_key,
+            session_cancel.child_token(),
+            navigator,
+        );
 
         // (1) sequencer FIRST — it must exist before anyone publishes.
         let sequencer = Sequencer::spawn(session_id, SessionBus::new());
@@ -641,12 +658,13 @@ fn build_actor(
     resolved: ResolvedModel,
     api_key: String,
     cancel: CancellationToken,
+    navigator: bool,
 ) -> AgentActor {
     let tool_context = ToolContext {
         workspace: workspace.to_path_buf(),
         writable_roots: vec![workspace.to_path_buf(), config_dir.to_path_buf()],
     };
-    AgentActor::new(
+    let mut actor = AgentActor::new(
         build_registry(),
         tool_context,
         resolved.provider,
@@ -655,7 +673,16 @@ fn build_actor(
         resolved.model.reasoning_history,
         resolved.model.max_output_tokens,
         cancel,
-    )
+    );
+    if navigator {
+        // The agent loop always sends its own system contract first; the
+        // navigator role rides as a second system message at the head of the
+        // transcript, so the Phase-1 loop and prompt stay untouched.
+        actor.transcript.push(crate::provider::openai::ChatMessage::System {
+            content: COGNITION_PROMPT.to_string(),
+        });
+    }
+    actor
 }
 
 fn build_registry() -> Registry {
@@ -705,6 +732,7 @@ mod tests {
             models_path: None,
             config_dir: PathBuf::from("/tmp/rust-agent-test"),
             allow_non_loopback,
+            bearer_token: None,
         }
     }
 

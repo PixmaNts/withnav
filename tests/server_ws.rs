@@ -65,6 +65,7 @@ fn test_config(tmp: &Path, base_url: &str) -> ServerConfig {
         models_path: Some(tmp.join("models.json")),
         config_dir,
         allow_non_loopback: false,
+        bearer_token: None,
     }
 }
 

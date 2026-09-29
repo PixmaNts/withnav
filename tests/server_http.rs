@@ -74,6 +74,7 @@ fn test_config(tmp: &Path) -> ServerConfig {
         models_path: Some(tmp.join("models.json")),
         config_dir,
         allow_non_loopback: false,
+        bearer_token: None,
     }
 }
 
@@ -275,6 +276,7 @@ async fn real_socket_serve_answers_health_create_and_get() {
     let addr: SocketAddr = listener.local_addr().expect("local addr");
     let bound = rust_agent::server::routes::serve_on(
         ServerConfig {
+            bearer_token: None,
             bind: addr,
             ..config
         },
@@ -402,8 +404,8 @@ async fn sigterm_drives_graceful_shutdown_sessions_end_and_clean_exit() {
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace dir");
 
-    let id_a = state.create_session(&ws, None).expect("create a");
-    let id_b = state.create_session(&ws, None).expect("create b");
+    let id_a = state.create_session(&ws, None, None).expect("create a");
+    let id_b = state.create_session(&ws, None, None).expect("create b");
 
     // The TEST subscribes before shutdown so session.end is observable.
     let mut subs = Vec::new();

@@ -17,10 +17,13 @@ import {
   NavigatorConfig,
   RemarkNotification,
   RemarkParams,
+  ServerInfoNotification,
   StatusNotification,
   Verdict,
 } from "./protocol";
 import { registerReflex } from "./reflex";
+import { CognitionBackend } from "./cognition";
+import { registerChatView } from "./chatView";
 
 const MARKER = "◆ ";
 const MAX_INLINE = 120;
@@ -48,6 +51,7 @@ let lastRemark: ActiveRemark | undefined;
 let diagnosticsTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let reflexContext: vscode.ExtensionContext | undefined;
 let reflexDisposables: vscode.Disposable[] = [];
+const cognition = new CognitionBackend();
 
 export function activate(_context: vscode.ExtensionContext) {
   reflexContext = _context;
@@ -65,6 +69,8 @@ export function activate(_context: vscode.ExtensionContext) {
   statusItem.show();
 
   registerCommands();
+  _context.subscriptions.push(registerChatView(_context, cognition));
+  _context.subscriptions.push(vscode.commands.registerCommand("navigator.focusChat", () => vscode.commands.executeCommand("workbench.view.extension.navigator")));
 
   vscode.window.onDidChangeVisibleTextEditors((editors) => {
     for (const editor of editors) {
@@ -146,6 +152,7 @@ async function startClient(): Promise<void> {
     stateMessage = params.message;
     refreshStatusBar();
   });
+  newClient.onNotification(ServerInfoNotification.type, (params) => cognition.setServerInfo(params));
 
   try {
     await newClient.start();

@@ -251,6 +251,21 @@ async fn main() -> anyhow::Result<()> {
     let workspace = std::env::current_dir().ok();
     let user_dir = navigator::default_user_dir();
 
+    // The cognition chat rides on an in-process Phase-2 server bound to a
+    // loopback ephemeral port with a per-process bearer token, announced as
+    // `navigator/serverInfo`. It lives exactly as long as the LSP session:
+    // when `navigator::serve` returns (exit/EOF) the shutdown trigger fires,
+    // every session is closed and the server drains so the process exits.
+    let http = match spawn_cognition_server(&cli).await {
+        Ok(http) => Some(http),
+        Err(e) => {
+            // A failed bind must not take the navigator down: run the LSP
+            // without the chat (no serverInfo notification).
+            tracing::error!("cognition chat server unavailable: {e}");
+            None
+        }
+    };
+
     let mut deps = navigator::NavigatorDeps::with_layers(layers.metacognition(), log_path)
         .with_dirs(workspace, user_dir)
         .with_model_ids(
@@ -259,6 +274,9 @@ async fn main() -> anyhow::Result<()> {
             layers.metacognition_model.clone(),
         )
         .with_disabled_layers(layers.disabled.clone());
+    if let Some(info) = http.as_ref().map(|h| h.info.clone()) {
+        deps = deps.with_server_info(info);
+    }
     if let Some(fim) = layers.fim {
         deps = deps.with_fim(fim);
     }
@@ -267,7 +285,70 @@ async fn main() -> anyhow::Result<()> {
     }
 
     navigator::serve(tokio::io::stdin(), tokio::io::stdout(), deps).await;
+
+    // LSP exit/EOF: close every chat session and let the server drain, so
+    // the process exits instead of leaking the HTTP task.
+    if let Some(http) = http {
+        let _ = http.shutdown.send(());
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), http.task).await;
+    }
     Ok(())
+}
+
+/// The running cognition chat server: the spawned HTTP task plus the
+/// shutdown trigger the LSP exit fires, and the endpoint to announce.
+struct CognitionHttp {
+    task: tokio::task::JoinHandle<()>,
+    shutdown: tokio::sync::oneshot::Sender<()>,
+    info: navigator::ServerInfoParams,
+}
+
+/// The in-process cognition server: an [`AppState`] over the same models
+/// resolution as the LSP layers, bound to a loopback ephemeral port, with a
+/// random 64-hex-char bearer token.
+async fn spawn_cognition_server(cli: &Cli) -> anyhow::Result<CognitionHttp> {
+    use rust_agent::server::session::{AppState, ServerConfig};
+
+    let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let models_path = navigator::resolve_models(cli.models.as_deref(), &workspace);
+    let config_dir = auth::default_config_dir()
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve config dir"))?;
+    let token = bearer_token();
+    let config = ServerConfig {
+        bind: "127.0.0.1:0".parse().expect("loopback bind"),
+        models_path,
+        config_dir,
+        allow_non_loopback: false,
+        bearer_token: Some(token.clone()),
+    };
+    let state = AppState::new(config);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let task = tokio::spawn(async move {
+        let _ = rust_agent::server::routes::serve_until(
+            state,
+            listener,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+        )
+        .await;
+    });
+
+    Ok(CognitionHttp {
+        task,
+        shutdown: shutdown_tx,
+        info: navigator::ServerInfoParams { port, token },
+    })
+}
+
+/// A random 32-byte bearer token, hex-encoded: two ULIDs give 128 random
+/// bits each with millisecond ordering, plenty for a per-process secret.
+fn bearer_token() -> String {
+    use ulid::Ulid;
+    format!("{}{}", Ulid::new(), Ulid::new()).to_lowercase()
 }
 
 /// Replays a candidate pipeline over the recorded trigger log. Nothing here

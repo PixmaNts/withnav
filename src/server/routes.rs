@@ -44,6 +44,8 @@ pub struct CreateSessionRequest {
     pub workspace: String,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
 /// Frozen create-session response (ticket 04 Q3).
@@ -111,7 +113,7 @@ impl From<&WireContentBlock> for ContentBlock {
 /// The frozen message ack (ticket 04 Q3): `notice` carries the visible
 /// steer/interrupt downgrade and is absent for next-turn.
 #[derive(Debug, Clone, Serialize, PartialEq)]
-pub(crate) struct MessageAccepted {
+pub struct MessageAccepted {
     pub command_id: String,
     pub accepted: bool,
     pub actor_state: String,
@@ -136,6 +138,7 @@ pub struct StopAccepted {
 /// The Axum router for this slice's routes. Tests mount it directly via
 /// `tower::ServiceExt::oneshot`.
 pub fn app(state: AppState) -> Router {
+    let token = state.config.bearer_token.clone();
     Router::new()
         .route("/v1/health", get(health))
         .route("/v1/sessions", post(create_session))
@@ -151,6 +154,21 @@ pub fn app(state: AppState) -> Router {
             any(crate::server::websocket::get_ws),
         )
         .with_state(state)
+        .layer(axum::middleware::from_fn(move |request: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| {
+            let token = token.clone();
+            async move {
+                if request.uri().path() != "/v1/health" {
+                    if let Some(token) = token {
+                        use axum::http::header::AUTHORIZATION;
+                        let expected = format!("Bearer {token}");
+                        if request.headers().get(AUTHORIZATION).and_then(|v| v.to_str().ok()) != Some(&expected) {
+                            return StatusCode::UNAUTHORIZED.into_response();
+                        }
+                    }
+                }
+                next.run(request).await
+            }
+        }))
 }
 
 /// Loopback bind + graceful shutdown (SIGINT/SIGTERM -> every active session
@@ -184,6 +202,28 @@ pub async fn serve_state_on(
     let app = app(state.clone());
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(state))
+        .await?;
+    Ok(())
+}
+
+/// Serve until an EXTERNAL shutdown future resolves (the navigator drives it
+/// with its LSP exit), then close every session the same way a signal
+/// would: each one's fence emits `session.end`, then the server drains.
+/// Unlike [`serve_state_on`] there is no signal handler — the caller owns
+/// the shutdown condition.
+pub async fn serve_until(
+    state: AppState,
+    listener: tokio::net::TcpListener,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<(), ServerError> {
+    let shutdown_state = state.clone();
+    let shutdown = async move {
+        shutdown.await;
+        shutdown_state.close_all().await;
+    };
+    let app = app(state);
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
         .await?;
     Ok(())
 }
@@ -230,6 +270,7 @@ async fn create_session(
     let session_id = state.create_session(
         std::path::Path::new(&request.workspace),
         request.model.as_deref(),
+        request.profile.as_deref(),
     );
     match session_id {
         Ok(id) => (
@@ -261,7 +302,8 @@ async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> R
 const HTTP_USER_ACTOR_ID: &str = "user:http";
 
 /// Builds the Command for a posted message with a server-assigned sender.
-pub(crate) fn build_command(
+/// Public so the WS route and integration tests share the exact POST core.
+pub fn build_command(
     session_id: Ulid,
     request: &PostMessageRequest,
     mode: DeliveryMode,
@@ -337,8 +379,9 @@ async fn post_message(
 /// permit up front (a full inbox is a 503 BEFORE the event is sequenced, so
 /// there is nothing to un-publish — the rejected permit releases its slot),
 /// sequence `message.received` via `accept_command`, commit the command into
-/// the reserved permit, ack.
-pub(crate) async fn route_message(
+/// the reserved permit, ack. Public so the WS route and integration tests
+/// share the exact POST core.
+pub async fn route_message(
     handle: &SessionHandle,
     command: Command,
 ) -> Result<MessageAccepted, ServerError> {
@@ -455,6 +498,7 @@ mod tests {
             models_path: None,
             config_dir: std::env::temp_dir(),
             allow_non_loopback: false,
+            bearer_token: None,
         })
     }
 

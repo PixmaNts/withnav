@@ -55,6 +55,7 @@ async fn live_server_edit_and_test_through_the_bus() {
         models_path: Some(root.join("models.json")),
         config_dir,
         allow_non_loopback: false,
+        bearer_token: None,
     };
     let state = AppState::new(config);
     let (addr, server_task) = spawn_server(state).await;

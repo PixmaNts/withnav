@@ -88,7 +88,7 @@
         },
         "navigator.modelAlias": {
           "type": "string",
-          "default": "fast",
+          "default": "metacognition",
           "description": "Model alias (from rust-agent models.json) used for remarks."
         },
         "navigator.reflex.enabled": {

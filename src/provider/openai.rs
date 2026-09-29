@@ -180,9 +180,14 @@ pub fn build_request(
 /// A per-provider HTTP client cache: one `reqwest::Client` built once per
 /// provider and reused, instead of rebuilding a client (and its connection
 /// pool) on every call.
+///
+/// The key includes the timeouts, not only the provider name: layers sharing
+/// one provider apply different deadlines (observed 2026-09-29: the instinct's
+/// 2 s client was reused by the metacognition on the same `omniroute`
+/// provider, cutting every remark at exactly 2000 ms).
 #[derive(Default)]
 pub struct ClientCache {
-    clients: std::sync::Mutex<std::collections::HashMap<String, reqwest::Client>>,
+    clients: std::sync::Mutex<std::collections::HashMap<(String, u64, u64), reqwest::Client>>,
 }
 
 impl ClientCache {
@@ -199,12 +204,17 @@ impl ClientCache {
     ) -> Result<reqwest::Client, ProviderError> {
         // The lock is only held for a map lookup after the first build, so
         // a Mutex stays cheap and the fast path needs no extra allocation.
+        let key = (
+            provider_name.to_string(),
+            provider.connect_timeout_ms,
+            provider.request_timeout_ms,
+        );
         let mut clients = self.clients.lock().expect("client cache poisoned");
-        if let Some(c) = clients.get(provider_name) {
+        if let Some(c) = clients.get(&key) {
             return Ok(c.clone());
         }
         let built = build_client(provider)?;
-        clients.insert(provider_name.to_string(), built.clone());
+        clients.insert(key, built.clone());
         Ok(built)
     }
 }
@@ -345,8 +355,29 @@ mod tests {
         // Two providers, two entries: repeated gets for the same provider
         // never grow the cache (the client is reused, not rebuilt).
         assert_eq!(cache.clients.lock().unwrap().len(), 2);
-        assert!(cache.clients.lock().unwrap().contains_key("p"));
-        assert!(cache.clients.lock().unwrap().contains_key("q"));
+    }
+
+    #[test]
+    fn client_cache_keeps_distinct_deadlines_apart_on_one_provider() {
+        let slow = ProviderConfig {
+            base_url: "http://cache-test.invalid/v1".to_string(),
+            api_key_env: None,
+            headers: Default::default(),
+            connect_timeout_ms: 5_000,
+            request_timeout_ms: 600_000,
+        };
+        let fast = ProviderConfig {
+            connect_timeout_ms: 2_000,
+            request_timeout_ms: 2_000,
+            ..slow.clone()
+        };
+        let cache = ClientCache::new();
+        let _ = cache.get("omniroute", &fast).unwrap();
+        let slow_client = cache.get("omniroute", &slow).unwrap();
+        // A layer with a long deadline must not inherit the short-deadline
+        // client built first by another layer on the same provider.
+        assert_eq!(cache.clients.lock().unwrap().len(), 2);
+        assert!(format!("{slow_client:?}").contains("600s"));
     }
 
     #[test]

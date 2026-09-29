@@ -116,7 +116,7 @@ function readConfig(): NavigatorConfig {
     idleMs: config.get<number>("idleMs", 3000),
     minChangedLines: config.get<number>("minChangedLines", 3),
     cooldownMs: config.get<number>("cooldownMs", 20000),
-    modelAlias: config.get<string>("modelAlias", "fast"),
+    modelAlias: config.get<string>("modelAlias", "metacognition"),
   };
 }
 

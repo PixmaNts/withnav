@@ -29,8 +29,20 @@ export type HostToWebview =
   | { type: "question"; id: string; text: string }
   /** Live preview of the editor context the next message would carry (chip label). */
   | { type: "editorContext"; label: string }
+  /** Past conversations of this workspace, newest first. `currentId` is the open one. */
+  | { type: "conversations"; items: ConversationSummary[]; currentId?: string }
+  /** A conversation was opened (resumed or started); a `history` message follows. */
+  | { type: "conversationOpened"; id?: string; title: string }
   /** Replace the whole transcript (sent when the view is (re)opened). */
   | { type: "history"; items: HostToWebview[] };
+
+/** One saved conversation, as listed in the panel. `updatedAt` is an RFC 3339 timestamp. */
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  updatedAt: string;
+  messageCount: number;
+}
 
 /** Webview -> host messages. */
 export type WebviewToHost =
@@ -41,7 +53,15 @@ export type WebviewToHost =
   /** The driver interrupts the current turn. */
   | { type: "stop" }
   /** The driver opens a file mentioned in the chat. */
-  | { type: "openFile"; path: string; line?: number };
+  | { type: "openFile"; path: string; line?: number }
+  /** The driver asks for the conversation list (the host answers with `conversations`). */
+  | { type: "listConversations" }
+  /** The driver reopens a past conversation. */
+  | { type: "openConversation"; id: string }
+  /** The driver starts a new conversation; the current one stays saved. */
+  | { type: "newConversation" }
+  /** The driver deletes a saved conversation. */
+  | { type: "deleteConversation"; id: string };
 
 /** What the chat view needs from the host side; implemented by the cognition bridge. */
 export interface ChatBackend {
@@ -52,4 +72,13 @@ export interface ChatBackend {
   /** `context` is an editor-context block appended after the driver's text. */
   send(text: string, context?: string): Promise<void>;
   stop(): Promise<void>;
+  /** Saved conversations of the workspace, newest first. */
+  listConversations(): Promise<ConversationSummary[]>;
+  /** Resumes a saved conversation and replays it into the transcript. */
+  openConversation(id: string): Promise<void>;
+  /** Starts a new conversation on the next send. */
+  newConversation(): Promise<void>;
+  deleteConversation(id: string): Promise<void>;
+  /** The open conversation's id, if one exists yet. */
+  currentConversationId(): string | undefined;
 }

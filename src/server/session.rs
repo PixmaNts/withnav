@@ -676,10 +676,14 @@ impl AppState {
     ) -> Result<SessionId, ServerError> {
         // Resume keeps the stored model/profile/workspace (the stored row is
         // the authority); a fresh session honors the request's.
-        let session_id = resumed
-            .as_ref()
-            .map(|loaded| loaded.meta.id)
-            .unwrap_or_default();
+        // Resume keeps the stored model/profile/workspace (the stored row is
+        // the authority); a fresh session honors the request's.
+        let session_id = match &resumed {
+            Some(loaded) => loaded.meta.id,
+            // NB: NOT Ulid::default() — that is the nil ULID; every fresh
+            // session must mint its own id.
+            None => Ulid::new(),
+        };
         let (workspace, alias, profile) = match &resumed {
             Some(loaded) => (
                 PathBuf::from(&loaded.meta.workspace),
@@ -717,10 +721,10 @@ impl AppState {
             .as_ref()
             .map(|loaded| loaded.meta.last_seq + 1)
             .unwrap_or(0);
-        let bus = resumed
-            .as_ref()
-            .map(|loaded| SessionBus::from_envelopes(loaded.envelopes.clone()))
-            .unwrap_or_default();
+        let bus = match &resumed {
+            Some(loaded) => SessionBus::from_envelopes(loaded.envelopes.clone()),
+            None => SessionBus::new(),
+        };
         let is_resume = resumed.is_some();
 
         // History hooks: a persisting emitter + a turn-end transcript

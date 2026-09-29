@@ -1,5 +1,6 @@
 /// <reference lib="dom" />
 import type { HostToWebview, WebviewToHost } from "../chatProtocol";
+import { mountConversations } from "./conversations";
 
 type ViewState = { includeContext?: boolean };
 declare function acquireVsCodeApi(): { postMessage(message: WebviewToHost): void; getState(): ViewState | undefined; setState(state: ViewState): void };
@@ -15,6 +16,10 @@ const stop = document.querySelector<HTMLButtonElement>("#stop")!;
 const includeContext = document.querySelector<HTMLInputElement>("#include-context")!;
 const contextPreview = document.querySelector<HTMLElement>("#context-preview")!;
 includeContext.checked = vscode.getState()?.includeContext ?? true;
+const conversations = mountConversations(message => vscode.postMessage(message), () => {
+  if (!prompt.disabled) prompt.focus();
+  else document.querySelector<HTMLElement>(".conv-trigger")?.focus();
+});
 type Turn = { root: HTMLElement; content: HTMLElement; reasoning: HTMLElement; activity: HTMLElement; text: string; thoughts: string; calls: Map<string, HTMLElement> };
 const turns = new Map<string, Turn>();
 let state = "connecting";
@@ -121,6 +126,7 @@ function activity(item: Turn, event: Extract<HostToWebview, { type: "tool" }>): 
 }
 
 function receive(event: HostToWebview): void {
+  if (conversations(event)) return;
   switch (event.type) {
     case "history":
       transcript.replaceChildren(empty);

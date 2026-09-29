@@ -30,7 +30,7 @@ use crate::bus::command::{Command, ContentBlock, DeliveryMode};
 use crate::bus::event::ROOT_ACTOR_ID;
 use crate::bus::sequencer::PendingCommand;
 use crate::error::ServerError;
-use crate::server::session::{AppState, ServerConfig, SessionHandle};
+use crate::server::session::{AppState, ServerConfig, SessionHandle, SessionSlot};
 
 /// Frozen health body (SPEC §20.2).
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -46,6 +46,10 @@ pub struct CreateSessionRequest {
     pub model: Option<String>,
     #[serde(default)]
     pub profile: Option<String>,
+    /// Optional id of a past conversation to resume (same id returned; the
+    /// conversation continues with its stored events and transcript).
+    #[serde(default)]
+    pub resume: Option<String>,
 }
 
 /// Frozen create-session response (ticket 04 Q3).
@@ -141,8 +145,8 @@ pub fn app(state: AppState) -> Router {
     let token = state.config.bearer_token.clone();
     Router::new()
         .route("/v1/health", get(health))
-        .route("/v1/sessions", post(create_session))
-        .route("/v1/sessions/{id}", get(get_session))
+        .route("/v1/sessions", get(list_sessions).post(create_session))
+        .route("/v1/sessions/{id}", get(get_session).delete(delete_session))
         .route("/v1/sessions/{id}/messages", post(post_message))
         .route("/v1/sessions/{id}/stop", post(stop_session))
         .route(
@@ -267,13 +271,23 @@ async fn create_session(
             return error_response(ServerError::MalformedBody(rejection.body_text()));
         }
     };
-    let session_id = state.create_session(
-        std::path::Path::new(&request.workspace),
-        request.model.as_deref(),
-        request.profile.as_deref(),
-    );
+    let resume: Option<Ulid> = match request.resume.as_deref().map(str::parse) {
+        None => None,
+        Some(Ok(parsed)) => Some(parsed),
+        Some(Err(_)) => {
+            return error_response(ServerError::SessionNotFound(request.resume.unwrap()));
+        }
+    };
+    let session_id = state
+        .create_or_resume_session(
+            std::path::Path::new(&request.workspace),
+            request.model.as_deref(),
+            request.profile.as_deref(),
+            resume,
+        )
+        .await;
     match session_id {
-        Ok(id) => (
+        Ok((id, _)) => (
             StatusCode::OK,
             Json(CreateSessionResponse {
                 session_id: id.to_string(),
@@ -295,6 +309,100 @@ async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> R
         Ok(summary) => Json(summary).into_response(),
         Err(err) => error_response(err),
     }
+}
+
+/// One row of `GET /v1/sessions?workspace=`: the stored summary plus the
+/// registry's liveness.
+#[derive(Debug, Serialize)]
+pub struct SessionListEntry {
+    pub id: String,
+    pub title: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    /// Number of driver messages (`message.received` events).
+    pub message_count: u64,
+    /// True when a live, active session with this id exists in this process.
+    pub live: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionListBody {
+    pub sessions: Vec<SessionListEntry>,
+}
+
+/// `GET /v1/sessions?workspace=<abs path>`: the workspace's conversations,
+/// newest `updated_at` first. Requires persistence (`history_db`); without
+/// it the list is simply empty.
+async fn list_sessions(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let Some(workspace) = params.get("workspace") else {
+        return error_response(ServerError::MalformedBody(
+            "missing query parameter: workspace".to_string(),
+        ));
+    };
+    let Some(store) = state.history() else {
+        return (
+            StatusCode::OK,
+            Json(SessionListBody {
+                sessions: Vec::new(),
+            }),
+        )
+            .into_response();
+    };
+    match store.list(workspace).await {
+        Ok(rows) => {
+            let sessions = rows
+                .into_iter()
+                .map(|row| SessionListEntry {
+                    live: matches!(
+                        state.slot(row.meta.id),
+                        Some(SessionSlot::Live(handle))
+                            if handle.lifecycle == crate::server::session::Lifecycle::Active
+                    ),
+                    id: row.meta.id.to_string(),
+                    title: row.meta.title,
+                    created_at: row.meta.created_at,
+                    updated_at: row.meta.updated_at,
+                    message_count: row.message_count,
+                })
+                .collect();
+            (StatusCode::OK, Json(SessionListBody { sessions })).into_response()
+        }
+        Err(err) => error_response(ServerError::History(err)),
+    }
+}
+
+/// `DELETE /v1/sessions/{id}`: stops it if live, removes it from memory and
+/// from the store. 204 on success; 404 only when the id is neither in
+/// memory nor on disk.
+async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let parsed: Ulid = match id.parse() {
+        Ok(parsed) => parsed,
+        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+    };
+    let known_to_memory = state.slot(parsed).is_some();
+    match state.close_session(parsed).await {
+        Ok(()) => {}
+        Err(ServerError::SessionNotFound(_)) if !known_to_memory => {
+            // Disk-only id: it must exist in the store, else 404.
+            match state.history() {
+                Some(store) => match store.exists(parsed).await {
+                    Ok(true) => {}
+                    Ok(false) => return error_response(ServerError::SessionNotFound(id)),
+                    Err(err) => return error_response(ServerError::History(err)),
+                },
+                None => return error_response(ServerError::SessionNotFound(id)),
+            }
+        }
+        Err(err) => return error_response(err),
+    }
+    state.discard(parsed);
+    if let Some(store) = state.history() {
+        store.delete(parsed);
+    }
+    StatusCode::NO_CONTENT.into_response()
 }
 
 /// The server-assigned sender for HTTP-submitted messages: clients can never
@@ -460,6 +568,7 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         ServerError::NonLoopbackBind(_) | ServerError::Bind(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::InboxFull => StatusCode::SERVICE_UNAVAILABLE,
         ServerError::NonTextContent | ServerError::MalformedBody(_) => StatusCode::BAD_REQUEST,
+        ServerError::History(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::Config(_) | ServerError::Model(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     if matches!(err, ServerError::InboxFull) {
@@ -499,6 +608,7 @@ mod tests {
             config_dir: std::env::temp_dir(),
             allow_non_loopback: false,
             bearer_token: None,
+            history_db: None,
         })
     }
 

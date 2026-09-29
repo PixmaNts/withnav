@@ -136,8 +136,15 @@ pub struct Sequencer {
 impl Sequencer {
     /// Spawns the ONE authoritative sequencer task for a session.
     pub fn spawn(session_id: Ulid, emitter: impl Emitter) -> Self {
+        Self::spawn_from(session_id, emitter, 0)
+    }
+
+    /// [`Sequencer::spawn`] resuming at `next_seq` (a resumed session's
+    /// sequencer continues at `last_seq + 1` so stored and live seqs form
+    /// one gapless sequence).
+    pub fn spawn_from(session_id: Ulid, emitter: impl Emitter, next_seq: u64) -> Self {
         let (ingress_tx, ingress_rx) = mpsc::unbounded_channel();
-        tokio::spawn(run(session_id, ingress_rx, emitter));
+        tokio::spawn(run(session_id, ingress_rx, emitter, next_seq));
         Self {
             session_id,
             ingress_tx,
@@ -268,9 +275,10 @@ async fn run(
     session_id: Ulid,
     mut ingress_rx: mpsc::UnboundedReceiver<Ingress>,
     mut emitter: impl Emitter,
+    next_seq: u64,
 ) {
     // `next_seq` lives ONLY inside this task (single assignment point).
-    let mut next_seq: u64 = 0;
+    let mut next_seq: u64 = next_seq;
 
     while let Some(msg) = ingress_rx.recv().await {
         match msg {

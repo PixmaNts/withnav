@@ -27,7 +27,7 @@ pub struct StreamOptions {
     pub include_usage: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "lowercase")]
 pub enum ChatMessage {
     System {
@@ -38,10 +38,13 @@ pub enum ChatMessage {
     },
     Assistant {
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         content: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         reasoning_content: Option<String>,
         #[serde(skip_serializing_if = "Vec::is_empty")]
+        #[serde(default)]
         tool_calls: Vec<RequestToolCall>,
     },
     Tool {
@@ -50,7 +53,7 @@ pub enum ChatMessage {
     },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestToolCall {
     pub id: String,
     #[serde(rename = "type")]
@@ -58,7 +61,7 @@ pub struct RequestToolCall {
     pub function: RequestFunction,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestFunction {
     pub name: String,
     pub arguments: String,

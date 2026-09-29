@@ -134,12 +134,29 @@ pub fn spawn(
     sequencer: Sequencer,
     session_cancel: CancellationToken,
 ) -> tokio::task::JoinHandle<AgentActor> {
+    spawn_with_turn_end(session_id, actor, inbox, sequencer, session_cancel, Box::new(
+        |_| {},
+    ))
+}
+
+/// [`spawn`] with an `on_turn_end(&[ChatMessage])` callback: called after
+/// each turn's terminal events (turn.end/task.done/agent.state) with the
+/// actor's transcript snapshot at that point — the history store's hook.
+pub fn spawn_with_turn_end(
+    session_id: Ulid,
+    actor: AgentActor,
+    inbox: ActorInbox,
+    sequencer: Sequencer,
+    session_cancel: CancellationToken,
+    on_turn_end: Box<dyn Fn(&[crate::provider::openai::ChatMessage]) + Send>,
+) -> tokio::task::JoinHandle<AgentActor> {
     tokio::spawn(runtime_loop(
         session_id,
         actor,
         inbox,
         sequencer,
         session_cancel,
+        on_turn_end,
     ))
 }
 
@@ -149,6 +166,7 @@ async fn runtime_loop(
     mut inbox: ActorInbox,
     sequencer: Sequencer,
     session_cancel: CancellationToken,
+    on_turn_end: Box<dyn Fn(&[crate::provider::openai::ChatMessage]) + Send>,
 ) -> AgentActor {
     let mut active_task_id: Option<Ulid> = None;
 
@@ -346,6 +364,10 @@ async fn runtime_loop(
         if actor.cancel.is_cancelled() || session_cancel.is_cancelled() {
             break;
         }
+
+        // Terminal events of the turn are sequenced: snapshot the transcript
+        // for the history hook (bounded store write, fire-and-forget).
+        on_turn_end(&actor.transcript);
     }
 
     teardown(&mut actor, &sequencer);

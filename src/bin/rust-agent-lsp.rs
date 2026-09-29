@@ -314,12 +314,20 @@ async fn spawn_cognition_server(cli: &Cli) -> anyhow::Result<CognitionHttp> {
     let config_dir = auth::default_config_dir()
         .ok_or_else(|| anyhow::anyhow!("cannot resolve config dir"))?;
     let token = bearer_token();
+    let history_db = directories::ProjectDirs::from("", "", "rust-agent")
+        .map(|dirs| dirs.data_dir().join("navigator").join("sessions.db"));
+    if let Some(path) = &history_db {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
     let config = ServerConfig {
         bind: "127.0.0.1:0".parse().expect("loopback bind"),
         models_path,
         config_dir,
         allow_non_loopback: false,
         bearer_token: Some(token.clone()),
+        history_db,
     };
     let state = AppState::new(config);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;

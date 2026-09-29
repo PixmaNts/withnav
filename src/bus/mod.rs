@@ -121,6 +121,19 @@ impl SessionBus {
         Self::default()
     }
 
+    /// A bus pre-filled with stored envelopes (a resumed session): the
+    /// durable kinds re-enter the ring in order, so a fresh (no-cursor)
+    /// subscriber replays the whole past conversation. The envelopes are
+    /// already seq-stamped; the ring's append (durable-only) is exactly the
+    /// filter.
+    pub fn from_envelopes(envelopes: Vec<EventEnvelope>) -> Self {
+        let mut bus = Self::new();
+        for envelope in envelopes {
+            bus.ring.append(&envelope);
+        }
+        bus
+    }
+
     /// The evicted-durable watermark (the resume floor), `None` while every
     /// durable event is still retained.
     pub fn last_evicted_durable_seq(&self) -> Option<u64> {

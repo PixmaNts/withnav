@@ -198,6 +198,9 @@ pub struct ServerConfig {
     /// When set, every route except health requires
     /// `Authorization: Bearer <token>` (the navigator's in-process server).
     pub bearer_token: Option<String>,
+    /// Conversation-history database (`sessions.db`); `None` keeps today's
+    /// behaviour with no persistence (tests, CLI `run`, `serve`).
+    pub history_db: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -220,15 +223,34 @@ pub struct AppState {
     /// [`MAX_TOMBSTONES`].
     tombstone_order: Arc<Mutex<VecDeque<SessionId>>>,
     pub config: Arc<ServerConfig>,
+    /// The conversation-history store; `None` when `history_db` is unset.
+    history: Option<Arc<crate::server::store::HistoryStore>>,
 }
 
 impl AppState {
     pub fn new(config: ServerConfig) -> Self {
+        let history = config.history_db.as_deref().and_then(|path| {
+            match crate::server::store::HistoryStore::open(path) {
+                Ok(store) => Some(Arc::new(store)),
+                Err(err) => {
+                    // Persistence is an enhancement, never a dependency: a
+                    // broken database degrades to no history.
+                    tracing::error!("history store disabled: {err}");
+                    None
+                }
+            }
+        });
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             tombstone_order: Arc::new(Mutex::new(VecDeque::new())),
             config: Arc::new(config),
+            history,
         }
+    }
+
+    /// The history store, when persistence is enabled.
+    pub fn history(&self) -> Option<&crate::server::store::HistoryStore> {
+        self.history.as_deref()
     }
 
     /// Live sessions + retained tombstones (the whole registry). Client
@@ -280,62 +302,54 @@ impl AppState {
     /// call — the actor is built but not run until a message arrives),
     /// mints tokens, spawns the sequencer FIRST, publishes `session.start`
     /// (seq 0), THEN spawns the runtime task, and registers the handle.
-    pub fn create_session(
+    pub async fn create_session(
         &self,
         workspace: &Path,
         model: Option<&str>,
         profile: Option<&str>,
     ) -> Result<SessionId, ServerError> {
-        let navigator = profile == Some(NAVIGATOR_PROFILE);
-        let alias = model.unwrap_or(if navigator { "cognition" } else { "default" });
-        let resolved = self.resolve_model(workspace, alias)?;
-        let api_key = auth::resolve_key(
-            &self.config.config_dir,
-            &resolved.provider_name,
-            resolved.provider.api_key_env.as_deref(),
-        )?;
+        self.create_or_resume_session(workspace, model, profile, None)
+            .await
+            .map(|(id, _)| id)
+    }
 
-        let session_id = Ulid::new();
-        let session_cancel = CancellationToken::new();
-        let actor = build_actor(
-            workspace,
-            &self.config.config_dir,
-            resolved,
-            api_key,
-            session_cancel.child_token(),
-            navigator,
-        );
-
-        // (1) sequencer FIRST — it must exist before anyone publishes.
-        let sequencer = Sequencer::spawn(session_id, SessionBus::new());
-        // (2) session.start is seq 0, sequenced before the runtime exists.
-        let _ = sequencer.publish(start_candidate(workspace));
-        // (3) THEN the runtime task; the handle is retained so /stop can
-        // await the interrupted turn's events before the session.end fence.
-        let (inbox_tx, inbox) = ActorInbox::channel();
-        let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn(
-            session_id,
-            actor,
-            inbox,
-            sequencer.clone(),
-            session_cancel.clone(),
-        ))));
-
-        self.lock_sessions().insert(
-            session_id,
-            SessionSlot::Live(SessionHandle {
-                inbox_tx,
-                sequencer,
-                session_cancel,
-                runtime_task,
-                actor_id: ROOT_ACTOR_ID.to_string(),
-                lifecycle: Lifecycle::Active,
-                actor_state: "idle".to_string(),
-                workspace: workspace.to_path_buf(),
-                model: alias.to_string(),
-            }),
-        );
-        Ok(session_id)
+    /// [`create_session`] with an optional `resume` id (the POST
+    /// `/v1/sessions` `{"resume": "<id>"}` path):
+    /// - live + active → the SAME id, no rebuild;
+    /// - tombstone, or disk-only → rebuilt from the store under the SAME id
+    ///   with its stored model and profile: the sequencer continues at
+    ///   `last_seq + 1`, the bus is pre-filled with the stored envelopes (a
+    ///   fresh subscriber replays the past conversation), NO new
+    ///   `session.start`, the actor's transcript restored from the snapshot;
+    /// - unknown id → [`ServerError::SessionNotFound`].
+    /// The second tuple field says whether the session was resumed.
+    pub async fn create_or_resume_session(
+        &self,
+        workspace: &Path,
+        model: Option<&str>,
+        profile: Option<&str>,
+        resume: Option<SessionId>,
+    ) -> Result<(SessionId, bool), ServerError> {
+        if let Some(id) = resume {
+            // Live + active: the conversation never left.
+            if let Some(SessionSlot::Live(handle)) = self.lock_sessions().get(&id) {
+                if handle.lifecycle == Lifecycle::Active {
+                    return Ok((id, true));
+                }
+            }
+            // Tombstone in memory, or only on disk: rebuild under the same
+            // id. Both need the stored row.
+            let Some(store) = self.history.as_ref() else {
+                return Err(ServerError::SessionNotFound(id.to_string()));
+            };
+            let Some(loaded) = store.load(id).await.map_err(ServerError::History)? else {
+                return Err(ServerError::SessionNotFound(id.to_string()));
+            };
+            self.spawn_session(workspace, None, None, Some(loaded), workspace)?;
+            return Ok((id, true));
+        }
+        let id = self.spawn_session(workspace, model, profile, None, workspace)?;
+        Ok((id, false))
     }
 
     /// The frozen `GET /v1/sessions/:id` summary. Unknown id is a structured
@@ -571,8 +585,7 @@ impl AppState {
     /// `Ok(None)` when already Stopping/closed (idempotent); 404 when
     /// unknown. The slot stays in the map until the tombstone replaces it,
     /// so a concurrent request sees `Stopping` (P1-2) rather than a hole.
-    fn mark_stopping(&self, id: SessionId) -> Result<Option<SessionHandle>, ServerError> {
-        let mut guard = self.lock_sessions();
+    fn mark_stopping(&self, id: SessionId) -> Result<Option<SessionHandle>, ServerError> {        let mut guard = self.lock_sessions();
         match guard.get_mut(&id) {
             Some(SessionSlot::Live(handle)) if handle.lifecycle == Lifecycle::Active => {
                 handle.lifecycle = Lifecycle::Stopping;
@@ -607,6 +620,14 @@ impl AppState {
         }
     }
 
+    /// Removes a session from the registry AND the tombstone queue: the
+    /// DELETE route's memory half. Call after `close_session` (live) or on
+    /// a disk-only id (no memory slot at all).
+    pub fn discard(&self, id: SessionId) {
+        self.lock_sessions().remove(&id);
+        self.lock_tombstones().retain(|other| *other != id);
+    }
+
     fn lock_sessions(&self) -> MutexGuard<'_, HashMap<SessionId, SessionSlot>> {
         // Poison recovery via into_inner: a panicking writer must not wedge
         // the registry (same policy as the runtime observers).
@@ -637,6 +658,138 @@ impl AppState {
         };
         let config = ModelsConfig::load(&models_path)?;
         Ok(config.resolve(alias)?)
+    }
+
+    /// The shared mint: resolves the model, builds the actor, spawns the
+    /// sequencer (pre-filled + continuing at `last_seq + 1` when resuming),
+    /// publishes `session.start` (fresh only), spawns the runtime with the
+    /// history hooks, registers the handle. `resume_workspace` is the
+    /// workspace a resume request named; the FRESH path passes its own.
+    fn spawn_session(
+        &self,
+        workspace: &Path,
+        model: Option<&str>,
+        profile: Option<&str>,
+        resumed: Option<crate::server::store::LoadedSession>,
+        resume_workspace: &Path,
+    ) -> Result<SessionId, ServerError> {
+        // Resume keeps the stored model/profile/workspace (the stored row is
+        // the authority); a fresh session honors the request's.
+        let session_id = resumed
+            .as_ref()
+            .map(|loaded| loaded.meta.id)
+            .unwrap_or_else(Ulid::new);
+        let (workspace, alias, profile) = match &resumed {
+            Some(loaded) => (
+                PathBuf::from(&loaded.meta.workspace),
+                loaded.meta.model.clone(),
+                loaded.meta.profile.as_deref(),
+            ),
+            None => {
+                let navigator = profile == Some(NAVIGATOR_PROFILE);
+                let alias =
+                    model.unwrap_or(if navigator { "cognition" } else { "default" });
+                (workspace.to_path_buf(), alias.to_string(), profile)
+            }
+        };
+        let navigator = profile == Some(NAVIGATOR_PROFILE);
+        let resolved = self.resolve_model(resume_workspace, &alias)?;
+        let api_key = auth::resolve_key(
+            &self.config.config_dir,
+            &resolved.provider_name,
+            resolved.provider.api_key_env.as_deref(),
+        )?;
+        let session_cancel = CancellationToken::new();
+        let mut actor = build_actor(
+            &workspace,
+            &self.config.config_dir,
+            resolved,
+            api_key,
+            session_cancel.child_token(),
+            navigator,
+        );
+        if let Some(loaded) = &resumed {
+            actor.transcript = loaded.transcript.clone();
+        }
+
+        let next_seq = resumed
+            .as_ref()
+            .map(|loaded| loaded.meta.last_seq + 1)
+            .unwrap_or(0);
+        let bus = resumed
+            .as_ref()
+            .map(|loaded| SessionBus::from_envelopes(loaded.envelopes.clone()))
+            .unwrap_or_else(SessionBus::new);
+        let is_resume = resumed.is_some();
+
+        // History hooks: a persisting emitter + a turn-end transcript
+        // snapshot, only when the store is enabled.
+        let history = self.history.clone();
+        let sequencer = match &history {
+            Some(store) => {
+                store.record_session(
+                    session_id,
+                    &workspace.display().to_string(),
+                    &alias,
+                    profile,
+                );
+                Sequencer::spawn_from(
+                    session_id,
+                    crate::server::store::PersistingEmitter::new(
+                        session_id,
+                        bus,
+                        (**store).clone(),
+                    ),
+                    next_seq,
+                )
+            }
+            None => Sequencer::spawn_from(session_id, bus, next_seq),
+        };
+
+        if !is_resume {
+            // session.start is seq 0, sequenced before the runtime exists.
+            let _ = sequencer.publish(start_candidate(&workspace));
+        }
+        // THEN the runtime task; the handle is retained so /stop can await
+        // the interrupted turn's events before the session.end fence.
+        let (inbox_tx, inbox) = ActorInbox::channel();
+        let on_turn_end: Box<dyn Fn(&[crate::provider::openai::ChatMessage]) + Send> =
+            match &history {
+                Some(store) => {
+                    let store = store.clone();
+                    Box::new(move |transcript| {
+                        store.save_transcript(session_id, transcript.to_vec());
+                    })
+                }
+                None => Box::new(|_| {}),
+            };
+        let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn_with_turn_end(
+            session_id,
+            actor,
+            inbox,
+            sequencer.clone(),
+            session_cancel.clone(),
+            on_turn_end,
+        ))));
+
+        // A resumed id replaces its tombstone slot: also drop it from the
+        // eviction queue so a later close cannot evict the now-live id.
+        self.lock_tombstones().retain(|other| *other != session_id);
+        self.lock_sessions().insert(
+            session_id,
+            SessionSlot::Live(SessionHandle {
+                inbox_tx,
+                sequencer,
+                session_cancel,
+                runtime_task,
+                actor_id: ROOT_ACTOR_ID.to_string(),
+                lifecycle: Lifecycle::Active,
+                actor_state: "idle".to_string(),
+                workspace: workspace.clone(),
+                model: alias.clone(),
+            }),
+        );
+        Ok(session_id)
     }
 }
 
@@ -733,6 +886,7 @@ mod tests {
             config_dir: PathBuf::from("/tmp/rust-agent-test"),
             allow_non_loopback,
             bearer_token: None,
+            history_db: None,
         }
     }
 

@@ -162,8 +162,11 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
         config_dir: cfg_dir,
         allow_non_loopback: false,
         bearer_token: None,
+        history_db: None,
     });
-    let session_id = state.create_session(&workspace, args.model.as_deref(), None)?;
+    let session_id = state
+        .create_session(&workspace, args.model.as_deref(), None)
+        .await?;
     let handle = state
         .handle(session_id)
         .ok_or_else(|| anyhow::anyhow!("session vanished immediately after creation"))?;
@@ -322,6 +325,7 @@ async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
         config_dir: cfg_dir,
         allow_non_loopback: args.allow_non_loopback,
         bearer_token: None,
+        history_db: None,
     };
     crate::server::routes::serve(config).await?;
     Ok(EXIT_DONE)

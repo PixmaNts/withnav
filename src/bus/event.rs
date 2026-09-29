@@ -423,7 +423,8 @@ fn de_error<E: serde::de::Error>() -> E {
 // --- RFC 3339 timestamp (no chrono dependency; UTC only) ---
 
 /// Current UTC time as RFC 3339 with millisecond precision (`...Z`).
-fn now_rfc3339() -> String {
+/// Also used by the history store for its row timestamps.
+pub(crate) fn now_rfc3339() -> String {
     let d = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         // Duration since the epoch is always present on supported platforms.

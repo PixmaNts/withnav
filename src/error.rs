@@ -120,6 +120,8 @@ pub enum ServerError {
     Model(#[from] crate::error::ProviderError),
     #[error("malformed request body: {0}")]
     MalformedBody(String),
+    #[error("history store error: {0}")]
+    History(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -8,6 +8,7 @@
 pub mod routes;
 pub mod session;
 pub mod sse;
+pub mod store;
 pub mod websocket;
 
 pub use routes::{app, serve};

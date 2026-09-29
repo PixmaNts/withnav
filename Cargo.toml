@@ -60,6 +60,8 @@ tower-lsp-server = "0.23.0"
 similar = "3.2.0"
 # Navigator pipeline branch conditions: builtin functions disabled at use sites.
 evalexpr = "13.1.0"
+# Conversation history (navigator): one SQLite file per user, bundled SQLite.
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 [dev-dependencies]
 tokio = { version = "1.53", features = ["test-util"] }

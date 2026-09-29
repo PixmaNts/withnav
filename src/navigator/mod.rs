@@ -8,8 +8,11 @@
 
 pub mod commenter;
 pub mod config;
+pub mod default_pipeline;
 pub mod document;
+pub mod intent;
 pub mod log;
+pub mod pipeline;
 pub mod policy;
 pub mod ports;
 pub mod protocol;
@@ -20,7 +23,12 @@ use std::path::Path;
 
 pub use commenter::{Commenter, LlmCommenter, RemarkContext};
 pub use config::NavigatorConfig;
+pub use intent::{read_intent, IntentRecord};
 pub use log::new_ulid_string;
+pub use pipeline::{
+    Action, Evaluation, Pipeline, PipelineError, PipelineSnapshot, PrefilterOutcome, TriggerInputs,
+    TriggerKind,
+};
 pub use policy::{TriggerEvent, TriggerInput, TriggerOutcome};
 pub use ports::{
     Answer, Answers, DecisionModel, FimAnswer, FimModel, FimRequest, ModelError, Question,

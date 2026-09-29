@@ -58,6 +58,8 @@ axum = { version = "0.8.9", features = ["ws", "macros"] }
 futures = "0.3"
 tower-lsp-server = "0.23.0"
 similar = "3.2.0"
+# Navigator pipeline branch conditions: builtin functions disabled at use sites.
+evalexpr = "13.1.0"
 
 [dev-dependencies]
 tokio = { version = "1.53", features = ["test-util"] }

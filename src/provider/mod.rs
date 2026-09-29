@@ -14,6 +14,7 @@ pub mod config;
 pub mod fim;
 pub mod openai;
 pub mod sse;
+pub mod systemone;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {

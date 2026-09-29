@@ -26,6 +26,10 @@ use crate::bus::sequencer::{Candidate, Sequencer};
 use crate::error::AgentError;
 use crate::provider::StreamDelta;
 
+/// The turn-end transcript hook: called with the actor's transcript after
+/// each turn's terminal events (the history store's snapshot seam).
+pub type TurnEndHook = Box<dyn Fn(&[crate::provider::openai::ChatMessage]) + Send>;
+
 /// Cancel reason recorded on `session.end` when the session token fires.
 const CANCEL_REASON: &str = "cancel";
 /// Cancel reason recorded on `session.end` when the inbox senders all drop.
@@ -148,7 +152,7 @@ pub fn spawn_with_turn_end(
     inbox: ActorInbox,
     sequencer: Sequencer,
     session_cancel: CancellationToken,
-    on_turn_end: Box<dyn Fn(&[crate::provider::openai::ChatMessage]) + Send>,
+    on_turn_end: TurnEndHook,
 ) -> tokio::task::JoinHandle<AgentActor> {
     tokio::spawn(runtime_loop(
         session_id,
@@ -166,7 +170,7 @@ async fn runtime_loop(
     mut inbox: ActorInbox,
     sequencer: Sequencer,
     session_cancel: CancellationToken,
-    on_turn_end: Box<dyn Fn(&[crate::provider::openai::ChatMessage]) + Send>,
+    on_turn_end: TurnEndHook,
 ) -> AgentActor {
     let mut active_task_id: Option<Ulid> = None;
 

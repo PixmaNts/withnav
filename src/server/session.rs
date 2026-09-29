@@ -322,7 +322,8 @@ impl AppState {
     ///   fresh subscriber replays the past conversation), NO new
     ///   `session.start`, the actor's transcript restored from the snapshot;
     /// - unknown id → [`ServerError::SessionNotFound`].
-    /// The second tuple field says whether the session was resumed.
+    ///
+    /// Returns the id and whether the session was resumed.
     pub async fn create_or_resume_session(
         &self,
         workspace: &Path,
@@ -678,7 +679,7 @@ impl AppState {
         let session_id = resumed
             .as_ref()
             .map(|loaded| loaded.meta.id)
-            .unwrap_or_else(Ulid::new);
+            .unwrap_or_default();
         let (workspace, alias, profile) = match &resumed {
             Some(loaded) => (
                 PathBuf::from(&loaded.meta.workspace),
@@ -719,7 +720,7 @@ impl AppState {
         let bus = resumed
             .as_ref()
             .map(|loaded| SessionBus::from_envelopes(loaded.envelopes.clone()))
-            .unwrap_or_else(SessionBus::new);
+            .unwrap_or_default();
         let is_resume = resumed.is_some();
 
         // History hooks: a persisting emitter + a turn-end transcript
@@ -753,8 +754,7 @@ impl AppState {
         // THEN the runtime task; the handle is retained so /stop can await
         // the interrupted turn's events before the session.end fence.
         let (inbox_tx, inbox) = ActorInbox::channel();
-        let on_turn_end: Box<dyn Fn(&[crate::provider::openai::ChatMessage]) + Send> =
-            match &history {
+        let on_turn_end: crate::bus::runtime::TurnEndHook = match &history {
                 Some(store) => {
                     let store = store.clone();
                     Box::new(move |transcript| {

@@ -500,6 +500,37 @@ mod tests {
         EventEnvelope::new(Ulid::new(), seq, kind, serde_json::json!({ "n": seq }))
     }
 
+    /// Polls until the session row carries a title (the writer drained the
+    /// set_title command).
+    async fn poll_title(store: &HistoryStore, id: Ulid) -> LoadedSession {
+        for _ in 0..200 {
+            if let Some(loaded) = store.load(id).await.expect("load") {
+                if loaded.meta.title.is_some() {
+                    return loaded;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("history writer never set the title");
+    }
+
+    /// Polls the (fire-and-forget) writer until `list` returns `min` rows:
+    /// the channel offers no flush barrier, so tests observe drain by read.
+    async fn poll_list(
+        store: &HistoryStore,
+        workspace: &str,
+        min: usize,
+    ) -> Vec<ListedSession> {
+        for _ in 0..200 {
+            let listed = store.list(workspace).await.expect("list");
+            if listed.len() >= min {
+                return listed;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("history writer never drained");
+    }
+
     fn temp_store() -> (tempfile::TempDir, HistoryStore) {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = HistoryStore::open(dir.path().join("sessions.db")).expect("open");
@@ -524,12 +555,14 @@ mod tests {
                 content: "hi".into(),
             }],
         );
+        // A real time gap so the two sessions' updated_at CANNOT tie (the
+        // writer stamps at write time; >=2ms apart is deterministic).
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         // id2 updated later: it must list first even though id was created first.
         store.append_event(id2, envelope(0, EventKind::SessionStart));
-        // Let the writer drain.
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-        let listed = store.list("/w").await.expect("list");
+        // Poll until the writer drained (fire-and-forget channel).
+        let listed = poll_list(&store, "/w", 2).await;
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].meta.id, id2, "newest updated_at first");
 
@@ -554,8 +587,7 @@ mod tests {
         store.record_session(id, "/w", "m", None);
         store.set_title(id, "first".into());
         store.set_title(id, "second".into());
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        let loaded = store.load(id).await.expect("load").expect("present");
+        let loaded = poll_title(&store, id).await;
         assert_eq!(loaded.meta.title.as_deref(), Some("first"));
     }
 
@@ -569,7 +601,12 @@ mod tests {
         store.record_session(id, "/w", "m", None);
         store.append_event(id, envelope(0, EventKind::SessionStart));
         store.delete(id);
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        for _ in 0..200 {
+            if store.load(id).await.expect("load").is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
         assert!(store.load(id).await.expect("load").is_none());
         assert!(store.list("/w").await.expect("list").is_empty());
     }
@@ -581,9 +618,9 @@ mod tests {
     async fn list_is_per_workspace() {
         let (_dir, store) = temp_store();
         store.record_session(Ulid::new(), "/a", "m", None);
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let listed = poll_list(&store, "/a", 1).await;
+        assert_eq!(listed.len(), 1);
         assert!(store.list("/b").await.expect("list").is_empty());
-        assert_eq!(store.list("/a").await.expect("list").len(), 1);
     }
 
     // Given a store file
@@ -596,8 +633,8 @@ mod tests {
         let _a = HistoryStore::open(&path).expect("first open");
         let b = HistoryStore::open(&path).expect("second open");
         b.record_session(Ulid::new(), "/w", "m", None);
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        assert_eq!(b.list("/w").await.expect("list").len(), 1);
+        let listed = poll_list(&b, "/w", 1).await;
+        assert_eq!(listed.len(), 1);
     }
 
     // ---- title derivation ----

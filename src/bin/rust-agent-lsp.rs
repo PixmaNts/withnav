@@ -314,6 +314,7 @@ async fn spawn_cognition_server(cli: &Cli) -> anyhow::Result<CognitionHttp> {
     let config_dir = auth::default_config_dir()
         .ok_or_else(|| anyhow::anyhow!("cannot resolve config dir"))?;
     let token = bearer_token();
+    // Conversation history: one SQLite file in the navigator's data dir.
     let history_db = directories::ProjectDirs::from("", "", "rust-agent")
         .map(|dirs| dirs.data_dir().join("navigator").join("sessions.db"));
     if let Some(path) = &history_db {

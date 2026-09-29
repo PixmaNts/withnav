@@ -83,3 +83,29 @@ _Avoid_: escalate, trigger (a trigger is an instinct input)
 An event (save, idle, diagnostic change, conversation turn) that makes the instinct evaluate whether
 a layer should act.
 _Avoid_: hook, event (too generic)
+
+## Decision pipeline
+
+**Pipeline**:
+The editable chain that turns a trigger into an action: the questions the instinct asks, and the
+branches that read the answers.
+_Avoid_: workflow, graph, rules
+
+**Question**:
+One typed ask put to the instinct about the current state, answered as a choice, a score or a
+yes-probability.
+_Avoid_: check, probe, query
+
+**Branch**:
+A condition over the answers, with a threshold, that selects an action when it holds; branches are
+tried in order and the first that holds wins.
+_Avoid_: rule, route (route is itself a question name)
+
+**Action**:
+What a branch decides: stay silent, ask the metacognition for a remark, or wake the cognition.
+_Avoid_: outcome, effect
+
+**Replay**:
+Running a recorded history of triggers through a different pipeline to see which actions it would
+have chosen, compared against the driver's verdicts.
+_Avoid_: backtest, simulation

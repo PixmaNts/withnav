@@ -25,3 +25,6 @@ auth.json
 
 # Agent evidence (local only)
 /.omo/
+
+# API keys dropped next to the code by hand
+*.key

@@ -7,3 +7,6 @@ version-controlled file the driver can read and correct, so what the system beli
 opaque; the live state (recent edits, diagnostics, conversation summary) stays in memory, because it
 changes every second and has no business in git. The cognition writes the intent record as the
 conversation settles things; every layer reads both parts.
+
+The intent record is one file per project, `.navigator/intent.md`, linking to the active feature spec
+rather than being that spec: the work of the moment and a feature's specification do not live as long.

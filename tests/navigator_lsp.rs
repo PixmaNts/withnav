@@ -626,3 +626,89 @@ async fn intent_and_diagnostics_are_accepted() {
     let resp = client.recv().await;
     assert!(resp.get("result").is_some(), "server broken: {resp}");
 }
+
+/// navigator/inlineCompletion answers with the frozen shape: an empty item
+/// list until the reflex layer is wired in.
+#[tokio::test(start_paused = true)]
+async fn inline_completion_answers_empty_items() {
+    let mock = MockCommenter::new(vec![]);
+    let tmp = tempfile::tempdir().unwrap();
+    let mut client = spawn_server(NavigatorDeps::new(
+        Arc::new(mock),
+        tmp.path().join("nav.jsonl"),
+    ));
+
+    client.initialize(json!({})).await;
+    client.did_open(URI, &base_text(), 1).await;
+    client
+        .send(&json!({
+            "jsonrpc": "2.0",
+            "id": 21,
+            "method": "navigator/inlineCompletion",
+            "params": {"uri": URI, "version": 1, "line": 0, "character": 4}
+        }))
+        .await;
+    let resp = client.recv().await;
+    assert_eq!(resp["id"], 21);
+    assert_eq!(resp["result"]["items"], json!([]));
+}
+
+/// navigator/reflexShown is accepted and logged as a reflex_shown record.
+#[tokio::test(start_paused = true)]
+async fn reflex_shown_is_logged() {
+    let mock = MockCommenter::new(vec![]);
+    let tmp = tempfile::tempdir().unwrap();
+    let log_path = tmp.path().join("nav.jsonl");
+    let mut client = spawn_server(NavigatorDeps::new(Arc::new(mock), log_path.clone()));
+
+    client.initialize(json!({})).await;
+    client
+        .notify(
+            "navigator/reflexShown",
+            json!({"requestId": "req1", "shownAtMs": 1759000000123u64}),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let records = std::fs::read_to_string(log_path).unwrap();
+    assert!(records.contains("\"kind\":\"reflex_shown\""));
+    assert!(records.contains("\"request_id\":\"req1\""));
+    assert!(records.contains("\"shown_at_ms\":1759000000123"));
+}
+
+/// Trigger records carry the full replay fields (run_id, version,
+/// prefilter, delivered outcome) even in the prototype commenter path.
+#[tokio::test(start_paused = true)]
+async fn trigger_records_carry_replay_fields() {
+    let mock = MockCommenter::new(vec![Answer::Remark(1, "careful")]);
+    let tmp = tempfile::tempdir().unwrap();
+    let log_path = tmp.path().join("nav.jsonl");
+    let mut client = spawn_server(NavigatorDeps::new(Arc::new(mock), log_path.clone()));
+
+    client.initialize(json!({})).await;
+    client.did_open(URI, &base_text(), 1).await;
+    client.did_change(URI, &big_edit(), 2).await;
+    tokio::time::advance(Duration::from_millis(3001)).await;
+    let mut seen = Vec::new();
+    let _ = client.expect("navigator/remark", &mut seen).await;
+
+    let records = std::fs::read_to_string(log_path).unwrap();
+    let trigger: Value = records
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .find(|v: &Value| v["kind"] == "trigger")
+        .expect("a trigger record");
+    assert!(trigger["trigger_id"].as_str().is_some());
+    assert!(trigger["run_id"].as_str().is_some());
+    assert_eq!(trigger["uri"], URI);
+    assert_eq!(trigger["version"], 2);
+    assert_eq!(trigger["event"], "idle");
+    assert_eq!(trigger["prefilter"]["outcome"], "pass");
+    assert_eq!(trigger["prefilter"]["inputs"]["changed_lines"], 4);
+    assert_eq!(trigger["requested_action"], "remark");
+    assert_eq!(trigger["delivered"], "remark");
+    assert!(trigger["remark_id"].as_str().is_some());
+    // Pipeline-era fields stay absent until a decision pipeline runs.
+    assert!(trigger.get("pipeline_hash").is_none());
+    assert!(trigger.get("answers").is_none());
+}

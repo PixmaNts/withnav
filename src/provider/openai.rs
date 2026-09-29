@@ -152,6 +152,9 @@ pub struct ApiErrorBody {
 pub fn build_client(provider: &ProviderConfig) -> Result<reqwest::Client, ProviderError> {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_millis(provider.connect_timeout_ms))
+        // Total deadline covering send and body: the configured
+        // request_timeout_ms must actually be applied to the client.
+        .timeout(Duration::from_millis(provider.request_timeout_ms))
         .no_proxy()
         .build()
         .map_err(ProviderError::Http)
@@ -172,6 +175,38 @@ pub fn build_request(
         req = req.header(k, v);
     }
     req
+}
+
+/// A per-provider HTTP client cache: one `reqwest::Client` built once per
+/// provider and reused, instead of rebuilding a client (and its connection
+/// pool) on every call.
+#[derive(Default)]
+pub struct ClientCache {
+    clients: std::sync::Mutex<std::collections::HashMap<String, reqwest::Client>>,
+}
+
+impl ClientCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the shared client for the named provider, building it on
+    /// first use.
+    pub fn get(
+        &self,
+        provider_name: &str,
+        provider: &ProviderConfig,
+    ) -> Result<reqwest::Client, ProviderError> {
+        // The lock is only held for a map lookup after the first build, so
+        // a Mutex stays cheap and the fast path needs no extra allocation.
+        let mut clients = self.clients.lock().expect("client cache poisoned");
+        if let Some(c) = clients.get(provider_name) {
+            return Ok(c.clone());
+        }
+        let built = build_client(provider)?;
+        clients.insert(provider_name.to_string(), built.clone());
+        Ok(built)
+    }
 }
 
 #[cfg(test)]
@@ -292,5 +327,45 @@ mod tests {
         let chunk: ChatChunk = serde_json::from_str(raw).unwrap();
         assert!(chunk.error.is_some());
         assert_eq!(chunk.error.unwrap().message, "model overloaded");
+    }
+
+    #[test]
+    fn client_cache_reuses_one_client_per_provider() {
+        let provider = ProviderConfig {
+            base_url: "http://cache-test.invalid/v1".to_string(),
+            api_key_env: None,
+            headers: Default::default(),
+            connect_timeout_ms: 100,
+            request_timeout_ms: 250,
+        };
+        let cache = ClientCache::new();
+        let _ = cache.get("p", &provider).unwrap();
+        let _ = cache.get("p", &provider).unwrap();
+        let _ = cache.get("q", &provider).unwrap();
+        // Two providers, two entries: repeated gets for the same provider
+        // never grow the cache (the client is reused, not rebuilt).
+        assert_eq!(cache.clients.lock().unwrap().len(), 2);
+        assert!(cache.clients.lock().unwrap().contains_key("p"));
+        assert!(cache.clients.lock().unwrap().contains_key("q"));
+    }
+
+    #[test]
+    fn build_client_applies_the_configured_request_timeout() {
+        let provider = ProviderConfig {
+            base_url: "http://timeout-test.invalid/v1".to_string(),
+            api_key_env: None,
+            headers: Default::default(),
+            connect_timeout_ms: 100,
+            request_timeout_ms: 250,
+        };
+        let client = build_client(&provider).unwrap();
+        // The total timeout is observable in the client's Debug output.
+        assert!(format!("{client:?}").contains("TotalTimeout: 250ms"));
+        let other = build_client(&ProviderConfig {
+            request_timeout_ms: 300,
+            ..provider
+        })
+        .unwrap();
+        assert!(format!("{other:?}").contains("TotalTimeout: 300ms"));
     }
 }

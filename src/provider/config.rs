@@ -34,10 +34,25 @@ fn default_request_timeout_ms() -> u64 {
     600_000
 }
 
+/// Which wire API a model speaks. `chat` is the OpenAI-style streaming
+/// endpoint existing models use; `fim` and `systemone` are the
+/// fill-in-the-middle and typed-decision endpoints used by the reflex and
+/// instinct layers of the navigator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ApiKind {
+    #[default]
+    Chat,
+    Fim,
+    SystemOne,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
     pub provider: String,
     pub model: String,
+    #[serde(default)]
+    pub api: ApiKind,
     #[serde(default)]
     pub context_window: Option<u64>,
     #[serde(default)]
@@ -185,6 +200,38 @@ mod tests {
         let bad = "{ \"providers\": { }, \"models\": { }, }";
         let e = ModelsConfig::parse(bad).unwrap_err();
         assert!(matches!(e, ConfigError::ParseJson(_)));
+    }
+
+    #[test]
+    fn api_kind_defaults_to_chat() {
+        let cfg = ModelsConfig::parse(FIXTURE).unwrap();
+        let r = cfg.resolve("fast").unwrap();
+        assert_eq!(r.model.api, ApiKind::Chat);
+    }
+
+    #[test]
+    fn api_kind_parses_fim_and_systemone() {
+        let raw = serde_json::json!({
+            "providers": { "p": { "base_url": "http://x/v1" } },
+            "models": {
+                "r": { "provider": "p", "model": "m", "api": "fim" },
+                "i": { "provider": "p", "model": "m", "api": "systemone" }
+            }
+        })
+        .to_string();
+        let cfg = ModelsConfig::parse(&raw).unwrap();
+        assert_eq!(cfg.resolve("r").unwrap().model.api, ApiKind::Fim);
+        assert_eq!(cfg.resolve("i").unwrap().model.api, ApiKind::SystemOne);
+    }
+
+    #[test]
+    fn unknown_api_kind_is_rejected() {
+        let raw = serde_json::json!({
+            "providers": { "p": { "base_url": "http://x/v1" } },
+            "models": { "r": { "provider": "p", "model": "m", "api": "weird" } }
+        })
+        .to_string();
+        assert!(ModelsConfig::parse(&raw).is_err());
     }
 
     #[test]

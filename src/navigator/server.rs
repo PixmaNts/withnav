@@ -15,14 +15,15 @@ use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::*;
 use tower_lsp_server::{Client, LanguageServer};
 
-use crate::navigator::commenter::{Commenter, Diag, RemarkContext};
+use crate::navigator::commenter::{Commenter, Diag, RemarkContext, MALFORMED_PREFIX};
 use crate::navigator::config::NavigatorConfig;
 use crate::navigator::document::DocumentState;
-use crate::navigator::log::{LogRecord, NavLog};
+use crate::navigator::log::{excerpt, LogRecord, NavLog, PrefilterRecord, TriggerRecord};
 use crate::navigator::policy::{decide, TriggerEvent, TriggerInput, TriggerOutcome};
 use crate::navigator::protocol::{
     ClearNotification, ClearParams, DiagnosticItem, DiagnosticsParams, FeedbackParams,
-    IntentParams, RemarkNotification, RemarkParams, StatusNotification, StatusParams,
+    InlineCompletionResult, IntentParams, RemarkNotification, RemarkParams, ReflexShownParams,
+    StatusNotification, StatusParams,
 };
 
 pub struct NavigatorBackend {
@@ -33,6 +34,8 @@ struct Inner {
     client: Client,
     commenter: Arc<dyn Commenter>,
     log: NavLog,
+    /// One id per server process, grouping every trigger record it writes.
+    run_id: String,
     config: Mutex<NavigatorConfig>,
     state: Mutex<HashMap<String, DocumentState>>,
     language_ids: Mutex<HashMap<String, String>>,
@@ -49,6 +52,7 @@ impl NavigatorBackend {
                 client,
                 commenter: deps.commenter,
                 log: NavLog::new(deps.log_path),
+                run_id: crate::navigator::new_ulid_string(),
                 config: Mutex::new(NavigatorConfig::default()),
                 state: Mutex::new(HashMap::new()),
                 language_ids: Mutex::new(HashMap::new()),
@@ -129,18 +133,56 @@ impl Inner {
             TriggerEvent::IdleExpired => "idle",
         };
         let outcome = decide(&input, &config);
-        let (outcome_str, reason) = match &outcome {
-            TriggerOutcome::Fire => ("fire", None),
+        let (prefilter_outcome, skip_reason) = match &outcome {
+            TriggerOutcome::Fire => ("pass", None),
             TriggerOutcome::Skip(r) => ("skip", Some(*r)),
         };
-        self.log.append(&LogRecord::Trigger {
-            uri: &uri,
-            event: event_name,
-            outcome: outcome_str,
-            reason,
-            changed_lines: input.changed_lines,
-        });
+        let trigger_id = crate::navigator::new_ulid_string();
+        let mut prefilter_inputs = std::collections::BTreeMap::new();
+        prefilter_inputs.insert("changed_lines".to_string(), serde_json::json!(input.changed_lines));
+        prefilter_inputs.insert(
+            "since_last_remark_ms".to_string(),
+            serde_json::json!(input
+                .since_last_remark
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(u64::MAX)),
+        );
+        // One trigger record per trigger, written once the delivered outcome
+        // is known. The prototype commenter path fills the pre-filter part
+        // and the delivered outcome; the pipeline-era fields stay absent
+        // until a decision pipeline runs.
+        let log_trigger = |requested: Option<&'static str>,
+                           delivered: &'static str,
+                           remark_id: Option<&str>,
+                           reason: Option<&str>| {
+            self.log.append(&LogRecord::Trigger(TriggerRecord {
+                trigger_id: &trigger_id,
+                run_id: &self.run_id,
+                workspace: None,
+                uri: &uri,
+                version: doc_version,
+                event: event_name,
+                prefilter: PrefilterRecord {
+                    inputs: &prefilter_inputs,
+                    outcome: prefilter_outcome,
+                    reason: skip_reason,
+                },
+                pipeline_hash: None,
+                template_inputs: None,
+                rendered_state: None,
+                questions: None,
+                model: None,
+                answers: None,
+                branch: None,
+                requested_action: requested,
+                delivered,
+                remark_id,
+                reason,
+            }));
+        };
         if matches!(outcome, TriggerOutcome::Skip(_)) {
+            // Skipped by a pre-filter: nothing was ever requested.
+            log_trigger(None, "none", None, skip_reason);
             return;
         }
         // One in-flight call per uri at most; the cancel handle is stored in
@@ -198,6 +240,7 @@ impl Inner {
 
         let Some(result) = result else {
             // Cancelled: a newer edit took over. Stay quiet.
+            log_trigger(Some("remark"), "cancelled", None, None);
             return;
         };
 
@@ -215,6 +258,7 @@ impl Inner {
                         }
                         _ => {
                             tracing::info!(%uri, "dropping remark for stale version");
+                            log_trigger(Some("remark"), "cancelled", None, Some("stale_version"));
                             return;
                         }
                     }
@@ -228,6 +272,7 @@ impl Inner {
                     model: &model,
                     latency_ms: started.elapsed().as_millis(),
                 });
+                log_trigger(Some("remark"), "remark", Some(&id), None);
                 self.last_remark_ids
                     .lock()
                     .await
@@ -247,6 +292,7 @@ impl Inner {
                     model: &model,
                     latency_ms: started.elapsed().as_millis(),
                 });
+                log_trigger(Some("remark"), "silent", None, None);
                 // Silence rebase too: this diff was considered and judged fine.
                 let mut state = self.state.lock().await;
                 if let Some(doc) = state.get_mut(&uri) {
@@ -254,11 +300,29 @@ impl Inner {
                 }
             }
             Err(message) => {
-                self.log.append(&LogRecord::Error {
-                    uri: &uri,
-                    message: &message,
-                });
-                self.set_status("error", Some(message)).await;
+                // A malformed answer is a model failure, not a provider
+                // failure: different delivered outcome in the log.
+                if let Some(raw) = message.strip_prefix(MALFORMED_PREFIX) {
+                    self.log.append(&LogRecord::Malformed {
+                        uri: &uri,
+                        model: &model,
+                        latency_ms: started.elapsed().as_millis(),
+                        raw_excerpt: &excerpt(raw, 400),
+                    });
+                    log_trigger(Some("remark"), "malformed", None, None);
+                    self.set_status(
+                        "error",
+                        Some("model answer violated the prompt contract".to_string()),
+                    )
+                    .await;
+                } else {
+                    self.log.append(&LogRecord::Error {
+                        uri: &uri,
+                        message: &message,
+                    });
+                    log_trigger(Some("remark"), "provider_error", None, None);
+                    self.set_status("error", Some(message)).await;
+                }
                 return;
             }
         }
@@ -271,6 +335,16 @@ impl Inner {
             doc.in_flight_cancel = None;
             doc.in_flight_version = None;
         }
+    }
+
+    /// `navigator/reflexShown`: the extension reporting display time of a
+    /// suggestion, so the log holds both halves of the pause-to-display
+    /// latency.
+    async fn on_reflex_shown(&self, params: ReflexShownParams) {
+        self.log.append(&LogRecord::ReflexShown {
+            request_id: &params.request_id,
+            shown_at_ms: params.shown_at_ms,
+        });
     }
 
     /// `navigator/feedback` client->server notification.
@@ -370,7 +444,7 @@ impl Inner {
 }
 
 fn new_remark_id() -> String {
-    ulid::Ulid::new().to_string().to_lowercase()
+    crate::navigator::new_ulid_string()
 }
 
 impl LanguageServer for NavigatorBackend {
@@ -432,6 +506,22 @@ impl NavigatorBackend {
 
     pub async fn intent(&self, params: IntentParams) {
         self.inner.on_intent(params).await;
+    }
+
+    /// `navigator/inlineCompletion`: ghost-text request from the extension's
+    /// inline-completion provider. Returns an empty item list until the
+    /// reflex layer is wired in; the shape is the frozen contract.
+    pub async fn inline_completion(
+        &self,
+        _params: crate::navigator::protocol::InlineCompletionParams,
+    ) -> tower_lsp_server::jsonrpc::Result<
+        crate::navigator::protocol::InlineCompletionResult,
+    > {
+        Ok(InlineCompletionResult { items: Vec::new() })
+    }
+
+    pub async fn reflex_shown(&self, params: ReflexShownParams) {
+        self.inner.on_reflex_shown(params).await;
     }
 }
 

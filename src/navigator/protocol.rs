@@ -60,6 +60,56 @@ pub struct IntentParams {
     pub text: String,
 }
 
+/// Client -> server: request ghost-text suggestions at a cursor position.
+/// LSP positions, UTF-16 code units; the extension's inline-completion
+/// provider sends one after its debounce, the server converts against its
+/// full-sync text and drops the answer if the document version moved.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InlineCompletionParams {
+    pub uri: String,
+    pub version: i32,
+    pub line: u32,
+    pub character: u32,
+}
+
+/// One suggestion: the text to insert and the range it replaces (the empty
+/// range at the cursor when the suggestion is a pure insertion).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InlineCompletionItem {
+    pub text: String,
+    /// 0-based, end-exclusive, same units as the request position.
+    pub range: Range,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Range {
+    pub start: Position,
+    pub end: Position,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Position {
+    pub line: u32,
+    pub character: u32,
+}
+
+/// Server -> client: the answer to `navigator/inlineCompletion`. Empty when
+/// the reflex layer is absent or had nothing to say.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InlineCompletionResult {
+    pub items: Vec<InlineCompletionItem>,
+}
+
+/// Client -> server: the extension reporting that a suggestion was
+/// displayed; `shownAtMs` is the display timestamp so the log holds both
+/// halves of the pause-to-display latency.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReflexShownParams {
+    pub request_id: String,
+    pub shown_at_ms: u64,
+}
+
 // --- Notification trait impls (server -> client) ---
 
 pub enum RemarkNotification {}
@@ -126,5 +176,68 @@ mod tests {
         assert_eq!(RemarkNotification::METHOD, "navigator/remark");
         assert_eq!(ClearNotification::METHOD, "navigator/clear");
         assert_eq!(StatusNotification::METHOD, "navigator/status");
+    }
+
+    #[test]
+    fn inline_completion_params_serialize_the_wire_shape() {
+        let p = InlineCompletionParams {
+            uri: "file:///a.rs".into(),
+            version: 7,
+            line: 3,
+            character: 8,
+        };
+        let s = serde_json::to_string(&p).unwrap();
+        assert_eq!(
+            s,
+            r#"{"uri":"file:///a.rs","version":7,"line":3,"character":8}"#
+        );
+    }
+
+    #[test]
+    fn inline_completion_result_items_and_range_round_trip() {
+        let r = InlineCompletionResult {
+            items: vec![InlineCompletionItem {
+                text: "world".into(),
+                range: Range {
+                    start: Position { line: 0, character: 6 },
+                    end: Position { line: 0, character: 6 },
+                },
+            }],
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "items": [{
+                    "text": "world",
+                    "range": {
+                        "start": {"line": 0, "character": 6},
+                        "end": {"line": 0, "character": 6}
+                    }
+                }]
+            })
+        );
+        let back: InlineCompletionResult = serde_json::from_value(v).unwrap();
+        assert_eq!(back.items.len(), 1);
+        assert_eq!(back.items[0].text, "world");
+    }
+
+    #[test]
+    fn empty_inline_completion_result_is_an_empty_items_array() {
+        let r = InlineCompletionResult { items: Vec::new() };
+        assert_eq!(
+            serde_json::to_string(&r).unwrap(),
+            r#"{"items":[]}"#
+        );
+    }
+
+    #[test]
+    fn reflex_shown_params_use_camel_case() {
+        let p = ReflexShownParams {
+            request_id: "t9".into(),
+            shown_at_ms: 1234,
+        };
+        let s = serde_json::to_string(&p).unwrap();
+        assert_eq!(s, r#"{"requestId":"t9","shownAtMs":1234}"#);
     }
 }

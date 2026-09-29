@@ -51,6 +51,39 @@ export interface IntentParams {
   text: string;
 }
 
+// --- Reflex: inline completion ---
+
+export interface InlineCompletionParams {
+  uri: string;
+  version: number;
+  line: number;
+  character: number;
+}
+
+export interface Position {
+  line: number;
+  character: number;
+}
+
+export interface Range {
+  start: Position;
+  end: Position;
+}
+
+export interface InlineCompletionItem {
+  text: string;
+  range: Range;
+}
+
+export interface InlineCompletionResult {
+  items: InlineCompletionItem[];
+}
+
+export interface ReflexShownParams {
+  requestId: string;
+  shownAtMs: number;
+}
+
 export namespace RemarkNotification {
   export const type = new NotificationType<RemarkParams>("navigator/remark");
 }
@@ -73,4 +106,8 @@ export namespace DiagnosticsNotification {
 
 export namespace IntentNotification {
   export const type = new NotificationType<IntentParams>("navigator/intent");
+}
+
+export namespace ReflexShownNotification {
+  export const type = new NotificationType<ReflexShownParams>("navigator/reflexShown");
 }

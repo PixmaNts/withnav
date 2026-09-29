@@ -6,6 +6,13 @@
       "headers": {},
       "connect_timeout_ms": 5000,
       "request_timeout_ms": 600000
+    },
+    "inception": {
+      "base_url": "https://api.inceptionlabs.ai/v1",
+      "api_key_env": "INCEPTION_API_KEY",
+      "headers": {},
+      "connect_timeout_ms": 5000,
+      "request_timeout_ms": 600000
     }
   },
   "models": {
@@ -28,6 +35,48 @@
       "supports_parallel_tool_calls": true,
       "thinking": "low",
       "reasoning_history": "preserve"
+    },
+    "cognition": {
+      "provider": "omniroute",
+      "model": "cc/claude-opus-5-5",
+      "context_window": 200000,
+      "max_output_tokens": 32000,
+      "supports_tools": true,
+      "supports_parallel_tool_calls": true,
+      "thinking": "high",
+      "reasoning_history": "preserve",
+      "api": "chat"
+    },
+    "metacognition": {
+      "provider": "omniroute",
+      "model": "combo/deepseek-v4-flash",
+      "context_window": 128000,
+      "max_output_tokens": 8000,
+      "supports_tools": true,
+      "supports_parallel_tool_calls": false,
+      "thinking": "off",
+      "reasoning_history": "preserve",
+      "api": "chat"
+    },
+    "reflex": {
+      "provider": "inception",
+      "model": "mercury-edit-2",
+      "context_window": 128000,
+      "max_output_tokens": 512,
+      "supports_tools": false,
+      "supports_parallel_tool_calls": false,
+      "reasoning_history": "preserve",
+      "api": "fim"
+    },
+    "instinct": {
+      "provider": "omniroute",
+      "model": "typesafe/jev-1.13",
+      "context_window": 64000,
+      "max_output_tokens": 2048,
+      "supports_tools": false,
+      "supports_parallel_tool_calls": false,
+      "reasoning_history": "preserve",
+      "api": "systemone"
     }
   }
 }

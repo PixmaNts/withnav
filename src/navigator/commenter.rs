@@ -61,28 +61,53 @@ pub trait Commenter: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<Option<Remark>, String>> + Send + 'a>>;
 }
 
+/// What the metacognition's answer parsed to: a remark, explicit silence,
+/// or output that violates the prompt contract (non-empty but unparseable).
+/// Malformed output is not silence: the log records it as `malformed` so
+/// prompt regressions are visible instead of silently eaten.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParsedAnswer {
+    Remark(Remark),
+    Silent,
+    Malformed,
+}
+
 /// Parses the model's answer per the prompt contract: JSON only, either
 /// `{"silent": true}` or `{"line": <1-based>, "text": "..."}`. Tolerates code
-/// fences and surrounding prose; anything unparseable is None (silence).
-pub fn parse_model_answer(raw: &str) -> Option<Remark> {
-    let json_str = extract_json(raw)?;
-    let v: serde_json::Value = serde_json::from_str(json_str.trim()).ok()?;
+/// fences and surrounding prose; empty output counts as silence.
+pub fn parse_answer(raw: &str) -> ParsedAnswer {
+    if raw.trim().is_empty() {
+        return ParsedAnswer::Silent;
+    }
+    let Some(json_str) = extract_json(raw) else {
+        return ParsedAnswer::Malformed;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str.trim()) else {
+        return ParsedAnswer::Malformed;
+    };
     if v.get("silent").and_then(|s| s.as_bool()).unwrap_or(false) {
-        return None;
+        return ParsedAnswer::Silent;
     }
-    let line = v.get("line").and_then(|l| l.as_u64())?;
+    let Some(line) = v.get("line").and_then(|l| l.as_u64()) else {
+        return ParsedAnswer::Malformed;
+    };
     if line == 0 {
-        return None;
+        return ParsedAnswer::Malformed;
     }
-    let text = v.get("text").and_then(|t| t.as_str())?;
+    let Some(text) = v.get("text").and_then(|t| t.as_str()) else {
+        return ParsedAnswer::Malformed;
+    };
     if text.trim().is_empty() {
-        return None;
+        return ParsedAnswer::Malformed;
     }
-    Some(Remark {
-        // model speaks 1-based; wire speaks 0-based
-        line: u32::try_from(line - 1).ok()?,
-        text: text.trim().to_string(),
-    })
+    match u32::try_from(line - 1) {
+        Ok(line0) => ParsedAnswer::Remark(Remark {
+            // model speaks 1-based; wire speaks 0-based
+            line: line0,
+            text: text.trim().to_string(),
+        }),
+        Err(_) => ParsedAnswer::Malformed,
+    }
 }
 
 /// Extracts the innermost balanced JSON object from prose / code fences.
@@ -144,16 +169,32 @@ Answer with JSON only, no prose around it, either:
 or:
 {\"line\": <1-based line number in the current file>, \"text\": \"<one or two short sentences>\"}";
 
+/// Error-message prefix marking an answer that violated the prompt
+/// contract. The server recognizes it and logs the trigger as `malformed`
+/// instead of `provider_error`; the rest of the message is the raw output.
+pub const MALFORMED_PREFIX: &str = "malformed answer: ";
+
 /// Commenter calling the fast model alias via the provider layer
-/// (non-tool streaming chat call).
+/// (non-tool streaming chat call). Holds one HTTP client per provider
+/// through a shared [`ClientCache`], so repeated remarks reuse
+/// connections instead of rebuilding a client per call.
 pub struct LlmCommenter {
     resolved: crate::provider::config::ResolvedModel,
     api_key: String,
+    clients: std::sync::Arc<crate::provider::openai::ClientCache>,
 }
 
 impl LlmCommenter {
-    pub fn new(resolved: crate::provider::config::ResolvedModel, api_key: String) -> Self {
-        Self { resolved, api_key }
+    pub fn new(
+        resolved: crate::provider::config::ResolvedModel,
+        api_key: String,
+        clients: std::sync::Arc<crate::provider::openai::ClientCache>,
+    ) -> Self {
+        Self {
+            resolved,
+            api_key,
+            clients,
+        }
     }
 
     fn build_user_message(&self, ctx: &RemarkContext) -> String {
@@ -192,8 +233,9 @@ impl Commenter for LlmCommenter {
         cancel: &'a CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Remark>, String>> + Send + 'a>> {
         Box::pin(async move {
-            use crate::provider::openai::{build_client, build_request, ChatMessage, ChatRequest};
+            use crate::provider::openai::{build_request, ChatMessage, ChatRequest};
             use crate::provider::{start_and_consume, StreamDelta};
+            use crate::navigator::commenter::{parse_answer, ParsedAnswer, MALFORMED_PREFIX};
 
             let request = ChatRequest {
                 model: self.resolved.model.model.clone(),
@@ -214,7 +256,10 @@ impl Commenter for LlmCommenter {
                 temperature: Some(0.2),
             };
 
-            let client = build_client(&self.resolved.provider).map_err(|e| e.to_string())?;
+            let client = self
+                .clients
+                .get(&self.resolved.provider_name, &self.resolved.provider)
+                .map_err(|e| e.to_string())?;
             let http = build_request(&client, &self.resolved.provider, &self.api_key, &request);
             let response = http.send().await.map_err(|e| format!("http: {e}"))?;
 
@@ -223,14 +268,17 @@ impl Commenter for LlmCommenter {
                 .await
                 .map_err(|e| e.to_string())?;
 
-            let remark = parse_model_answer(&message.text);
-            if remark.is_none() && !message.text.trim().is_empty() {
-                tracing::warn!(
-                    raw = %message.text,
-                    "navigator: unparseable model answer treated as silence"
-                );
+            match parse_answer(&message.text) {
+                ParsedAnswer::Remark(remark) => Ok(Some(remark)),
+                ParsedAnswer::Silent => Ok(None),
+                ParsedAnswer::Malformed => {
+                    tracing::warn!(
+                        raw = %message.text,
+                        "navigator: model answer violates the prompt contract"
+                    );
+                    Err(format!("{MALFORMED_PREFIX}{}", message.text))
+                }
             }
-            Ok(remark)
         })
     }
 }
@@ -239,48 +287,57 @@ impl Commenter for LlmCommenter {
 mod tests {
     use super::*;
 
-    fn remark(line0: u32, text: &str) -> Option<Remark> {
-        Some(Remark {
-            line: line0,
-            text: text.to_string(),
-        })
-    }
-
     #[test]
     fn parses_valid_remark() {
         assert_eq!(
-            parse_model_answer(r#"{"line": 12, "text": "careful, missing error path"}"#),
-            remark(11, "careful, missing error path")
+            parse_answer(r#"{"line": 12, "text": "careful, missing error path"}"#),
+            ParsedAnswer::Remark(Remark {
+                line: 11,
+                text: "careful, missing error path".to_string()
+            })
         );
     }
 
     #[test]
     fn parses_silent() {
-        assert_eq!(parse_model_answer(r#"{"silent": true}"#), None);
+        assert_eq!(parse_answer(r#"{"silent": true}"#), ParsedAnswer::Silent);
     }
 
     #[test]
-    fn garbage_is_silence() {
-        assert_eq!(parse_model_answer("I think you should refactor this"), None);
-        assert_eq!(parse_model_answer(""), None);
+    fn garbage_is_malformed_not_silence() {
+        assert_eq!(parse_answer("I think you should refactor this"), ParsedAnswer::Malformed);
+        assert_eq!(parse_answer(""), ParsedAnswer::Silent);
+    }
+
+    #[test]
+    fn json_without_silent_or_line_is_malformed() {
+        assert_eq!(parse_answer(r#"{"silent": false}"#), ParsedAnswer::Malformed);
+        assert_eq!(parse_answer(r#"{"other": 1}"#), ParsedAnswer::Malformed);
+    }
+
+    #[test]
+    fn parse_model_answer_folds_malformed_to_silence() {
+        assert_eq!(parse_answer("nope"), ParsedAnswer::Malformed);
+        assert_eq!(parse_answer(r#"{"line": 0, "text": "x"}"#), ParsedAnswer::Malformed);
+        assert_eq!(parse_answer(r#"{"line": 1, "text": "  "}"#), ParsedAnswer::Malformed);
     }
 
     #[test]
     fn json_in_code_fences_is_parsed() {
         let raw = "```json\n{\"line\": 3, \"text\": \"off by one\"}\n```";
-        assert_eq!(parse_model_answer(raw), remark(2, "off by one"));
+        assert_eq!(
+            parse_answer(raw),
+            ParsedAnswer::Remark(Remark { line: 2, text: "off by one".to_string() })
+        );
     }
 
     #[test]
     fn json_wrapped_in_prose_is_parsed() {
         let raw = "Here is my answer:\n{\"line\": 7, \"text\": \"edge case\"}\nHope it helps";
-        assert_eq!(parse_model_answer(raw), remark(6, "edge case"));
-    }
-
-    #[test]
-    fn zero_line_or_empty_text_rejected() {
-        assert_eq!(parse_model_answer(r#"{"line": 0, "text": "x"}"#), None);
-        assert_eq!(parse_model_answer(r#"{"line": 1, "text": "  "}"#), None);
+        assert_eq!(
+            parse_answer(raw),
+            ParsedAnswer::Remark(Remark { line: 6, text: "edge case".to_string() })
+        );
     }
 
     #[test]

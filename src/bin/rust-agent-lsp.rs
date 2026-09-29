@@ -3,18 +3,20 @@
 //! stdout is the LSP channel; all logging goes to stderr via tracing.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::Parser;
 use rust_agent::navigator;
 use rust_agent::navigator::commenter::{Commenter, LlmCommenter};
 use rust_agent::provider::auth;
 use rust_agent::provider::config::ModelsConfig;
+use rust_agent::provider::openai::ClientCache;
 
 #[derive(Parser, Debug)]
 #[command(
     name = "rust-agent-lsp",
     version,
-    about = "Navigator POC: a pair-programming navigator over LSP"
+    about = "Navigator: a pair-programming navigator over LSP"
 )]
 struct Cli {
     /// Explicit path to models.json (default: workspace, then config dir).
@@ -58,7 +60,7 @@ fn build_llm_commenter(cli: &Cli) -> anyhow::Result<LlmCommenter> {
         resolved.provider.api_key_env.as_deref(),
     )
     .map_err(|e| anyhow::anyhow!("no API key for provider '{}': {e}", resolved.provider_name))?;
-    Ok(LlmCommenter::new(resolved, api_key))
+    Ok(LlmCommenter::new(resolved, api_key, Arc::new(ClientCache::new())))
 }
 
 #[tokio::main]
@@ -66,14 +68,14 @@ async fn main() -> anyhow::Result<()> {
     init_tracing_stderr();
     let cli = Cli::parse();
 
-    let commenter: std::sync::Arc<dyn Commenter> = match build_llm_commenter(&cli) {
-        Ok(c) => std::sync::Arc::new(c),
+    let commenter: Arc<dyn Commenter> = match build_llm_commenter(&cli) {
+        Ok(c) => Arc::new(c),
         Err(e) => {
             // Never crash the editor: run with an always-silent commenter and
             // surface the failure in logs. The status notification only
             // reaches the client after initialize, so tracing is the channel.
             tracing::error!("navigator LLM setup failed, staying silent: {e}");
-            std::sync::Arc::new(FailingCommenter {
+            Arc::new(FailingCommenter {
                 message: format!("setup failed: {e}"),
             })
         }

@@ -1,14 +1,17 @@
-//! Navigator POC: a pair-programming navigator over LSP.
+//! The navigator: a colleague over the driver's shoulder with four
+//! cooperating layers — reflex (fill-in-the-middle suggestions), instinct
+//! (typed decision questions), metacognition (fast remarks) and cognition
+//! (deliberate chat). It never edits code.
 //!
-//! The navigator observes document edits, decides with a heuristic trigger
-//! policy when a remark is warranted, asks the fast LLM for at most one short
-//! remark (or silence), and pushes it to the editor. It never edits code.
+//! This module hosts the Language Server; the layer model seams live in
+//! [`ports`], injected through [`NavigatorDeps`] so tests can script them.
 
 pub mod commenter;
 pub mod config;
 pub mod document;
 pub mod log;
 pub mod policy;
+pub mod ports;
 pub mod protocol;
 pub mod server;
 
@@ -16,16 +19,29 @@ use std::path::Path;
 
 pub use commenter::{Commenter, LlmCommenter, RemarkContext};
 pub use config::NavigatorConfig;
+pub use log::new_ulid_string;
 pub use policy::{TriggerEvent, TriggerInput, TriggerOutcome};
-pub use protocol::{ClearParams, FeedbackParams, IntentParams, Remark, RemarkParams, StatusParams};
+pub use ports::{
+    Answer, Answers, DecisionModel, FimAnswer, FimModel, FimRequest, ModelError, Question,
+    Questions,
+};
+pub use protocol::{
+    ClearParams, FeedbackParams, InlineCompletionItem, InlineCompletionParams,
+    InlineCompletionResult, IntentParams, Range, ReflexShownParams, Remark, RemarkParams,
+    StatusParams,
+};
 use tower_lsp_server::ls_types::Uri;
 use tower_lsp_server::{LspService, Server};
 
-/// Everything the navigator needs besides the LSP channel itself. The LLM seam
-/// (`commenter`) and the JSONL log path are injectable so tests can script
-/// them.
+/// Everything the navigator needs besides the LSP channel itself. The model
+/// seams (`commenter`, and `fim`/`decision` for the reflex and instinct
+/// layers) and the JSONL log path are injectable so tests can script them.
+/// `fim`/`decision` set to `None` keep today's behaviour (no suggestion, no
+/// decision pipeline).
 pub struct NavigatorDeps {
     pub commenter: std::sync::Arc<dyn Commenter>,
+    pub fim: Option<std::sync::Arc<dyn FimModel>>,
+    pub decision: Option<std::sync::Arc<dyn DecisionModel>>,
     pub log_path: std::path::PathBuf,
 }
 
@@ -36,8 +52,22 @@ impl NavigatorDeps {
     ) -> Self {
         Self {
             commenter,
+            fim: None,
+            decision: None,
             log_path: log_path.into(),
         }
+    }
+
+    /// Builder-style: attaches the reflex layer's model seam.
+    pub fn with_fim(mut self, fim: std::sync::Arc<dyn FimModel>) -> Self {
+        self.fim = Some(fim);
+        self
+    }
+
+    /// Builder-style: attaches the instinct layer's model seam.
+    pub fn with_decision(mut self, decision: std::sync::Arc<dyn DecisionModel>) -> Self {
+        self.decision = Some(decision);
+        self
     }
 }
 
@@ -56,6 +86,14 @@ pub fn build_service(
             server::NavigatorBackend::diagnostics,
         )
         .custom_method("navigator/intent", server::NavigatorBackend::intent)
+        .custom_method(
+            "navigator/inlineCompletion",
+            server::NavigatorBackend::inline_completion,
+        )
+        .custom_method(
+            "navigator/reflexShown",
+            server::NavigatorBackend::reflex_shown,
+        )
         .finish()
 }
 

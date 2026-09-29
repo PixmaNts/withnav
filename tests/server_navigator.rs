@@ -61,6 +61,7 @@ fn test_state(tmp: &Path, base_url: &str) -> AppState {
         config_dir,
         allow_non_loopback: false,
         bearer_token: None,
+        history_db: None,
     })
 }
 
@@ -125,6 +126,7 @@ async fn navigator_profile_sends_the_cognition_prompt_as_second_system_message()
 
     let id = state
         .create_session(&ws, None, Some("navigator"))
+        .await
         .expect("create navigator session");
     let handle = state.handle(id).expect("live");
     assert_eq!(

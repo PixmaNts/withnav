@@ -61,6 +61,7 @@ fn test_state(tmp: &std::path::Path, bearer_token: Option<String>) -> AppState {
         config_dir,
         allow_non_loopback: false,
         bearer_token,
+        history_db: None,
     })
 }
 

@@ -70,6 +70,7 @@ fn test_config(tmp: &Path, base_url: &str) -> ServerConfig {
         config_dir,
         allow_non_loopback: false,
         bearer_token: None,
+        history_db: None,
     }
 }
 

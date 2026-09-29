@@ -56,6 +56,7 @@ async fn live_server_edit_and_test_through_the_bus() {
         config_dir,
         allow_non_loopback: false,
         bearer_token: None,
+        history_db: None,
     };
     let state = AppState::new(config);
     let (addr, server_task) = spawn_server(state).await;

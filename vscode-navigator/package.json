@@ -90,6 +90,11 @@
           "type": "string",
           "default": "fast",
           "description": "Model alias (from rust-agent models.json) used for remarks."
+        },
+        "navigator.reflex.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable inline-completion suggestions from the reflex layer."
         }
       }
     }

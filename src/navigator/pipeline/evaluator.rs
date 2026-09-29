@@ -62,6 +62,50 @@ impl Pipeline {
             .map(|t| &t.questions)
     }
 
+    /// The questions of the trigger handling `kind`, serialized for the
+    /// trigger log record.
+    pub fn questions_for(&self, kind: TriggerKind) -> Option<BTreeMap<String, Question>> {
+        self.questions(kind).cloned()
+    }
+
+    /// The models.json alias this snapshot's instinct resolves through.
+    pub fn model_alias(&self) -> &str {
+        &self.snapshot.inner.model_alias
+    }
+
+    /// Renders the prompt attached to the selected branch. `branch_index`
+    /// is the index returned by [`Pipeline::evaluate`].
+    pub fn render_remark_branch(
+        &self,
+        kind: TriggerKind,
+        branch_index: Option<usize>,
+        vars: &BTreeMap<String, String>,
+    ) -> String {
+        let Some(index) = branch_index else {
+            return String::new();
+        };
+        let Some(trigger) = self
+            .snapshot
+            .inner
+            .triggers
+            .iter()
+            .find(|t| t.handles(kind))
+        else {
+            return String::new();
+        };
+        let Some(prompt_path) = trigger
+            .branches
+            .get(index)
+            .and_then(|b| b.prompt.as_deref())
+        else {
+            return String::new();
+        };
+        let Some(prompt) = self.snapshot.prompts.get(prompt_path) else {
+            return String::new();
+        };
+        templates::render(prompt, vars)
+    }
+
     /// Public entry for the integration ticket: one trigger, end to end.
     /// Pre-filters run first (cheap, no model call); on pass the instinct is
     /// asked once and branches are tried in order; no matching branch means

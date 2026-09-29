@@ -40,9 +40,7 @@ pub enum ModelError {
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Question {
     /// A yes-probability question; the answer is a float in 0..1.
-    Noul {
-        instructions: String,
-    },
+    Noul { instructions: String },
     /// A choice between named options; `criteria` maps each option to the
     /// instruction describing when it applies.
     Choice {

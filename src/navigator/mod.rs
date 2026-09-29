@@ -19,7 +19,12 @@ pub mod protocol;
 pub mod reflex;
 pub mod server;
 
-use std::path::Path;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::Arc;
+
+use tokio_util::sync::CancellationToken;
 
 pub use commenter::{Commenter, LlmCommenter, RemarkContext};
 pub use config::NavigatorConfig;
@@ -29,56 +34,150 @@ pub use pipeline::{
     Action, Evaluation, Pipeline, PipelineError, PipelineSnapshot, PrefilterOutcome, TriggerInputs,
     TriggerKind,
 };
-pub use policy::{TriggerEvent, TriggerInput, TriggerOutcome};
 pub use ports::{
     Answer, Answers, DecisionModel, FimAnswer, FimModel, FimRequest, ModelError, Question,
     Questions,
 };
-pub use reflex::{SuggestOutcome, Suggestion, DEBOUNCE_MS, MAX_CONTEXT_BYTES, MAX_PREFIX_BYTES, MAX_SUFFIX_BYTES};
 pub use protocol::{
     ClearParams, FeedbackParams, InlineCompletionItem, InlineCompletionParams,
     InlineCompletionResult, IntentParams, Range, ReflexShownParams, Remark, RemarkParams,
     StatusParams,
 };
+pub use reflex::{
+    SuggestOutcome, Suggestion, DEBOUNCE_MS, MAX_CONTEXT_BYTES, MAX_PREFIX_BYTES, MAX_SUFFIX_BYTES,
+};
 use tower_lsp_server::ls_types::Uri;
 use tower_lsp_server::{LspService, Server};
 
+/// The metacognition seam: one remark (or silence) for a document state,
+/// including the pipeline branch prompt rendered through its templates.
+pub trait Metacognition: Send + Sync {
+    fn remark<'a>(
+        &'a self,
+        ctx: &'a RemarkContext,
+        cancel: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Remark>, String>> + Send + 'a>>;
+}
+
+/// Adapts a plain [`Commenter`] to [`Metacognition`], ignoring the branch
+/// prompt (prototype behaviour; scripted tests also use this when the
+/// prompt is not what they assert on).
+pub struct CommenterAsMetacognition(pub Arc<dyn Commenter>);
+
+impl Metacognition for CommenterAsMetacognition {
+    fn remark<'a>(
+        &'a self,
+        ctx: &'a RemarkContext,
+        cancel: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Remark>, String>> + Send + 'a>> {
+        self.0.remark(ctx, cancel)
+    }
+}
+
 /// Everything the navigator needs besides the LSP channel itself. The model
-/// seams (`commenter`, and `fim`/`decision` for the reflex and instinct
+/// seams (metacognition, and `fim`/`decision` for the reflex and instinct
 /// layers) and the JSONL log path are injectable so tests can script them.
-/// `fim`/`decision` set to `None` keep today's behaviour (no suggestion, no
-/// decision pipeline).
+///
+/// `fim`/`decision` set to `None` keep the corresponding layer disabled (no
+/// suggestion / triggers logged with `instinct_unavailable`); the other
+/// layers keep working. `workspace`/`user_dir` drive pipeline resolution,
+/// the intent record and hot reload.
 pub struct NavigatorDeps {
-    pub commenter: std::sync::Arc<dyn Commenter>,
-    pub fim: Option<std::sync::Arc<dyn FimModel>>,
-    pub decision: Option<std::sync::Arc<dyn DecisionModel>>,
-    pub log_path: std::path::PathBuf,
+    pub commenter: Arc<dyn Metacognition>,
+    pub fim: Option<Arc<dyn FimModel>>,
+    pub decision: Option<Arc<dyn DecisionModel>>,
+    /// Model ids for the per-layer call records.
+    pub reflex_model: Option<String>,
+    pub instinct_model: Option<String>,
+    pub metacognition_model: Option<String>,
+    /// The workspace root (upgraded from `rootUri` at initialize when the
+    /// client sends one).
+    pub workspace: Option<PathBuf>,
+    /// The user-level navigator dir (`~/.config/rust-agent/navigator/`).
+    pub user_dir: Option<PathBuf>,
+    /// Human-readable notes about layers that were disabled at startup;
+    /// surfaced as one status message after initialize.
+    pub disabled_layers: Vec<String>,
+    pub log_path: PathBuf,
 }
 
 impl NavigatorDeps {
-    pub fn new(
-        commenter: std::sync::Arc<dyn Commenter>,
-        log_path: impl Into<std::path::PathBuf>,
-    ) -> Self {
+    /// Wraps a plain [`Commenter`] seam (prototype path).
+    pub fn new(commenter: Arc<dyn Commenter>, log_path: impl Into<PathBuf>) -> Self {
+        Self {
+            commenter: Arc::new(CommenterAsMetacognition(commenter)),
+            fim: None,
+            decision: None,
+            reflex_model: None,
+            instinct_model: None,
+            metacognition_model: None,
+            workspace: None,
+            user_dir: None,
+            disabled_layers: Vec::new(),
+            log_path: log_path.into(),
+        }
+    }
+
+    /// Direct metacognition seam (prompt-aware).
+    pub fn with_layers(commenter: Arc<dyn Metacognition>, log_path: impl Into<PathBuf>) -> Self {
         Self {
             commenter,
             fim: None,
             decision: None,
+            reflex_model: None,
+            instinct_model: None,
+            metacognition_model: None,
+            workspace: None,
+            user_dir: None,
+            disabled_layers: Vec::new(),
             log_path: log_path.into(),
         }
     }
 
     /// Builder-style: attaches the reflex layer's model seam.
-    pub fn with_fim(mut self, fim: std::sync::Arc<dyn FimModel>) -> Self {
+    pub fn with_fim(mut self, fim: Arc<dyn FimModel>) -> Self {
         self.fim = Some(fim);
         self
     }
 
     /// Builder-style: attaches the instinct layer's model seam.
-    pub fn with_decision(mut self, decision: std::sync::Arc<dyn DecisionModel>) -> Self {
+    pub fn with_decision(mut self, decision: Arc<dyn DecisionModel>) -> Self {
         self.decision = Some(decision);
         self
     }
+
+    /// Builder-style: model ids for the per-layer call records.
+    pub fn with_model_ids(
+        mut self,
+        reflex: Option<String>,
+        instinct: Option<String>,
+        metacognition: Option<String>,
+    ) -> Self {
+        self.reflex_model = reflex;
+        self.instinct_model = instinct;
+        self.metacognition_model = metacognition;
+        self
+    }
+
+    /// Builder-style: the workspace root and the user navigator dir
+    /// (pipeline resolution, intent record, hot reload).
+    pub fn with_dirs(mut self, workspace: Option<PathBuf>, user_dir: Option<PathBuf>) -> Self {
+        self.workspace = workspace;
+        self.user_dir = user_dir;
+        self
+    }
+
+    /// Builder-style: notes about layers disabled at startup.
+    pub fn with_disabled_layers(mut self, notes: Vec<String>) -> Self {
+        self.disabled_layers = notes;
+        self
+    }
+}
+
+/// The default user-level navigator dir
+/// (`~/.config/rust-agent/navigator/`), when it can be resolved.
+pub fn default_user_dir() -> Option<PathBuf> {
+    crate::provider::auth::default_config_dir().map(|d| d.join("navigator"))
 }
 
 /// Builds the [`LspService`] for a navigator backend. Split from [`serve`] so
@@ -136,4 +235,75 @@ pub fn resolve_models(explicit: Option<&Path>, workspace: &Path) -> Option<std::
     let config_dir =
         crate::provider::auth::default_config_dir().unwrap_or_else(|| Path::new(".").to_path_buf());
     crate::provider::config::resolve_models_path(explicit, workspace, &config_dir)
+}
+
+/// Extracts a percent-decoded path from a `file://` URI string (the form
+/// documents are keyed by). Returns `None` for other schemes and for a
+/// malformed escape.
+pub fn uri_to_path_str(uri: &str) -> Option<String> {
+    let rest = uri.strip_prefix("file://")?;
+    // `file://host/path`: the host is dropped, only the path locates the file.
+    let rest = &rest[rest.find('/')?..];
+    let decoded = percent_decode(rest)?;
+    if decoded.starts_with('/') {
+        Some(decoded)
+    } else {
+        None
+    }
+}
+
+/// Extracts a filesystem path from a `file://` URI, percent-decoded.
+pub fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
+    uri_to_path_str(uri.as_str()).map(PathBuf::from)
+}
+
+/// Percent-decodes a URI component (the `%XX` escapes of the path).
+/// Returns `None` when a `%` is not followed by two hex digits: guessing a
+/// path from a malformed URI would key the document under the wrong file.
+fn percent_decode(s: &str) -> Option<String> {
+    let hex = |b: u8| -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    };
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hi = hex(*bytes.get(i + 1)?)?;
+            let lo = hex(*bytes.get(i + 2)?)?;
+            out.push(hi * 16 + lo);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    Some(String::from_utf8_lossy(&out).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uri_paths_decode() {
+        assert_eq!(
+            uri_to_path_str("file:///ws/src/main.rs").as_deref(),
+            Some("/ws/src/main.rs")
+        );
+        assert_eq!(
+            uri_to_path_str("file:///ws/a%20b/c%C3%A9.rs").as_deref(),
+            Some("/ws/a b/cé.rs")
+        );
+        assert_eq!(uri_to_path_str("file:///bad%2"), None, "incomplete escape");
+        assert_eq!(uri_to_path_str("untitled:Untitled-1"), None);
+        // A host-bearing file URI keeps its path (no host stripping: VS Code
+        // never sends one for local files).
+        assert_eq!(uri_to_path_str("file://localhost/x").as_deref(), Some("/x"));
+    }
 }

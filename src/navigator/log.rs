@@ -285,7 +285,10 @@ mod tests {
         assert_eq!(records[0]["input_tokens"], 454);
         assert_eq!(records[1]["kind"], "reflex_shown");
         assert_eq!(records[1]["request_id"], "t2");
-        assert_eq!(records[1]["shown_at_ms"], serde_json::json!(1_759_000_000_000u64));
+        assert_eq!(
+            records[1]["shown_at_ms"],
+            serde_json::json!(1_759_000_000_000u64)
+        );
     }
 
     #[test]

@@ -1,30 +1,41 @@
-//! The LSP backend: document sync, trigger policy wiring, idle timers,
-//! cancellation, custom notifications, JSONL logging.
+//! The LSP backend: document sync, the decision pipeline wiring, idle
+//! timers, cancellation, custom notifications, JSONL logging.
 //!
 //! All mutable state lives in [`Inner`] behind an `Arc`, so trait methods
-//! (`&self`) can spawn idle timers and commenter tasks that capture the state
-//! without needing an `Arc<NavigatorBackend>`.
+//! (`&self`) can spawn idle timers and metacognition tasks that capture the
+//! state without needing an `Arc<NavigatorBackend>`.
+//!
+//! Every trigger runs through the pipeline: save/idle/diagnostics events,
+//! pre-filters, one instinct call, first matching branch. A `remark` branch
+//! calls the metacognition with the branch prompt rendered through the
+//! pipeline's templates; `wake_cognition` is logged (nothing shown) while
+//! the cognition layer does not exist.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::time::Instant;
 
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::*;
 use tower_lsp_server::{Client, LanguageServer};
 
-use crate::navigator::commenter::{Commenter, Diag, RemarkContext, MALFORMED_PREFIX};
+use crate::navigator::commenter::{Diag, RemarkContext, MALFORMED_PREFIX};
 use crate::navigator::config::NavigatorConfig;
 use crate::navigator::document::DocumentState;
 use crate::navigator::log::{excerpt, LogRecord, NavLog, PrefilterRecord, TriggerRecord};
-use crate::navigator::policy::{decide, TriggerEvent, TriggerInput, TriggerOutcome};
+use crate::navigator::pipeline::{
+    Action, Pipeline, PipelineError, PipelineSnapshot, TriggerInputs, TriggerKind, NO_REMARK_MS,
+};
+use crate::navigator::ports::DecisionModel;
 use crate::navigator::protocol::{
     ClearNotification, ClearParams, DiagnosticItem, DiagnosticsParams, FeedbackParams,
-    InlineCompletionResult, IntentParams, RemarkNotification, RemarkParams, ReflexShownParams,
-    StatusNotification, StatusParams,
+    InlineCompletionResult, IntentParams, Position, ReflexShownParams, RemarkNotification,
+    RemarkParams, StatusNotification, StatusParams,
 };
+use crate::navigator::reflex::{to_result, ReflexService, SuggestOutcome};
+use crate::navigator::{Metacognition, NavigatorDeps};
 
 pub struct NavigatorBackend {
     inner: Arc<Inner>,
@@ -32,7 +43,7 @@ pub struct NavigatorBackend {
 
 struct Inner {
     client: Client,
-    commenter: Arc<dyn Commenter>,
+    metacognition: Arc<dyn Metacognition>,
     log: NavLog,
     /// One id per server process, grouping every trigger record it writes.
     run_id: String,
@@ -43,14 +54,39 @@ struct Inner {
     /// Latest remark id per uri (feedback targets it).
     last_remark_ids: Mutex<HashMap<String, String>>,
     intent: Mutex<Option<String>>,
+    /// The workspace root (pipeline + intent resolution); set at initialize.
+    workspace: Mutex<Option<PathBuf>>,
+    /// The user-level navigator dir, fixed at construction.
+    user_dir: Option<PathBuf>,
+    /// The active pipeline; swapped only by a successful reload.
+    pipeline: Mutex<Pipeline>,
+    /// The instinct seam; None keeps the layer disabled.
+    decision: Option<Arc<dyn DecisionModel>>,
+    /// Model ids for the per-layer call records.
+    instinct_model: Option<String>,
+    metacognition_model: Option<String>,
+    reflex_model: Option<String>,
+    /// The reflex service; None keeps the layer disabled (empty answers).
+    reflex: Option<ReflexService>,
+    /// Startup notes about disabled layers, surfaced once after initialize.
+    disabled_layers: Vec<String>,
 }
 
 impl NavigatorBackend {
-    pub fn new(client: Client, deps: crate::navigator::NavigatorDeps) -> Self {
+    pub fn new(client: Client, deps: NavigatorDeps) -> Self {
+        // Pipeline floor: whatever resolves now (project > user > built-in).
+        // A failure falls back to the built-in so the editor keeps working;
+        // reload retries and surfaces errors.
+        let snapshot = load_snapshot(deps.workspace.as_deref(), deps.user_dir.as_deref())
+            .unwrap_or_else(|e| {
+                tracing::error!("initial pipeline load failed, using built-in: {e}");
+                PipelineSnapshot::builtin().expect("the built-in pipeline must validate")
+            });
+        let reflex = deps.fim.map(ReflexService::new);
         Self {
             inner: Arc::new(Inner {
                 client,
-                commenter: deps.commenter,
+                metacognition: deps.commenter,
                 log: NavLog::new(deps.log_path),
                 run_id: crate::navigator::new_ulid_string(),
                 config: Mutex::new(NavigatorConfig::default()),
@@ -59,9 +95,92 @@ impl NavigatorBackend {
                 diagnostics: Mutex::new(HashMap::new()),
                 last_remark_ids: Mutex::new(HashMap::new()),
                 intent: Mutex::new(None),
+                workspace: Mutex::new(deps.workspace),
+                user_dir: deps.user_dir,
+                pipeline: Mutex::new(Pipeline::new(snapshot)),
+                decision: deps.decision,
+                instinct_model: deps.instinct_model,
+                metacognition_model: deps.metacognition_model,
+                reflex,
+                reflex_model: deps.reflex_model,
+                disabled_layers: deps.disabled_layers,
             }),
         }
     }
+}
+
+/// Pipeline resolution used at construction and reload: the workspace's
+/// `.navigator/`, else the user dir, else the built-in.
+fn load_snapshot(
+    workspace: Option<&std::path::Path>,
+    user_dir: Option<&std::path::Path>,
+) -> std::result::Result<PipelineSnapshot, PipelineError> {
+    match workspace {
+        Some(ws) => {
+            PipelineSnapshot::load(ws, user_dir.unwrap_or_else(|| std::path::Path::new("")))
+        }
+        None => PipelineSnapshot::builtin(),
+    }
+}
+
+/// One trigger's gathered context: everything the pipeline inputs, the
+/// templates and the log record need.
+struct TriggerContext {
+    uri: String,
+    event: &'static str,
+    version: i32,
+    changed_lines: i64,
+    since_last_remark_ms: i64,
+    has_errors: bool,
+    has_intent: bool,
+    intent_text: String,
+    language_id: String,
+    diff: String,
+    context_text: String,
+    diagnostics_text: String,
+}
+
+impl TriggerContext {
+    fn template_inputs(&self) -> std::collections::BTreeMap<String, String> {
+        std::collections::BTreeMap::from([
+            ("file".to_string(), self.uri.clone()),
+            ("language".to_string(), self.language_id.clone()),
+            ("intent".to_string(), self.intent_text.clone()),
+            ("diff".to_string(), self.diff.clone()),
+            ("context".to_string(), self.context_text.clone()),
+            ("diagnostics".to_string(), self.diagnostics_text.clone()),
+            ("live_state".to_string(), String::new()),
+        ])
+    }
+
+    fn prefilter_inputs(&self) -> std::collections::BTreeMap<String, serde_json::Value> {
+        std::collections::BTreeMap::from([
+            (
+                "changed_lines".to_string(),
+                serde_json::json!(self.changed_lines),
+            ),
+            (
+                "since_last_remark_ms".to_string(),
+                serde_json::json!(self.since_last_remark_ms),
+            ),
+        ])
+    }
+}
+
+/// The pipeline-era fields of a trigger record, filled from an evaluation
+/// (or absent, when the pipeline could not run).
+struct RecordData {
+    workspace: Option<String>,
+    pipeline_hash: Option<String>,
+    template_inputs: Option<serde_json::Value>,
+    rendered_state: Option<String>,
+    questions: Option<serde_json::Value>,
+    model: Option<String>,
+    answers: Option<serde_json::Value>,
+    branch: Option<usize>,
+    requested: Option<&'static str>,
+    prefilter_outcome: &'static str,
+    prefilter_reason: Option<&'static str>,
 }
 
 impl Inner {
@@ -81,7 +200,7 @@ impl Inner {
         *cfg = NavigatorConfig::from_value(&value, &cfg);
     }
 
-    /// Cancels any in-flight commenter call for a document.
+    /// Cancels any in-flight evaluation for a document.
     fn cancel_in_flight(doc: &mut DocumentState) {
         if let Some(cancel) = doc.in_flight_cancel.take() {
             cancel.cancel();
@@ -100,93 +219,201 @@ impl Inner {
             // Stale timer: a newer edit restarted the countdown.
             let current = inner.state.lock().await.get(&uri).map(|d| d.version);
             if current == Some(version) {
-                inner.evaluate(uri, TriggerEvent::IdleExpired).await;
+                inner.evaluate(uri, TriggerKind::Idle).await;
             }
         });
     }
 
-    /// Runs the trigger policy and, if it fires, the commenter call. Logs
-    /// every trigger decision (fire and skip alike).
-    async fn evaluate(self: &Arc<Self>, uri: String, event: TriggerEvent) {
+    /// Reloads the pipeline from disk (hot reload on didSave under
+    /// `.navigator/` or the user dir). The whole snapshot is validated
+    /// before it replaces the active one, so a load error keeps the previous
+    /// snapshot running and surfaces in the status bar.
+    async fn reload_pipeline(self: &Arc<Self>) {
+        let workspace = self.workspace.lock().await.clone();
+        let user_dir = self.user_dir.clone();
+        match load_snapshot(workspace.as_deref(), user_dir.as_deref()) {
+            Ok(snapshot) => {
+                let hash = snapshot.hash().to_string();
+                let source = snapshot.source().as_str();
+                *self.pipeline.lock().await = Pipeline::new(snapshot);
+                tracing::info!(hash, source, "pipeline reloaded");
+            }
+            Err(e) => {
+                self.set_status(
+                    "error",
+                    Some(format!(
+                        "pipeline reload failed ({origin}): {e}",
+                        origin = e.origin()
+                    )),
+                )
+                .await;
+            }
+        }
+    }
+
+    /// The workspace intent record, falling back to the session intent set
+    /// via `navigator/intent`. Returns the summary text and whether any
+    /// intent exists.
+    async fn current_intent(&self) -> (String, bool) {
+        let workspace = self.workspace.lock().await.clone();
+        if let Some(ws) = workspace {
+            match crate::navigator::read_intent(&ws) {
+                Ok(Some(record)) => {
+                    let summary = record.summary().to_string();
+                    let has = !summary.trim().is_empty();
+                    return (summary, has);
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!(error = %e, "intent record unreadable"),
+            }
+        }
+        match self.intent.lock().await.clone() {
+            Some(text) => (text, true),
+            None => (String::new(), false),
+        }
+    }
+
+    /// Gathers everything one trigger needs from the document state.
+    async fn gather(&self, uri: &str, now: Instant) -> Option<TriggerContext> {
+        let (changed_lines, since_last_remark_ms, version, doc_text, baseline) = {
+            let state = self.state.lock().await;
+            let doc = state.get(uri)?;
+            let since = doc
+                .last_remark
+                .map(|t| (now.duration_since(t)).as_millis() as i64)
+                .unwrap_or(NO_REMARK_MS);
+            (
+                doc.changed_lines_since_baseline() as i64,
+                since,
+                doc.version,
+                doc.text.clone(),
+                doc.baseline.clone(),
+            )
+        };
+        let language_id = self
+            .language_ids
+            .lock()
+            .await
+            .get(uri)
+            .cloned()
+            .unwrap_or_else(|| "plaintext".to_string());
+        let diags = self
+            .diagnostics
+            .lock()
+            .await
+            .get(uri)
+            .cloned()
+            .unwrap_or_default();
+        let has_errors = diags.iter().any(|d| d.severity == "error");
+        let diagnostics_text = diags
+            .iter()
+            .map(|d| format!("line {}: [{}] {}", d.line + 1, d.severity, d.message))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (intent_text, has_intent) = self.current_intent().await;
+        // Reuse the prototype's diff/excerpt builders for the {{diff}} and
+        // {{context}} template variables.
+        let ctx = RemarkContext::build(uri, &language_id, &baseline, &doc_text, Vec::new(), None);
+        Some(TriggerContext {
+            uri: uri.to_string(),
+            event: "",
+            version,
+            changed_lines,
+            since_last_remark_ms,
+            has_errors,
+            has_intent,
+            intent_text,
+            language_id,
+            diff: ctx.diff,
+            context_text: ctx.text_excerpt,
+            diagnostics_text,
+        })
+    }
+
+    /// Runs the pipeline for one trigger and delivers the branch's action.
+    /// Logs every trigger decision (remark and skip alike) as a full record.
+    async fn evaluate(self: &Arc<Self>, uri: String, event: TriggerKind) {
         let config = self.config.lock().await.clone();
         if !config.enabled {
             return;
         }
+        let mut ctx = match self.gather(&uri, Instant::now()).await {
+            Some(ctx) => ctx,
+            None => return,
+        };
+        ctx.event = event.as_str();
 
-        let now = Instant::now();
-        let (input, doc_version) = {
-            let state = self.state.lock().await;
-            let Some(doc) = state.get(&uri) else {
-                return;
-            };
-            let input = TriggerInput {
-                event,
-                changed_lines: doc.changed_lines_since_baseline(),
-                since_last_edit: Some(now.duration_since(doc.last_edit)),
-                since_last_remark: doc.last_remark.map(|t| now.duration_since(t)),
-            };
-            (input, doc.version)
-        };
-
-        let event_name = match event {
-            TriggerEvent::Save => "save",
-            TriggerEvent::IdleExpired => "idle",
-        };
-        let outcome = decide(&input, &config);
-        let (prefilter_outcome, skip_reason) = match &outcome {
-            TriggerOutcome::Fire => ("pass", None),
-            TriggerOutcome::Skip(r) => ("skip", Some(*r)),
-        };
         let trigger_id = crate::navigator::new_ulid_string();
-        let mut prefilter_inputs = std::collections::BTreeMap::new();
-        prefilter_inputs.insert("changed_lines".to_string(), serde_json::json!(input.changed_lines));
-        prefilter_inputs.insert(
-            "since_last_remark_ms".to_string(),
-            serde_json::json!(input
-                .since_last_remark
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(u64::MAX)),
-        );
-        // One trigger record per trigger, written once the delivered outcome
-        // is known. The prototype commenter path fills the pre-filter part
-        // and the delivered outcome; the pipeline-era fields stay absent
-        // until a decision pipeline runs.
-        let log_trigger = |requested: Option<&'static str>,
+        let prefilter_inputs = ctx.prefilter_inputs();
+        let template_inputs = ctx.template_inputs();
+        let inputs = TriggerInputs {
+            changed_lines: ctx.changed_lines,
+            since_last_remark_ms: ctx.since_last_remark_ms,
+            has_errors: ctx.has_errors,
+            has_intent: ctx.has_intent,
+        };
+        let workspace_str = self
+            .workspace
+            .lock()
+            .await
+            .as_ref()
+            .map(|p| p.display().to_string());
+        let mut record = RecordData {
+            workspace: workspace_str.clone(),
+            pipeline_hash: None,
+            template_inputs: None,
+            rendered_state: None,
+            questions: None,
+            model: None,
+            answers: None,
+            branch: None,
+            requested: None,
+            prefilter_outcome: "pass",
+            prefilter_reason: None,
+        };
+
+        // Writes the one trigger record for this trigger, once the delivered
+        // outcome is known.
+        let log_trigger = |record: &RecordData,
                            delivered: &'static str,
                            remark_id: Option<&str>,
                            reason: Option<&str>| {
             self.log.append(&LogRecord::Trigger(TriggerRecord {
                 trigger_id: &trigger_id,
                 run_id: &self.run_id,
-                workspace: None,
-                uri: &uri,
-                version: doc_version,
-                event: event_name,
+                workspace: record.workspace.as_deref(),
+                uri: &ctx.uri,
+                version: ctx.version,
+                event: ctx.event,
                 prefilter: PrefilterRecord {
                     inputs: &prefilter_inputs,
-                    outcome: prefilter_outcome,
-                    reason: skip_reason,
+                    outcome: record.prefilter_outcome,
+                    reason: record.prefilter_reason,
                 },
-                pipeline_hash: None,
-                template_inputs: None,
-                rendered_state: None,
-                questions: None,
-                model: None,
-                answers: None,
-                branch: None,
-                requested_action: requested,
+                pipeline_hash: record.pipeline_hash.as_deref(),
+                template_inputs: record.template_inputs.as_ref(),
+                rendered_state: record.rendered_state.as_deref(),
+                questions: record.questions.as_ref(),
+                model: record.model.as_deref(),
+                answers: record.answers.as_ref(),
+                branch: record.branch,
+                requested_action: record.requested,
                 delivered,
                 remark_id,
                 reason,
             }));
         };
-        if matches!(outcome, TriggerOutcome::Skip(_)) {
-            // Skipped by a pre-filter: nothing was ever requested.
-            log_trigger(None, "none", None, skip_reason);
+
+        // No instinct wired: the pipeline cannot run.
+        let Some(decision) = self.decision.as_ref().map(Arc::clone) else {
+            record.prefilter_outcome = "skip";
+            record.prefilter_reason = Some("instinct_unavailable");
+            log_trigger(&record, "none", None, Some("instinct_unavailable"));
             return;
-        }
-        // One in-flight call per uri at most; the cancel handle is stored in
-        // the SAME critical section so a concurrent didChange always sees it.
+        };
+
+        // One in-flight pipeline evaluation per uri; a concurrent didChange
+        // cancels it (the SAME critical section stores the handle).
         let cancel = CancellationToken::new();
         {
             let mut state = self.state.lock().await;
@@ -199,52 +426,208 @@ impl Inner {
             }
         }
 
-        let ctx = {
-            let state = self.state.lock().await;
-            let Some(doc) = state.get(&uri) else {
+        self.set_status("thinking", None).await;
+        let started = Instant::now();
+        let pipeline = self.pipeline.lock().await.clone();
+        let Some(questions) = pipeline.questions_for(event) else {
+            self.clear_in_flight(&uri).await;
+            record.prefilter_outcome = "skip";
+            record.prefilter_reason = Some("no_trigger");
+            log_trigger(&record, "none", None, Some("no_trigger"));
+            self.set_status("idle", None).await;
+            return;
+        };
+        let questions_json =
+            Some(serde_json::to_value(&questions).unwrap_or(serde_json::Value::Null));
+
+        let evaluation = pipeline
+            .evaluate(event, inputs, &template_inputs, decision.as_ref(), &cancel)
+            .await;
+        let evaluation = match evaluation {
+            Ok(eval) => eval,
+            Err(model_error) => {
                 self.clear_in_flight(&uri).await;
+                let cancelled = matches!(
+                    model_error,
+                    crate::navigator::ports::ModelError::Provider(
+                        crate::error::ProviderError::Canceled { .. }
+                    )
+                );
+                if cancelled {
+                    record.model = self.instinct_model.clone();
+                    log_trigger(&record, "cancelled", None, None);
+                } else {
+                    let message = model_error.to_string();
+                    self.log.append(&LogRecord::Error {
+                        uri: &ctx.uri,
+                        message: &message,
+                    });
+                    record.model = self.instinct_model.clone();
+                    log_trigger(&record, "provider_error", None, Some("instinct"));
+                    self.set_status("error", Some(message)).await;
+                }
                 return;
-            };
-            let diags = self
-                .diagnostics
-                .lock()
-                .await
-                .get(&uri)
-                .cloned()
-                .unwrap_or_default();
-            let language_id = self
-                .language_ids
-                .lock()
-                .await
-                .get(&uri)
-                .cloned()
-                .unwrap_or_else(|| "plaintext".to_string());
-            RemarkContext::build(
-                &uri,
-                &language_id,
-                &doc.baseline,
-                &doc.text,
-                diags,
-                self.intent.lock().await.clone(),
-            )
+            }
         };
 
-        self.set_status("thinking", None).await;
+        // The instinct call record is emitted only if evaluation actually
+        // asked the model (a pre-filter/no-trigger skip has no call).
+        let model_id = self
+            .instinct_model
+            .clone()
+            .unwrap_or_else(|| pipeline.model_alias().to_string());
+        if evaluation.answers.is_some() {
+            self.log.append(&LogRecord::Call {
+                layer: "instinct",
+                model: &model_id,
+                latency_ms: started.elapsed().as_millis(),
+                input_tokens: None,
+                output_tokens: None,
+                cancelled: false,
+            });
+        }
+        record.pipeline_hash = Some(evaluation.hash.clone());
+        record.template_inputs = Some(
+            serde_json::to_value(&evaluation.template_inputs).unwrap_or(serde_json::Value::Null),
+        );
+        record.rendered_state = Some(evaluation.rendered_state.clone());
+        record.questions = questions_json;
+        record.model = Some(model_id);
+        record.answers = evaluation
+            .answers
+            .as_ref()
+            .map(|a| serde_json::to_value(a).unwrap_or(serde_json::Value::Null));
+        record.branch = evaluation.branch_index;
+        record.requested = Some(evaluation.requested_action.as_str());
+        record.prefilter_outcome = evaluation.prefilter.as_str();
+        record.prefilter_reason = evaluation.prefilter.skip_reason();
+
+        if let Some(reason) = evaluation.prefilter.skip_reason() {
+            self.clear_in_flight(&uri).await;
+            record.requested = None;
+            log_trigger(&record, "none", None, Some(reason));
+            self.set_status("idle", None).await;
+            return;
+        }
+
+        match evaluation.requested_action {
+            Action::Silent => {
+                self.clear_in_flight(&uri).await;
+                // A pre-filter skip or no matching branch: nothing beyond
+                // the instinct was requested.
+                let reason = record
+                    .prefilter_reason
+                    .or(if evaluation.branch_index.is_none() {
+                        Some("no_branch")
+                    } else {
+                        None
+                    });
+                log_trigger(&record, "silent", None, reason);
+                // Silence rebases: this diff was considered and judged fine.
+                let mut state = self.state.lock().await;
+                if let Some(doc) = state.get_mut(&uri) {
+                    doc.rebase();
+                }
+                self.set_status("idle", None).await;
+            }
+            Action::WakeCognition => {
+                self.clear_in_flight(&uri).await;
+                // The cognition layer arrives in later slices: requested
+                // wake_cognition, delivered nothing.
+                log_trigger(&record, "none", None, Some("cognition_unavailable"));
+                self.set_status("idle", None).await;
+            }
+            Action::Remark => {
+                let prompt =
+                    pipeline.render_remark_branch(event, evaluation.branch_index, &template_inputs);
+                self.deliver_remark(
+                    uri,
+                    ctx,
+                    trigger_id,
+                    record,
+                    prefilter_inputs,
+                    prompt,
+                    cancel,
+                )
+                .await;
+            }
+        }
+    }
+
+    /// Delivers a `remark` branch: calls the metacognition with the rendered
+    /// branch prompt and writes the completed trigger record.
+    #[allow(clippy::too_many_arguments)]
+    async fn deliver_remark(
+        self: &Arc<Self>,
+        uri: String,
+        ctx: TriggerContext,
+        trigger_id: String,
+        record: RecordData,
+        prefilter_inputs: std::collections::BTreeMap<String, serde_json::Value>,
+        prompt: String,
+        cancel: CancellationToken,
+    ) {
+        let log_trigger = |record: &RecordData,
+                           delivered: &'static str,
+                           remark_id: Option<&str>,
+                           reason: Option<&str>| {
+            self.log.append(&LogRecord::Trigger(TriggerRecord {
+                trigger_id: &trigger_id,
+                run_id: &self.run_id,
+                workspace: record.workspace.as_deref(),
+                uri: &ctx.uri,
+                version: ctx.version,
+                event: ctx.event,
+                prefilter: PrefilterRecord {
+                    inputs: &prefilter_inputs,
+                    outcome: record.prefilter_outcome,
+                    reason: record.prefilter_reason,
+                },
+                pipeline_hash: record.pipeline_hash.as_deref(),
+                template_inputs: record.template_inputs.as_ref(),
+                rendered_state: record.rendered_state.as_deref(),
+                questions: record.questions.as_ref(),
+                model: record.model.as_deref(),
+                answers: record.answers.as_ref(),
+                branch: record.branch,
+                requested_action: record.requested,
+                delivered,
+                remark_id,
+                reason,
+            }));
+        };
+
+        let remark_ctx = RemarkContext {
+            uri: ctx.uri.clone(),
+            language_id: ctx.language_id.clone(),
+            diff: ctx.diff.clone(),
+            text_excerpt: ctx.context_text.clone(),
+            diagnostics: Vec::new(),
+            intent: if ctx.intent_text.is_empty() {
+                None
+            } else {
+                Some(ctx.intent_text.clone())
+            },
+            prompt: Some(prompt),
+        };
         let started = Instant::now();
         let result = tokio::select! {
             biased;
             _ = cancel.cancelled() => None, // superseded by a newer edit
-            r = self.commenter.remark(&ctx, &cancel) => Some(r),
+            r = self.metacognition.remark(&remark_ctx, &cancel) => Some(r),
         };
         self.clear_in_flight(&uri).await;
 
         let Some(result) = result else {
             // Cancelled: a newer edit took over. Stay quiet.
-            log_trigger(Some("remark"), "cancelled", None, None);
+            log_trigger(&record, "cancelled", None, None);
             return;
         };
 
-        let model = config.model_alias.clone();
+        let model = self
+            .metacognition_model
+            .clone()
+            .unwrap_or_else(|| "metacognition".to_string());
         match result {
             Ok(Some(remark)) => {
                 // A remark about a stale document version is dropped; a
@@ -252,64 +635,91 @@ impl Inner {
                 {
                     let mut state = self.state.lock().await;
                     match state.get_mut(&uri) {
-                        Some(doc) if doc.version == doc_version => {
+                        Some(doc) if doc.version == ctx.version => {
                             doc.last_remark = Some(Instant::now());
                             doc.rebase();
                         }
                         _ => {
-                            tracing::info!(%uri, "dropping remark for stale version");
-                            log_trigger(Some("remark"), "cancelled", None, Some("stale_version"));
+                            tracing::info!(uri = %ctx.uri, "dropping remark for stale version");
+                            log_trigger(&record, "cancelled", None, Some("stale_version"));
                             return;
                         }
                     }
                 }
-                let id = new_remark_id();
+                let id = crate::navigator::new_ulid_string();
+                let latency = started.elapsed().as_millis();
+                self.log.append(&LogRecord::Call {
+                    layer: "metacognition",
+                    model: &model,
+                    latency_ms: latency,
+                    input_tokens: None,
+                    output_tokens: None,
+                    cancelled: false,
+                });
                 self.log.append(&LogRecord::Remark {
                     id: &id,
-                    uri: &uri,
+                    uri: &ctx.uri,
                     line: remark.line,
                     text: &remark.text,
                     model: &model,
-                    latency_ms: started.elapsed().as_millis(),
+                    latency_ms: latency,
                 });
-                log_trigger(Some("remark"), "remark", Some(&id), None);
                 self.last_remark_ids
                     .lock()
                     .await
                     .insert(uri.clone(), id.clone());
                 self.client
                     .send_notification::<RemarkNotification>(RemarkParams {
-                        id,
+                        id: id.clone(),
                         uri: uri.clone(),
                         line: remark.line,
                         text: remark.text,
                     })
                     .await;
+                log_trigger(&record, "remark", Some(&id), None);
+                self.set_status("idle", None).await;
             }
             Ok(None) => {
+                self.log.append(&LogRecord::Call {
+                    layer: "metacognition",
+                    model: &model,
+                    latency_ms: started.elapsed().as_millis(),
+                    input_tokens: None,
+                    output_tokens: None,
+                    cancelled: false,
+                });
                 self.log.append(&LogRecord::Silent {
-                    uri: &uri,
+                    uri: &ctx.uri,
                     model: &model,
                     latency_ms: started.elapsed().as_millis(),
                 });
-                log_trigger(Some("remark"), "silent", None, None);
-                // Silence rebase too: this diff was considered and judged fine.
+                // Silence rebases: this diff was considered and judged fine.
                 let mut state = self.state.lock().await;
                 if let Some(doc) = state.get_mut(&uri) {
                     doc.rebase();
                 }
+                log_trigger(&record, "silent", None, None);
+                self.set_status("idle", None).await;
             }
             Err(message) => {
+                self.log.append(&LogRecord::Call {
+                    layer: "metacognition",
+                    model: &model,
+                    latency_ms: started.elapsed().as_millis(),
+                    input_tokens: None,
+                    output_tokens: None,
+                    cancelled: false,
+                });
                 // A malformed answer is a model failure, not a provider
                 // failure: different delivered outcome in the log.
                 if let Some(raw) = message.strip_prefix(MALFORMED_PREFIX) {
                     self.log.append(&LogRecord::Malformed {
-                        uri: &uri,
+                        uri: &ctx.uri,
                         model: &model,
                         latency_ms: started.elapsed().as_millis(),
                         raw_excerpt: &excerpt(raw, 400),
                     });
-                    log_trigger(Some("remark"), "malformed", None, None);
+                    log_trigger(&record, "malformed", None, None);
                     self.set_status(
                         "error",
                         Some("model answer violated the prompt contract".to_string()),
@@ -317,16 +727,14 @@ impl Inner {
                     .await;
                 } else {
                     self.log.append(&LogRecord::Error {
-                        uri: &uri,
+                        uri: &ctx.uri,
                         message: &message,
                     });
-                    log_trigger(Some("remark"), "provider_error", None, None);
+                    log_trigger(&record, "provider_error", None, None);
                     self.set_status("error", Some(message)).await;
                 }
-                return;
             }
         }
-        self.set_status("idle", None).await;
     }
 
     async fn clear_in_flight(&self, uri: &str) {
@@ -355,8 +763,9 @@ impl Inner {
         });
     }
 
-    /// `navigator/diagnostics`: keep the latest set per uri.
-    async fn on_diagnostics(&self, params: DiagnosticsParams) {
+    /// `navigator/diagnostics`: keep the latest set per uri and run the
+    /// diagnostics trigger.
+    async fn on_diagnostics(self: &Arc<Self>, params: DiagnosticsParams) {
         let items: Vec<Diag> = params
             .items
             .into_iter()
@@ -366,13 +775,41 @@ impl Inner {
                 message: d.message,
             })
             .collect();
-        self.diagnostics.lock().await.insert(params.uri, items);
+        self.diagnostics
+            .lock()
+            .await
+            .insert(params.uri.clone(), items);
+        self.evaluate(params.uri, TriggerKind::Diagnostics).await;
     }
 
     /// `navigator/intent`: the user's current goal, global to the session.
     async fn on_intent(&self, params: IntentParams) {
         let text = params.text.trim().to_string();
         *self.intent.lock().await = if text.is_empty() { None } else { Some(text) };
+    }
+
+    /// True when a didSave of this uri should hot-reload the pipeline: any
+    /// file under the workspace `.navigator/` or the user navigator dir.
+    fn is_navigator_config(
+        uri: &str,
+        workspace: Option<&std::path::Path>,
+        user_dir: Option<&std::path::Path>,
+    ) -> bool {
+        let Some(path) = crate::navigator::uri_to_path_str(uri) else {
+            return false;
+        };
+        let path = std::path::Path::new(&path);
+        if let Some(ws) = workspace {
+            if path.starts_with(ws.join(".navigator")) {
+                return true;
+            }
+        }
+        if let Some(user) = user_dir {
+            if path.starts_with(user) {
+                return true;
+            }
+        }
+        false
     }
 
     async fn on_did_open(self: &Arc<Self>, params: DidOpenTextDocumentParams) {
@@ -425,8 +862,15 @@ impl Inner {
     }
 
     async fn on_did_save(self: &Arc<Self>, params: DidSaveTextDocumentParams) {
-        let uri = crate::navigator::uri_key(&params.text_document.uri);
-        self.evaluate(uri, TriggerEvent::Save).await;
+        let uri_key = crate::navigator::uri_key(&params.text_document.uri);
+        {
+            let workspace = self.workspace.lock().await.clone();
+            let user_dir = self.user_dir.clone();
+            if Self::is_navigator_config(&uri_key, workspace.as_deref(), user_dir.as_deref()) {
+                self.reload_pipeline().await;
+            }
+        }
+        self.evaluate(uri_key, TriggerKind::Save).await;
     }
 
     async fn on_did_close(&self, params: DidCloseTextDocumentParams) {
@@ -441,16 +885,74 @@ impl Inner {
             .send_notification::<ClearNotification>(ClearParams { uri })
             .await;
     }
-}
 
-fn new_remark_id() -> String {
-    crate::navigator::new_ulid_string()
+    /// One reflex layer model call, for the cost log. Usage tokens are not
+    /// surfaced by the service seam yet; latency is.
+    fn log_reflex_call(&self, latency_ms: u128) {
+        if let Some(model) = self.reflex_model.as_deref() {
+            self.log.append(&LogRecord::Call {
+                layer: "reflex",
+                model,
+                latency_ms,
+                input_tokens: None,
+                output_tokens: None,
+                cancelled: false,
+            });
+        }
+    }
 }
 
 impl LanguageServer for NavigatorBackend {
-    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(
+        &self,
+        params: InitializeParams,
+    ) -> tower_lsp_server::jsonrpc::Result<InitializeResult> {
         if let Some(options) = &params.initialization_options {
             self.inner.apply_config(options.clone()).await;
+        }
+        // rootUri wins, then the first workspace folder; the process cwd the
+        // binary passed (if any) is the last resort.
+        {
+            #[allow(deprecated)]
+            let from_root = params
+                .root_uri
+                .as_ref()
+                .and_then(crate::navigator::uri_to_path);
+            let from_folders = params.workspace_folders.as_ref().and_then(|folders| {
+                folders
+                    .first()
+                    .and_then(|f| crate::navigator::uri_to_path(&f.uri))
+            });
+            let mut workspace = self.inner.workspace.lock().await;
+            if from_root.is_some() {
+                *workspace = from_root;
+            } else if from_folders.is_some() {
+                *workspace = from_folders;
+            }
+            let ws = workspace.clone();
+            drop(workspace);
+            // The workspace may unlock a project pipeline: reload quietly
+            // (a failure keeps the built-in running; the status
+            // notification may not be deliverable this early anyway).
+            if ws.is_some() {
+                self.inner.reload_pipeline().await;
+            }
+        }
+        if !self.inner.disabled_layers.is_empty() {
+            self.inner
+                .set_status(
+                    "error",
+                    Some(format!(
+                        "layer{} disabled: {}",
+                        if self.inner.disabled_layers.len() == 1 {
+                            ""
+                        } else {
+                            "s"
+                        },
+                        self.inner.disabled_layers.join("; ")
+                    )),
+                )
+                .await;
         }
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
@@ -467,7 +969,7 @@ impl LanguageServer for NavigatorBackend {
         })
     }
 
-    async fn shutdown(&self) -> Result<()> {
+    async fn shutdown(&self) -> tower_lsp_server::jsonrpc::Result<()> {
         Ok(())
     }
 
@@ -509,15 +1011,76 @@ impl NavigatorBackend {
     }
 
     /// `navigator/inlineCompletion`: ghost-text request from the extension's
-    /// inline-completion provider. Returns an empty item list until the
-    /// reflex layer is wired in; the shape is the frozen contract.
+    /// inline-completion provider. The reflex layer answers or returns an
+    /// empty item list.
     pub async fn inline_completion(
         &self,
-        _params: crate::navigator::protocol::InlineCompletionParams,
-    ) -> tower_lsp_server::jsonrpc::Result<
-        crate::navigator::protocol::InlineCompletionResult,
-    > {
-        Ok(InlineCompletionResult { items: Vec::new() })
+        params: crate::navigator::protocol::InlineCompletionParams,
+    ) -> tower_lsp_server::jsonrpc::Result<crate::navigator::protocol::InlineCompletionResult> {
+        let Some(reflex) = &self.inner.reflex else {
+            return Ok(InlineCompletionResult {
+                items: Vec::new(),
+                request_id: None,
+            });
+        };
+        let text = {
+            let state = self.inner.state.lock().await;
+            match state.get(&params.uri) {
+                Some(doc) => doc.text.clone(),
+                None => {
+                    return Ok(InlineCompletionResult {
+                        items: Vec::new(),
+                        request_id: None,
+                    })
+                }
+            }
+        };
+        let language_id = self
+            .inner
+            .language_ids
+            .lock()
+            .await
+            .get(&params.uri)
+            .cloned()
+            .unwrap_or_else(|| "plaintext".to_string());
+        let pos = Position {
+            line: params.line,
+            character: params.character,
+        };
+        // The reflex context: the intent record summary for now (the
+        // metacognition refreshes it in a later slice). The service caps it.
+        let (context, _) = self.inner.current_intent().await;
+        let started = Instant::now();
+        match reflex
+            .suggest(
+                &params.uri,
+                &text,
+                params.version,
+                pos,
+                &context,
+                &language_id,
+            )
+            .await
+        {
+            Ok(suggestion) => {
+                self.inner.log_reflex_call(started.elapsed().as_millis());
+                Ok(to_result(&suggestion))
+            }
+            Err(SuggestOutcome::Debounced | SuggestOutcome::StaleVersion) => {
+                self.inner.log_reflex_call(started.elapsed().as_millis());
+                Ok(InlineCompletionResult {
+                    items: Vec::new(),
+                    request_id: None,
+                })
+            }
+            Err(SuggestOutcome::ModelSilent) => {
+                self.inner.log_reflex_call(started.elapsed().as_millis());
+                Ok(InlineCompletionResult {
+                    items: Vec::new(),
+                    request_id: None,
+                })
+            }
+        }
     }
 
     pub async fn reflex_shown(&self, params: ReflexShownParams) {
@@ -530,7 +1093,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn remark_ids_are_unique() {
-        assert_ne!(new_remark_id(), new_remark_id());
+    fn navigator_ids_are_unique() {
+        assert_ne!(
+            crate::navigator::new_ulid_string(),
+            crate::navigator::new_ulid_string()
+        );
+    }
+
+    #[test]
+    fn navigator_config_uris_match_project_and_user_dirs() {
+        let ws = std::path::Path::new("/ws");
+        let user = std::path::Path::new("/home/u/.config/rust-agent/navigator");
+        assert!(Inner::is_navigator_config(
+            "file:///ws/.navigator/pipeline.toml",
+            Some(ws),
+            Some(user)
+        ));
+        assert!(Inner::is_navigator_config(
+            "file:///ws/.navigator/prompts/state.md",
+            Some(ws),
+            Some(user)
+        ));
+        assert!(Inner::is_navigator_config(
+            "file:///home/u/.config/rust-agent/navigator/pipeline.toml",
+            Some(ws),
+            Some(user)
+        ));
+        assert!(!Inner::is_navigator_config(
+            "file:///ws/src/main.rs",
+            Some(ws),
+            Some(user)
+        ));
+        assert!(!Inner::is_navigator_config(
+            "untitled:Untitled-1",
+            Some(ws),
+            Some(user)
+        ));
     }
 }

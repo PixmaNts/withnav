@@ -17,7 +17,7 @@ const reflexEnabled = () =>
  * Suggestions apply on Tab (VS Code's inlineSuggest default); continuing
  * to type dismisses them. Returning an empty list hides the ghost text.
  */
-export function registerReflex(client: LanguageClient, context: vscode.ExtensionContext): void {
+export function registerReflex(client: LanguageClient): vscode.Disposable[] {
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
   const provider: vscode.InlineCompletionItemProvider = {
@@ -27,16 +27,17 @@ export function registerReflex(client: LanguageClient, context: vscode.Extension
       }
       const uri = document.uri.toString();
 
-      // Debounce: the last keystroke wins; a superseded timer is dropped
-      // server-side by the version check.
+      // Debounce: the last keystroke wins; a superseded timer is dropped.
       const pending = timers.get(uri);
       if (pending) {
         clearTimeout(pending);
       }
-      await new Promise<void>((resolve) => {
-        timers.set(uri, setTimeout(resolve, DEBOUNCE_MS));
+      await new Promise<boolean>((resolve) => {
+        timers.set(uri, setTimeout(() => resolve(true), DEBOUNCE_MS));
       });
-      timers.delete(uri);
+      if (timers.get(uri)) {
+        timers.delete(uri);
+      }
       if (!reflexEnabled()) {
         return { items: [] };
       }
@@ -92,7 +93,5 @@ export function registerReflex(client: LanguageClient, context: vscode.Extension
     },
   };
 
-  context.subscriptions.push(
-    vscode.languages.registerInlineCompletionItemProvider({ scheme: "file" }, provider),
-  );
+  return [vscode.languages.registerInlineCompletionItemProvider({ scheme: "file" }, provider)];
 }

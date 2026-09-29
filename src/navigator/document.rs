@@ -109,7 +109,11 @@ pub fn text_around_changes(old: &str, new: &str, context: usize) -> String {
         .map(|(il, _)| numbered(il))
         .collect();
     if selected.is_empty() {
-        new.lines().enumerate().map(numbered).collect::<Vec<_>>().join("\n")
+        new.lines()
+            .enumerate()
+            .map(numbered)
+            .collect::<Vec<_>>()
+            .join("\n")
     } else {
         selected.join("\n")
     }
@@ -152,7 +156,10 @@ mod tests {
         let old = "a\nz\n";
         let new = "a\nb\nc\nd\nz\n";
         // the diff inserts b, c, d between a and z
-        assert_eq!(text_around_changes(old, new, 0), "   2| b\n   3| c\n   4| d");
+        assert_eq!(
+            text_around_changes(old, new, 0),
+            "   2| b\n   3| c\n   4| d"
+        );
         assert_eq!(
             text_around_changes(old, new, 1),
             "   1| a\n   2| b\n   3| c\n   4| d\n   5| z"

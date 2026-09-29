@@ -1,16 +1,22 @@
 //! `rust-agent-lsp`: the navigator Language Server over stdio.
 //!
 //! stdout is the LSP channel; all logging goes to stderr via tracing.
+//! Each layer (reflex, instinct, metacognition) is built from its alias in
+//! models.json; a layer whose alias/key/config is missing is disabled with a
+//! status message and the others keep working.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
 use rust_agent::navigator;
-use rust_agent::navigator::commenter::{Commenter, LlmCommenter};
+use rust_agent::navigator::commenter::LlmCommenter;
+use rust_agent::navigator::{Commenter, CommenterAsMetacognition, Metacognition};
 use rust_agent::provider::auth;
 use rust_agent::provider::config::ModelsConfig;
+use rust_agent::provider::fim::InceptionFim;
 use rust_agent::provider::openai::ClientCache;
+use rust_agent::provider::systemone::SystemOneClient;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -39,28 +45,156 @@ fn init_tracing_stderr() {
         .try_init();
 }
 
-fn build_llm_commenter(cli: &Cli) -> anyhow::Result<LlmCommenter> {
+/// Resolves the models config: explicit path, workspace copy (it carries the
+/// navigator aliases), then the config dir.
+fn load_models(cli: &Cli) -> anyhow::Result<ModelsConfig> {
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let config_dir =
         auth::default_config_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve config dir"))?;
     let models_path = navigator::resolve_models(cli.models.as_deref(), &workspace)
         .or_else(|| Some(config_dir.join("models.json")))
         .ok_or_else(|| anyhow::anyhow!("no models.json found"))?;
-    let models = ModelsConfig::load(&models_path)
-        .map_err(|e| anyhow::anyhow!("cannot load {}: {e}", models_path.display()))?;
+    ModelsConfig::load(&models_path)
+        .map_err(|e| anyhow::anyhow!("cannot load {}: {e}", models_path.display()))
+}
 
-    // Default alias from config `fast`, overridable later via LSP config.
-    let alias = "fast";
+/// The metacognition over the LLM commenter; the pipeline prompt is carried
+/// on the `RemarkContext`.
+struct PromptedCommenter {
+    inner: Arc<LlmCommenter>,
+}
+
+impl Metacognition for PromptedCommenter {
+    fn remark<'a>(
+        &'a self,
+        ctx: &'a navigator::RemarkContext,
+        cancel: &'a tokio_util::sync::CancellationToken,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Option<navigator::Remark>, String>> + Send + 'a,
+        >,
+    > {
+        self.inner.remark(ctx, cancel)
+    }
+}
+
+struct Layers {
+    fim: Option<Arc<dyn rust_agent::navigator::ports::FimModel>>,
+    decision: Option<Arc<dyn rust_agent::navigator::ports::DecisionModel>>,
+    reflex_model: Option<String>,
+    instinct_model: Option<String>,
+    metacognition_model: Option<String>,
+    metacognition: Option<Arc<LlmCommenter>>,
+    disabled: Vec<String>,
+}
+
+/// Builds every layer from its alias. A missing alias or key disables that
+/// layer with a note; the others keep working.
+fn build_layers(cli: &Cli, clients: Arc<ClientCache>) -> Layers {
+    let mut layers = Layers {
+        fim: None,
+        decision: None,
+        reflex_model: None,
+        instinct_model: None,
+        metacognition_model: None,
+        metacognition: None,
+        disabled: Vec::new(),
+    };
+    let models = match load_models(cli) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!("models.json unavailable, every model layer disabled: {e}");
+            layers.disabled.push(format!("all: models.json ({e})"));
+            return layers;
+        }
+    };
+    let config_dir = auth::default_config_dir().unwrap_or_else(|| PathBuf::from("."));
+
+    // Reflex: Mercury FIM on the `reflex` alias.
+    match models.resolve("reflex") {
+        Ok(resolved) => {
+            let model_id = resolved.model.model.clone();
+            match auth::resolve_key(
+                &config_dir,
+                &resolved.provider_name,
+                resolved.provider.api_key_env.as_deref(),
+            ) {
+                Ok(key) => {
+                    layers.fim = Some(Arc::new(InceptionFim::new(resolved, key, clients.clone())));
+                    layers.reflex_model = Some(model_id);
+                }
+                Err(e) => {
+                    tracing::error!("reflex disabled (no API key): {e}");
+                    layers.disabled.push(format!("reflex: no API key ({e})"));
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!("reflex disabled (alias): {e}");
+            layers.disabled.push(format!("reflex: {e}"));
+        }
+    }
+
+    // Instinct: System One on the `instinct` alias (the pipeline snapshot
+    // names its own alias; the shipped ones all use `instinct`).
+    match SystemOneClient::from_alias(&models, "instinct", &config_dir, clients.clone()) {
+        Ok(client) => {
+            layers.instinct_model = Some(client.model().to_string());
+            layers.decision = Some(Arc::new(client));
+        }
+        Err(e) => {
+            tracing::error!("instinct disabled: {e}");
+            layers.disabled.push(format!("instinct: {e}"));
+        }
+    }
+
+    // Metacognition: the fast chat commenter on the `metacognition` alias.
+    match build_llm_commenter(&models, "metacognition", &config_dir, clients.clone()) {
+        Ok(commenter) => {
+            layers.metacognition_model = Some(commenter.model_id().to_string());
+            layers.metacognition = Some(Arc::new(commenter));
+        }
+        Err(e) => {
+            tracing::error!("metacognition disabled: {e}");
+            layers.disabled.push(format!("metacognition: {e}"));
+        }
+    }
+
+    layers
+}
+
+/// Chat commenter on a named alias (the metacognition).
+fn build_llm_commenter(
+    models: &ModelsConfig,
+    alias: &str,
+    config_dir: &std::path::Path,
+    clients: Arc<ClientCache>,
+) -> anyhow::Result<LlmCommenter> {
     let resolved = models
         .resolve(alias)
         .map_err(|e| anyhow::anyhow!("cannot resolve alias '{alias}': {e}"))?;
     let api_key = auth::resolve_key(
-        &config_dir,
+        config_dir,
         &resolved.provider_name,
         resolved.provider.api_key_env.as_deref(),
     )
     .map_err(|e| anyhow::anyhow!("no API key for provider '{}': {e}", resolved.provider_name))?;
-    Ok(LlmCommenter::new(resolved, api_key, Arc::new(ClientCache::new())))
+    Ok(LlmCommenter::new(resolved, api_key, clients))
+}
+
+impl Layers {
+    /// The metacognition seam: the real commenter when built, else a
+    /// failing stand-in so the editor never crashes.
+    fn metacognition(&self) -> Arc<dyn Metacognition> {
+        match &self.metacognition {
+            Some(llm) => Arc::new(PromptedCommenter {
+                inner: Arc::clone(llm),
+            }),
+            None => Arc::new(CommenterAsMetacognition(Arc::new(FailingCommenter {
+                message: "metacognition layer disabled".to_string(),
+            }))),
+        }
+    }
 }
 
 #[tokio::main]
@@ -68,18 +202,8 @@ async fn main() -> anyhow::Result<()> {
     init_tracing_stderr();
     let cli = Cli::parse();
 
-    let commenter: Arc<dyn Commenter> = match build_llm_commenter(&cli) {
-        Ok(c) => Arc::new(c),
-        Err(e) => {
-            // Never crash the editor: run with an always-silent commenter and
-            // surface the failure in logs. The status notification only
-            // reaches the client after initialize, so tracing is the channel.
-            tracing::error!("navigator LLM setup failed, staying silent: {e}");
-            Arc::new(FailingCommenter {
-                message: format!("setup failed: {e}"),
-            })
-        }
-    };
+    let clients = Arc::new(ClientCache::new());
+    let layers = build_layers(&cli, clients);
 
     let log_path = navigator::default_log_path()
         .ok_or_else(|| anyhow::anyhow!("cannot resolve user data dir"))?;
@@ -87,13 +211,33 @@ async fn main() -> anyhow::Result<()> {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    let deps = navigator::NavigatorDeps::new(commenter, log_path);
+    // The workspace root starts at the process cwd; initialize upgrades it
+    // from rootUri when the client sends one.
+    let workspace = std::env::current_dir().ok();
+    let user_dir = navigator::default_user_dir();
+
+    let mut deps = navigator::NavigatorDeps::with_layers(layers.metacognition(), log_path)
+        .with_dirs(workspace, user_dir)
+        .with_model_ids(
+            layers.reflex_model.clone(),
+            layers.instinct_model.clone(),
+            layers.metacognition_model.clone(),
+        )
+        .with_disabled_layers(layers.disabled.clone());
+    if let Some(fim) = layers.fim {
+        deps = deps.with_fim(fim);
+    }
+    if let Some(decision) = layers.decision {
+        deps = deps.with_decision(decision);
+    }
+
     navigator::serve(tokio::io::stdin(), tokio::io::stdout(), deps).await;
     Ok(())
 }
 
-/// Stand-in used when model/auth setup fails: every remark call errors, which
-/// surfaces as `navigator/status` error instead of a crash.
+/// Stand-in used when the metacognition layer could not be built: every
+/// remark call errors, which surfaces as `navigator/status` error instead
+/// of a crash.
 struct FailingCommenter {
     message: String,
 }

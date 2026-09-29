@@ -10,7 +10,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio_util::sync::CancellationToken;
 
 use rust_agent::navigator::commenter::{Commenter, RemarkContext};
+use rust_agent::navigator::ports::{
+    Answer as DecisionAnswer, DecisionModel, FimAnswer, FimModel, FimRequest, ModelError, Question,
+};
 use rust_agent::navigator::{self, NavigatorDeps, Remark};
+use std::collections::BTreeMap;
 
 // ---------- mock commenter ----------
 
@@ -272,6 +276,7 @@ fn try_parse(buf: &[u8]) -> Option<(Value, usize)> {
 /// Spawns the server on duplex pairs; returns the client side.
 /// Wireup: client writes -> server input; server output -> client reads.
 fn spawn_server(deps: NavigatorDeps) -> LspClient {
+    let deps = deps.with_decision(Arc::new(ScriptedDecision));
     let (server_input, client_write) = tokio::io::duplex(64 * 1024);
     let (client_read, server_output) = tokio::io::duplex(64 * 1024);
     tokio::spawn(navigator::serve(server_input, server_output, deps));
@@ -279,6 +284,97 @@ fn spawn_server(deps: NavigatorDeps) -> LspClient {
         writer: client_write,
         reader: client_read,
         buf: Vec::new(),
+    }
+}
+
+/// The default pipeline's answers for existing integration scenarios:
+/// changes are worth a short metacognition remark, but do not drift from
+/// intent enough to wake cognition.
+struct ScriptedDecision;
+
+impl DecisionModel for ScriptedDecision {
+    fn decide<'a>(
+        &'a self,
+        _state: &'a str,
+        questions: &'a BTreeMap<String, Question>,
+        _cancel: &'a CancellationToken,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<BTreeMap<String, DecisionAnswer>, ModelError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let mut answers = BTreeMap::new();
+            for (name, question) in questions {
+                match question {
+                    Question::Noul { .. } => {
+                        answers.insert(name.clone(), DecisionAnswer::Noul { noul: 0.9 });
+                    }
+                    Question::Choice { criteria, .. } => {
+                        let choice = if criteria.contains_key("metacognition") {
+                            "metacognition"
+                        } else {
+                            criteria.keys().next().map(String::as_str).unwrap_or("")
+                        };
+                        let probabilities = criteria
+                            .keys()
+                            .map(|k| (k.clone(), if k == choice { 1.0 } else { 0.0 }))
+                            .collect();
+                        answers.insert(
+                            name.clone(),
+                            DecisionAnswer::Choice {
+                                choice: choice.to_string(),
+                                probabilities,
+                                confidence: 1.0,
+                            },
+                        );
+                    }
+                    Question::Score { criteria, .. } => {
+                        let probabilities = (0..criteria.len())
+                            .map(|i| (i.to_string(), if i == 0 { 1.0 } else { 0.0 }))
+                            .collect();
+                        answers.insert(
+                            name.clone(),
+                            DecisionAnswer::Score {
+                                score: 0.0,
+                                legend: criteria
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, s)| (i.to_string(), s.clone()))
+                                    .collect(),
+                                probabilities,
+                                confidence: 1.0,
+                            },
+                        );
+                    }
+                }
+            }
+            Ok(answers)
+        })
+    }
+}
+
+struct ScriptedFim {
+    text: &'static str,
+}
+
+impl FimModel for ScriptedFim {
+    fn complete<'a>(
+        &'a self,
+        _request: FimRequest,
+        _cancel: &'a CancellationToken,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<FimAnswer, ModelError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            Ok(FimAnswer {
+                text: self.text.to_string(),
+                usage: Default::default(),
+                latency: Duration::from_millis(5),
+            })
+        })
     }
 }
 
@@ -547,7 +643,8 @@ async fn did_close_clears_remark() {
     assert_eq!(clear["params"]["uri"], URI);
 }
 
-/// didChangeConfiguration updates thresholds at runtime.
+/// The pipeline's configured pre-filter, rather than the prototype's LSP
+/// minChangedLines setting, controls whether the instinct runs.
 #[tokio::test(start_paused = true)]
 async fn config_update_changes_idle_threshold() {
     let mock = MockCommenter::new(vec![Answer::Remark(0, "cfg-driven")]);
@@ -561,11 +658,9 @@ async fn config_update_changes_idle_threshold() {
         .initialize(json!({"idleMs": 1000, "minChangedLines": 1, "cooldownMs": 60000}))
         .await;
     client.did_open(URI, &base_text(), 1).await;
-    // A single changed line now suffices.
-    client
-        .did_change(URI, "fn main() {\n    println!(\"hi\");\n}", 2)
-        .await;
-    tokio::time::advance(Duration::from_millis(1001)).await;
+    // The built-in pipeline still requires at least three changed lines.
+    client.did_change(URI, &big_edit(), 2).await;
+    tokio::time::advance(Duration::from_millis(3001)).await;
     let mut seen = Vec::new();
     let remark = client.expect("navigator/remark", &mut seen).await;
     assert_eq!(remark["params"]["text"], "cfg-driven");
@@ -627,16 +722,16 @@ async fn intent_and_diagnostics_are_accepted() {
     assert!(resp.get("result").is_some(), "server broken: {resp}");
 }
 
-/// navigator/inlineCompletion answers with the frozen shape: an empty item
-/// list until the reflex layer is wired in.
+/// navigator/inlineCompletion answers with an item and request id from the
+/// reflex service, including the result range.
 #[tokio::test(start_paused = true)]
 async fn inline_completion_answers_empty_items() {
     let mock = MockCommenter::new(vec![]);
     let tmp = tempfile::tempdir().unwrap();
-    let mut client = spawn_server(NavigatorDeps::new(
-        Arc::new(mock),
-        tmp.path().join("nav.jsonl"),
-    ));
+    let deps = NavigatorDeps::new(Arc::new(mock), tmp.path().join("nav.jsonl"))
+        .with_fim(Arc::new(ScriptedFim { text: "hello" }))
+        .with_model_ids(Some("mercury-edit-2".into()), None, None);
+    let mut client = spawn_server(deps);
 
     client.initialize(json!({})).await;
     client.did_open(URI, &base_text(), 1).await;
@@ -648,9 +743,11 @@ async fn inline_completion_answers_empty_items() {
             "params": {"uri": URI, "version": 1, "line": 0, "character": 4}
         }))
         .await;
+    tokio::time::advance(Duration::from_millis(151)).await;
     let resp = client.recv().await;
     assert_eq!(resp["id"], 21);
-    assert_eq!(resp["result"]["items"], json!([]));
+    assert_eq!(resp["result"]["items"][0]["text"], "hello");
+    assert!(resp["result"]["requestId"].as_str().is_some());
 }
 
 /// navigator/reflexShown is accepted and logged as a reflex_shown record.
@@ -676,8 +773,8 @@ async fn reflex_shown_is_logged() {
     assert!(records.contains("\"shown_at_ms\":1759000000123"));
 }
 
-/// Trigger records carry the full replay fields (run_id, version,
-/// prefilter, delivered outcome) even in the prototype commenter path.
+/// Trigger records carry all pipeline-era replay fields as well as the
+/// requested and delivered outcome.
 #[tokio::test(start_paused = true)]
 async fn trigger_records_carry_replay_fields() {
     let mock = MockCommenter::new(vec![Answer::Remark(1, "careful")]);
@@ -708,7 +805,10 @@ async fn trigger_records_carry_replay_fields() {
     assert_eq!(trigger["requested_action"], "remark");
     assert_eq!(trigger["delivered"], "remark");
     assert!(trigger["remark_id"].as_str().is_some());
-    // Pipeline-era fields stay absent until a decision pipeline runs.
-    assert!(trigger.get("pipeline_hash").is_none());
-    assert!(trigger.get("answers").is_none());
+    assert!(trigger["pipeline_hash"].as_str().is_some());
+    assert!(trigger["template_inputs"].is_object());
+    assert!(trigger["rendered_state"].as_str().is_some());
+    assert!(trigger["questions"].is_object());
+    assert!(trigger["answers"].is_object());
+    assert_eq!(trigger["branch"], 1);
 }

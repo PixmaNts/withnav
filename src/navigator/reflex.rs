@@ -43,7 +43,9 @@ fn line_comment_prefix(language_id: &str) -> &'static str {
     match language_id {
         "rust" | "swift" | "kotlin" | "go" | "java" | "scala" | "c" | "cpp" | "javascript"
         | "typescript" | "json" | "css" | "scss" | "php" | "zig" => "//",
-        "python" | "ruby" | "shellscript" | "bash" | "yaml" | "toml" | "perl" | "r" | "elixir" => "#",
+        "python" | "ruby" | "shellscript" | "bash" | "yaml" | "toml" | "perl" | "r" | "elixir" => {
+            "#"
+        }
         "lua" | "sql" => "--",
         "erlang" => "%",
         "html" | "xml" | "markdown" | "plaintext" => "<!--",
@@ -127,11 +129,7 @@ pub fn utf16_position_to_offset(text: &str, line: u32, character: u32) -> Option
             let in_line = char_utf16_to_byte_offset(l, character as usize)?;
             // Byte offset of the line start: sum of the preceding lines
             // plus their newlines.
-            let line_start: usize = text
-                .lines()
-                .take(i)
-                .map(|prev| prev.len() + 1)
-                .sum();
+            let line_start: usize = text.lines().take(i).map(|prev| prev.len() + 1).sum();
             return Some(line_start + in_line);
         }
     }
@@ -296,14 +294,8 @@ impl ReflexService {
         {
             let per_doc = self.per_document.lock().await;
             if let Some(entry) = per_doc.get(uri) {
-                let is_latest = entry
-                    .cancel
-                    .as_ref()
-                    .is_some_and(|t| !t.is_cancelled());
-                let same_version = entry
-                    .pending
-                    .map(|(v, _)| v == version)
-                    .unwrap_or(false);
+                let is_latest = entry.cancel.as_ref().is_some_and(|t| !t.is_cancelled());
+                let same_version = entry.pending.map(|(v, _)| v == version).unwrap_or(false);
                 if !is_latest || !same_version {
                     return Err(SuggestOutcome::StaleVersion);
                 }
@@ -330,6 +322,7 @@ impl ReflexService {
 pub fn to_result(suggestion: &Suggestion) -> InlineCompletionResult {
     InlineCompletionResult {
         items: vec![suggestion.item.clone()],
+        request_id: Some(suggestion.request_id.clone()),
     }
 }
 
@@ -441,10 +434,19 @@ mod tests {
 
     #[test]
     fn end_position_advances_lines_and_utf16_units() {
-        let start = Position { line: 2, character: 4 };
+        let start = Position {
+            line: 2,
+            character: 4,
+        };
         // "ab\n😀x": after the newline the character resets; 😀 counts two
         // UTF-16 units, x one: final character = 3.
         let end = end_position(start, "ab\n😀x");
-        assert_eq!(end, Position { line: 3, character: 3 });
+        assert_eq!(
+            end,
+            Position {
+                line: 3,
+                character: 3
+            }
+        );
     }
 }

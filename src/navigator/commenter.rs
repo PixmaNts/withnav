@@ -21,6 +21,8 @@ pub struct RemarkContext {
     pub diagnostics: Vec<Diag>,
     /// The user's current free-text goal, if any.
     pub intent: Option<String>,
+    /// Pipeline-selected metacognition prompt, already template-rendered.
+    pub prompt: Option<String>,
 }
 
 /// A compiler/editor diagnostic forwarded by the extension.
@@ -47,6 +49,7 @@ impl RemarkContext {
             text_excerpt: text_around_changes(baseline, current, 20),
             diagnostics,
             intent,
+            prompt: None,
         }
     }
 }
@@ -197,6 +200,11 @@ impl LlmCommenter {
         }
     }
 
+    /// The model identifier sent on the wire (for the call records).
+    pub fn model_id(&self) -> &str {
+        &self.resolved.model.model
+    }
+
     fn build_user_message(&self, ctx: &RemarkContext) -> String {
         let mut m = String::new();
         m.push_str(&format!(
@@ -235,14 +243,74 @@ impl Commenter for LlmCommenter {
         Box::pin(async move {
             use crate::provider::openai::{build_request, ChatMessage, ChatRequest};
             use crate::provider::{start_and_consume, StreamDelta};
-            use crate::navigator::commenter::{parse_answer, ParsedAnswer, MALFORMED_PREFIX};
-
+            let system = ctx
+                .prompt
+                .as_deref()
+                .filter(|prompt| !prompt.trim().is_empty())
+                .map(|prompt| format!("{NAVIGATOR_SYSTEM_PROMPT}\n\n{prompt}"))
+                .unwrap_or_else(|| NAVIGATOR_SYSTEM_PROMPT.to_string());
             let request = ChatRequest {
                 model: self.resolved.model.model.clone(),
                 messages: vec![
-                    ChatMessage::System {
-                        content: NAVIGATOR_SYSTEM_PROMPT.to_string(),
+                    ChatMessage::System { content: system },
+                    ChatMessage::User {
+                        content: self.build_user_message(ctx),
                     },
+                ],
+                tools: Vec::new(),
+                stream: true,
+                stream_options: Some(crate::provider::openai::StreamOptions {
+                    include_usage: true,
+                }),
+                max_tokens: self.resolved.model.max_output_tokens.min(Some(1024)),
+                temperature: Some(0.2),
+            };
+            let client = self
+                .clients
+                .get(&self.resolved.provider_name, &self.resolved.provider)
+                .map_err(|e| e.to_string())?;
+            let http = build_request(&client, &self.resolved.provider, &self.api_key, &request);
+            let response = http.send().await.map_err(|e| format!("http: {e}"))?;
+            let mut noop = |_d: StreamDelta| {};
+            let message = start_and_consume(response, cancel, &mut noop)
+                .await
+                .map_err(|e| e.to_string())?;
+            match parse_answer(&message.text) {
+                ParsedAnswer::Remark(remark) => Ok(Some(remark)),
+                ParsedAnswer::Silent => Ok(None),
+                ParsedAnswer::Malformed => {
+                    tracing::warn!(raw = %message.text, "navigator: model answer violates the prompt contract");
+                    Err(format!("{MALFORMED_PREFIX}{}", message.text))
+                }
+            }
+        })
+    }
+}
+
+impl LlmCommenter {
+    /// The prompted remark: the pipeline branch prompt (rendered from the
+    /// templates) frames the metacognition; an empty prompt keeps the
+    /// prototype's framing only.
+    pub fn remark_with_prompt<'a>(
+        &'a self,
+        ctx: &'a RemarkContext,
+        branch_prompt: &'a str,
+        cancel: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Remark>, String>> + Send + 'a>> {
+        Box::pin(async move {
+            use crate::navigator::commenter::{parse_answer, ParsedAnswer, MALFORMED_PREFIX};
+            use crate::provider::openai::{build_request, ChatMessage, ChatRequest};
+            use crate::provider::{start_and_consume, StreamDelta};
+
+            let system = if branch_prompt.trim().is_empty() {
+                NAVIGATOR_SYSTEM_PROMPT.to_string()
+            } else {
+                format!("{NAVIGATOR_SYSTEM_PROMPT}\n\n{branch_prompt}")
+            };
+            let request = ChatRequest {
+                model: self.resolved.model.model.clone(),
+                messages: vec![
+                    ChatMessage::System { content: system },
                     ChatMessage::User {
                         content: self.build_user_message(ctx),
                     },
@@ -305,21 +373,33 @@ mod tests {
 
     #[test]
     fn garbage_is_malformed_not_silence() {
-        assert_eq!(parse_answer("I think you should refactor this"), ParsedAnswer::Malformed);
+        assert_eq!(
+            parse_answer("I think you should refactor this"),
+            ParsedAnswer::Malformed
+        );
         assert_eq!(parse_answer(""), ParsedAnswer::Silent);
     }
 
     #[test]
     fn json_without_silent_or_line_is_malformed() {
-        assert_eq!(parse_answer(r#"{"silent": false}"#), ParsedAnswer::Malformed);
+        assert_eq!(
+            parse_answer(r#"{"silent": false}"#),
+            ParsedAnswer::Malformed
+        );
         assert_eq!(parse_answer(r#"{"other": 1}"#), ParsedAnswer::Malformed);
     }
 
     #[test]
     fn parse_model_answer_folds_malformed_to_silence() {
         assert_eq!(parse_answer("nope"), ParsedAnswer::Malformed);
-        assert_eq!(parse_answer(r#"{"line": 0, "text": "x"}"#), ParsedAnswer::Malformed);
-        assert_eq!(parse_answer(r#"{"line": 1, "text": "  "}"#), ParsedAnswer::Malformed);
+        assert_eq!(
+            parse_answer(r#"{"line": 0, "text": "x"}"#),
+            ParsedAnswer::Malformed
+        );
+        assert_eq!(
+            parse_answer(r#"{"line": 1, "text": "  "}"#),
+            ParsedAnswer::Malformed
+        );
     }
 
     #[test]
@@ -327,7 +407,10 @@ mod tests {
         let raw = "```json\n{\"line\": 3, \"text\": \"off by one\"}\n```";
         assert_eq!(
             parse_answer(raw),
-            ParsedAnswer::Remark(Remark { line: 2, text: "off by one".to_string() })
+            ParsedAnswer::Remark(Remark {
+                line: 2,
+                text: "off by one".to_string()
+            })
         );
     }
 
@@ -336,7 +419,10 @@ mod tests {
         let raw = "Here is my answer:\n{\"line\": 7, \"text\": \"edge case\"}\nHope it helps";
         assert_eq!(
             parse_answer(raw),
-            ParsedAnswer::Remark(Remark { line: 6, text: "edge case".to_string() })
+            ParsedAnswer::Remark(Remark {
+                line: 6,
+                text: "edge case".to_string()
+            })
         );
     }
 

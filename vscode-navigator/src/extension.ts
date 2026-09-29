@@ -20,6 +20,7 @@ import {
   StatusNotification,
   Verdict,
 } from "./protocol";
+import { registerReflex } from "./reflex";
 
 const MARKER = "◆ ";
 const MAX_INLINE = 120;
@@ -45,8 +46,11 @@ let stateMessage: string | undefined;
 let remarks = new Map<string, ActiveRemark>();
 let lastRemark: ActiveRemark | undefined;
 let diagnosticsTimers = new Map<string, ReturnType<typeof setTimeout>>();
+let reflexContext: vscode.ExtensionContext | undefined;
+let reflexDisposables: vscode.Disposable[] = [];
 
 export function activate(_context: vscode.ExtensionContext) {
+  reflexContext = _context;
   decorationType = vscode.window.createTextEditorDecorationType({
     after: {
       margin: "0 0 0 2em",
@@ -91,6 +95,7 @@ export function activate(_context: vscode.ExtensionContext) {
 }
 
 export function deactivate(): Thenable<void> | undefined {
+  // Stop inline completions before the language client shuts down.
   clearAllRemarks();
   statusItem.dispose();
   decorationType.dispose();
@@ -150,6 +155,10 @@ async function startClient(): Promise<void> {
     state = "idle";
     stateMessage = undefined;
     refreshStatusBar();
+    if (reflexContext) {
+      reflexDisposables = registerReflex(newClient);
+      reflexContext.subscriptions.push(...reflexDisposables);
+    }
   } catch (err) {
     clientStartFailed = true;
     state = "error";
@@ -162,6 +171,10 @@ async function stopClient(): Promise<void> {
   const current = client;
   client = undefined;
   clientServerPath = undefined;
+  for (const disposable of reflexDisposables) {
+    disposable.dispose();
+  }
+  reflexDisposables = [];
   if (current) {
     await current.stop(2000).catch(() => undefined);
   }

@@ -77,6 +77,7 @@ export interface InlineCompletionItem {
 
 export interface InlineCompletionResult {
   items: InlineCompletionItem[];
+  requestId?: string;
 }
 
 export interface ReflexShownParams {

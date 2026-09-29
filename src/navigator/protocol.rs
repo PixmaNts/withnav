@@ -98,6 +98,11 @@ pub struct Position {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InlineCompletionResult {
     pub items: Vec<InlineCompletionItem>,
+    /// The reflex call's id, echoed back in `navigator/reflexShown` so the
+    /// log can join the model call with its display. Absent when no
+    /// suggestion was produced.
+    #[serde(default, rename = "requestId", skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 /// Client -> server: the extension reporting that a suggestion was
@@ -199,10 +204,17 @@ mod tests {
             items: vec![InlineCompletionItem {
                 text: "world".into(),
                 range: Range {
-                    start: Position { line: 0, character: 6 },
-                    end: Position { line: 0, character: 6 },
+                    start: Position {
+                        line: 0,
+                        character: 6,
+                    },
+                    end: Position {
+                        line: 0,
+                        character: 6,
+                    },
                 },
             }],
+            request_id: Some("t1".into()),
         };
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(
@@ -214,21 +226,23 @@ mod tests {
                         "start": {"line": 0, "character": 6},
                         "end": {"line": 0, "character": 6}
                     }
-                }]
+                }],
+                "requestId": "t1"
             })
         );
         let back: InlineCompletionResult = serde_json::from_value(v).unwrap();
         assert_eq!(back.items.len(), 1);
         assert_eq!(back.items[0].text, "world");
+        assert_eq!(back.request_id.as_deref(), Some("t1"));
     }
 
     #[test]
     fn empty_inline_completion_result_is_an_empty_items_array() {
-        let r = InlineCompletionResult { items: Vec::new() };
-        assert_eq!(
-            serde_json::to_string(&r).unwrap(),
-            r#"{"items":[]}"#
-        );
+        let r = InlineCompletionResult {
+            items: Vec::new(),
+            request_id: None,
+        };
+        assert_eq!(serde_json::to_string(&r).unwrap(), r#"{"items":[]}"#);
     }
 
     #[test]

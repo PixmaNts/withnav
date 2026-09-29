@@ -1,0 +1,81 @@
+{
+  "request": {
+    "model": "typesafe/jev-1.13",
+    "state": "Intent: add retry with backoff to the HTTP client.\nDiff:\n+    let resp = client.get(url).send().await.unwrap();\n+    // TODO retry",
+    "questions": {
+      "worth_attention": {
+        "type": "noul",
+        "instructions": "Does this change deserve a remark from a senior pair programmer?"
+      },
+      "route": {
+        "type": "choice",
+        "instructions": "Who should handle this?",
+        "criteria": {
+          "silent": "Nothing worth saying",
+          "metacognition": "A short local remark on the code",
+          "cognition": "A deeper discussion about design or intent"
+        }
+      },
+      "severity": {
+        "type": "score",
+        "instructions": "How serious is the issue in this change?",
+        "criteria": [
+          "none",
+          "minor",
+          "moderate",
+          "major"
+        ]
+      },
+      "drift": {
+        "type": "noul",
+        "instructions": "Does the code drift away from the stated intent?"
+      }
+    }
+  },
+  "response": {
+    "model": "typesafe/jev-1.13-20260917",
+    "answers": {
+      "worth_attention": {
+        "type": "noul",
+        "noul": 0.8
+      },
+      "route": {
+        "type": "choice",
+        "choice": "cognition",
+        "probabilities": {
+          "metacognition": 0.45,
+          "cognition": 0.51,
+          "silent": 0.04
+        },
+        "confidence": 0.27
+      },
+      "severity": {
+        "type": "score",
+        "score": 1.56,
+        "legend": {
+          "0": "none",
+          "1": "minor",
+          "2": "moderate",
+          "3": "major"
+        },
+        "probabilities": {
+          "0": 0.14,
+          "1": 0.35,
+          "2": 0.31,
+          "3": 0.2
+        },
+        "confidence": 0.16
+      },
+      "drift": {
+        "type": "noul",
+        "noul": 0.54
+      }
+    },
+    "usage": {
+      "input_tokens": 454,
+      "output_tokens": 96,
+      "cost": 1.9068e-05
+    },
+    "provider": "TypeSafe"
+  }
+}

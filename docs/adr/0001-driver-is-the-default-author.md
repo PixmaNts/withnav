@@ -16,5 +16,7 @@ request, applied once the driver accepts it.
 
 ## Consequences
 
-The cognition's toolset keeps write tools, but their output is routed to the driver as a proposal
-instead of being applied directly.
+The cognition has no direct write tool: `write` and `edit` become a `propose` tool whose diff is
+applied only when the driver accepts it, and `bash` is withheld because it can write files behind
+that mechanism (filtering commands is not a reliable guard). The one autonomous write is the intent
+record: it is the navigator's working memory, not code, and the driver can read and revert it.

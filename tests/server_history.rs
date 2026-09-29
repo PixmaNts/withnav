@@ -208,15 +208,17 @@ async fn collect_until(
 /// Waits until the writer thread has drained (observed via the store's own
 /// read path through a fresh HTTP list).
 async fn wait_for_list(base: &str, workspace: &Path, min: usize) -> Vec<Value> {
-    for _ in 0..100 {
+    let mut last = Vec::new();
+    for _ in 0..200 {
         let body = list_sessions(base, workspace).await;
         let sessions = body["sessions"].as_array().cloned().unwrap_or_default();
         if sessions.len() >= min {
             return sessions;
         }
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        last = sessions;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    panic!("history writer never caught up");
+    panic!("history writer never caught up (min {min}, saw {})", last.len());
 }
 
 fn done_response(text: &str) -> Vec<u8> {

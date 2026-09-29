@@ -1,0 +1,37 @@
+# Candidate pipeline for the replay tests: the built-in shape with a shorter
+# cooldown, so the save that came 4.2 s after a remark would have reached the
+# instinct. The log holds no answers for it, which is the point: the replay
+# does not re-simulate the history that never happened.
+[instinct]
+model = "instinct"
+
+[[trigger]]
+on = ["save", "idle"]
+state = "prompts/state.md"
+prefilter = { min_changed_lines = 3, cooldown_ms = 1000 }
+
+[trigger.questions.worth_attention]
+type = "noul"
+instructions = "Does this change deserve a remark from a senior pair programmer?"
+
+[trigger.questions.route]
+type = "choice"
+instructions = "Who should handle this?"
+criteria = { silent = "Nothing worth saying", metacognition = "A short local remark on the code", cognition = "A deeper discussion about design or intent" }
+
+[trigger.questions.drift]
+type = "noul"
+instructions = "Does the code drift away from the stated intent?"
+
+[[trigger.branch]]
+when = "has_intent && drift > 0.8"
+action = "wake_cognition"
+
+[[trigger.branch]]
+when = "worth_attention > 0.7"
+action = "remark"
+prompt = "prompts/remark.md"
+
+[[trigger.branch]]
+when = "true"
+action = "silent"

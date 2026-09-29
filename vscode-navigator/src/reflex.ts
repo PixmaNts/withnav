@@ -18,27 +18,36 @@ const reflexEnabled = () =>
  * to type dismisses them. Returning an empty list hides the ghost text.
  */
 export function registerReflex(client: LanguageClient): vscode.Disposable[] {
-  const timers = new Map<string, ReturnType<typeof setTimeout>>();
+  const timers = new Map<
+    string,
+    { timer: ReturnType<typeof setTimeout>; resolve: (fire: boolean) => void }
+  >();
 
   const provider: vscode.InlineCompletionItemProvider = {
-    provideInlineCompletionItems: async (document, position, _token, _ctx) => {
+    provideInlineCompletionItems: async (document, position, _context, token) => {
       if (!reflexEnabled()) {
         return { items: [] };
       }
       const uri = document.uri.toString();
 
-      // Debounce: the last keystroke wins; a superseded timer is dropped.
+      // Debounce: the last keystroke wins. A superseded request resolves to
+      // "do not fire" instead of hanging forever.
       const pending = timers.get(uri);
       if (pending) {
-        clearTimeout(pending);
+        clearTimeout(pending.timer);
+        pending.resolve(false);
       }
-      await new Promise<boolean>((resolve) => {
-        timers.set(uri, setTimeout(() => resolve(true), DEBOUNCE_MS));
+      const fire = await new Promise<boolean>((resolve) => {
+        const entry = {
+          timer: setTimeout(() => {
+            timers.delete(uri);
+            resolve(true);
+          }, DEBOUNCE_MS),
+          resolve,
+        };
+        timers.set(uri, entry);
       });
-      if (timers.get(uri)) {
-        timers.delete(uri);
-      }
-      if (!reflexEnabled()) {
+      if (!fire || token.isCancellationRequested || !reflexEnabled()) {
         return { items: [] };
       }
 
@@ -80,10 +89,13 @@ export function registerReflex(client: LanguageClient): vscode.Disposable[] {
 
       return {
         items: result.items.map((item) => {
-          const range = new vscode.Range(
-            new vscode.Position(item.range.start.line, item.range.start.character),
-            new vscode.Position(item.range.end.line, item.range.end.character),
-          );
+          // An inline completion's range is the EXISTING text it replaces.
+          // A fill-in-the-middle suggestion inserts at the cursor and replaces
+          // nothing, so the range is empty. The server's range spans the
+          // inserted text instead, and VS Code silently dropped every
+          // suggestion whose range did not start with the typed text
+          // (observed 2026-09-29: 118 suggestions sent, none displayed).
+          const range = new vscode.Range(position, position);
           const completion = new vscode.InlineCompletionItem(item.text, range);
           // Kept for the handleInlineCompletionItemAccepted hook.
           (completion as unknown as { requestId?: string }).requestId = requestId;

@@ -43,7 +43,7 @@ use ulid::Ulid;
 
 use crate::agent::actor::AgentActor;
 use crate::bus::command::Command;
-use crate::bus::event::{EventKind, SessionStart, ROOT_ACTOR_ID};
+use crate::bus::event::{EventEnvelope, EventKind, SessionStart, ROOT_ACTOR_ID};
 use crate::bus::inbox::ActorInbox;
 use crate::bus::runtime;
 use crate::bus::sequencer::{Candidate, Sequencer};
@@ -116,11 +116,12 @@ impl std::fmt::Debug for SessionHandle {
     }
 }
 
-/// A closed session's retained record (P1-3 tombstone). Holds ONLY what a
-/// late GET needs — NO `inbox_tx`, NO `Sequencer`, NO cancellation token:
-/// the routing resources are released when the live slot is replaced. Ring
-/// retention for reconnect-after-final_seq is todo 8 (see the module-level
-/// DEFERRAL note).
+/// A closed session's retained record (its tombstone). Holds what a late
+/// GET needs PLUS the frozen durable-history snapshot (for a reconnect
+/// after `final_seq`): a streaming route replays `retained` through
+/// `final_seq` then ends cleanly. No `inbox_tx`, no `Sequencer`, no
+/// cancellation token: the routing resources are released when the live
+/// slot is replaced.
 #[derive(Clone, Debug)]
 pub struct Tombstone {
     /// The session's last seq: the head observed at close time — the same
@@ -131,6 +132,14 @@ pub struct Tombstone {
     pub final_seq: u64,
     pub workspace: PathBuf,
     pub model: String,
+    /// Durable envelopes retained at close time, ending at `session.end`.
+    /// `None` when the ring was already past [`RING_CAP`] (eviction) — a
+    /// snapshot without its evicted prefix cannot answer a fresh (no-cursor)
+    /// reconnect without silently hiding events, so replay is refused.
+    pub retained: Option<Vec<EventEnvelope>>,
+    /// The evicted-durable watermark at close time: durable seqs
+    /// `<= resume_floor` are unreplayable from this tombstone.
+    pub resume_floor: Option<u64>,
 }
 
 /// One registry slot: a live, routable session OR a closed tombstone.
@@ -422,6 +431,7 @@ impl AppState {
         // Tail probe BEFORE the cancel: survives even with no external
         // subscriber and anchors the tombstone's final_seq on the real tail.
         let tail = handle.sequencer.subscribe_since(None).await.ok();
+        let tail_resume_floor = tail.as_ref().and_then(|reply| reply.resume_floor);
         handle.session_cancel.cancel();
         drop(handle.inbox_tx);
 
@@ -467,47 +477,77 @@ impl AppState {
         // authoritatively from the backstop fence's reply, else read off the
         // terminal tail the runtime produced (its session.end is the last
         // envelope the probe delivered).
-        let final_seq = match fenced_seq {
-            Some(seq) => seq,
-            None => self.final_seq_from_tail(tail).await,
+        let fenced = fenced_seq.map(|seq| (seq, None));
+        let (final_seq, collected_tail) = match fenced {
+            Some((seq, collected)) => (seq, collected),
+            None => {
+                let (seq, collected) = Self::collect_tail_through_session_end(tail).await;
+                (seq, Some(collected))
+            }
         };
 
+        let retained = match collected_tail {
+            // The runtime fenced the session: the tail probe carries the
+            // full durable history through session.end — freeze it.
+            Some(collected) => collected,
+            // The MANAGER fired the backstop fence (wedged/aborted runtime):
+            // the probe cannot have seen session.end from the fence, so
+            // re-subscribe to the now-closed session's retained ring.
+            None => {
+                let fresh = handle.sequencer.subscribe_since(None).await.ok();
+                Self::collect_tail_through_session_end(fresh).await.1
+            }
+        };
         self.retain_tombstone(
             id,
             Tombstone {
                 final_seq,
                 workspace: handle.workspace.clone(),
                 model: handle.model.clone(),
+                retained,
+                resume_floor: tail_resume_floor,
             },
         );
     }
 
-    /// The seq the fence assigned to `session.end` when the RUNTIME fired
-    /// it: the last event of the pre-cancel tail probe (its `session.end` is
-    /// the final envelope), else a fresh subscribe replaying the closed
-    /// session's retained ring. The tombstone never records a pre-fence
-    /// estimate.
-    async fn final_seq_from_tail(&self, mut tail: Option<crate::bus::SubscribeReply>) -> u64 {
-        let Some(reply) = tail.as_mut() else {
-            return 0;
+    /// The durable tail of a closing session: replay + live envelopes up to and
+    /// including `session.end`, with the seq it landed on. The single collection
+    /// the tombstone derives BOTH `final_seq` (runtime-fenced path) and the
+    /// frozen `retained` snapshot from — the live receiver is consumed exactly
+    /// once. `None` when the ring had already evicted (a partial snapshot must
+    /// not masquerade as complete) or the tail never reached `session.end`.
+    async fn collect_tail_through_session_end(
+        tail: Option<crate::bus::SubscribeReply>,
+    ) -> (u64, Option<Vec<EventEnvelope>>) {
+        let Some(mut reply) = tail else {
+            return (0, None);
         };
-        let mut last = 0u64;
-        if let crate::bus::ResumeOutcome::Replay(replay) = &reply.replay {
-            last = replay.last().map(|e| e.seq).unwrap_or(0);
-        }
-        // Take the receiver so we can await: the runtime handle resolving
-        // only proves the fence was QUEUED (the sequencer task fans the
-        // envelope out asynchronously), so drain until session.end lands.
+        let resume_floor = reply.resume_floor;
+        let mut envelopes = match reply.replay {
+            crate::bus::ResumeOutcome::Replay(events) => events,
+            crate::bus::ResumeOutcome::Resync | crate::bus::ResumeOutcome::InvalidCursor => {
+                return (0, None);
+            }
+        };
+        let mut last = envelopes.last().map(|e| e.seq).unwrap_or(0);
         if let Some(mut live) = reply.live.take() {
             while let Ok(Some(env)) = tokio::time::timeout(TEARDOWN_AWAIT_CAP, live.recv()).await {
                 let is_end = env.kind.as_str() == "session.end";
                 last = last.max(env.seq);
+                envelopes.push(env);
                 if is_end {
                     break;
                 }
             }
         }
-        last
+        if resume_floor.is_some()
+            || !envelopes
+                .last()
+                .is_some_and(|env| env.kind.as_str() == "session.end")
+        {
+            return (last, None);
+        }
+        (last, Some(envelopes))
     }
 
     /// Marks a live session `Stopping` under the registry lock.
@@ -745,6 +785,8 @@ mod tests {
                     final_seq: i as u64,
                     workspace: PathBuf::from("/w"),
                     model: "m".to_string(),
+                    retained: None,
+                    resume_floor: None,
                 },
             );
         }

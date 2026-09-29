@@ -446,15 +446,23 @@ async fn future_cursor_yields_resync_control_frame() {
     );
 }
 
-// ---- (e) reconnect-after-stop replays nothing and terminates (no 404/hang) ----
+// ---- (e) reconnect-after-stop replays through final_seq then terminates
+//         (no 404 mid-race, no hang) ----
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reconnect_after_stop_terminates_cleanly() {
+async fn reconnect_after_stop_replays_through_final_seq_then_terminates() {
     let done = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
     let server = spawn_test_server(vec![http_sse(&sse_body(&[done]))]).await;
     let id = create_session(&server.base, &server.ws).await;
 
-    // Stop the session -> it becomes a tombstone.
+    // Observe the live history first so the expected replay set is grounded
+    // in what actually happened (not a guess about teardown timing).
+    let base = server.base.clone();
+    let id2 = id.clone();
+    let reader = tokio::spawn(async move { read_sse_frames(&base, &id2, None, 2500).await });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    post_message(&server.base, &id, "go").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
     let stop = reqwest::Client::new()
         .post(format!("{}/v1/sessions/{id}/stop", server.base))
         .send()
@@ -462,17 +470,62 @@ async fn reconnect_after_stop_terminates_cleanly() {
         .expect("stop");
     assert_eq!(stop.status(), 200);
 
-    // GET /events on a stopped session: 200 stream that ends with a clean
-    // server EOF (not a 404, not a client-budget timeout, not a hang).
-    let read = read_sse(&server.base, &id, None, 3000).await;
-    assert_eq!(
-        read.end,
-        SseEnd::Eof,
-        "stopped-session SSE ends with a clean server EOF, not a timeout/error"
-    );
+    let live = reader.await.expect("reader");
+    let dur = |fs: &[SseFrame]| -> Vec<(u64, String)> {
+        fs.iter()
+            .filter_map(|f| Some((f.id?, kind_of(f)?)))
+            .filter(|(_, k)| k != "llm.delta")
+            .collect()
+    };
+    let expected = dur(&live);
     assert!(
-        read.frames.iter().all(|f| kind_of(f).is_none()),
-        "tombstone stream carries no live durable events"
+        !expected.is_empty(),
+        "observed a durable history: {expected:?}"
+    );
+
+    // GET /events on the tombstone: 200 (not 404), replays the durable
+    // history through final_seq (session.end LAST), then ends with a clean
+    // server EOF — not a client-budget timeout, not a hang.
+    let read = read_sse(&server.base, &id, None, 3000).await;
+    assert_eq!(read.end, SseEnd::Eof, "clean server EOF, not timeout/error");
+    let replayed = dur(&read.frames);
+    // Everything observed live is contained, in order (the observer's 2500ms
+    // budget can end before stop, so its tail is a prefix of the truth).
+    let mut it = replayed.iter();
+    for pair in &expected {
+        assert!(
+            it.any(|r| r == pair),
+            "tombstone replay missing/misordered {pair:?}: got {replayed:?}"
+        );
+    }
+    let seqs: Vec<u64> = replayed.iter().map(|(s, _)| *s).collect();
+    assert!(
+        seqs.windows(2).all(|w| w[1] > w[0]),
+        "tombstone replay is seq-ordered: {seqs:?}"
+    );
+    let last = replayed.last().expect("tombstone replayed something");
+    assert_eq!(
+        last.1, "session.end",
+        "session.end (final_seq) is the LAST replayed event: {replayed:?}"
+    );
+    let payload: Value = serde_json::from_str(
+        &read
+            .frames
+            .iter()
+            .rev()
+            .find(|f| kind_of(f).as_deref() == Some("session.end"))
+            .expect("session.end frame")
+            .data,
+    )
+    .expect("json");
+    assert_eq!(
+        last.0,
+        payload["seq"].as_u64().expect("seq"),
+        "last frame id == session.end seq"
+    );
+    assert_eq!(
+        last.0, payload["payload"]["final_seq"],
+        "final_seq == session.end seq"
     );
 }
 

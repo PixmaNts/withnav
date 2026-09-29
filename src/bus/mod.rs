@@ -56,6 +56,11 @@ pub enum ResumeOutcome {
 pub struct SubscribeReply {
     pub replay: ResumeOutcome,
     pub live: Option<mpsc::Receiver<EventEnvelope>>,
+    /// The evicted-durable watermark at handshake time (the resume floor):
+    /// durable seqs `<= resume_floor` are unreplayable. `None` while every
+    /// durable event is retained. The SSE tombstone snapshot
+    /// (reconnect after `final_seq`) consumes this to answer late cursors.
+    pub resume_floor: Option<u64>,
 }
 
 /// FIFO over the durable subsequence makes evicted durables exactly the
@@ -151,7 +156,11 @@ impl SessionBus {
             }
             _ => None,
         };
-        SubscribeReply { replay, live }
+        SubscribeReply {
+            replay,
+            live,
+            resume_floor: self.ring.last_evicted_durable_seq,
+        }
     }
 }
 

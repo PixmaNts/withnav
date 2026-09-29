@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { ChatBackend, HostToWebview } from "./chatProtocol";
+import { ChatBackend, ConversationSummary, HostToWebview } from "./chatProtocol";
 import type { ServerInfoParams } from "./protocol";
 
 /** One SSE frame off the event stream: the seq id plus the parsed envelope. */
@@ -39,20 +39,39 @@ export class CognitionBackend implements ChatBackend {
   private delivered = new Set<number>();
   private currentTurn?: string;
   private streaming = false;
+  /** Saved conversations of the workspace, newest first (last listing). */
+  private conversations: ConversationSummary[] = [];
+  /** A stopped conversation to resume on the next send (Stop keeps it). */
+  private resumeId?: string;
+  /** Cancels the SSE fetch of the running stream, if any. */
+  private streamAbort?: AbortController;
+  /** Bumped by every deliberate stream cancel: stale connects go quiet. */
+  private streamGeneration = 0;
+  /** Turn ids that received a live text delta (replayed turns get none). */
+  private turnTextDelta = new Set<string>();
 
   setServerInfo(info: ServerInfoParams): void {
     // A restart of the language server publishes a NEW endpoint: the old
-    // session and stream belong to a dead server, so drop them. The next
-    // send creates a fresh session against the new port.
-    if (this.endpoint && (this.endpoint.port !== info.port || this.endpoint.token !== info.token)) {
+    // session and stream belong to a dead server, so drop them and reopen
+    // the newest saved conversation against the new port.
+    const restarted =
+      !!this.endpoint && (this.endpoint.port !== info.port || this.endpoint.token !== info.token);
+    const first = !this.endpoint;
+    if (restarted) {
+      this.abortStream();
       this.session = undefined;
+      this.resumeId = undefined;
       this.lastSeq = undefined;
       this.delivered.clear();
       this.currentTurn = undefined;
       this.emit({ type: "status", state: "connecting" });
     }
     this.endpoint = info;
-    if (this.session) void this.connect();
+    if (this.session) {
+      void this.connect();
+      return;
+    }
+    if (first || restarted) void this.bootstrapConversations();
   }
 
   history(): HostToWebview[] {
@@ -62,6 +81,70 @@ export class CognitionBackend implements ChatBackend {
   subscribe(listener: (message: HostToWebview) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  currentConversationId(): string | undefined {
+    return this.session ?? this.resumeId;
+  }
+
+  async listConversations(): Promise<ConversationSummary[]> {
+    // Before the first announcement there is nothing to list; the bootstrap
+    // on the announcement pushes the real list.
+    if (!this.endpoint) {
+      this.emitConversations();
+      return [];
+    }
+    const body = await this.request(`/v1/sessions?${this.workspaceQuery()}`, { method: "GET" });
+    this.conversations = parseSessionList(body);
+    this.emitConversations();
+    return [...this.conversations];
+  }
+
+  async openConversation(id: string): Promise<void> {
+    if (!this.endpoint) await this.waitForEndpoint();
+    const summary = this.conversations.find((c) => c.id === id);
+    // Resume first: an unknown id (404) must leave the current view intact.
+    const created = await this.request("/v1/sessions", {
+      method: "POST",
+      body: JSON.stringify({ workspace: this.workspacePath(), profile: "navigator", resume: id }),
+    });
+    const sessionId = String(created?.session_id ?? "");
+    if (!sessionId) throw new Error("cognition server: resume returned no id");
+    // Stop streaming the previous conversation before switching.
+    this.abortStream();
+    this.resetTranscript();
+    this.session = sessionId;
+    this.resumeId = undefined;
+    this.emit({ type: "conversationOpened", id: sessionId, title: summary?.title ?? sessionId });
+    this.emit({ type: "history", items: [] });
+    this.emit({ type: "status", state: "ready" });
+    // No Last-Event-ID: the stored events replay the whole conversation.
+    void this.connect();
+    void this.listConversations().catch(() => undefined);
+  }
+
+  async newConversation(): Promise<void> {
+    // The previous conversation stays on disk; the next send creates fresh.
+    this.abortStream();
+    this.session = undefined;
+    this.resumeId = undefined;
+    this.resetTranscript();
+    this.emit({ type: "conversationOpened", title: "New conversation" });
+    this.emit({ type: "history", items: [] });
+    this.emit({ type: "status", state: "ready" });
+    this.emitConversations();
+  }
+
+  async deleteConversation(id: string): Promise<void> {
+    await this.request(`/v1/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+    this.conversations = this.conversations.filter((c) => c.id !== id);
+    if (this.session === id || this.resumeId === id) {
+      // The open conversation vanished: land in a fresh one (which pushes
+      // the updated list itself).
+      await this.newConversation();
+    } else {
+      this.emitConversations();
+    }
   }
 
   async send(text: string, context?: string): Promise<void> {
@@ -81,42 +164,85 @@ export class CognitionBackend implements ChatBackend {
     if (!this.session || !this.endpoint) return;
     const session = this.session;
     this.session = undefined;
-    this.lastSeq = undefined;
-    this.delivered.clear();
+    // A stopped session accepts no new messages on the same id, but the
+    // conversation survives: the next send resumes it under the same id,
+    // so keep the stream cursor to continue where this one ended.
+    this.resumeId = session;
     await this.request(`/v1/sessions/${session}/stop`, { method: "POST" });
-    // A stopped session accepts no messages; the next send starts fresh.
     this.emit({ type: "status", state: "ready" });
   }
 
   // ---- session lifecycle ----
 
-  private async ensureSession(): Promise<string> {
-    if (this.session) return this.session;
-    this.emit({ type: "status", state: "connecting" });
-    while (!this.endpoint) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-    const created = await this.request("/v1/sessions", {
-      method: "POST",
-      body: JSON.stringify({ workspace, profile: "navigator" }),
-    });
-    const sessionId = String(created?.session_id ?? "");
-    if (!sessionId) throw new Error("cognition server: create session returned no id");
-    this.session = sessionId;
-    this.delivered.clear();
-    this.emit({ type: "status", state: "ready" });
-    void this.connect();
-    return this.session;
+  private workspacePath(): string {
+    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
   }
 
-  // ---- SSE stream ----
+  private workspaceQuery(): string {
+    return `workspace=${encodeURIComponent(this.workspacePath())}`;
+  }
+
+  private waitForEndpoint(): Promise<void> {
+    if (this.endpoint) return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = setInterval(() => {
+        if (this.endpoint) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 100);
+    });
+  }
+
+  /** Lists the workspace's conversations and resumes the newest one, if any. */
+  private async bootstrapConversations(): Promise<void> {
+    try {
+      const body = await this.request(`/v1/sessions?${this.workspaceQuery()}`, { method: "GET" });
+      this.conversations = parseSessionList(body);
+      const newest = this.conversations[0];
+      if (newest) await this.openConversation(newest.id);
+      else this.emitConversations();
+    } catch {
+      // The endpoint announcement is our only trigger; if listing fails
+      // (e.g. a server without the history store), stay empty and calm.
+      this.emitConversations();
+    }
+  }
+
+  private emitConversations(): void {
+    this.emit({
+      type: "conversations",
+      items: [...this.conversations],
+      currentId: this.currentConversationId(),
+    });
+  }
+
+  /** Drops everything that described the previous conversation. */
+  private resetTranscript(): void {
+    this.transcript = [];
+    this.lastSeq = undefined;
+    this.delivered.clear();
+    this.currentTurn = undefined;
+    this.toolSummaries.clear();
+    this.turnTextDelta.clear();
+  }
+
+  /** Stops the SSE fetch of the running stream, if any. */
+  private abortStream(): void {
+    this.streamGeneration++;
+    this.streaming = false;
+    this.streamAbort?.abort();
+    this.streamAbort = undefined;
+  }
 
   private async connect(): Promise<void> {
     if (!this.endpoint || !this.session || this.streaming) return;
     this.streaming = true;
+    const generation = this.streamGeneration;
     const endpoint = this.endpoint;
     const session = this.session;
+    const abort = new AbortController();
+    this.streamAbort = abort;
     try {
       const headers: Record<string, string> = {
         authorization: `Bearer ${endpoint.token}`,
@@ -124,7 +250,7 @@ export class CognitionBackend implements ChatBackend {
       if (this.lastSeq !== undefined) headers["last-event-id"] = this.lastSeq;
       const response = await fetch(
         `http://127.0.0.1:${endpoint.port}/v1/sessions/${session}/events`,
-        { headers },
+        { headers, signal: abort.signal },
       );
       if (!response.ok || !response.body) {
         throw new Error(`event stream: HTTP ${response.status}`);
@@ -135,6 +261,8 @@ export class CognitionBackend implements ChatBackend {
       for (;;) {
         const part = await reader.read();
         if (part.done) break;
+        // A newer stream took over (open/new/delete): drop this one quietly.
+        if (generation !== this.streamGeneration) return;
         buffer += decoder.decode(part.value, { stream: true });
         let split: number;
         while ((split = buffer.indexOf("\n\n")) !== -1) {
@@ -144,14 +272,52 @@ export class CognitionBackend implements ChatBackend {
         }
       }
     } catch (error) {
-      this.emit({ type: "status", state: "error", message: this.errorText(error) });
+      // A deliberate cancel (open/new/delete) is not an error.
+      if (generation === this.streamGeneration && !isAbort(error)) {
+        this.emit({ type: "status", state: "error", message: this.errorText(error) });
+      }
     }
+    if (generation !== this.streamGeneration) return; // a newer stream took over
+    if (this.streamAbort === abort) this.streamAbort = undefined;
     this.streaming = false;
-    // The stream ended (server drain or drop): reconnect with the cursor,
-    // unless the session is gone (stop / server restart).
-    if (this.session === session) {
+    // The stream ended (server drain or drop): reconnect — resuming this
+    // session with the cursor, or picking up whatever session is current
+    // (a send after Stop may have created one while this drained), unless
+    // there is none (stop / new conversation / server restart).
+    if (this.session !== undefined) {
       setTimeout(() => void this.connect(), RECONNECT_DELAY_MS);
     }
+  }
+
+  private async ensureSession(): Promise<string> {
+    if (this.session) return this.session;
+    this.emit({ type: "status", state: "connecting" });
+    await this.waitForEndpoint();
+    const resume = this.resumeId;
+    const created = await this.request("/v1/sessions", {
+      method: "POST",
+      body: JSON.stringify(
+        resume
+          ? { workspace: this.workspacePath(), profile: "navigator", resume }
+          : { workspace: this.workspacePath(), profile: "navigator" },
+      ),
+    });
+    const sessionId = String(created?.session_id ?? "");
+    if (!sessionId) throw new Error("cognition server: create session returned no id");
+    this.session = sessionId;
+    this.resumeId = undefined;
+    if (!resume) {
+      // A brand-new session restarts its seq space. (On resume: same
+      // conversation, same seq space — keep the cursor and the delivered
+      // set so the resumed stream continues instead of replaying.)
+      this.lastSeq = undefined;
+      this.delivered.clear();
+      this.turnTextDelta.clear();
+    }
+    this.emit({ type: "status", state: "ready" });
+    void this.connect();
+    void this.listConversations().catch(() => undefined);
+    return this.session;
   }
 
   /** Parses one SSE frame: `id:`, optional `event:`, joined `data:` lines. */
@@ -219,12 +385,26 @@ export class CognitionBackend implements ChatBackend {
         const id = String(payload.turn_id ?? this.currentTurn ?? envelope.seq);
         const delta = payload.delta ?? {};
         if (delta.delta_type === "text") {
+          this.turnTextDelta.add(id);
           return { type: "delta", id, text: String(delta.text ?? "") };
         }
         if (delta.delta_type === "thinking") {
           return { type: "reasoning", id, text: String(delta.text ?? "") };
         }
         return undefined; // tool_call deltas ride the tool events instead
+      }
+      case "llm.response": {
+        // During a history replay no `llm.delta` arrives: a turn that got
+        // no live text renders its final message as one delta. Live turns
+        // (flagged above) must not be duplicated.
+        const id = String(payload.turn_id ?? this.currentTurn ?? envelope.seq);
+        const message = payload.message ?? {};
+        const text = typeof message.text === "string" ? message.text : "";
+        const thinking = typeof message.thinking === "string" ? message.thinking : "";
+        if (this.turnTextDelta.has(id)) return undefined;
+        if (!text && !thinking) return undefined;
+        if (thinking) this.emit({ type: "reasoning", id, text: thinking });
+        return text ? { type: "delta", id, text } : undefined;
       }
       case "tool.pre_call": {
         const id = this.currentTurn ?? String(envelope.seq);
@@ -277,7 +457,12 @@ export class CognitionBackend implements ChatBackend {
   private toolSummaries = new Map<string, string>();
 
   private emit(message: HostToWebview): void {
-    if (message.type !== "history") this.transcript.push(message);
+    // Conversation-list metadata is pushed, never replayed as transcript.
+    const ephemeral =
+      message.type === "history" ||
+      message.type === "conversations" ||
+      message.type === "conversationOpened";
+    if (!ephemeral) this.transcript.push(message);
     for (const listener of this.listeners) listener(message);
   }
 
@@ -310,18 +495,42 @@ export class CognitionBackend implements ChatBackend {
     }
     if (!response.ok) {
       let detail = `HTTP ${response.status}`;
-      try {
-        const body = await response.json();
-        if (body?.error) detail = String(body.error);
-      } catch {
-        /* keep the status-line detail */
+      if (response.status !== 204) {
+        try {
+          const body = await response.json();
+          if (body?.error) detail = String(body.error);
+        } catch {
+          /* keep the status-line detail */
+        }
       }
       const message = `cognition server: ${detail}`;
       this.emit({ type: "status", state: "error", message });
       throw new Error(message);
     }
-    return response.json();
+    // DELETE answers 204 and other routes may answer empty: undefined, not a
+    // JSON parse crash.
+    if (response.status === 204) return undefined;
+    const raw = await response.text();
+    return raw ? JSON.parse(raw) : undefined;
   }
+}
+
+/** A fetch aborted on purpose (open/new/delete switching streams). */
+function isAbort(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+/** Maps the wire session list onto the panel's ConversationSummary. */
+function parseSessionList(body: any): ConversationSummary[] {
+  const sessions = Array.isArray(body?.sessions) ? body.sessions : [];
+  return sessions
+    .filter((s: any) => s && typeof s.id === "string")
+    .map((s: any) => ({
+      id: s.id,
+      title: typeof s.title === "string" && s.title ? s.title : "Untitled conversation",
+      updatedAt: typeof s.updated_at === "string" ? s.updated_at : "",
+      messageCount: typeof s.message_count === "number" ? s.message_count : 0,
+    }));
 }
 
 /** The human line shown for a tool call: what it touched, capped short. */

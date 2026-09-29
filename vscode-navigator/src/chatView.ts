@@ -47,7 +47,15 @@ export function registerChatView(
 </html>`;
 
       // Driver messages lose their raw editor-context block and gain a chip label.
-      const post = (message: HostToWebview): void => { void webview.postMessage(presentMessage(message)); };
+      // The webview (re)loads with amnesia: remember the last conversation
+      // header pushes so `ready` can restore them before the transcript.
+      let lastConversationOpened: HostToWebview | undefined;
+      let lastConversations: HostToWebview | undefined;
+      const post = (message: HostToWebview): void => {
+        if (message.type === "conversationOpened") lastConversationOpened = message;
+        else if (message.type === "conversations") lastConversations = message;
+        void webview.postMessage(presentMessage(message));
+      };
       const unsubscribe = backend.subscribe(post);
 
       // Live preview of what the next message would carry.
@@ -66,6 +74,8 @@ export function registerChatView(
       const messageSubscription = webview.onDidReceiveMessage((message: WebviewToHost) => {
         switch (message?.type) {
           case "ready":
+            if (lastConversations) post(lastConversations);
+            if (lastConversationOpened) post(lastConversationOpened);
             post({ type: "history", items: backend.history() });
             pushContext();
             break;

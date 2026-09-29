@@ -20,6 +20,10 @@ struct Cli {
     /// Explicit path to models.json (default: workspace, then config dir).
     #[arg(long)]
     models: Option<PathBuf>,
+    /// Accepted and ignored: stdio is the only transport. vscode-languageclient
+    /// appends this flag when launched with `TransportKind.stdio`.
+    #[arg(long, hide = true)]
+    stdio: bool,
 }
 
 fn init_tracing_stderr() {

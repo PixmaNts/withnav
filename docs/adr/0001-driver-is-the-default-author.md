@@ -1,22 +1,23 @@
-# The driver is the default author of the code
+# The driver is the default author; the cognition assists unless asked to do the work
 
-The whole point of rust-agent is that the human keeps a mental model of their own codebase, which
-agentic "vibe coding" destroys: the agent writes everything, planning always misses something, and
-the early speed turns into long iteration loops. So no layer writes to a file on its own. The reflex
-offers suggestions the driver accepts keystroke by keystroke, the metacognition only produces
-remarks, and the cognition may produce code only as a proposal (a diff) on the driver's explicit
-request, applied once the driver accepts it.
+The point of rust-agent is that the human keeps a mental model of their own codebase, which agentic
+"vibe coding" destroys: the agent writes everything, planning always misses something, and the early
+speed turns into long iteration loops. The layers around the cognition exist to make pair
+programming possible, not to take capabilities away: the cognition stays a classic coding agent with
+its full toolset (`read`, `write`, `edit`, `bash`...). What changes is its role, set by the system
+prompt: by default it assists and guides the driver, who writes the code; when the driver explicitly
+asks it to do the work, it does it like any coding agent. The reflex only offers suggestions the
+driver accepts, and the metacognition only produces remarks.
 
 ## Considered Options
 
-- Driver only, no generated code beyond suggestions: rejected, generating pure plumbing on request
-  proved useful while building the first prototype.
-- Cognition writes freely, as in classic coding agents: rejected, it is exactly the workflow this
-  project exists to replace.
+- Hard restrictions (withholding `bash`, routing every write through an accept-this-diff mechanism):
+  rejected, it cripples a coding agent for builds, tests and exploration, and it forbids the
+  legitimate "do it for me" case. The driver is the one deciding when to delegate.
+- Cognition writes freely by default, as in classic coding agents: rejected, it is exactly the
+  workflow this project exists to replace as the default.
 
 ## Consequences
 
-The cognition has no direct write tool: `write` and `edit` become a `propose` tool whose diff is
-applied only when the driver accepts it, and `bash` is withheld because it can write files behind
-that mechanism (filtering commands is not a reliable guard). The one autonomous write is the intent
-record: it is the navigator's working memory, not code, and the driver can read and revert it.
+Authorship relies on the prompt and on the driver's review, not on a sandbox. The intent record is
+written by the cognition on its own: it is the navigator's working memory, not code.

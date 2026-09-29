@@ -48,10 +48,10 @@ A short, line-anchored comment from the metacognition, shown discreetly next to 
 changes the code.
 _Avoid_: hint, diagnostic, comment
 
-**Proposal**:
-A diff produced by the cognition on the driver's explicit request; it changes the code only once the
-driver accepts it.
-_Avoid_: edit, patch, write
+**Delegation**:
+The driver explicitly asking the cognition to do a piece of work itself instead of guiding them
+through it; without a delegation, the cognition assists and the driver writes the code.
+_Avoid_: autopilot, vibe mode
 
 **Verdict**:
 The driver's rating of a remark: useful, noise, or dismissed.

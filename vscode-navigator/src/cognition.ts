@@ -64,7 +64,7 @@ export class CognitionBackend implements ChatBackend {
     return () => this.listeners.delete(listener);
   }
 
-  async send(text: string): Promise<void> {
+  async send(text: string, context?: string): Promise<void> {
     // The driver's message arrives as `message.received` on the stream; do
     // NOT emit an optimistic copy here (that duplicated it).
     const session = await this.ensureSession();
@@ -72,7 +72,7 @@ export class CognitionBackend implements ChatBackend {
       method: "POST",
       body: JSON.stringify({
         target_actor_id: ROOT_ACTOR,
-        content: [{ type: "text", text }],
+        content: [{ type: "text", text: context ? `${text}\n\n${context}` : text }],
       }),
     });
   }

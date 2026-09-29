@@ -1,5 +1,8 @@
 import * as vscode from "vscode";
-import { CHAT_VIEW_ID, ChatBackend, WebviewToHost } from "./chatProtocol";
+import { CHAT_VIEW_ID, ChatBackend, HostToWebview, WebviewToHost } from "./chatProtocol";
+import { buildEditorContext, presentMessage } from "./editorContext";
+
+const CONTEXT_DEBOUNCE_MS = 200;
 
 export function registerChatView(
   context: vscode.ExtensionContext,
@@ -35,6 +38,7 @@ export function registerChatView(
     <form id="composer" class="composer">
       <label for="prompt" class="sr-only">Message Navigator</label>
       <textarea id="prompt" rows="2" placeholder="Message Navigator…" disabled></textarea>
+      <div class="context-row"><label class="context-toggle"><input type="checkbox" id="include-context" checked><span>Include editor context</span></label><span id="context-preview" class="context-chip" title="Attached to your next message">No editor open</span></div>
       <div class="composer-footer"><span class="hint">Enter to send · Shift+Enter for a line</span><div class="actions"><button type="button" id="stop" class="stop" hidden>Stop</button><button type="submit" id="send" disabled>Send <span aria-hidden="true">↗</span></button></div></div>
     </form>
   </div>
@@ -42,15 +46,35 @@ export function registerChatView(
 </body>
 </html>`;
 
-      const unsubscribe = backend.subscribe(message => { void webview.postMessage(message); });
+      // Driver messages lose their raw editor-context block and gain a chip label.
+      const post = (message: HostToWebview): void => { void webview.postMessage(presentMessage(message)); };
+      const unsubscribe = backend.subscribe(post);
+
+      // Live preview of what the next message would carry.
+      let contextTimer: ReturnType<typeof setTimeout> | undefined;
+      const pushContext = (): void => post({ type: "editorContext", label: buildEditorContext().label });
+      const scheduleContext = (): void => {
+        if (contextTimer) clearTimeout(contextTimer);
+        contextTimer = setTimeout(pushContext, CONTEXT_DEBOUNCE_MS);
+      };
+      const editorSubscriptions = [
+        vscode.window.onDidChangeActiveTextEditor(scheduleContext),
+        vscode.window.onDidChangeTextEditorSelection(scheduleContext),
+        vscode.window.onDidChangeVisibleTextEditors(scheduleContext),
+        vscode.window.tabGroups.onDidChangeTabs(scheduleContext),
+      ];
       const messageSubscription = webview.onDidReceiveMessage((message: WebviewToHost) => {
         switch (message?.type) {
           case "ready":
-            void webview.postMessage({ type: "history", items: backend.history() });
+            post({ type: "history", items: backend.history() });
+            pushContext();
             break;
           case "send":
             if (typeof message.text === "string" && message.text.trim()) {
-              void backend.send(message.text).catch(showError);
+              // Built at send time: the focused webview is not a text editor, so
+              // the active editor is still the one the driver last worked in.
+              const context = message.includeContext === false ? undefined : buildEditorContext().block;
+              void backend.send(message.text, context).catch(showError);
             }
             break;
           case "stop":
@@ -66,6 +90,8 @@ export function registerChatView(
       view.onDidDispose(() => {
         unsubscribe();
         messageSubscription.dispose();
+        if (contextTimer) clearTimeout(contextTimer);
+        for (const subscription of editorSubscriptions) subscription.dispose();
       });
     },
   });

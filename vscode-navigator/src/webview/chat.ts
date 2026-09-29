@@ -1,7 +1,8 @@
 /// <reference lib="dom" />
 import type { HostToWebview, WebviewToHost } from "../chatProtocol";
 
-declare function acquireVsCodeApi(): { postMessage(message: WebviewToHost): void };
+type ViewState = { includeContext?: boolean };
+declare function acquireVsCodeApi(): { postMessage(message: WebviewToHost): void; getState(): ViewState | undefined; setState(state: ViewState): void };
 const vscode = acquireVsCodeApi();
 const transcript = document.querySelector<HTMLElement>("#transcript")!;
 const empty = document.querySelector<HTMLElement>("#empty")!;
@@ -11,6 +12,9 @@ const form = document.querySelector<HTMLFormElement>("#composer")!;
 const prompt = document.querySelector<HTMLTextAreaElement>("#prompt")!;
 const send = document.querySelector<HTMLButtonElement>("#send")!;
 const stop = document.querySelector<HTMLButtonElement>("#stop")!;
+const includeContext = document.querySelector<HTMLInputElement>("#include-context")!;
+const contextPreview = document.querySelector<HTMLElement>("#context-preview")!;
+includeContext.checked = vscode.getState()?.includeContext ?? true;
 type Turn = { root: HTMLElement; content: HTMLElement; reasoning: HTMLElement; activity: HTMLElement; text: string; thoughts: string; calls: Map<string, HTMLElement> };
 const turns = new Map<string, Turn>();
 let state = "connecting";
@@ -50,12 +54,17 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
   return node;
 }
 
-function message(author: string, text: string): void {
+function message(author: string, text: string, context?: string): void {
   const root = el("article", `message ${author}`);
   root.append(el("div", "byline", author === "driver" ? pendingQuestion ? "You · Answer" : "You" : author === "cognition" ? "Cognition" : "Navigator"));
   const body = el("div", "message-body");
   renderMarkdown(body, text);
   root.append(body);
+  if (context) {
+    const chip = el("div", "context-chip sent", context);
+    chip.title = "Editor context sent with this message";
+    root.append(chip);
+  }
   add(root);
   if (pendingQuestion && author === "driver") pendingQuestion = false;
 }
@@ -124,7 +133,11 @@ function receive(event: HostToWebview): void {
       follow();
       break;
     case "status": setStatus(event.state, event.message); break;
-    case "message": message(event.author, event.text); break;
+    case "message": message(event.author, event.text, event.context); break;
+    case "editorContext":
+      contextPreview.textContent = event.label;
+      contextPreview.title = `Attached to your next message: ${event.label}`;
+      break;
     case "turnStart": turn(event.id); setStatus("busy"); break;
     case "delta": {
       const item = turn(event.id);
@@ -261,13 +274,21 @@ form.addEventListener("submit", event => {
   event.preventDefault();
   const text = prompt.value.trim();
   if (!text || prompt.disabled) return;
-  vscode.postMessage({ type: "send", text });
+  vscode.postMessage({ type: "send", text, includeContext: includeContext.checked });
   prompt.value = "";
   updateControls();
   stickToBottom = true;
   follow();
 });
 prompt.addEventListener("input", updateControls);
+function updateContextToggle(): void {
+  contextPreview.classList.toggle("off", !includeContext.checked);
+}
+includeContext.addEventListener("change", () => {
+  vscode.setState({ ...vscode.getState(), includeContext: includeContext.checked });
+  updateContextToggle();
+});
+updateContextToggle();
 prompt.addEventListener("keydown", event => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();

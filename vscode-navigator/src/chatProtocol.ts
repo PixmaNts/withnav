@@ -11,8 +11,10 @@ export type Author = "driver" | "cognition" | "navigator";
 /** Host -> webview messages. */
 export type HostToWebview =
   | { type: "status"; state: "connecting" | "ready" | "busy" | "error"; message?: string }
-  /** A message already complete when shown (the driver's own, or a navigator wake). */
-  | { type: "message"; id: string; author: Author; text: string }
+  /** A message already complete when shown (the driver's own, or a navigator wake).
+   *  `context` is the chip label of the editor context attached to a driver message;
+   *  `text` then holds the driver's own text only, without the raw block. */
+  | { type: "message"; id: string; author: Author; text: string; context?: string }
   /** The cognition starts answering; deltas for this id follow. */
   | { type: "turnStart"; id: string }
   /** Streamed answer text for the current turn, to append. */
@@ -25,6 +27,8 @@ export type HostToWebview =
   | { type: "turnEnd"; id: string; outcome: "done" | "stopped" | "error"; error?: string }
   /** The cognition asked the driver a question and waits for the next message as the answer. */
   | { type: "question"; id: string; text: string }
+  /** Live preview of the editor context the next message would carry (chip label). */
+  | { type: "editorContext"; label: string }
   /** Replace the whole transcript (sent when the view is (re)opened). */
   | { type: "history"; items: HostToWebview[] };
 
@@ -32,8 +36,8 @@ export type HostToWebview =
 export type WebviewToHost =
   /** The webview finished loading and wants the history. */
   | { type: "ready" }
-  /** The driver sends a message to the cognition. */
-  | { type: "send"; text: string }
+  /** The driver sends a message to the cognition; the host appends the editor context when asked. */
+  | { type: "send"; text: string; includeContext?: boolean }
   /** The driver interrupts the current turn. */
   | { type: "stop" }
   /** The driver opens a file mentioned in the chat. */
@@ -45,6 +49,7 @@ export interface ChatBackend {
   history(): HostToWebview[];
   /** Subscribe to live messages; returns an unsubscribe function. */
   subscribe(listener: (message: HostToWebview) => void): () => void;
-  send(text: string): Promise<void>;
+  /** `context` is an editor-context block appended after the driver's text. */
+  send(text: string, context?: string): Promise<void>;
   stop(): Promise<void>;
 }

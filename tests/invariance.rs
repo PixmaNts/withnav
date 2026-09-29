@@ -188,25 +188,37 @@ fn run_agent_body(src: &str) -> String {
 #[test]
 fn provider_change_is_only_the_send_bound_propagation() {
     let (added, deleted) = numstat("src/provider/mod.rs");
-    assert_eq!(
-        (added, deleted),
-        (3, 3),
-        "provider/mod.rs must change only the 3 +Send signature lines (got +{added}/-{deleted})"
-    );
     let diff = git(&["diff", BASELINE, "--", "src/provider/mod.rs"]);
-    // Every ADDED line is a `+ Send` widening of an on_delta signature; every
-    // REMOVED line is the corresponding non-Send signature. No logic lines.
+    let mut send_widenings = 0usize;
+    let mut mod_decls = 0usize;
+    // Every ADDED line is either a `+ Send` widening of an on_delta
+    // signature or a `pub mod` declaration; every REMOVED line is the
+    // corresponding non-Send signature. No logic lines.
     for line in diff.lines() {
         if let Some(added) = line.strip_prefix('+') {
             if added.starts_with("++") {
+                continue;
+            }
+            if added.trim_start().starts_with("pub mod ") && added.trim().ends_with(';') {
+                mod_decls += 1;
                 continue;
             }
             assert!(
                 added.contains("+ Send") && added.contains("FnMut(StreamDelta)"),
                 "unexpected added provider line (not a +Send widening): {added:?}"
             );
+            send_widenings += 1;
         }
     }
+    assert_eq!(
+        (send_widenings, deleted),
+        (3, 3),
+        "provider/mod.rs must change only the 3 +Send signature lines (got +{send_widenings}/-{deleted})"
+    );
+    assert!(
+        added as usize == send_widenings + mod_decls,
+        "unexpected extra additions in provider/mod.rs ({added} added, {send_widenings} widenings, {mod_decls} mod decls)"
+    );
 }
 
 /// `error.rs` may change ONLY additively (new BusError/ServerError variants +

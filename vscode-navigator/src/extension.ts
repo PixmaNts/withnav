@@ -78,6 +78,12 @@ export function activate(_context: vscode.ExtensionContext) {
     }
   });
 
+  // A remark is anchored to a line number: edits above it shift it, and an
+  // edit next to it means the driver is acting on it, so it is removed
+  // (observed 2026-09-30: a remark stayed on screen after the driver applied
+  // it, and drifted to unrelated lines as code moved).
+  vscode.workspace.onDidChangeTextDocument((event) => followEdits(event));
+
   vscode.languages.onDidChangeDiagnostics((event) => {
     for (const uri of event.uris) {
       if (uri.scheme !== "file") {
@@ -243,6 +249,37 @@ function removeRemark(uri: string) {
   refreshStatusBar();
 }
 
+/** Lines around the remarked one within which an edit clears the remark. */
+const REMARK_NEIGHBOURHOOD = 2;
+
+function followEdits(event: vscode.TextDocumentChangeEvent) {
+  const uri = event.document.uri.toString();
+  const remark = remarks.get(uri);
+  if (!remark || event.contentChanges.length === 0) {
+    return;
+  }
+  let line = remark.line;
+  for (const change of event.contentChanges) {
+    const start = change.range.start.line;
+    const end = change.range.end.line;
+    if (end < line - REMARK_NEIGHBOURHOOD) {
+      const added = change.text.split("\n").length - 1;
+      line += added - (end - start);
+    } else if (start <= line + REMARK_NEIGHBOURHOOD) {
+      removeRemark(uri);
+      return;
+    }
+  }
+  if (line !== remark.line) {
+    remark.line = Math.max(0, line);
+    for (const editor of vscode.window.visibleTextEditors) {
+      if (editor.document.uri.toString() === uri) {
+        applyDecorations(editor);
+      }
+    }
+  }
+}
+
 function clearAllRemarks() {
   remarks.clear();
   for (const editor of vscode.window.visibleTextEditors) {
@@ -307,9 +344,23 @@ function applyDecorations(editor: vscode.TextEditor) {
         contentText: MARKER + inlineText(remark.text),
       },
     },
-    hoverMessage: new vscode.MarkdownString(escapeMarkdown(remark.text)),
+    hoverMessage: remarkHover(remark.text),
   };
   editor.setDecorations(decorationType, [decoration]);
+}
+
+/** The remark's full text plus clickable verdicts, so rating does not depend on remembering shortcuts. */
+function remarkHover(text: string): vscode.MarkdownString {
+  const hover = new vscode.MarkdownString(
+    `${escapeMarkdown(text)}\n\n` +
+      "[Useful](command:navigator.markUseful) · " +
+      "[Noise](command:navigator.markNoise) · " +
+      "[Dismiss](command:navigator.dismiss)",
+  );
+  hover.isTrusted = {
+    enabledCommands: ["navigator.markUseful", "navigator.markNoise", "navigator.dismiss"],
+  };
+  return hover;
 }
 
 function clampLine(line: number, lineCount: number): number {

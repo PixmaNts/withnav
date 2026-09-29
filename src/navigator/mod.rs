@@ -13,6 +13,7 @@ pub mod log;
 pub mod policy;
 pub mod ports;
 pub mod protocol;
+pub mod reflex;
 pub mod server;
 
 use std::path::Path;
@@ -25,6 +26,7 @@ pub use ports::{
     Answer, Answers, DecisionModel, FimAnswer, FimModel, FimRequest, ModelError, Question,
     Questions,
 };
+pub use reflex::{SuggestOutcome, Suggestion, DEBOUNCE_MS, MAX_CONTEXT_BYTES, MAX_PREFIX_BYTES, MAX_SUFFIX_BYTES};
 pub use protocol::{
     ClearParams, FeedbackParams, InlineCompletionItem, InlineCompletionParams,
     InlineCompletionResult, IntentParams, Range, ReflexShownParams, Remark, RemarkParams,

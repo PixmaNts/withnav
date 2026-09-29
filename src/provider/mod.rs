@@ -11,6 +11,7 @@ use crate::provider::sse::SseEventStream;
 
 pub mod auth;
 pub mod config;
+pub mod fim;
 pub mod openai;
 pub mod sse;
 

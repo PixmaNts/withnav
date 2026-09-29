@@ -1,0 +1,220 @@
+//! Wire-golden lock for the `fim` API kind: the exact request body sent to
+//! `POST {base}/fim/completions`, the `choices[0].text` answer parsing, the
+//! bearer header, and the error-status path — against a wiremock server.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use serde_json::json;
+use wiremock::matchers::{body_partial_json, header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+use rust_agent::navigator::ports::{FimModel, FimRequest};
+use rust_agent::provider::auth;
+use rust_agent::provider::config::{
+    ApiKind, ModelConfig, ModelsConfig, ProviderConfig, ReasoningHistory, ResolvedModel,
+};
+use rust_agent::provider::fim::InceptionFim;
+use rust_agent::provider::openai::ClientCache;
+
+fn resolved(base_url: String) -> ResolvedModel {
+    ResolvedModel {
+        alias: "reflex".to_string(),
+        provider_name: "inception".to_string(),
+        provider: ProviderConfig {
+            base_url,
+            api_key_env: None,
+            headers: Default::default(),
+            connect_timeout_ms: 1_000,
+            // Long on purpose: the reflex engine must clamp it.
+            request_timeout_ms: 600_000,
+        },
+        model: ModelConfig {
+            provider: "inception".to_string(),
+            model: "mercury-edit-2".to_string(),
+            api: ApiKind::Fim,
+            context_window: None,
+            max_output_tokens: None,
+            supports_tools: false,
+            supports_parallel_tool_calls: None,
+            thinking: None,
+            reasoning_history: ReasoningHistory::Preserve,
+        },
+    }
+}
+
+fn engine(base_url: String, api_key: &str) -> InceptionFim {
+    InceptionFim::new(resolved(base_url), api_key.to_string(), Arc::new(ClientCache::new()))
+}
+
+fn req() -> FimRequest {
+    FimRequest {
+        prompt: "fn main() {\n    ".to_string(),
+        suffix: "\n}".to_string(),
+        max_tokens: 128,
+    }
+}
+
+/// The exact wire body the Inception endpoint must receive.
+#[tokio::test]
+async fn golden_request_body_and_text_parsing() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/fim/completions"))
+        .and(header("authorization", "Bearer test-key"))
+        .and(body_partial_json(json!({
+            "model": "mercury-edit-2",
+            "prompt": "fn main() {\n    ",
+            "suffix": "\n}",
+            "max_tokens": 128
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"text": "println!(\"hi\");"}],
+            "usage": {"prompt_tokens": 41, "completion_tokens": 7}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let engine = engine(server.uri(), "test-key");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let answer = engine.complete(req(), &cancel).await.unwrap();
+    assert_eq!(answer.text, "println!(\"hi\");");
+    assert_eq!(answer.usage.prompt_tokens, 41);
+    assert_eq!(answer.usage.completion_tokens, 7);
+}
+
+/// The temperature field is part of the frozen wire shape.
+#[tokio::test]
+async fn golden_body_carries_temperature() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/fim/completions"))
+        .and(body_partial_json(json!({"temperature": 0.1})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"text": "x"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let engine = engine(server.uri(), "test-key");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let answer = engine.complete(req(), &cancel).await.unwrap();
+    assert_eq!(answer.text, "x");
+    // Usage absent in the answer: zeroed, not an error.
+    assert_eq!(answer.usage.prompt_tokens, 0);
+}
+
+/// A non-2xx status surfaces as a Provider(ModelError::Provider) error
+/// carrying the status and the endpoint's error message.
+#[tokio::test]
+async fn error_status_is_a_provider_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/fim/completions"))
+        .respond_with(ResponseTemplate::new(429).set_body_json(json!({
+            "error": {"message": "rate limited"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let engine = engine(server.uri(), "test-key");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let err = engine.complete(req(), &cancel).await.unwrap_err();
+    match err {
+        rust_agent::navigator::ports::ModelError::Provider(p) => {
+            assert!(p.to_string().contains("rate limited"), "got: {p}");
+        }
+        other => panic!("expected provider error, got {other:?}"),
+    }
+}
+
+/// A 200 whose body is not the FIM shape is a Malformed error, not a
+/// crash and not silence.
+#[tokio::test]
+async fn malformed_body_is_a_malformed_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/fim/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "unexpected": true
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let engine = engine(server.uri(), "test-key");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let err = engine.complete(req(), &cancel).await.unwrap_err();
+    assert!(matches!(
+        err,
+        rust_agent::navigator::ports::ModelError::Malformed(_)
+    ));
+}
+
+/// Cancelling before the answer returns promptly with a cancellation
+/// error (the token is honoured mid-request).
+#[tokio::test]
+async fn cancelled_call_stops_waiting() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/fim/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"text": "late"}]
+        })).set_delay(Duration::from_secs(10)))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let engine = engine(server.uri(), "test-key");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let cancel2 = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel2.cancel();
+    });
+    let started = std::time::Instant::now();
+    let result = engine.complete(req(), &cancel).await;
+    assert!(result.is_err());
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+/// The repo's models.json resolves the `reflex` alias exactly as this
+/// engine expects (inception provider, mercury-edit-2, fim api kind).
+#[test]
+fn repo_models_json_resolves_the_reflex_alias() {
+    let cfg = ModelsConfig::parse(include_str!("../models.json")).unwrap();
+    let r = cfg.resolve("reflex").unwrap();
+    assert_eq!(r.provider_name, "inception");
+    assert_eq!(r.model.model, "mercury-edit-2");
+    assert_eq!(r.model.api, ApiKind::Fim);
+    assert_eq!(r.provider.base_url, "https://api.inceptionlabs.ai/v1");
+}
+
+/// The api key resolves from a 0600 auth.json store the way the binary
+/// does (auth entry name = provider name).
+#[tokio::test]
+async fn api_key_resolves_from_the_auth_store() {
+    let tmp = tempfile::tempdir().unwrap();
+    auth::set_key(tmp.path(), "inception", "golden-test-key").unwrap();
+    let key = auth::resolve_key(tmp.path(), "inception", Some("INCEPTION_API_KEY")).unwrap();
+    assert_eq!(key, "golden-test-key");
+
+    // And the engine built with it sends it as the bearer token.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/fim/completions"))
+        .and(header("authorization", "Bearer golden-test-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"text": "ok"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let engine = engine(server.uri(), &key);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let answer = engine.complete(req(), &cancel).await.unwrap();
+    assert_eq!(answer.text, "ok");
+}

@@ -15,6 +15,10 @@ path = "src/lib.rs"
 name = "rust-agent"
 path = "src/main.rs"
 
+[[bin]]
+name = "rust-agent-lsp"
+path = "src/bin/rust-agent-lsp.rs"
+
 [dependencies]
 tokio = { version = "1.53", features = [
     "rt-multi-thread",
@@ -23,6 +27,7 @@ tokio = { version = "1.53", features = [
     "signal",
     "fs",
     "io-util",
+    "io-std",
     "time",
     "sync",
 ] }
@@ -51,6 +56,8 @@ futures-util = "0.3"
 # Phase 2: event bus + local HTTP server (thin slice wrapping the Phase-1 loop).
 axum = { version = "0.8.9", features = ["ws", "macros"] }
 futures = "0.3"
+tower-lsp-server = "0.23.0"
+similar = "3.2.0"
 
 [dev-dependencies]
 tokio = { version = "1.53", features = ["test-util"] }

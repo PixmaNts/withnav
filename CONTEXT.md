@@ -1,0 +1,85 @@
+# rust-agent
+
+A pair-programming system in which the human keeps the keyboard and stays the author of the code,
+while several models of different speeds watch, complete, judge and discuss. It exists to get the
+speed of AI assistance without losing the developer's mental model of their own codebase.
+
+## Roles
+
+**Driver**:
+The human writing the code. The driver is the default author of every line.
+_Avoid_: user (when authorship matters), pilot
+
+**Navigator**:
+The whole assisting system as the driver perceives it: a colleague watching over the shoulder who
+completes, remarks and discusses, but does not take the keyboard.
+_Avoid_: copilot, assistant, agent (for the whole system)
+
+## Layers
+
+**Reflex**:
+The fastest layer: completes what the driver is typing, as ghost text, from a fill-in-the-middle
+model.
+_Avoid_: autocomplete layer, FIM layer
+
+**Instinct**:
+The decision layer: answers bounded, typed questions (choice, score, yes-probability) about the
+current situation to sort, route, filter and gate; it never produces free text.
+_Avoid_: classifier, router, Jev (Jev is one provider of this layer, not the layer)
+
+**Metacognition**:
+The fast reflective layer: watches both the code being written and the conversation, judges whether
+the code matches the intent, produces remarks, and can wake the cognition.
+_Avoid_: observer, critic, flash (a flash model is its current engine, not its role)
+
+**Cognition**:
+The deliberate layer: the high-level conversation with the driver about concepts, features, intent
+and problems, with the full agentic toolset.
+_Avoid_: main agent, chat, frontier (a frontier model is its engine, not its role)
+
+## Outputs
+
+**Suggestion**:
+Ghost text offered by the reflex at the cursor; it becomes code only when the driver accepts it.
+_Avoid_: completion (ambiguous with chat completions)
+
+**Remark**:
+A short, line-anchored comment from the metacognition, shown discreetly next to the code; it never
+changes the code.
+_Avoid_: hint, diagnostic, comment
+
+**Proposal**:
+A diff produced by the cognition on the driver's explicit request; it changes the code only once the
+driver accepts it.
+_Avoid_: edit, patch, write
+
+**Verdict**:
+The driver's rating of a remark: useful, noise, or dismissed.
+_Avoid_: feedback, vote
+
+## Shared context
+
+**Shared context**:
+What every layer knows about the work in progress, so that fast layers can be relevant, not just
+fast. It has two parts: the intent record and the live state.
+_Avoid_: memory, context window
+
+**Intent record**:
+The durable part of the shared context: current intent, plan and decisions, readable and editable by
+the driver and kept under version control.
+_Avoid_: plan file, notes
+
+**Live state**:
+The ephemeral part of the shared context: recent edits, compiler diagnostics, a running summary of
+the conversation. It is not persisted.
+_Avoid_: session state, cache
+
+**Wake**:
+The metacognition bringing something to the cognition's attention, turning a fast observation into a
+deliberate discussion.
+_Avoid_: escalate, trigger (a trigger is an instinct input)
+
+**Trigger**:
+An event (save, idle, diagnostic change, conversation turn) that makes the instinct evaluate whether
+a layer should act.
+_Avoid_: hook, event (too generic)

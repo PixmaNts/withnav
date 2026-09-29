@@ -85,6 +85,22 @@ export function registerChatView(
               void openFile(message.path, message.line).catch(showError);
             }
             break;
+          case "listConversations":
+            void backend.listConversations().catch(showError);
+            break;
+          case "openConversation":
+            if (typeof message.id === "string") {
+              void backend.openConversation(message.id).catch(showError);
+            }
+            break;
+          case "newConversation":
+            void backend.newConversation().catch(showError);
+            break;
+          case "deleteConversation":
+            if (typeof message.id === "string") {
+              void backend.deleteConversation(message.id).catch(showError);
+            }
+            break;
         }
       });
       view.onDidDispose(() => {

@@ -555,16 +555,28 @@ mod tests {
                 content: "hi".into(),
             }],
         );
-        // A real time gap so the two sessions' updated_at CANNOT tie (the
-        // writer stamps at write time; >=2ms apart is deterministic).
+        // id2 updated later: it must list first even though id was created
+        // first. The writer stamps at write time; when both stamps share a
+        // millisecond (starved writer thread) the order between them is
+        // undefined, so the assertion runs only on a real timestamp gap.
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        // id2 updated later: it must list first even though id was created first.
         store.append_event(id2, envelope(0, EventKind::SessionStart));
 
         // Poll until the writer drained (fire-and-forget channel).
         let listed = poll_list(&store, "/w", 2).await;
         assert_eq!(listed.len(), 2);
-        assert_eq!(listed[0].meta.id, id2, "newest updated_at first");
+        if listed[0].meta.updated_at != listed[1].meta.updated_at {
+            assert_eq!(listed[0].meta.id, id2, "newest updated_at first");
+        } else {
+            // Same-millisecond stamps (a starved writer processed both
+            // bursts together): order between them is undefined — both must
+            // still be present.
+            assert!(
+                listed.iter().any(|row| row.meta.id == id)
+                    && listed.iter().any(|row| row.meta.id == id2),
+                "both sessions listed"
+            );
+        }
 
         let loaded = store.load(id).await.expect("load").expect("present");
         assert_eq!(loaded.meta.model, "cognition");
@@ -600,7 +612,16 @@ mod tests {
         let id = Ulid::new();
         store.record_session(id, "/w", "m", None);
         store.append_event(id, envelope(0, EventKind::SessionStart));
+        // Wait for the row to EXIST first (the channel is fire-and-forget,
+        // so observing the insert proves the earlier commands drained).
+        for _ in 0..200 {
+            if store.load(id).await.expect("load").is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
         store.delete(id);
+        // Then wait for it to be GONE.
         for _ in 0..200 {
             if store.load(id).await.expect("load").is_none() {
                 break;

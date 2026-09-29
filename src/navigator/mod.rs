@@ -17,6 +17,7 @@ pub mod policy;
 pub mod ports;
 pub mod protocol;
 pub mod reflex;
+pub mod replay;
 pub mod server;
 
 use std::future::Future;

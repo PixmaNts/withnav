@@ -32,6 +32,31 @@ struct Cli {
     /// appends this flag when launched with `TransportKind.stdio`.
     #[arg(long, hide = true)]
     stdio: bool,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Command {
+    /// Replays a candidate pipeline over the recorded trigger log and
+    /// compares its decisions with the ones the driver took.
+    Replay {
+        /// A `.navigator` directory or its `pipeline.toml` (default: the
+        /// built-in pipeline).
+        #[arg(long)]
+        pipeline: Option<PathBuf>,
+        /// Decision log to replay (default: the navigator log).
+        #[arg(long)]
+        log: Option<PathBuf>,
+        /// Re-render the state and ask the instinct again when the candidate's
+        /// question differs from the logged one. Without it such a trigger is
+        /// reported as not comparable.
+        #[arg(long)]
+        reask: bool,
+        /// Machine-readable report on stdout instead of the text table.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn init_tracing_stderr() {
@@ -202,6 +227,16 @@ async fn main() -> anyhow::Result<()> {
     init_tracing_stderr();
     let cli = Cli::parse();
 
+    if let Some(Command::Replay {
+        ref pipeline,
+        ref log,
+        reask,
+        json,
+    }) = cli.command
+    {
+        return run_replay(&cli, pipeline.as_deref(), log.as_deref(), reask, json).await;
+    }
+
     let clients = Arc::new(ClientCache::new());
     let layers = build_layers(&cli, clients);
 
@@ -232,6 +267,72 @@ async fn main() -> anyhow::Result<()> {
     }
 
     navigator::serve(tokio::io::stdin(), tokio::io::stdout(), deps).await;
+    Ok(())
+}
+
+/// Replays a candidate pipeline over the recorded trigger log. Nothing here
+/// talks to the editor: the instinct model is only built when `--reask` was
+/// asked for, and then only for the triggers whose question changed.
+async fn run_replay(
+    cli: &Cli,
+    pipeline_path: Option<&std::path::Path>,
+    log_path: Option<&std::path::Path>,
+    reask: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    use rust_agent::navigator::pipeline::Pipeline;
+    use rust_agent::navigator::replay::{load_candidate, ReplayLog, Replayer};
+
+    let candidate = load_candidate(pipeline_path)
+        .map_err(|e| anyhow::anyhow!("cannot load the candidate pipeline: {e}"))?;
+    let pipeline = Pipeline::new(candidate);
+
+    let log_path = match log_path {
+        Some(path) => path.to_path_buf(),
+        None => navigator::default_log_path()
+            .ok_or_else(|| anyhow::anyhow!("cannot resolve the user data dir; pass --log"))?,
+    };
+    // A missing log replays as an empty one: no triggers, nothing to compare.
+    let log = match ReplayLog::read(&log_path) {
+        Ok(log) => log,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(anyhow::anyhow!("no such log: {}", log_path.display()));
+        }
+        Err(e) => return Err(anyhow::anyhow!("cannot read {}: {e}", log_path.display())),
+    };
+
+    let report = if reask {
+        let models = load_models(cli)?;
+        let config_dir = auth::default_config_dir()
+            .ok_or_else(|| anyhow::anyhow!("cannot resolve config dir for the instinct API key"))?;
+        let alias = pipeline.snapshot().model_alias().to_string();
+        let client =
+            SystemOneClient::from_alias(&models, &alias, &config_dir, Arc::new(ClientCache::new()))
+                .map_err(|e| {
+                    anyhow::anyhow!("cannot build the instinct model on '{alias}': {e}")
+                })?;
+        Replayer::with_reask(&pipeline, &client).run(&log).await
+    } else {
+        Replayer::new(&pipeline).run(&log).await
+    };
+
+    // The snapshot only knows builtin/user/project: report the path the driver
+    // actually pointed at.
+    let report = match pipeline_path {
+        Some(path) => report.with_pipeline_origin(&path.display().to_string()),
+        None => report.with_pipeline_origin("built-in"),
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|e| anyhow::anyhow!("{e}"))?
+        );
+    } else {
+        print!(
+            "{}",
+            report.render_text(navigator::replay::DEFAULT_LIST_LIMIT)
+        );
+    }
     Ok(())
 }
 

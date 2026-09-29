@@ -17,11 +17,28 @@ async function main() {
     external: ["vscode"],
     logLevel: "info",
   });
+  const webview = await esbuild.context({
+    entryPoints: ["src/webview/chat.ts"],
+    bundle: true,
+    format: "iife",
+    minify: production,
+    sourcemap: !production,
+    sourcesContent: false,
+    platform: "browser",
+    outfile: "out/chat.js",
+    logLevel: "info",
+  });
+  const styles = await esbuild.context({
+    entryPoints: ["src/webview/chat.css"],
+    minify: production,
+    outfile: "out/chat.css",
+    logLevel: "info",
+  });
   if (watch) {
-    await ctx.watch();
+    await Promise.all([ctx.watch(), webview.watch(), styles.watch()]);
   } else {
-    await ctx.rebuild();
-    await ctx.dispose();
+    await Promise.all([ctx.rebuild(), webview.rebuild(), styles.rebuild()]);
+    await Promise.all([ctx.dispose(), webview.dispose(), styles.dispose()]);
     // vscode-languageclient spawns lib/node/terminateProcess.sh from __dirname
     // when force-killing the server; copy it next to the bundle.
     await fs.copyFile(

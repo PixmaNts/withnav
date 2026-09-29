@@ -4,6 +4,9 @@ src/**
 node_modules/**
 out/**/*.map
 out/**/*.ts
+!out/chat.js
+!out/chat.css
+!media/**
 .gitignore
 .vscodeignore
 esbuild.mjs

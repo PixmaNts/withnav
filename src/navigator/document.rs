@@ -81,15 +81,8 @@ pub fn text_around_changes(old: &str, new: &str, context: usize) -> String {
     let mut touched = vec![false; new_line_count];
     for change in diff.iter_all_changes() {
         if matches!(change.tag(), similar::ChangeTag::Insert) {
-            let new_index = change.new_index();
-            if let Some(mut idx) = new_index {
-                // iter_all_changes yields per-line entries for line diffs;
-                // a change's new_index is its first new line.
+            if let Some(idx) = change.new_index() {
                 touched[idx] = true;
-                // Some entries span the moved region; mark conservatively
-                // until the next old_index boundary (i.e. also mark the
-                // remainder of the replacement run below via Replace tags).
-                let _ = &mut idx;
             }
         }
     }
@@ -104,15 +97,19 @@ pub fn text_around_changes(old: &str, new: &str, context: usize) -> String {
             }
         }
     }
-    let lines: Vec<&str> = new.lines().collect();
-    let selected: Vec<&str> = lines
-        .iter()
+    // Each kept line carries its 1-based number: the model must answer with a
+    // line in the current file, and without numbers it has to guess (observed
+    // 2026-09-29: a remark about a `parse().unwrap()` landed one line below).
+    let numbered = |(i, l): (usize, &str)| format!("{:>4}| {l}", i + 1);
+    let selected: Vec<String> = new
+        .lines()
+        .enumerate()
         .zip(keep.iter())
         .filter(|(_, k)| **k)
-        .map(|(l, _)| *l)
+        .map(|(il, _)| numbered(il))
         .collect();
     if selected.is_empty() {
-        new.to_string()
+        new.lines().enumerate().map(numbered).collect::<Vec<_>>().join("\n")
     } else {
         selected.join("\n")
     }
@@ -146,9 +143,8 @@ mod tests {
         let old = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n";
         let new = "l1\nl2\nl3\nl4\nCHANGED\nl6\nl7\nl8\n";
         let win = text_around_changes(old, new, 1);
-        assert!(win.contains("CHANGED"));
-        // window = [l4, CHANGED, l6]: the far-away lines are excluded.
-        assert_eq!(win, "l4\nCHANGED\nl6");
+        // window = [l4, CHANGED, l6] with their real line numbers.
+        assert_eq!(win, "   4| l4\n   5| CHANGED\n   6| l6");
     }
 
     #[test]
@@ -156,7 +152,10 @@ mod tests {
         let old = "a\nz\n";
         let new = "a\nb\nc\nd\nz\n";
         // the diff inserts b, c, d between a and z
-        assert_eq!(text_around_changes(old, new, 0), "b\nc\nd");
-        assert_eq!(text_around_changes(old, new, 1), "a\nb\nc\nd\nz");
+        assert_eq!(text_around_changes(old, new, 0), "   2| b\n   3| c\n   4| d");
+        assert_eq!(
+            text_around_changes(old, new, 1),
+            "   1| a\n   2| b\n   3| c\n   4| d\n   5| z"
+        );
     }
 }

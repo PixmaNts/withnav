@@ -1,0 +1,115 @@
+{
+  "name": "navigator",
+  "displayName": "Navigator",
+  "description": "Pair-programming navigator: a language server watches your edits and offers short end-of-line remarks.",
+  "version": "0.1.0",
+  "publisher": "rust-agent",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "navigator.markUseful",
+        "title": "Mark Last Remark as Useful",
+        "category": "Navigator"
+      },
+      {
+        "command": "navigator.markNoise",
+        "title": "Mark Last Remark as Noise",
+        "category": "Navigator"
+      },
+      {
+        "command": "navigator.dismiss",
+        "title": "Dismiss Current Remark",
+        "category": "Navigator"
+      },
+      {
+        "command": "navigator.setIntent",
+        "title": "Set Current Intent",
+        "category": "Navigator"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "navigator.markUseful",
+        "key": "ctrl+alt+y",
+        "when": "navigator.remarkVisible"
+      },
+      {
+        "command": "navigator.markNoise",
+        "key": "ctrl+alt+n",
+        "when": "navigator.remarkVisible"
+      },
+      {
+        "command": "navigator.dismiss",
+        "key": "ctrl+alt+d",
+        "when": "navigator.remarkVisible"
+      }
+    ],
+    "configuration": {
+      "title": "Navigator",
+      "properties": {
+        "navigator.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the navigator and keep its language server running."
+        },
+        "navigator.serverPath": {
+          "type": "string",
+          "default": "rust-agent-lsp",
+          "description": "Path to the rust-agent-lsp server binary (absolute path, or a command found on PATH)."
+        },
+        "navigator.idleMs": {
+          "type": "integer",
+          "default": 3000,
+          "minimum": 0,
+          "description": "Idle delay after the last edit before the navigator may speak."
+        },
+        "navigator.minChangedLines": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 0,
+          "description": "Minimum number of changed lines since the last remark for the navigator to consider speaking."
+        },
+        "navigator.cooldownMs": {
+          "type": "integer",
+          "default": 20000,
+          "minimum": 0,
+          "description": "Minimum delay between two remarks on the same file."
+        },
+        "navigator.modelAlias": {
+          "type": "string",
+          "default": "fast",
+          "description": "Model alias (from rust-agent models.json) used for remarks."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p tsconfig.json && node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc -p tsconfig.json",
+    "package": "vsce package --allow-missing-repository",
+    "package:dry-run": "vsce ls"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0"
+  }
+}

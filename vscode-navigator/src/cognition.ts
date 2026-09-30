@@ -422,7 +422,14 @@ export class CognitionBackend implements ChatBackend {
         // so the finished row keeps saying what was touched.
         const summary = toolSummary(name, undefined, this.toolSummaries.get(callId));
         this.toolSummaries.delete(callId);
-        return { type: "tool", id, callId, phase: "end", name, summary, ok: payload.status === "ok" };
+        // A non-zero shell exit is reported as status error, but it is
+        // often harmless: `grep` finding nothing exits 1, and in a `;` chain
+        // the last command's code decides for all the output above it. Show
+        // the code so the driver can judge (observed 2026-09-30: a
+        // `wc; ls; cat …` chain marked failed although its output was fine).
+        const exitCode = payload.metadata?.exit_code;
+        const shown = typeof exitCode === "number" && exitCode !== 0 ? `${summary} (exit ${exitCode})` : summary;
+        return { type: "tool", id, callId, phase: "end", name, summary: shown, ok: payload.status === "ok" };
       }
       case "agent.yield":
         return {
@@ -551,8 +558,10 @@ function toolSummary(name: any, args: any, fallback?: string): string {
     }
     case "bash": {
       const command = arg("command") ?? "";
-      const first = command.split("\n")[0] ?? "";
-      return first ? `bash: ${first.slice(0, 60)}` : (fallback ?? tool);
+      // One line, whitespace collapsed: the row truncates it with an ellipsis
+      // and shows the whole command on hover.
+      const oneLine = command.replace(/\s+/g, " ").trim();
+      return oneLine ? `bash: ${oneLine}` : (fallback ?? tool);
     }
     default:
       return fallback ?? tool;

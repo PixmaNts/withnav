@@ -50,6 +50,8 @@ pre code { padding: 0; white-space: pre; background: none; }
 .tool-row { display: flex; align-items: baseline; gap: 7px; min-width: 0; color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 1.6; }
 .tool-row.failed, .turn-result { color: var(--vscode-errorForeground); }
 .tool-mark { flex: none; width: 12px; text-align: center; font-size: 13px; }
+.tool-verb { white-space: pre; }
+.tool-row > :last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-row.working .tool-mark { display: inline-block; animation: pulse 1.2s ease-in-out infinite; }
 .file-link { background: none; border: 0; padding: 0; text-decoration: underline; text-underline-offset: 2px; }
 .question { margin-top: 12px; border-left: 2px solid var(--vscode-focusBorder); padding: 4px 0 4px 10px; }

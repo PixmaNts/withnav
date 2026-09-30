@@ -94,8 +94,10 @@ function turn(id: string): Turn {
 }
 
 function toolPath(summary: string): { path: string; line?: number } | undefined {
-  // Paths are only offered for file-related activity; no arbitrary shell arguments.
-  const match = /(?:^|\s)(?:(?:read|edit|write|open|search)\s+)?([\w./\\-]+\.[\w-]+)(?::(\d+))?(?=\s|$)/i.exec(summary);
+  // Only file tools get a link. A shell command is shown as plain text: the
+  // first path-looking word of `cat -n src/a.rs | …` is not what it operates
+  // on in general, and linking it split the row into misleading pieces.
+  const match = /^(?:read|edit|write)\s+([\w./\\-]+)(?::(\d+))?$/i.exec(summary);
   return match ? { path: match[1], line: match[2] ? Number(match[2]) : undefined } : undefined;
 }
 
@@ -113,14 +115,17 @@ function activity(item: Turn, event: Extract<HostToWebview, { type: "tool" }>): 
   const target = toolPath(summary);
   if (target) {
     const at = summary.indexOf(target.path);
-    row.append(document.createTextNode(summary.slice(0, at)));
+    // A span with preserved whitespace: a bare text node in the flex row
+    // lost its trailing space and glued "read" to the path.
+    row.append(el("span", "tool-verb", summary.slice(0, at)));
     const link = el("button", "file-link", target.path + (target.line ? `:${target.line}` : ""));
     link.type = "button";
     link.addEventListener("click", () => vscode.postMessage({ type: "openFile", ...target }));
-    row.append(link, document.createTextNode(summary.slice(at + link.textContent!.length)));
+    row.append(link);
   } else {
-    row.append(document.createTextNode(summary));
+    row.append(el("span", "tool-text", summary));
   }
+  row.title = summary;
   row.setAttribute("aria-label", `${event.phase === "start" ? "Running" : event.ok === false ? "Failed" : "Finished"}: ${summary}`);
   follow();
 }

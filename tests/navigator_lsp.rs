@@ -467,7 +467,7 @@ async fn cooldown_suppresses_second_remark() {
     assert_eq!(first["params"]["text"], "first");
     client.expect_status("idle").await;
 
-    // A second big edit within the 20 s cooldown: the idle timer fires but
+    // A second big edit within the 45 s cooldown: the idle timer fires but
     // the policy skips, so no second commenter call happens.
     let bigger = format!("{}\n// a\n// b\n// c\n", big_edit());
     client.did_change(URI, &bigger, 3).await;
@@ -476,7 +476,7 @@ async fn cooldown_suppresses_second_remark() {
     assert_eq!(mock.calls(), 1, "cooldown must suppress the second call");
 
     // After the cooldown elapses, a new edit fires again.
-    tokio::time::advance(Duration::from_millis(20_000)).await;
+    tokio::time::advance(Duration::from_millis(45_000)).await;
     let bigger2 = format!("{}\n// d\n// e\n// f\n", big_edit());
     client.did_change(URI, &bigger2, 4).await;
     tokio::time::advance(Duration::from_millis(3001)).await;
@@ -820,11 +820,12 @@ async fn trigger_records_carry_replay_fields() {
 async fn server_info_arrives_after_initialized_with_the_configured_values() {
     let mock = MockCommenter::new(vec![]);
     let tmp = tempfile::tempdir().unwrap();
-    let deps = NavigatorDeps::new(Arc::new(mock), tmp.path().join("nav.jsonl"))
-        .with_server_info(navigator::ServerInfoParams {
+    let deps = NavigatorDeps::new(Arc::new(mock), tmp.path().join("nav.jsonl")).with_server_info(
+        navigator::ServerInfoParams {
             port: 45678,
             token: "tok-123".to_string(),
-        });
+        },
+    );
     let mut client = spawn_server(deps);
 
     client.initialize(json!({})).await;
@@ -840,7 +841,10 @@ async fn server_info_arrives_after_initialized_with_the_configured_values() {
 async fn without_server_info_no_notification_is_sent() {
     let mock = MockCommenter::new(vec![]);
     let tmp = tempfile::tempdir().unwrap();
-    let mut client = spawn_server(NavigatorDeps::new(Arc::new(mock), tmp.path().join("nav.jsonl")));
+    let mut client = spawn_server(NavigatorDeps::new(
+        Arc::new(mock),
+        tmp.path().join("nav.jsonl"),
+    ));
 
     client.initialize(json!({})).await;
     client.did_open(URI, &base_text(), 1).await;

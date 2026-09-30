@@ -1,7 +1,12 @@
-//! The built-in default pipeline (spec §Instinct): the three questions
-//! (`worth_attention`, `route`, `drift`), pre-filters min 3 lines / cooldown
-//! 20 s, drift -> wake_cognition (> 0.8, only if `has_intent`), remark when
-//! `worth_attention > 0.7 && route == "metacognition"`, else silent.
+//! The built-in default pipeline: the three questions (`worth_attention`,
+//! `route`, `drift`), pre-filters min 3 lines / cooldown 45 s, drift ->
+//! wake_cognition (> 0.8, only if `has_intent`), remark when
+//! `worth_attention > 0.85 && route == "metacognition"`, else silent.
+//! The stricter values come from a first day of use (2026-09-29): at 0.7
+//! and 20 s, `worth_attention` sat at 0.93-0.95 during a refactoring and the
+//! metacognition remarked on every save. Replaying that log, 0.85 with a
+//! 45 s cooldown halves the remarks (25 -> 13). Rewording the question to
+//! discount mid-edit code silenced every remark, so the wording is kept.
 //! Shipped in the binary via `include_str!`.
 
 /// `pipeline.toml` as it would sit in `.navigator/`.

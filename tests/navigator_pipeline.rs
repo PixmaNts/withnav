@@ -487,7 +487,7 @@ fn builtin_default_pipeline_loads_and_is_the_spec_shape() {
     assert_eq!(triggers.len(), 1);
     assert_eq!(triggers[0].on.len(), 2);
     assert_eq!(triggers[0].prefilters.min_changed_lines, 3);
-    assert_eq!(triggers[0].prefilters.cooldown_ms, 20_000);
+    assert_eq!(triggers[0].prefilters.cooldown_ms, 45_000);
     let specs = triggers[0].branch_specs();
     assert_eq!(specs.len(), 3);
     assert_eq!(specs[0].0.as_str(), "wake_cognition");

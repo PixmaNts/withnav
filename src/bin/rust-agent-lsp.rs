@@ -311,8 +311,8 @@ async fn spawn_cognition_server(cli: &Cli) -> anyhow::Result<CognitionHttp> {
 
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let models_path = navigator::resolve_models(cli.models.as_deref(), &workspace);
-    let config_dir = auth::default_config_dir()
-        .ok_or_else(|| anyhow::anyhow!("cannot resolve config dir"))?;
+    let config_dir =
+        auth::default_config_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve config dir"))?;
     let token = bearer_token();
     // Conversation history: one SQLite file in the navigator's data dir.
     let history_db = directories::ProjectDirs::from("", "", "rust-agent")
@@ -336,13 +336,9 @@ async fn spawn_cognition_server(cli: &Cli) -> anyhow::Result<CognitionHttp> {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let task = tokio::spawn(async move {
-        let _ = rust_agent::server::routes::serve_until(
-            state,
-            listener,
-            async move {
-                let _ = shutdown_rx.await;
-            },
-        )
+        let _ = rust_agent::server::routes::serve_until(state, listener, async move {
+            let _ = shutdown_rx.await;
+        })
         .await;
     });
 

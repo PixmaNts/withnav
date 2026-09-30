@@ -586,7 +586,8 @@ impl AppState {
     /// `Ok(None)` when already Stopping/closed (idempotent); 404 when
     /// unknown. The slot stays in the map until the tombstone replaces it,
     /// so a concurrent request sees `Stopping` (P1-2) rather than a hole.
-    fn mark_stopping(&self, id: SessionId) -> Result<Option<SessionHandle>, ServerError> {        let mut guard = self.lock_sessions();
+    fn mark_stopping(&self, id: SessionId) -> Result<Option<SessionHandle>, ServerError> {
+        let mut guard = self.lock_sessions();
         match guard.get_mut(&id) {
             Some(SessionSlot::Live(handle)) if handle.lifecycle == Lifecycle::Active => {
                 handle.lifecycle = Lifecycle::Stopping;
@@ -692,8 +693,7 @@ impl AppState {
             ),
             None => {
                 let navigator = profile == Some(NAVIGATOR_PROFILE);
-                let alias =
-                    model.unwrap_or(if navigator { "cognition" } else { "default" });
+                let alias = model.unwrap_or(if navigator { "cognition" } else { "default" });
                 (workspace.to_path_buf(), alias.to_string(), profile)
             }
         };
@@ -759,14 +759,14 @@ impl AppState {
         // the interrupted turn's events before the session.end fence.
         let (inbox_tx, inbox) = ActorInbox::channel();
         let on_turn_end: crate::bus::runtime::TurnEndHook = match &history {
-                Some(store) => {
-                    let store = store.clone();
-                    Box::new(move |transcript| {
-                        store.save_transcript(session_id, transcript.to_vec());
-                    })
-                }
-                None => Box::new(|_| {}),
-            };
+            Some(store) => {
+                let store = store.clone();
+                Box::new(move |transcript| {
+                    store.save_transcript(session_id, transcript.to_vec());
+                })
+            }
+            None => Box::new(|_| {}),
+        };
         let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn_with_turn_end(
             session_id,
             actor,
@@ -835,9 +835,11 @@ fn build_actor(
         // The agent loop always sends its own system contract first; the
         // navigator role rides as a second system message at the head of the
         // transcript, so the Phase-1 loop and prompt stay untouched.
-        actor.transcript.push(crate::provider::openai::ChatMessage::System {
-            content: COGNITION_PROMPT.to_string(),
-        });
+        actor
+            .transcript
+            .push(crate::provider::openai::ChatMessage::System {
+                content: COGNITION_PROMPT.to_string(),
+            });
     }
     actor
 }

@@ -110,10 +110,7 @@ async fn navigator_profile_sends_the_cognition_prompt_as_second_system_message()
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .and(header("authorization", "Bearer test-key"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(sse, "text/event-stream"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
         .expect(1)
         .mount(&server)
         .await;
@@ -174,7 +171,10 @@ async fn navigator_profile_sends_the_cognition_prompt_as_second_system_message()
         serde_json::from_slice(&requests[0].body).expect("request body is the chat request");
     assert_eq!(body["model"], "mock-opus");
     let messages = body["messages"].as_array().expect("messages array");
-    let roles: Vec<&str> = messages.iter().map(|m| m["role"].as_str().unwrap_or("")).collect();
+    let roles: Vec<&str> = messages
+        .iter()
+        .map(|m| m["role"].as_str().unwrap_or(""))
+        .collect();
     let system_count = roles.iter().filter(|r| **r == "system").count();
     assert_eq!(
         system_count, 2,

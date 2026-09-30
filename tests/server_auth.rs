@@ -139,7 +139,12 @@ async fn with_a_token_a_wrong_or_malformed_header_is_401() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let state = test_state(tmp.path(), Some("secret-token".to_string()));
 
-    for header in ["Bearer wrong", "secret-token", "bearer secret-token", "Bearer "] {
+    for header in [
+        "Bearer wrong",
+        "secret-token",
+        "bearer secret-token",
+        "Bearer ",
+    ] {
         let response = app(state.clone())
             .oneshot(
                 Request::builder()

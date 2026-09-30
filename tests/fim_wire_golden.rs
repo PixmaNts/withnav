@@ -44,7 +44,11 @@ fn resolved(base_url: String) -> ResolvedModel {
 }
 
 fn engine(base_url: String, api_key: &str) -> InceptionFim {
-    InceptionFim::new(resolved(base_url), api_key.to_string(), Arc::new(ClientCache::new()))
+    InceptionFim::new(
+        resolved(base_url),
+        api_key.to_string(),
+        Arc::new(ClientCache::new()),
+    )
 }
 
 fn req() -> FimRequest {
@@ -161,9 +165,13 @@ async fn cancelled_call_stops_waiting() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/fim/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "choices": [{"text": "late"}]
-        })).set_delay(Duration::from_secs(10)))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({
+                    "choices": [{"text": "late"}]
+                }))
+                .set_delay(Duration::from_secs(10)),
+        )
         .expect(1)
         .mount(&server)
         .await;

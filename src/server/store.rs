@@ -117,13 +117,7 @@ impl HistoryStore {
 
     /// Registers a session row (INSERT OR IGNORE: a resumed id already has
     /// its row).
-    pub fn record_session(
-        &self,
-        id: Ulid,
-        workspace: &str,
-        model: &str,
-        profile: Option<&str>,
-    ) {
+    pub fn record_session(&self, id: Ulid, workspace: &str, model: &str, profile: Option<&str>) {
         let _ = self.tx.send(Write::RecordSession {
             id,
             workspace: workspace.to_string(),
@@ -264,8 +258,14 @@ fn apply(conn: &Connection, write: Write) -> Result<(), rusqlite::Error> {
             Ok(())
         }
         Write::Delete { id } => {
-            conn.execute("DELETE FROM events WHERE session_id = ?1", params![id.to_string()])?;
-            conn.execute("DELETE FROM sessions WHERE id = ?1", params![id.to_string()])?;
+            conn.execute(
+                "DELETE FROM events WHERE session_id = ?1",
+                params![id.to_string()],
+            )?;
+            conn.execute(
+                "DELETE FROM sessions WHERE id = ?1",
+                params![id.to_string()],
+            )?;
             Ok(())
         }
     }
@@ -414,11 +414,7 @@ pub struct PersistingEmitter {
 }
 
 impl PersistingEmitter {
-    pub fn new(
-        session_id: Ulid,
-        bus: crate::bus::SessionBus,
-        store: HistoryStore,
-    ) -> Self {
+    pub fn new(session_id: Ulid, bus: crate::bus::SessionBus, store: HistoryStore) -> Self {
         Self {
             bus,
             session_id,
@@ -461,10 +457,7 @@ impl Emitter for PersistingEmitter {
 /// cut at 60 characters.
 pub fn title_from_message(content: &str) -> String {
     let stripped = strip_editor_context(content);
-    let collapsed: String = stripped
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let collapsed: String = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
     collapsed.chars().take(60).collect()
 }
 
@@ -516,11 +509,7 @@ mod tests {
 
     /// Polls the (fire-and-forget) writer until `list` returns `min` rows:
     /// the channel offers no flush barrier, so tests observe drain by read.
-    async fn poll_list(
-        store: &HistoryStore,
-        workspace: &str,
-        min: usize,
-    ) -> Vec<ListedSession> {
+    async fn poll_list(store: &HistoryStore, workspace: &str, min: usize) -> Vec<ListedSession> {
         for _ in 0..200 {
             let listed = store.list(workspace).await.expect("list");
             if listed.len() >= min {
@@ -674,7 +663,10 @@ mod tests {
         assert_eq!(title_from_message(&long).chars().count(), 60);
         // Non-trailing block is KEPT (only a trailing block is editor-added).
         let mid = "see <editor-context>x</editor-context> then report";
-        assert_eq!(title_from_message(mid), "see <editor-context>x</editor-context> then report");
+        assert_eq!(
+            title_from_message(mid),
+            "see <editor-context>x</editor-context> then report"
+        );
         // Unclosed block: kept verbatim.
         let unclosed = "hello <editor-context> junk";
         assert_eq!(title_from_message(unclosed), "hello <editor-context> junk");

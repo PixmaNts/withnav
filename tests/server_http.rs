@@ -406,8 +406,14 @@ async fn sigterm_drives_graceful_shutdown_sessions_end_and_clean_exit() {
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace dir");
 
-    let id_a = state.create_session(&ws, None, None).await.expect("create a");
-    let id_b = state.create_session(&ws, None, None).await.expect("create b");
+    let id_a = state
+        .create_session(&ws, None, None)
+        .await
+        .expect("create a");
+    let id_b = state
+        .create_session(&ws, None, None)
+        .await
+        .expect("create b");
 
     // The TEST subscribes before shutdown so session.end is observable.
     let mut subs = Vec::new();

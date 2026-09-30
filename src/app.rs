@@ -82,6 +82,7 @@ pub struct AuthArgs {
 pub enum AuthCommand {
     Set { provider: String },
     List,
+    Remove { provider: String },
 }
 
 pub fn init_tracing() {
@@ -123,6 +124,14 @@ fn auth_command(args: AuthArgs) -> anyhow::Result<i32> {
                 for p in providers {
                     println!("{p}");
                 }
+            }
+            Ok(EXIT_DONE)
+        }
+        AuthCommand::Remove { provider } => {
+            if auth::remove_key(&dir, &provider).is_ok() {
+                println!("removed key for provider '{provider}'");
+            } else {
+                println!("no key found for provider '{provider}'");
             }
             Ok(EXIT_DONE)
         }

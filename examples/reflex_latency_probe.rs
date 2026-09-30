@@ -33,8 +33,12 @@ fn report(label: &str, samples: &[Duration]) {
         "{label}: p50 {:.0} ms, p95 {:.0} ms (min {:.0}, max {:.0}, n={})",
         percentile(v.clone(), 0.50).as_secs_f64() * 1000.0,
         percentile(v.clone(), 0.95).as_secs_f64() * 1000.0,
-        v.iter().map(|d| d.as_secs_f64() * 1000.0).fold(f64::INFINITY, f64::min),
-        v.iter().map(|d| d.as_secs_f64() * 1000.0).fold(f64::NEG_INFINITY, f64::max),
+        v.iter()
+            .map(|d| d.as_secs_f64() * 1000.0)
+            .fold(f64::INFINITY, f64::min),
+        v.iter()
+            .map(|d| d.as_secs_f64() * 1000.0)
+            .fold(f64::NEG_INFINITY, f64::max),
         v.len(),
     );
 }

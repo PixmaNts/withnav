@@ -48,8 +48,11 @@ fn make_state(tmp: &Path, base_url: &str, history_db: Option<PathBuf>) -> AppSta
     let config_dir = tmp.join("cfg");
     std::fs::create_dir_all(&config_dir).expect("config dir");
     let auth_path = config_dir.join("auth.json");
-    std::fs::write(&auth_path, json!({ "mock": { "api_key": "test-key" } }).to_string())
-        .expect("write auth.json");
+    std::fs::write(
+        &auth_path,
+        json!({ "mock": { "api_key": "test-key" } }).to_string(),
+    )
+    .expect("write auth.json");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -76,7 +79,10 @@ async fn spawn_server(state: AppState) -> (SocketAddr, tokio::task::JoinHandle<(
     });
     let mut up = false;
     for _ in 0..100 {
-        if reqwest::get(format!("http://{addr}/v1/health")).await.is_ok() {
+        if reqwest::get(format!("http://{addr}/v1/health"))
+            .await
+            .is_ok()
+        {
             up = true;
             break;
         }
@@ -188,8 +194,10 @@ async fn collect_until(
         out.extend(replay);
     }
     if let Some(mut live) = sub.live {
-        while let Some(env) =
-            tokio::time::timeout(Duration::from_secs(5), live.recv()).await.ok().flatten()
+        while let Some(env) = tokio::time::timeout(Duration::from_secs(5), live.recv())
+            .await
+            .ok()
+            .flatten()
         {
             let matched = pred(&env);
             out.push(env);
@@ -218,7 +226,10 @@ async fn wait_for_list(base: &str, workspace: &Path, min: usize) -> Vec<Value> {
         last = sessions;
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    panic!("history writer never caught up (min {min}, saw {})", last.len());
+    panic!(
+        "history writer never caught up (min {min}, saw {})",
+        last.len()
+    );
 }
 
 fn done_response(text: &str) -> Vec<u8> {
@@ -291,7 +302,9 @@ async fn converse_persists_events_title_and_transcript() {
     post_message(&server.base, &id, msg).await;
     let events = collect_until(sub, |e| e.kind == "turn.end").await;
     assert!(
-        events.iter().any(|e| e.kind == "turn.end" && e.payload["outcome"] == "done"),
+        events
+            .iter()
+            .any(|e| e.kind == "turn.end" && e.payload["outcome"] == "done"),
         "turn completed"
     );
 
@@ -400,8 +413,7 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
     post_message(&base2, &id, "What word did I ask you to remember?").await;
     let events2 = collect_until(sub2, |e| e.kind == "turn.end").await;
     assert!(events2.iter().any(|e| e.payload["outcome"] == "done"));
-    let new_events: Vec<&EventEnvelope> =
-        events2.iter().filter(|e| e.seq > original_max).collect();
+    let new_events: Vec<&EventEnvelope> = events2.iter().filter(|e| e.seq > original_max).collect();
     assert!(!new_events.is_empty(), "new events were sequenced");
     let new_min = new_events.iter().map(|e| e.seq).min().unwrap();
     assert_eq!(
@@ -410,9 +422,7 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
         "the resumed sequencer continues at last_seq + 1 (new {new_min}, stored max {original_max})"
     );
     assert!(
-        !new_events
-            .iter()
-            .any(|e| e.kind == "session.start"),
+        !new_events.iter().any(|e| e.kind == "session.start"),
         "NO new session.start on resume"
     );
     let new_message = new_events
@@ -484,7 +494,11 @@ async fn delete_removes_from_memory_and_store() {
     // Store is empty for the workspace.
     for _ in 0..50 {
         let body = list_sessions(&server.base, &server.ws).await;
-        if body["sessions"].as_array().map(|a| a.is_empty()).unwrap_or(false) {
+        if body["sessions"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(false)
+        {
             break;
         }
         tokio::time::sleep(Duration::from_millis(30)).await;
@@ -519,7 +533,10 @@ async fn list_is_per_workspace() {
     let other = server.ws.parent().unwrap().join("other-ws");
     std::fs::create_dir_all(&other).expect("other ws");
 
-    for (ws, text) in [(&server.ws, "in the first workspace"), (&other, "in the second")] {
+    for (ws, text) in [
+        (&server.ws, "in the first workspace"),
+        (&other, "in the second"),
+    ] {
         let created: Value = create_session(
             &server.base,
             json!({ "workspace": ws, "profile": "navigator" }),

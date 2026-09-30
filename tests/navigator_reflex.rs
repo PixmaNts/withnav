@@ -108,10 +108,12 @@ fn spawn_suggest(
     version: i32,
     position: Position,
     context: &str,
-) -> tokio::task::JoinHandle<Result<
-    rust_agent::navigator::reflex::Suggestion,
-    rust_agent::navigator::reflex::SuggestOutcome,
->> {
+) -> tokio::task::JoinHandle<
+    Result<
+        rust_agent::navigator::reflex::Suggestion,
+        rust_agent::navigator::reflex::SuggestOutcome,
+    >,
+> {
     let svc = Arc::clone(svc);
     let uri = uri.to_string();
     let doc = doc.to_string();
@@ -130,15 +132,28 @@ async fn non_ascii_cursor_splits_prompt_at_the_byte_offset() {
     let svc = service(model.clone());
     // "héllo\n😀x" — line 1, after the emoji (2 UTF-16 units).
     let doc = "héllo\n😀x";
-    let suggestion = spawn_suggest(&svc, URI, doc, 1, Position { line: 1, character: 2 }, "")
-        .await
-        .unwrap()
-        .unwrap();
+    let suggestion = spawn_suggest(
+        &svc,
+        URI,
+        doc,
+        1,
+        Position {
+            line: 1,
+            character: 2,
+        },
+        "",
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(suggestion.item.text, "world");
     // Insertion range starts exactly at the cursor...
     assert_eq!(
         suggestion.item.range.start,
-        Position { line: 1, character: 2 }
+        Position {
+            line: 1,
+            character: 2
+        }
     );
     // ...and the model saw prefix "héllo\n😀" (11 bytes) and suffix "x".
     let req = model.last_request();
@@ -152,10 +167,20 @@ async fn non_ascii_cursor_splits_prompt_at_the_byte_offset() {
 async fn reflex_context_renders_as_comment_block() {
     let model = FakeFim::with_answers(vec!["x".to_string()]);
     let svc = service(model.clone());
-    let _ = spawn_suggest(&svc, URI, "fn a() {", 1, Position { line: 0, character: 8 }, "intent: write tests\nsig: pub fn run()")
-        .await
-        .unwrap()
-        .unwrap();
+    let _ = spawn_suggest(
+        &svc,
+        URI,
+        "fn a() {",
+        1,
+        Position {
+            line: 0,
+            character: 8,
+        },
+        "intent: write tests\nsig: pub fn run()",
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let req = model.last_request();
     assert!(req.prompt.starts_with("// navigator context"));
     assert!(req.prompt.contains("// intent: write tests"));
@@ -171,11 +196,31 @@ async fn newer_request_cancels_the_older_one() {
     let svc = service(model.clone());
     let doc = "fn main() {}";
 
-    let older = spawn_suggest(&svc, URI, doc, 1, Position { line: 0, character: 4 }, "");
+    let older = spawn_suggest(
+        &svc,
+        URI,
+        doc,
+        1,
+        Position {
+            line: 0,
+            character: 4,
+        },
+        "",
+    );
     // Let the older request register and enter its debounce sleep.
     tokio::time::advance(Duration::from_millis(50)).await;
     // A newer request for the same document at a later version.
-    let newer = spawn_suggest(&svc, URI, doc, 2, Position { line: 0, character: 4 }, "");
+    let newer = spawn_suggest(
+        &svc,
+        URI,
+        doc,
+        2,
+        Position {
+            line: 0,
+            character: 4,
+        },
+        "",
+    );
     tokio::time::advance(Duration::from_millis(DEBOUNCE_MS + 100)).await;
 
     let outcome_older = older.await.unwrap();
@@ -183,7 +228,11 @@ async fn newer_request_cancels_the_older_one() {
     // The superseded request never surfaced and never called the model.
     assert!(outcome_older.is_err());
     assert_eq!(suggestion.item.text, "first");
-    assert_eq!(model.calls(), 1, "the older request must not call the model");
+    assert_eq!(
+        model.calls(),
+        1,
+        "the older request must not call the model"
+    );
 }
 
 /// A request superseded while the model is answering never surfaces; the
@@ -193,7 +242,17 @@ async fn superseded_while_answering_never_surfaces() {
     let model = FakeFim::with_answers_and_delay(vec!["late".to_string(), "fresh".to_string()], 100);
     let svc = service(model.clone());
 
-    let older = spawn_suggest(&svc, URI, "fn main() {}", 5, Position { line: 0, character: 4 }, "");
+    let older = spawn_suggest(
+        &svc,
+        URI,
+        "fn main() {}",
+        5,
+        Position {
+            line: 0,
+            character: 4,
+        },
+        "",
+    );
     // Past the debounce: drive the runtime (advance wakes the timer but
     // never polls the task) until the older request is inside the model
     // call, then supersede it.
@@ -204,7 +263,17 @@ async fn superseded_while_answering_never_surfaces() {
         }
     }
     assert_eq!(model.calls(), 1, "the older request must reach the model");
-    let newer = spawn_suggest(&svc, URI, "fn main() { ", 6, Position { line: 0, character: 4 }, "");
+    let newer = spawn_suggest(
+        &svc,
+        URI,
+        "fn main() { ",
+        6,
+        Position {
+            line: 0,
+            character: 4,
+        },
+        "",
+    );
     tokio::time::advance(Duration::from_millis(DEBOUNCE_MS + 300)).await;
 
     let outcome_older = older.await.unwrap();
@@ -217,9 +286,19 @@ async fn superseded_while_answering_never_surfaces() {
 #[tokio::test(start_paused = true)]
 async fn empty_model_answer_is_silent() {
     let svc = service(FakeFim::with_answers(vec![String::new()]));
-    let outcome = spawn_suggest(&svc, URI, "fn a() {}", 1, Position { line: 0, character: 4 }, "")
-        .await
-        .unwrap();
+    let outcome = spawn_suggest(
+        &svc,
+        URI,
+        "fn a() {}",
+        1,
+        Position {
+            line: 0,
+            character: 4,
+        },
+        "",
+    )
+    .await
+    .unwrap();
     assert_eq!(
         outcome.unwrap_err(),
         rust_agent::navigator::reflex::SuggestOutcome::ModelSilent
@@ -232,9 +311,19 @@ async fn empty_model_answer_is_silent() {
 async fn out_of_bounds_position_is_silent_without_a_model_call() {
     let model = FakeFim::with_answers(vec!["x".to_string()]);
     let svc = service(model.clone());
-    let outcome = spawn_suggest(&svc, URI, "fn a() {}", 1, Position { line: 99, character: 0 }, "")
-        .await
-        .unwrap();
+    let outcome = spawn_suggest(
+        &svc,
+        URI,
+        "fn a() {}",
+        1,
+        Position {
+            line: 99,
+            character: 0,
+        },
+        "",
+    )
+    .await
+    .unwrap();
     assert_eq!(
         outcome.unwrap_err(),
         rust_agent::navigator::reflex::SuggestOutcome::ModelSilent
@@ -247,7 +336,17 @@ async fn out_of_bounds_position_is_silent_without_a_model_call() {
 async fn nothing_is_sent_before_the_debounce_elapses() {
     let model = FakeFim::with_answers(vec!["x".to_string()]);
     let svc = service(model.clone());
-    let task = spawn_suggest(&svc, URI, "fn a() {}", 1, Position { line: 0, character: 4 }, "");
+    let task = spawn_suggest(
+        &svc,
+        URI,
+        "fn a() {}",
+        1,
+        Position {
+            line: 0,
+            character: 4,
+        },
+        "",
+    );
     tokio::time::advance(Duration::from_millis(DEBOUNCE_MS - 1)).await;
     assert_eq!(model.calls(), 0, "the debounce must hold the request");
     tokio::time::advance(Duration::from_millis(2)).await;
@@ -262,8 +361,28 @@ async fn nothing_is_sent_before_the_debounce_elapses() {
 async fn different_documents_do_not_cancel_each_other() {
     let model = FakeFim::with_answers(vec!["one".to_string(), "two".to_string()]);
     let svc = service(model);
-    let a = spawn_suggest(&svc, "file:///a.rs", "fn a() {}", 1, Position { line: 0, character: 4 }, "");
-    let b = spawn_suggest(&svc, "file:///b.rs", "fn b() {}", 1, Position { line: 0, character: 4 }, "");
+    let a = spawn_suggest(
+        &svc,
+        "file:///a.rs",
+        "fn a() {}",
+        1,
+        Position {
+            line: 0,
+            character: 4,
+        },
+        "",
+    );
+    let b = spawn_suggest(
+        &svc,
+        "file:///b.rs",
+        "fn b() {}",
+        1,
+        Position {
+            line: 0,
+            character: 4,
+        },
+        "",
+    );
     let (ra, rb) = tokio::join!(a, b);
     let mut texts = [
         ra.unwrap().unwrap().item.text,

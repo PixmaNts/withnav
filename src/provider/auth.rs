@@ -72,6 +72,14 @@ pub fn resolve_key(
     Err(ProviderError::MissingApiKey)
 }
 
+pub fn remove_key(config_dir: &Path, provider_name: &str) -> Result<(), ProviderError> {
+    let mut store = load_store(config_dir)?;
+    if let Some(_entry) = store.providers.remove_entry(provider_name) {
+        return save_store(config_dir, store);
+    }
+    Err(ProviderError::MissingApiKey)
+}
+
 pub fn set_key(config_dir: &Path, provider_name: &str, api_key: &str) -> Result<(), ProviderError> {
     std::fs::create_dir_all(config_dir).map_err(io_api)?;
     let mut store = load_store(config_dir).unwrap_or_default();
@@ -81,9 +89,19 @@ pub fn set_key(config_dir: &Path, provider_name: &str, api_key: &str) -> Result<
             api_key: api_key.to_string(),
         },
     );
+    save_store(config_dir, store)
+}
+
+/// Helper function to save a Store to disk.
+/// Used for saving the store after adding a key or removing one
+pub fn save_store(config_dir: &Path, store: AuthStore) -> Result<(), ProviderError> {
+    let path = auth_path(config_dir);
+    if path.exists() {
+        check_perms_or_fail(&path)?;
+    }
+    
     let serialized = serde_json::to_string_pretty(&store)
         .map_err(|e| ProviderError::Auth(format!("failed to serialize auth.json: {e}")))?;
-
     let path = auth_path(config_dir);
     let tmp = path.with_extension("json.tmp");
     {
@@ -145,6 +163,16 @@ mod tests {
         std::env::remove_var("RUST_AGENT_TEST_KEY2");
     }
 
+
+    #[test] 
+    fn remove_key_test() {
+        let tmp = tempfile::tempdir().unwrap();
+        set_key(tmp.path(), "omniroute", "super-secret-value").unwrap();
+        assert!(remove_key(tmp.path(), "omniroute").is_ok());
+        let e = resolve_key(tmp.path(), "omniroute", None).unwrap_err();
+        assert!(matches!(e, ProviderError::MissingApiKey));
+    }
+    
     #[test]
     fn missing_everywhere_returns_missing_api_key() {
         let tmp = tempfile::tempdir().unwrap();

@@ -138,9 +138,14 @@ pub fn spawn(
     sequencer: Sequencer,
     session_cancel: CancellationToken,
 ) -> tokio::task::JoinHandle<AgentActor> {
-    spawn_with_turn_end(session_id, actor, inbox, sequencer, session_cancel, Box::new(
-        |_| {},
-    ))
+    spawn_with_turn_end(
+        session_id,
+        actor,
+        inbox,
+        sequencer,
+        session_cancel,
+        Box::new(|_| {}),
+    )
 }
 
 /// [`spawn`] with an `on_turn_end(&[ChatMessage])` callback: called after

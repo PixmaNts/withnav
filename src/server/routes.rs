@@ -158,21 +158,28 @@ pub fn app(state: AppState) -> Router {
             any(crate::server::websocket::get_ws),
         )
         .with_state(state)
-        .layer(axum::middleware::from_fn(move |request: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| {
-            let token = token.clone();
-            async move {
-                if request.uri().path() != "/v1/health" {
-                    if let Some(token) = token {
-                        use axum::http::header::AUTHORIZATION;
-                        let expected = format!("Bearer {token}");
-                        if request.headers().get(AUTHORIZATION).and_then(|v| v.to_str().ok()) != Some(&expected) {
-                            return StatusCode::UNAUTHORIZED.into_response();
+        .layer(axum::middleware::from_fn(
+            move |request: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| {
+                let token = token.clone();
+                async move {
+                    if request.uri().path() != "/v1/health" {
+                        if let Some(token) = token {
+                            use axum::http::header::AUTHORIZATION;
+                            let expected = format!("Bearer {token}");
+                            if request
+                                .headers()
+                                .get(AUTHORIZATION)
+                                .and_then(|v| v.to_str().ok())
+                                != Some(&expected)
+                            {
+                                return StatusCode::UNAUTHORIZED.into_response();
+                            }
                         }
                     }
+                    next.run(request).await
                 }
-                next.run(request).await
-            }
-        }))
+            },
+        ))
 }
 
 /// Loopback bind + graceful shutdown (SIGINT/SIGTERM -> every active session

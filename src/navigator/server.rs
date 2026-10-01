@@ -11,8 +11,6 @@
 //! pipeline's templates; `wake_cognition` is logged (nothing shown) while
 //! the cognition layer does not exist.
 
-use std::collections::{HashMap, VecDeque};
-use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::time::Instant;
@@ -23,10 +21,8 @@ use tower_lsp_server::ls_types::*;
 use tower_lsp_server::{Client, LanguageServer};
 
 use crate::navigator::config::NavigatorConfig;
-use crate::navigator::document::{text_around_line, DocumentState};
-use crate::navigator::log::{
-    excerpt, now_iso8601, DeliveryOutcome, LogRecord, NavLog, PendingTrigger,
-};
+use crate::navigator::document::{text_around_line, Documents};
+use crate::navigator::log::{excerpt, DeliveryOutcome, LogRecord, NavLog, PendingTrigger};
 use crate::navigator::lsp::protocol::{
     ClearNotification, ClearParams, DiagnosticItem, DiagnosticsParams, FeedbackParams,
     InlineCompletionResult, IntentParams, Position, ReflexShownParams, RemarkNotification,
@@ -34,7 +30,7 @@ use crate::navigator::lsp::protocol::{
 };
 use crate::navigator::metacognition::{Diag, RemarkContext};
 use crate::navigator::pipeline::{
-    Action, Pipeline, PipelineError, PipelineSnapshot, TriggerInputs, TriggerKind, NO_REMARK_MS,
+    Action, Pipeline, PipelineError, PipelineSnapshot, TriggerInputs, TriggerKind,
 };
 use crate::navigator::ports::{DecisionModel, ModelError};
 use crate::navigator::reflex::{to_result, ReflexContext, ReflexService};
@@ -51,13 +47,8 @@ struct Inner {
     /// One id per server process, grouping every trigger record it writes.
     run_id: String,
     config: Mutex<NavigatorConfig>,
-    state: Mutex<HashMap<String, DocumentState>>,
-    language_ids: Mutex<HashMap<String, String>>,
-    diagnostics: Mutex<HashMap<String, Vec<Diag>>>,
+    documents: Mutex<Documents>,
     intent: Mutex<Option<String>>,
-    /// The recent live state per uri: the last few edit summaries each
-    /// `gather` saw, newest last, rendered into `{{live_state}}`.
-    live_state: Mutex<HashMap<String, VecDeque<EditSummary>>>,
     /// The workspace root (pipeline + intent resolution); set at initialize.
     workspace: Mutex<Option<PathBuf>>,
     /// The user-level navigator dir, fixed at construction.
@@ -115,11 +106,8 @@ impl NavigatorBackend {
                 log,
                 run_id: crate::navigator::new_ulid_string(),
                 config: Mutex::new(NavigatorConfig::default()),
-                state: Mutex::new(HashMap::new()),
-                language_ids: Mutex::new(HashMap::new()),
-                diagnostics: Mutex::new(HashMap::new()),
+                documents: Mutex::new(Documents::default()),
                 intent: Mutex::new(None),
-                live_state: Mutex::new(HashMap::new()),
                 workspace: Mutex::new(deps.workspace),
                 user_dir: deps.user_dir,
                 pipeline: Mutex::new(Pipeline::new(snapshot)),
@@ -222,85 +210,9 @@ fn wake_message(ctx: &TriggerContext, digest: &str) -> String {
     out
 }
 
-/// The first changed line (1-based) and its text in the new document:
-/// where this edit starts and what it says. `(0, "")` when nothing was
-/// inserted (a pure deletion has no new line to quote).
-fn first_changed_line(old: &str, new: &str) -> (usize, String) {
-    let diff = similar::TextDiff::from_lines(old, new);
-    for change in diff.iter_all_changes() {
-        if matches!(change.tag(), similar::ChangeTag::Insert) {
-            if let Some(idx) = change.new_index() {
-                return (idx + 1, change.value().trim_end().to_string());
-            }
-        }
-    }
-    (0, String::new())
-}
-
-/// Renders the live state as plain text: the newest edits first, then the
-/// latest error/warning diagnostics, capped in lines and characters.
-fn render_live_state(
-    live: &HashMap<String, VecDeque<EditSummary>>,
-    diagnostics: &HashMap<String, Vec<Diag>>,
-) -> String {
-    let mut edits: Vec<&EditSummary> = live.values().flat_map(|ring| ring.iter()).collect();
-    edits.sort_by(|a, b| b.ts.cmp(&a.ts));
-    let mut out = String::new();
-    for e in edits.iter().take(LIVE_STATE_EDITS) {
-        let _ = writeln!(
-            out,
-            "{} changed {} line(s) at {} | {}",
-            e.ts, e.changed_lines, e.first_line, e.excerpt
-        );
-    }
-    let mut diags: Vec<String> = Vec::new();
-    for (uri, items) in diagnostics {
-        for d in items {
-            if !matches!(d.severity.as_str(), "error" | "warning") {
-                continue;
-            }
-            diags.push(format!(
-                "{} line {}: [{}] {}",
-                uri.rsplit('/').next().unwrap_or(uri),
-                d.line + 1,
-                d.severity,
-                d.message
-            ));
-            if diags.len() >= LIVE_STATE_DIAGS {
-                break;
-            }
-        }
-        if diags.len() >= LIVE_STATE_DIAGS {
-            break;
-        }
-    }
-    for d in diags {
-        let _ = writeln!(out, "{d}");
-    }
-    excerpt(out.trim_end(), LIVE_STATE_MAX_CHARS)
-}
-
-/// One recorded edit of the live state: when `gather` ran, how many lines
-/// changed, where the first change sits and what that line says.
-struct EditSummary {
-    ts: String,
-    changed_lines: i64,
-    first_line: usize,
-    excerpt: String,
-}
-
 /// Lines on each side of the last edited line shown to the conversation
 /// trigger.
 const CONVERSATION_CONTEXT_LINES: usize = 20;
-
-/// Edit summaries kept per uri in the live state.
-const LIVE_STATE_EDITS: usize = 5;
-
-/// Diagnostics lines kept in the live state, in total across uris.
-const LIVE_STATE_DIAGS: usize = 20;
-
-/// Total character cap of the rendered `{{live_state}}`.
-const LIVE_STATE_MAX_CHARS: usize = 1500;
 
 /// One trigger's gathered context: everything the pipeline inputs, the
 /// templates and the log record need.
@@ -373,14 +285,6 @@ impl Inner {
         *cfg = NavigatorConfig::from_value(&value, &cfg);
     }
 
-    /// Cancels any in-flight evaluation for a document.
-    fn cancel_in_flight(doc: &mut DocumentState) {
-        if let Some(cancel) = doc.in_flight_cancel.take() {
-            cancel.cancel();
-        }
-        doc.in_flight_version = None;
-    }
-
     /// Spawns the idle timer for a uri: fires after `idle_ms` without edits.
     /// Each spawn replaces the previous timer for that uri (the old task sees
     /// a newer version on wake and stands down).
@@ -390,7 +294,7 @@ impl Inner {
             let idle_ms = inner.config.lock().await.idle_ms;
             tokio::time::sleep(std::time::Duration::from_millis(idle_ms)).await;
             // Stale timer: a newer edit restarted the countdown.
-            let current = inner.state.lock().await.get(&uri).map(|d| d.version);
+            let current = inner.documents.lock().await.get(&uri).map(|d| d.version);
             if current == Some(version) {
                 inner.evaluate(uri, TriggerKind::Idle).await;
             }
@@ -446,52 +350,12 @@ impl Inner {
         }
     }
 
-    /// The open documents keyed by absolute path (current editor text): the
-    /// metacognition's `read` tool answers from these instead of disk.
-    async fn open_buffers(&self) -> std::collections::BTreeMap<PathBuf, String> {
-        let state = self.state.lock().await;
-        state
-            .iter()
-            .filter_map(|(uri, doc)| {
-                crate::navigator::uri_to_path_str(uri).map(|p| (PathBuf::from(p), doc.text.clone()))
-            })
-            .collect()
-    }
-
     /// Gathers everything one trigger needs from the document state.
     async fn gather(&self, uri: &str, event: TriggerKind, now: Instant) -> Option<TriggerContext> {
-        let (changed_lines, since_last_remark_ms, version, doc_text, baseline, last_edit_line) = {
-            let state = self.state.lock().await;
-            let doc = state.get(uri)?;
-            let since = doc
-                .last_remark
-                .map(|t| (now.duration_since(t)).as_millis() as i64)
-                .unwrap_or(NO_REMARK_MS);
-            (
-                doc.changed_lines_since_baseline() as i64,
-                since,
-                doc.version,
-                doc.text.clone(),
-                doc.baseline.clone(),
-                doc.last_edit_line,
-            )
-        };
-        let language_id = self
-            .language_ids
-            .lock()
-            .await
-            .get(uri)
-            .cloned()
-            .unwrap_or_else(|| "plaintext".to_string());
-        let diags = self
+        let snapshot = self.documents.lock().await.snapshot(uri, event, now)?;
+        let has_errors = snapshot.diagnostics.iter().any(|d| d.severity == "error");
+        let diagnostics_text = snapshot
             .diagnostics
-            .lock()
-            .await
-            .get(uri)
-            .cloned()
-            .unwrap_or_default();
-        let has_errors = diags.iter().any(|d| d.severity == "error");
-        let diagnostics_text = diags
             .iter()
             .map(|d| format!("line {}: [{}] {}", d.line + 1, d.severity, d.message))
             .collect::<Vec<_>>()
@@ -499,40 +363,27 @@ impl Inner {
         let (intent_text, has_intent) = self.current_intent().await;
         // Reuse the prototype's diff/excerpt builders for the {{diff}} and
         // {{context}} template variables.
-        let mut ctx =
-            RemarkContext::build(uri, &language_id, &baseline, &doc_text, Vec::new(), None);
+        let mut ctx = RemarkContext::build(
+            uri,
+            &snapshot.language_id,
+            &snapshot.baseline,
+            &snapshot.text,
+            Vec::new(),
+            None,
+        );
         if event == TriggerKind::Conversation {
             // The change is in the conversation: no diff, and the context is
             // the code around the last edited line (the top of the file when
             // nothing was edited yet).
             ctx.diff = String::new();
-            ctx.text_excerpt =
-                text_around_line(&doc_text, last_edit_line, CONVERSATION_CONTEXT_LINES);
+            ctx.text_excerpt = text_around_line(
+                &snapshot.text,
+                snapshot.last_edit_line,
+                CONVERSATION_CONTEXT_LINES,
+            );
         }
         ctx.workspace = self.workspace.lock().await.clone();
-        ctx.open_buffers = self.open_buffers().await;
-        // The live state: this trigger's edit summary joins the ring, then
-        // the whole ring plus the diagnostics render as plain text.
-        let (first_line, first_line_text) = first_changed_line(&baseline, &doc_text);
-        let summary = EditSummary {
-            ts: now_iso8601(),
-            changed_lines,
-            first_line,
-            excerpt: excerpt(&first_line_text, 120),
-        };
-        let live_state_text = {
-            let mut live = self.live_state.lock().await;
-            // A conversation trigger is not an edit: it adds no summary.
-            if event != TriggerKind::Conversation {
-                let ring = live.entry(uri.to_string()).or_default();
-                ring.push_back(summary);
-                while ring.len() > LIVE_STATE_EDITS {
-                    ring.pop_front();
-                }
-            }
-            let diagnostics = self.diagnostics.lock().await;
-            render_live_state(&live, &diagnostics)
-        };
+        ctx.open_buffers = snapshot.open_buffers;
         // The conversation digest the fast layers judge against: the feed's
         // bounded view of what the driver and the cognition last agreed.
         let conversation_text = self
@@ -544,19 +395,19 @@ impl Inner {
         Some(TriggerContext {
             uri: uri.to_string(),
             event: "",
-            version,
-            changed_lines,
-            since_last_remark_ms,
+            version: snapshot.version,
+            changed_lines: snapshot.changed_lines,
+            since_last_remark_ms: snapshot.since_last_remark_ms,
             has_errors,
             has_intent,
             has_conversation,
             intent_text,
-            language_id,
+            language_id: snapshot.language_id,
             diff: ctx.diff,
             context_text: ctx.text_excerpt,
             diagnostics_text,
             conversation_text,
-            live_state_text,
+            live_state_text: snapshot.live_state,
         })
     }
 
@@ -619,7 +470,7 @@ impl Inner {
         // cancels it (the SAME critical section stores the handle).
         let cancel = CancellationToken::new();
         {
-            let mut state = self.state.lock().await;
+            let mut state = self.documents.lock().await;
             if let Some(doc) = state.get_mut(&uri) {
                 if doc.in_flight_version.is_some() {
                     return;
@@ -737,7 +588,7 @@ impl Inner {
                 // Silence rebases: this diff was considered and judged fine.
                 // A conversation trigger considered no diff.
                 if event != TriggerKind::Conversation {
-                    let mut state = self.state.lock().await;
+                    let mut state = self.documents.lock().await;
                     if let Some(doc) = state.get_mut(&uri) {
                         doc.rebase();
                     }
@@ -779,7 +630,7 @@ impl Inner {
             },
             prompt: Some(prompt),
             workspace: self.workspace.lock().await.clone(),
-            open_buffers: self.open_buffers().await,
+            open_buffers: self.documents.lock().await.open_buffers(),
         };
         let started = Instant::now();
         let result = tokio::select! {
@@ -804,7 +655,7 @@ impl Inner {
                 // A remark about a stale document version is dropped; a
                 // current one stamps the cooldown clock and rebases.
                 {
-                    let mut state = self.state.lock().await;
+                    let mut state = self.documents.lock().await;
                     match state.get_mut(&uri) {
                         Some(doc) if doc.version == ctx.version => {
                             doc.last_remark = Some(Instant::now());
@@ -873,7 +724,7 @@ impl Inner {
                 // Silence rebases: this diff was considered and judged fine.
                 // A conversation trigger considered no diff.
                 if ctx.event != TriggerKind::Conversation.as_str() {
-                    let mut state = self.state.lock().await;
+                    let mut state = self.documents.lock().await;
                     if let Some(doc) = state.get_mut(&uri) {
                         doc.rebase();
                     }
@@ -950,7 +801,7 @@ impl Inner {
             // and rebase, or the idle trigger right after the save wakes the
             // cognition a second time about the same change (observed
             // 2026-10-01: two identical wakes 1.5 s apart).
-            let mut state = self.state.lock().await;
+            let mut state = self.documents.lock().await;
             if let Some(doc) = state.get_mut(&uri) {
                 if doc.version == ctx.version {
                     doc.last_remark = Some(Instant::now());
@@ -987,7 +838,7 @@ impl Inner {
     }
 
     async fn clear_in_flight(&self, uri: &str) {
-        let mut state = self.state.lock().await;
+        let mut state = self.documents.lock().await;
         if let Some(doc) = state.get_mut(uri) {
             doc.in_flight_cancel = None;
             doc.in_flight_version = None;
@@ -1024,10 +875,10 @@ impl Inner {
                 message: d.message,
             })
             .collect();
-        self.diagnostics
+        self.documents
             .lock()
             .await
-            .insert(params.uri.clone(), items);
+            .set_diagnostics(&params.uri, items);
         self.evaluate(params.uri, TriggerKind::Diagnostics).await;
     }
 
@@ -1064,20 +915,11 @@ impl Inner {
     async fn on_did_open(self: &Arc<Self>, params: DidOpenTextDocumentParams) {
         let doc = params.text_document;
         let uri = crate::navigator::uri_key(&doc.uri);
-        self.language_ids
-            .lock()
-            .await
-            .insert(uri.clone(), doc.language_id.clone());
-        let version;
-        {
-            let mut state = self.state.lock().await;
-            let entry = state
-                .entry(uri.clone())
-                .or_insert_with(|| DocumentState::new(String::new(), 0));
-            entry.apply_change(doc.text, doc.version);
-            entry.rebase();
-            version = entry.version;
-        }
+        let version =
+            self.documents
+                .lock()
+                .await
+                .open(&uri, doc.language_id, doc.text, doc.version);
         *self.focused.lock().await = Some(uri.clone());
         self.spawn_idle_timer(uri, version);
     }
@@ -1092,24 +934,7 @@ impl Inner {
             .next()
             .map(|c| c.text)
             .unwrap_or_default();
-        {
-            let mut state = self.state.lock().await;
-            match state.get_mut(&uri) {
-                Some(doc) => {
-                    Self::cancel_in_flight(doc);
-                    let (line, _) = first_changed_line(&doc.text, &text);
-                    if line > 0 {
-                        doc.last_edit_line = line;
-                    }
-                    doc.apply_change(text, version);
-                }
-                None => {
-                    let mut doc = DocumentState::new(text, version);
-                    doc.rebase();
-                    state.insert(uri.clone(), doc);
-                }
-            }
-        }
+        self.documents.lock().await.change(&uri, text, version);
         *self.focused.lock().await = Some(uri.clone());
         self.spawn_idle_timer(uri, version);
     }
@@ -1130,18 +955,13 @@ impl Inner {
 
     async fn on_did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = crate::navigator::uri_key(&params.text_document.uri);
-        if let Some(mut doc) = self.state.lock().await.remove(&uri) {
-            Self::cancel_in_flight(&mut doc);
-        }
+        self.documents.lock().await.close(&uri);
         {
             let mut focused = self.focused.lock().await;
             if focused.as_deref() == Some(uri.as_str()) {
                 *focused = None;
             }
         }
-        self.language_ids.lock().await.remove(&uri);
-        self.diagnostics.lock().await.remove(&uri);
-        self.live_state.lock().await.remove(&uri);
         self.client
             .send_notification::<ClearNotification>(ClearParams { uri })
             .await;
@@ -1192,18 +1012,11 @@ impl Inner {
         else {
             return;
         };
-        let text = self.state.lock().await.get(uri).map(|d| d.text.clone());
-        let Some(text) = text else {
+        let document = self.documents.lock().await.text_and_language(uri);
+        let Some((text, language_id)) = document else {
             self.reflex_context.release().await;
             return;
         };
-        let language_id = self
-            .language_ids
-            .lock()
-            .await
-            .get(uri)
-            .cloned()
-            .unwrap_or_else(|| "plaintext".to_string());
         self.reflex_context
             .spawn_refresh(claim, uri, intent, conversation, language_id, &text);
     }
@@ -1342,26 +1155,18 @@ impl NavigatorBackend {
                 request_id: None,
             });
         };
-        let text = {
-            let state = self.inner.state.lock().await;
-            match state.get(&params.uri) {
-                Some(doc) => doc.text.clone(),
-                None => {
-                    return Ok(InlineCompletionResult {
-                        items: Vec::new(),
-                        request_id: None,
-                    })
-                }
-            }
-        };
-        let language_id = self
+        let document = self
             .inner
-            .language_ids
+            .documents
             .lock()
             .await
-            .get(&params.uri)
-            .cloned()
-            .unwrap_or_else(|| "plaintext".to_string());
+            .text_and_language(&params.uri);
+        let Some((text, language_id)) = document else {
+            return Ok(InlineCompletionResult {
+                items: Vec::new(),
+                request_id: None,
+            });
+        };
         let pos = Position {
             line: params.line,
             character: params.character,
@@ -1418,56 +1223,6 @@ mod tests {
             crate::navigator::new_ulid_string(),
             crate::navigator::new_ulid_string()
         );
-    }
-
-    #[test]
-    fn first_changed_line_finds_the_first_insert() {
-        let (line, text) = first_changed_line("a\nb\n", "a\nb\nc\nd\n");
-        assert_eq!(line, 3);
-        assert_eq!(text, "c");
-        // A pure deletion quotes nothing.
-        assert_eq!(first_changed_line("a\nb\n", "a\n"), (0, String::new()));
-        assert_eq!(first_changed_line("a\n", "a\n"), (0, String::new()));
-    }
-
-    #[test]
-    fn live_state_renders_edits_newest_first_and_diagnostics() {
-        let mut live: HashMap<String, VecDeque<EditSummary>> = HashMap::new();
-        let ring = live.entry("file:///ws/a.rs".to_string()).or_default();
-        for (ts, line) in [
-            ("2026-10-01T10:00:00.000Z", 1),
-            ("2026-10-01T10:01:00.000Z", 2),
-        ] {
-            ring.push_back(EditSummary {
-                ts: ts.to_string(),
-                changed_lines: 4,
-                first_line: line,
-                excerpt: "let x = 1;".to_string(),
-            });
-        }
-        let mut diagnostics: HashMap<String, Vec<Diag>> = HashMap::new();
-        diagnostics.insert(
-            "file:///ws/a.rs".to_string(),
-            vec![
-                Diag {
-                    line: 4,
-                    severity: "error".to_string(),
-                    message: "cannot find value `y`".to_string(),
-                },
-                Diag {
-                    line: 9,
-                    severity: "info".to_string(),
-                    message: "unrelated hint".to_string(),
-                },
-            ],
-        );
-        let text = render_live_state(&live, &diagnostics);
-        // Newest edit first.
-        let first = text.lines().next().unwrap();
-        assert!(first.starts_with("2026-10-01T10:01:00.000Z"), "{text}");
-        // Only errors and warnings make it in.
-        assert!(text.contains("[error] cannot find value `y`"), "{text}");
-        assert!(!text.contains("unrelated hint"), "{text}");
     }
 
     #[test]

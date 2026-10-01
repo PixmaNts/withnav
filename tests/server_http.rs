@@ -6,7 +6,7 @@
 //! message).
 
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -17,70 +17,20 @@ use tower::ServiceExt;
 
 use rust_agent::server::{app, AppState, ServerConfig};
 
+mod common;
+use common::server::TestServerConfig;
+
 /// SIGTERM is PROCESS-GLOBAL: the real-signal test must not fire while
 /// another test's server (which installs its own shutdown_signal handler)
 /// is running. Both real-socket tests hold this lock.
 static REAL_SOCKET_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// Writes a models.json whose provider base_url is a dead loopback port and
-/// returns its path. Creating a session loads the file but makes NO network
-/// call, so the dead port is never dialed here.
-fn write_test_models(dir: &Path) -> PathBuf {
-    let path = dir.join("models.json");
-    std::fs::write(
-        &path,
-        json!({
-            "providers": {
-                "mock": {
-                    "base_url": "http://127.0.0.1:1/v1",
-                    "api_key_env": "RUST_AGENT_TEST_SERVER_KEY",
-                    "headers": {},
-                    "connect_timeout_ms": 100,
-                    "request_timeout_ms": 100
-                }
-            },
-            "models": {
-                "default": {
-                    "provider": "mock",
-                    "model": "mock-model",
-                    "reasoning_history": "preserve"
-                }
-            }
-        })
-        .to_string(),
-    )
-    .expect("write models.json");
-    path
-}
-
 fn test_config(tmp: &Path) -> ServerConfig {
-    let _models_path = write_test_models(tmp);
-    let config_dir = tmp.join("cfg");
-    std::fs::create_dir_all(&config_dir).expect("config dir");
-    let auth_path = config_dir.join("auth.json");
-    std::fs::write(
-        &auth_path,
-        json!({ "mock": { "api_key": "test-key" } }).to_string(),
-    )
-    .expect("write auth.json");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&auth_path, std::fs::Permissions::from_mode(0o600))
-            .expect("chmod 600");
-    }
-    ServerConfig {
-        bind: "127.0.0.1:0".parse().expect("loopback bind"),
-        models_path: Some(tmp.join("models.json")),
-        config_dir,
-        allow_non_loopback: false,
-        bearer_token: None,
-        history_db: None,
-    }
+    TestServerConfig::unreachable(tmp).config()
 }
 
 fn test_state(tmp: &Path) -> AppState {
-    AppState::new(test_config(tmp))
+    TestServerConfig::unreachable(tmp).state()
 }
 
 async fn create_session(state: &AppState, workspace: &str, model: Option<&str>) -> Value {

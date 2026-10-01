@@ -5,7 +5,6 @@
 //! resumed session replays the stored events; delete; the list is
 //! per-workspace; without `history_db` nothing is written.
 
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -13,103 +12,20 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use rust_agent::bus::event::EventEnvelope;
-use rust_agent::server::{AppState, ServerConfig};
+use rust_agent::server::AppState;
 
-// ---- fixtures (same technique as server_messages.rs) ----
+mod common;
+use common::server::{post_create_session, post_message_ok, spawn_server, TestServerConfig};
+use common::sse::{http_sse, sse_body};
 
-fn write_test_models(dir: &Path, base_url: &str) {
-    std::fs::write(
-        dir.join("models.json"),
-        json!({
-            "providers": {
-                "mock": {
-                    "base_url": base_url,
-                    "api_key_env": "RUST_AGENT_TEST_HISTORY_KEY",
-                    "headers": {},
-                    "connect_timeout_ms": 2000,
-                    "request_timeout_ms": 600000
-                }
-            },
-            "models": {
-                "cognition": {
-                    "provider": "mock",
-                    "model": "mock-opus",
-                    "reasoning_history": "preserve"
-                }
-            }
-        })
-        .to_string(),
-    )
-    .expect("write models.json");
-}
-
+/// A state over a `cognition`-aliased mock provider at `base_url`, with
+/// history persisted to `history_db` when given.
 fn make_state(tmp: &Path, base_url: &str, history_db: Option<PathBuf>) -> AppState {
-    write_test_models(tmp, base_url);
-    let config_dir = tmp.join("cfg");
-    std::fs::create_dir_all(&config_dir).expect("config dir");
-    let auth_path = config_dir.join("auth.json");
-    std::fs::write(
-        &auth_path,
-        json!({ "mock": { "api_key": "test-key" } }).to_string(),
-    )
-    .expect("write auth.json");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&auth_path, std::fs::Permissions::from_mode(0o600))
-            .expect("chmod 600");
+    let mut config = TestServerConfig::mock(tmp, base_url).model_alias("cognition", "mock-opus");
+    if let Some(db) = history_db {
+        config = config.history_db(db);
     }
-    AppState::new(ServerConfig {
-        bind: "127.0.0.1:0".parse().expect("loopback bind"),
-        models_path: Some(tmp.join("models.json")),
-        config_dir,
-        allow_non_loopback: false,
-        bearer_token: None,
-        history_db,
-    })
-}
-
-async fn spawn_server(state: AppState) -> (SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("ephemeral bind");
-    let addr = listener.local_addr().expect("local addr");
-    let task = tokio::spawn(async move {
-        let _ = rust_agent::server::routes::serve_state_on(state, listener).await;
-    });
-    let mut up = false;
-    for _ in 0..100 {
-        if reqwest::get(format!("http://{addr}/v1/health"))
-            .await
-            .is_ok()
-        {
-            up = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(up, "server never came up");
-    (addr, task)
-}
-
-fn sse_body(events: &[&str]) -> String {
-    let mut b = String::new();
-    for e in events {
-        b.push_str("data: ");
-        b.push_str(e);
-        b.push_str("\n\n");
-    }
-    b.push_str("data: [DONE]\n\n");
-    b
-}
-
-fn http_sse(body: &str) -> Vec<u8> {
-    format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    )
-    .into_bytes()
+    config.state()
 }
 
 /// A scripted provider that answers EVERY connection with the given SSE
@@ -145,29 +61,6 @@ async fn spawn_mock_provider(response: Vec<u8>) -> MockProvider {
         url: format!("http://{addr}/v1"),
         requests,
     }
-}
-
-async fn create_session(base: &str, body: Value) -> reqwest::Response {
-    reqwest::Client::new()
-        .post(format!("{base}/v1/sessions"))
-        .json(&body)
-        .send()
-        .await
-        .expect("create")
-}
-
-async fn post_message(base: &str, id: &str, text: &str) {
-    let resp = reqwest::Client::new()
-        .post(format!("{base}/v1/sessions/{id}/messages"))
-        .json(&json!({
-            "target_actor_id": "agent:main",
-            "mode": "next-turn",
-            "content": [{ "type": "text", "text": text }]
-        }))
-        .send()
-        .await
-        .expect("post message");
-    assert_eq!(resp.status(), 200);
 }
 
 async fn list_sessions(base: &str, workspace: &Path) -> Value {
@@ -287,9 +180,9 @@ async fn spawn_history_server() -> (ServerA, PathBuf, tempfile::TempDir) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn converse_persists_events_title_and_transcript() {
     let (server, db, _keep) = spawn_history_server().await;
-    let created = create_session(
+    let created = post_create_session(
         &server.base,
-        json!({ "workspace": server.ws, "profile": "navigator" }),
+        &json!({ "workspace": server.ws, "profile": "navigator" }),
     )
     .await;
     assert_eq!(created.status(), 200);
@@ -299,7 +192,7 @@ async fn converse_persists_events_title_and_transcript() {
     let handle = server.state.handle(id.parse().unwrap()).expect("live");
     let sub = handle.sequencer.subscribe_since(None).await.expect("sub");
     let msg = "Remember the word: pineapple<editor-context>{\"file\":\"a.rs\"}</editor-context>";
-    post_message(&server.base, &id, msg).await;
+    post_message_ok(&server.base, &id, msg).await;
     let events = collect_until(sub, |e| e.kind == "turn.end").await;
     assert!(
         events
@@ -343,9 +236,9 @@ async fn converse_persists_events_title_and_transcript() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resume_in_a_fresh_state_replays_and_remembers() {
     let (server, db, _keep) = spawn_history_server().await;
-    let created = create_session(
+    let created = post_create_session(
         &server.base,
-        json!({ "workspace": server.ws, "profile": "navigator" }),
+        &json!({ "workspace": server.ws, "profile": "navigator" }),
     )
     .await;
     let created: Value = created.json().await.expect("json");
@@ -354,7 +247,7 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
     // Turn 1 in the ORIGINAL state.
     let handle = server.state.handle(id.parse().unwrap()).expect("live");
     let sub = handle.sequencer.subscribe_since(None).await.expect("sub");
-    post_message(&server.base, &id, "Remember the word: pineapple").await;
+    post_message_ok(&server.base, &id, "Remember the word: pineapple").await;
     let events = collect_until(sub, |e| e.kind == "turn.end").await;
     let original_seqs: Vec<u64> = events.iter().map(|e| e.seq).collect();
     let original_max = *original_seqs.iter().max().expect("seqs");
@@ -410,7 +303,7 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
 
     // Drive the next turn: the model request must contain the earlier
     // messages (the remembered word).
-    post_message(&base2, &id, "What word did I ask you to remember?").await;
+    post_message_ok(&base2, &id, "What word did I ask you to remember?").await;
     let events2 = collect_until(sub2, |e| e.kind == "turn.end").await;
     assert!(events2.iter().any(|e| e.payload["outcome"] == "done"));
     let new_events: Vec<&EventEnvelope> = events2.iter().filter(|e| e.seq > original_max).collect();
@@ -467,9 +360,9 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_removes_from_memory_and_store() {
     let (server, _db, _keep) = spawn_history_server().await;
-    let created: Value = create_session(
+    let created: Value = post_create_session(
         &server.base,
-        json!({ "workspace": server.ws, "profile": "navigator" }),
+        &json!({ "workspace": server.ws, "profile": "navigator" }),
     )
     .await
     .json()
@@ -478,7 +371,7 @@ async fn delete_removes_from_memory_and_store() {
     let id = created["session_id"].as_str().expect("id").to_string();
     let handle = server.state.handle(id.parse().unwrap()).expect("live");
     let sub = handle.sequencer.subscribe_since(None).await.expect("sub");
-    post_message(&server.base, &id, "hello").await;
+    post_message_ok(&server.base, &id, "hello").await;
     let _ = collect_until(sub, |e| e.kind == "turn.end").await;
     wait_for_list(&server.base, &server.ws, 1).await;
 
@@ -516,9 +409,9 @@ async fn delete_removes_from_memory_and_store() {
     assert_eq!(resp.status(), 404);
 
     // Resuming the deleted id 404s too.
-    let resp = create_session(
+    let resp = post_create_session(
         &server.base,
-        json!({ "workspace": server.ws, "profile": "navigator", "resume": id }),
+        &json!({ "workspace": server.ws, "profile": "navigator", "resume": id }),
     )
     .await;
     assert_eq!(resp.status(), 404);
@@ -537,9 +430,9 @@ async fn list_is_per_workspace() {
         (&server.ws, "in the first workspace"),
         (&other, "in the second"),
     ] {
-        let created: Value = create_session(
+        let created: Value = post_create_session(
             &server.base,
-            json!({ "workspace": ws, "profile": "navigator" }),
+            &json!({ "workspace": ws, "profile": "navigator" }),
         )
         .await
         .json()
@@ -548,7 +441,7 @@ async fn list_is_per_workspace() {
         let id = created["session_id"].as_str().expect("id").to_string();
         let handle = server.state.handle(id.parse().unwrap()).expect("live");
         let sub = handle.sequencer.subscribe_since(None).await.expect("sub");
-        post_message(&server.base, &id, text).await;
+        post_message_ok(&server.base, &id, text).await;
         let _ = collect_until(sub, |e| e.kind == "turn.end").await;
     }
 
@@ -573,9 +466,9 @@ async fn without_history_db_nothing_is_written() {
     let ws = root.join("ws");
     std::fs::create_dir_all(&ws).expect("ws");
 
-    let created: Value = create_session(
+    let created: Value = post_create_session(
         &format!("http://{addr}"),
-        json!({ "workspace": ws, "profile": "navigator" }),
+        &json!({ "workspace": ws, "profile": "navigator" }),
     )
     .await
     .json()
@@ -584,7 +477,7 @@ async fn without_history_db_nothing_is_written() {
     let id = created["session_id"].as_str().expect("id").to_string();
     let handle = state.handle(id.parse().unwrap()).expect("live");
     let sub = handle.sequencer.subscribe_since(None).await.expect("sub");
-    post_message(&format!("http://{addr}"), &id, "no persistence").await;
+    post_message_ok(&format!("http://{addr}"), &id, "no persistence").await;
     let _ = collect_until(sub, |e| e.kind == "turn.end").await;
 
     let body = list_sessions(&format!("http://{addr}"), &ws).await;

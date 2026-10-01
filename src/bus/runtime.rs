@@ -544,6 +544,7 @@ mod tests {
     use crate::bus::command::{Command, ContentBlock, DeliveryMode};
     use crate::bus::event::EventEnvelope;
     use crate::provider::config::{ProviderConfig, ReasoningHistory};
+    use crate::provider::test_support::{http_sse, sse_body};
     use crate::tools::{Registry, ToolContext};
     use std::collections::BTreeMap;
     use std::time::Duration;
@@ -552,26 +553,6 @@ mod tests {
     use tokio::sync::mpsc;
 
     // ---- mock provider (same technique as the loop.rs tests) ----
-
-    fn sse_body(events: &[&str]) -> String {
-        let mut b = String::new();
-        for e in events {
-            b.push_str("data: ");
-            b.push_str(e);
-            b.push_str("\n\n");
-        }
-        b.push_str("data: [DONE]\n\n");
-        b
-    }
-
-    fn http_sse(body: &str) -> Vec<u8> {
-        format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        )
-        .into_bytes()
-    }
 
     async fn read_request(sock: &mut tokio::net::TcpStream) -> String {
         let mut buf = Vec::new();

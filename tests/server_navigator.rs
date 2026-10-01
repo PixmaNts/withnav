@@ -14,37 +14,15 @@
 use std::path::Path;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::Value;
 use wiremock::matchers::{header, method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer};
 
-use rust_agent::server::{AppState, ServerConfig};
+use rust_agent::server::AppState;
 
-fn write_test_models(dir: &Path, base_url: &str) {
-    std::fs::write(
-        dir.join("models.json"),
-        json!({
-            "providers": {
-                "mock": {
-                    "base_url": base_url,
-                    "api_key_env": "RUST_AGENT_TEST_NAV_KEY",
-                    "headers": {},
-                    "connect_timeout_ms": 2000,
-                    "request_timeout_ms": 600000
-                }
-            },
-            "models": {
-                "cognition": {
-                    "provider": "mock",
-                    "model": "mock-opus",
-                    "reasoning_history": "preserve"
-                }
-            }
-        })
-        .to_string(),
-    )
-    .expect("write models.json");
-}
+mod common;
+use common::server::TestServerConfig;
+use common::sse::sse_response;
 
 fn test_state(tmp: &Path, base_url: &str) -> AppState {
     test_state_with_feed(tmp, base_url, None)
@@ -55,32 +33,9 @@ fn test_state_with_feed(
     base_url: &str,
     conversation: Option<rust_agent::navigator::ConversationFeed>,
 ) -> AppState {
-    write_test_models(tmp, base_url);
-    let config_dir = tmp.join("cfg");
-    std::fs::create_dir_all(&config_dir).expect("config dir");
-    let auth_path = config_dir.join("auth.json");
-    std::fs::write(
-        &auth_path,
-        json!({ "mock": { "api_key": "test-key" } }).to_string(),
-    )
-    .expect("write auth.json");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&auth_path, std::fs::Permissions::from_mode(0o600))
-            .expect("chmod 600");
-    }
-    AppState::with_conversation(
-        ServerConfig {
-            bind: "127.0.0.1:0".parse().expect("loopback bind"),
-            models_path: Some(tmp.join("models.json")),
-            config_dir,
-            allow_non_loopback: false,
-            bearer_token: None,
-            history_db: None,
-        },
-        conversation,
-    )
+    TestServerConfig::mock(tmp, base_url)
+        .model_alias("cognition", "mock-opus")
+        .state_with_conversation(conversation)
 }
 
 /// Drains the sequencer stream (replay + live) until `pred` matches, then
@@ -124,11 +79,10 @@ async fn navigator_profile_sends_the_cognition_prompt_as_second_system_message()
     let server = MockServer::start().await;
     let done =
         r#"{"choices":[{"index":0,"delta":{"content":"guide answer"},"finish_reason":"stop"}]}"#;
-    let sse = format!("data: {done}\n\ndata: [DONE]\n\n");
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .and(header("authorization", "Bearer test-key"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+        .respond_with(sse_response(&[done]))
         .expect(1)
         .mount(&server)
         .await;
@@ -241,11 +195,10 @@ async fn post_driver_message(
 async fn wake_through_the_feed_lands_as_a_navigator_sourced_message_and_turn() {
     let server = MockServer::start().await;
     let done = r#"{"choices":[{"index":0,"delta":{"content":"noted, let's discuss"},"finish_reason":"stop"}]}"#;
-    let sse = format!("data: {done}\n\ndata: [DONE]\n\n");
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .and(header("authorization", "Bearer test-key"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+        .respond_with(sse_response(&[done]))
         .expect(2)
         .mount(&server)
         .await;
@@ -366,12 +319,11 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
         (done, "the local scope", 4),
         (done2, "latest wake", 3),
     ] {
-        let sse = format!("data: {body}\n\ndata: [DONE]\n\n");
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
             .and(header("authorization", "Bearer test-key"))
             .and(wiremock::matchers::body_string_contains(marker.to_string()))
-            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .respond_with(sse_response(&[body]))
             .expect(1)
             .with_priority(priority)
             .mount(&server)

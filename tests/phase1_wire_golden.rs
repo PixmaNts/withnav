@@ -22,27 +22,10 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+mod common;
+use common::sse::{http_sse, sse_body};
+
 const FIXTURE_DIR: &str = "tests/fixtures/phase1_wire";
-
-fn sse_body(events: &[&str]) -> String {
-    let mut b = String::new();
-    for e in events {
-        b.push_str("data: ");
-        b.push_str(e);
-        b.push_str("\n\n");
-    }
-    b.push_str("data: [DONE]\n\n");
-    b
-}
-
-fn http_sse(body: &str) -> Vec<u8> {
-    format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    )
-    .into_bytes()
-}
 
 async fn read_request(sock: &mut tokio::net::TcpStream) -> String {
     let mut buf = Vec::new();

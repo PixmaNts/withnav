@@ -4,135 +4,16 @@
 //! scripted-TCP technique as the runtime tests) so a posted message drives a
 //! real turn. Frozen bodies per ticket 04 Q3.
 
-use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use rust_agent::bus::event::EventEnvelope;
-use rust_agent::server::{AppState, ServerConfig};
 
-/// The mock provider is scripted per test; real-socket tests (and the
-/// in-process POSTs against the same AppState) must not race on SIGTERM or
-/// the models.json fixture, so each test builds its own tempdir. No shared
-/// lock needed: nothing here raises signals.
-///
-/// Writes a models.json whose provider base_url is `base_url`.
-fn write_test_models(dir: &Path, base_url: &str) -> PathBuf {
-    let path = dir.join("models.json");
-    std::fs::write(
-        &path,
-        json!({
-            "providers": {
-                "mock": {
-                    "base_url": base_url,
-                    "api_key_env": "RUST_AGENT_TEST_MESSAGES_KEY",
-                    "headers": {},
-                    "connect_timeout_ms": 2000,
-                    "request_timeout_ms": 600000
-                }
-            },
-            "models": {
-                "default": {
-                    "provider": "mock",
-                    "model": "mock-model",
-                    "reasoning_history": "preserve"
-                }
-            }
-        })
-        .to_string(),
-    )
-    .expect("write models.json");
-    path
-}
-
-fn test_config(tmp: &Path, base_url: &str) -> ServerConfig {
-    write_test_models(tmp, base_url);
-    let config_dir = tmp.join("cfg");
-    std::fs::create_dir_all(&config_dir).expect("config dir");
-    let auth_path = config_dir.join("auth.json");
-    std::fs::write(
-        &auth_path,
-        json!({ "mock": { "api_key": "test-key" } }).to_string(),
-    )
-    .expect("write auth.json");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&auth_path, std::fs::Permissions::from_mode(0o600))
-            .expect("chmod 600");
-    }
-    ServerConfig {
-        bind: "127.0.0.1:0".parse().expect("loopback bind"),
-        models_path: Some(tmp.join("models.json")),
-        config_dir,
-        allow_non_loopback: false,
-        bearer_token: None,
-        history_db: None,
-    }
-}
-
-/// Spawns the real server (serve_state_on) on an ephemeral socket over the
-/// given state; returns the base URL. The caller drops/aborts the task.
-async fn spawn_server(state: AppState) -> (SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("ephemeral bind");
-    let addr = listener.local_addr().expect("local addr");
-    let task = tokio::spawn(async move {
-        let _ = rust_agent::server::routes::serve_state_on(state, listener).await;
-    });
-    // Wait until the socket answers health (bounded, no fixed sleep race).
-    let mut up = false;
-    for _ in 0..100 {
-        if reqwest::get(format!("http://{addr}/v1/health"))
-            .await
-            .is_ok()
-        {
-            up = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(up, "server never came up");
-    (addr, task)
-}
-
-/// Creates a session over HTTP and returns its ULID string.
-async fn create_session(base: &str, ws: &Path) -> String {
-    let created: Value = reqwest::Client::new()
-        .post(format!("{base}/v1/sessions"))
-        .json(&json!({ "workspace": ws.to_str().expect("utf8 ws") }))
-        .send()
-        .await
-        .expect("create")
-        .json()
-        .await
-        .expect("create json");
-    created["session_id"]
-        .as_str()
-        .expect("session id")
-        .to_string()
-}
-
-async fn post_message(base: &str, id: &str, body: Value) -> reqwest::Response {
-    reqwest::Client::new()
-        .post(format!("{base}/v1/sessions/{id}/messages"))
-        .json(&body)
-        .send()
-        .await
-        .expect("post message")
-}
-
-fn text_message(text: &str) -> Value {
-    json!({
-        "target_actor_id": "agent:main",
-        "mode": "next-turn",
-        "content": [{ "type": "text", "text": text }]
-    })
-}
+mod common;
+use common::server::{create_session, post_message, post_message_body, TestServer};
+use common::sse::{http_sse, sse_body};
 
 /// Collects (kind, seq) pairs from replay + live until `pred` matches, then
 /// settles (same-tick sequenced events land in the same batch) and drains
@@ -165,89 +46,6 @@ async fn collect_until(
     out
 }
 
-// ---- scripted mock provider (same technique as the runtime tests) ----
-
-fn sse_body(events: &[&str]) -> String {
-    let mut b = String::new();
-    for e in events {
-        b.push_str("data: ");
-        b.push_str(e);
-        b.push_str("\n\n");
-    }
-    b.push_str("data: [DONE]\n\n");
-    b
-}
-
-fn http_sse(body: &str) -> Vec<u8> {
-    format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    )
-    .into_bytes()
-}
-
-struct MockProvider {
-    url: String,
-}
-
-/// Scripted responses, one per accepted connection (queued FIFO).
-async fn spawn_mock_provider(responses: Vec<Vec<u8>>) -> MockProvider {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("mock bind");
-    let addr = listener.local_addr().expect("mock addr");
-    tokio::spawn(async move {
-        for resp in responses {
-            let Ok((mut sock, _)) = listener.accept().await else {
-                break;
-            };
-            let mut buf = vec![0u8; 16384];
-            let _ = sock.read(&mut buf).await;
-            let _ = sock.write_all(&resp).await;
-            let _ = sock.flush().await;
-            let _ = sock.shutdown().await;
-        }
-    });
-    MockProvider {
-        url: format!("http://{addr}/v1"),
-    }
-}
-
-struct TestServer {
-    base: String,
-    state: AppState,
-    ws: PathBuf,
-    _mock: MockProvider,
-    task: tokio::task::JoinHandle<()>,
-    _root: tempfile::TempDir,
-}
-
-impl Drop for TestServer {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-async fn spawn_test_server(mock_responses: Vec<Vec<u8>>) -> TestServer {
-    let mock = spawn_mock_provider(mock_responses).await;
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let root = tmp.path().to_path_buf();
-    let config = test_config(&root, &mock.url);
-    let state = AppState::new(config);
-    let (addr, task) = spawn_server(state.clone()).await;
-    let ws = root.join("ws");
-    std::fs::create_dir_all(&ws).expect("workspace dir");
-    TestServer {
-        base: format!("http://{addr}"),
-        state,
-        ws,
-        _mock: mock,
-        task,
-        _root: tmp,
-    }
-}
-
 // ---- (a) happy path: 200 {accepted:true} immediately; message reaches the agent ----
 
 // Given a live session backed by a scripted one-turn mock provider
@@ -257,7 +55,7 @@ async fn spawn_test_server(mock_responses: Vec<Vec<u8>>) -> TestServer {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn post_message_acks_immediately_and_drives_a_turn() {
     let done = r#"{"choices":[{"index":0,"delta":{"content":"all done"},"finish_reason":"stop"}]}"#;
-    let server = spawn_test_server(vec![http_sse(&sse_body(&[done]))]).await;
+    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
 
     let id = create_session(&server.base, &server.ws).await;
     let handle = server
@@ -270,7 +68,7 @@ async fn post_message_acks_immediately_and_drives_a_turn() {
         .await
         .expect("subscribe");
 
-    let resp = post_message(&server.base, &id, text_message("please finish the turn")).await;
+    let resp = post_message(&server.base, &id, "please finish the turn").await;
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.expect("ack json");
     let command_id = body["command_id"].as_str().expect("command_id").to_string();
@@ -338,12 +136,12 @@ async fn full_inbox_is_a_structured_503_inbox_full() {
         let _ = tokio::time::timeout(Duration::from_secs(15), sock.read(&mut sink)).await;
     });
 
-    let server = spawn_test_server_with_provider_url(format!("http://{addr}/v1")).await;
+    let server = TestServer::start_with_provider_url(&format!("http://{addr}/v1")).await;
 
     let id = create_session(&server.base, &server.ws).await;
 
     // First message starts the turn that will never finish.
-    let resp = post_message(&server.base, &id, text_message("start the endless turn")).await;
+    let resp = post_message(&server.base, &id, "start the endless turn").await;
     assert_eq!(resp.status(), 200);
     tokio::time::timeout(Duration::from_secs(5), stream_started_rx)
         .await
@@ -352,12 +150,12 @@ async fn full_inbox_is_a_structured_503_inbox_full() {
 
     // Flood the bounded transport while the actor is mid-turn.
     for i in 0..rust_agent::bus::inbox::INBOX_CAPACITY {
-        let resp = post_message(&server.base, &id, text_message(&format!("filler {i}"))).await;
+        let resp = post_message(&server.base, &id, &format!("filler {i}")).await;
         assert_eq!(resp.status(), 200, "filler {i} must be accepted");
     }
 
     // One more: rejected, never dropped-or-blocked.
-    let resp = post_message(&server.base, &id, text_message("one too many")).await;
+    let resp = post_message(&server.base, &id, "one too many").await;
     assert_eq!(resp.status(), 503);
     let body: Value = resp.json().await.expect("503 json");
     assert_eq!(body["accepted"], false);
@@ -390,27 +188,6 @@ async fn full_inbox_is_a_structured_503_inbox_full() {
     );
 }
 
-/// Variant of [`spawn_test_server`] with a caller-supplied provider URL (the
-/// never-ending-stream test owns its mock connection directly).
-async fn spawn_test_server_with_provider_url(provider_url: String) -> TestServer {
-    let mock = MockProvider { url: provider_url };
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let root = tmp.path().to_path_buf();
-    let config = test_config(&root, &mock.url);
-    let state = AppState::new(config);
-    let (addr, task) = spawn_server(state.clone()).await;
-    let ws = root.join("ws");
-    std::fs::create_dir_all(&ws).expect("workspace dir");
-    TestServer {
-        base: format!("http://{addr}"),
-        state,
-        ws,
-        _mock: mock,
-        task,
-        _root: tmp,
-    }
-}
-
 // ---- (d) non-Text content -> 400 structured ----
 
 // Given a message whose content includes a non-Text block
@@ -418,7 +195,7 @@ async fn spawn_test_server_with_provider_url(provider_url: String) -> TestServer
 // Then 400 with the shared {"error": ...} shape and NOTHING is sequenced
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn non_text_content_is_a_structured_400_and_not_sequenced() {
-    let server = spawn_test_server(vec![]).await;
+    let server = TestServer::start(vec![]).await;
     let id = create_session(&server.base, &server.ws).await;
     let handle = server
         .state
@@ -430,10 +207,10 @@ async fn non_text_content_is_a_structured_400_and_not_sequenced() {
         .await
         .expect("subscribe");
 
-    let resp = post_message(
+    let resp = post_message_body(
         &server.base,
         &id,
-        json!({
+        &json!({
             "target_actor_id": "agent:main",
             "mode": "next-turn",
             "content": [
@@ -466,14 +243,14 @@ async fn non_text_content_is_a_structured_400_and_not_sequenced() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn steer_and_interrupt_modes_are_downgraded_with_a_notice() {
     let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;
-    let server = spawn_test_server(vec![http_sse(&sse_body(&[done]))]).await;
+    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
     let id = create_session(&server.base, &server.ws).await;
 
     for (mode, name) in [("steer", "steer"), ("interrupt", "interrupt")] {
-        let resp = post_message(
+        let resp = post_message_body(
             &server.base,
             &id,
-            json!({
+            &json!({
                 "target_actor_id": "agent:main",
                 "mode": mode,
                 "content": [{ "type": "text", "text": format!("message for {name}") }]
@@ -523,7 +300,7 @@ async fn stop_tears_down_in_order_and_later_messages_are_rejected() {
         let _ = tokio::time::timeout(Duration::from_secs(20), sock.read(&mut sink)).await;
     });
 
-    let server = spawn_test_server_with_provider_url(format!("http://{addr}/v1")).await;
+    let server = TestServer::start_with_provider_url(&format!("http://{addr}/v1")).await;
     let id = create_session(&server.base, &server.ws).await;
     let handle = server
         .state
@@ -536,7 +313,7 @@ async fn stop_tears_down_in_order_and_later_messages_are_rejected() {
         .expect("subscribe before stop");
 
     // Start the turn that will be interrupted.
-    let resp = post_message(&server.base, &id, text_message("will be interrupted")).await;
+    let resp = post_message(&server.base, &id, "will be interrupted").await;
     assert_eq!(resp.status(), 200);
     tokio::time::timeout(Duration::from_secs(5), stream_started_rx)
         .await
@@ -593,7 +370,7 @@ async fn stop_tears_down_in_order_and_later_messages_are_rejected() {
 
     // Follow-up POST /messages -> 404/409; nothing ever sequenced after
     // session.end.
-    let late = post_message(&server.base, &id, text_message("too late")).await;
+    let late = post_message(&server.base, &id, "too late").await;
     assert!(
         late.status() == 404 || late.status() == 409,
         "post-stop message must be 404/409, got {}",
@@ -633,7 +410,7 @@ async fn stop_tears_down_in_order_and_later_messages_are_rejected() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stopped_session_answers_get_but_routing_is_gone_deferral_pin() {
     let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;
-    let server = spawn_test_server(vec![http_sse(&sse_body(&[done]))]).await;
+    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
     let id = create_session(&server.base, &server.ws).await;
 
     let client = reqwest::Client::new();
@@ -657,7 +434,7 @@ async fn stopped_session_answers_get_but_routing_is_gone_deferral_pin() {
     assert_eq!(summary["actor_state"], "stopped");
     assert!(summary["current_seq"].is_u64(), "final_seq retained");
 
-    let late = post_message(&server.base, &id, text_message("late")).await;
+    let late = post_message(&server.base, &id, "late").await;
     assert!(late.status() == 404 || late.status() == 409);
 }
 
@@ -697,7 +474,7 @@ async fn stop_during_a_slow_turn_still_orders_the_terminal_tail() {
         let _ = sock.shutdown().await;
     });
 
-    let server = spawn_test_server_with_provider_url(format!("http://{addr}/v1")).await;
+    let server = TestServer::start_with_provider_url(&format!("http://{addr}/v1")).await;
     let id = create_session(&server.base, &server.ws).await;
     let handle = server
         .state
@@ -710,7 +487,7 @@ async fn stop_during_a_slow_turn_still_orders_the_terminal_tail() {
         .expect("subscribe before stop");
 
     // Start the slow turn.
-    let resp = post_message(&server.base, &id, text_message("slow turn")).await;
+    let resp = post_message(&server.base, &id, "slow turn").await;
     assert_eq!(resp.status(), 200);
     tokio::time::timeout(Duration::from_secs(5), stream_started_rx)
         .await
@@ -784,11 +561,11 @@ async fn stop_during_a_slow_turn_still_orders_the_terminal_tail() {
 // Then a structured 404 {"error": ...}
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unknown_ids_are_structured_404_on_messages_and_stop() {
-    let server = spawn_test_server(vec![]).await;
+    let server = TestServer::start(vec![]).await;
     let missing = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
     let client = reqwest::Client::new();
 
-    let resp = post_message(&server.base, missing, text_message("anyone?")).await;
+    let resp = post_message(&server.base, missing, "anyone?").await;
     assert_eq!(resp.status(), 404);
     let body: Value = resp.json().await.expect("404 json");
     assert!(body.get("error").is_some(), "structured 404 body: {body}");
@@ -814,7 +591,7 @@ async fn unknown_ids_are_structured_404_on_messages_and_stop() {
 async fn message_received_is_sequenced_before_any_action_with_a_seq() {
     let done =
         r#"{"choices":[{"index":0,"delta":{"content":"done here"},"finish_reason":"stop"}]}"#;
-    let server = spawn_test_server(vec![http_sse(&sse_body(&[done]))]).await;
+    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
     let id = create_session(&server.base, &server.ws).await;
     let handle = server
         .state
@@ -826,7 +603,7 @@ async fn message_received_is_sequenced_before_any_action_with_a_seq() {
         .await
         .expect("subscribe BEFORE the post");
 
-    let resp = post_message(&server.base, &id, text_message("sequence me")).await;
+    let resp = post_message(&server.base, &id, "sequence me").await;
     assert_eq!(resp.status(), 200);
     let ack: Value = resp.json().await.expect("ack json");
 
@@ -852,20 +629,20 @@ async fn message_received_is_sequenced_before_any_action_with_a_seq() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn manual_qa_real_http_transcript() {
     let done = r#"{"choices":[{"index":0,"delta":{"content":"all done"},"finish_reason":"stop"}]}"#;
-    let server = spawn_test_server(vec![http_sse(&sse_body(&[done]))]).await;
+    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
     let id = create_session(&server.base, &server.ws).await;
 
     eprintln!("QA POST /messages (text) ->");
-    let resp = post_message(&server.base, &id, text_message("qa hello")).await;
+    let resp = post_message(&server.base, &id, "qa hello").await;
     let status = resp.status();
     eprintln!("  {}: {}", status, resp.text().await.expect("body"));
     assert_eq!(status, 200);
 
     eprintln!("QA POST /messages (non-text) ->");
-    let resp = post_message(
+    let resp = post_message_body(
         &server.base,
         &id,
-        json!({
+        &json!({
             "target_actor_id": "agent:main",
             "mode": "next-turn",
             "content": [{ "type": "tool_result", "tool_call_id": "t", "content": "x" }]
@@ -887,7 +664,7 @@ async fn manual_qa_real_http_transcript() {
     assert_eq!(status, 200);
 
     eprintln!("QA POST /messages (after stop) ->");
-    let late = post_message(&server.base, &id, text_message("late")).await;
+    let late = post_message(&server.base, &id, "late").await;
     let status = late.status();
     eprintln!("  {}: {}", status, late.text().await.expect("body"));
     assert!(status == 404 || status == 409);

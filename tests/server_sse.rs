@@ -5,200 +5,13 @@
 //! 404 mid-race. Sessions are created against a scripted MOCK PROVIDER so a
 //! posted message drives real events.
 
-use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use rust_agent::server::{AppState, ServerConfig};
-
-fn write_test_models(dir: &Path, base_url: &str) -> PathBuf {
-    let path = dir.join("models.json");
-    std::fs::write(
-        &path,
-        json!({
-            "providers": {
-                "mock": {
-                    "base_url": base_url,
-                    "api_key_env": "RUST_AGENT_TEST_SSE_KEY",
-                    "headers": {},
-                    "connect_timeout_ms": 2000,
-                    "request_timeout_ms": 600000
-                }
-            },
-            "models": {
-                "default": {
-                    "provider": "mock",
-                    "model": "mock-model",
-                    "reasoning_history": "preserve"
-                }
-            }
-        })
-        .to_string(),
-    )
-    .expect("write models.json");
-    path
-}
-
-fn test_config(tmp: &Path, base_url: &str) -> ServerConfig {
-    write_test_models(tmp, base_url);
-    let config_dir = tmp.join("cfg");
-    std::fs::create_dir_all(&config_dir).expect("config dir");
-    let auth_path = config_dir.join("auth.json");
-    std::fs::write(
-        &auth_path,
-        json!({ "mock": { "api_key": "test-key" } }).to_string(),
-    )
-    .expect("write auth.json");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&auth_path, std::fs::Permissions::from_mode(0o600))
-            .expect("chmod 600");
-    }
-    ServerConfig {
-        bind: "127.0.0.1:0".parse().expect("loopback bind"),
-        models_path: Some(tmp.join("models.json")),
-        config_dir,
-        allow_non_loopback: false,
-        bearer_token: None,
-        history_db: None,
-    }
-}
-
-async fn spawn_server(state: AppState) -> (SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("ephemeral bind");
-    let addr = listener.local_addr().expect("local addr");
-    let task = tokio::spawn(async move {
-        let _ = rust_agent::server::routes::serve_state_on(state, listener).await;
-    });
-    let mut up = false;
-    for _ in 0..100 {
-        if reqwest::get(format!("http://{addr}/v1/health"))
-            .await
-            .is_ok()
-        {
-            up = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(up, "server never came up");
-    (addr, task)
-}
-
-async fn create_session(base: &str, ws: &Path) -> String {
-    let created: Value = reqwest::Client::new()
-        .post(format!("{base}/v1/sessions"))
-        .json(&json!({ "workspace": ws.to_str().expect("utf8 ws") }))
-        .send()
-        .await
-        .expect("create")
-        .json()
-        .await
-        .expect("create json");
-    created["session_id"]
-        .as_str()
-        .expect("session id")
-        .to_string()
-}
-
-async fn post_message(base: &str, id: &str, text: &str) -> reqwest::Response {
-    reqwest::Client::new()
-        .post(format!("{base}/v1/sessions/{id}/messages"))
-        .json(&json!({
-            "target_actor_id": "agent:main",
-            "mode": "next-turn",
-            "content": [{ "type": "text", "text": text }]
-        }))
-        .send()
-        .await
-        .expect("post message")
-}
-
-// ---- scripted mock provider ----
-
-fn sse_body(events: &[&str]) -> String {
-    let mut b = String::new();
-    for e in events {
-        b.push_str("data: ");
-        b.push_str(e);
-        b.push_str("\n\n");
-    }
-    b.push_str("data: [DONE]\n\n");
-    b
-}
-
-fn http_sse(body: &str) -> Vec<u8> {
-    format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    )
-    .into_bytes()
-}
-
-struct MockProvider {
-    url: String,
-}
-
-async fn spawn_mock_provider(responses: Vec<Vec<u8>>) -> MockProvider {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("mock bind");
-    let addr = listener.local_addr().expect("mock addr");
-    tokio::spawn(async move {
-        for resp in responses {
-            let Ok((mut sock, _)) = listener.accept().await else {
-                break;
-            };
-            let mut buf = vec![0u8; 16384];
-            let _ = sock.read(&mut buf).await;
-            let _ = sock.write_all(&resp).await;
-            let _ = sock.flush().await;
-            let _ = sock.shutdown().await;
-        }
-    });
-    MockProvider {
-        url: format!("http://{addr}/v1"),
-    }
-}
-
-struct TestServer {
-    base: String,
-    ws: PathBuf,
-    _mock: MockProvider,
-    task: tokio::task::JoinHandle<()>,
-    _root: tempfile::TempDir,
-}
-
-impl Drop for TestServer {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-async fn spawn_test_server(mock_responses: Vec<Vec<u8>>) -> TestServer {
-    let mock = spawn_mock_provider(mock_responses).await;
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let root = tmp.path().to_path_buf();
-    let config = test_config(&root, &mock.url);
-    let state = AppState::new(config);
-    let (addr, task) = spawn_server(state.clone()).await;
-    let ws = root.join("ws");
-    std::fs::create_dir_all(&ws).expect("workspace dir");
-    TestServer {
-        base: format!("http://{addr}"),
-        ws,
-        _mock: mock,
-        task,
-        _root: tmp,
-    }
-}
+mod common;
+use common::server::{create_session, post_message, TestServer};
+use common::sse::{http_sse, sse_body};
 
 // ---- SSE frame parsing over a raw HTTP GET ----
 
@@ -316,7 +129,7 @@ fn kind_of(frame: &SseFrame) -> Option<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sse_frames_carry_id_equal_to_seq_and_are_monotonic() {
     let done = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
-    let server = spawn_test_server(vec![http_sse(&sse_body(&[done]))]).await;
+    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
     let id = create_session(&server.base, &server.ws).await;
 
     // Connect FIRST (captures session.start@0), then drive a turn.
@@ -351,7 +164,7 @@ async fn sse_frames_carry_id_equal_to_seq_and_are_monotonic() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reconnect_with_last_event_id_resumes_without_gap_or_dup() {
     let done = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
-    let server = spawn_test_server(vec![http_sse(&sse_body(&[done]))]).await;
+    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
     let id = create_session(&server.base, &server.ws).await;
 
     // Drive a full turn so the ring has several durable events.
@@ -396,7 +209,7 @@ async fn reconnect_with_last_event_id_resumes_without_gap_or_dup() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn absent_last_event_id_replays_from_seq_zero() {
     let done = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
-    let server = spawn_test_server(vec![http_sse(&sse_body(&[done]))]).await;
+    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
     let id = create_session(&server.base, &server.ws).await;
     post_message(&server.base, &id, "go").await;
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -420,7 +233,7 @@ async fn absent_last_event_id_replays_from_seq_zero() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn future_cursor_yields_resync_control_frame() {
     let done = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
-    let server = spawn_test_server(vec![http_sse(&sse_body(&[done]))]).await;
+    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
     let id = create_session(&server.base, &server.ws).await;
 
     // Cursor far beyond head -> InvalidCursor -> EXACTLY one "resync" control
@@ -454,7 +267,7 @@ async fn future_cursor_yields_resync_control_frame() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reconnect_after_stop_replays_through_final_seq_then_terminates() {
     let done = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
-    let server = spawn_test_server(vec![http_sse(&sse_body(&[done]))]).await;
+    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
     let id = create_session(&server.base, &server.ws).await;
 
     // Observe the live history first so the expected replay set is grounded
@@ -536,7 +349,7 @@ async fn reconnect_after_stop_replays_through_final_seq_then_terminates() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unknown_session_events_is_404() {
     let done = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
-    let server = spawn_test_server(vec![http_sse(&sse_body(&[done]))]).await;
+    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
     let unknown = ulid::Ulid::new().to_string();
     let resp = reqwest::Client::new()
         .get(format!("{}/v1/sessions/{unknown}/events", server.base))
@@ -610,7 +423,7 @@ async fn subscribe_then_replay_seam_is_complete_and_delivers_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_clients_observe_identical_durable_history() {
     let done = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
-    let server = spawn_test_server(vec![http_sse(&sse_body(&[done]))]).await;
+    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
     let id = create_session(&server.base, &server.ws).await;
 
     let base1 = server.base.clone();

@@ -27,6 +27,9 @@ use rust_agent::tools::bash::BashTool;
 use rust_agent::tools::native::ReadTool;
 use rust_agent::tools::{Registry, ToolContext};
 
+mod common;
+use common::sse::{http_sse, spawn_mock_provider, sse_body};
+
 /// A comparable snapshot of a rendered UiEvent (UiEvent is not PartialEq).
 #[derive(Debug, PartialEq, Eq)]
 enum Ui {
@@ -53,7 +56,7 @@ async fn run_via_bus_renders_identically_to_the_direct_path() {
     let done = r#"{"choices":[{"index":0,"delta":{"reasoning_content":"pondering","content":"hello world"},"finish_reason":"stop"}]}"#;
 
     // --- Path 1: DIRECT (Phase-1 on_delta closure), capturing UiEvents. ---
-    let direct_server = spawn_mock(vec![http_sse(&sse_body(&[done]))]).await;
+    let direct_server = spawn_mock_provider(vec![http_sse(&sse_body(&[done]))]).await;
     let mut direct_ui: Vec<Ui> = Vec::new();
     let mut actor = make_actor(direct_server.url.clone());
     actor.push_user("go");
@@ -80,7 +83,7 @@ async fn run_via_bus_renders_identically_to_the_direct_path() {
     let direct_exit = phase1_exit(&outcome);
 
     // --- Path 2: THROUGH THE BUS (runtime task + event_to_ui). ---
-    let bus_server = spawn_mock(vec![http_sse(&sse_body(&[done]))]).await;
+    let bus_server = spawn_mock_provider(vec![http_sse(&sse_body(&[done]))]).await;
     let session_id = Ulid::new();
     let sequencer = Sequencer::spawn(session_id, SessionBus::new());
     let (inbox_tx, inbox) = ActorInbox::channel();
@@ -294,52 +297,6 @@ fn user_command(session_id: Ulid, text: &str) -> rust_agent::bus::command::Comma
             text: text.to_string(),
         }],
         created_at: std::time::SystemTime::now(),
-    }
-}
-
-// ---- scripted mock provider (same technique as the runtime tests) ----
-
-fn sse_body(events: &[&str]) -> String {
-    let mut b = String::new();
-    for e in events {
-        b.push_str("data: ");
-        b.push_str(e);
-        b.push_str("\n\n");
-    }
-    b.push_str("data: [DONE]\n\n");
-    b
-}
-
-fn http_sse(body: &str) -> Vec<u8> {
-    format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    )
-    .into_bytes()
-}
-
-struct MockServer {
-    url: String,
-}
-
-async fn spawn_mock(responses: Vec<Vec<u8>>) -> MockServer {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        for resp in responses {
-            let Ok((mut sock, _)) = listener.accept().await else {
-                break;
-            };
-            let mut buf = vec![0u8; 16384];
-            let _ = sock.read(&mut buf).await;
-            let _ = sock.write_all(&resp).await;
-            let _ = sock.flush().await;
-            let _ = sock.shutdown().await;
-        }
-    });
-    MockServer {
-        url: format!("http://{addr}/v1"),
     }
 }
 

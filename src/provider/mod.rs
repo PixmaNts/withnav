@@ -15,6 +15,8 @@ pub mod fim;
 pub mod openai;
 pub mod sse;
 pub mod systemone;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {

@@ -9,60 +9,17 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use rust_agent::server::{app, AppState, ServerConfig};
+use rust_agent::server::{app, AppState};
 
-fn write_test_models(dir: &std::path::Path) -> std::path::PathBuf {
-    let path = dir.join("models.json");
-    std::fs::write(
-        &path,
-        json!({
-            "providers": {
-                "mock": {
-                    "base_url": "http://127.0.0.1:1/v1",
-                    "api_key_env": "RUST_AGENT_TEST_AUTH_KEY",
-                    "headers": {},
-                    "connect_timeout_ms": 100,
-                    "request_timeout_ms": 100
-                }
-            },
-            "models": {
-                "default": {
-                    "provider": "mock",
-                    "model": "mock-model",
-                    "reasoning_history": "preserve"
-                }
-            }
-        })
-        .to_string(),
-    )
-    .expect("write models.json");
-    path
-}
+mod common;
+use common::server::TestServerConfig;
 
 fn test_state(tmp: &std::path::Path, bearer_token: Option<String>) -> AppState {
-    let models_path = write_test_models(tmp);
-    let config_dir = tmp.join("cfg");
-    std::fs::create_dir_all(&config_dir).expect("config dir");
-    let auth_path = config_dir.join("auth.json");
-    std::fs::write(
-        &auth_path,
-        json!({ "mock": { "api_key": "test-key" } }).to_string(),
-    )
-    .expect("write auth.json");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&auth_path, std::fs::Permissions::from_mode(0o600))
-            .expect("chmod 600");
+    let mut config = TestServerConfig::unreachable(tmp);
+    if let Some(token) = &bearer_token {
+        config = config.bearer_token(token);
     }
-    AppState::new(ServerConfig {
-        bind: "127.0.0.1:0".parse().expect("loopback bind"),
-        models_path: Some(models_path),
-        config_dir,
-        allow_non_loopback: false,
-        bearer_token,
-        history_db: None,
-    })
+    config.state()
 }
 
 async fn body_json(response: axum::response::Response) -> Value {

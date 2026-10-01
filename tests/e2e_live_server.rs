@@ -11,7 +11,6 @@
 //! NEVER a passing skip. The offline suite uses a mock provider; only THIS
 //! test exercises the real proxy through the whole server stack.
 
-use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
@@ -19,6 +18,9 @@ use serde_json::{json, Value};
 
 use rust_agent::server::session::ServerConfig;
 use rust_agent::server::AppState;
+
+mod common;
+use common::server::{spawn_server, write_auth_file};
 
 const OMNIROUTE: &str = "http://localhost:20128/v1";
 const MODEL: &str = "opencode-go/deepseek-v4-flash";
@@ -48,7 +50,7 @@ async fn live_server_edit_and_test_through_the_bus() {
     let config_dir = root.join("cfg");
     std::fs::create_dir_all(&config_dir).expect("cfg dir");
     write_live_models(root);
-    write_live_auth(&config_dir, &key);
+    write_auth_file(&config_dir, "omniroute", &key);
 
     let config = ServerConfig {
         bind: "127.0.0.1:0".parse().expect("bind"),
@@ -217,40 +219,6 @@ fn write_live_models(dir: &Path) {
         .to_string(),
     )
     .expect("write models.json");
-}
-
-fn write_live_auth(config_dir: &Path, key: &str) {
-    let auth = config_dir.join("auth.json");
-    std::fs::write(
-        &auth,
-        json!({ "omniroute": { "api_key": key } }).to_string(),
-    )
-    .expect("write auth.json");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600)).expect("chmod 600");
-    }
-}
-
-async fn spawn_server(state: AppState) -> (SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("ephemeral bind");
-    let addr = listener.local_addr().expect("addr");
-    let task = tokio::spawn(async move {
-        let _ = rust_agent::server::routes::serve_state_on(state, listener).await;
-    });
-    for _ in 0..100 {
-        if reqwest::get(format!("http://{addr}/v1/health"))
-            .await
-            .is_ok()
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    (addr, task)
 }
 
 /// Parse the SSE body, collecting each event envelope until `turn.end` (or the

@@ -165,6 +165,7 @@ mod tests {
     use super::*;
     use crate::agent::actor::AgentActor;
     use crate::provider::config::{ProviderConfig, ReasoningHistory};
+    use crate::provider::test_support::{http_sse, sse_body};
     use crate::tools::bash::BashTool;
     use crate::tools::control::AskTool;
     use crate::tools::native::ReadTool;
@@ -175,26 +176,6 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::Mutex;
     use tokio_util::sync::CancellationToken;
-
-    fn sse_body(events: &[&str]) -> String {
-        let mut b = String::new();
-        for e in events {
-            b.push_str("data: ");
-            b.push_str(e);
-            b.push_str("\n\n");
-        }
-        b.push_str("data: [DONE]\n\n");
-        b
-    }
-
-    fn http_sse(body: &str) -> Vec<u8> {
-        format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        )
-        .into_bytes()
-    }
 
     async fn read_request(sock: &mut tokio::net::TcpStream) -> String {
         let mut buf = Vec::new();

@@ -440,7 +440,17 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
     // The provider's second request (the resumed turn after the answer)
     // must carry the answer as role "tool" — the ask tool result — not as
     // a navigator message. The third request carries the wake as "user".
-    let requests = server.received_requests().await.expect("wiremock retains");
+    let requests = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let requests = server.received_requests().await.expect("wiremock retains");
+            if requests.len() >= 3 {
+                break requests;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("third provider request (queued wake turn) should arrive");
     assert_eq!(requests.len(), 3);
     let body2: Value = serde_json::from_slice(&requests[1].body).expect("body 2");
     let roles2: Vec<&str> = body2["messages"]

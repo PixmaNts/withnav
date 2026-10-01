@@ -22,16 +22,21 @@ async fn collect_until(
     sub: rust_agent::session::Subscription,
     pred: impl Fn(&EventEnvelope) -> bool,
 ) -> Vec<EventEnvelope> {
+    const DEADLINE: Duration = Duration::from_secs(20);
+    let deadline = tokio::time::Instant::now() + DEADLINE;
     let mut out = Vec::new();
     if let rust_agent::bus::ResumeOutcome::Replay(replay) = sub.replay {
         out.extend(replay);
     }
     if let Some(mut live) = sub.live {
-        while let Some(env) = tokio::time::timeout(Duration::from_secs(5), live.recv())
-            .await
-            .ok()
-            .flatten()
-        {
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let env = tokio::time::timeout(remaining, live.recv())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("timed out waiting for matching server event; seen: {out:?}")
+                });
+            let Some(env) = env else { break };
             let matched = pred(&env);
             out.push(env);
             if matched {
@@ -43,6 +48,10 @@ async fn collect_until(
             }
         }
     }
+    assert!(
+        out.iter().any(&pred),
+        "live subscription closed before matching server event; seen: {out:?}"
+    );
     out
 }
 

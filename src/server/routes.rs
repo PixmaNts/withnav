@@ -68,50 +68,7 @@ pub struct PostMessageRequest {
     pub target_actor_id: String,
     #[serde(default)]
     pub mode: Option<String>,
-    pub content: Vec<WireContentBlock>,
-}
-
-/// The wire form of a content block (PLAN §7.5): only Text is accepted this
-/// phase; any other `type` is a 400.
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum WireContentBlock {
-    Text {
-        text: String,
-    },
-    Thinking {
-        text: String,
-    },
-    ToolUse {
-        id: String,
-        name: String,
-        args: serde_json::Value,
-    },
-    ToolResult {
-        tool_call_id: String,
-        content: String,
-    },
-}
-
-impl From<&WireContentBlock> for ContentBlock {
-    fn from(wire: &WireContentBlock) -> Self {
-        match wire {
-            WireContentBlock::Text { text } => ContentBlock::Text { text: text.clone() },
-            WireContentBlock::Thinking { text } => ContentBlock::Thinking { text: text.clone() },
-            WireContentBlock::ToolUse { id, name, args } => ContentBlock::ToolUse {
-                id: id.clone(),
-                name: name.clone(),
-                args: args.clone(),
-            },
-            WireContentBlock::ToolResult {
-                tool_call_id,
-                content,
-            } => ContentBlock::ToolResult {
-                tool_call_id: tool_call_id.clone(),
-                content: content.clone(),
-            },
-        }
-    }
+    pub content: Vec<ContentBlock>,
 }
 
 /// The frozen message ack (ticket 04 Q3): `notice` carries the visible
@@ -425,7 +382,7 @@ pub fn build_command(
         source_actor_id: HTTP_USER_ACTOR_ID.to_string(),
         target_actor_id: ROOT_ACTOR_ID.to_string(),
         mode,
-        content: request.content.iter().map(ContentBlock::from).collect(),
+        content: request.content.clone(),
         created_at: SystemTime::now(),
     }
 }

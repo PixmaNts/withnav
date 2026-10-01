@@ -113,7 +113,7 @@ async fn navigator_profile_sends_the_cognition_prompt_as_second_system_message()
         &rust_agent::server::routes::PostMessageRequest {
             target_actor_id: "agent:main".to_string(),
             mode: Some("next-turn".to_string()),
-            content: vec![rust_agent::server::routes::WireContentBlock::Text {
+            content: vec![rust_agent::bus::command::ContentBlock::Text {
                 text: "hello there".to_string(),
             }],
         },
@@ -173,7 +173,7 @@ async fn post_driver_message(
         &rust_agent::server::routes::PostMessageRequest {
             target_actor_id: "agent:main".to_string(),
             mode: Some("next-turn".to_string()),
-            content: vec![rust_agent::server::routes::WireContentBlock::Text {
+            content: vec![rust_agent::bus::command::ContentBlock::Text {
                 text: text.to_string(),
             }],
         },

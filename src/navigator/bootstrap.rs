@@ -26,11 +26,9 @@ pub fn load_models(explicit: Option<&Path>) -> anyhow::Result<ModelsConfig> {
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let config_dir =
         auth::default_config_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve config dir"))?;
-    let models_path = navigator::resolve_models(explicit, &workspace)
-        .or_else(|| Some(config_dir.join("models.json")))
-        .ok_or_else(|| anyhow::anyhow!("no models.json found"))?;
-    ModelsConfig::load(&models_path)
-        .map_err(|e| anyhow::anyhow!("cannot load {}: {e}", models_path.display()))
+    crate::provider::config::load_models(explicit, &workspace, &config_dir)
+        .map(|(config, _path)| config)
+        .map_err(|e| anyhow::anyhow!("cannot load models.json: {e}"))
 }
 
 struct Layers {

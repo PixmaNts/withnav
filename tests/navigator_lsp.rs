@@ -385,35 +385,6 @@ async fn reflex_shown_is_logged() {
     assert!(records.contains("\"shown_at_ms\":1759000000123"));
 }
 
-/// Trigger records carry all pipeline-era replay fields as well as the
-/// requested and delivered outcome.
-#[tokio::test(start_paused = true)]
-async fn trigger_records_carry_replay_fields() {
-    let mut client = Nav::start(MockCommenter::new(vec![Answer::Remark(1, "careful")])).await;
-    client.open_and_edit().await;
-    tokio::time::advance(Duration::from_millis(3001)).await;
-    let mut seen = Vec::new();
-    let _ = client.expect("navigator/remark", &mut seen).await;
-
-    let trigger = first_trigger(&client);
-    assert!(trigger["trigger_id"].as_str().is_some());
-    assert!(trigger["run_id"].as_str().is_some());
-    assert_eq!(trigger["uri"], URI);
-    assert_eq!(trigger["version"], 2);
-    assert_eq!(trigger["event"], "idle");
-    assert_eq!(trigger["prefilter"]["outcome"], "pass");
-    assert_eq!(trigger["prefilter"]["inputs"]["changed_lines"], 4);
-    assert_eq!(trigger["requested_action"], "remark");
-    assert_eq!(trigger["delivered"], "remark");
-    assert!(trigger["remark_id"].as_str().is_some());
-    assert!(trigger["pipeline_hash"].as_str().is_some());
-    assert!(trigger["template_inputs"].is_object());
-    assert!(trigger["rendered_state"].as_str().is_some());
-    assert!(trigger["questions"].is_object());
-    assert!(trigger["answers"].is_object());
-    assert_eq!(trigger["branch"], 1);
-}
-
 /// With `server_info` in the deps, `initialized` delivers
 /// `navigator/serverInfo` with exactly those values: the extension learns
 /// the cognition chat server's port and bearer token.

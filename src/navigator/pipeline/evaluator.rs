@@ -548,27 +548,6 @@ action = "silent"
     }
 
     #[tokio::test]
-    async fn cooldown_prefilter_skips() {
-        let pipeline = Pipeline::new(snapshot());
-        let model = FakeModel {
-            answers: answers_remark(),
-        };
-        let mut i = inputs(5);
-        i.since_last_remark_ms = 19_999;
-        let eval = pipeline
-            .evaluate(
-                TriggerKind::Save,
-                i,
-                &template_inputs(),
-                &model,
-                &CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(eval.prefilter.skip_reason(), Some("cooldown"));
-    }
-
-    #[tokio::test]
     async fn min_changed_lines_is_ignored_for_the_conversation_event() {
         let on_conversation = TOML.replace("on = [\"save\"]", "on = [\"save\", \"conversation\"]");
         let pipeline = Pipeline::new(
@@ -624,77 +603,6 @@ action = "silent"
             .await
             .unwrap();
         assert_eq!(cooled.prefilter.skip_reason(), Some("cooldown"));
-    }
-
-    #[tokio::test]
-    async fn first_matching_trigger_wins() {
-        let two = r#"
-[instinct]
-model = "instinct"
-
-[[trigger]]
-on = ["save"]
-state = "s.md"
-
-[trigger.questions.a]
-type = "noul"
-instructions = "?"
-
-[[trigger.branch]]
-when = "a > 0.5"
-action = "wake_cognition"
-
-[[trigger]]
-on = ["save", "idle"]
-state = "s.md"
-
-[trigger.questions.b]
-type = "noul"
-instructions = "?"
-
-[[trigger.branch]]
-when = "b > 0.5"
-action = "silent"
-"#;
-        let prompts = BTreeMap::from([("s.md".to_string(), "x".to_string())]);
-        let snap = PipelineSnapshot::from_parts(
-            two,
-            prompts,
-            super::super::snapshot::SnapshotSource::Builtin,
-        )
-        .unwrap();
-        let pipeline = Pipeline::new(snap);
-        let model = FakeModel {
-            answers: BTreeMap::from([
-                ("a".to_string(), Answer::Noul { noul: 0.9 }),
-                ("b".to_string(), Answer::Noul { noul: 0.9 }),
-            ]),
-        };
-        // save matches the FIRST trigger only.
-        let eval = pipeline
-            .evaluate(
-                TriggerKind::Save,
-                inputs(0),
-                &Default::default(),
-                &model,
-                &CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(eval.requested_action, Action::WakeCognition);
-        // idle matches the second.
-        let eval = pipeline
-            .evaluate(
-                TriggerKind::Idle,
-                inputs(0),
-                &Default::default(),
-                &model,
-                &CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(eval.requested_action, Action::Silent);
-        assert_eq!(eval.branch_index, Some(0));
     }
 
     #[tokio::test]

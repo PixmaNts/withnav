@@ -317,41 +317,6 @@ mod tests {
     }
 
     #[test]
-    fn undeclared_identifier_is_rejected() {
-        let t = trigger_def("mystery > 0.5");
-        let err = validate_trigger(&t, "test").unwrap_err();
-        assert!(
-            err.to_string().contains("undeclared identifier `mystery`"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn non_boolean_result_is_rejected() {
-        let t = trigger_def("worth_attention + 1");
-        let err = validate_trigger(&t, "test").unwrap_err();
-        assert!(
-            err.to_string().contains("Expected a Value::Boolean")
-                || err.to_string().contains("boolean"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn builtin_function_call_is_rejected() {
-        let t = trigger_def("min(worth_attention, 0.5) > 0.2");
-        let err = validate_trigger(&t, "test").unwrap_err();
-        assert!(err.to_string().contains("functions"), "{err}");
-    }
-
-    #[test]
-    fn assignment_is_rejected() {
-        let t = trigger_def("(worth_attention = 1) > 0.5");
-        let err = validate_trigger(&t, "test").unwrap_err();
-        assert!(err.to_string().contains("assign"), "{err}");
-    }
-
-    #[test]
     fn parse_error_is_reported() {
         let t = trigger_def("worth_attention >");
         let err = validate_trigger(&t, "test").unwrap_err();

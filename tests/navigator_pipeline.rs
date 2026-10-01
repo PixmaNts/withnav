@@ -106,60 +106,77 @@ fn valid_pipeline_loads() {
     assert_eq!(snap.hash().len(), 16);
 }
 
+/// Every way a pipeline is rejected at load time, with the error kind and a
+/// fragment of the message: TOML snippet (plus the prompts it loads) in,
+/// error out.
 #[test]
-fn parse_error_is_rejected() {
-    let err = snapshot_with("[instinct\nmodel = ").unwrap_err();
-    assert!(
-        matches!(err, rust_agent::navigator::PipelineError::Parse { .. }),
-        "{err}"
-    );
-}
+fn a_bad_pipeline_is_rejected_at_load() {
+    use rust_agent::navigator::PipelineError;
 
-#[test]
-fn unknown_identifier_is_rejected() {
-    let bad = BASE.replace("drift > 0.8", "nope > 0.8");
-    let err = snapshot_with(&bad).unwrap_err();
-    assert!(
-        err.to_string().contains("undeclared identifier `nope`"),
-        "{err}"
-    );
-}
-
-#[test]
-fn non_boolean_condition_is_rejected() {
-    let bad = BASE.replace("\"true\"", "\"42\"");
-    let err = snapshot_with(&bad).unwrap_err();
-    let msg = err.to_string();
-    assert!(
-        msg.contains("Expected a Value::Boolean")
-            || msg.contains("boolean")
-            || msg.contains("condition"),
-        "{msg}"
-    );
-}
-
-#[test]
-fn builtin_function_is_rejected() {
-    let bad = BASE.replace("\"true\"", "\"max(1, 2) == 2\"");
-    let err = snapshot_with(&bad).unwrap_err();
-    assert!(err.to_string().contains("functions"), "{err}");
-}
-
-#[test]
-fn assignment_is_rejected() {
-    let bad = BASE.replace("\"true\"", "\"(drift = 1) > 0.5\"");
-    let err = snapshot_with(&bad).unwrap_err();
-    assert!(err.to_string().contains("assign"), "{err}");
-}
-
-#[test]
-fn unknown_template_variable_is_rejected() {
-    let prompts = BTreeMap::from([("s.md".to_string(), "{{mystery}}".to_string())]);
-    let err = PipelineSnapshot::from_parts(BASE, prompts, SnapshotSource::Builtin).unwrap_err();
-    assert!(
-        err.to_string().contains("unknown variable `{{mystery}}`"),
-        "{err}"
-    );
+    // (case, toml, state prompt override, is a TOML parse error, message fragment)
+    let cases: Vec<(&str, String, Option<&str>, bool, &str)> = vec![
+        ("parse error", "[instinct\nmodel = ".into(), None, true, ""),
+        (
+            "undeclared identifier",
+            BASE.replace("drift > 0.8", "nope > 0.8"),
+            None,
+            false,
+            "undeclared identifier `nope`",
+        ),
+        (
+            "non-boolean condition",
+            BASE.replace("\"true\"", "\"42\""),
+            None,
+            false,
+            "Expected a Value::Boolean",
+        ),
+        (
+            "builtin function",
+            BASE.replace("\"true\"", "\"max(1, 2) == 2\""),
+            None,
+            false,
+            "functions",
+        ),
+        (
+            "assignment",
+            BASE.replace("\"true\"", "\"(drift = 1) > 0.5\""),
+            None,
+            false,
+            "assign",
+        ),
+        (
+            "unknown template variable",
+            BASE.to_string(),
+            Some("{{mystery}}"),
+            false,
+            "unknown variable `{{mystery}}`",
+        ),
+        (
+            "score criteria out of range",
+            BASE.replace(
+                "criteria = [\"none\", \"minor\", \"moderate\", \"major\"]",
+                "criteria = [\"only\"]",
+            ),
+            None,
+            false,
+            "level labels",
+        ),
+    ];
+    for (case, toml, state, is_parse, fragment) in cases {
+        let mut prompts = prompts();
+        if let Some(state) = state {
+            prompts.insert("s.md".to_string(), state.to_string());
+        }
+        let err =
+            PipelineSnapshot::from_parts(&toml, prompts, SnapshotSource::Builtin).expect_err(case);
+        let kind_ok = if is_parse {
+            matches!(err, PipelineError::Parse { .. })
+        } else {
+            matches!(err, PipelineError::Invalid { .. })
+        };
+        assert!(kind_ok, "{case}: wrong error kind: {err:?}");
+        assert!(err.to_string().contains(fragment), "{case}: {err}");
+    }
 }
 
 #[tokio::test]
@@ -592,30 +609,4 @@ async fn builtin_conversation_trigger_ignores_changed_lines_and_remarks_on_contr
         .await
         .unwrap();
     assert_eq!(eval.prefilter.skip_reason(), Some("cooldown"));
-}
-
-#[test]
-fn score_question_rejects_out_of_range_criteria() {
-    let toml = r#"
-[instinct]
-model = "instinct"
-
-[[trigger]]
-on = ["save"]
-state = "s.md"
-
-[trigger.questions.s]
-type = "score"
-instructions = "?"
-criteria = ["only"]
-
-[[trigger.branch]]
-when = "true"
-action = "silent"
-"#;
-    let err = snapshot_with(toml).unwrap_err();
-    assert!(
-        err.to_string().contains("score") || err.to_string().contains("criteria"),
-        "{err}"
-    );
 }

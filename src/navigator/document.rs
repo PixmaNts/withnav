@@ -9,7 +9,8 @@ use std::path::PathBuf;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::navigator::log::{excerpt, now_iso8601};
+use crate::bus::event::now_rfc3339;
+use crate::navigator::log::excerpt;
 use crate::navigator::lsp::uri::uri_to_path_str;
 use crate::navigator::metacognition::Diag;
 use crate::navigator::pipeline::{TriggerKind, NO_REMARK_MS};
@@ -241,7 +242,7 @@ impl Documents {
         let summary = (event != TriggerKind::Conversation).then(|| {
             let (first_line, first_line_text) = first_changed_line(&state.baseline, &state.text);
             EditSummary {
-                ts: now_iso8601(),
+                ts: now_rfc3339(),
                 changed_lines,
                 first_line,
                 excerpt: excerpt(&first_line_text, 120),

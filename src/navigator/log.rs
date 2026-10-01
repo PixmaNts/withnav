@@ -281,7 +281,10 @@ impl NavLog {
     pub fn append(&self, record: &LogRecord<'_>) {
         let mut entry = serde_json::to_value(record).unwrap_or(Value::Null);
         if let Value::Object(map) = &mut entry {
-            map.insert("ts".to_string(), Value::String(now_iso8601().to_string()));
+            map.insert(
+                "ts".to_string(),
+                Value::String(crate::bus::event::now_rfc3339().to_string()),
+            );
         }
         let mut line = serde_json::to_string(&entry).unwrap_or_default();
         line.push('\n');
@@ -323,34 +326,6 @@ pub fn excerpt(text: &str, max_chars: usize) -> String {
     let mut s: String = text.chars().take(max_chars).collect();
     s.push('…');
     s
-}
-
-/// UTC timestamp with millisecond precision, no external dep.
-pub(crate) fn now_iso8601() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs();
-    let millis = now.subsec_millis();
-    let days = secs / 86_400;
-    let rem = secs % 86_400;
-    let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-    let (y, mo, d) = civil_from_days(days as i64);
-    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}.{millis:03}Z")
-}
-
-/// Howard Hinnant's civil-from-days algorithm.
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 #[cfg(test)]
@@ -465,13 +440,5 @@ mod tests {
         assert!(a
             .chars()
             .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase()));
-    }
-
-    #[test]
-    fn civil_from_days_known_date() {
-        // 2026-09-29 is day 20725 since epoch.
-        assert_eq!(civil_from_days(20_725), (2026, 9, 29));
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        assert_eq!(civil_from_days(19_782), (2024, 2, 29));
     }
 }

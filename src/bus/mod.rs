@@ -117,18 +117,14 @@ pub struct SessionBus {
 }
 
 impl SessionBus {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// A bus pre-filled with stored envelopes (a resumed session): the
-    /// durable kinds re-enter the ring in order, so a fresh (no-cursor)
-    /// subscriber replays the whole past conversation. The envelopes are
-    /// already seq-stamped; the ring's append (durable-only) is exactly the
-    /// filter.
-    pub fn from_envelopes(envelopes: Vec<EventEnvelope>) -> Self {
-        let mut bus = Self::new();
-        for envelope in envelopes {
+    /// A bus whose ring is pre-filled with `retained` envelopes (a resumed
+    /// session; empty for a fresh one): the durable kinds re-enter the ring
+    /// in order, so a fresh (no-cursor) subscriber replays the whole past
+    /// conversation. The envelopes are already seq-stamped; the ring's
+    /// append (durable-only) is exactly the filter.
+    pub fn new(retained: Vec<EventEnvelope>) -> Self {
+        let mut bus = Self::default();
+        for envelope in retained {
             bus.ring.append(&envelope);
         }
         bus
@@ -279,7 +275,7 @@ mod tests {
     /// floor is the evicted-durable watermark, not the oldest retained seq.
     #[test]
     fn cursor_at_oldest_retained_minus_one_still_replays_gaplessly() {
-        let mut bus = SessionBus::new();
+        let mut bus = SessionBus::default();
         let total = RING_CAP as u64 + 10;
         for seq in 0..total {
             bus.emit(durable_envelope(seq));
@@ -308,7 +304,7 @@ mod tests {
     /// (c) The five pinned resume cases (O7 cursor semantics).
     #[tokio::test]
     async fn the_five_resume_cases_behave_as_pinned() {
-        let mut bus = SessionBus::new();
+        let mut bus = SessionBus::default();
         for seq in 0..5u64 {
             bus.emit(durable_envelope(seq));
         }
@@ -358,7 +354,7 @@ mod tests {
             .collect();
         assert_eq!(durable_kinds.len(), 11);
 
-        let mut bus = SessionBus::new();
+        let mut bus = SessionBus::default();
         let mut seq: u64 = 0;
         let mut expected_durable_kinds: Vec<EventKind> = Vec::new();
         for kind in &durable_kinds {
@@ -422,7 +418,7 @@ mod tests {
     /// deterministically receives the COMPLETE durable sequence in order.
     #[test]
     fn slow_subscriber_disconnects_while_healthy_one_receives_everything() {
-        let mut bus = SessionBus::new();
+        let mut bus = SessionBus::default();
         let mut slow = subscribe(&mut bus, None, 0).live.take().unwrap();
         let mut healthy = subscribe(&mut bus, None, 0).live.take().unwrap();
 
@@ -489,7 +485,7 @@ mod tests {
     /// exactly once, never replayed, never lost.
     #[tokio::test]
     async fn atomic_subscribe_then_replay_delivers_the_seam_event_exactly_once() {
-        let mut bus = SessionBus::new();
+        let mut bus = SessionBus::default();
         for seq in 0..3u64 {
             bus.emit(durable_envelope(seq));
         }
@@ -510,7 +506,7 @@ mod tests {
     /// or a duplicate across the subscribe boundary.
     #[tokio::test]
     async fn sequencer_subscribe_replay_then_live_is_gap_and_dup_free() {
-        let sequencer = Sequencer::spawn(Ulid::new(), SessionBus::new());
+        let sequencer = Sequencer::spawn(Ulid::new(), SessionBus::default(), 0);
         sequencer.publish(durable_candidate(0)).unwrap();
         sequencer.publish(durable_candidate(1)).unwrap();
 
@@ -530,7 +526,7 @@ mod tests {
     /// instead of being silently lost.
     #[tokio::test]
     async fn session_close_ends_live_streams_and_fails_late_publish() {
-        let sequencer = Sequencer::spawn(Ulid::new(), SessionBus::new());
+        let sequencer = Sequencer::spawn(Ulid::new(), SessionBus::default(), 0);
         let mut sub = sequencer.subscribe_since(None).await.unwrap();
         sequencer.publish(durable_candidate(0)).unwrap();
 
@@ -549,7 +545,7 @@ mod tests {
     /// per-subscriber seq sequences and the reconnect ResumeOutcome.
     #[test]
     fn manual_qa_two_subscribers_disconnect_then_resume() {
-        let mut bus = SessionBus::new();
+        let mut bus = SessionBus::default();
         let mut slow = subscribe(&mut bus, None, 0).live.take().unwrap();
         let mut healthy = subscribe(&mut bus, None, 0).live.take().unwrap();
 

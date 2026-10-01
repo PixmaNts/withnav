@@ -23,10 +23,19 @@ pub enum RunOutcome {
     StepBudgetExhausted,
 }
 
-/// Pure observer events fired immediately around each `registry.dispatch`
-/// (todo 5). Borrowing-only: the runtime publishes them to the bus and keeps
-/// no state; the loop's control flow never branches on them.
-pub enum ToolEvent<'a> {
+/// Pure observer events of a run, in the order the loop produces them. The
+/// loop's control flow never branches on what the observer does.
+///
+/// `StepStarted` fires AFTER the per-iteration cancellation check,
+/// immediately BEFORE request construction (a cancelled iteration never
+/// mints a phantom step). `Delta` fires per streamed delta. `Response`
+/// fires immediately AFTER the normalized model response is appended to the
+/// transcript (the message already carries `usage` + `finish_reason`).
+/// `PreCall` / `PostCall` fire immediately around each `registry.dispatch`.
+pub enum AgentEvent<'a> {
+    Delta(StreamDelta),
+    StepStarted,
+    Response(&'a AssistantMessage),
     PreCall {
         tool_call_id: &'a str,
         name: &'a str,
@@ -39,21 +48,9 @@ pub enum ToolEvent<'a> {
     },
 }
 
-/// Pure observer events at step boundaries (todo 5): `Started` fires AFTER the
-/// per-iteration cancellation check, immediately BEFORE request construction
-/// (a cancelled iteration never mints a phantom step); `Response` fires
-/// immediately AFTER the normalized model response is appended to the
-/// transcript (the message already carries `usage` + `finish_reason`).
-pub enum StepEvent<'a> {
-    Started,
-    Response(&'a AssistantMessage),
-}
-
 pub async fn run_agent(
     actor: &mut AgentActor,
-    on_delta: &mut (dyn FnMut(StreamDelta) + Send),
-    on_tool: &mut (dyn for<'e> FnMut(ToolEvent<'e>) + Send),
-    on_step: &mut (dyn for<'e> FnMut(StepEvent<'e>) + Send),
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> Result<RunOutcome, AgentError> {
     actor.state = AgentState::Running;
     let budget = max_steps();
@@ -64,10 +61,11 @@ pub async fn run_agent(
             return Ok(RunOutcome::Interrupted);
         }
 
-        on_step(StepEvent::Started);
+        observe(AgentEvent::StepStarted);
 
         let request = build_request(
             &actor.model,
+            actor.system_prompt.as_deref(),
             actor.transcript.clone(),
             actor.registry.schemas(),
             actor.max_tokens,
@@ -77,7 +75,11 @@ pub async fn run_agent(
         let http = build_http(&client, &actor.provider, &actor.api_key, &request);
         let response = http.send().await.map_err(ProviderError::Http)?;
 
-        let message = match start_and_consume(response, &actor.cancel, on_delta).await {
+        let message = match start_and_consume(response, &actor.cancel, &mut |delta| {
+            observe(AgentEvent::Delta(delta))
+        })
+        .await
+        {
             Ok(m) => m,
             Err(ProviderError::Canceled { .. }) => {
                 actor.state = AgentState::Idle;
@@ -89,7 +91,7 @@ pub async fn run_agent(
         actor
             .transcript
             .push(assistant_history_message(&message, actor.reasoning_history));
-        on_step(StepEvent::Response(&message));
+        observe(AgentEvent::Response(&message));
 
         let sibling_ids: Vec<String> = message.tool_calls.iter().map(|tc| tc.id.clone()).collect();
 
@@ -115,7 +117,7 @@ pub async fn run_agent(
                         actor.state = AgentState::Idle;
                         return Ok(RunOutcome::Interrupted);
                     }
-                    on_tool(ToolEvent::PreCall {
+                    observe(AgentEvent::PreCall {
                         tool_call_id: &call.id,
                         name: &call.name,
                         args: &call.args,
@@ -130,7 +132,7 @@ pub async fn run_agent(
                         )
                         .await
                         .unwrap_or_else(|e| ToolResult::error("tool_error", e.to_string()));
-                    on_tool(ToolEvent::PostCall {
+                    observe(AgentEvent::PostCall {
                         tool_call_id: &call.id,
                         name: &call.name,
                         result: &result,
@@ -281,15 +283,8 @@ mod tests {
         let cancel = CancellationToken::new();
         let mut actor = make_actor(server.url.clone(), registry_all(), cancel);
         actor.push_user("run echo hi");
-        let mut noop = |_d: StreamDelta| {};
-        let outcome = run_agent(
-            &mut actor,
-            &mut noop,
-            &mut |_e: ToolEvent| {},
-            &mut |_s: StepEvent| {},
-        )
-        .await
-        .unwrap();
+        let mut noop = |_e: AgentEvent| {};
+        let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
         assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "all done"));
 
         let reqs = server.requests.lock().await;
@@ -314,15 +309,8 @@ mod tests {
         let cancel = CancellationToken::new();
         let mut actor = make_actor(server.url.clone(), registry_all(), cancel);
         actor.push_user("set up the SD card");
-        let mut noop = |_d: StreamDelta| {};
-        let first = run_agent(
-            &mut actor,
-            &mut noop,
-            &mut |_e: ToolEvent| {},
-            &mut |_s: StepEvent| {},
-        )
-        .await
-        .unwrap();
+        let mut noop = |_e: AgentEvent| {};
+        let first = run_agent(&mut actor, &mut noop).await.unwrap();
         match first {
             RunOutcome::Yielded(req) => assert_eq!(req.question, "insert SD card"),
             other => panic!("expected Yielded, got {other:?}"),
@@ -330,14 +318,7 @@ mod tests {
         let transcript_len_after_yield = actor.transcript.len();
 
         actor.push_user("done, it is visible");
-        let second = run_agent(
-            &mut actor,
-            &mut noop,
-            &mut |_e: ToolEvent| {},
-            &mut |_s: StepEvent| {},
-        )
-        .await
-        .unwrap();
+        let second = run_agent(&mut actor, &mut noop).await.unwrap();
         assert!(matches!(second, RunOutcome::Done(m) if m.text == "thanks, continuing"));
         assert!(actor.transcript.len() > transcript_len_after_yield);
 
@@ -356,15 +337,8 @@ mod tests {
         let mut actor = make_actor(server.url.clone(), registry_all(), cancel.clone());
         actor.push_user("go");
         cancel.cancel();
-        let mut noop = |_d: StreamDelta| {};
-        let outcome = run_agent(
-            &mut actor,
-            &mut noop,
-            &mut |_e: ToolEvent| {},
-            &mut |_s: StepEvent| {},
-        )
-        .await
-        .unwrap();
+        let mut noop = |_e: AgentEvent| {};
+        let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
         assert!(matches!(outcome, RunOutcome::Interrupted));
     }
 
@@ -380,19 +354,12 @@ mod tests {
         actor.push_user("count");
         let mut timeline: Vec<String> = Vec::new();
         {
-            let mut on_delta = |d: StreamDelta| {
-                if let StreamDelta::Text(t) = d {
-                    timeline.push(t);
+            let mut on_delta = |e: AgentEvent| {
+                if let AgentEvent::Delta(StreamDelta::Text { text }) = e {
+                    timeline.push(text);
                 }
             };
-            let outcome = run_agent(
-                &mut actor,
-                &mut on_delta,
-                &mut |_e: ToolEvent| {},
-                &mut |_s: StepEvent| {},
-            )
-            .await
-            .unwrap();
+            let outcome = run_agent(&mut actor, &mut on_delta).await.unwrap();
             assert!(matches!(outcome, RunOutcome::Done(_)));
         }
         assert_eq!(timeline, vec!["one ", "two ", "three"]);
@@ -410,15 +377,8 @@ mod tests {
         let cancel = CancellationToken::new();
         let mut actor = make_actor(server.url.clone(), registry_all(), cancel);
         actor.push_user("loop forever");
-        let mut noop = |_d: StreamDelta| {};
-        let outcome = run_agent(
-            &mut actor,
-            &mut noop,
-            &mut |_e: ToolEvent| {},
-            &mut |_s: StepEvent| {},
-        )
-        .await
-        .unwrap();
+        let mut noop = |_e: AgentEvent| {};
+        let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
         std::env::remove_var("RUST_AGENT_MAX_STEPS");
         assert!(matches!(outcome, RunOutcome::StepBudgetExhausted));
     }

@@ -51,6 +51,7 @@ use crate::bus::SessionBus;
 use crate::error::{ConfigError, ServerError};
 use crate::provider::auth;
 use crate::provider::config::{resolve_models_path, ModelsConfig, ResolvedModel};
+use crate::provider::openai::ChatMessage;
 use crate::server::routes::route_message;
 use crate::tools::{Registry, ToolContext};
 
@@ -737,17 +738,19 @@ impl AppState {
             navigator,
         );
         if let Some(loaded) = &resumed {
-            actor.transcript = loaded.transcript.clone();
+            actor.transcript = restore_transcript(&loaded.transcript, navigator);
         }
 
         let next_seq = resumed
             .as_ref()
             .map(|loaded| loaded.meta.last_seq + 1)
             .unwrap_or(0);
-        let bus = match &resumed {
-            Some(loaded) => SessionBus::from_envelopes(loaded.envelopes.clone()),
-            None => SessionBus::new(),
-        };
+        let bus = SessionBus::new(
+            resumed
+                .as_ref()
+                .map(|loaded| loaded.envelopes.clone())
+                .unwrap_or_default(),
+        );
         let is_resume = resumed.is_some();
 
         // History hooks: a persisting emitter + a turn-end transcript
@@ -761,7 +764,7 @@ impl AppState {
                     &alias,
                     profile,
                 );
-                Sequencer::spawn_from(
+                Sequencer::spawn(
                     session_id,
                     crate::server::store::PersistingEmitter::new(
                         session_id,
@@ -771,7 +774,7 @@ impl AppState {
                     next_seq,
                 )
             }
-            None => Sequencer::spawn_from(session_id, bus, next_seq),
+            None => Sequencer::spawn(session_id, bus, next_seq),
         };
 
         if !is_resume {
@@ -781,16 +784,13 @@ impl AppState {
         // THEN the runtime task; the handle is retained so /stop can await
         // the interrupted turn's events before the session.end fence.
         let (inbox_tx, inbox) = ActorInbox::channel();
-        let on_turn_end: crate::bus::runtime::TurnEndHook = match &history {
-            Some(store) => {
-                let store = store.clone();
-                Box::new(move |transcript| {
-                    store.save_transcript(session_id, transcript.to_vec());
-                })
-            }
-            None => Box::new(|_| {}),
-        };
-        let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn_with_turn_end(
+        let on_turn_end: Option<crate::bus::runtime::TurnEndHook> = history.as_ref().map(|store| {
+            let store = store.clone();
+            Box::new(move |transcript: &[ChatMessage]| {
+                store.save_transcript(session_id, transcript.to_vec());
+            }) as crate::bus::runtime::TurnEndHook
+        });
+        let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn(
             session_id,
             actor,
             inbox,
@@ -942,16 +942,24 @@ fn build_actor(
         cancel,
     );
     if navigator {
-        // The agent loop always sends its own system contract first; the
-        // navigator role rides as a second system message at the head of the
-        // transcript, so the Phase-1 loop and prompt stay untouched.
-        actor
-            .transcript
-            .push(crate::provider::openai::ChatMessage::System {
-                content: COGNITION_PROMPT.to_string(),
-            });
+        // The navigator role rides as a second system message after the
+        // agent loop's own contract; it is not part of the transcript.
+        actor = actor.with_system_prompt(COGNITION_PROMPT);
     }
     actor
+}
+
+/// The stored transcript for a resumed session. A navigator transcript saved
+/// before the role prompt left the transcript starts with that prompt as a
+/// system message; it is dropped so the actor does not send it twice.
+fn restore_transcript(stored: &[ChatMessage], navigator: bool) -> Vec<ChatMessage> {
+    let legacy_prompt = navigator
+        && matches!(
+            stored.first(),
+            Some(ChatMessage::System { content }) if content == COGNITION_PROMPT
+        );
+    let skip = usize::from(legacy_prompt);
+    stored[skip..].to_vec()
 }
 
 fn build_registry(navigator: bool) -> Registry {
@@ -1047,7 +1055,7 @@ mod tests {
 
         let handle = SessionHandle {
             inbox_tx: mpsc::channel(1).0,
-            sequencer: Sequencer::spawn(Ulid::new(), SessionBus::new()),
+            sequencer: Sequencer::spawn(Ulid::new(), SessionBus::default(), 0),
             session_cancel: CancellationToken::new(),
             runtime_task: Arc::new(Mutex::new(Some(tokio::spawn(async { idle_actor() })))),
             actor_id: ROOT_ACTOR_ID.to_string(),
@@ -1114,7 +1122,7 @@ mod tests {
     fn wedged_runtime_handle() -> SessionHandle {
         SessionHandle {
             inbox_tx: mpsc::channel(1).0,
-            sequencer: Sequencer::spawn(Ulid::new(), SessionBus::new()),
+            sequencer: Sequencer::spawn(Ulid::new(), SessionBus::default(), 0),
             session_cancel: CancellationToken::new(),
             runtime_task: Arc::new(Mutex::new(Some(tokio::spawn(async {
                 std::future::pending::<()>().await;

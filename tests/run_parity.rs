@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
 use rust_agent::agent::actor::AgentActor;
-use rust_agent::agent::run_loop::{run_agent, RunOutcome, StepEvent, ToolEvent};
+use rust_agent::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
 use rust_agent::app::{event_to_ui, exit_code_for};
 use rust_agent::bus::inbox::ActorInbox;
 use rust_agent::bus::runtime;
@@ -61,20 +61,18 @@ async fn run_via_bus_renders_identically_to_the_direct_path() {
     let mut actor = make_actor(direct_server.url.clone());
     actor.push_user("go");
     let outcome = {
-        let mut on_delta = |d: StreamDelta| match d {
-            StreamDelta::Text(t) => direct_ui.push(Ui::Text(t)),
-            StreamDelta::Thinking(t) => direct_ui.push(Ui::Thinking(t)),
-            StreamDelta::ToolCallStarted { name, .. } => direct_ui.push(Ui::Tool(name)),
-            StreamDelta::ToolCallArgs { .. } => {}
+        let mut on_delta = |e: AgentEvent| {
+            let AgentEvent::Delta(d) = e else { return };
+            match d {
+                StreamDelta::Text { text } => direct_ui.push(Ui::Text(text)),
+                StreamDelta::Thinking { text } => direct_ui.push(Ui::Thinking(text)),
+                StreamDelta::ToolCallStarted { name, .. } => direct_ui.push(Ui::Tool(name)),
+                StreamDelta::ToolCallArgs { .. } => {}
+            }
         };
-        run_agent(
-            &mut actor,
-            &mut on_delta,
-            &mut |_e: ToolEvent| {},
-            &mut |_s: StepEvent| {},
-        )
-        .await
-        .expect("direct run")
+        run_agent(&mut actor, &mut on_delta)
+            .await
+            .expect("direct run")
     };
     // The Phase-1 `finish` renders Done for a Done outcome.
     if matches!(outcome, RunOutcome::Done(_)) {
@@ -85,7 +83,7 @@ async fn run_via_bus_renders_identically_to_the_direct_path() {
     // --- Path 2: THROUGH THE BUS (runtime task + event_to_ui). ---
     let bus_server = spawn_mock_provider(vec![http_sse(&sse_body(&[done]))]).await;
     let session_id = Ulid::new();
-    let sequencer = Sequencer::spawn(session_id, SessionBus::new());
+    let sequencer = Sequencer::spawn(session_id, SessionBus::default(), 0);
     let (inbox_tx, inbox) = ActorInbox::channel();
     let session_cancel = CancellationToken::new();
     let bus_actor = make_actor(bus_server.url.clone());
@@ -97,6 +95,7 @@ async fn run_via_bus_renders_identically_to_the_direct_path() {
         inbox,
         sequencer.clone(),
         session_cancel.clone(),
+        None,
     );
 
     inbox_tx

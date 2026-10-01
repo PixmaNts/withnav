@@ -207,13 +207,7 @@ async fn post_prompt(
 ) -> anyhow::Result<()> {
     use crate::bus::command::{Command, ContentBlock, DeliveryMode};
     use crate::bus::event::ROOT_ACTOR_ID;
-    use crate::bus::sequencer::PendingCommand;
 
-    let permit = handle
-        .inbox_tx
-        .clone()
-        .try_reserve_owned()
-        .map_err(|_| anyhow::anyhow!("inbox unavailable"))?;
     let command = Command {
         command_id: ulid::Ulid::new(),
         session_id,
@@ -225,22 +219,7 @@ async fn post_prompt(
         }],
         created_at: std::time::SystemTime::now(),
     };
-    let pending = PendingCommand {
-        command_id: command.command_id,
-        content: command.text_content(),
-        source: command.source_actor_id.clone(),
-        target: command.target_actor_id.clone(),
-        mode: command.mode.as_str().to_string(),
-    };
-    let committed = command.clone();
-    handle
-        .sequencer
-        .accept_command(
-            pending,
-            Box::new(move || {
-                permit.send(committed);
-            }),
-        )
+    crate::server::routes::route_message(handle, command)
         .await
         .map_err(|e| anyhow::anyhow!("post failed: {e}"))?;
     Ok(())
@@ -387,8 +366,8 @@ pub fn event_to_ui(envelope: &EventEnvelope) -> Option<UiEvent> {
         EventKind::LlmDelta => {
             let payload: LlmDelta = serde_json::from_value(envelope.payload.clone()).ok()?;
             match payload.delta {
-                crate::provider::StreamDelta::Text(t) => Some(UiEvent::AssistantText(t)),
-                crate::provider::StreamDelta::Thinking(t) => Some(UiEvent::Thinking(t)),
+                crate::provider::StreamDelta::Text { text } => Some(UiEvent::AssistantText(text)),
+                crate::provider::StreamDelta::Thinking { text } => Some(UiEvent::Thinking(text)),
                 crate::provider::StreamDelta::ToolCallStarted { name, .. } => {
                     Some(UiEvent::ToolStarted { name })
                 }
@@ -548,8 +527,12 @@ mod tests {
     #[test]
     fn event_to_ui_matches_phase1_on_delta_and_finish_sequence() {
         let envelopes = [
-            delta_envelope(StreamDelta::Thinking("pondering".into())),
-            delta_envelope(StreamDelta::Text("hello ".into())),
+            delta_envelope(StreamDelta::Thinking {
+                text: "pondering".into(),
+            }),
+            delta_envelope(StreamDelta::Text {
+                text: "hello ".into(),
+            }),
             delta_envelope(StreamDelta::ToolCallStarted {
                 index: 0,
                 name: "bash".into(),
@@ -558,7 +541,9 @@ mod tests {
                 index: 0,
                 fragment: "ls".into(),
             }),
-            delta_envelope(StreamDelta::Text("world".into())),
+            delta_envelope(StreamDelta::Text {
+                text: "world".into(),
+            }),
             kind_envelope(
                 EventKind::TurnEnd,
                 serde_json::to_value(&TurnEndPayload {
@@ -668,13 +653,19 @@ mod tests {
     #[test]
     fn event_to_ui_scripted_run_eprints_the_ui_sequence() {
         let envelopes = vec![
-            delta_envelope(StreamDelta::Text("counting: ".into())),
-            delta_envelope(StreamDelta::Text("1 2 3".into())),
+            delta_envelope(StreamDelta::Text {
+                text: "counting: ".into(),
+            }),
+            delta_envelope(StreamDelta::Text {
+                text: "1 2 3".into(),
+            }),
             delta_envelope(StreamDelta::ToolCallStarted {
                 index: 0,
                 name: "read".into(),
             }),
-            delta_envelope(StreamDelta::Text(" done".into())),
+            delta_envelope(StreamDelta::Text {
+                text: " done".into(),
+            }),
             kind_envelope(
                 EventKind::TurnEnd,
                 serde_json::to_value(&TurnEndPayload {

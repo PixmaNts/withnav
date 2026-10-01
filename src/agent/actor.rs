@@ -21,6 +21,9 @@ pub struct AgentActor {
     pub model: String,
     pub reasoning_history: ReasoningHistory,
     pub max_tokens: Option<u64>,
+    /// An optional role prompt, sent as a second system message right after
+    /// the system contract on every request. It is not part of the transcript.
+    pub system_prompt: Option<String>,
     pub cancel: CancellationToken,
     pub state: AgentState,
     pub pending_ask_id: Option<String>,
@@ -47,10 +50,17 @@ impl AgentActor {
             model,
             reasoning_history,
             max_tokens,
+            system_prompt: None,
             cancel,
             state: AgentState::Idle,
             pending_ask_id: None,
         }
+    }
+
+    /// Sets the role prompt sent after the system contract.
+    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.system_prompt = Some(prompt.into());
+        self
     }
 
     pub fn push_user(&mut self, text: impl Into<String>) {

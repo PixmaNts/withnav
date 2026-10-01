@@ -114,6 +114,8 @@ pub enum ServerError {
     InboxFull,
     #[error("session is stopping; command rejected")]
     SessionStopping,
+    #[error("conversation is stopped; resume it first")]
+    ResumeRequired,
     #[error("message content must be text")]
     NonTextContent,
     #[error("non-loopback bind refused: {0} (pass --allow-non-loopback to override)")]

@@ -396,7 +396,8 @@ async fn stop_tears_down_in_order_and_later_messages_are_rejected() {
 }
 
 // A stopped session's runtime is gone: GET still answers from the tombstone,
-// but a message POST is 404/409 (a tombstone answers reads, never commands).
+// but a message POST is a 409 asking to resume first (a tombstone answers
+// reads, never commands).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stopped_session_answers_get_but_routing_is_gone() {
     let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;
@@ -425,7 +426,9 @@ async fn stopped_session_answers_get_but_routing_is_gone() {
     assert!(summary["current_seq"].is_u64(), "final_seq retained");
 
     let late = post_message(&server.base, &id, "late").await;
-    assert!(late.status() == 404 || late.status() == 409);
+    assert_eq!(late.status(), 409);
+    let body: Value = late.json().await.expect("json");
+    assert_eq!(body["reason"], "resume_required", "{body}");
 }
 
 // Slow-runtime variant, REAL HTTP: a mid-turn stop against

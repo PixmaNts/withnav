@@ -17,11 +17,14 @@
 //!   actor and sequencer under the SAME id, continuing at `last_seq + 1`.
 //!   This works from a tombstone or from disk alone.
 //!
-//! The registry conflates them in one place: `GET /v1/sessions/:id` and the
-//! SSE route consult only the in-memory registry, so a conversation that is
-//! resumable but has no tombstone (evicted, or from before a restart) answers
-//! 404 even though `resume` would succeed. "Unknown here" does not mean
-//! "not resumable".
+//! `GET /v1/sessions/:id` and the SSE route answer a stored conversation
+//! with no memory slot (evicted, or from before a restart) from the store,
+//! as "stopped" at its `last_seq`; a message post to it is a 409 asking to
+//! resume first. Only an id the store does not know is a 404.
+//!
+//! Lifecycle gate: resume, close and delete take one async mutex for their
+//! whole run, so an id never has two runtimes and is never resumed while it
+//! is stopping or being deleted (the resume waits, then proceeds).
 //!
 //! Lock discipline: the registry is a `std::sync::Mutex`
 //! whose critical sections are short and purely synchronous. Every `.await`
@@ -225,20 +228,34 @@ impl Service {
         self.lock_sessions().get(&id).cloned()
     }
 
-    /// A clone of the LIVE handle, gated on the lifecycle: `Err(404)` for
-    /// unknown ids and tombstones, `Err(409 SessionStopping)` for a
-    /// Stopping session. No lock is
-    /// held past the return — the caller awaits only on the clone.
-    pub(crate) fn routable_handle(&self, id: SessionId) -> Result<SessionHandle, ServerError> {
+    /// A clone of the LIVE handle, gated on the lifecycle:
+    /// `Err(SessionStopping)` (409) for a Stopping session,
+    /// `Err(ResumeRequired)` (409) for a stopped conversation (tombstone, or
+    /// stored only), `Err(SessionNotFound)` (404) for an unknown or deleted
+    /// id. No lock is held past the lookup — the caller awaits only on the
+    /// clone.
+    pub(crate) async fn routable_handle(
+        &self,
+        id: SessionId,
+    ) -> Result<SessionHandle, ServerError> {
         match self.lock_sessions().get(&id) {
             Some(SessionSlot::Live(handle)) if handle.lifecycle == Lifecycle::Active => {
-                Ok(handle.clone())
+                return Ok(handle.clone());
             }
-            Some(SessionSlot::Live(_)) => Err(ServerError::SessionStopping),
-            Some(SessionSlot::Tombstone(_)) | None => {
-                Err(ServerError::SessionNotFound(id.to_string()))
-            }
+            Some(SessionSlot::Live(_)) => return Err(ServerError::SessionStopping),
+            Some(SessionSlot::Tombstone(_)) => return Err(ServerError::ResumeRequired),
+            None => {}
         }
+        let stored = self
+            .history
+            .exists(id)
+            .await
+            .map_err(ServerError::History)?;
+        Err(if stored {
+            ServerError::ResumeRequired
+        } else {
+            ServerError::SessionNotFound(id.to_string())
+        })
     }
 
     /// Accepts one command into its session: the session must be live and
@@ -246,7 +263,7 @@ impl Service {
     /// caller names the source actor. `message.received` is sequenced before
     /// the command reaches the inbox, and only for an accepted command.
     pub async fn send(&self, command: Command) -> Result<MessageAccepted, ServerError> {
-        let handle = self.routable_handle(command.session_id)?;
+        let handle = self.routable_handle(command.session_id).await?;
         accept(&handle, command).await
     }
 
@@ -327,7 +344,9 @@ impl Service {
     }
 
     /// The frozen `GET /v1/sessions/:id` summary. Unknown id is a structured
-    /// 404; a tombstone answers "stopped" at its recorded `final_seq`.
+    /// 404; a tombstone answers "stopped" at its recorded `final_seq`, and a
+    /// stored conversation with no memory slot answers "stopped" at its
+    /// stored `last_seq`.
     /// `current_seq` = last EMITTED seq: for a live
     /// session it is the sequencer head minus one; for a tombstone it is the
     /// retained `final_seq`.
@@ -335,19 +354,22 @@ impl Service {
         let source = {
             let guard = self.lock_sessions();
             match guard.get(&id) {
-                Some(SessionSlot::Live(handle)) => SummarySource::Live {
+                Some(SessionSlot::Live(handle)) => Some(SummarySource::Live {
                     sequencer: handle.sequencer.clone(),
                     actor_state: handle.actor_state.clone(),
                     workspace: handle.workspace.display().to_string(),
                     model: handle.model.clone(),
-                },
-                Some(SessionSlot::Tombstone(tombstone)) => SummarySource::Tombstone {
+                }),
+                Some(SessionSlot::Tombstone(tombstone)) => Some(SummarySource::Tombstone {
                     final_seq: tombstone.final_seq,
                     workspace: tombstone.workspace.display().to_string(),
                     model: tombstone.model.clone(),
-                },
-                None => return Err(ServerError::SessionNotFound(id.to_string())),
+                }),
+                None => None,
             }
+        };
+        let Some(source) = source else {
+            return self.stored_summary(id).await;
         };
         // Guard released above; the head query is a plain sequencer
         // round-trip (the manager reads no events).
@@ -377,6 +399,24 @@ impl Service {
             workspace,
             model,
             current_seq,
+        })
+    }
+
+    /// The summary of a conversation that only the store holds (after a
+    /// restart, or evicted): stopped at its stored `last_seq`.
+    async fn stored_summary(&self, id: SessionId) -> Result<SessionSummary, ServerError> {
+        let meta = self
+            .history
+            .meta(id)
+            .await
+            .map_err(ServerError::History)?
+            .ok_or_else(|| ServerError::SessionNotFound(id.to_string()))?;
+        Ok(SessionSummary {
+            session_id: id.to_string(),
+            actor_state: "stopped".to_string(),
+            workspace: meta.workspace,
+            model: meta.model,
+            current_seq: meta.last_seq,
         })
     }
 

@@ -8,6 +8,8 @@
 //! - `POST /v1/sessions/:id/messages` -> `{command_id, accepted:true, actor_state, notice?}`
 //!   (frozen error bodies: 404 unknown id / 409 stopping / 503 `{"accepted":false,"reason":"inbox_full"}`
 //!   / 400 non-Text). All errors share the `{"error": ...}` shape.
+//!   A stopped conversation (tombstone, or stored only) answers 409
+//!   `{"error", "reason":"resume_required"}`: resume it first.
 //! - `POST /v1/sessions/:id/stop` -> `{accepted:true, actor_state:"stopped"}`
 
 use std::net::SocketAddr;
@@ -373,7 +375,7 @@ async fn post_message(
         Err(_) => return error_response(ServerError::SessionNotFound(id)),
     };
     // Unknown or stopping sessions answer 404/409 before the body is judged.
-    if let Err(err) = state.routable_handle(session_id) {
+    if let Err(err) = state.routable_handle(session_id).await {
         return error_response(err);
     }
     let mode = match parse_mode(request.mode.as_deref()) {
@@ -409,7 +411,7 @@ async fn stop_session(State(state): State<AppState>, Path(id): Path<String>) -> 
 pub(crate) fn error_response(err: ServerError) -> Response {
     let status = match &err {
         ServerError::SessionNotFound(_) => StatusCode::NOT_FOUND,
-        ServerError::SessionStopping => StatusCode::CONFLICT,
+        ServerError::SessionStopping | ServerError::ResumeRequired => StatusCode::CONFLICT,
         ServerError::NonLoopbackBind(_) | ServerError::Bind(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::InboxFull => StatusCode::SERVICE_UNAVAILABLE,
         ServerError::NonTextContent | ServerError::MalformedBody(_) => StatusCode::BAD_REQUEST,
@@ -420,6 +422,13 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         return (
             status,
             Json(json!({ "accepted": false, "reason": "inbox_full" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::ResumeRequired) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "resume_required" })),
         )
             .into_response();
     }

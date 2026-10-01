@@ -465,7 +465,7 @@ async fn assert_not_routable(state: &AppState, id: rust_agent::bus::command::Ses
     assert!(
         matches!(
             state.send(command).await,
-            Err(rust_agent::error::ServerError::SessionNotFound(_))
+            Err(rust_agent::error::ServerError::ResumeRequired)
         ),
         "closed session is not routable"
     );

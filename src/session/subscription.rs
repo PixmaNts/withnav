@@ -9,6 +9,8 @@
 //!   history read falls back to the bus ring.
 //! - A tombstone replays its retained history through `final_seq`, then
 //!   ends: no live receiver.
+//! - A conversation only the store holds replays its stored history through
+//!   `last_seq`, then ends, with the same cursor rules as a live session.
 //! - An unknown id is [`ServerError::SessionNotFound`].
 
 use tokio::sync::mpsc;
@@ -37,7 +39,7 @@ impl Service {
         cursor: Option<u64>,
     ) -> Result<Subscription, ServerError> {
         match self.slot(id) {
-            None => Err(ServerError::SessionNotFound(id.to_string())),
+            None => self.stored_subscription(id, cursor).await,
             Some(SessionSlot::Tombstone(tombstone)) => Ok(Subscription {
                 replay: tombstone_replay(&tombstone, cursor),
                 live: None,
@@ -69,6 +71,37 @@ impl Service {
                 }
             }
         }
+    }
+
+    /// A conversation that only the store holds: its stored history through
+    /// `last_seq` with the live-session cursor rules (absent = everything,
+    /// `k <= last_seq` = after `k`, `k > last_seq` = invalid), then the
+    /// stream ends. Unknown ids are not found.
+    async fn stored_subscription(
+        &self,
+        id: SessionId,
+        cursor: Option<u64>,
+    ) -> Result<Subscription, ServerError> {
+        let history = self.history();
+        let meta = history
+            .meta(id)
+            .await
+            .map_err(ServerError::History)?
+            .ok_or_else(|| ServerError::SessionNotFound(id.to_string()))?;
+        if cursor.is_some_and(|k| k > meta.last_seq) {
+            return Ok(Subscription {
+                replay: ResumeOutcome::InvalidCursor,
+                live: None,
+            });
+        }
+        let events = history
+            .replay(id, cursor, meta.last_seq)
+            .await
+            .map_err(ServerError::History)?;
+        Ok(Subscription {
+            replay: ResumeOutcome::Replay(events),
+            live: None,
+        })
     }
 
     /// The live-session subscription over the stored history. The cursor is

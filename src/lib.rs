@@ -3,6 +3,7 @@ pub mod app;
 pub mod bus;
 pub mod error;
 pub mod navigator;
+pub mod paths;
 pub mod provider;
 pub mod render;
 pub mod server;

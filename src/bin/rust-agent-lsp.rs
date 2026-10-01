@@ -104,7 +104,7 @@ async fn run_replay(
 
     let log_path = match log_path {
         Some(path) => path.to_path_buf(),
-        None => navigator::default_log_path()
+        None => rust_agent::paths::decision_log()
             .ok_or_else(|| anyhow::anyhow!("cannot resolve the user data dir; pass --log"))?,
     };
     // A missing log replays as an empty one: no triggers, nothing to compare.

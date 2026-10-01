@@ -83,8 +83,13 @@ prompts, and every driver turn end triggers a `conversation` evaluation on the f
 | `~/.config/rust-agent/models.json`, `auth.json` | aliases and keys | the driver, `rust-agent auth` |
 | `<workspace>/.navigator/pipeline.toml`, `prompts/*.md` | the project's pipeline | the driver |
 | `<workspace>/.navigator/intent.md` | intent, plan, decisions | the cognition and the driver |
-| `~/.local/share/rust-agent/navigator.jsonl` | decision log, replay input | `navigator/log.rs` |
-| `~/.local/share/rust-agent/navigator/sessions.db` | conversations | `session/store.rs` |
+| `~/.local/share/navigator/navigator.jsonl` | decision log, replay input | `navigator/log.rs` |
+| `~/.local/share/navigator/navigator.db` | conversations | `session/store.rs` |
+
+Data paths come from `paths.rs`; on first start `paths::migrate_legacy_data` moves the files of the former
+`~/.local/share/rust-agent/` location (`navigator.jsonl`, `navigator/sessions.db` with its `-wal` and `-shm`)
+to the new ones when the new ones do not exist yet. If a move fails the old files stay and the navigator
+starts fresh.
 
 ## Where new code goes
 

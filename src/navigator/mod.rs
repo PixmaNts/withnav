@@ -179,13 +179,6 @@ pub fn default_user_dir() -> Option<PathBuf> {
     crate::provider::auth::default_config_dir().map(|d| d.join("navigator"))
 }
 
-/// Default JSONL log path under the user data dir
-/// (`~/.local/share/rust-agent/navigator.jsonl` on Linux).
-pub fn default_log_path() -> Option<std::path::PathBuf> {
-    directories::ProjectDirs::from("", "", "rust-agent")
-        .map(|p| p.data_dir().join("navigator.jsonl"))
-}
-
 /// Resolves the models config path the same way the main binary does.
 pub fn resolve_models(explicit: Option<&Path>, workspace: &Path) -> Option<std::path::PathBuf> {
     let config_dir =

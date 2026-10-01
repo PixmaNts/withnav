@@ -108,7 +108,7 @@ fn build_layers(models_path: Option<&Path>, clients: Arc<ClientCache>) -> Layers
 
     // Metacognition: the fast chat commenter on the `metacognition` alias,
     // logging to the navigator log.
-    let metacognition_log = navigator::default_log_path();
+    let metacognition_log = crate::paths::decision_log();
     match build_llm_commenter(
         &models,
         "metacognition",
@@ -165,10 +165,12 @@ impl Layers {
 /// Builds the layers, starts the cognition chat server and serves the
 /// navigator over stdio until the client exits.
 pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
+    // Before anything opens the data files: bring over the former location.
+    crate::paths::migrate_legacy_data();
     let clients = Arc::new(ClientCache::new());
     let layers = build_layers(models_path, clients);
 
-    let log_path = navigator::default_log_path()
+    let log_path = crate::paths::decision_log()
         .ok_or_else(|| anyhow::anyhow!("cannot resolve user data dir"))?;
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -256,20 +258,15 @@ async fn spawn_cognition_server(
         auth::default_config_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve config dir"))?;
     let token = bearer_token();
     // Conversation history: one SQLite file in the navigator's data dir.
-    let history_db = directories::ProjectDirs::from("", "", "rust-agent")
-        .map(|dirs| dirs.data_dir().join("navigator").join("sessions.db"));
-    if let Some(path) = &history_db {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-    }
+    let history_db = crate::paths::history_db()
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve the navigator data dir"))?;
     let config = ServerConfig {
         bind: "127.0.0.1:0".parse().expect("loopback bind"),
         models_path,
         config_dir,
         allow_non_loopback: false,
         bearer_token: Some(token.clone()),
-        history_db,
+        history_db: Some(history_db),
     };
     let state = AppState::with_hooks(
         config,

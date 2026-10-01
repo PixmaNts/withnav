@@ -278,16 +278,10 @@ pub struct TurnEnd {
     pub error: Option<TurnError>,
 }
 
-/// `delta` maps the frozen Phase-1 `StreamDelta` (no serde derives upstream)
-/// onto the wire with a `delta_type` variant tag (ticket 01).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LlmDelta {
     pub turn_id: Ulid,
     pub step_id: Ulid,
-    #[serde(
-        serialize_with = "serialize_stream_delta",
-        deserialize_with = "deserialize_stream_delta"
-    )]
     pub delta: StreamDelta,
 }
 
@@ -349,75 +343,6 @@ pub struct TaskDone {
     pub actor_id: String,
     pub result_message_id: Ulid,
     pub status: TaskStatus,
-}
-
-// --- StreamDelta <-> JSON adapter (delta_type tag) ---
-
-fn serialize_stream_delta<S: serde::Serializer>(
-    delta: &StreamDelta,
-    s: S,
-) -> Result<S::Ok, S::Error> {
-    let value = match delta {
-        StreamDelta::Text(text) => serde_json::json!({ "delta_type": "text", "text": text }),
-        StreamDelta::Thinking(text) => {
-            serde_json::json!({ "delta_type": "thinking", "text": text })
-        }
-        StreamDelta::ToolCallStarted { index, name } => serde_json::json!({
-            "delta_type": "tool_call_started",
-            "index": index,
-            "name": name,
-        }),
-        StreamDelta::ToolCallArgs { index, fragment } => serde_json::json!({
-            "delta_type": "tool_call_args",
-            "index": index,
-            "fragment": fragment,
-        }),
-    };
-    value.serialize(s)
-}
-
-fn deserialize_stream_delta<'de, D: serde::Deserializer<'de>>(
-    d: D,
-) -> Result<StreamDelta, D::Error> {
-    let v = Value::deserialize(d)?;
-    let tag = v.get("delta_type").and_then(Value::as_str);
-    match tag {
-        Some("text") => parse_str_field(&v, "text")
-            .map(StreamDelta::Text)
-            .ok_or_else(de_error),
-        Some("thinking") => parse_str_field(&v, "text")
-            .map(StreamDelta::Thinking)
-            .ok_or_else(de_error),
-        Some("tool_call_started") => {
-            let index = match v.get("index").and_then(Value::as_u64) {
-                Some(i) => usize::try_from(i).map_err(|_| de_error())?,
-                None => return Err(de_error()),
-            };
-            match parse_str_field(&v, "name") {
-                Some(name) => Ok(StreamDelta::ToolCallStarted { index, name }),
-                None => Err(de_error()),
-            }
-        }
-        Some("tool_call_args") => {
-            let index = match v.get("index").and_then(Value::as_u64) {
-                Some(i) => usize::try_from(i).map_err(|_| de_error())?,
-                None => return Err(de_error()),
-            };
-            match parse_str_field(&v, "fragment") {
-                Some(fragment) => Ok(StreamDelta::ToolCallArgs { index, fragment }),
-                None => Err(de_error()),
-            }
-        }
-        _ => Err(de_error()),
-    }
-}
-
-fn parse_str_field(v: &Value, key: &str) -> Option<String> {
-    v.get(key).and_then(Value::as_str).map(str::to_string)
-}
-
-fn de_error<E: serde::de::Error>() -> E {
-    serde::de::Error::custom("invalid llm.delta stream delta payload")
 }
 
 // --- RFC 3339 timestamp (no chrono dependency; UTC only) ---
@@ -696,7 +621,9 @@ mod tests {
         let delta = LlmDelta {
             turn_id: Ulid::new(),
             step_id: Ulid::new(),
-            delta: StreamDelta::Text("héllo ✓".into()),
+            delta: StreamDelta::Text {
+                text: "héllo ✓".into(),
+            },
         };
         let v = serde_json::to_value(&delta).unwrap();
         assert_eq!(v["delta"]["delta_type"], "text");
@@ -725,6 +652,45 @@ mod tests {
             "delta": {"delta_type": "prompt.pre_llm"},
         }));
         assert!(bad.is_err());
+    }
+
+    #[test]
+    fn stream_delta_wire_golden_roundtrips() {
+        let cases = [
+            (
+                StreamDelta::Text { text: "hi".into() },
+                json!({"delta_type": "text", "text": "hi"}),
+            ),
+            (
+                StreamDelta::Thinking { text: "hm".into() },
+                json!({"delta_type": "thinking", "text": "hm"}),
+            ),
+            (
+                StreamDelta::ToolCallStarted {
+                    index: 2,
+                    name: "bash".into(),
+                },
+                json!({"delta_type": "tool_call_started", "index": 2, "name": "bash"}),
+            ),
+            (
+                StreamDelta::ToolCallArgs {
+                    index: 2,
+                    fragment: "{\"a\"".into(),
+                },
+                json!({"delta_type": "tool_call_args", "index": 2, "fragment": "{\"a\""}),
+            ),
+        ];
+        for (delta, wire) in cases {
+            assert_eq!(serde_json::to_value(&delta).unwrap(), wire);
+            let back: StreamDelta = serde_json::from_value(wire).unwrap();
+            assert_eq!(back, delta);
+        }
+        // Missing fields and a wrong index type are rejected.
+        assert!(serde_json::from_value::<StreamDelta>(json!({"delta_type": "text"})).is_err());
+        assert!(serde_json::from_value::<StreamDelta>(
+            json!({"delta_type": "tool_call_started", "index": "0", "name": "x"})
+        )
+        .is_err());
     }
 
     #[test]

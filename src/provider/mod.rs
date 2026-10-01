@@ -50,10 +50,13 @@ pub struct AssistantMessage {
     pub usage: Option<Usage>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// One incremental piece of a model response. On the wire (`llm.delta`) it
+/// carries a `delta_type` tag next to its fields.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "delta_type", rename_all = "snake_case")]
 pub enum StreamDelta {
-    Text(String),
-    Thinking(String),
+    Text { text: String },
+    Thinking { text: String },
     ToolCallStarted { index: usize, name: String },
     ToolCallArgs { index: usize, fragment: String },
 }
@@ -100,13 +103,13 @@ impl Accumulator {
             if let Some(thinking) = delta.reasoning_content {
                 if !thinking.is_empty() {
                     self.thinking.push_str(&thinking);
-                    on_delta(StreamDelta::Thinking(thinking));
+                    on_delta(StreamDelta::Thinking { text: thinking });
                 }
             }
             if let Some(content) = delta.content {
                 if !content.is_empty() {
                     self.text.push_str(&content);
-                    on_delta(StreamDelta::Text(content));
+                    on_delta(StreamDelta::Text { text: content });
                 }
             }
             for tc in delta.tool_calls {
@@ -421,8 +424,8 @@ mod accumulator_tests {
         let mut timeline: Vec<String> = Vec::new();
         {
             let mut on_delta = |d: StreamDelta| {
-                if let StreamDelta::Text(t) = d {
-                    timeline.push(t);
+                if let StreamDelta::Text { text } = d {
+                    timeline.push(text);
                 }
             };
             let events = event_stream(vec![

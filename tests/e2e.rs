@@ -346,7 +346,7 @@ async fn live_omniroute_edit_and_test() {
     let saw2 = saw_thinking.clone();
     let outcome = {
         let mut on_delta = move |d: StreamDelta| {
-            if let StreamDelta::Thinking(_) = d {
+            if let StreamDelta::Thinking { .. } = d {
                 saw2.store(true, std::sync::atomic::Ordering::SeqCst);
             }
         };

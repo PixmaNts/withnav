@@ -382,8 +382,8 @@ mod tests {
         let mut timeline: Vec<String> = Vec::new();
         {
             let mut on_delta = |d: StreamDelta| {
-                if let StreamDelta::Text(t) = d {
-                    timeline.push(t);
+                if let StreamDelta::Text { text } = d {
+                    timeline.push(text);
                 }
             };
             let outcome = run_agent(

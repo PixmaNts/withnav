@@ -62,8 +62,8 @@ async fn run_via_bus_renders_identically_to_the_direct_path() {
     actor.push_user("go");
     let outcome = {
         let mut on_delta = |d: StreamDelta| match d {
-            StreamDelta::Text(t) => direct_ui.push(Ui::Text(t)),
-            StreamDelta::Thinking(t) => direct_ui.push(Ui::Thinking(t)),
+            StreamDelta::Text { text } => direct_ui.push(Ui::Text(text)),
+            StreamDelta::Thinking { text } => direct_ui.push(Ui::Thinking(text)),
             StreamDelta::ToolCallStarted { name, .. } => direct_ui.push(Ui::Tool(name)),
             StreamDelta::ToolCallArgs { .. } => {}
         };

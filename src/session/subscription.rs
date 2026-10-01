@@ -2,8 +2,11 @@
 //! decision and the live receiver, whether the session is live or stopped.
 //! The sequencer never leaves the session module.
 //!
-//! - A live session subscribes on its sequencer (replay through the head,
-//!   then live events only after it).
+//! - A live session captures its head atomically with a live receiver,
+//!   replays the stored history through that head, then follows live events
+//!   (each one above the head, exactly once). Stale `session.end` envelopes
+//!   from an earlier stop of a resumed conversation are hidden. A failing
+//!   history read falls back to the bus ring.
 //! - A tombstone replays its retained history through `final_seq`, then
 //!   ends: no live receiver.
 //! - An unknown id is [`ServerError::SessionNotFound`].
@@ -13,7 +16,7 @@ use tokio::sync::mpsc;
 use super::lifecycle::Tombstone;
 use super::service::{Service, SessionId, SessionSlot};
 use crate::bus::event::EventEnvelope;
-use crate::bus::ResumeOutcome;
+use crate::bus::{LiveSubscription, ResumeOutcome};
 use crate::error::ServerError;
 
 /// The outcome of [`Service::subscribe`]: what to replay, then the live
@@ -40,20 +43,107 @@ impl Service {
                 live: None,
             }),
             Some(SessionSlot::Live(handle)) => {
-                Ok(match handle.sequencer.subscribe_since(cursor).await {
-                    Ok(reply) => Subscription {
-                        replay: reply.replay,
-                        live: reply.live,
-                    },
+                let live = match handle.sequencer.subscribe_live().await {
+                    Ok(live) => live,
                     // A closed sequencer replays nothing and ends, so a
                     // reconnecting client never hangs and never sees a 404
                     // mid-race.
-                    Err(_) => Subscription {
-                        replay: ResumeOutcome::Replay(Vec::new()),
-                        live: None,
-                    },
+                    Err(_) => return Ok(Subscription::ended()),
+                };
+                match self.replay_live(id, cursor, live).await {
+                    Ok(subscription) => Ok(subscription),
+                    Err(err) => {
+                        tracing::error!(
+                            session_id = %id,
+                            error = %err,
+                            "history replay failed; falling back to the ring"
+                        );
+                        Ok(match handle.sequencer.subscribe_since(cursor).await {
+                            Ok(reply) => Subscription {
+                                replay: reply.replay,
+                                live: reply.live,
+                            },
+                            Err(_) => Subscription::ended(),
+                        })
+                    }
+                }
+            }
+        }
+    }
+
+    /// The live-session subscription over the stored history. The cursor is
+    /// decided first, from the captured head `H` alone: `Some(k)` with
+    /// `k > H`, or with no `H` yet, is `InvalidCursor` (no live receiver, no
+    /// store read). Otherwise the store is read once, through `H`: not at
+    /// all when no event was emitted yet or the cursor already sits at `H`.
+    /// `llm.delta` is never stored, and stale `session.end` envelopes (from
+    /// an earlier stop of a resumed conversation) are hidden. Every event
+    /// above `H` reaches the live receiver, so history plus receiver cover
+    /// each durable event exactly once. On a failed flush or read the live
+    /// receiver is dropped before the error is returned, so the caller's
+    /// fallback does not leave two subscribers for one client.
+    async fn replay_live(
+        &self,
+        id: SessionId,
+        cursor: Option<u64>,
+        live: LiveSubscription,
+    ) -> Result<Subscription, String> {
+        let LiveSubscription {
+            high_water,
+            receiver,
+        } = live;
+        let through = match (cursor, high_water) {
+            (Some(_), None) => None,
+            (Some(k), Some(h)) if k > h => None,
+            (_, head) => Some(head),
+        };
+        let Some(head) = through else {
+            drop(receiver);
+            return Ok(Subscription {
+                replay: ResumeOutcome::InvalidCursor,
+                live: None,
+            });
+        };
+        let nothing_to_read = match (cursor, head) {
+            (_, None) => true,
+            (Some(k), Some(h)) => k == h,
+            (None, Some(_)) => false,
+        };
+        if nothing_to_read {
+            return Ok(Subscription {
+                replay: ResumeOutcome::Replay(Vec::new()),
+                live: Some(receiver),
+            });
+        }
+        let stored = async {
+            self.history().flush().await?;
+            self.history()
+                .replay(id, cursor, head.unwrap_or_default())
+                .await
+        }
+        .await;
+        match stored {
+            Ok(mut events) => {
+                events.retain(|event| event.kind != "session.end");
+                Ok(Subscription {
+                    replay: ResumeOutcome::Replay(events),
+                    live: Some(receiver),
                 })
             }
+            Err(err) => {
+                drop(receiver);
+                Err(err)
+            }
+        }
+    }
+}
+
+impl Subscription {
+    /// Nothing to replay and nothing more to come.
+    fn ended() -> Self {
+        Self {
+            replay: ResumeOutcome::Replay(Vec::new()),
+            live: None,
         }
     }
 }

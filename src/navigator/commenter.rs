@@ -3,16 +3,16 @@
 //! model alias through the existing provider layer; tests use a scripted mock.
 
 use std::collections::BTreeMap;
-use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
 
 use crate::navigator::document::{text_around_changes, unified_diff};
 use crate::navigator::log::{LogRecord, NavLog};
+use crate::navigator::ports::{Metacognition, ModelError};
 use crate::navigator::protocol::Remark;
 
 /// Everything the commenter sees about a document.
@@ -77,16 +77,6 @@ impl RemarkContext {
         self.open_buffers = open_buffers;
         self
     }
-}
-
-pub trait Commenter: Send + Sync {
-    /// Returns `Ok(Some(remark))`, `Ok(None)` for silence, or an error
-    /// (LLM/network failure; surfaced but never fatal).
-    fn remark<'a>(
-        &'a self,
-        ctx: &'a RemarkContext,
-        cancel: &'a CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Remark>, String>> + Send + 'a>>;
 }
 
 /// What the metacognition's answer parsed to: a remark, explicit silence,
@@ -197,11 +187,6 @@ Answer with JSON only, no prose around it, either:
 or:
 {\"line\": <1-based line number in the current file>, \"text\": \"<one or two short sentences>\"}";
 
-/// Error-message prefix marking an answer that violated the prompt
-/// contract. The server recognizes it and logs the trigger as `malformed`
-/// instead of `provider_error`; the rest of the message is the raw output.
-pub const MALFORMED_PREFIX: &str = "malformed answer: ";
-
 /// Commenter calling the fast model alias via the provider layer
 /// (streaming chat call with a small read/grep tool loop). Holds one HTTP
 /// client per provider through a shared [`ClientCache`], so repeated
@@ -219,6 +204,9 @@ const REMARK_BUDGET: Duration = Duration::from_secs(8);
 /// At most this many rounds where the model may call tools; the call after
 /// the last one carries no tools, forcing the JSON answer.
 const MAX_TOOL_ROUNDS: usize = 2;
+/// Cap on the tokens of each metacognition round: a remark is a sentence or
+/// two, so a runaway generation is cost with no value.
+const REMARK_MAX_TOKENS: u64 = 1024;
 /// Cap on each tool output sent back to the model.
 const TOOL_OUTPUT_MAX_CHARS: usize = 4000;
 
@@ -297,13 +285,16 @@ impl LlmCommenter {
     async fn remark_with_tools(
         &self,
         ctx: &RemarkContext,
-        branch_prompt: &str,
         cancel: &CancellationToken,
-    ) -> Result<Option<Remark>, String> {
+    ) -> Result<Option<Remark>, ModelError> {
         use crate::provider::openai::{build_request, ChatMessage, ChatRequest};
         use crate::provider::{start_and_consume, StreamDelta};
 
         let body = match tokio::time::timeout(REMARK_BUDGET, async {
+            // The pipeline renders the branch prompt (conversation, live
+            // state) into the context; without it the metacognition would
+            // judge the diff alone.
+            let branch_prompt = ctx.prompt.as_deref().unwrap_or("");
             let system = if branch_prompt.trim().is_empty() {
                 NAVIGATOR_SYSTEM_PROMPT.to_string()
             } else {
@@ -324,8 +315,7 @@ impl LlmCommenter {
 
             let client = self
                 .clients
-                .get(&self.resolved.provider_name, &self.resolved.provider)
-                .map_err(|e| e.to_string())?;
+                .get(&self.resolved.provider_name, &self.resolved.provider)?;
 
             let mut message = None;
             for round in 0..=MAX_TOOL_ROUNDS {
@@ -343,7 +333,14 @@ impl LlmCommenter {
                     stream_options: Some(crate::provider::openai::StreamOptions {
                         include_usage: true,
                     }),
-                    max_tokens: self.resolved.model.max_output_tokens.min(Some(1024)),
+                    // `None.min(Some(n))` is `None`: a model without a stated
+                    // limit would run uncapped, so the cap is applied explicitly.
+                    max_tokens: Some(
+                        self.resolved
+                            .model
+                            .max_output_tokens
+                            .map_or(REMARK_MAX_TOKENS, |m| m.min(REMARK_MAX_TOKENS)),
+                    ),
                     temperature: Some(0.2),
                 };
                 let http = build_request(&client, &self.resolved.provider, &self.api_key, &request);
@@ -352,7 +349,7 @@ impl LlmCommenter {
                     Ok(r) => r,
                     Err(e) => {
                         self.log_call("metacognition_round", self.model_id(), started, false);
-                        return Err(format!("http: {e}"));
+                        return Err(crate::error::ProviderError::Http(e).into());
                     }
                 };
                 let mut noop = |_d: StreamDelta| {};
@@ -361,7 +358,7 @@ impl LlmCommenter {
                     Err(e) => {
                         let cancelled = matches!(e, crate::error::ProviderError::Canceled { .. });
                         self.log_call("metacognition_round", self.model_id(), started, cancelled);
-                        return Err(e.to_string());
+                        return Err(e.into());
                     }
                 };
                 self.log_call("metacognition_round", self.model_id(), started, false);
@@ -401,7 +398,7 @@ impl LlmCommenter {
                 }
             }
             let message = message.expect("the loop always sets the final message");
-            Ok::<_, String>(message)
+            Ok::<_, ModelError>(message)
         })
         .await
         {
@@ -431,7 +428,7 @@ impl LlmCommenter {
             ParsedAnswer::Silent => Ok(None),
             ParsedAnswer::Malformed => {
                 tracing::warn!(raw = %body.text, "navigator: model answer violates the prompt contract");
-                Err(format!("{MALFORMED_PREFIX}{}", body.text))
+                Err(ModelError::Malformed(body.text))
             }
         }
     }
@@ -509,10 +506,7 @@ impl crate::navigator::ports::ReflexContextModel for LlmCommenter {
     fn refresh<'a>(
         &'a self,
         request: &'a crate::navigator::ports::ReflexContextRequest,
-    ) -> Pin<
-        Box<dyn Future<Output = Result<String, crate::navigator::ports::ModelError>> + Send + 'a>,
-    > {
-        use crate::navigator::ports::ModelError;
+    ) -> BoxFuture<'a, Result<String, ModelError>> {
         use crate::provider::openai::{build_request, ChatMessage, ChatRequest, StreamOptions};
         use crate::provider::{start_and_consume, StreamDelta};
 
@@ -640,30 +634,13 @@ pub fn slice_buffer(text: &str, offset: Option<u64>, limit: Option<u64>) -> Stri
     lines[start..end].join("\n")
 }
 
-impl Commenter for LlmCommenter {
+impl Metacognition for LlmCommenter {
     fn remark<'a>(
         &'a self,
         ctx: &'a RemarkContext,
         cancel: &'a CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Remark>, String>> + Send + 'a>> {
-        // The pipeline renders the branch prompt (conversation, live state)
-        // into the context; without it the metacognition would judge the
-        // diff alone.
-        Box::pin(self.remark_with_tools(ctx, ctx.prompt.as_deref().unwrap_or(""), cancel))
-    }
-}
-
-impl LlmCommenter {
-    /// The prompted remark: the pipeline branch prompt (rendered from the
-    /// templates) frames the metacognition; an empty prompt keeps the
-    /// prototype's framing only.
-    pub fn remark_with_prompt<'a>(
-        &'a self,
-        ctx: &'a RemarkContext,
-        branch_prompt: &'a str,
-        cancel: &'a CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Remark>, String>> + Send + 'a>> {
-        Box::pin(self.remark_with_tools(ctx, branch_prompt, cancel))
+    ) -> BoxFuture<'a, Result<Option<Remark>, ModelError>> {
+        Box::pin(self.remark_with_tools(ctx, cancel))
     }
 }
 

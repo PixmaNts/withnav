@@ -12,8 +12,9 @@ use serde_json::{json, Value};
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use rust_agent::navigator::commenter::{Commenter, LlmCommenter, RemarkContext};
+use rust_agent::navigator::commenter::{LlmCommenter, RemarkContext};
 use rust_agent::navigator::log::NavLog;
+use rust_agent::navigator::ports::Metacognition;
 use rust_agent::provider::config::{
     ApiKind, ModelConfig, ProviderConfig, ReasoningHistory, ResolvedModel,
 };
@@ -48,11 +49,17 @@ fn resolved(base_url: String) -> ResolvedModel {
 }
 
 fn commenter(base_url: String, log_path: Option<PathBuf>) -> LlmCommenter {
-    let mut c = LlmCommenter::new(
-        resolved(base_url),
-        "test-key".into(),
-        Arc::new(ClientCache::new()),
-    );
+    commenter_with_limit(base_url, log_path, None)
+}
+
+fn commenter_with_limit(
+    base_url: String,
+    log_path: Option<PathBuf>,
+    max_output_tokens: Option<u64>,
+) -> LlmCommenter {
+    let mut model = resolved(base_url);
+    model.model.max_output_tokens = max_output_tokens;
+    let mut c = LlmCommenter::new(model, "test-key".into(), Arc::new(ClientCache::new()));
     if let Some(p) = log_path {
         c = c.with_log(NavLog::new(p));
     }
@@ -331,7 +338,7 @@ async fn buffer_read_honours_offset_and_limit() {
 }
 
 // Given a context carrying the rendered pipeline branch prompt
-// When the metacognition remarks through `Commenter::remark`
+// When the metacognition remarks through `Metacognition::remark`
 // Then the system message the model receives contains that prompt.
 #[tokio::test]
 async fn the_branch_prompt_reaches_the_models_system_message() {
@@ -357,4 +364,60 @@ async fn the_branch_prompt_reaches_the_models_system_message() {
         system.contains("driver: keep the parser"),
         "branch prompt in the system message: {system}"
     );
+}
+
+// Given a model answering prose instead of the JSON contract
+// When the metacognition remarks
+// Then the error is the typed `Malformed` carrying the raw output, not a
+//      provider failure.
+#[tokio::test]
+async fn a_prose_answer_is_a_typed_malformed_error() {
+    use rust_agent::navigator::ports::ModelError;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let answer = sse_stream(vec![sse_data(&delta_text("you should refactor this"))]);
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(answer, "text/event-stream"))
+        .mount(&server)
+        .await;
+
+    let c = commenter(server.uri(), None);
+    let ctx = remark_ctx(tmp.path(), vec![]);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    match c.remark(&ctx, &cancel).await {
+        Err(ModelError::Malformed(raw)) => assert_eq!(raw, "you should refactor this"),
+        other => panic!("expected Malformed, got {other:?}"),
+    }
+}
+
+// Given a model whose config states no output limit, a larger one, or a
+//       smaller one
+// When the metacognition remarks
+// Then the request never asks for more than 1024 tokens, and keeps a
+//      smaller configured limit.
+#[tokio::test]
+async fn the_remark_request_is_capped_at_1024_tokens() {
+    for (configured, expected) in [(None, 1024), (Some(8192), 1024), (Some(256), 256)] {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = MockServer::start().await;
+        let answer = sse_stream(vec![sse_data(&delta_text(r#"{"silent": true}"#))]);
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(answer, "text/event-stream"))
+            .mount(&server)
+            .await;
+
+        let c = commenter_with_limit(server.uri(), None, configured);
+        let ctx = remark_ctx(tmp.path(), vec![]);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let _ = c.remark(&ctx, &cancel).await.unwrap();
+
+        let bodies = received_bodies(&server).await;
+        assert_eq!(
+            bodies[0]["max_tokens"], expected,
+            "configured limit {configured:?}"
+        );
+    }
 }

@@ -22,22 +22,24 @@ use tokio_util::sync::CancellationToken;
 use tower_lsp_server::ls_types::*;
 use tower_lsp_server::{Client, LanguageServer};
 
-use crate::navigator::commenter::{Diag, RemarkContext, MALFORMED_PREFIX};
+use crate::navigator::commenter::{Diag, RemarkContext};
 use crate::navigator::config::NavigatorConfig;
 use crate::navigator::document::{text_around_line, DocumentState};
 use crate::navigator::log::{
-    excerpt, now_iso8601, LogRecord, NavLog, PrefilterRecord, TriggerRecord,
+    excerpt, now_iso8601, DeliveryOutcome, LogRecord, NavLog, PendingTrigger,
 };
 use crate::navigator::pipeline::{
     Action, Pipeline, PipelineError, PipelineSnapshot, TriggerInputs, TriggerKind, NO_REMARK_MS,
 };
-use crate::navigator::ports::{DecisionModel, ReflexContextModel, ReflexContextRequest};
+use crate::navigator::ports::{
+    DecisionModel, ModelError, ReflexContextModel, ReflexContextRequest,
+};
 use crate::navigator::protocol::{
     ClearNotification, ClearParams, DiagnosticItem, DiagnosticsParams, FeedbackParams,
     InlineCompletionResult, IntentParams, Position, ReflexShownParams, RemarkNotification,
     RemarkParams, ServerInfoNotification, ServerInfoParams, StatusNotification, StatusParams,
 };
-use crate::navigator::reflex::{to_result, ReflexService, SuggestOutcome};
+use crate::navigator::reflex::{to_result, ReflexService};
 use crate::navigator::{ConversationEvent, Metacognition, NavigatorDeps, WakeOutcome};
 
 pub struct NavigatorBackend {
@@ -378,24 +380,6 @@ impl TriggerContext {
     }
 }
 
-/// The pipeline-era fields of a trigger record, filled from an evaluation
-/// (or absent, when the pipeline could not run).
-struct RecordData {
-    workspace: Option<String>,
-    pipeline_hash: Option<String>,
-    template_inputs: Option<serde_json::Value>,
-    rendered_state: Option<String>,
-    questions: Option<serde_json::Value>,
-    model: Option<String>,
-    answers: Option<serde_json::Value>,
-    branch: Option<usize>,
-    requested: Option<&'static str>,
-    prefilter_outcome: &'static str,
-    prefilter_reason: Option<&'static str>,
-    /// The cognition session a wake targeted, when one did.
-    session: Option<String>,
-}
-
 impl Inner {
     async fn set_status(&self, state: &str, message: Option<String>) {
         self.client
@@ -619,8 +603,6 @@ impl Inner {
         };
         ctx.event = event.as_str();
 
-        let trigger_id = crate::navigator::new_ulid_string();
-        let prefilter_inputs = ctx.prefilter_inputs();
         let template_inputs = ctx.template_inputs();
         let inputs = TriggerInputs {
             changed_lines: ctx.changed_lines,
@@ -635,59 +617,25 @@ impl Inner {
             .await
             .as_ref()
             .map(|p| p.display().to_string());
-        let mut record = RecordData {
-            workspace: workspace_str.clone(),
-            pipeline_hash: None,
-            template_inputs: None,
-            rendered_state: None,
-            questions: None,
-            model: None,
-            answers: None,
-            branch: None,
-            requested: None,
-            prefilter_outcome: "pass",
-            prefilter_reason: None,
-            session: None,
-        };
-
-        // Writes the one trigger record for this trigger, once the delivered
-        // outcome is known.
-        let log_trigger = |record: &RecordData,
-                           delivered: &'static str,
-                           remark_id: Option<&str>,
-                           reason: Option<&str>| {
-            self.log.append(&LogRecord::Trigger(TriggerRecord {
-                trigger_id: &trigger_id,
-                run_id: &self.run_id,
-                workspace: record.workspace.as_deref(),
-                uri: &ctx.uri,
-                version: ctx.version,
-                event: ctx.event,
-                prefilter: PrefilterRecord {
-                    inputs: &prefilter_inputs,
-                    outcome: record.prefilter_outcome,
-                    reason: record.prefilter_reason,
-                },
-                pipeline_hash: record.pipeline_hash.as_deref(),
-                template_inputs: record.template_inputs.as_ref(),
-                rendered_state: record.rendered_state.as_deref(),
-                questions: record.questions.as_ref(),
-                model: record.model.as_deref(),
-                answers: record.answers.as_ref(),
-                branch: record.branch,
-                requested_action: record.requested,
-                delivered,
-                remark_id,
-                reason,
-                session: record.session.as_deref(),
-            }));
-        };
+        let mut pending = PendingTrigger::new(
+            &self.run_id,
+            workspace_str,
+            &ctx.uri,
+            ctx.version,
+            ctx.event,
+            ctx.prefilter_inputs(),
+        );
 
         // No instinct wired: the pipeline cannot run.
         let Some(decision) = self.decision.as_ref().map(Arc::clone) else {
-            record.prefilter_outcome = "skip";
-            record.prefilter_reason = Some("instinct_unavailable");
-            log_trigger(&record, "none", None, Some("instinct_unavailable"));
+            pending.prefilter_outcome = "skip";
+            pending.prefilter_reason = Some("instinct_unavailable");
+            pending.finish(
+                &self.log,
+                DeliveryOutcome::None {
+                    reason: "instinct_unavailable",
+                },
+            );
             return;
         };
 
@@ -720,21 +668,23 @@ impl Inner {
                 self.clear_in_flight(&uri).await;
                 let cancelled = matches!(
                     model_error,
-                    crate::navigator::ports::ModelError::Provider(
-                        crate::error::ProviderError::Canceled { .. }
-                    )
+                    ModelError::Provider(crate::error::ProviderError::Canceled { .. })
                 );
+                pending.model = self.instinct_model.clone();
                 if cancelled {
-                    record.model = self.instinct_model.clone();
-                    log_trigger(&record, "cancelled", None, None);
+                    pending.finish(&self.log, DeliveryOutcome::Cancelled { reason: None });
                 } else {
                     let message = model_error.to_string();
                     self.log.append(&LogRecord::Error {
                         uri: &ctx.uri,
                         message: &message,
                     });
-                    record.model = self.instinct_model.clone();
-                    log_trigger(&record, "provider_error", None, Some("instinct"));
+                    pending.finish(
+                        &self.log,
+                        DeliveryOutcome::ProviderError {
+                            reason: Some("instinct"),
+                        },
+                    );
                     self.set_status("error", Some(message)).await;
                 }
                 return;
@@ -758,21 +708,21 @@ impl Inner {
                 purpose: None,
             });
         }
-        record.pipeline_hash = Some(evaluation.hash.clone());
-        record.template_inputs = Some(
+        pending.pipeline_hash = Some(evaluation.hash.clone());
+        pending.template_inputs = Some(
             serde_json::to_value(&evaluation.template_inputs).unwrap_or(serde_json::Value::Null),
         );
-        record.rendered_state = Some(evaluation.rendered_state.clone());
-        record.questions = questions_json;
-        record.model = Some(model_id);
-        record.answers = evaluation
+        pending.rendered_state = Some(evaluation.rendered_state.clone());
+        pending.questions = questions_json;
+        pending.model = Some(model_id);
+        pending.answers = evaluation
             .answers
             .as_ref()
             .map(|a| serde_json::to_value(a).unwrap_or(serde_json::Value::Null));
-        record.branch = evaluation.branch_index;
-        record.requested = Some(evaluation.requested_action.as_str());
-        record.prefilter_outcome = evaluation.prefilter.as_str();
-        record.prefilter_reason = evaluation.prefilter.skip_reason();
+        pending.branch = evaluation.branch_index;
+        pending.requested_action = Some(evaluation.requested_action.as_str());
+        pending.prefilter_outcome = evaluation.prefilter.as_str();
+        pending.prefilter_reason = evaluation.prefilter.skip_reason();
 
         if let Some(reason) = evaluation.prefilter.skip_reason() {
             self.clear_in_flight(&uri).await;
@@ -786,11 +736,11 @@ impl Inner {
                     self.set_status("idle", None).await;
                     return;
                 }
-                record.template_inputs = None;
-                record.rendered_state = None;
+                pending.template_inputs = None;
+                pending.rendered_state = None;
             }
-            record.requested = None;
-            log_trigger(&record, "none", None, Some(reason));
+            pending.requested_action = None;
+            pending.finish(&self.log, DeliveryOutcome::None { reason });
             self.set_status("idle", None).await;
             return;
         }
@@ -800,14 +750,14 @@ impl Inner {
                 self.clear_in_flight(&uri).await;
                 // A pre-filter skip or no matching branch: nothing beyond
                 // the instinct was requested.
-                let reason = record
+                let reason = pending
                     .prefilter_reason
                     .or(if evaluation.branch_index.is_none() {
                         Some("no_branch")
                     } else {
                         None
                     });
-                log_trigger(&record, "silent", None, reason);
+                pending.finish(&self.log, DeliveryOutcome::Silent { reason });
                 // Silence rebases: this diff was considered and judged fine.
                 // A conversation trigger considered no diff.
                 if event != TriggerKind::Conversation {
@@ -820,70 +770,26 @@ impl Inner {
             }
             Action::WakeCognition => {
                 self.clear_in_flight(&uri).await;
-                self.deliver_wake(uri, ctx, trigger_id, record, prefilter_inputs)
-                    .await;
+                self.deliver_wake(uri, ctx, pending).await;
             }
             Action::Remark => {
                 let prompt =
                     pipeline.render_remark_branch(event, evaluation.branch_index, &template_inputs);
-                self.deliver_remark(
-                    uri,
-                    ctx,
-                    trigger_id,
-                    record,
-                    prefilter_inputs,
-                    prompt,
-                    cancel,
-                )
-                .await;
+                self.deliver_remark(uri, ctx, pending, prompt, cancel).await;
             }
         }
     }
 
     /// Delivers a `remark` branch: calls the metacognition with the rendered
     /// branch prompt and writes the completed trigger record.
-    #[allow(clippy::too_many_arguments)]
     async fn deliver_remark(
         self: &Arc<Self>,
         uri: String,
         ctx: TriggerContext,
-        trigger_id: String,
-        record: RecordData,
-        prefilter_inputs: std::collections::BTreeMap<String, serde_json::Value>,
+        pending: PendingTrigger,
         prompt: String,
         cancel: CancellationToken,
     ) {
-        let log_trigger = |record: &RecordData,
-                           delivered: &'static str,
-                           remark_id: Option<&str>,
-                           reason: Option<&str>| {
-            self.log.append(&LogRecord::Trigger(TriggerRecord {
-                trigger_id: &trigger_id,
-                run_id: &self.run_id,
-                workspace: record.workspace.as_deref(),
-                uri: &ctx.uri,
-                version: ctx.version,
-                event: ctx.event,
-                prefilter: PrefilterRecord {
-                    inputs: &prefilter_inputs,
-                    outcome: record.prefilter_outcome,
-                    reason: record.prefilter_reason,
-                },
-                pipeline_hash: record.pipeline_hash.as_deref(),
-                template_inputs: record.template_inputs.as_ref(),
-                rendered_state: record.rendered_state.as_deref(),
-                questions: record.questions.as_ref(),
-                model: record.model.as_deref(),
-                answers: record.answers.as_ref(),
-                branch: record.branch,
-                requested_action: record.requested,
-                delivered,
-                remark_id,
-                reason,
-                session: record.session.as_deref(),
-            }));
-        };
-
         let remark_ctx = RemarkContext {
             uri: ctx.uri.clone(),
             language_id: ctx.language_id.clone(),
@@ -909,7 +815,7 @@ impl Inner {
 
         let Some(result) = result else {
             // Cancelled: a newer edit took over. Stay quiet.
-            log_trigger(&record, "cancelled", None, None);
+            pending.finish(&self.log, DeliveryOutcome::Cancelled { reason: None });
             return;
         };
 
@@ -933,7 +839,12 @@ impl Inner {
                         }
                         _ => {
                             tracing::info!(uri = %ctx.uri, "dropping remark for stale version");
-                            log_trigger(&record, "cancelled", None, Some("stale_version"));
+                            pending.finish(
+                                &self.log,
+                                DeliveryOutcome::Cancelled {
+                                    reason: Some("stale_version"),
+                                },
+                            );
                             return;
                         }
                     }
@@ -965,7 +876,7 @@ impl Inner {
                         text: remark.text,
                     })
                     .await;
-                log_trigger(&record, "remark", Some(&id), None);
+                pending.finish(&self.log, DeliveryOutcome::Remark { remark_id: id });
                 self.set_status("idle", None).await;
             }
             Ok(None) => {
@@ -991,10 +902,10 @@ impl Inner {
                         doc.rebase();
                     }
                 }
-                log_trigger(&record, "silent", None, None);
+                pending.finish(&self.log, DeliveryOutcome::Silent { reason: None });
                 self.set_status("idle", None).await;
             }
-            Err(message) => {
+            Err(error) => {
                 self.log.append(&LogRecord::Call {
                     layer: "metacognition",
                     model: &model,
@@ -1006,25 +917,26 @@ impl Inner {
                 });
                 // A malformed answer is a model failure, not a provider
                 // failure: different delivered outcome in the log.
-                if let Some(raw) = message.strip_prefix(MALFORMED_PREFIX) {
+                if let ModelError::Malformed(raw) = &error {
                     self.log.append(&LogRecord::Malformed {
                         uri: &ctx.uri,
                         model: &model,
                         latency_ms: started.elapsed().as_millis(),
                         raw_excerpt: &excerpt(raw, 400),
                     });
-                    log_trigger(&record, "malformed", None, None);
+                    pending.finish(&self.log, DeliveryOutcome::Malformed);
                     self.set_status(
                         "error",
                         Some("model answer violated the prompt contract".to_string()),
                     )
                     .await;
                 } else {
+                    let message = error.to_string();
                     self.log.append(&LogRecord::Error {
                         uri: &ctx.uri,
                         message: &message,
                     });
-                    log_trigger(&record, "provider_error", None, None);
+                    pending.finish(&self.log, DeliveryOutcome::ProviderError { reason: None });
                     self.set_status("error", Some(message)).await;
                 }
             }
@@ -1036,59 +948,25 @@ impl Inner {
     /// through the feed. The guard is the feed's: while the cognition
     /// waits on the driver's `ask` answer, the wake is queued (latest
     /// wins) and delivered right after the driver's next message.
-    #[allow(clippy::too_many_arguments)]
     async fn deliver_wake(
         self: &Arc<Self>,
         uri: String,
         ctx: TriggerContext,
-        trigger_id: String,
-        mut record: RecordData,
-        prefilter_inputs: std::collections::BTreeMap<String, serde_json::Value>,
+        pending: PendingTrigger,
     ) {
-        let log_trigger = |record: &RecordData,
-                           delivered: &'static str,
-                           reason: Option<&str>,
-                           session: Option<&str>| {
-            self.log.append(&LogRecord::Trigger(TriggerRecord {
-                trigger_id: &trigger_id,
-                run_id: &self.run_id,
-                workspace: record.workspace.as_deref(),
-                uri: &ctx.uri,
-                version: ctx.version,
-                event: ctx.event,
-                prefilter: PrefilterRecord {
-                    inputs: &prefilter_inputs,
-                    outcome: record.prefilter_outcome,
-                    reason: record.prefilter_reason,
-                },
-                pipeline_hash: record.pipeline_hash.as_deref(),
-                template_inputs: record.template_inputs.as_ref(),
-                rendered_state: record.rendered_state.as_deref(),
-                questions: record.questions.as_ref(),
-                model: record.model.as_deref(),
-                answers: record.answers.as_ref(),
-                branch: record.branch,
-                requested_action: record.requested,
-                delivered,
-                remark_id: None,
-                reason,
-                session,
-            }));
+        const UNAVAILABLE: DeliveryOutcome = DeliveryOutcome::None {
+            reason: "cognition_unavailable",
         };
-
-        let unavailable =
-            |record: &RecordData| log_trigger(record, "none", Some("cognition_unavailable"), None);
         let Some(feed) = self.conversation.clone() else {
-            unavailable(&record);
+            pending.finish(&self.log, UNAVAILABLE);
             self.set_status("idle", None).await;
             return;
         };
         if feed.active_session().is_none() {
-            unavailable(&record);
+            pending.finish(&self.log, UNAVAILABLE);
             self.set_status("idle", None).await;
             return;
         }
-        record.session = feed.active_session().map(|id| id.to_string());
         let message = wake_message(&ctx, &feed.digest());
         let outcome = feed.post_wake(&message).await;
         if matches!(outcome, WakeOutcome::Posted(_) | WakeOutcome::Queued(_)) {
@@ -1106,18 +984,28 @@ impl Inner {
         }
         match outcome {
             WakeOutcome::Posted(session_id) => {
-                log_trigger(&record, "wake", None, Some(&session_id.to_string()));
+                pending.finish(
+                    &self.log,
+                    DeliveryOutcome::Wake {
+                        session: session_id.to_string(),
+                    },
+                );
             }
             WakeOutcome::Queued(session_id) => {
-                log_trigger(&record, "wake_queued", None, Some(&session_id.to_string()));
+                pending.finish(
+                    &self.log,
+                    DeliveryOutcome::WakeQueued {
+                        session: session_id.to_string(),
+                    },
+                );
             }
             // The session exists but refused the post (stopping, full
             // inbox): an honest outcome, logged for tuning like any skip.
             WakeOutcome::Failed(_, error) => {
                 tracing::warn!(uri = %uri, error = %error, "wake post failed");
-                unavailable(&record);
+                pending.finish(&self.log, UNAVAILABLE);
             }
-            WakeOutcome::NoSession => unavailable(&record),
+            WakeOutcome::NoSession => pending.finish(&self.log, UNAVAILABLE),
         }
         self.set_status("idle", None).await;
     }
@@ -1602,15 +1490,12 @@ impl NavigatorBackend {
                 self.inner.log_reflex_call(started.elapsed().as_millis());
                 Ok(to_result(&suggestion))
             }
-            Err(SuggestOutcome::Debounced | SuggestOutcome::StaleVersion) => {
-                self.inner.log_reflex_call(started.elapsed().as_millis());
-                Ok(InlineCompletionResult {
-                    items: Vec::new(),
-                    request_id: None,
-                })
-            }
-            Err(SuggestOutcome::ModelSilent) => {
-                self.inner.log_reflex_call(started.elapsed().as_millis());
+            Err(outcome) => {
+                // A debounced or out-of-range request never reached the
+                // model: logging it would bill a call that did not happen.
+                if outcome.called_model() {
+                    self.inner.log_reflex_call(started.elapsed().as_millis());
+                }
                 Ok(InlineCompletionResult {
                     items: Vec::new(),
                     request_id: None,

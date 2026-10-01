@@ -2,21 +2,20 @@
 //! scripted reflex, instinct and metacognition models.
 
 use std::collections::VecDeque;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use futures::future::BoxFuture;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio_util::sync::CancellationToken;
 
 use rust_agent::error::ProviderError;
-use rust_agent::navigator::commenter::{Commenter, RemarkContext};
+use rust_agent::navigator::commenter::RemarkContext;
 use rust_agent::navigator::ports::{
-    Answer, Answers, DecisionModel, FimAnswer, FimModel, FimRequest, ModelError, Question,
-    Questions, ReflexContextModel, ReflexContextRequest,
+    Answer, Answers, DecisionModel, FimAnswer, FimModel, FimRequest, Metacognition, ModelError,
+    Question, Questions, ReflexContextModel, ReflexContextRequest,
 };
 use rust_agent::navigator::{self, NavigatorDeps, Remark};
 use rust_agent::provider::Usage;
@@ -61,15 +60,17 @@ pub fn delta_tool_call(id: &str, name: &str, args: &Value) -> Value {
 /// One scripted metacognition answer.
 /// - `Remark(line, text)` => Ok(Some(...))
 /// - `Silent` => Ok(None)
-/// - `Fail(msg)` => Err(msg)
+/// - `Fail(msg)` => a provider-side failure with that message
+/// - `Malformed(raw)` => an answer that violates the prompt contract
 #[derive(Clone)]
 pub enum RemarkAnswer {
     Remark(u32, &'static str),
     Silent,
     Fail(&'static str),
+    Malformed(&'static str),
 }
 
-/// Scripted [`Commenter`]: consumes answers from a shared list, in order;
+/// Scripted [`Metacognition`]: consumes answers from a shared list, in order;
 /// when empty, answers `Silent`. Counts calls, and can hold every call on a
 /// gate so a test can interleave an edit while the request is in flight.
 #[derive(Clone, Default)]
@@ -100,12 +101,12 @@ impl ScriptedCommenter {
     }
 }
 
-impl Commenter for ScriptedCommenter {
+impl Metacognition for ScriptedCommenter {
     fn remark<'a>(
         &'a self,
         _ctx: &'a RemarkContext,
         cancel: &'a CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Remark>, String>> + Send + 'a>> {
+    ) -> BoxFuture<'a, Result<Option<Remark>, ModelError>> {
         Box::pin(async move {
             // The answer is assigned when the call starts: a cancelled call
             // still consumes its answer (it is discarded), like a real LLM
@@ -122,7 +123,7 @@ impl Commenter for ScriptedCommenter {
             if let Some(gate) = &self.gate {
                 tokio::select! {
                     _ = gate.cancelled() => {}
-                    _ = cancel.cancelled() => return Err("cancelled".into()),
+                    _ = cancel.cancelled() => return Err(ModelError::Unavailable("cancelled".into())),
                 }
             }
             match answer {
@@ -131,7 +132,8 @@ impl Commenter for ScriptedCommenter {
                     text: text.to_string(),
                 })),
                 RemarkAnswer::Silent => Ok(None),
-                RemarkAnswer::Fail(msg) => Err(msg.to_string()),
+                RemarkAnswer::Fail(msg) => Err(ModelError::Unavailable(msg.to_string())),
+                RemarkAnswer::Malformed(raw) => Err(ModelError::Malformed(raw.to_string())),
             }
         })
     }
@@ -240,7 +242,7 @@ impl DecisionModel for ScriptedDecision {
         state: &'a str,
         questions: &'a Questions,
         _cancel: &'a CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = Result<Answers, ModelError>> + Send + 'a>> {
+    ) -> BoxFuture<'a, Result<Answers, ModelError>> {
         let index = self.calls.fetch_add(1, Ordering::SeqCst);
         self.states.lock().unwrap().push(state.to_string());
         let result = match &self.mode {
@@ -319,7 +321,7 @@ impl FimModel for ScriptedFim {
         &'a self,
         request: FimRequest,
         cancel: &'a CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = Result<FimAnswer, ModelError>> + Send + 'a>> {
+    ) -> BoxFuture<'a, Result<FimAnswer, ModelError>> {
         Box::pin(async move {
             // The answer is assigned when the call starts: a cancelled call
             // still consumes it, like a real request whose tokens are paid
@@ -379,7 +381,7 @@ impl ReflexContextModel for ScriptedReflexContext {
     fn refresh<'a>(
         &'a self,
         request: &'a ReflexContextRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<String, ModelError>> + Send + 'a>> {
+    ) -> BoxFuture<'a, Result<String, ModelError>> {
         Box::pin(async move {
             self.requests.lock().unwrap().push(request.clone());
             let next = {
@@ -454,6 +456,20 @@ impl LspClient {
             let msg = self.recv().await;
             if msg.get("method").and_then(|m| m.as_str()) == Some("navigator/status")
                 && msg["params"]["state"].as_str() == Some(state)
+            {
+                return msg;
+            }
+        }
+    }
+
+    /// Reads messages until a `navigator/status` with one of `states`.
+    pub async fn expect_status_in(&mut self, states: &[&str]) -> Value {
+        loop {
+            let msg = self.recv().await;
+            if msg.get("method").and_then(|m| m.as_str()) == Some("navigator/status")
+                && msg["params"]["state"]
+                    .as_str()
+                    .is_some_and(|s| states.contains(&s))
             {
                 return msg;
             }
@@ -575,7 +591,12 @@ fn try_parse(buf: &[u8]) -> Option<(Value, usize)> {
 /// worth a short metacognition remark and drift enough to wake cognition
 /// when an intent exists.
 pub fn spawn_server(deps: NavigatorDeps) -> LspClient {
-    let deps = deps.with_decision(Arc::new(ScriptedDecision::routing_to_metacognition()));
+    spawn_server_as_is(deps.with_decision(Arc::new(ScriptedDecision::routing_to_metacognition())))
+}
+
+/// [`spawn_server`] without adding an instinct: the deps decide which
+/// layers exist.
+pub fn spawn_server_as_is(deps: NavigatorDeps) -> LspClient {
     let (server_input, client_write) = tokio::io::duplex(64 * 1024);
     let (client_read, server_output) = tokio::io::duplex(64 * 1024);
     tokio::spawn(navigator::serve(server_input, server_output, deps));

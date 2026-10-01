@@ -12,7 +12,7 @@ use clap::Parser;
 use rust_agent::navigator;
 use rust_agent::navigator::commenter::LlmCommenter;
 use rust_agent::navigator::log::NavLog;
-use rust_agent::navigator::{Commenter, CommenterAsMetacognition, Metacognition};
+use rust_agent::navigator::Metacognition;
 use rust_agent::provider::auth;
 use rust_agent::provider::config::ModelsConfig;
 use rust_agent::provider::fim::InceptionFim;
@@ -82,26 +82,6 @@ fn load_models(cli: &Cli) -> anyhow::Result<ModelsConfig> {
         .ok_or_else(|| anyhow::anyhow!("no models.json found"))?;
     ModelsConfig::load(&models_path)
         .map_err(|e| anyhow::anyhow!("cannot load {}: {e}", models_path.display()))
-}
-
-/// The metacognition over the LLM commenter; the pipeline prompt is carried
-/// on the `RemarkContext`.
-struct PromptedCommenter {
-    inner: Arc<LlmCommenter>,
-}
-
-impl Metacognition for PromptedCommenter {
-    fn remark<'a>(
-        &'a self,
-        ctx: &'a navigator::RemarkContext,
-        cancel: &'a tokio_util::sync::CancellationToken,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<Option<navigator::Remark>, String>> + Send + 'a,
-        >,
-    > {
-        self.inner.remark(ctx, cancel)
-    }
 }
 
 struct Layers {
@@ -225,12 +205,10 @@ impl Layers {
     /// failing stand-in so the editor never crashes.
     fn metacognition(&self) -> Arc<dyn Metacognition> {
         match &self.metacognition {
-            Some(llm) => Arc::new(PromptedCommenter {
-                inner: Arc::clone(llm),
-            }),
-            None => Arc::new(CommenterAsMetacognition(Arc::new(FailingCommenter {
+            Some(llm) => Arc::clone(llm) as Arc<dyn Metacognition>,
+            None => Arc::new(FailingCommenter {
                 message: "metacognition layer disabled".to_string(),
-            }))),
+            }),
         }
     }
 }
@@ -283,7 +261,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let mut deps = navigator::NavigatorDeps::with_layers(layers.metacognition(), log_path)
+    let mut deps = navigator::NavigatorDeps::new(layers.metacognition(), log_path)
         .with_dirs(workspace, user_dir)
         .with_conversation(conversation)
         .with_model_ids(
@@ -453,17 +431,14 @@ struct FailingCommenter {
     message: String,
 }
 
-impl Commenter for FailingCommenter {
+impl Metacognition for FailingCommenter {
     fn remark<'a>(
         &'a self,
         _ctx: &'a navigator::RemarkContext,
         _cancel: &'a tokio_util::sync::CancellationToken,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<Option<navigator::Remark>, String>> + Send + 'a,
-        >,
-    > {
+    ) -> futures::future::BoxFuture<'a, Result<Option<navigator::Remark>, navigator::ModelError>>
+    {
         let msg = self.message.clone();
-        Box::pin(async move { Err(msg) })
+        Box::pin(async move { Err(navigator::ModelError::Unavailable(msg)) })
     }
 }

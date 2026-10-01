@@ -228,7 +228,7 @@ async fn empty_model_answer_is_silent() {
     );
 }
 
-/// An out-of-bounds position resolves as ModelSilent without calling the
+/// An out-of-bounds position resolves as OutOfRange without calling the
 /// model.
 #[tokio::test(start_paused = true)]
 async fn out_of_bounds_position_is_silent_without_a_model_call() {
@@ -249,7 +249,7 @@ async fn out_of_bounds_position_is_silent_without_a_model_call() {
     .unwrap();
     assert_eq!(
         outcome.unwrap_err(),
-        rust_agent::navigator::reflex::SuggestOutcome::ModelSilent
+        rust_agent::navigator::reflex::SuggestOutcome::OutOfRange
     );
     assert_eq!(model.calls(), 0);
 }

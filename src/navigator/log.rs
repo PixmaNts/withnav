@@ -84,6 +84,136 @@ pub struct TriggerRecord<'a> {
     pub session: Option<&'a str>,
 }
 
+/// What a trigger finally delivered. Each variant carries exactly the
+/// fields its terminal record has, so a caller cannot log a remark without
+/// an id or a wake without a session.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DeliveryOutcome {
+    /// A remark was sent to the editor.
+    Remark { remark_id: String },
+    /// The metacognition (or the pipeline) judged there was nothing to say;
+    /// `reason` says why when the pipeline decided it.
+    Silent { reason: Option<&'static str> },
+    /// The evaluation was superseded by a newer edit, or its answer was for
+    /// a stale document version.
+    Cancelled { reason: Option<&'static str> },
+    /// The model answered, but not per the prompt contract.
+    Malformed,
+    /// A model call failed; `reason` names the layer when the instinct did.
+    ProviderError { reason: Option<&'static str> },
+    /// Nothing was delivered, for a stated reason.
+    None { reason: &'static str },
+    /// A wake was posted to the cognition session.
+    Wake { session: String },
+    /// A wake was queued behind the cognition's pending `ask`.
+    WakeQueued { session: String },
+}
+
+impl DeliveryOutcome {
+    /// `delivered`, `remark_id`, `reason`, `session` of the record.
+    fn parts(&self) -> (&'static str, Option<&str>, Option<&str>, Option<&str>) {
+        match self {
+            Self::Remark { remark_id } => ("remark", Some(remark_id), None, None),
+            Self::Silent { reason } => ("silent", None, *reason, None),
+            Self::Cancelled { reason } => ("cancelled", None, *reason, None),
+            Self::Malformed => ("malformed", None, None, None),
+            Self::ProviderError { reason } => ("provider_error", None, *reason, None),
+            Self::None { reason } => ("none", None, Some(reason), None),
+            Self::Wake { session } => ("wake", None, None, Some(session)),
+            Self::WakeQueued { session } => ("wake_queued", None, None, Some(session)),
+        }
+    }
+}
+
+/// A trigger whose outcome is not known yet: everything the terminal record
+/// holds except what was delivered. [`PendingTrigger::finish`] consumes it,
+/// so every trigger writes exactly one record.
+#[derive(Debug, Clone)]
+pub struct PendingTrigger {
+    pub trigger_id: String,
+    /// One per server process.
+    pub run_id: String,
+    pub workspace: Option<String>,
+    pub uri: String,
+    /// Document version at the trigger.
+    pub version: i32,
+    pub event: &'static str,
+    pub prefilter_inputs: BTreeMap<String, Value>,
+    /// "pass" | "skip"
+    pub prefilter_outcome: &'static str,
+    pub prefilter_reason: Option<&'static str>,
+    pub pipeline_hash: Option<String>,
+    pub template_inputs: Option<Value>,
+    pub rendered_state: Option<String>,
+    pub questions: Option<Value>,
+    pub model: Option<String>,
+    pub answers: Option<Value>,
+    pub branch: Option<usize>,
+    pub requested_action: Option<&'static str>,
+}
+
+impl PendingTrigger {
+    /// A trigger that passed its pre-filters and has no pipeline result yet.
+    pub fn new(
+        run_id: &str,
+        workspace: Option<String>,
+        uri: &str,
+        version: i32,
+        event: &'static str,
+        prefilter_inputs: BTreeMap<String, Value>,
+    ) -> Self {
+        Self {
+            trigger_id: new_ulid_string(),
+            run_id: run_id.to_string(),
+            workspace,
+            uri: uri.to_string(),
+            version,
+            event,
+            prefilter_inputs,
+            prefilter_outcome: "pass",
+            prefilter_reason: None,
+            pipeline_hash: None,
+            template_inputs: None,
+            rendered_state: None,
+            questions: None,
+            model: None,
+            answers: None,
+            branch: None,
+            requested_action: None,
+        }
+    }
+
+    /// Writes the trigger's one terminal record.
+    pub fn finish(self, log: &NavLog, outcome: DeliveryOutcome) {
+        let (delivered, remark_id, reason, session) = outcome.parts();
+        log.append(&LogRecord::Trigger(TriggerRecord {
+            trigger_id: &self.trigger_id,
+            run_id: &self.run_id,
+            workspace: self.workspace.as_deref(),
+            uri: &self.uri,
+            version: self.version,
+            event: self.event,
+            prefilter: PrefilterRecord {
+                inputs: &self.prefilter_inputs,
+                outcome: self.prefilter_outcome,
+                reason: self.prefilter_reason,
+            },
+            pipeline_hash: self.pipeline_hash.as_deref(),
+            template_inputs: self.template_inputs.as_ref(),
+            rendered_state: self.rendered_state.as_deref(),
+            questions: self.questions.as_ref(),
+            model: self.model.as_deref(),
+            answers: self.answers.as_ref(),
+            branch: self.branch,
+            requested_action: self.requested_action,
+            delivered,
+            remark_id,
+            reason,
+            session,
+        }));
+    }
+}
+
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 // The trigger record is the fat one by design: one structured decision per

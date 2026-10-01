@@ -23,10 +23,13 @@
 //! - `events(session_id TEXT, seq INTEGER, kind TEXT, envelope TEXT,
 //!   PRIMARY KEY(session_id, seq))`
 //!
-//! Stored events: every durable envelope in order, except `session.end` (a
-//! resumed stream must not look closed). `llm.delta` is live-only and never
-//! stored. `transcript` is the JSON of the actor's `Vec<ChatMessage>`,
-//! snapshotted after every turn end.
+//! Stored events: every durable envelope in order, `session.end` included.
+//! Recording it keeps `last_seq` at the highest seq any client has seen, so a
+//! resumed session continues after it and never reuses a seq; the resume path
+//! (not the store) keeps it from replaying to subscribers, so the resumed
+//! stream does not look closed. `llm.delta` is live-only and never stored.
+//! `transcript` is the JSON of the actor's `Vec<ChatMessage>`, snapshotted
+//! after every turn end.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -54,7 +57,7 @@ pub struct StoredSession {
 }
 
 /// A full session load: the row's metadata, its stored envelopes (in seq
-/// order, `session.end` excluded), and the last transcript snapshot.
+/// order, any `session.end` included), and the last transcript snapshot.
 #[derive(Debug, Clone)]
 pub struct LoadedSession {
     pub meta: StoredSession,
@@ -505,9 +508,8 @@ use crate::bus::sequencer::Emitter;
 use crate::bus::SubscribeReply;
 
 /// Wraps a session's [`SessionBus`] as the sequencer's emitter and forwards
-/// every DURABLE envelope — except `llm.delta` (live-only, never stored) and
-/// `session.end` (a resumed stream must not look closed) — to the writer
-/// thread, in seq order, synchronously inside the single sequencer task. The
+/// every DURABLE envelope — everything except `llm.delta` (live-only, never
+/// stored), `session.end` included — to the writer thread, in seq order, synchronously inside the single sequencer task. The
 /// hand-off is a channel send: the sequencer never waits on SQLite.
 pub struct PersistingEmitter {
     bus: crate::bus::SessionBus,
@@ -528,9 +530,7 @@ impl PersistingEmitter {
 impl Emitter for PersistingEmitter {
     fn emit(&mut self, envelope: EventEnvelope) {
         let kind = envelope.kind.as_str();
-        let durable = kind != "llm.delta";
-        let is_end = kind == "session.end";
-        if durable && !is_end {
+        if kind != "llm.delta" {
             // The first driver message becomes the title (the store guards:
             // only when the title is still NULL).
             if kind == "message.received" {

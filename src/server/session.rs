@@ -367,6 +367,10 @@ impl AppState {
             let Some(store) = self.history.as_ref() else {
                 return Err(ServerError::SessionNotFound(id.to_string()));
             };
+            // The closing session's last events (`session.end` included) may
+            // still be queued: the load must see them, or the resumed
+            // sequence could restart below a seq a client already saw.
+            store.flush().await.map_err(ServerError::History)?;
             let Some(loaded) = store.load(id).await.map_err(ServerError::History)? else {
                 return Err(ServerError::SessionNotFound(id.to_string()));
             };
@@ -741,10 +745,20 @@ impl AppState {
             .as_ref()
             .map(|loaded| loaded.meta.last_seq + 1)
             .unwrap_or(0);
+        // The bus is pre-filled with the stored conversation, minus every
+        // earlier `session.end`: the resumed stream must not look closed.
+        // (`next_seq` above still counts those ends, so seqs never repeat.)
         let bus = SessionBus::new(
             resumed
                 .as_ref()
-                .map(|loaded| loaded.envelopes.clone())
+                .map(|loaded| {
+                    loaded
+                        .envelopes
+                        .iter()
+                        .filter(|envelope| envelope.kind != "session.end")
+                        .cloned()
+                        .collect()
+                })
                 .unwrap_or_default(),
         );
         let is_resume = resumed.is_some();

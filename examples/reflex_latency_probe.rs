@@ -12,7 +12,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rust_agent::navigator::ports::FimModel;
 use rust_agent::navigator::reflex::{build_fim_request, MAX_CONTEXT_BYTES};
 use rust_agent::provider::auth;
 use rust_agent::provider::config::ModelsConfig;
@@ -83,9 +82,23 @@ async fn main() -> anyhow::Result<()> {
     let mut plain = Vec::new();
     let mut with_ctx = Vec::new();
     for i in 0..CALLS {
-        let a = engine.complete(req_plain.clone(), &cancel).await?;
+        let a = engine
+            .complete(
+                &req_plain.prompt,
+                &req_plain.suffix,
+                req_plain.max_tokens,
+                &cancel,
+            )
+            .await?;
         plain.push(a.latency);
-        let b = engine.complete(req_ctx.clone(), &cancel).await?;
+        let b = engine
+            .complete(
+                &req_ctx.prompt,
+                &req_ctx.suffix,
+                req_ctx.max_tokens,
+                &cancel,
+            )
+            .await?;
         with_ctx.push(b.latency);
         println!(
             "call {i}: plain {:.0} ms ({}, {} in / {} out), with context {:.0} ms ({}, {} in / {} out)",

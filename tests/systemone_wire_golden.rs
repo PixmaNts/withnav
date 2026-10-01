@@ -5,11 +5,12 @@
 
 use std::collections::BTreeMap;
 
-use rust_agent::navigator::ports::{Answer, DecisionModel};
+use rust_agent::error::ProviderError;
+use rust_agent::navigator::models::DecisionAdapter;
 use rust_agent::navigator::TriggerInputs;
 use rust_agent::provider::config::{ApiKind, ModelConfig, ProviderConfig};
 use rust_agent::provider::openai::ClientCache;
-use rust_agent::provider::systemone::SystemOneClient;
+use rust_agent::provider::systemone::{Answer, DecisionRequest, Question, SystemOneClient};
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -37,6 +38,14 @@ fn model_config() -> ModelConfig {
         supports_parallel_tool_calls: None,
         thinking: None,
         reasoning_history: Default::default(),
+    }
+}
+
+fn empty_request() -> DecisionRequest<'static> {
+    static EMPTY: std::collections::BTreeMap<String, Question> = std::collections::BTreeMap::new();
+    DecisionRequest {
+        state: "state",
+        questions: &EMPTY,
     }
 }
 
@@ -81,7 +90,7 @@ async fn posts_model_state_questions_and_parses_answers() {
     let mut questions = BTreeMap::new();
     questions.insert(
         "worth_attention".to_string(),
-        rust_agent::navigator::ports::Question::Noul {
+        Question::Noul {
             instructions: "Worth a remark?".to_string(),
         },
     );
@@ -90,7 +99,7 @@ async fn posts_model_state_questions_and_parses_answers() {
     criteria.insert("cognition".to_string(), "Deep".to_string());
     questions.insert(
         "route".to_string(),
-        rust_agent::navigator::ports::Question::Choice {
+        Question::Choice {
             instructions: "Who?".to_string(),
             criteria,
         },
@@ -98,12 +107,15 @@ async fn posts_model_state_questions_and_parses_answers() {
 
     let answers = client
         .decide(
-            "Intent: add retry",
-            &questions,
+            &DecisionRequest {
+                state: "Intent: add retry",
+                questions: &questions,
+            },
             &tokio_util::sync::CancellationToken::new(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .answers;
 
     // The captured answers came back typed.
     assert_eq!(answers.len(), 5);
@@ -148,8 +160,7 @@ async fn non_2xx_is_a_provider_error() {
 
     let err = client
         .decide(
-            "state",
-            &BTreeMap::new(),
+            &empty_request(),
             &tokio_util::sync::CancellationToken::new(),
         )
         .await
@@ -181,16 +192,12 @@ async fn garbage_body_is_malformed_not_provider_error() {
 
     let err = client
         .decide(
-            "state",
-            &BTreeMap::new(),
+            &empty_request(),
             &tokio_util::sync::CancellationToken::new(),
         )
         .await
         .unwrap_err();
-    assert!(
-        matches!(err, rust_agent::navigator::ports::ModelError::Malformed(_)),
-        "{err}"
-    );
+    assert!(matches!(err, ProviderError::MalformedResponse(_)), "{err}");
 }
 
 #[tokio::test]
@@ -222,8 +229,7 @@ async fn slow_body_hits_the_two_second_deadline() {
     let started = std::time::Instant::now();
     let err = client
         .decide(
-            "state",
-            &BTreeMap::new(),
+            &empty_request(),
             &tokio_util::sync::CancellationToken::new(),
         )
         .await
@@ -268,8 +274,7 @@ async fn client_is_reused_across_calls_through_the_cache() {
 
     for c in [&client, &client2, &client] {
         c.decide(
-            "state",
-            &BTreeMap::new(),
+            &empty_request(),
             &tokio_util::sync::CancellationToken::new(),
         )
         .await
@@ -328,7 +333,7 @@ async fn pipeline_over_systemone_end_to_end() {
                 has_conversation: false,
             },
             &vars,
-            &client,
+            &DecisionAdapter(client),
             &tokio_util::sync::CancellationToken::new(),
         )
         .await

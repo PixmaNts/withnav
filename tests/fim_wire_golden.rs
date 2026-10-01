@@ -9,7 +9,7 @@ use serde_json::json;
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use rust_agent::navigator::ports::{FimModel, FimRequest};
+use rust_agent::error::ProviderError;
 use rust_agent::provider::auth;
 use rust_agent::provider::config::{
     ApiKind, ModelConfig, ModelsConfig, ProviderConfig, ReasoningHistory, ResolvedModel,
@@ -51,13 +51,9 @@ fn engine(base_url: String, api_key: &str) -> InceptionFim {
     )
 }
 
-fn req() -> FimRequest {
-    FimRequest {
-        prompt: "fn main() {\n    ".to_string(),
-        suffix: "\n}".to_string(),
-        max_tokens: 128,
-    }
-}
+const PROMPT: &str = "fn main() {\n    ";
+const SUFFIX: &str = "\n}";
+const MAX_TOKENS: u64 = 128;
 
 /// The exact wire body the Inception endpoint must receive.
 #[tokio::test]
@@ -82,7 +78,10 @@ async fn golden_request_body_and_text_parsing() {
 
     let engine = engine(server.uri(), "test-key");
     let cancel = tokio_util::sync::CancellationToken::new();
-    let answer = engine.complete(req(), &cancel).await.unwrap();
+    let answer = engine
+        .complete(PROMPT, SUFFIX, MAX_TOKENS, &cancel)
+        .await
+        .unwrap();
     assert_eq!(answer.text, "println!(\"hi\");");
     assert_eq!(answer.usage.prompt_tokens, 41);
     assert_eq!(answer.usage.completion_tokens, 7);
@@ -104,13 +103,16 @@ async fn golden_body_carries_temperature() {
 
     let engine = engine(server.uri(), "test-key");
     let cancel = tokio_util::sync::CancellationToken::new();
-    let answer = engine.complete(req(), &cancel).await.unwrap();
+    let answer = engine
+        .complete(PROMPT, SUFFIX, MAX_TOKENS, &cancel)
+        .await
+        .unwrap();
     assert_eq!(answer.text, "x");
     // Usage absent in the answer: zeroed, not an error.
     assert_eq!(answer.usage.prompt_tokens, 0);
 }
 
-/// A non-2xx status surfaces as a Provider(ModelError::Provider) error
+/// A non-2xx status surfaces as a Api error
 /// carrying the status and the endpoint's error message.
 #[tokio::test]
 async fn error_status_is_a_provider_error() {
@@ -126,10 +128,13 @@ async fn error_status_is_a_provider_error() {
 
     let engine = engine(server.uri(), "test-key");
     let cancel = tokio_util::sync::CancellationToken::new();
-    let err = engine.complete(req(), &cancel).await.unwrap_err();
-    match err {
-        rust_agent::navigator::ports::ModelError::Provider(p) => {
-            assert!(p.to_string().contains("rate limited"), "got: {p}");
+    let err = engine
+        .complete(PROMPT, SUFFIX, MAX_TOKENS, &cancel)
+        .await
+        .unwrap_err();
+    match &err {
+        ProviderError::Api { status: 429, .. } => {
+            assert!(err.to_string().contains("rate limited"), "got: {err}");
         }
         other => panic!("expected provider error, got {other:?}"),
     }
@@ -151,11 +156,11 @@ async fn malformed_body_is_a_malformed_error() {
 
     let engine = engine(server.uri(), "test-key");
     let cancel = tokio_util::sync::CancellationToken::new();
-    let err = engine.complete(req(), &cancel).await.unwrap_err();
-    assert!(matches!(
-        err,
-        rust_agent::navigator::ports::ModelError::Malformed(_)
-    ));
+    let err = engine
+        .complete(PROMPT, SUFFIX, MAX_TOKENS, &cancel)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ProviderError::MalformedResponse(_)));
 }
 
 /// Cancelling before the answer returns promptly with a cancellation
@@ -184,7 +189,7 @@ async fn cancelled_call_stops_waiting() {
         cancel2.cancel();
     });
     let started = std::time::Instant::now();
-    let result = engine.complete(req(), &cancel).await;
+    let result = engine.complete(PROMPT, SUFFIX, MAX_TOKENS, &cancel).await;
     assert!(result.is_err());
     assert!(started.elapsed() < Duration::from_secs(5));
 }
@@ -223,6 +228,9 @@ async fn api_key_resolves_from_the_auth_store() {
         .await;
     let engine = engine(server.uri(), &key);
     let cancel = tokio_util::sync::CancellationToken::new();
-    let answer = engine.complete(req(), &cancel).await.unwrap();
+    let answer = engine
+        .complete(PROMPT, SUFFIX, MAX_TOKENS, &cancel)
+        .await
+        .unwrap();
     assert_eq!(answer.text, "ok");
 }

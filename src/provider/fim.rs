@@ -3,15 +3,13 @@
 //! prompt, suffix, max_tokens, temperature}`, answer text in
 //! `choices[0].text`, usage in `usage.{prompt_tokens, completion_tokens}`.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-use crate::navigator::ports::{FimAnswer, FimModel, FimRequest, ModelError};
+use crate::error::ProviderError;
 use crate::provider::client::ModelClient;
 use crate::provider::config::{ProviderConfig, ResolvedModel};
 use crate::provider::openai::ClientCache;
@@ -56,7 +54,7 @@ impl InceptionFim {
         }
     }
 
-    fn client(&self) -> Result<&ModelClient, ModelError> {
+    fn client(&self) -> Result<&ModelClient, ProviderError> {
         if let Some(client) = self.client.get() {
             return Ok(client);
         }
@@ -98,37 +96,50 @@ struct FimChoice {
     text: String,
 }
 
-impl FimModel for InceptionFim {
-    fn complete<'a>(
-        &'a self,
-        request: FimRequest,
-        cancel: &'a CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = Result<FimAnswer, ModelError>> + Send + 'a>> {
-        Box::pin(async move {
-            let started = Instant::now();
-            let client = self.client()?;
-            let body = FimBody {
-                model: self.model.as_str(),
-                prompt: request.prompt.as_str(),
-                suffix: request.suffix.as_str(),
-                max_tokens: request.max_tokens,
-                temperature: TEMPERATURE,
-            };
-            let bytes = client
-                .post_json("fim/completions", &body, self.deadline(), cancel)
-                .await?;
-            let parsed: FimResponseBody = serde_json::from_slice(&bytes)
-                .map_err(|e| ModelError::Malformed(format!("fim response is not JSON: {e}")))?;
-            let Some(choice) = parsed.choices.into_iter().next() else {
-                return Err(ModelError::Malformed(
-                    "fim response carries no choices".to_string(),
-                ));
-            };
-            Ok(FimAnswer {
-                text: choice.text,
-                usage: parsed.usage.unwrap_or_default(),
-                latency: started.elapsed(),
-            })
+/// A fill-in-the-middle completion: the suggested insertion, the provider's
+/// token usage when reported, and the measured call latency.
+#[derive(Debug, Clone)]
+pub struct FimCompletion {
+    pub text: String,
+    pub usage: Usage,
+    pub latency: Duration,
+}
+
+impl InceptionFim {
+    /// Completes the middle between `prompt` (text before the cursor) and
+    /// `suffix` (text after it), up to `max_tokens` tokens. A body that is
+    /// not the FIM shape is [`ProviderError::MalformedResponse`].
+    pub async fn complete(
+        &self,
+        prompt: &str,
+        suffix: &str,
+        max_tokens: u64,
+        cancel: &CancellationToken,
+    ) -> Result<FimCompletion, ProviderError> {
+        let started = Instant::now();
+        let client = self.client()?;
+        let body = FimBody {
+            model: self.model.as_str(),
+            prompt,
+            suffix,
+            max_tokens,
+            temperature: TEMPERATURE,
+        };
+        let bytes = client
+            .post_json("fim/completions", &body, self.deadline(), cancel)
+            .await?;
+        let parsed: FimResponseBody = serde_json::from_slice(&bytes).map_err(|e| {
+            ProviderError::MalformedResponse(format!("fim response is not JSON: {e}"))
+        })?;
+        let Some(choice) = parsed.choices.into_iter().next() else {
+            return Err(ProviderError::MalformedResponse(
+                "fim response carries no choices".to_string(),
+            ));
+        };
+        Ok(FimCompletion {
+            text: choice.text,
+            usage: parsed.usage.unwrap_or_default(),
+            latency: started.elapsed(),
         })
     }
 }

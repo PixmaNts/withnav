@@ -10,6 +10,7 @@ use std::sync::Arc;
 use clap::Parser;
 use rust_agent::navigator;
 use rust_agent::navigator::bootstrap;
+use rust_agent::navigator::models::DecisionAdapter;
 use rust_agent::provider::auth;
 use rust_agent::provider::openai::ClientCache;
 use rust_agent::provider::systemone::SystemOneClient;
@@ -125,7 +126,8 @@ async fn run_replay(
                 .map_err(|e| {
                     anyhow::anyhow!("cannot build the instinct model on '{alias}': {e}")
                 })?;
-        Replayer::with_reask(&pipeline, &client).run(&log).await
+        let decision = DecisionAdapter(client);
+        Replayer::with_reask(&pipeline, &decision).run(&log).await
     } else {
         Replayer::new(&pipeline).run(&log).await
     };

@@ -18,6 +18,7 @@ pub mod intent;
 pub mod log;
 pub mod lsp;
 pub mod metacognition;
+pub mod models;
 pub mod pipeline;
 pub mod ports;
 pub mod reflex;

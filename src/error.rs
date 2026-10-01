@@ -38,6 +38,10 @@ pub enum ProviderError {
     Canceled {
         partial: Option<Box<AssistantMessage>>,
     },
+    /// The endpoint answered successfully but the body is not the expected
+    /// shape.
+    #[error("malformed provider response: {0}")]
+    MalformedResponse(String),
 }
 
 #[derive(Debug, Error)]

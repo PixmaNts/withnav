@@ -8,15 +8,12 @@
 //! - [`Metacognition`]: the fast remark engine (one remark, or silence, for a
 //!   document state).
 //!
-//! The request/answer types here are the wire contract for the provider
-//! implementations: `Questions`/`Answers` follow the System One shape
-//! captured in `tests/fixtures/navigator/systemone_multi.json`.
+//! `Questions`/`Answers` are the System One wire types re-exported from the
+//! provider (shape captured in `tests/fixtures/navigator/systemone_multi.json`).
 
-use std::collections::BTreeMap;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ProviderError;
@@ -30,7 +27,7 @@ use crate::navigator::metacognition::RemarkContext;
 #[derive(Debug, thiserror::Error)]
 pub enum ModelError {
     #[error("provider failure: {0}")]
-    Provider(#[from] ProviderError),
+    Provider(ProviderError),
     #[error("malformed model output: {0}")]
     Malformed(String),
     /// The layer cannot run at all (it was disabled at startup); the message
@@ -39,59 +36,19 @@ pub enum ModelError {
     Unavailable(String),
 }
 
-/// One typed ask put to the instinct, answered as a yes-probability (`noul`),
-/// a choice between named options, or a score over an ordered list of level
-/// labels. This is the request half of the System One wire shape.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum Question {
-    /// A yes-probability question; the answer is a float in 0..1.
-    Noul { instructions: String },
-    /// A choice between named options; `criteria` maps each option to the
-    /// instruction describing when it applies.
-    Choice {
-        instructions: String,
-        criteria: BTreeMap<String, String>,
-    },
-    /// A score over an ordered list of 2 to 10 level labels (weakest first
-    /// or strongest first, as the instructions define); the answer is an
-    /// expected level index plus per-level probabilities.
-    Score {
-        instructions: String,
-        criteria: Vec<String>,
-    },
+/// A provider response that is not the expected shape is `Malformed`; every
+/// other provider failure stays a `Provider` error.
+impl From<ProviderError> for ModelError {
+    fn from(e: ProviderError) -> Self {
+        match e {
+            ProviderError::MalformedResponse(message) => ModelError::Malformed(message),
+            other => ModelError::Provider(other),
+        }
+    }
 }
 
-/// The answer to one typed question: the response half of the System One
-/// wire shape. `probabilities` keys are the choice options, or the level
-/// indices as strings for scores; `confidence` is the model's own
-/// self-assessed certainty in 0..1.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum Answer {
-    Noul {
-        noul: f64,
-    },
-    Choice {
-        choice: String,
-        probabilities: BTreeMap<String, f64>,
-        confidence: f64,
-    },
-    Score {
-        /// Expected level index (fractional, e.g. `1.56`).
-        score: f64,
-        /// Level index (as a string) to level label, as returned.
-        legend: BTreeMap<String, String>,
-        probabilities: BTreeMap<String, f64>,
-        confidence: f64,
-    },
-}
-
-/// The questions of one instinct call, keyed by question name.
-pub type Questions = BTreeMap<String, Question>;
-
-/// The answers of one instinct call, keyed by the same question names.
-pub type Answers = BTreeMap<String, Answer>;
+// The System One wire types live with the provider client.
+pub use crate::provider::systemone::{Answer, Answers, Question, Questions};
 
 /// A fill-in-the-middle request from the reflex: the text before the cursor
 /// (already prefixed with the rendered reflex context, capped) and the text

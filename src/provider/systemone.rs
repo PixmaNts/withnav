@@ -1,19 +1,16 @@
-//! The instinct layer's [`DecisionModel`] over the System One wire API:
-//! `POST {base_url}/systemone` with body `{model, state, questions}` and the
-//! answer in `answers` (shape captured in
+//! The System One wire API client: `POST {base_url}/systemone` with body
+//! `{model, state, questions}` and the answer in `answers` (shape captured in
 //! `tests/fixtures/navigator/systemone_multi.json`).
 //!
 //! One HTTP client per provider via [`ClientCache`], one ~2 s deadline
 //! covering send and body, cancellation honoured between send and body.
 
-use std::future::Future;
-use std::pin::Pin;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::ProviderError;
-use crate::navigator::ports::{Answers, DecisionModel, ModelError, Questions};
 use crate::provider::client::ModelClient;
 use crate::provider::config::{ModelConfig, ProviderConfig};
 use crate::provider::openai::ClientCache;
@@ -21,6 +18,86 @@ use crate::provider::openai::ClientCache;
 /// The instinct's wall-clock budget for one System One call, covering send
 /// and body (spec: ~2 s).
 pub const SYSTEMONE_DEADLINE: Duration = Duration::from_millis(2_000);
+
+/// One typed ask put to the model, answered as a yes-probability (`noul`),
+/// a choice between named options, or a score over an ordered list of level
+/// labels. This is the request half of the System One wire shape.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Question {
+    /// A yes-probability question; the answer is a float in 0..1.
+    Noul { instructions: String },
+    /// A choice between named options; `criteria` maps each option to the
+    /// instruction describing when it applies.
+    Choice {
+        instructions: String,
+        criteria: BTreeMap<String, String>,
+    },
+    /// A score over an ordered list of 2 to 10 level labels (weakest first
+    /// or strongest first, as the instructions define); the answer is an
+    /// expected level index plus per-level probabilities.
+    Score {
+        instructions: String,
+        criteria: Vec<String>,
+    },
+}
+
+/// The answer to one typed question: the response half of the System One
+/// wire shape. `probabilities` keys are the choice options, or the level
+/// indices as strings for scores; `confidence` is the model's own
+/// self-assessed certainty in 0..1.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Answer {
+    Noul {
+        noul: f64,
+    },
+    Choice {
+        choice: String,
+        probabilities: BTreeMap<String, f64>,
+        confidence: f64,
+    },
+    Score {
+        /// Expected level index (fractional, e.g. `1.56`).
+        score: f64,
+        /// Level index (as a string) to level label, as returned.
+        legend: BTreeMap<String, String>,
+        probabilities: BTreeMap<String, f64>,
+        confidence: f64,
+    },
+}
+
+/// The questions of one call, keyed by question name.
+pub type Questions = BTreeMap<String, Question>;
+
+/// The answers of one call, keyed by the same question names.
+pub type Answers = BTreeMap<String, Answer>;
+
+/// What a caller supplies for one System One call; the client adds the
+/// model identifier it was built for.
+#[derive(Debug, Clone, Copy)]
+pub struct DecisionRequest<'a> {
+    pub state: &'a str,
+    pub questions: &'a Questions,
+}
+
+/// The parts of the System One response this crate reads.
+#[derive(Debug, Default, Deserialize)]
+pub struct DecisionResponse {
+    #[serde(default)]
+    pub answers: Answers,
+    #[serde(default)]
+    pub usage: Option<DecisionUsage>,
+}
+
+/// Token usage as the System One fixture reports it.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub struct DecisionUsage {
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+}
 
 /// The outgoing System One request body.
 #[derive(Debug, Serialize)]
@@ -30,36 +107,19 @@ struct SystemOneRequest<'a> {
     questions: &'a Questions,
 }
 
-/// The parts of the System One response this layer reads. `usage` follows the
-/// captured fixture (`input_tokens`, `output_tokens`).
-#[derive(Debug, Deserialize)]
-struct SystemOneResponse {
-    #[serde(default)]
-    answers: Answers,
-    #[serde(default)]
-    usage: Option<SystemOneUsage>,
+/// Truncates `text` to `max_chars` characters for an error message, marking
+/// the cut with an ellipsis.
+fn excerpt(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut s: String = text.chars().take(max_chars).collect();
+    s.push('…');
+    s
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
-struct SystemOneUsage {
-    #[serde(default)]
-    input_tokens: u64,
-    #[serde(default)]
-    output_tokens: u64,
-}
-
-/// One instinct answer plus the cost fields the log wants.
-#[derive(Debug, Clone)]
-pub struct SystemOneAnswer {
-    pub answers: Answers,
-    pub latency: Duration,
-    pub input_tokens: Option<u64>,
-    pub output_tokens: Option<u64>,
-}
-
-/// A [`DecisionModel`] answering typed questions over the System One
-/// endpoint. Cheap to clone: the HTTP client is shared through the
-/// [`ClientCache`].
+/// A client for the System One endpoint. Cheap to clone: the HTTP client is
+/// shared through the [`ClientCache`].
 #[derive(Clone)]
 pub struct SystemOneClient {
     base_url: String,
@@ -133,50 +193,31 @@ impl SystemOneClient {
     }
 
     /// One System One call: POST {base_url}/systemone under the ~2 s
-    /// deadline, shared client, cancellation between send and body.
-    pub async fn ask(
+    /// deadline, shared client, cancellation between send and body. A body
+    /// that does not parse is [`ProviderError::MalformedResponse`].
+    pub async fn decide(
         &self,
-        state: &str,
-        questions: &Questions,
+        request: &DecisionRequest<'_>,
         cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<SystemOneAnswer, ModelError> {
-        let started = std::time::Instant::now();
+    ) -> Result<DecisionResponse, ProviderError> {
         let body = SystemOneRequest {
             model: &self.model,
-            state,
-            questions,
+            state: request.state,
+            questions: request.questions,
         };
         let bytes = self
             .client
             .post_json("systemone", &body, SYSTEMONE_DEADLINE, cancel)
             .await?;
-        let latency = started.elapsed();
 
-        let parsed: SystemOneResponse = serde_json::from_slice(&bytes).map_err(|e| {
-            let excerpt = std::str::from_utf8(&bytes)
-                .map(|s| crate::navigator::log::excerpt(s, 200))
+        serde_json::from_slice(&bytes).map_err(|e| {
+            let body = std::str::from_utf8(&bytes)
+                .map(|s| excerpt(s, 200))
                 .unwrap_or_else(|_| format!("{} bytes", bytes.len()));
-            ModelError::Malformed(format!(
-                "systemone response did not parse: {e}; body: {excerpt}"
+            ProviderError::MalformedResponse(format!(
+                "systemone response did not parse: {e}; body: {body}"
             ))
-        })?;
-        Ok(SystemOneAnswer {
-            answers: parsed.answers,
-            latency,
-            input_tokens: parsed.usage.map(|u| u.input_tokens),
-            output_tokens: parsed.usage.map(|u| u.output_tokens),
         })
-    }
-}
-
-impl DecisionModel for SystemOneClient {
-    fn decide<'a>(
-        &'a self,
-        state: &'a str,
-        questions: &'a Questions,
-        cancel: &'a tokio_util::sync::CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = Result<Answers, ModelError>> + Send + 'a>> {
-        Box::pin(async move { self.ask(state, questions, cancel).await.map(|a| a.answers) })
     }
 }
 
@@ -189,7 +230,7 @@ mod tests {
         let mut questions = Questions::new();
         questions.insert(
             "go".to_string(),
-            crate::navigator::ports::Question::Noul {
+            Question::Noul {
                 instructions: "Worth a remark?".to_string(),
             },
         );
@@ -213,15 +254,14 @@ mod tests {
             "../../tests/fixtures/navigator/systemone_multi.json"
         ))
         .unwrap();
-        let parsed: SystemOneResponse =
-            serde_json::from_value(fixture["response"].clone()).unwrap();
+        let parsed: DecisionResponse = serde_json::from_value(fixture["response"].clone()).unwrap();
         assert_eq!(parsed.answers.len(), 5);
         assert_eq!(parsed.usage.unwrap().input_tokens, 454);
     }
 
     #[test]
     fn missing_answers_defaults_to_empty_not_error() {
-        let parsed: SystemOneResponse =
+        let parsed: DecisionResponse =
             serde_json::from_value(serde_json::json!({"model": "m"})).unwrap();
         assert!(parsed.answers.is_empty());
         assert!(parsed.usage.is_none());

@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use crate::navigator::log::NavLog;
 use crate::navigator::metacognition::LlmCommenter;
+use crate::navigator::models::{DecisionAdapter, FimAdapter};
 use crate::navigator::ports::{DecisionModel, FimModel};
 use crate::navigator::{
     self, ConversationFeed, Metacognition, ModelError, NavigatorDeps, Remark, RemarkContext,
@@ -73,7 +74,11 @@ fn build_layers(models_path: Option<&Path>, clients: Arc<ClientCache>) -> Layers
                 resolved.provider.api_key_env.as_deref(),
             ) {
                 Ok(key) => {
-                    layers.fim = Some(Arc::new(InceptionFim::new(resolved, key, clients.clone())));
+                    layers.fim = Some(Arc::new(FimAdapter(InceptionFim::new(
+                        resolved,
+                        key,
+                        clients.clone(),
+                    ))));
                     layers.reflex_model = Some(model_id);
                 }
                 Err(e) => {
@@ -93,7 +98,7 @@ fn build_layers(models_path: Option<&Path>, clients: Arc<ClientCache>) -> Layers
     match SystemOneClient::from_alias(&models, "instinct", &config_dir, clients.clone()) {
         Ok(client) => {
             layers.instinct_model = Some(client.model().to_string());
-            layers.decision = Some(Arc::new(client));
+            layers.decision = Some(Arc::new(DecisionAdapter(client)));
         }
         Err(e) => {
             tracing::error!("instinct disabled: {e}");

@@ -12,7 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio_util::sync::CancellationToken;
 
 use rust_agent::error::ProviderError;
-use rust_agent::navigator::commenter::RemarkContext;
+use rust_agent::navigator::metacognition::RemarkContext;
 use rust_agent::navigator::ports::{
     Answer, Answers, DecisionModel, FimAnswer, FimModel, FimRequest, Metacognition, ModelError,
     Question, Questions, ReflexContextModel, ReflexContextRequest,

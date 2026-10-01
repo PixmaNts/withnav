@@ -1,7 +1,8 @@
-//! The reflex layer's service: turns an inline-completion request (document
-//! text, version, UTF-16 cursor) into a suggestion, with the reflex context
+//! The reflex layer: turns an inline-completion request (document text,
+//! version, UTF-16 cursor) into a suggestion, with the reflex context
 //! rendered as a comment block, prefix/suffix capping, a 150 ms debounce and
-//! per-document cancellation of the superseded request.
+//! per-document cancellation of the superseded request. Also holds the
+//! reflex-context cache the metacognition refreshes in the background.
 //!
 //! Pure text work (UTF-16 → byte conversion, capping, context block) is a
 //! plain function so tests cover it without any model; [`ReflexService`]
@@ -12,10 +13,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::Mutex;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::navigator::ports::{FimModel, FimRequest};
-use crate::navigator::protocol::{InlineCompletionItem, InlineCompletionResult, Position, Range};
+use crate::navigator::log::{excerpt, LogRecord, NavLog};
+use crate::navigator::lsp::protocol::{
+    InlineCompletionItem, InlineCompletionResult, Position, Range,
+};
+use crate::navigator::ports::{FimModel, FimRequest, ReflexContextModel, ReflexContextRequest};
 
 /// Debounce after the last keystroke before a suggestion is asked for.
 pub const DEBOUNCE_MS: u64 = 150;
@@ -339,6 +344,187 @@ pub fn to_result(suggestion: &Suggestion) -> InlineCompletionResult {
         items: vec![suggestion.item.clone()],
         request_id: Some(suggestion.request_id.clone()),
     }
+}
+
+/// A refresh runs at most this often (and only when its inputs changed).
+const REFLEX_CONTEXT_MIN_INTERVAL: Duration = Duration::from_secs(60);
+/// The refreshed text is kept to about 300 tokens.
+const REFLEX_CONTEXT_MAX_CHARS: usize = 1200;
+/// Lines of document on each side of the cursor in the refresh excerpt.
+const REFLEX_EXCERPT_RADIUS: usize = 20;
+
+/// The reflex context the metacognition keeps current: the text served in
+/// front of the code and what it was computed from. Until the first
+/// refresh succeeds `text` is None and the caller serves the intent summary.
+#[derive(Default)]
+struct ReflexContextCache {
+    text: Option<String>,
+    /// Hash of (intent summary, conversation digest, active file uri) the
+    /// current text was computed from.
+    inputs: Option<u64>,
+    /// Start of the latest refresh attempt, successful or not.
+    last_attempt: Option<Instant>,
+    refreshing: bool,
+    /// The latest inline-completion cursor: the excerpt anchor for
+    /// refreshes triggered from `didSave`.
+    cursor: Option<(String, u32)>,
+}
+
+/// A granted refresh: the inputs hash the new text will be stamped with and
+/// the cursor line anchoring the excerpt.
+pub(crate) struct RefreshClaim {
+    inputs: u64,
+    line: u32,
+}
+
+/// The refreshed reflex context and its background refresh. Never waits on
+/// the model: the current text keeps being served while a refresh runs. A
+/// failed or empty refresh keeps the previous text, is logged, and is
+/// retried after the minimum interval.
+pub(crate) struct ReflexContext {
+    model: Option<Arc<dyn ReflexContextModel>>,
+    log: Arc<NavLog>,
+    metacognition_model: Option<String>,
+    cache: Mutex<ReflexContextCache>,
+}
+
+impl ReflexContext {
+    pub(crate) fn new(
+        model: Option<Arc<dyn ReflexContextModel>>,
+        log: Arc<NavLog>,
+        metacognition_model: Option<String>,
+    ) -> Self {
+        Self {
+            model,
+            log,
+            metacognition_model,
+            cache: Mutex::new(ReflexContextCache::default()),
+        }
+    }
+
+    /// False when no refresh seam is wired: the intent summary stays the
+    /// reflex context.
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.model.is_some()
+    }
+
+    /// The metacognition's refreshed text, once one exists.
+    pub(crate) async fn text(&self) -> Option<String> {
+        self.cache.lock().await.text.clone()
+    }
+
+    /// Decides whether a refresh is due: not already running, the latest
+    /// attempt older than a minute, and the inputs (intent summary,
+    /// conversation digest, active file) changed since the current text was
+    /// computed. A granted claim marks the refresh as running; settle it with
+    /// [`spawn_refresh`](Self::spawn_refresh) or [`release`](Self::release).
+    pub(crate) async fn claim(
+        &self,
+        uri: &str,
+        cursor_line: Option<u32>,
+        intent: &str,
+        conversation: &str,
+    ) -> Option<RefreshClaim> {
+        let inputs = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            (intent, conversation, uri).hash(&mut hasher);
+            hasher.finish()
+        };
+        let now = Instant::now();
+        let mut cache = self.cache.lock().await;
+        if let Some(line) = cursor_line {
+            cache.cursor = Some((uri.to_string(), line));
+        }
+        if cache.refreshing
+            || cache.inputs == Some(inputs)
+            || cache
+                .last_attempt
+                .is_some_and(|t| now.duration_since(t) < REFLEX_CONTEXT_MIN_INTERVAL)
+        {
+            return None;
+        }
+        cache.refreshing = true;
+        cache.last_attempt = Some(now);
+        let line = cache
+            .cursor
+            .as_ref()
+            .filter(|(u, _)| u == uri)
+            .map_or(0, |(_, l)| *l);
+        Some(RefreshClaim { inputs, line })
+    }
+
+    /// Gives a claim back without calling the model (the document to excerpt
+    /// is gone). The attempt time stays, so the interval still applies.
+    pub(crate) async fn release(&self) {
+        self.cache.lock().await.refreshing = false;
+    }
+
+    /// Runs the refresh in the background and stores the answer.
+    pub(crate) fn spawn_refresh(
+        self: &Arc<Self>,
+        claim: RefreshClaim,
+        uri: &str,
+        intent: String,
+        conversation: String,
+        language_id: String,
+        text: &str,
+    ) {
+        let Some(model) = self.model.clone() else {
+            return;
+        };
+        let request = ReflexContextRequest {
+            intent,
+            conversation,
+            file: uri.to_string(),
+            language_id,
+            excerpt: numbered_excerpt(text, claim.line as usize, REFLEX_EXCERPT_RADIUS),
+        };
+        let this = Arc::clone(self);
+        let uri = uri.to_string();
+        tokio::spawn(async move {
+            let started = Instant::now();
+            let result = model.refresh(&request).await;
+            this.log.append(&LogRecord::Call {
+                layer: "metacognition",
+                model: this.metacognition_model.as_deref().unwrap_or("unknown"),
+                latency_ms: started.elapsed().as_millis(),
+                input_tokens: None,
+                output_tokens: None,
+                cancelled: false,
+                purpose: Some("reflex_context"),
+            });
+            let mut cache = this.cache.lock().await;
+            cache.refreshing = false;
+            match result {
+                Ok(text) if !text.trim().is_empty() => {
+                    cache.text = Some(excerpt(text.trim(), REFLEX_CONTEXT_MAX_CHARS));
+                    cache.inputs = Some(claim.inputs);
+                }
+                Ok(_) => this.log.append(&LogRecord::Error {
+                    uri: &uri,
+                    message: "reflex context refresh: empty answer",
+                }),
+                Err(e) => this.log.append(&LogRecord::Error {
+                    uri: &uri,
+                    message: &format!("reflex context refresh: {e}"),
+                }),
+            }
+        });
+    }
+}
+
+/// The lines within `radius` of `line` (0-based), each prefixed by its
+/// 1-based number.
+fn numbered_excerpt(text: &str, line: usize, radius: usize) -> String {
+    let start = line.saturating_sub(radius);
+    text.lines()
+        .enumerate()
+        .skip(start)
+        .take(radius * 2 + 1)
+        .map(|(i, l)| format!("{:>4} | {l}", i + 1))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]

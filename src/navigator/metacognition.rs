@@ -1,6 +1,6 @@
-//! The only seam to the LLM: a trait producing at most one remark (or
-//! silence) for a document state. The real implementation calls the `fast`
-//! model alias through the existing provider layer; tests use a scripted mock.
+//! The metacognition layer: the single [`Metacognition`] implementation
+//! ([`LlmCommenter`], a fast chat model with read-only tools) and the
+//! producer of the reflex context. Tests script the seam with a mock.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -12,8 +12,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::navigator::document::{text_around_changes, unified_diff};
 use crate::navigator::log::{LogRecord, NavLog};
+use crate::navigator::lsp::protocol::Remark;
 use crate::navigator::ports::{Metacognition, ModelError};
-use crate::navigator::protocol::Remark;
 
 /// Everything the commenter sees about a document.
 #[derive(Debug, Clone)]

@@ -12,8 +12,8 @@ use serde_json::{json, Value};
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use rust_agent::navigator::commenter::{LlmCommenter, RemarkContext};
 use rust_agent::navigator::log::NavLog;
+use rust_agent::navigator::metacognition::{LlmCommenter, RemarkContext};
 use rust_agent::navigator::ports::Metacognition;
 use rust_agent::provider::config::{
     ApiKind, ModelConfig, ProviderConfig, ReasoningHistory, ResolvedModel,
@@ -328,7 +328,7 @@ async fn read_of_an_open_buffer_answers_from_the_buffer() {
 // Offset/limit on an open buffer slice exactly like ReadTool slices a file.
 #[tokio::test]
 async fn buffer_read_honours_offset_and_limit() {
-    use rust_agent::navigator::commenter::slice_buffer as slice;
+    use rust_agent::navigator::metacognition::slice_buffer as slice;
     // Same semantics as ReadTool's slice_lines: `lines()` + join, so the
     // trailing newline is not preserved.
     assert_eq!(slice("l1\nl2\nl3\n", None, None), "l1\nl2\nl3\n");

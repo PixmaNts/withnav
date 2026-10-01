@@ -1,0 +1,288 @@
+//! One authenticated HTTP client for one provider endpoint: the shared
+//! send/cancel/deadline/error-body handling behind the streaming chat call
+//! and the plain JSON POSTs (fill-in-the-middle, System One).
+
+use std::future::Future;
+use std::time::Duration;
+
+use serde::Serialize;
+use tokio_util::sync::CancellationToken;
+
+use crate::error::ProviderError;
+use crate::provider::config::ProviderConfig;
+use crate::provider::openai::{ChatRequest, ClientCache};
+use crate::provider::{extract_error_message, start_and_consume, AssistantMessage, StreamDelta};
+
+/// A provider's base URL, auth and extra headers over a pooled
+/// `reqwest::Client`. Build it once and reuse it across calls.
+#[derive(Clone)]
+pub struct ModelClient {
+    base_url: String,
+    headers: Vec<(String, String)>,
+    api_key: String,
+    http: reqwest::Client,
+}
+
+impl std::fmt::Debug for ModelClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModelClient")
+            .field("base_url", &self.base_url)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ModelClient {
+    /// The underlying `reqwest::Client` comes from `cache`, so its timeouts
+    /// are the ones in `provider`.
+    pub fn new(
+        provider_name: &str,
+        provider: &ProviderConfig,
+        api_key: String,
+        cache: &ClientCache,
+    ) -> Result<Self, ProviderError> {
+        Ok(Self {
+            base_url: provider.base_url.trim_end_matches('/').to_string(),
+            headers: provider
+                .headers
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            api_key,
+            http: cache.get(provider_name, provider)?,
+        })
+    }
+
+    fn post(&self, endpoint: &str) -> reqwest::RequestBuilder {
+        let mut req = self
+            .http
+            .post(format!("{}/{}", self.base_url, endpoint))
+            .bearer_auth(&self.api_key);
+        for (k, v) in &self.headers {
+            req = req.header(k, v);
+        }
+        req
+    }
+
+    /// POSTs `body` as JSON to `{base_url}/{endpoint}` and returns the raw
+    /// success body; the caller parses it. A non-2xx status becomes
+    /// [`ProviderError::Api`] carrying the API's error message when the body
+    /// has one. Cancellation covers the send and both bodies; `budget` is one
+    /// deadline over send, body and error body.
+    pub async fn post_json<B: Serialize>(
+        &self,
+        endpoint: &str,
+        body: &B,
+        budget: Duration,
+        cancel: &CancellationToken,
+    ) -> Result<bytes::Bytes, ProviderError> {
+        let req = self.post(endpoint).json(body);
+        let call = async {
+            let response = cancellable(cancel, req.send()).await??;
+            let status = response.status();
+            if !status.is_success() {
+                let text = cancellable(cancel, response.text())
+                    .await?
+                    .unwrap_or_default();
+                let message = extract_error_message(&text).unwrap_or(text);
+                return Err(ProviderError::Api {
+                    status: status.as_u16(),
+                    message,
+                    partial: None,
+                });
+            }
+            Ok(cancellable(cancel, response.bytes()).await??)
+        };
+        match tokio::time::timeout(budget, call).await {
+            Ok(result) => result,
+            Err(_) => Err(ProviderError::Api {
+                status: 0,
+                message: format!("deadline exceeded ({} ms)", budget.as_millis()),
+                partial: None,
+            }),
+        }
+    }
+
+    /// The streaming chat call: sends under `cancel`, then streams the
+    /// answer through `on_delta` until `[DONE]`.
+    pub async fn chat(
+        &self,
+        request: &ChatRequest,
+        cancel: &CancellationToken,
+        on_delta: &mut (dyn FnMut(StreamDelta) + Send),
+    ) -> Result<AssistantMessage, ProviderError> {
+        let response =
+            cancellable(cancel, self.post("chat/completions").json(request).send()).await??;
+        start_and_consume(response, cancel, on_delta).await
+    }
+}
+
+/// Awaits `fut` unless `cancel` fires first.
+async fn cancellable<T>(
+    cancel: &CancellationToken,
+    fut: impl Future<Output = T>,
+) -> Result<T, ProviderError> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(ProviderError::Canceled { partial: None }),
+        r = fut => Ok(r),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    fn client_at(addr: std::net::SocketAddr) -> ModelClient {
+        let provider = ProviderConfig {
+            base_url: format!("http://{addr}/v1/"),
+            api_key_env: None,
+            headers: Default::default(),
+            connect_timeout_ms: 1_000,
+            // Far above every budget below: only the call's own deadline can fire.
+            request_timeout_ms: 600_000,
+        };
+        ModelClient::new("p", &provider, "key".into(), &ClientCache::new()).unwrap()
+    }
+
+    /// Accepts one connection, reads the request, writes `head` and holds the
+    /// socket open without sending more.
+    async fn serve_then_stall(head: &'static [u8]) -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf).await;
+            if !head.is_empty() {
+                let _ = sock.write_all(head).await;
+                let _ = sock.flush().await;
+            }
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn an_error_body_is_read_under_the_deadline() {
+        // Promises 100 body bytes, sends none.
+        let addr =
+            serve_then_stall(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 100\r\n\r\n")
+                .await;
+        let started = Instant::now();
+        let err = client_at(addr)
+            .post_json(
+                "x",
+                &serde_json::json!({}),
+                Duration::from_millis(200),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        match err {
+            ProviderError::Api {
+                status: 0, message, ..
+            } => assert!(message.contains("deadline"), "{message}"),
+            other => panic!("expected the deadline error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_during_a_slow_send_returns_canceled_promptly() {
+        // Accepts and reads the request but never answers.
+        let addr = serve_then_stall(b"").await;
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            trigger.cancel();
+        });
+        let started = Instant::now();
+        let err = client_at(addr)
+            .post_json(
+                "x",
+                &serde_json::json!({}),
+                Duration::from_secs(30),
+                &cancel,
+            )
+            .await
+            .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(matches!(err, ProviderError::Canceled { partial: None }));
+    }
+
+    #[tokio::test]
+    async fn cancel_during_a_slow_chat_send_returns_canceled_promptly() {
+        let addr = serve_then_stall(b"").await;
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            trigger.cancel();
+        });
+        let request = ChatRequest {
+            model: "m".into(),
+            messages: vec![],
+            tools: vec![],
+            stream: true,
+            stream_options: None,
+            max_tokens: None,
+            temperature: None,
+        };
+        let started = Instant::now();
+        let err = client_at(addr)
+            .chat(&request, &cancel, &mut |_| {})
+            .await
+            .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(matches!(err, ProviderError::Canceled { partial: None }));
+    }
+
+    #[tokio::test]
+    async fn the_api_error_message_is_extracted() {
+        let addr = serve_then_stall(
+            b"HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: 40\r\nConnection: close\r\n\r\n{\"error\":{\"message\":\"slow down please\"}}",
+        )
+        .await;
+        let err = client_at(addr)
+            .post_json(
+                "x",
+                &serde_json::json!({}),
+                Duration::from_secs(5),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        match err {
+            ProviderError::Api {
+                status, message, ..
+            } => {
+                assert_eq!(status, 429);
+                assert_eq!(message, "slow down please");
+            }
+            other => panic!("expected Api 429, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_success_returns_the_raw_body() {
+        let addr = serve_then_stall(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nnot json",
+        )
+        .await;
+        let bytes = client_at(addr)
+            .post_json(
+                "x",
+                &serde_json::json!({}),
+                Duration::from_secs(5),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        // The body is handed back unparsed, whatever it holds.
+        assert_eq!(&bytes[..], b"not json");
+    }
+}

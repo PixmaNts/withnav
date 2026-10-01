@@ -106,9 +106,10 @@ enum Write {
 /// One message on the writer channel.
 enum Msg {
     /// A write; `ack` (when present) receives its outcome, otherwise a
-    /// failure is remembered for the next [`Msg::Flush`].
+    /// failure is remembered for every later [`Msg::Flush`].
     Write(Box<Write>, Option<Ack>),
-    /// Barrier: replies with the first error recorded since the last flush.
+    /// Barrier: replies with the first error any write has hit since the
+    /// store was opened.
     Flush(Ack),
 }
 
@@ -144,8 +145,7 @@ const WRITER_GONE: &str = "history writer stopped";
 impl HistoryStore {
     /// Opens (creating parents) and migrates the database, opens the writer's
     /// connection, then spawns the single writer thread. Fails when the
-    /// database cannot be opened at all — the caller treats that as "no
-    /// history".
+    /// database cannot be opened at all.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, String> {
         let path: PathBuf = path.into();
         if let Some(parent) = path.parent() {
@@ -186,9 +186,10 @@ impl HistoryStore {
     }
 
     /// Barrier: resolves once every write enqueued before this call has been
-    /// applied, with the FIRST error any fire-and-forget write hit since the
-    /// previous flush (the slot is cleared). `Ok` means all of them are in
-    /// the database.
+    /// applied, with the FIRST error any fire-and-forget write has hit since
+    /// the store was opened. The failure is sticky: every later flush keeps
+    /// returning it until the store is reopened. `Ok` means no write was
+    /// ever lost.
     pub async fn flush(&self) -> Result<(), String> {
         let (reply, outcome) = oneshot::channel();
         self.tx
@@ -291,7 +292,8 @@ const WRITER_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 
 /// The single writer thread: one connection, one message at a time, FIFO.
 /// A failed write is reported to its ack, or else remembered (first one
-/// wins) until the next flush; it is always logged.
+/// wins) and reported by every later flush, since a lost write leaves a
+/// hole that a clean flush would hide; it is always logged.
 fn writer_loop(mut conn: Connection, rx: mpsc::Receiver<Msg>) {
     let mut first_error: Option<String> = None;
     for msg in rx {
@@ -313,7 +315,7 @@ fn writer_loop(mut conn: Connection, rx: mpsc::Receiver<Msg>) {
                 }
             }
             Msg::Flush(reply) => {
-                let _ = reply.send(first_error.take().map_or(Ok(()), Err));
+                let _ = reply.send(first_error.clone().map_or(Ok(()), Err));
             }
         }
     }
@@ -784,8 +786,7 @@ mod tests {
 
     // Given a store whose events table has been destroyed underneath it
     // When an event is appended and the store is flushed
-    // Then the flush reports the failure (it is not only a log line), and
-    //      the next flush is clean again
+    // Then the flush reports the failure (it is not only a log line)
     #[tokio::test]
     async fn a_failed_event_insert_surfaces_at_flush() {
         let (dir, store) = temp_store();
@@ -801,7 +802,30 @@ mod tests {
         store.append_event(id, envelope(0, EventKind::SessionStart));
         let err = store.flush().await.expect_err("the insert must fail");
         assert!(err.contains("events"), "names the cause: {err}");
-        store.flush().await.expect("the error is reported once");
+    }
+
+    // Given a store whose events table has been destroyed underneath it
+    // When an event is appended and the store is flushed several times
+    // Then every flush keeps reporting the failure: the history has a hole
+    //      that no later flush may hide
+    #[tokio::test]
+    async fn failed_append_poison_survives_multiple_flushes() {
+        let (dir, store) = temp_store();
+        let id = Ulid::new();
+        store
+            .record_session(id, "/w", "m", None)
+            .await
+            .expect("record");
+        side_connection(&dir)
+            .execute_batch("DROP TABLE events")
+            .expect("drop events");
+
+        store.append_event(id, envelope(0, EventKind::SessionStart));
+        let first = store.flush().await.expect_err("the insert must fail");
+        let second = store.flush().await.expect_err("still poisoned");
+        let third = store.flush().await.expect_err("and still");
+        assert_eq!(first, second);
+        assert_eq!(second, third);
     }
 
     // Given a store whose sessions table has been destroyed underneath it
@@ -820,7 +844,7 @@ mod tests {
 
     // Given a store with a session
     // When two snapshots race a failing write
-    // Then flush reports only the FIRST error since the previous flush
+    // Then flush reports only the FIRST error
     #[tokio::test]
     async fn flush_reports_the_first_error_only() {
         let (_dir, store) = temp_store();

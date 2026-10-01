@@ -168,7 +168,7 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
     // Before anything opens the data files: bring over the former location.
     crate::paths::migrate_legacy_data();
     let clients = Arc::new(ClientCache::new());
-    let layers = build_layers(models_path, clients);
+    let mut layers = build_layers(models_path, clients);
 
     let log_path = crate::paths::decision_log()
         .ok_or_else(|| anyhow::anyhow!("cannot resolve user data dir"))?;
@@ -193,9 +193,11 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
     let http = match spawn_cognition_server(models_path, conversation.clone()).await {
         Ok(http) => Some(http),
         Err(e) => {
-            // A failed bind must not take the navigator down: run the LSP
-            // without the chat (no serverInfo notification).
+            // A failed bind or an unopenable history database must not take
+            // the navigator down: run the LSP without the chat (no
+            // serverInfo notification) and say so in `navigator/status`.
             tracing::error!("cognition chat server unavailable: {e}");
+            layers.disabled.push(format!("chat: {e}"));
             None
         }
     };
@@ -266,12 +268,12 @@ async fn spawn_cognition_server(
         config_dir,
         allow_non_loopback: false,
         bearer_token: Some(token.clone()),
-        history_db: Some(history_db),
+        history_db,
     };
     let state = AppState::with_hooks(
         config,
         Arc::new(navigator::NavigatorHooks::with_feed(conversation)),
-    );
+    )?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
 

@@ -17,7 +17,8 @@ async fn service_create_without_http_emits_start_zero() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace");
-    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0);
+    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0)
+        .expect("service");
 
     let id = service
         .create_session(&ws, None, None)
@@ -51,7 +52,8 @@ async fn service_send_rejects_invalid_content_without_event() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace");
-    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0);
+    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0)
+        .expect("service");
     let id = service
         .create_session(&ws, None, None)
         .await
@@ -226,7 +228,7 @@ async fn service_delete_removes_listing_and_routing() {
         .config()
         .split()
         .0;
-    let service = Service::new(config);
+    let service = Service::new(config).expect("service");
     let ws_str = ws.display().to_string();
 
     let id = service
@@ -265,4 +267,25 @@ async fn service_delete_removes_listing_and_routing() {
         service.delete(id).await,
         Err(ServerError::SessionNotFound(_))
     ));
+}
+
+// Given a history database path that cannot be opened (its parent is a file)
+// When the service is built
+// Then construction fails with a history error instead of running without
+//      history
+#[tokio::test]
+async fn service_construction_fails_on_an_unopenable_history_db() {
+    use rust_agent::error::ServerError;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let blocker = tmp.path().join("not-a-dir");
+    std::fs::write(&blocker, "file").expect("blocker file");
+    let config = TestServerConfig::unreachable(tmp.path())
+        .history_db(blocker.join("history.db"))
+        .config()
+        .split()
+        .0;
+
+    let result = Service::new(config);
+    assert!(matches!(result, Err(ServerError::History(_))));
 }

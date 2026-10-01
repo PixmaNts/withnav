@@ -286,7 +286,7 @@ mod tests {
     use crate::bus::sequencer::Sequencer;
     use crate::bus::SessionBus;
     use crate::session::actor::start_candidate;
-    use crate::session::service::tests::test_config;
+    use crate::session::service::tests::test_service;
     use crate::tools::{Registry, ToolContext};
 
     /// A real, never-driven actor: the stand-in result of the detached
@@ -321,7 +321,7 @@ mod tests {
     //      session.end slot) and is NOT routable; an unknown id is a 404
     #[tokio::test]
     async fn closed_session_answers_from_tombstone_and_is_not_routable() {
-        let state = Service::new(test_config());
+        let (_dir, state) = test_service();
         let id = Ulid::new();
         assert!(matches!(
             state.session_summary(id).await,
@@ -362,7 +362,7 @@ mod tests {
     //      evicted to the structured 404 while the newest still answers
     #[tokio::test]
     async fn tombstone_pool_is_bounded_by_max_tombstones_fifo() {
-        let state = Service::new(test_config());
+        let (_dir, state) = test_service();
         let ids: Vec<SessionId> = (0..MAX_TOMBSTONES + 3).map(|_| Ulid::new()).collect();
         for (i, id) in ids.iter().enumerate() {
             state.retain_tombstone(
@@ -422,7 +422,7 @@ mod tests {
         // Virtual time: the 10s teardown cap elapses instantly while the
         // wedged stand-in (which awaits nothing) stays parked.
         tokio::time::pause();
-        let state = Service::new(test_config());
+        let (_dir, state) = test_service();
         let id = Ulid::new();
         let handle = wedged_runtime_handle();
         handle
@@ -456,7 +456,7 @@ mod tests {
         use crate::bus::event::EventKind;
         use crate::bus::sequencer::Candidate;
 
-        let state = Service::new(test_config());
+        let (_dir, state) = test_service();
         let id = Ulid::new();
         let mut handle = wedged_runtime_handle();
         handle
@@ -521,7 +521,7 @@ mod tests {
     //     handle is gone: a tombstone answers reads, never commands.
     #[tokio::test]
     async fn stopped_session_answers_get_but_is_not_routable() {
-        let state = Service::new(test_config());
+        let (_dir, state) = test_service();
         let id = Ulid::new();
         let handle = wedged_runtime_handle();
         handle

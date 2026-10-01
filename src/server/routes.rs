@@ -130,7 +130,7 @@ pub async fn serve(
     config.validate()?;
     let addr: SocketAddr = config.bind;
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    serve_state_on(AppState::with_hooks(config, hooks), listener).await
+    serve_state_on(AppState::with_hooks(config, hooks)?, listener).await
 }
 
 /// The serve body over an already-bound listener with a fresh shared state —
@@ -140,7 +140,7 @@ pub async fn serve_on(
     config: ServerConfig,
     listener: tokio::net::TcpListener,
 ) -> Result<(), ServerError> {
-    serve_state_on(AppState::new(config), listener).await
+    serve_state_on(AppState::new(config)?, listener).await
 }
 
 /// The serve body over an already-bound listener and a CALLER-SUPPLIED
@@ -279,8 +279,7 @@ pub struct SessionListBody {
 }
 
 /// `GET /v1/sessions?workspace=<abs path>`: the workspace's conversations,
-/// newest `updated_at` first. Requires persistence (`history_db`); without
-/// it the list is simply empty.
+/// newest `updated_at` first.
 async fn list_sessions(
     State(state): State<AppState>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -447,15 +446,18 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    fn test_state() -> AppState {
-        AppState::new(ServerConfig {
+    fn test_state() -> (tempfile::TempDir, AppState) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = AppState::new(ServerConfig {
             bind: "127.0.0.1:0".parse().expect("loopback bind"),
             models_path: None,
-            config_dir: std::env::temp_dir(),
+            config_dir: dir.path().join("cfg"),
             allow_non_loopback: false,
             bearer_token: None,
-            history_db: None,
+            history_db: dir.path().join("history.db"),
         })
+        .expect("state over a temp database");
+        (dir, state)
     }
 
     // Given the mounted router
@@ -463,7 +465,8 @@ mod tests {
     // Then 200 with the frozen {status:"ok"} body
     #[tokio::test]
     async fn health_returns_frozen_ok_body() {
-        let response = app(test_state())
+        let (_dir, state) = test_state();
+        let response = app(state)
             .oneshot(
                 axum::http::Request::builder()
                     .uri("/v1/health")
@@ -488,7 +491,8 @@ mod tests {
     // Then 400 with the shared {"error": ...} shape (not a panic/plain text)
     #[tokio::test]
     async fn malformed_create_body_is_a_structured_400() {
-        let response = app(test_state())
+        let (_dir, state) = test_state();
+        let response = app(state)
             .oneshot(
                 axum::http::Request::builder()
                     .method("POST")

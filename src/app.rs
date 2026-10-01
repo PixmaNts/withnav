@@ -166,8 +166,8 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
         config_dir: cfg_dir,
         allow_non_loopback: false,
         bearer_token: None,
-        history_db: None,
-    });
+        history_db: history_db_path()?,
+    })?;
     let session_id = state
         .create_session(&workspace, args.model.as_deref(), None)
         .await?;
@@ -294,6 +294,13 @@ pub fn terminal_stderr_line(payload: &TurnEnd) -> Option<String> {
     }
 }
 
+/// The shared conversation database, in the navigator's data dir.
+fn history_db_path() -> anyhow::Result<std::path::PathBuf> {
+    crate::paths::migrate_legacy_data();
+    crate::paths::history_db()
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve the navigator data dir"))
+}
+
 async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
     use crate::server::session::ServerConfig;
 
@@ -308,7 +315,7 @@ async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
         config_dir: cfg_dir,
         allow_non_loopback: args.allow_non_loopback,
         bearer_token: None,
-        history_db: None,
+        history_db: history_db_path()?,
     };
     crate::server::routes::serve(
         config,

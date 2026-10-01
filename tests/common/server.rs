@@ -36,7 +36,10 @@ pub fn write_auth_file(config_dir: &Path, provider: &str, api_key: &str) -> Path
 }
 
 /// Builds a [`ServerConfig`] rooted in a temp directory, writing the
-/// `models.json` and `cfg/auth.json` it refers to.
+/// `models.json` and `cfg/auth.json` it refers to. The history database
+/// defaults to `<root>/history.db`, so a test server never touches the
+/// user's data dir; `root` must be a temp directory that outlives the
+/// server.
 pub struct TestServerConfig {
     root: PathBuf,
     base_url: String,
@@ -124,13 +127,16 @@ impl TestServerConfig {
             config_dir,
             allow_non_loopback: false,
             bearer_token: self.bearer_token.clone(),
-            history_db: self.history_db.clone(),
+            history_db: self
+                .history_db
+                .clone()
+                .unwrap_or_else(|| self.root.join("history.db")),
         }
     }
 
     /// An in-process [`AppState`] over [`Self::config`].
     pub fn state(&self) -> AppState {
-        AppState::new(self.config())
+        AppState::new(self.config()).expect("state over a temp history database")
     }
 
     /// Like [`Self::state`], with the navigator profile's hooks.
@@ -148,6 +154,7 @@ impl TestServerConfig {
             None => rust_agent::navigator::NavigatorHooks::new(),
         };
         AppState::with_hooks(self.config(), std::sync::Arc::new(hooks))
+            .expect("state over a temp history database")
     }
 }
 

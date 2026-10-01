@@ -20,12 +20,12 @@ pub struct SessionListing {
 
 impl Service {
     /// The workspace's stored conversations, newest `updated_at` first.
-    /// Without a history store the list is empty.
     pub async fn list(&self, workspace: &str) -> Result<Vec<SessionListing>, ServerError> {
-        let Some(store) = self.history() else {
-            return Ok(Vec::new());
-        };
-        let rows = store.list(workspace).await.map_err(ServerError::History)?;
+        let rows = self
+            .history()
+            .list(workspace)
+            .await
+            .map_err(ServerError::History)?;
         Ok(rows
             .into_iter()
             .map(|row| SessionListing {
@@ -51,10 +51,11 @@ impl Service {
             Ok(()) => {}
             Err(ServerError::SessionNotFound(_)) if !known_to_memory => {
                 // Disk-only id: it must exist in the store.
-                let on_disk = match self.history() {
-                    Some(store) => store.exists(id).await.map_err(ServerError::History)?,
-                    None => false,
-                };
+                let on_disk = self
+                    .history()
+                    .exists(id)
+                    .await
+                    .map_err(ServerError::History)?;
                 if !on_disk {
                     return Err(ServerError::SessionNotFound(id.to_string()));
                 }
@@ -62,9 +63,10 @@ impl Service {
             Err(err) => return Err(err),
         }
         self.discard(id);
-        if let Some(store) = self.history() {
-            store.delete(id).await.map_err(ServerError::History)?;
-        }
+        self.history()
+            .delete(id)
+            .await
+            .map_err(ServerError::History)?;
         Ok(())
     }
 }

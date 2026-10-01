@@ -23,9 +23,9 @@ pub struct ServerConfig {
     /// When set, every route except health requires
     /// `Authorization: Bearer <token>` (the navigator's in-process server).
     pub bearer_token: Option<String>,
-    /// Conversation-history database (`sessions.db`); `None` keeps today's
-    /// behaviour with no persistence (tests, CLI `run`, `serve`).
-    pub history_db: Option<PathBuf>,
+    /// Conversation-history database; the binaries default it to
+    /// [`crate::paths::history_db`], tests give each server its own.
+    pub history_db: PathBuf,
 }
 
 /// The HTTP-only half of [`ServerConfig`].
@@ -74,7 +74,7 @@ mod tests {
             config_dir: PathBuf::from("/tmp/rust-agent-test"),
             allow_non_loopback,
             bearer_token: None,
-            history_db: None,
+            history_db: PathBuf::from("/tmp/rust-agent-test/history.db"),
         }
     }
 
@@ -106,10 +106,10 @@ mod tests {
     fn split_gives_each_owner_its_fields() {
         let mut config = test_config("127.0.0.1:7310", true);
         config.bearer_token = Some("t".to_string());
-        config.history_db = Some(PathBuf::from("/tmp/h.db"));
+        config.history_db = PathBuf::from("/tmp/h.db");
         config.models_path = Some(PathBuf::from("/tmp/m.json"));
         let (session, http) = config.split();
-        assert_eq!(session.history_db, Some(PathBuf::from("/tmp/h.db")));
+        assert_eq!(session.history_db, PathBuf::from("/tmp/h.db"));
         assert_eq!(session.models_path, Some(PathBuf::from("/tmp/m.json")));
         assert_eq!(session.config_dir, PathBuf::from("/tmp/rust-agent-test"));
         assert_eq!(http.bind, "127.0.0.1:7310".parse().unwrap());

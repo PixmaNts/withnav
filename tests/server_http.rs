@@ -228,7 +228,6 @@ async fn real_socket_serve_answers_health_create_and_get() {
     let bound = rust_agent::server::routes::serve_on(
         ServerConfig {
             bearer_token: None,
-            history_db: None,
             bind: addr,
             ..config
         },

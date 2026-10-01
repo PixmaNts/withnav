@@ -3,7 +3,7 @@
 //! list, resume in a FRESH AppState on the same database file, the resumed
 //! model request contains the earlier messages, the SSE stream of the
 //! resumed session replays the stored events; delete; the list is
-//! per-workspace; without `history_db` nothing is written.
+//! per-workspace; a test config never names the user's data dir.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -21,13 +21,12 @@ use common::server::{post_create_session, post_message_ok, spawn_server, TestSer
 use common::sse::{http_sse, sse_body};
 
 /// A state over a `cognition`-aliased mock provider at `base_url`, with
-/// history persisted to `history_db` when given.
-fn make_state(tmp: &Path, base_url: &str, history_db: Option<PathBuf>) -> AppState {
-    let mut config = TestServerConfig::mock(tmp, base_url).model_alias("cognition", "mock-opus");
-    if let Some(db) = history_db {
-        config = config.history_db(db);
-    }
-    config.navigator_state()
+/// history persisted to `history_db`.
+fn make_state(tmp: &Path, base_url: &str, history_db: PathBuf) -> AppState {
+    TestServerConfig::mock(tmp, base_url)
+        .model_alias("cognition", "mock-opus")
+        .history_db(history_db)
+        .navigator_state()
 }
 
 /// A scripted provider that answers EVERY connection with the given SSE
@@ -157,7 +156,7 @@ async fn spawn_history_server() -> (ServerA, PathBuf, tempfile::TempDir) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     let db = root.join("sessions.db");
-    let state = make_state(&root, &mock.url, Some(db.clone()));
+    let state = make_state(&root, &mock.url, db.clone());
     let (addr, task) = spawn_server(state.clone()).await;
     let ws = root.join("ws");
     std::fs::create_dir_all(&ws).expect("workspace dir");
@@ -279,7 +278,7 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
     // Same workspace path content-wise: reuse a copy of the same ws string.
     let ws2 = root2.join("ws");
     std::fs::create_dir_all(&ws2).expect("ws2");
-    let state2 = make_state(&root2, &mock2.url, Some(db.clone()));
+    let state2 = make_state(&root2, &mock2.url, db.clone());
     // The resume keys on the STORED row (workspace/model/profile are the
     // stored ones); the request's workspace only guides models.json lookup.
     let (resumed_id, resumed) = state2
@@ -505,7 +504,7 @@ async fn resuming_an_old_navigator_transcript_sends_the_role_prompt_once() {
     store.flush().await.expect("flush");
 
     let mock = spawn_mock_provider(done_response("fine")).await;
-    let state = make_state(&root, &mock.url, Some(db.clone()));
+    let state = make_state(&root, &mock.url, db.clone());
     let (resumed_id, resumed) = state
         .create_or_resume_session(&ws, None, None, Some(id))
         .await
@@ -644,46 +643,45 @@ async fn list_is_per_workspace() {
     assert_eq!(second[0]["title"], "in the second");
 }
 
-// Given a server WITHOUT history_db
-// When a full conversation turn completes
-// Then nothing is written anywhere and the list is empty (no store at all)
+// Given a test server config that names no history database
+// When it is built and a conversation turn completes
+// Then the database sits in the test's own temp root and the user's real
+//      data dir is never named, so no test can write there
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn without_history_db_nothing_is_written() {
+async fn test_server_config_never_resolves_to_the_users_data_dir() {
     let mock = spawn_mock_provider(done_response("OK")).await;
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
-    let state = make_state(&root, &mock.url, None);
+    let config = TestServerConfig::mock(&root, &mock.url);
+    let db = config.config().history_db;
+    assert_eq!(db, root.join("history.db"));
+    if let Some(data_dir) = rust_agent::paths::data_dir() {
+        assert!(
+            !db.starts_with(&data_dir),
+            "{db:?} is in the user's data dir"
+        );
+    }
+
+    let state = config.state();
     let (addr, task) = spawn_server(state.clone()).await;
     let ws = root.join("ws");
     std::fs::create_dir_all(&ws).expect("ws");
-
-    let created: Value = post_create_session(
-        &format!("http://{addr}"),
-        &json!({ "workspace": ws, "profile": "navigator" }),
-    )
-    .await
-    .json()
-    .await
-    .expect("json");
+    let base = format!("http://{addr}");
+    let created: Value = post_create_session(&base, &json!({ "workspace": ws }))
+        .await
+        .json()
+        .await
+        .expect("json");
     let id = created["session_id"].as_str().expect("id").to_string();
     let sub = state
         .subscribe(id.parse().unwrap(), None)
         .await
         .expect("sub");
-    post_message_ok(&format!("http://{addr}"), &id, "no persistence").await;
+    post_message_ok(&base, &id, "persisted in the temp root").await;
     let _ = collect_until(sub, |e| e.kind == "turn.end").await;
 
-    let body = list_sessions(&format!("http://{addr}"), &ws).await;
-    assert_eq!(body["sessions"].as_array().map(|a| a.len()), Some(0));
-    // And no file was created anywhere in the tempdir.
-    let entries: Vec<_> = std::fs::read_dir(&root)
-        .expect("read dir")
-        .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
-    assert!(
-        !entries.iter().any(|name| name.ends_with(".db")),
-        "no database file: {entries:?}"
-    );
+    let body = wait_for_list(&base, &ws, 1).await;
+    assert_eq!(body.len(), 1, "the conversation is listed from the temp db");
+    assert!(db.exists(), "the database is the one in the temp root");
     task.abort();
 }

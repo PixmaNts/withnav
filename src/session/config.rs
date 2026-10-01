@@ -10,7 +10,6 @@ pub struct SessionConfig {
     pub models_path: Option<PathBuf>,
     /// Auth store directory for API-key resolution.
     pub config_dir: PathBuf,
-    /// Conversation-history database (`sessions.db`); `None` keeps the
-    /// service free of persistence (tests, CLI `run`, `serve`).
-    pub history_db: Option<PathBuf>,
+    /// Conversation-history database; every conversation is written there.
+    pub history_db: PathBuf,
 }

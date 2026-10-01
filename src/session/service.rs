@@ -149,44 +149,40 @@ pub struct Service {
     /// [`MAX_TOMBSTONES`].
     tombstone_order: Arc<Mutex<VecDeque<SessionId>>>,
     pub(super) config: Arc<SessionConfig>,
-    /// The conversation-history store; `None` when `history_db` is unset.
-    history: Option<Arc<super::store::HistoryStore>>,
+    /// The conversation-history store: every conversation is persisted.
+    history: Arc<super::store::HistoryStore>,
     /// Actor-profile policy injected by the host binary.
     hooks: Arc<dyn SessionHooks>,
 }
 
 impl Service {
-    /// A service without any profile behaviour ([`NoHooks`]).
-    pub fn new(config: SessionConfig) -> Self {
+    /// A service without any profile behaviour ([`NoHooks`]). Fails when
+    /// the history database cannot be opened.
+    pub fn new(config: SessionConfig) -> Result<Self, ServerError> {
         Self::with_hooks(config, Arc::new(NoHooks))
     }
 
     /// [`Service::new`] with the host's profile policy and lifecycle
     /// callbacks.
-    pub fn with_hooks(config: SessionConfig, hooks: Arc<dyn SessionHooks>) -> Self {
-        let history = config.history_db.as_deref().and_then(|path| {
-            match super::store::HistoryStore::open(path) {
-                Ok(store) => Some(Arc::new(store)),
-                Err(err) => {
-                    // Persistence is an enhancement, never a dependency: a
-                    // broken database degrades to no history.
-                    tracing::error!("history store disabled: {err}");
-                    None
-                }
-            }
-        });
-        Self {
+    pub fn with_hooks(
+        config: SessionConfig,
+        hooks: Arc<dyn SessionHooks>,
+    ) -> Result<Self, ServerError> {
+        // No fallback: a conversation that cannot be saved is not served.
+        let history =
+            super::store::HistoryStore::open(&config.history_db).map_err(ServerError::History)?;
+        Ok(Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             tombstone_order: Arc::new(Mutex::new(VecDeque::new())),
             config: Arc::new(config),
-            history,
+            history: Arc::new(history),
             hooks,
-        }
+        })
     }
 
-    /// The history store, when persistence is enabled.
-    pub fn history(&self) -> Option<&super::store::HistoryStore> {
-        self.history.as_deref()
+    /// The history store.
+    pub fn history(&self) -> &super::store::HistoryStore {
+        &self.history
     }
 
     /// Live sessions + retained tombstones (the whole registry). Client
@@ -285,9 +281,7 @@ impl Service {
             }
             // Tombstone in memory, or only on disk: rebuild under the same
             // id. Both need the stored row.
-            let Some(store) = self.history.as_ref() else {
-                return Err(ServerError::SessionNotFound(id.to_string()));
-            };
+            let store = &self.history;
             // The closing session's last events (`session.end` included) may
             // still be queued: the load must see them, or the resumed
             // sequence could restart below a seq a client already saw.
@@ -463,29 +457,24 @@ impl Service {
         let is_resume = resumed.is_some();
 
         // History hooks: a persisting emitter + a turn-end transcript
-        // snapshot, only when the store is enabled.
+        // snapshot.
         let history = self.history.clone();
-        let sequencer = match &history {
-            Some(store) => {
-                // Acknowledged: a session whose row cannot be written would
-                // silently lose every later event and snapshot.
-                store
-                    .record_session(
-                        session_id,
-                        &workspace.display().to_string(),
-                        &alias,
-                        profile,
-                    )
-                    .await
-                    .map_err(ServerError::History)?;
-                Sequencer::spawn(
-                    session_id,
-                    super::store::PersistingEmitter::new(session_id, bus, (**store).clone()),
-                    next_seq,
-                )
-            }
-            None => Sequencer::spawn(session_id, bus, next_seq),
-        };
+        // Acknowledged: a session whose row cannot be written would
+        // silently lose every later event and snapshot.
+        history
+            .record_session(
+                session_id,
+                &workspace.display().to_string(),
+                &alias,
+                profile,
+            )
+            .await
+            .map_err(ServerError::History)?;
+        let sequencer = Sequencer::spawn(
+            session_id,
+            super::store::PersistingEmitter::new(session_id, bus, (*history).clone()),
+            next_seq,
+        );
 
         if !is_resume {
             // session.start is seq 0, sequenced before the runtime exists.
@@ -494,12 +483,10 @@ impl Service {
         // THEN the runtime task; the handle is retained so /stop can await
         // the interrupted turn's events before the session.end fence.
         let (inbox_tx, inbox) = ActorInbox::channel();
-        let on_turn_end: Option<crate::bus::runtime::TurnEndHook> = history.as_ref().map(|store| {
-            let store = store.clone();
-            Box::new(move |transcript: &[ChatMessage]| {
-                store.save_transcript(session_id, transcript.to_vec());
-            }) as crate::bus::runtime::TurnEndHook
-        });
+        let on_turn_end: Option<crate::bus::runtime::TurnEndHook> =
+            Some(Box::new(move |transcript: &[ChatMessage]| {
+                history.save_transcript(session_id, transcript.to_vec());
+            }));
         let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn(
             session_id,
             actor,

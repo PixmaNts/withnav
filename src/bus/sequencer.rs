@@ -1,4 +1,4 @@
-//! Per-session sequencer task (todo 2): the ONE authoritative publisher.
+//! Per-session sequencer task: the ONE authoritative publisher.
 //!
 //! Exactly one task per session owns `next_seq` — it is the only code that
 //! assigns `seq` (strictly monotonic, starting at 0 so `session.start` is seq
@@ -7,9 +7,9 @@
 //! durable event is never lost, and ingress send failure means the session is
 //! closed ([`BusError::SequencerClosed`]), never silent loss. Per event the
 //! task performs seq-assign → [`Emitter::emit`] (ring append + subscriber
-//! fan-out are todo 3 and plug in at that seam).
+//! fan-out) plugs in at that seam).
 //!
-//! AcceptCommand ordering hook (Oracle O4, event-before-action): the
+//! AcceptCommand ordering hook (event-before-action): the
 //! `message.received` envelope is sequenced + emitted BEFORE the reserved
 //! inbox permit is committed, and the ack is sent only after the commit — so
 //! the runtime (a separate task) can never consume a command whose
@@ -23,9 +23,9 @@ use crate::bus::event::EventKind;
 use crate::bus::SubscribeReply;
 use crate::error::BusError;
 
-/// A command still unsequenced by the runtime (todo 4 freezes the full shape).
+/// A command still unsequenced by the runtime (the full shape is frozen in `bus::command`).
 /// `source`/`target`/`mode` carry the frozen `message.received` payload
-/// fields (ticket 01); todo 7's server route is the first producer.
+/// fields; the server message route is the producer.
 #[derive(Debug, Clone)]
 pub struct PendingCommand {
     pub command_id: Ulid,
@@ -37,8 +37,8 @@ pub struct PendingCommand {
 
 /// Committer invoked by the sequencer AFTER `message.received` is seq-assigned
 /// and emitted, and BEFORE the ack — this IS the event-before-action contract
-/// (Oracle O4) as code. The REAL inbox permit commit (handing the command to
-/// the runtime actor, todo 4's `ActorInbox`) is wired in todo 7 through this
+/// as code. The REAL inbox permit commit (handing the command to
+/// the runtime actor's `ActorInbox`) is wired through this
 /// seam, which is why `accept_command` TAKES the committer instead of owning
 /// one. Must not block: it runs inside the single sequencer mailbox.
 pub type CommandCommit = Box<dyn FnOnce() + Send>;
@@ -54,22 +54,22 @@ pub struct AcceptReceipt {
 pub enum Ingress {
     /// An unsequenced event candidate from any producer.
     Candidate(Candidate),
-    /// Event-before-action acceptance (O4): sequence + emit `message.received`
+    /// Event-before-action acceptance: sequence + emit `message.received`
     /// FIRST, then invoke `commit`, then ack with the assigned seq.
     AcceptCommand {
         commit: CommandCommit,
         command: PendingCommand,
         reply: oneshot::Sender<Result<AcceptReceipt, BusError>>,
     },
-    /// Atomic subscribe-then-replay (todo 3): resolve the cursor against the
+    /// Atomic subscribe-then-replay: resolve the cursor against the
     /// ring and register a live queue in ONE synchronous mailbox step.
     SubscribeSince {
         cursor: Option<u64>,
         reply: oneshot::Sender<crate::bus::SubscribeReply>,
     },
-    /// Session teardown (todo 5): sequence + emit `session.end`, pin
+    /// Session teardown: sequence + emit `session.end`, pin
     /// `final_seq`, then the sequencer task EXITS — the fence that guarantees
-    /// no event is ever sequenced after `session.end`. `reply` (todo 7) gets
+    /// no event is ever sequenced after `session.end`. `reply` gets
     /// the seq the fence stamped on `session.end`.
     CloseSession {
         reason: String,
@@ -79,7 +79,7 @@ pub enum Ingress {
     /// has been handled (so every event published before it has been
     /// emitted). The action must not block.
     AfterEvents { action: Box<dyn FnOnce() + Send> },
-    /// Head query (todo 6): reply with the next unassigned seq.
+    /// Head query: reply with the next unassigned seq.
     CurrentSeq {
         reply: oneshot::Sender<Result<u64, BusError>>,
     },
@@ -110,13 +110,13 @@ impl Candidate {
     }
 }
 
-/// Per-event downstream seam. Todo 2 tests collect into a channel; the
+/// Per-event downstream seam. Sequencer tests collect into a channel; the
 /// concrete [`crate::bus::SessionBus`] implements ring append + bounded
 /// fan-out here.
 pub trait Emitter: Send + 'static {
     fn emit(&mut self, envelope: EventEnvelope);
 
-    /// Atomic subscribe-then-replay (todo 8 consumes this): called from the
+    /// Atomic subscribe-then-replay (the SSE handler consumes this): called from the
     /// single mailbox handler with NO await around it, so the replay snapshot
     /// and the live registration share one synchronous step (exactly-once at
     /// the seam). `next_seq` is the session head + 1 for cursor sanity.
@@ -156,7 +156,7 @@ impl Sequencer {
         ingress_send(&self.ingress_tx, Ingress::Candidate(candidate))
     }
 
-    /// Event-before-action acceptance (O4). The handler's order is: seq-assign
+    /// Event-before-action acceptance. The handler's order is: seq-assign
     /// `message.received` -> emit it -> invoke `commit` -> ack with the seq.
     /// The ack therefore PROVES the commit ran after the emit. Commit failure
     /// or a session ended before handling yields
@@ -190,7 +190,7 @@ impl Sequencer {
 
     /// Atomic subscribe-then-replay: ONE control op on the sequencer task.
     /// The mailbox handler, without awaiting, resolves the cursor against the
-    /// ring (per the todo-3 resume contract), registers a bounded live queue,
+    /// ring (per the resume contract on `SessionBus`), registers a bounded live queue,
     /// and returns the replay-through-head snapshot + live receiver — an
     /// event published after this returns is live-only (exactly once).
     /// A closed session maps to `BusError::SessionNotFound`.
@@ -208,11 +208,11 @@ impl Sequencer {
             .map_err(|_| BusError::SessionNotFound(self.session_id.to_string()))
     }
 
-    /// Head accessor (todo 6's `GET /sessions/:id` `current_seq`): replies
+    /// Head accessor (`GET /sessions/:id` `current_seq`): replies
     /// with the next unassigned seq, so the last-EMITTED seq is
-    /// `current - 1` (the pinned `current_seq` = last emitted seq, ticket
-    /// 04). A closed session maps to `BusError::SessionNotFound` (todo 7
-    /// treats that as "the fence already assigned final_seq").
+    /// `current - 1` (the pinned `current_seq` = last emitted seq).
+    /// A closed session maps to `BusError::SessionNotFound` (the session
+    /// manager treats that as "the fence already assigned final_seq").
     pub async fn current_seq(&self) -> Result<u64, BusError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         ingress_send(&self.ingress_tx, Ingress::CurrentSeq { reply: reply_tx })?;
@@ -306,7 +306,7 @@ async fn run(
                     let _ = reply.send(Err(BusError::SeqSpaceExhausted));
                     break;
                 };
-                // Event-before-action (O4), in this exact order: emit the
+                // Event-before-action, in this exact order: emit the
                 // sequenced envelope, THEN commit the command, THEN ack —
                 // so the ack is observable proof that commit followed emit.
                 let mut candidate = message_received_candidate(&command);
@@ -405,7 +405,7 @@ mod tests {
             _next_seq: u64,
             reply: oneshot::Sender<SubscribeReply>,
         ) {
-            // Subscribe is a fan-out concern (todo 3); this collector emitter
+            // Subscribe is a fan-out concern; this collector emitter
             // has no subscriber registry, so the request fails like a closed
             // session would.
             drop(reply);
@@ -526,7 +526,7 @@ mod tests {
         assert!(rx.recv().await.is_none());
     }
 
-    /// (e) Event-before-action (O4), GENUINELY OBSERVED: the emitter and the
+    /// (e) Event-before-action, GENUINELY OBSERVED: the emitter and the
     /// committer both append to one shared timeline, and the ack appends its
     /// entry after `accept_command` returns. The handler structure is
     /// emit -> commit -> ack in ONE task, so a recorded order of

@@ -1,10 +1,10 @@
-//! Bounded per-actor inbox with reject-on-full backpressure (todo 4).
+//! Bounded per-actor inbox with reject-on-full backpressure.
 //!
-//! One logical inbox (SPEC §15.2): one bounded `mpsc` transport per actor plus
+//! One logical inbox: one bounded `mpsc` transport per actor plus
 //! an in-actor buffer of drained-but-not-yet-injected commands. Commands are
 //! never replayable, so a full inbox REJECTS the next command (`BusError::
-//! InboxFull`) instead of dropping or blocking. The drive loop is todo 5; this
-//! module exposes the methods it calls.
+//! InboxFull`) instead of dropping or blocking. The runtime drive loop calls the
+//! methods this module exposes.
 
 use tokio::sync::mpsc;
 use ulid::Ulid;
@@ -21,20 +21,20 @@ pub struct BatchOutcome {
     pub downgrade_notice: Option<DowngradeNotice>,
 }
 
-/// The sole holder of the inbox transport's receiver side. The todo-5 runtime
+/// The sole holder of the inbox transport's receiver side. The runtime
 /// task owns this plus the `AgentActor`; the server/CLI only ever touch the
 /// `Sender` returned by [`ActorInbox::channel`].
 ///
 /// Holding the receiver inside keeps the bounded channel open (a dropped
 /// receiver would make every later `try_send` a `Closed` error) and keeps
-/// drain/apply explicit so the todo-5 drive loop controls the timing.
+/// drain/apply explicit so the runtime drive loop controls the timing.
 pub struct ActorInbox {
     commands: Vec<Command>,
     _rx: mpsc::Receiver<Command>,
 }
 
 /// Map a rejected enqueue onto the typed bus error the server turns into
-/// `503 inbox_full` (ticket 7). Commands are rejected, never dropped or
+/// `503 inbox_full`. Commands are rejected, never dropped or
 /// blocked, because unlike ring events they cannot be replayed.
 impl From<mpsc::error::TrySendError<Command>> for BusError {
     fn from(err: mpsc::error::TrySendError<Command>) -> Self {
@@ -48,7 +48,7 @@ impl From<mpsc::error::TrySendError<Command>> for BusError {
 
 impl ActorInbox {
     /// Create the bounded per-actor inbox transport: one `mpsc` channel plus
-    /// the in-actor buffer, sharing a single FIFO order (SPEC §15.2).
+    /// the in-actor buffer, sharing a single FIFO order.
     pub fn channel() -> (mpsc::Sender<Command>, Self) {
         let (tx, rx) = mpsc::channel(INBOX_CAPACITY);
         (
@@ -66,13 +66,13 @@ impl ActorInbox {
     }
 
     /// The command_id of the FIRST buffered command — the task_id source for
-    /// the todo-5 runtime (`active_task_id.or(first command_id)`).
+    /// the runtime (`active_task_id.or(first command_id)`).
     pub fn peek_first_buffered_command_id(&self) -> Option<Ulid> {
         self.commands.first().map(|cmd| cmd.command_id)
     }
 
     /// Drain everything currently in the transport into the in-actor buffer
-    /// (FIFO). Returns how many commands were drained. The todo-5 drive loop
+    /// (FIFO). Returns how many commands were drained. The runtime drive loop
     /// calls this ONLY at a turn boundary — while the actor runs this stays
     /// uncalled, so mid-turn commands buffer for the next turn (next-turn
     /// semantics, no cancellation).
@@ -83,7 +83,7 @@ impl ActorInbox {
         self.commands.len()
     }
 
-    /// The todo-5 drive loop's WAIT primitive: await the first command
+    /// The runtime drive loop's WAIT primitive: await the first command
     /// (yielding `None` only when all senders are gone), then scoop up
     /// everything already queued behind it into the in-actor buffer as one
     /// FIFO batch. The batch itself is applied by the existing
@@ -188,7 +188,7 @@ mod tests {
         for i in 0..3 {
             send(&tx, text_command(DeliveryMode::NextTurn, &format!("m{i}")));
         }
-        // The todo-5 drive loop drains ONLY at the turn boundary; while
+        // The runtime drive loop drains ONLY at the turn boundary; while
         // run_agent holds the actor RUNNING these stay buffered untouched:
         assert!(!inbox.has_buffered());
         assert_eq!(inbox.drain_transport(), 3);

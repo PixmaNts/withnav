@@ -17,6 +17,16 @@
 //! still never breaks a live conversation: the callers decide what a failure
 //! means.
 //!
+//! Two notions that must not be confused. "Conversation resumable" means the
+//! row and its events are in this store: `POST /v1/sessions` with `resume`
+//! rebuilds an actor and sequencer under the same id, whether or not the
+//! session is still in memory. "Runtime stopped" means the in-memory actor
+//! and sequencer are gone; that says nothing about the store, which keeps the
+//! conversation until `DELETE` removes it. The store knows only the former;
+//! the registry in `server::session` owns the latter. A stopped runtime's
+//! `session.end` is stored like any other durable event, so a stored
+//! conversation does not by itself say whether a runtime is live.
+//!
 //! Schema:
 //! - `sessions(id TEXT PRIMARY KEY, workspace TEXT, model TEXT, profile TEXT,
 //!   title TEXT, created_at TEXT, updated_at TEXT, last_seq INTEGER, transcript TEXT)`

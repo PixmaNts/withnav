@@ -1,8 +1,8 @@
-//! Todo-7 integration tests: POST /v1/sessions/:id/messages and
+//! Integration tests: POST /v1/sessions/:id/messages and
 //! POST /v1/sessions/:id/stop over a REAL HTTP server on an ephemeral
 //! loopback socket. Sessions are created against a MOCK PROVIDER (the same
 //! scripted-TCP technique as the runtime tests) so a posted message drives a
-//! real turn. Frozen bodies per ticket 04 Q3.
+//! real turn. Bodies are the frozen ones from `server::routes`.
 
 use std::time::Duration;
 
@@ -381,7 +381,7 @@ async fn stop_tears_down_in_order_and_later_messages_are_rejected() {
         events.iter().map(|e| e.seq).max().expect("max")
     );
 
-    // DEFECT-2 PROOF: GET-after-stop answers from the tombstone with
+    // GET-after-stop answers from the tombstone with
     // current_seq == the seq session.end ACTUALLY carried on the wire.
     let summary: Value = client
         .get(format!("{}/v1/sessions/{}", server.base, id))
@@ -402,13 +402,10 @@ async fn stop_tears_down_in_order_and_later_messages_are_rejected() {
     );
 }
 
-// DEFECT-3 DEFERRAL PIN: reconnect-after-final_seq (replaying a stopped
-// session's ring through the tombstone) is TODO 8's SSE resume behavior.
-// THIS slice's contract: GET answers from the tombstone, while the routing
-// resources are gone — a message POST is 404/409 and no NEW session can be
-// confused with it. Pinned so the deferral is visible and testable.
+// A stopped session's runtime is gone: GET still answers from the tombstone,
+// but a message POST is 404/409 (a tombstone answers reads, never commands).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stopped_session_answers_get_but_routing_is_gone_deferral_pin() {
+async fn stopped_session_answers_get_but_routing_is_gone() {
     let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;
     let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
     let id = create_session(&server.base, &server.ws).await;
@@ -421,8 +418,8 @@ async fn stopped_session_answers_get_but_routing_is_gone_deferral_pin() {
         .expect("stop");
     assert_eq!(stop.status(), 200);
 
-    // Tombstone answers GET (stopped, with a final_seq for todo 8's resume
-    // floor); routing is gone for commands.
+    // Tombstone answers GET (stopped, with the retained final_seq);
+    // routing is gone for commands.
     let summary: Value = client
         .get(format!("{}/v1/sessions/{}", server.base, id))
         .send()
@@ -438,7 +435,7 @@ async fn stopped_session_answers_get_but_routing_is_gone_deferral_pin() {
     assert!(late.status() == 404 || late.status() == 409);
 }
 
-// DEFECT-1 PROOF (slow-runtime variant, REAL HTTP): a mid-turn stop against
+// Slow-runtime variant, REAL HTTP: a mid-turn stop against
 // a provider that DELAYS its final SSE chunk. The runtime needs real time to
 // unwind, so the manager must AWAIT it (not fence first): the stream still
 // ends turn.end{interrupted} -> agent.state{idle} -> session.end, with
@@ -538,7 +535,7 @@ async fn stop_during_a_slow_turn_still_orders_the_terminal_tail() {
         "gapless: {seqs:?}"
     );
 
-    // DEFECT-2 PROOF (slow variant): tombstone seq == the session.end the
+    // Slow variant: tombstone seq == the session.end the
     // subscriber actually observed.
     let summary: Value = client
         .get(format!("{}/v1/sessions/{}", server.base, id))

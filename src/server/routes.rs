@@ -1,7 +1,7 @@
-//! Axum HTTP surface (todos 6-7): health, session create/get, message and
-//! stop routing. SSE is todo 8, WS todo 9.
+//! Axum HTTP surface health, session create/get, message and
+//! stop routing. SSE streaming lives in `server::sse`.
 //!
-//! Response bodies are FROZEN (ticket 04 Q3):
+//! Response bodies are FROZEN:
 //! - `GET  /v1/health`        -> `{status:"ok"}`
 //! - `POST /v1/sessions`      -> `{session_id, root_actor_id:"agent:main", actor_state:"idle"}`
 //! - `GET  /v1/sessions/:id`  -> `{session_id, actor_state, workspace, model, current_seq}`
@@ -9,9 +9,6 @@
 //!   (frozen error bodies: 404 unknown id / 409 stopping / 503 `{"accepted":false,"reason":"inbox_full"}`
 //!   / 400 non-Text). All errors share the `{"error": ...}` shape.
 //! - `POST /v1/sessions/:id/stop` -> `{accepted:true, actor_state:"stopped"}`
-//!
-//! allow: SIZE_OK — ticket 05's approved module map fixes the file set
-//! (mod/routes/sse/session); every HTTP route lives here.
 
 use std::net::SocketAddr;
 use std::time::SystemTime;
@@ -32,13 +29,13 @@ use crate::bus::sequencer::PendingCommand;
 use crate::error::ServerError;
 use crate::server::session::{AppState, ServerConfig, SessionHandle, SessionSlot};
 
-/// Frozen health body (SPEC §20.2).
+/// Frozen health body.
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct HealthBody {
     pub status: &'static str,
 }
 
-/// Frozen create-session request (ticket 04 Q3).
+/// Frozen create-session request.
 #[derive(Debug, Deserialize)]
 pub struct CreateSessionRequest {
     pub workspace: String,
@@ -52,7 +49,7 @@ pub struct CreateSessionRequest {
     pub resume: Option<String>,
 }
 
-/// Frozen create-session response (ticket 04 Q3).
+/// Frozen create-session response.
 #[derive(Debug, Serialize, PartialEq)]
 pub struct CreateSessionResponse {
     pub session_id: String,
@@ -60,7 +57,7 @@ pub struct CreateSessionResponse {
     pub actor_state: &'static str,
 }
 
-/// `POST /v1/sessions/:id/messages` request (SPEC §20.2). The server — never
+/// `POST /v1/sessions/:id/messages` request. The server — never
 /// the client — assigns `source_actor_id` (`user:http`), so the wire carries
 /// no impersonatable sender field.
 #[derive(Debug, Deserialize)]
@@ -71,7 +68,7 @@ pub struct PostMessageRequest {
     pub content: Vec<ContentBlock>,
 }
 
-/// The frozen message ack (ticket 04 Q3): `notice` carries the visible
+/// The frozen message ack: `notice` carries the visible
 /// steer/interrupt downgrade and is absent for next-turn.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct MessageAccepted {
@@ -82,14 +79,14 @@ pub struct MessageAccepted {
     pub notice: Option<String>,
 }
 
-/// The frozen 503 body (wayfinder ticket 02).
+/// The frozen 503 body.
 #[derive(Debug, Serialize, PartialEq)]
 pub struct InboxFullResponse {
     pub accepted: bool,
     pub reason: &'static str,
 }
 
-/// The frozen stop ack (wayfinder ticket 02).
+/// The frozen stop ack.
 #[derive(Debug, Serialize, PartialEq)]
 pub struct StopAccepted {
     pub accepted: bool,
@@ -368,7 +365,7 @@ async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -
 }
 
 /// The server-assigned sender for HTTP-submitted messages: clients can never
-/// impersonate another actor by choosing it themselves (SPEC §11.7).
+/// impersonate another actor by choosing it themselves.
 const HTTP_USER_ACTOR_ID: &str = "user:http";
 
 /// Builds the Command for a posted message with a server-assigned sender.
@@ -398,7 +395,7 @@ pub(crate) fn parse_mode(mode: Option<&str>) -> Result<DeliveryMode, ServerError
     }
 }
 
-/// `POST /v1/sessions/:id/messages` (todo 7): validate the session and the
+/// `POST /v1/sessions/:id/messages`: validate the session and the
 /// content, sequence `message.received` BEFORE the inbox commit
 /// (event-before-action), and ack with the frozen body — never blocking on
 /// agent progress. A full inbox reserves the permit back and answers
@@ -522,7 +519,7 @@ async fn stop_session(State(state): State<AppState>, Path(id): Path<String>) -> 
 /// The single structured-error funnel: every failure is a typed
 /// [`ServerError`] mapped onto a status code + JSON body. The full-inbox
 /// rejection carries the FROZEN `{accepted:false, reason:"inbox_full"}`
-/// body (wayfinder ticket 02); every other failure shares `{"error": ...}`.
+/// body; every other failure shares `{"error": ...}`.
 pub(crate) fn error_response(err: ServerError) -> Response {
     let status = match &err {
         ServerError::SessionNotFound(_) => StatusCode::NOT_FOUND,

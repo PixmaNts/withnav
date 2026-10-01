@@ -1,4 +1,4 @@
-//! SSE event streaming with `id=seq` and `Last-Event-ID` resume (todo 8).
+//! SSE event streaming with `id=seq` and `Last-Event-ID` resume.
 //!
 //! `GET /v1/sessions/:id/events` streams sequenced `EventEnvelope`s. The SSE
 //! `id:` field is the event `seq`, so a reconnecting client sends

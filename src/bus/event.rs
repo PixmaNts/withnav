@@ -1,5 +1,5 @@
-//! Frozen `EventEnvelope` shape (docs/PLAN.md §7.1) and the 12-kind `EventKind`
-//! catalog (ticket 01).
+//! Frozen `EventEnvelope` shape and the 12-kind `EventKind`
+//! catalog.
 //!
 //! Reserved-but-deferred kind names (NOT in the enum, never emitted this slice):
 //! `prompt.pre_llm`, `tool.progress`, `context.pre_compact` (Phase 3),
@@ -15,18 +15,18 @@ use ulid::Ulid;
 use crate::provider::{AssistantMessage, StreamDelta, Usage};
 use crate::tools::ToolStatus;
 
-/// Frozen envelope schema version (PLAN §7.1: reserved = 1).
+/// Frozen envelope schema version (reserved = 1).
 pub const SCHEMA_VERSION: u32 = 1;
 
 /// The single root actor id for this slice (all events are published by it).
 pub const ROOT_ACTOR_ID: &str = "agent:main";
 
-/// The catalog emits EXACTLY 12 kinds (ticket 01 / Oracle O1): 2 session +
+/// The catalog emits EXACTLY 12 kinds: 2 session +
 /// message + 2 turn + 2 llm + 2 tool + 2 agent + task = 12, never 13.
 pub const EVENT_KIND_COUNT: usize = 12;
 
 /// Durable kinds are retained in the reconnect ring; only `llm.delta` is
-/// live-only (ticket 01 durability marking). Kept with the catalog it guards.
+/// live-only. Kept with the catalog it guards.
 const fn is_durable(kind: EventKind) -> bool {
     !matches!(kind, EventKind::LlmDelta)
 }
@@ -71,7 +71,7 @@ impl EventKind {
         }
     }
 
-    /// The 12 emitted kinds, in catalog order. Todo 3 iterates this to seed
+    /// The 12 emitted kinds, in catalog order. The bus iterates this to seed
     /// the ring/fan-out.
     pub const ALL: [EventKind; EVENT_KIND_COUNT] = Self::all_variants();
 }
@@ -152,7 +152,7 @@ impl EventKind {
     }
 }
 
-/// Frozen envelope (PLAN §7.1 / SPEC §10.1). Immutable after sequencing; the
+/// Frozen envelope. Immutable after sequencing; the
 /// sequencer task is the only code that assigns `seq`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventEnvelope {
@@ -199,7 +199,7 @@ impl EventEnvelope {
     }
 }
 
-/// Wire vocabulary of `TurnEnd.outcome` (ticket 01: distinct from the internal
+/// Wire vocabulary of `TurnEnd.outcome` (distinct from the internal
 /// loop type; `StepBudgetExhausted` never leaks — it maps to `yielded`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -210,7 +210,7 @@ pub enum TurnEndOutcome {
     Error,
 }
 
-/// Bounded typed error summary on `TurnEnd` (Oracle P1-4): enough for an
+/// Bounded typed error summary on `TurnEnd`: enough for an
 /// event-only client to reproduce the CLI error line; no raw secrets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnError {
@@ -232,7 +232,7 @@ pub enum TaskStatus {
     Done,
 }
 
-// --- The 12 frozen payload structs (ticket 01), serialized inside
+// --- The 12 frozen payload structs, serialized inside
 // --- `EventEnvelope.payload`. Optional fields use skip-if-none (matches the
 // --- Phase-1 `ToolResult` convention).
 
@@ -249,7 +249,7 @@ pub struct SessionEnd {
 }
 
 /// `mode` wire vocab: "next-turn" | "steer" | "interrupt" (recorded only; the
-/// typed `DeliveryMode` lands with the command router, todo 4).
+/// typed `DeliveryMode` lives in `bus::command`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MessageReceived {
     pub command_id: Ulid,

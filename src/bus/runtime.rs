@@ -1,6 +1,6 @@
-//! Per-actor runtime task (todo 5): the sole holder of `&mut AgentActor`,
+//! Per-actor runtime task: the sole holder of `&mut AgentActor`,
 //! driving `inbox batch -> run_agent` and translating the terminal
-//! [`RunOutcome`] into bus events per the ticket-01 table.
+//! [`RunOutcome`] into bus events.
 //!
 //! Ordering contract: turn.start -> llm.delta / llm.response / tool.pre_call /
 //! tool.post_call (interleaved as the step produces them) -> terminal
@@ -33,7 +33,7 @@ pub type TurnEndHook = Box<dyn Fn(&[crate::provider::openai::ChatMessage]) + Sen
 const CANCEL_REASON: &str = "cancel";
 /// Cancel reason recorded on `session.end` when the inbox senders all drop.
 const END_OF_STREAM_REASON: &str = "inbox_closed";
-/// Wire cap for `turn.end{error}.message` (Oracle P1-4: bounded, no secrets).
+/// Wire cap for `turn.end{error}.message` (bounded, no secrets).
 const ERROR_SUMMARY_CAP: usize = 256;
 
 /// One turn's publishing state: identity (turn, task, current step, last
@@ -421,7 +421,7 @@ fn to_value<T: serde::Serialize + ?Sized>(value: &T) -> serde_json::Value {
     serde_json::to_value(value).unwrap_or(serde_json::Value::Null)
 }
 
-/// Bounded, secret-free error summary for the wire (Oracle P1-4).
+/// Bounded, secret-free error summary for the wire.
 fn bounded(message: &str, cap: usize) -> String {
     if message.chars().count() <= cap {
         message.to_string()
@@ -582,8 +582,8 @@ mod tests {
     /// Scripted harness: a real sequencer over a real SessionBus, a real
     /// runtime task, and a live subscriber registered BEFORE any command is
     /// sent — the collected stream is the session's ordered event log
-    /// (`session.start` belongs to the future session manager, todo 6, so
-    /// turn.start is seq 0 here).
+    /// (`session.start` belongs to the session manager, which this
+    /// harness does not use, so turn.start is seq 0 here).
     struct Harness {
         inbox_tx: mpsc::Sender<Command>,
         session_cancel: CancellationToken,

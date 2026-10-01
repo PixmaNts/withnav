@@ -1,5 +1,5 @@
-//! Todo-10 direct-vs-bus render parity. `run` was rebranched to go through
-//! the bus (§6.2). This test drives the SAME scripted mock-provider turn two
+//! Direct-vs-bus render parity. `run` goes through
+//! the bus. This test drives the SAME scripted mock-provider turn two
 //! ways — (1) directly via `run_agent` with the Phase-1 `on_delta` closure,
 //! (2) through the runtime task + `event_to_ui` adapter — and asserts the
 //! rendered UiEvent sequence + terminal exit code are IDENTICAL, so the bus
@@ -155,7 +155,7 @@ fn phase1_exit(outcome: &RunOutcome) -> i32 {
 /// Stderr parity on the ERROR path: Phase-1 `finish` prints `\nerror: {e}` and
 /// exits 1; the bus path's `exit_code_for` reads `turn.end.error.message` and
 /// prints the SAME line + exit 1. This pins that the bounded error summary the
-/// runtime puts on `turn.end` reproduces the Phase-1 stderr line (P1-4), so a
+/// runtime puts on `turn.end` reproduces the Phase-1 stderr line, so a
 /// client rendering from events sees byte-identical error output.
 #[test]
 fn error_turn_end_reproduces_the_phase1_stderr_line_and_exit_code() {

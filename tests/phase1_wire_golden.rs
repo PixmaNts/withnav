@@ -1,4 +1,4 @@
-//! Phase-1 golden wire-body lock (todo 1 of the Phase-2 plan).
+//! Phase-1 golden wire-body lock: the provider request bodies must not drift.
 //!
 //! Drives `run_agent` against a scripted mock provider (same technique as the
 //! Phase-1 loop tests) and locks the raw outgoing provider request bodies.

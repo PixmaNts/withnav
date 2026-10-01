@@ -1,8 +1,7 @@
-//! Frozen `Command` shape and `DeliveryMode::{NextTurn, Steer, Interrupt}` (todo 4).
+//! Frozen `Command` shape and `DeliveryMode::{NextTurn, Steer, Interrupt}`.
 //!
-//! Wire vocabulary per PLAN §7.3 / SPEC §6.4. Phase 2 implements NextTurn timing
-//! only: `Steer`/`Interrupt` are accepted + recorded + visibly downgraded
-//! (SPEC §15.3-15.4 semantics land in Phase 3).
+//! Phase 2 implements NextTurn timing only: `Steer`/`Interrupt` are accepted +
+//! recorded + visibly downgraded (their real mid-turn semantics land in Phase 3).
 
 use std::fmt;
 use std::time::SystemTime;
@@ -14,10 +13,10 @@ use ulid::Ulid;
 use crate::error::ServerError;
 
 /// Actor identifier following the string grammar (`agent:main`, `user:cli`,
-/// `user:http`). A string, NOT a ULID (PLAN §7.2).
+/// `user:http`). A string, NOT a ULID.
 pub type ActorId = String;
 
-/// ULID-backed session identifier (PLAN §7.2).
+/// ULID-backed session identifier.
 pub type SessionId = Ulid;
 
 /// How the sender wants the command timed. All three variants are frozen wire
@@ -42,7 +41,7 @@ impl DeliveryMode {
     }
 }
 
-/// Transcript content blocks. PROVISIONAL shape (PLAN §7.5): Phase 2 accepts
+/// Transcript content blocks. PROVISIONAL shape: Phase 2 accepts
 /// the full enum but only HANDLES `Text`; any other block is rejected at the
 /// accept boundary with `BusError::NonTextContent`.
 /// On the wire it carries a snake_case `type` tag.
@@ -66,7 +65,7 @@ pub enum ContentBlock {
     },
 }
 
-/// A targeted, point-to-point instruction (SPEC §6.4). Distinct from an event:
+/// A targeted, point-to-point instruction. Distinct from an event:
 /// never broadcast, never sequenced, never replayable — a rejected command is
 /// the sender's to retry.
 #[derive(Debug, Clone)]
@@ -81,7 +80,7 @@ pub struct Command {
 }
 
 /// Visible downgrade marker for a `Steer`/`Interrupt` command in this build.
-/// Surfaced in the message-received ack (todo 7) so clients see the mode was
+/// Surfaced in the message-received ack so clients see the mode was
 /// recorded but runs at next-turn timing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DowngradeNotice {
@@ -103,8 +102,8 @@ impl fmt::Display for DowngradeNotice {
 }
 
 impl Command {
-    /// Phase-2 content rule: Text-only (PLAN §7.5). The server maps the typed
-    /// error to 400 (ticket 7); the inbox rejects before buffering.
+    /// Phase-2 content rule: Text-only. The server maps the typed
+    /// error to 400; the inbox rejects before buffering.
     pub fn validate_content(&self) -> Result<(), ServerError> {
         let non_text = self
             .content
@@ -116,7 +115,7 @@ impl Command {
         Ok(())
     }
 
-    /// Concat of the Text blocks (ticket 02: the loop wants a string, the wire
+    /// Concat of the Text blocks (the loop wants a string, the wire
     /// wants typed blocks). Non-Text blocks never reach here in a valid batch:
     /// `validate_content` runs at the accept boundary.
     pub fn text_content(&self) -> String {

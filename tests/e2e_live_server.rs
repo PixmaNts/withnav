@@ -1,4 +1,4 @@
-//! Todo-10 REQUIRED live e2e THROUGH the server path. Starts the real Axum
+//! REQUIRED live e2e THROUGH the server path. Starts the real Axum
 //! server on a loopback port, creates a session in a temp Rust project, posts
 //! a message over HTTP, and consumes the SSE event stream to `turn.end{done}`,
 //! asserting: an `llm.delta` `reasoning_content` (thinking) observed >= 1, a

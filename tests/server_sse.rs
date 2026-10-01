@@ -1,4 +1,4 @@
-//! Todo-8 integration tests: GET /v1/sessions/:id/events over a REAL HTTP
+//! Integration tests: GET /v1/sessions/:id/events over a REAL HTTP
 //! server on an ephemeral loopback socket. The SSE `id:` field is the event
 //! `seq`; `Last-Event-ID` resumes gaplessly; a rejected cursor or a stopped
 //! session yields a control frame / clean termination, never a hang or a

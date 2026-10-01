@@ -1,9 +1,9 @@
-//! Todo-6 integration tests: the Axum surface over a REAL HTTP client where
+//! Integration tests: the Axum surface over a REAL HTTP client where
 //! it matters, `tower::ServiceExt::oneshot` for pure routing. Frozen bodies
-//! per ticket 04 Q3. Sessions are created against a test models.json whose
+//! as documented in `server::routes`. Sessions are created against a test models.json whose
 //! provider points at an unreachable mock base_url — creation must NEVER
-//! call the provider (the actor is built but not run until todo 7 posts a
-//! message).
+//! call the provider (the actor is built but not run until a message is
+//! posted).
 
 use std::net::SocketAddr;
 use std::path::Path;
@@ -86,7 +86,7 @@ async fn health_returns_200_ok_body() {
 // Given a test models.json (dead provider base_url)
 // When POST /v1/sessions
 // Then 200 with the frozen create body; the provider is NEVER called at
-//      creation (the actor is built but not run until todo 7)
+//      creation (the actor is built but not run until a message is posted)
 #[tokio::test]
 async fn create_session_returns_frozen_body_without_calling_the_provider() {
     let tmp = tempfile::tempdir().expect("tempdir");

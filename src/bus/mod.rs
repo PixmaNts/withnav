@@ -1,7 +1,7 @@
 //! Phase 2 event bus: per-session sequencer, event envelopes, per-actor
 //! inboxes, and the agent runtime task.
 //!
-//! Todo 3 (this module): the [`SessionBus`] is the concrete [`Emitter`] the
+//! The [`SessionBus`] is the concrete [`Emitter`] the
 //! sequencer task drives after seq assignment. Per event it performs, in one
 //! synchronous step inside the single sequencer task: ring-append (durable
 //! kinds only) → fan-out to per-subscriber bounded mpsc queues. Subscribers
@@ -35,7 +35,7 @@ pub const RING_CAP: usize = 4096;
 /// The resume floor is `last_evicted_durable_seq` (the evicted-durable
 /// watermark), NOT the oldest retained seq: while a durable event with
 /// `seq > cursor` has not been evicted, replay is gapless even when the
-/// cursor sits one below the oldest retained seq (P1-6).
+/// cursor sits one below the oldest retained seq.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResumeOutcome {
     /// Durable events with `seq > cursor`, in seq order (empty when the
@@ -48,7 +48,7 @@ pub enum ResumeOutcome {
     InvalidCursor,
 }
 
-/// The atomic subscribe-then-replay handshake result (todo 8's SSE handler
+/// The atomic subscribe-then-replay handshake result (the SSE handler
 /// consumes this): the replay vector is the ring snapshot taken in the SAME
 /// synchronous step that registers `live`, and `live` yields only events
 /// with `seq >` that snapshot's head — replay ∪ live is exactly-once.
@@ -92,8 +92,8 @@ impl EventRing {
         self.events.push_back(envelope.clone());
     }
 
-    /// Durable events after `cursor`, in seq order; `None` means no cursor
-    /// (O7): the full retained history INCLUDING seq 0.
+    /// Durable events after `cursor`, in seq order; `None` means no cursor:
+    /// the full retained history INCLUDING seq 0.
     fn replay_from(&self, cursor: Option<u64>) -> Vec<EventEnvelope> {
         self.events
             .iter()
@@ -136,7 +136,7 @@ impl SessionBus {
         self.ring.last_evicted_durable_seq()
     }
 
-    /// Resume contract (O7): resolves `cursor` against the ring and the
+    /// Resume contract: resolves `cursor` against the ring and the
     /// session head (`next_seq`), then registers a new bounded live queue in
     /// the SAME synchronous step — so replay ∪ live is exactly-once. A
     /// rejected cursor (`Resync`/`InvalidCursor`) gets no live stream.
@@ -271,7 +271,7 @@ mod tests {
         assert_eq!(all, vec![0, 2]);
     }
 
-    /// (e) P1-6: cursor == oldest_retained - 1 replays GAPLESSLY because the
+    /// (e) cursor == oldest_retained - 1 replays GAPLESSLY because the
     /// floor is the evicted-durable watermark, not the oldest retained seq.
     #[test]
     fn cursor_at_oldest_retained_minus_one_still_replays_gaplessly() {
@@ -301,7 +301,7 @@ mod tests {
         assert!(reply.live.is_none(), "rejected cursors get no live stream");
     }
 
-    /// (c) The five pinned resume cases (O7 cursor semantics).
+    /// (c) The five pinned resume cases.
     #[tokio::test]
     async fn the_five_resume_cases_behave_as_pinned() {
         let mut bus = SessionBus::default();

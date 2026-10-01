@@ -1,34 +1,38 @@
-//! Session manager (todo 6): a registry + router over per-session sequencer
+//! Session manager: a registry + router over per-session sequencer
 //! and runtime handles. It processes NO events: it mints sessions (sequencer
 //! spawned FIRST, `session.start` published, THEN the runtime task), answers
 //! create/get, and drives lifecycle transitions. Teardown fires the
 //! sequencer's `CloseSession` fence — the SEQUENCER owns emitting
 //! `session.end` + assigning `final_seq`; the manager never subscribes to or
 //! parses events. The closed session is retained as a bounded pool of
-//! [`Tombstone`] slots (P1-3: a reconnect terminates cleanly instead of 404
+//! [`Tombstone`] slots (a reconnect terminates cleanly instead of 404
 //! mid-race; the OLDEST tombstone is evicted once [`MAX_TOMBSTONES`] is
 //! exceeded, so create/stop churn cannot grow the registry unboundedly).
 //!
-//! Lock discipline (ticket 05 Q4): the registry is a `std::sync::Mutex`
+//! Two notions of "gone", which are NOT the same thing:
+//!
+//! - Runtime stopped: the in-memory actor and sequencer no longer exist, so
+//!   nothing can be posted to the session. A [`Tombstone`] may still answer
+//!   `GET /v1/sessions/:id` ("stopped" at `final_seq`) and a late SSE
+//!   reconnect (it replays the retained durable history through
+//!   `session.end`, then ends). A tombstone is bounded and lives only in
+//!   memory: after eviction or a process restart the id is unknown here.
+//! - Conversation resumable: the SQLite store ([`crate::server::store`]) holds
+//!   the conversation. `POST /v1/sessions` with `resume` rebuilds a fresh
+//!   actor and sequencer under the SAME id, continuing at `last_seq + 1`.
+//!   This works from a tombstone or from disk alone.
+//!
+//! The registry conflates them in one place: `GET /v1/sessions/:id` and the
+//! SSE route consult only the in-memory registry, so a conversation that is
+//! resumable but has no tombstone (evicted, or from before a restart) answers
+//! 404 even though `resume` would succeed. "Unknown here" does not mean
+//! "not resumable".
+//!
+//! Lock discipline: the registry is a `std::sync::Mutex`
 //! whose critical sections are short and purely synchronous. Every `.await`
 //! happens AFTER the guard is dropped — clone the [`SessionHandle`] (its
 //! `mpsc::Sender` and [`Sequencer`] are `Clone`), release the lock, THEN
 //! await. clippy's `await_holding_lock` lint enforces this.
-//!
-//! DEFERRAL (todo 7 -> todo 8, explicit): a tombstone retains `final_seq`,
-//! workspace, and model ONLY. The plan line "tombstone retains the ring
-//! snapshot plus eviction watermark so an in-flight reconnect replays
-//! through final_seq" describes TODO 8's reconnect-after-final_seq
-//! behavior: SSE resume (`Last-Event-ID`) is what consumes that. Until
-//! todo 8 lands, a reconnect to a stopped session is answered from the
-//! tombstone by GET ("stopped" at final_seq) and SSE streaming targets
-//! return 404.
-//! `tests/server_messages.rs::stopped_session_answers_get_but_routing_is_gone_deferral_pin`
-//! pins this so the deferral is visible, not silent.
-//!
-//! allow: SIZE_OK — ticket 05's approved module map fixes the file set
-//! (mod/routes/sse/session); the manager's registry + lifecycle +
-//! actor construction must stay in this one file.
 
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
@@ -71,13 +75,13 @@ const TEARDOWN_AWAIT_CAP: Duration = Duration::from_secs(10);
 /// A session id on the wire and in the registry.
 pub type SessionId = Ulid;
 
-/// Synchronously-readable lifecycle state of a LIVE registry entry (P1-2).
+/// Synchronously-readable lifecycle state of a LIVE registry entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lifecycle {
     /// Accepts commands and subscriptions.
     Active,
     /// Teardown started (stop/shutdown): new commands + subscriptions are
-    /// rejected from here on (todo 7 consumes this).
+    /// rejected from here on.
     Stopping,
 }
 
@@ -85,7 +89,7 @@ pub enum Lifecycle {
 /// so no lock is ever held across an await.
 #[derive(Clone)]
 pub struct SessionHandle {
-    /// Bounded per-actor command transport (todo 7 posts here).
+    /// Bounded per-actor command transport (message routes post here).
     pub inbox_tx: mpsc::Sender<Command>,
     /// The session's ONE authoritative event sequencer.
     pub sequencer: Sequencer,
@@ -93,7 +97,7 @@ pub struct SessionHandle {
     pub session_cancel: CancellationToken,
     /// The runtime task's join handle, take-once: teardown awaits it so the
     /// interrupted turn's events are sequenced BEFORE the `session.end`
-    /// fence (ticket 03). Shared so the registry's handle clones stay
+    /// fence. Shared so the registry's handle clones stay
     /// `Clone`; the fence races to take the same `Option`.
     pub runtime_task: Arc<Mutex<Option<tokio::task::JoinHandle<AgentActor>>>>,
     /// Always `agent:main` this slice (the single root actor).
@@ -126,11 +130,9 @@ impl std::fmt::Debug for SessionHandle {
 /// slot is replaced.
 #[derive(Clone, Debug)]
 pub struct Tombstone {
-    /// The session's last seq: the head observed at close time — the same
-    /// seq the sequencer's CloseSession fence deterministically assigns to
-    /// `session.end` (one more than the last emitted event). The sequencer
-    /// owns the event; this is the manager's lock-free estimate of it (for
-    /// an idle session it is exact; todo 7's stop flow supersedes it).
+    /// The session's last seq: the seq the sequencer's CloseSession fence
+    /// actually assigned to `session.end` (read from the fence reply, or off
+    /// the terminal tail when the runtime fenced itself).
     pub final_seq: u64,
     pub workspace: PathBuf,
     pub model: String,
@@ -168,7 +170,7 @@ enum SummarySource {
     },
 }
 
-/// Frozen `GET /v1/sessions/:id` body (ticket 04 Q3).
+/// Frozen `GET /v1/sessions/:id` body.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionSummary {
     pub session_id: String,
@@ -308,7 +310,7 @@ impl AppState {
 
     /// A clone of the LIVE handle, gated on the lifecycle: `Err(404)` for
     /// unknown ids and tombstones, `Err(409 SessionStopping)` for a
-    /// Stopping session (todo 7's command routes consume this). No lock is
+    /// Stopping session. No lock is
     /// held past the return — the caller awaits only on the clone.
     pub fn routable_handle(&self, id: SessionId) -> Result<SessionHandle, ServerError> {
         match self.lock_sessions().get(&id) {
@@ -386,7 +388,7 @@ impl AppState {
 
     /// The frozen `GET /v1/sessions/:id` summary. Unknown id is a structured
     /// 404; a tombstone answers "stopped" at its recorded `final_seq`.
-    /// `current_seq` = last EMITTED seq (ticket 04 vocabulary): for a live
+    /// `current_seq` = last EMITTED seq: for a live
     /// session it is the sequencer head minus one; for a tombstone it is the
     /// retained `final_seq`.
     pub async fn session_summary(&self, id: SessionId) -> Result<SessionSummary, ServerError> {
@@ -438,9 +440,8 @@ impl AppState {
         })
     }
 
-    /// Ordered teardown of ONE session (todo 7's /stop, shutdown):
-    /// `Stopping` FIRST (so concurrent requests see it), then the ticket-03
-    /// order: cancel the session token (the RUNTIME emits the interrupted
+    /// Ordered teardown of ONE session (`/stop`, shutdown):
+    /// `Stopping` FIRST (so concurrent requests see it), then cancel the session token (the RUNTIME emits the interrupted
     /// `turn.end` + `agent.state{Idle}` from the natural outcome and drops
     /// its inbox receiver), WAIT for the runtime task's teardown to
     /// complete, THEN fire the sequencer's `CloseSession` fence — the
@@ -477,7 +478,7 @@ impl AppState {
         }
     }
 
-    /// Fire the ticket-03 order. The RUNTIME owns the terminal tail: the
+    /// Teardown order. The RUNTIME owns the terminal tail: the
     /// session-token cancel interrupts the actor, the runtime's natural
     /// outcome path emits `turn.end{interrupted}` then `agent.state{Idle}`,
     /// and its `teardown()` fires the CloseSession fence itself, sequencing
@@ -520,7 +521,7 @@ impl AppState {
                 // DEGRADED path (documented): the runtime outlived the cap.
                 // Abort it, REAP it (the abort lands at the task's next
                 // poll; the await proves it can poll/emit no more), then
-                // fence below. The ticket-03 terminal tail
+                // fence below. The terminal tail
                 // (turn.end/agent.state) is lost in this path by
                 // definition; it exists only for a wedged/aborted task.
                 task.abort();
@@ -616,7 +617,7 @@ impl AppState {
     /// Marks a live session `Stopping` under the registry lock.
     /// `Ok(None)` when already Stopping/closed (idempotent); 404 when
     /// unknown. The slot stays in the map until the tombstone replaces it,
-    /// so a concurrent request sees `Stopping` (P1-2) rather than a hole.
+    /// so a concurrent request sees `Stopping` rather than a hole.
     fn mark_stopping(&self, id: SessionId) -> Result<Option<SessionHandle>, ServerError> {
         let mut guard = self.lock_sessions();
         match guard.get_mut(&id) {
@@ -1256,15 +1257,12 @@ mod tests {
         end_seq
     }
 
-    // Given the tombstone contract (defect 3 DEFERRAL to todo 8)
-    // When GET asks a stopped session for its summary and a streaming route
-    //    would ask for events
-    // Then GET answers from the tombstone (stopped @ final_seq) while
-    //     routing stays gone: the CURRENT behavior the todo-8 reconnect
-    //     work must replace (replay-through-final_seq) — pinned here so the
-    //     deferral is visible and testable, not silent.
+    // Given a stopped session
+    // When GET asks for its summary and a command route asks for its handle
+    // Then GET answers from the tombstone (stopped @ final_seq) while the
+    //     handle is gone: a tombstone answers reads, never commands.
     #[tokio::test]
-    async fn stopped_session_answers_get_but_is_not_routable_deferral_pin() {
+    async fn stopped_session_answers_get_but_is_not_routable() {
         let state = AppState::new(config("127.0.0.1:0", false));
         let id = Ulid::new();
         let handle = wedged_runtime_handle();

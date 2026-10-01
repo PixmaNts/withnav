@@ -142,13 +142,13 @@ fn rpassword_prompt(provider: &str) -> anyhow::Result<String> {
     Ok(line.trim().to_string())
 }
 
-/// `run`: a one-shot IN-PROCESS CLIENT of the same core `serve` uses (SPEC
-/// §6.2). It starts the session manager (sequencer + runtime task, NO HTTP
+/// `run`: a one-shot IN-PROCESS CLIENT of the same core `serve` uses.
+/// It starts the session manager (sequencer + runtime task, NO HTTP
 /// server), subscribes to the session's event stream BEFORE posting the
 /// prompt (so no initial `llm.delta` is lost — deltas are not in the replay
 /// ring), renders each event through the `event_to_ui` adapter,
 /// and derives the exit code from the terminal events — NOT from a direct
-/// `run_agent` call (no shortcut, §6.2). Order: create -> subscribe -> post ->
+/// `run_agent` call (no shortcut). Order: create -> subscribe -> post ->
 /// render-until-terminal -> close.
 async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
     use crate::server::session::ServerConfig;
@@ -181,7 +181,7 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
     // reach the runtime.)
     install_sigint_handler(handle.session_cancel.clone());
 
-    // Subscribe BEFORE posting (O5): deltas are live-only, so a late
+    // Subscribe BEFORE posting: deltas are live-only, so a late
     // subscriber would drop the initial streamed text.
     let mut sub = handle
         .sequencer
@@ -354,7 +354,7 @@ fn print_yield(renderer: &mut Renderer, req: &HumanRequest) {
     });
 }
 
-/// Render-behind-a-subscriber adapter (ticket 05, option a): maps a bus event
+/// Render-behind-a-subscriber adapter : maps a bus event
 /// onto the SAME UiEvent the Phase-1 `on_delta` closure + `finish` produced,
 /// so `render.rs` and CLI stdout do not change.
 /// Returns `None` for events with no CLI rendering (session/turn lifecycle,
@@ -493,7 +493,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // --- event_to_ui render-parity (todo 4 deliverable 3) ---
+    // --- event_to_ui render-parity ---
 
     use crate::bus::event::{
         AgentYield as AgentYieldPayload, LlmDelta as LlmDeltaPayload, TurnEnd as TurnEndPayload,

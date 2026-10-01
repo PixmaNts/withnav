@@ -8,5 +8,3 @@ async fn main() -> anyhow::Result<()> {
     let code = dispatch(cli).await?;
     std::process::exit(code);
 }
-
-

@@ -42,7 +42,10 @@ fn pipeline(relative: &str) -> Pipeline {
 /// The pipeline the fixture log was recorded with (the first built-in
 /// default), frozen here so tuning the built-in does not rewrite history.
 fn recorded() -> Pipeline {
-    Pipeline::new(load_candidate(Some(&fixture("fixtures/navigator/replay/recorded"))).expect("recorded pipeline"))
+    Pipeline::new(
+        load_candidate(Some(&fixture("fixtures/navigator/replay/recorded")))
+            .expect("recorded pipeline"),
+    )
 }
 
 /// Scripted instinct: answers per call, in order, recording the states it

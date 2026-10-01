@@ -99,7 +99,7 @@ pub fn save_store(config_dir: &Path, store: AuthStore) -> Result<(), ProviderErr
     if path.exists() {
         check_perms_or_fail(&path)?;
     }
-    
+
     let serialized = serde_json::to_string_pretty(&store)
         .map_err(|e| ProviderError::Auth(format!("failed to serialize auth.json: {e}")))?;
     let path = auth_path(config_dir);
@@ -163,8 +163,7 @@ mod tests {
         std::env::remove_var("RUST_AGENT_TEST_KEY2");
     }
 
-
-    #[test] 
+    #[test]
     fn remove_key_test() {
         let tmp = tempfile::tempdir().unwrap();
         set_key(tmp.path(), "omniroute", "super-secret-value").unwrap();
@@ -172,7 +171,7 @@ mod tests {
         let e = resolve_key(tmp.path(), "omniroute", None).unwrap_err();
         assert!(matches!(e, ProviderError::MissingApiKey));
     }
-    
+
     #[test]
     fn missing_everywhere_returns_missing_api_key() {
         let tmp = tempfile::tempdir().unwrap();

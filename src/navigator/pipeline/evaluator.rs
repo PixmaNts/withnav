@@ -433,6 +433,7 @@ action = "silent"
             since_last_remark_ms: 60_000,
             has_errors: false,
             has_intent: true,
+            has_conversation: false,
         }
     }
 
@@ -445,6 +446,7 @@ action = "silent"
             ("context".to_string(), String::new()),
             ("diagnostics".to_string(), String::new()),
             ("live_state".to_string(), String::new()),
+            ("conversation".to_string(), String::new()),
         ])
     }
 

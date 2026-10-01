@@ -106,7 +106,7 @@ async fn posts_model_state_questions_and_parses_answers() {
         .unwrap();
 
     // The captured answers came back typed.
-    assert_eq!(answers.len(), 4);
+    assert_eq!(answers.len(), 5);
     match answers.get("worth_attention").unwrap() {
         Answer::Noul { noul } => assert!((noul - 0.8).abs() < 1e-9),
         other => panic!("expected noul, got {other:?}"),
@@ -312,6 +312,7 @@ async fn pipeline_over_systemone_end_to_end() {
         since_last_remark_ms: 60_000,
         has_errors: false,
         has_intent: false,
+        has_conversation: false,
     };
     // The built-in default asks 3 questions; the captured fixture answers
     // them (worth 0.8, route cognition, drift 0.54) -> no remark branch
@@ -324,6 +325,7 @@ async fn pipeline_over_systemone_end_to_end() {
                 since_last_remark_ms: 60_000,
                 has_errors: false,
                 has_intent: true,
+                has_conversation: false,
             },
             &vars,
             &client,

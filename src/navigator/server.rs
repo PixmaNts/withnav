@@ -11,7 +11,8 @@
 //! pipeline's templates; `wake_cognition` is logged (nothing shown) while
 //! the cognition layer does not exist.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::time::Instant;
@@ -24,7 +25,9 @@ use tower_lsp_server::{Client, LanguageServer};
 use crate::navigator::commenter::{Diag, RemarkContext, MALFORMED_PREFIX};
 use crate::navigator::config::NavigatorConfig;
 use crate::navigator::document::DocumentState;
-use crate::navigator::log::{excerpt, LogRecord, NavLog, PrefilterRecord, TriggerRecord};
+use crate::navigator::log::{
+    excerpt, now_iso8601, LogRecord, NavLog, PrefilterRecord, TriggerRecord,
+};
 use crate::navigator::pipeline::{
     Action, Pipeline, PipelineError, PipelineSnapshot, TriggerInputs, TriggerKind, NO_REMARK_MS,
 };
@@ -54,6 +57,9 @@ struct Inner {
     /// Latest remark id per uri (feedback targets it).
     last_remark_ids: Mutex<HashMap<String, String>>,
     intent: Mutex<Option<String>>,
+    /// The recent live state per uri: the last few edit summaries each
+    /// `gather` saw, newest last, rendered into `{{live_state}}`.
+    live_state: Mutex<HashMap<String, VecDeque<EditSummary>>>,
     /// The workspace root (pipeline + intent resolution); set at initialize.
     workspace: Mutex<Option<PathBuf>>,
     /// The user-level navigator dir, fixed at construction.
@@ -102,6 +108,7 @@ impl NavigatorBackend {
                 diagnostics: Mutex::new(HashMap::new()),
                 last_remark_ids: Mutex::new(HashMap::new()),
                 intent: Mutex::new(None),
+                live_state: Mutex::new(HashMap::new()),
                 workspace: Mutex::new(deps.workspace),
                 user_dir: deps.user_dir,
                 pipeline: Mutex::new(Pipeline::new(snapshot)),
@@ -160,6 +167,82 @@ fn wake_message(ctx: &TriggerContext, digest: &str) -> String {
     out
 }
 
+/// The first changed line (1-based) and its text in the new document:
+/// where this edit starts and what it says. `(0, "")` when nothing was
+/// inserted (a pure deletion has no new line to quote).
+fn first_changed_line(old: &str, new: &str) -> (usize, String) {
+    let diff = similar::TextDiff::from_lines(old, new);
+    for change in diff.iter_all_changes() {
+        if matches!(change.tag(), similar::ChangeTag::Insert) {
+            if let Some(idx) = change.new_index() {
+                return (idx + 1, change.value().trim_end().to_string());
+            }
+        }
+    }
+    (0, String::new())
+}
+
+/// Renders the live state as plain text: the newest edits first, then the
+/// latest error/warning diagnostics, capped in lines and characters.
+fn render_live_state(
+    live: &HashMap<String, VecDeque<EditSummary>>,
+    diagnostics: &HashMap<String, Vec<Diag>>,
+) -> String {
+    let mut edits: Vec<&EditSummary> = live.values().flat_map(|ring| ring.iter()).collect();
+    edits.sort_by(|a, b| b.ts.cmp(&a.ts));
+    let mut out = String::new();
+    for e in edits.iter().take(LIVE_STATE_EDITS) {
+        let _ = writeln!(
+            out,
+            "{} changed {} line(s) at {} | {}",
+            e.ts, e.changed_lines, e.first_line, e.excerpt
+        );
+    }
+    let mut diags: Vec<String> = Vec::new();
+    for (uri, items) in diagnostics {
+        for d in items {
+            if !matches!(d.severity.as_str(), "error" | "warning") {
+                continue;
+            }
+            diags.push(format!(
+                "{} line {}: [{}] {}",
+                uri.rsplit('/').next().unwrap_or(uri),
+                d.line + 1,
+                d.severity,
+                d.message
+            ));
+            if diags.len() >= LIVE_STATE_DIAGS {
+                break;
+            }
+        }
+        if diags.len() >= LIVE_STATE_DIAGS {
+            break;
+        }
+    }
+    for d in diags {
+        let _ = writeln!(out, "{d}");
+    }
+    excerpt(out.trim_end(), LIVE_STATE_MAX_CHARS)
+}
+
+/// One recorded edit of the live state: when `gather` ran, how many lines
+/// changed, where the first change sits and what that line says.
+struct EditSummary {
+    ts: String,
+    changed_lines: i64,
+    first_line: usize,
+    excerpt: String,
+}
+
+/// Edit summaries kept per uri in the live state.
+const LIVE_STATE_EDITS: usize = 5;
+
+/// Diagnostics lines kept in the live state, in total across uris.
+const LIVE_STATE_DIAGS: usize = 20;
+
+/// Total character cap of the rendered `{{live_state}}`.
+const LIVE_STATE_MAX_CHARS: usize = 1500;
+
 /// One trigger's gathered context: everything the pipeline inputs, the
 /// templates and the log record need.
 struct TriggerContext {
@@ -170,11 +253,14 @@ struct TriggerContext {
     since_last_remark_ms: i64,
     has_errors: bool,
     has_intent: bool,
+    has_conversation: bool,
     intent_text: String,
     language_id: String,
     diff: String,
     context_text: String,
     diagnostics_text: String,
+    conversation_text: String,
+    live_state_text: String,
 }
 
 impl TriggerContext {
@@ -186,7 +272,8 @@ impl TriggerContext {
             ("diff".to_string(), self.diff.clone()),
             ("context".to_string(), self.context_text.clone()),
             ("diagnostics".to_string(), self.diagnostics_text.clone()),
-            ("live_state".to_string(), String::new()),
+            ("live_state".to_string(), self.live_state_text.clone()),
+            ("conversation".to_string(), self.conversation_text.clone()),
         ])
     }
 
@@ -353,6 +440,33 @@ impl Inner {
         // Reuse the prototype's diff/excerpt builders for the {{diff}} and
         // {{context}} template variables.
         let ctx = RemarkContext::build(uri, &language_id, &baseline, &doc_text, Vec::new(), None);
+        // The live state: this trigger's edit summary joins the ring, then
+        // the whole ring plus the diagnostics render as plain text.
+        let (first_line, first_line_text) = first_changed_line(&baseline, &doc_text);
+        let summary = EditSummary {
+            ts: now_iso8601(),
+            changed_lines,
+            first_line,
+            excerpt: excerpt(&first_line_text, 120),
+        };
+        let live_state_text = {
+            let mut live = self.live_state.lock().await;
+            let ring = live.entry(uri.to_string()).or_default();
+            ring.push_back(summary);
+            while ring.len() > LIVE_STATE_EDITS {
+                ring.pop_front();
+            }
+            let diagnostics = self.diagnostics.lock().await;
+            render_live_state(&live, &diagnostics)
+        };
+        // The conversation digest the fast layers judge against: the feed's
+        // bounded view of what the driver and the cognition last agreed.
+        let conversation_text = self
+            .conversation
+            .as_ref()
+            .map(|f| f.digest())
+            .unwrap_or_default();
+        let has_conversation = !conversation_text.trim().is_empty();
         Some(TriggerContext {
             uri: uri.to_string(),
             event: "",
@@ -361,11 +475,14 @@ impl Inner {
             since_last_remark_ms,
             has_errors,
             has_intent,
+            has_conversation,
             intent_text,
             language_id,
             diff: ctx.diff,
             context_text: ctx.text_excerpt,
             diagnostics_text,
+            conversation_text,
+            live_state_text,
         })
     }
 
@@ -396,6 +513,7 @@ impl Inner {
             since_last_remark_ms: ctx.since_last_remark_ms,
             has_errors: ctx.has_errors,
             has_intent: ctx.has_intent,
+            has_conversation: ctx.has_conversation,
         };
         let workspace_str = self
             .workspace
@@ -1009,6 +1127,7 @@ impl Inner {
         self.language_ids.lock().await.remove(&uri);
         self.diagnostics.lock().await.remove(&uri);
         self.last_remark_ids.lock().await.remove(&uri);
+        self.live_state.lock().await.remove(&uri);
         self.client
             .send_notification::<ClearNotification>(ClearParams { uri })
             .await;
@@ -1237,6 +1356,56 @@ mod tests {
             crate::navigator::new_ulid_string(),
             crate::navigator::new_ulid_string()
         );
+    }
+
+    #[test]
+    fn first_changed_line_finds_the_first_insert() {
+        let (line, text) = first_changed_line("a\nb\n", "a\nb\nc\nd\n");
+        assert_eq!(line, 3);
+        assert_eq!(text, "c");
+        // A pure deletion quotes nothing.
+        assert_eq!(first_changed_line("a\nb\n", "a\n"), (0, String::new()));
+        assert_eq!(first_changed_line("a\n", "a\n"), (0, String::new()));
+    }
+
+    #[test]
+    fn live_state_renders_edits_newest_first_and_diagnostics() {
+        let mut live: HashMap<String, VecDeque<EditSummary>> = HashMap::new();
+        let ring = live.entry("file:///ws/a.rs".to_string()).or_default();
+        for (ts, line) in [
+            ("2026-10-01T10:00:00.000Z", 1),
+            ("2026-10-01T10:01:00.000Z", 2),
+        ] {
+            ring.push_back(EditSummary {
+                ts: ts.to_string(),
+                changed_lines: 4,
+                first_line: line,
+                excerpt: "let x = 1;".to_string(),
+            });
+        }
+        let mut diagnostics: HashMap<String, Vec<Diag>> = HashMap::new();
+        diagnostics.insert(
+            "file:///ws/a.rs".to_string(),
+            vec![
+                Diag {
+                    line: 4,
+                    severity: "error".to_string(),
+                    message: "cannot find value `y`".to_string(),
+                },
+                Diag {
+                    line: 9,
+                    severity: "info".to_string(),
+                    message: "unrelated hint".to_string(),
+                },
+            ],
+        );
+        let text = render_live_state(&live, &diagnostics);
+        // Newest edit first.
+        let first = text.lines().next().unwrap();
+        assert!(first.starts_with("2026-10-01T10:01:00.000Z"), "{text}");
+        // Only errors and warnings make it in.
+        assert!(text.contains("[error] cannot find value `y`"), "{text}");
+        assert!(!text.contains("unrelated hint"), "{text}");
     }
 
     #[test]

@@ -29,6 +29,10 @@
       "drift": {
         "type": "noul",
         "instructions": "Does the code drift away from the stated intent?"
+      },
+      "contradicts_conversation": {
+        "type": "noul",
+        "instructions": "Does this change contradict what the driver and the cognition just agreed in the conversation?"
       }
     }
   },
@@ -69,6 +73,10 @@
       "drift": {
         "type": "noul",
         "noul": 0.54
+      },
+      "contradicts_conversation": {
+        "type": "noul",
+        "noul": 0.2
       }
     },
     "usage": {

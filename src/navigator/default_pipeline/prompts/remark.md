@@ -16,4 +16,7 @@ Diagnostics:
 Live state:
 {{live_state}}
 
+Conversation:
+{{conversation}}
+
 Write one concrete, actionable remark about the change above, as a senior pair programmer would say it aloud. If nothing is worth saying, stay silent. Never rewrite code, never produce more than one remark.

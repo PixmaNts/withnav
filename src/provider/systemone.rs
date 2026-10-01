@@ -276,7 +276,7 @@ mod tests {
         .unwrap();
         let parsed: SystemOneResponse =
             serde_json::from_value(fixture["response"].clone()).unwrap();
-        assert_eq!(parsed.answers.len(), 4);
+        assert_eq!(parsed.answers.len(), 5);
         assert_eq!(parsed.usage.unwrap().input_tokens, 454);
     }
 

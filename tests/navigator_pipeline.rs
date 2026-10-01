@@ -126,6 +126,7 @@ fn inputs(changed: i64) -> TriggerInputs {
         since_last_remark_ms: 120_000,
         has_errors: false,
         has_intent: true,
+        has_conversation: false,
     }
 }
 
@@ -138,6 +139,7 @@ fn tvars() -> BTreeMap<String, String> {
         "context",
         "diagnostics",
         "live_state",
+        "conversation",
     ]
     .into_iter()
     .map(|k| (k.to_string(), format!("value-{k}")))
@@ -456,6 +458,78 @@ action = "silent"
     assert_eq!(eval.requested_action.as_str(), "wake_cognition");
 }
 
+/// The built-in wake shape: a contradiction with the conversation wakes
+/// the cognition, but only when a conversation digest exists.
+#[tokio::test]
+async fn contradiction_wakes_only_with_a_conversation() {
+    let toml = r#"
+[instinct]
+model = "instinct"
+
+[[trigger]]
+on = ["save"]
+state = "s.md"
+
+[trigger.questions.drift]
+type = "noul"
+instructions = "Drift?"
+
+[trigger.questions.contradicts_conversation]
+type = "noul"
+instructions = "Does this change contradict what the driver and the cognition just agreed in the conversation?"
+
+[[trigger.branch]]
+when = "(has_intent && drift > 0.8) || (has_conversation && contradicts_conversation > 0.8)"
+action = "wake_cognition"
+
+[[trigger.branch]]
+when = "true"
+action = "silent"
+"#;
+    let pipeline = Pipeline::new(snapshot_with(toml).unwrap());
+    let model = FakeModel {
+        answers: BTreeMap::from([
+            ("drift".to_string(), Answer::Noul { noul: 0.1 }),
+            (
+                "contradicts_conversation".to_string(),
+                Answer::Noul { noul: 0.95 },
+            ),
+        ]),
+    };
+    // No intent, no conversation: the contradiction alone wakes nobody.
+    let mut i = inputs(0);
+    i.has_intent = false;
+    i.has_conversation = false;
+    let eval = pipeline
+        .evaluate(
+            TriggerKind::Save,
+            i,
+            &tvars(),
+            &model,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(eval.requested_action.as_str(), "silent");
+
+    // A conversation digest exists: the same answer wakes the cognition.
+    let mut i = inputs(0);
+    i.has_intent = false;
+    i.has_conversation = true;
+    let eval = pipeline
+        .evaluate(
+            TriggerKind::Save,
+            i,
+            &tvars(),
+            &model,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(eval.requested_action.as_str(), "wake_cognition");
+    assert_eq!(eval.branch_index, Some(0));
+}
+
 #[tokio::test]
 async fn evaluation_carries_rendered_state_and_template_inputs() {
     let pipeline = Pipeline::new(snapshot_with(BASE).unwrap());
@@ -488,6 +562,10 @@ fn builtin_default_pipeline_loads_and_is_the_spec_shape() {
     assert_eq!(triggers[0].on.len(), 2);
     assert_eq!(triggers[0].prefilters.min_changed_lines, 3);
     assert_eq!(triggers[0].prefilters.cooldown_ms, 45_000);
+    assert_eq!(triggers[0].questions.len(), 4);
+    assert!(triggers[0]
+        .questions
+        .contains_key("contradicts_conversation"));
     let specs = triggers[0].branch_specs();
     assert_eq!(specs.len(), 3);
     assert_eq!(specs[0].0.as_str(), "wake_cognition");

@@ -1,12 +1,12 @@
 //! `{{var}}` template substitution: substitution only, no logic. The
 //! variable list is fixed by the spec: `file`, `language`, `intent`,
-//! `diff`, `context`, `diagnostics`, `live_state`. Unknown `{{name}}`
-//! fails validation.
+//! `diff`, `context`, `diagnostics`, `live_state`, `conversation`. Unknown
+//! `{{name}}` fails validation.
 
 use super::PipelineError;
 
 /// The template variables, in spec order.
-pub const TEMPLATE_VARIABLES: [&str; 7] = [
+pub const TEMPLATE_VARIABLES: [&str; 8] = [
     "file",
     "language",
     "intent",
@@ -14,6 +14,7 @@ pub const TEMPLATE_VARIABLES: [&str; 7] = [
     "context",
     "diagnostics",
     "live_state",
+    "conversation",
 ];
 
 /// Validates that a template only references known variables.
@@ -88,6 +89,7 @@ mod tests {
             ("context".to_string(), "1: fn a()".to_string()),
             ("diagnostics".to_string(), String::new()),
             ("live_state".to_string(), String::new()),
+            ("conversation".to_string(), String::new()),
         ])
     }
 

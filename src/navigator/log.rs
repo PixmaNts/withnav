@@ -192,7 +192,7 @@ pub fn excerpt(text: &str, max_chars: usize) -> String {
 }
 
 /// UTC timestamp with millisecond precision, no external dep.
-fn now_iso8601() -> String {
+pub(crate) fn now_iso8601() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();

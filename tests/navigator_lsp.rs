@@ -994,6 +994,41 @@ async fn wake_cognition_without_a_feed_logs_cognition_unavailable() {
     assert_eq!(trigger["reason"], "cognition_unavailable");
 }
 
+/// With a `ConversationFeed` holding a digest (an active session with
+/// driver messages), the logged trigger's `template_inputs.conversation`
+/// carries that digest: the instinct and the metacognition see what the
+/// driver and the cognition agreed.
+#[tokio::test(start_paused = true)]
+async fn trigger_template_inputs_carry_the_conversation_digest() {
+    let mock = MockCommenter::new(vec![Answer::Silent]);
+    let tmp = tempfile::tempdir().unwrap();
+    let log_path = tmp.path().join("nav.jsonl");
+    let (feed, _posted) = feed_with_active_session().await;
+    let deps = NavigatorDeps::new(Arc::new(mock), log_path.clone()).with_conversation(feed);
+    let mut client = spawn_server(deps);
+
+    client.initialize(json!({})).await;
+    client.did_open(URI, &base_text(), 1).await;
+    client.did_change(URI, &big_edit(), 2).await;
+    tokio::time::advance(Duration::from_millis(3001)).await;
+    client.expect_status("idle").await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let records = std::fs::read_to_string(log_path).unwrap();
+    let trigger: Value = records
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .find(|v: &Value| v["kind"] == "trigger")
+        .expect("a trigger record");
+    let conversation = trigger["template_inputs"]["conversation"]
+        .as_str()
+        .expect("conversation template input");
+    assert!(
+        conversation.contains("driver: add an auth remove command"),
+        "the digest: {conversation}"
+    );
+}
+
 /// Without `server_info` in the deps, NO `navigator/serverInfo` ever leaves
 /// the server (the chat stays unannounced when its server failed to bind).
 #[tokio::test(start_paused = true)]

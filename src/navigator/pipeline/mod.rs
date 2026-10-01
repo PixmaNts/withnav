@@ -196,6 +196,9 @@ pub struct TriggerInputs {
     pub has_errors: bool,
     /// Whether an intent record (or session intent) exists.
     pub has_intent: bool,
+    /// Whether the conversation feed holds a digest (an active
+    /// conversation with at least one exchange).
+    pub has_conversation: bool,
 }
 
 /// Large "never" for `since_last_remark_ms` when no remark was delivered.

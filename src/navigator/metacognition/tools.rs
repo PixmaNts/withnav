@@ -1,0 +1,136 @@
+//! The read-only tools offered to the metacognition: their definitions, their
+//! execution (open buffers win over disk) and `slice_buffer`.
+
+use std::path::Path;
+use std::time::Instant;
+
+use tokio_util::sync::CancellationToken;
+
+use super::{LlmCommenter, RemarkContext};
+
+/// Cap on each tool output sent back to the model.
+const TOOL_OUTPUT_MAX_CHARS: usize = 4000;
+
+impl LlmCommenter {
+    /// Executes one tool call from the model: `read` (with the open-buffer
+    /// override) or `grep`, through the shared `Tool` implementations.
+    /// Relative paths anchor to the workspace first, so the model may pass
+    /// either form.
+    pub(super) async fn execute_tool(
+        &self,
+        ctx: &RemarkContext,
+        tc: &crate::provider::ToolCall,
+    ) -> String {
+        use crate::tools::native::{GrepTool, ReadTool};
+        use crate::tools::{Tool, ToolContext};
+
+        let started = Instant::now();
+        let Some(workspace) = ctx.workspace.clone() else {
+            return "error: no workspace; tools are unavailable".to_string();
+        };
+        let mut args = tc.args.clone();
+        if let Some(path) = args.get("path").and_then(|p| p.as_str()) {
+            if !path.starts_with('/') {
+                args["path"] =
+                    serde_json::Value::String(workspace.join(path).to_string_lossy().into_owned());
+            }
+        }
+        // Reading requires the root in `validate_path`'s roots; the
+        // metacognition never writes, so the workspace root is the only
+        // root it gets.
+        let cx = ToolContext {
+            workspace: workspace.clone(),
+            writable_roots: vec![workspace.clone()],
+        };
+        let output = match tc.name.as_str() {
+            "read" => {
+                // An open buffer wins over disk: unsaved edits are what
+                // the driver actually sees.
+                if let Some(buffer) = args
+                    .get("path")
+                    .and_then(|p| p.as_str())
+                    .and_then(|p| ctx.open_buffers.get(Path::new(p)))
+                {
+                    let offset = args.get("offset").and_then(|v| v.as_u64());
+                    let limit = args.get("limit").and_then(|v| v.as_u64());
+                    Ok(crate::tools::ToolResult::ok(slice_buffer(
+                        buffer, offset, limit,
+                    )))
+                } else {
+                    ReadTool.call(args, CancellationToken::new(), &cx).await
+                }
+            }
+            "grep" => GrepTool.call(args, CancellationToken::new(), &cx).await,
+            other => Ok(crate::tools::ToolResult::error(
+                "unknown_tool",
+                format!("no such tool: {other}"),
+            )),
+        };
+        let text = match output {
+            Ok(result) => match &result.error {
+                Some(err) => format!("error[{}]: {}", err.code, err.message),
+                None => result.output,
+            },
+            Err(e) => format!("error: {e}"),
+        };
+        self.log_call("metacognition_tool", &tc.name, started, false);
+        crate::navigator::log::excerpt(&text, TOOL_OUTPUT_MAX_CHARS)
+    }
+}
+
+/// `read` tool definition with workspace-anchored path hint.
+pub(super) fn tool_def_read(ws: &Path) -> crate::provider::openai::ToolDef {
+    crate::provider::openai::ToolDef::function(
+        "read",
+        format!(
+            "Read a file (a bounded line range) under {}. Reports the file's lines.",
+            ws.display()
+        ),
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "absolute path, or relative to the workspace"},
+                "offset": {"type": "integer", "description": "1-indexed start line"},
+                "limit": {"type": "integer", "description": "max lines to read"}
+            },
+            "required": ["path"]
+        }),
+    )
+}
+
+/// `grep` tool definition.
+pub(super) fn tool_def_grep(ws: &Path) -> crate::provider::openai::ToolDef {
+    crate::provider::openai::ToolDef::function(
+        "grep",
+        format!(
+            "Search file contents for a regex pattern under {}.",
+            ws.display()
+        ),
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string", "description": "file or directory; default the workspace"}
+            },
+            "required": ["pattern"]
+        }),
+    )
+}
+
+/// Slices an open buffer like `ReadTool` slices a file: 1-indexed offset,
+/// optional limit, joined lines. Public for tests.
+pub fn slice_buffer(text: &str, offset: Option<u64>, limit: Option<u64>) -> String {
+    if offset.is_none() && limit.is_none() {
+        return text.to_string();
+    }
+    let start = offset.unwrap_or(1).max(1) as usize - 1;
+    let lines: Vec<&str> = text.lines().collect();
+    let end = match limit {
+        Some(l) => (start + l as usize).min(lines.len()),
+        None => lines.len(),
+    };
+    if start >= lines.len() {
+        return String::new();
+    }
+    lines[start..end].join("\n")
+}

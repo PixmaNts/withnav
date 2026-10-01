@@ -1,9 +1,17 @@
 //! The metacognition layer: the single [`Metacognition`] implementation
 //! ([`LlmCommenter`], a fast chat model with read-only tools) and the
 //! producer of the reflex context. Tests script the seam with a mock.
+//!
+//! This file owns the commenter and its remark loop; `answer` parses the
+//! model's reply, `tools` runs the read/grep tools, `reflex_context` holds
+//! the reflex-context producer.
+
+mod answer;
+mod reflex_context;
+mod tools;
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -14,6 +22,10 @@ use crate::navigator::document::{text_around_changes, unified_diff};
 use crate::navigator::log::{LogRecord, NavLog};
 use crate::navigator::lsp::protocol::Remark;
 use crate::navigator::ports::{Metacognition, ModelError};
+
+pub use answer::{parse_answer, ParsedAnswer};
+pub use tools::slice_buffer;
+use tools::{tool_def_grep, tool_def_read};
 
 /// Everything the commenter sees about a document.
 #[derive(Debug, Clone)]
@@ -79,94 +91,6 @@ impl RemarkContext {
     }
 }
 
-/// What the metacognition's answer parsed to: a remark, explicit silence,
-/// or output that violates the prompt contract (non-empty but unparseable).
-/// Malformed output is not silence: the log records it as `malformed` so
-/// prompt regressions are visible instead of silently eaten.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ParsedAnswer {
-    Remark(Remark),
-    Silent,
-    Malformed,
-}
-
-/// Parses the model's answer per the prompt contract: JSON only, either
-/// `{"silent": true}` or `{"line": <1-based>, "text": "..."}`. Tolerates code
-/// fences and surrounding prose; empty output counts as silence.
-pub fn parse_answer(raw: &str) -> ParsedAnswer {
-    if raw.trim().is_empty() {
-        return ParsedAnswer::Silent;
-    }
-    let Some(json_str) = extract_json(raw) else {
-        return ParsedAnswer::Malformed;
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str.trim()) else {
-        return ParsedAnswer::Malformed;
-    };
-    if v.get("silent").and_then(|s| s.as_bool()).unwrap_or(false) {
-        return ParsedAnswer::Silent;
-    }
-    let Some(line) = v.get("line").and_then(|l| l.as_u64()) else {
-        return ParsedAnswer::Malformed;
-    };
-    if line == 0 {
-        return ParsedAnswer::Malformed;
-    }
-    let Some(text) = v.get("text").and_then(|t| t.as_str()) else {
-        return ParsedAnswer::Malformed;
-    };
-    if text.trim().is_empty() {
-        return ParsedAnswer::Malformed;
-    }
-    match u32::try_from(line - 1) {
-        Ok(line0) => ParsedAnswer::Remark(Remark {
-            // model speaks 1-based; wire speaks 0-based
-            line: line0,
-            text: text.trim().to_string(),
-        }),
-        Err(_) => ParsedAnswer::Malformed,
-    }
-}
-
-/// Extracts the innermost balanced JSON object from prose / code fences.
-fn extract_json(raw: &str) -> Option<&str> {
-    let trimmed = raw.trim();
-    // Direct hit first.
-    if trimmed.starts_with('{') && serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
-        return Some(trimmed);
-    }
-    // Otherwise find the first balanced { ... } and try it.
-    let bytes = trimmed.as_bytes();
-    let start = bytes.iter().position(|&b| b == b'{')?;
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    for (i, &b) in bytes.iter().enumerate().skip(start) {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if b == b'\\' {
-                escaped = true;
-            } else if b == b'"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match b {
-            b'"' => in_string = true,
-            b'{' => depth += 1,
-            b'}' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(&trimmed[start..=i]);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
 /// The system prompt framing the navigator. Public for tests.
 pub const NAVIGATOR_SYSTEM_PROMPT: &str = "\
 You are a senior pair-programming navigator watching over the driver's shoulder.
@@ -207,8 +131,6 @@ const MAX_TOOL_ROUNDS: usize = 2;
 /// Cap on the tokens of each metacognition round: a remark is a sentence or
 /// two, so a runaway generation is cost with no value.
 const REMARK_MAX_TOKENS: u64 = 1024;
-/// Cap on each tool output sent back to the model.
-const TOOL_OUTPUT_MAX_CHARS: usize = 4000;
 
 impl LlmCommenter {
     pub fn new(
@@ -432,206 +354,6 @@ impl LlmCommenter {
             }
         }
     }
-
-    /// Executes one tool call from the model: `read` (with the open-buffer
-    /// override) or `grep`, through the shared `Tool` implementations.
-    /// Relative paths anchor to the workspace first, so the model may pass
-    /// either form.
-    async fn execute_tool(&self, ctx: &RemarkContext, tc: &crate::provider::ToolCall) -> String {
-        use crate::tools::native::{GrepTool, ReadTool};
-        use crate::tools::{Tool, ToolContext};
-
-        let started = Instant::now();
-        let Some(workspace) = ctx.workspace.clone() else {
-            return "error: no workspace; tools are unavailable".to_string();
-        };
-        let mut args = tc.args.clone();
-        if let Some(path) = args.get("path").and_then(|p| p.as_str()) {
-            if !path.starts_with('/') {
-                args["path"] =
-                    serde_json::Value::String(workspace.join(path).to_string_lossy().into_owned());
-            }
-        }
-        // Reading requires the root in `validate_path`'s roots; the
-        // metacognition never writes, so the workspace root is the only
-        // root it gets.
-        let cx = ToolContext {
-            workspace: workspace.clone(),
-            writable_roots: vec![workspace.clone()],
-        };
-        let output = match tc.name.as_str() {
-            "read" => {
-                // An open buffer wins over disk: unsaved edits are what
-                // the driver actually sees.
-                if let Some(buffer) = args
-                    .get("path")
-                    .and_then(|p| p.as_str())
-                    .and_then(|p| ctx.open_buffers.get(Path::new(p)))
-                {
-                    let offset = args.get("offset").and_then(|v| v.as_u64());
-                    let limit = args.get("limit").and_then(|v| v.as_u64());
-                    Ok(crate::tools::ToolResult::ok(slice_buffer(
-                        buffer, offset, limit,
-                    )))
-                } else {
-                    ReadTool.call(args, CancellationToken::new(), &cx).await
-                }
-            }
-            "grep" => GrepTool.call(args, CancellationToken::new(), &cx).await,
-            other => Ok(crate::tools::ToolResult::error(
-                "unknown_tool",
-                format!("no such tool: {other}"),
-            )),
-        };
-        let text = match output {
-            Ok(result) => match &result.error {
-                Some(err) => format!("error[{}]: {}", err.code, err.message),
-                None => result.output,
-            },
-            Err(e) => format!("error: {e}"),
-        };
-        self.log_call("metacognition_tool", &tc.name, started, false);
-        crate::navigator::log::excerpt(&text, TOOL_OUTPUT_MAX_CHARS)
-    }
-}
-
-/// The system prompt for the reflex-context refresh.
-const REFLEX_CONTEXT_PROMPT: &str = include_str!("reflex_context_prompt.md");
-/// The refresh is capped well under the remark budget's tool loop: one
-/// short plain call.
-const REFLEX_CONTEXT_BUDGET: Duration = Duration::from_secs(15);
-const REFLEX_CONTEXT_MAX_TOKENS: u64 = 300;
-
-impl crate::navigator::ports::ReflexContextModel for LlmCommenter {
-    fn refresh<'a>(
-        &'a self,
-        request: &'a crate::navigator::ports::ReflexContextRequest,
-    ) -> BoxFuture<'a, Result<String, ModelError>> {
-        use crate::provider::openai::{build_request, ChatMessage, ChatRequest, StreamOptions};
-        use crate::provider::{start_and_consume, StreamDelta};
-
-        Box::pin(async move {
-            let user = format!(
-                "File: {}\nLanguage: {}\n\nIntent on record:\n{}\n\nRecent conversation:\n{}\n\n\
-                 Excerpt around the cursor:\n{}\n",
-                request.file,
-                request.language_id,
-                or_none(&request.intent),
-                or_none(&request.conversation),
-                request.excerpt,
-            );
-            let chat = ChatRequest {
-                model: self.resolved.model.model.clone(),
-                messages: vec![
-                    ChatMessage::System {
-                        content: REFLEX_CONTEXT_PROMPT.to_string(),
-                    },
-                    ChatMessage::User { content: user },
-                ],
-                tools: Vec::new(),
-                stream: true,
-                stream_options: Some(StreamOptions {
-                    include_usage: true,
-                }),
-                max_tokens: self
-                    .resolved
-                    .model
-                    .max_output_tokens
-                    .min(Some(REFLEX_CONTEXT_MAX_TOKENS))
-                    .or(Some(REFLEX_CONTEXT_MAX_TOKENS)),
-                temperature: Some(0.2),
-            };
-            let client = self
-                .clients
-                .get(&self.resolved.provider_name, &self.resolved.provider)?;
-            let cancel = CancellationToken::new();
-            let call = async {
-                let http = build_request(&client, &self.resolved.provider, &self.api_key, &chat);
-                let response = http
-                    .send()
-                    .await
-                    .map_err(crate::error::ProviderError::Http)?;
-                let mut noop = |_d: StreamDelta| {};
-                start_and_consume(response, &cancel, &mut noop)
-                    .await
-                    .map_err(ModelError::Provider)
-            };
-            match tokio::time::timeout(REFLEX_CONTEXT_BUDGET, call).await {
-                Ok(msg) => Ok(msg?.text.trim().to_string()),
-                Err(_) => {
-                    cancel.cancel();
-                    Err(ModelError::Provider(
-                        crate::error::ProviderError::Canceled { partial: None },
-                    ))
-                }
-            }
-        })
-    }
-}
-
-fn or_none(text: &str) -> &str {
-    if text.trim().is_empty() {
-        "(none)"
-    } else {
-        text
-    }
-}
-
-/// `read` tool definition with workspace-anchored path hint.
-fn tool_def_read(ws: &Path) -> crate::provider::openai::ToolDef {
-    crate::provider::openai::ToolDef::function(
-        "read",
-        format!(
-            "Read a file (a bounded line range) under {}. Reports the file's lines.",
-            ws.display()
-        ),
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "absolute path, or relative to the workspace"},
-                "offset": {"type": "integer", "description": "1-indexed start line"},
-                "limit": {"type": "integer", "description": "max lines to read"}
-            },
-            "required": ["path"]
-        }),
-    )
-}
-
-/// `grep` tool definition.
-fn tool_def_grep(ws: &Path) -> crate::provider::openai::ToolDef {
-    crate::provider::openai::ToolDef::function(
-        "grep",
-        format!(
-            "Search file contents for a regex pattern under {}.",
-            ws.display()
-        ),
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "pattern": {"type": "string"},
-                "path": {"type": "string", "description": "file or directory; default the workspace"}
-            },
-            "required": ["pattern"]
-        }),
-    )
-}
-
-/// Slices an open buffer like `ReadTool` slices a file: 1-indexed offset,
-/// optional limit, joined lines. Public for tests.
-pub fn slice_buffer(text: &str, offset: Option<u64>, limit: Option<u64>) -> String {
-    if offset.is_none() && limit.is_none() {
-        return text.to_string();
-    }
-    let start = offset.unwrap_or(1).max(1) as usize - 1;
-    let lines: Vec<&str> = text.lines().collect();
-    let end = match limit {
-        Some(l) => (start + l as usize).min(lines.len()),
-        None => lines.len(),
-    };
-    if start >= lines.len() {
-        return String::new();
-    }
-    lines[start..end].join("\n")
 }
 
 impl Metacognition for LlmCommenter {
@@ -647,77 +369,6 @@ impl Metacognition for LlmCommenter {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_valid_remark() {
-        assert_eq!(
-            parse_answer(r#"{"line": 12, "text": "careful, missing error path"}"#),
-            ParsedAnswer::Remark(Remark {
-                line: 11,
-                text: "careful, missing error path".to_string()
-            })
-        );
-    }
-
-    #[test]
-    fn parses_silent() {
-        assert_eq!(parse_answer(r#"{"silent": true}"#), ParsedAnswer::Silent);
-    }
-
-    #[test]
-    fn garbage_is_malformed_not_silence() {
-        assert_eq!(
-            parse_answer("I think you should refactor this"),
-            ParsedAnswer::Malformed
-        );
-        assert_eq!(parse_answer(""), ParsedAnswer::Silent);
-    }
-
-    #[test]
-    fn json_without_silent_or_line_is_malformed() {
-        assert_eq!(
-            parse_answer(r#"{"silent": false}"#),
-            ParsedAnswer::Malformed
-        );
-        assert_eq!(parse_answer(r#"{"other": 1}"#), ParsedAnswer::Malformed);
-    }
-
-    #[test]
-    fn parse_model_answer_folds_malformed_to_silence() {
-        assert_eq!(parse_answer("nope"), ParsedAnswer::Malformed);
-        assert_eq!(
-            parse_answer(r#"{"line": 0, "text": "x"}"#),
-            ParsedAnswer::Malformed
-        );
-        assert_eq!(
-            parse_answer(r#"{"line": 1, "text": "  "}"#),
-            ParsedAnswer::Malformed
-        );
-    }
-
-    #[test]
-    fn json_in_code_fences_is_parsed() {
-        let raw = "```json\n{\"line\": 3, \"text\": \"off by one\"}\n```";
-        assert_eq!(
-            parse_answer(raw),
-            ParsedAnswer::Remark(Remark {
-                line: 2,
-                text: "off by one".to_string()
-            })
-        );
-    }
-
-    #[test]
-    fn json_wrapped_in_prose_is_parsed() {
-        let raw = "Here is my answer:\n{\"line\": 7, \"text\": \"edge case\"}\nHope it helps";
-        assert_eq!(
-            parse_answer(raw),
-            ParsedAnswer::Remark(Remark {
-                line: 6,
-                text: "edge case".to_string()
-            })
-        );
-    }
 
     #[test]
     fn system_prompt_forbids_code_and_encourages_silence() {

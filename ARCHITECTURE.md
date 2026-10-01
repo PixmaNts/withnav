@@ -46,7 +46,7 @@ Dependencies point down this list. A module never imports one above it.
 | `runtime/` | the shared state behind the LSP: idle timers, the conversation-turn listener, trigger evaluation (`trigger.rs`), remark and wake delivery (`delivery.rs`), reflex-facing calls (`inline.rs`) |
 | `document.rs` | one `OpenDocument` per uri (text, baseline, version, diagnostics, edit history) and the `snapshot` a trigger reads |
 | `reflex.rs` | inline suggestions: position conversion, prefix and suffix caps, debounce, staleness, and the reflex-context cache |
-| `metacognition.rs` | the one `Metacognition` implementation: remark prompt, read/grep tool loop with its budget, reflex-context producer |
+| `metacognition/` | the one `Metacognition` implementation: remark prompt and tool loop with its budget (`mod.rs`), answer parsing (`answer.rs`), the read/grep tools (`tools.rs`), the reflex-context producer and its prompt (`reflex_context.rs`) |
 | `pipeline/` | the decision pipeline: TOML model (`mod.rs`), load-time validation and compiled conditions (`validator.rs`), snapshot and file resolution (`snapshot.rs`), `{{var}}` templates (`templates.rs`), evaluation and branch selection (`evaluator.rs`) |
 | `replay/` | frozen-trigger replay of the log against a candidate pipeline, reusing the pipeline's prefilters and branch selection (`mod.rs`); log parsing (`log.rs`); the report and its text rendering (`report.rs`) |
 | `log.rs` | the JSONL decision log: record types, `PendingTrigger::finish` (the only writer of trigger records) |
@@ -106,10 +106,3 @@ starts fresh.
   not copy a harness into a new test file.
 - Keep a production file under ~600 lines. Past that, split by responsibility, not by size.
 - Comments name the domain reason and dated evidence; never a ticket or plan id.
-
-## Known debt
-
-Tracked in [`.scratch/refactor/plan.md`](.scratch/refactor/plan.md):
-
-- `navigator/replay.rs` (about 860 lines) and `navigator/metacognition.rs` (about 650) exceed the
-  size rule.

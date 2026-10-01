@@ -35,7 +35,6 @@ pub struct Cli {
 pub enum Commands {
     Run(RunArgs),
     Serve(ServeArgs),
-    Tui,
     Auth(AuthArgs),
 }
 
@@ -95,10 +94,6 @@ pub async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
     match cli.command {
         Commands::Run(args) => run_command(args).await,
         Commands::Serve(args) => serve_command(args).await,
-        Commands::Tui => {
-            println!("not yet implemented (Phase 2/4)");
-            Ok(EXIT_DONE)
-        }
         Commands::Auth(args) => auth_command(args),
     }
 }
@@ -505,10 +500,10 @@ mod tests {
     }
 
     #[test]
-    fn cli_lists_four_subcommands() {
+    fn cli_lists_its_subcommands() {
         let cmd = Cli::command();
         let names: Vec<_> = cmd.get_subcommands().map(|s| s.get_name()).collect();
-        for expected in ["run", "serve", "tui", "auth"] {
+        for expected in ["run", "serve", "auth"] {
             assert!(names.contains(&expected), "missing subcommand: {expected}");
         }
     }

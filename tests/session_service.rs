@@ -107,3 +107,114 @@ async fn service_send_rejects_invalid_content_without_event() {
         "a rejected command sequences nothing"
     );
 }
+
+/// The ordered envelopes `Service::subscribe(id, None)` replays.
+async fn service_replay(
+    server: &common::server::TestServer,
+    id: ulid::Ulid,
+) -> Vec<rust_agent::bus::event::EventEnvelope> {
+    let sub = server.state.subscribe(id, None).await.expect("subscribe");
+    match sub.replay {
+        ResumeOutcome::Replay(events) => events,
+        other => panic!("expected a replay: {other:?}"),
+    }
+}
+
+/// Reads `GET /events` until `count` envelopes arrived, the server ended
+/// the stream, or the budget elapsed.
+async fn http_replay(
+    base: &str,
+    id: ulid::Ulid,
+    count: usize,
+) -> Vec<rust_agent::bus::event::EventEnvelope> {
+    let mut resp = reqwest::get(format!("{base}/v1/sessions/{id}/events"))
+        .await
+        .expect("sse connect");
+    assert_eq!(resp.status(), 200);
+    let mut buf = String::new();
+    let mut events = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while events.len() < count {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(left, resp.chunk()).await {
+            Ok(Ok(Some(chunk))) => buf.push_str(&String::from_utf8_lossy(&chunk)),
+            _ => break,
+        }
+        while let Some(end) = buf.find("\n\n") {
+            let frame: String = buf.drain(..end + 2).collect();
+            let data: Vec<&str> = frame
+                .lines()
+                .filter_map(|line| line.strip_prefix("data:"))
+                .collect();
+            if !data.is_empty() {
+                events.push(serde_json::from_str(data.join("\n").trim()).expect("envelope"));
+            }
+        }
+    }
+    events
+}
+
+// Given a session that ran one scripted turn
+// When `Service::subscribe(id, None)` and the HTTP SSE stream replay it,
+//      live and then after a stop (tombstone)
+// Then both yield the same ordered envelopes, and a stopped session's
+//      subscription has no live receiver
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_subscription_matches_http_replay() {
+    use common::server::{create_session, post_message_ok, TestServer};
+    use common::sse::{http_sse, sse_body};
+
+    let done = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
+    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
+    let id: ulid::Ulid = create_session(&server.base, &server.ws)
+        .await
+        .parse()
+        .expect("ulid");
+    post_message_ok(&server.base, &id.to_string(), "go").await;
+
+    // Wait for the turn to finish.
+    let mut expected = service_replay(&server, id).await;
+    for _ in 0..100 {
+        if expected.iter().any(|e| e.kind == "turn.end") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        expected = service_replay(&server, id).await;
+    }
+    assert!(
+        expected.iter().any(|e| e.kind == "turn.end"),
+        "{expected:?}"
+    );
+
+    // Live session.
+    let live = server.state.subscribe(id, None).await.expect("subscribe");
+    assert!(live.live.is_some(), "a live session has a live receiver");
+    assert_eq!(
+        expected,
+        http_replay(&server.base, id, expected.len()).await
+    );
+
+    // Stopped session: the tombstone replays through `session.end`, then ends.
+    let stop = reqwest::Client::new()
+        .post(format!("{}/v1/sessions/{id}/stop", server.base))
+        .send()
+        .await
+        .expect("stop");
+    assert_eq!(stop.status(), 200);
+    let stopped = server.state.subscribe(id, None).await.expect("subscribe");
+    assert!(stopped.live.is_none(), "a tombstone has no live receiver");
+    let ResumeOutcome::Replay(expected) = stopped.replay else {
+        panic!("a tombstone replays");
+    };
+    assert_eq!(
+        expected.last().map(|e| e.kind.as_str()),
+        Some("session.end")
+    );
+    assert_eq!(expected, http_replay(&server.base, id, usize::MAX).await);
+
+    // An unknown id is not found.
+    assert!(matches!(
+        server.state.subscribe(ulid::Ulid::new(), None).await,
+        Err(rust_agent::error::ServerError::SessionNotFound(_))
+    ));
+}

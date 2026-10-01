@@ -183,9 +183,8 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
 
     // Subscribe BEFORE posting: deltas are live-only, so a late
     // subscriber would drop the initial streamed text.
-    let mut sub = handle
-        .sequencer
-        .subscribe_since(None)
+    let mut sub = state
+        .subscribe(session_id, None)
         .await
         .map_err(|e| anyhow::anyhow!("subscribe failed: {e}"))?;
 
@@ -231,7 +230,7 @@ async fn post_prompt(
 /// UiEvents, plus the stderr line + exit code for interrupted/error) from the
 /// event stream instead of the raw `RunOutcome`.
 async fn render_until_terminal(
-    sub: &mut crate::bus::SubscribeReply,
+    sub: &mut crate::session::Subscription,
     renderer: &mut Renderer,
 ) -> i32 {
     if let crate::bus::ResumeOutcome::Replay(events) = &sub.replay {

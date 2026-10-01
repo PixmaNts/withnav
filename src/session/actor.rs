@@ -10,11 +10,11 @@ use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
 use super::message::accept;
-use super::service::{SessionHandle, SessionId};
+use super::service::{Service, SessionHandle, SessionId};
 use crate::agent::actor::AgentActor;
 use crate::bus::command::{Command, ContentBlock, DeliveryMode};
 use crate::bus::event::{EventKind, SessionStart, ROOT_ACTOR_ID};
-use crate::bus::sequencer::{Candidate, Sequencer};
+use crate::bus::sequencer::Candidate;
 use crate::provider::config::ResolvedModel;
 use crate::provider::openai::ChatMessage;
 use crate::tools::{Registry, ToolContext};
@@ -57,8 +57,8 @@ pub(super) fn wake_poster(
 /// The subscriber task feeding a navigator session's events into the
 /// conversation hub, until the session is cancelled or its stream ends.
 pub(super) fn spawn_feed_watch(
+    service: Service,
     feed: crate::navigator::ConversationFeed,
-    sequencer: Sequencer,
     session_cancel: CancellationToken,
     session_id: SessionId,
 ) {
@@ -68,15 +68,15 @@ pub(super) fn spawn_feed_watch(
         // until the session ends. A slow feed never slows the
         // sequencer: the bus disconnects it and the digest simply
         // stops growing at the tail.
-        let Ok(reply) = sequencer.subscribe_since(None).await else {
+        let Ok(subscription) = service.subscribe(session_id, None).await else {
             return;
         };
-        if let crate::bus::ResumeOutcome::Replay(events) = reply.replay {
+        if let crate::bus::ResumeOutcome::Replay(events) = subscription.replay {
             for event in &events {
                 feed.observe_replayed(event).await;
             }
         }
-        let mut live = match reply.live {
+        let mut live = match subscription.live {
             Some(live) => live,
             None => return,
         };

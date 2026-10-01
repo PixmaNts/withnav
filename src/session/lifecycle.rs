@@ -286,7 +286,7 @@ mod tests {
     use crate::bus::sequencer::Sequencer;
     use crate::bus::SessionBus;
     use crate::session::actor::start_candidate;
-    use crate::session::service::test_config;
+    use crate::session::service::tests::test_config;
     use crate::tools::{Registry, ToolContext};
 
     /// A real, never-driven actor: the stand-in result of the detached

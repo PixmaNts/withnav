@@ -51,6 +51,7 @@ use crate::bus::SessionBus;
 use crate::error::{ConfigError, ServerError};
 use crate::provider::auth;
 use crate::provider::config::{resolve_models_path, ModelsConfig, ResolvedModel};
+use crate::provider::openai::ChatMessage;
 use crate::server::routes::route_message;
 use crate::tools::{Registry, ToolContext};
 
@@ -737,7 +738,7 @@ impl AppState {
             navigator,
         );
         if let Some(loaded) = &resumed {
-            actor.transcript = loaded.transcript.clone();
+            actor.transcript = restore_transcript(&loaded.transcript, navigator);
         }
 
         let next_seq = resumed
@@ -942,16 +943,24 @@ fn build_actor(
         cancel,
     );
     if navigator {
-        // The agent loop always sends its own system contract first; the
-        // navigator role rides as a second system message at the head of the
-        // transcript, so the Phase-1 loop and prompt stay untouched.
-        actor
-            .transcript
-            .push(crate::provider::openai::ChatMessage::System {
-                content: COGNITION_PROMPT.to_string(),
-            });
+        // The navigator role rides as a second system message after the
+        // agent loop's own contract; it is not part of the transcript.
+        actor = actor.with_system_prompt(COGNITION_PROMPT);
     }
     actor
+}
+
+/// The stored transcript for a resumed session. A navigator transcript saved
+/// before the role prompt left the transcript starts with that prompt as a
+/// system message; it is dropped so the actor does not send it twice.
+fn restore_transcript(stored: &[ChatMessage], navigator: bool) -> Vec<ChatMessage> {
+    let legacy_prompt = navigator
+        && matches!(
+            stored.first(),
+            Some(ChatMessage::System { content }) if content == COGNITION_PROMPT
+        );
+    let skip = usize::from(legacy_prompt);
+    stored[skip..].to_vec()
 }
 
 fn build_registry(navigator: bool) -> Registry {

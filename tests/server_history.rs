@@ -11,7 +11,9 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use rust_agent::bus::event::EventEnvelope;
+use rust_agent::bus::event::{EventEnvelope, EventKind};
+use rust_agent::provider::openai::ChatMessage;
+use rust_agent::server::session::COGNITION_PROMPT;
 use rust_agent::server::AppState;
 
 mod common;
@@ -226,6 +228,13 @@ async fn converse_persists_events_title_and_transcript() {
         !loaded.transcript.is_empty(),
         "transcript snapshot after turn end"
     );
+    assert!(
+        !loaded
+            .transcript
+            .iter()
+            .any(|m| matches!(m, ChatMessage::System { .. })),
+        "the navigator role prompt is not stored in the transcript"
+    );
 }
 
 // Given a persisted conversation in one AppState
@@ -352,6 +361,106 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
         "the earlier messages ride along: {contents:?}"
     );
     task2.abort();
+}
+
+/// The messages of the last request the mock provider saw.
+fn last_request_messages(mock: &MockProvider) -> Vec<Value> {
+    let requests = mock.requests.lock().unwrap().clone();
+    let body: Value = serde_json::from_str(
+        requests
+            .last()
+            .expect("provider called")
+            .split("\r\n\r\n")
+            .nth(1)
+            .unwrap_or_default(),
+    )
+    .expect("request json");
+    body["messages"].as_array().expect("messages").clone()
+}
+
+// Given a navigator transcript stored before the role prompt left the
+//      transcript (it starts with the prompt as a system message)
+// When the session is resumed and a message is posted
+// Then the model request carries the loop contract and the role prompt
+//      exactly once each, followed by the stored turns and the new message
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resuming_an_old_navigator_transcript_sends_the_role_prompt_once() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    let db = root.join("sessions.db");
+    let ws = root.join("ws");
+    std::fs::create_dir_all(&ws).expect("ws");
+
+    let id = ulid::Ulid::new();
+    let store = rust_agent::server::store::HistoryStore::open(&db).expect("open");
+    store.record_session(
+        id,
+        &ws.display().to_string(),
+        "cognition",
+        Some("navigator"),
+    );
+    store.append_event(
+        id,
+        EventEnvelope::new(id, 0, EventKind::SessionStart, json!({})),
+    );
+    store.save_transcript(
+        id,
+        vec![
+            ChatMessage::System {
+                content: COGNITION_PROMPT.to_string(),
+            },
+            ChatMessage::User {
+                content: "earlier question".into(),
+            },
+            ChatMessage::Assistant {
+                content: Some("earlier answer".into()),
+                reasoning_content: None,
+                tool_calls: vec![],
+            },
+        ],
+    );
+    // The writer is fire-and-forget: wait until the transcript is readable.
+    for _ in 0..200 {
+        if let Some(loaded) = store.load(id).await.expect("load") {
+            if loaded.transcript.len() == 3 {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let mock = spawn_mock_provider(done_response("fine")).await;
+    let state = make_state(&root, &mock.url, Some(db.clone()));
+    let (resumed_id, resumed) = state
+        .create_or_resume_session(&ws, None, None, Some(id))
+        .await
+        .expect("resume");
+    assert_eq!(resumed_id, id);
+    assert!(resumed);
+    let (addr, task) = spawn_server(state.clone()).await;
+    let base = format!("http://{addr}");
+    let handle = state.handle(id).expect("live");
+    let sub = handle.sequencer.subscribe_since(None).await.expect("sub");
+    post_message_ok(&base, &id.to_string(), "new question").await;
+    let _ = collect_until(sub, |e| e.kind == "turn.end").await;
+
+    let messages = last_request_messages(&mock);
+    let shape: Vec<(&str, &str)> = messages
+        .iter()
+        .map(|m| {
+            (
+                m["role"].as_str().unwrap_or_default(),
+                m["content"].as_str().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(shape.len(), 5, "{shape:?}");
+    assert_eq!(shape[0].0, "system");
+    assert_eq!(shape[1], ("system", COGNITION_PROMPT));
+    assert_eq!(shape[2], ("user", "earlier question"));
+    assert_eq!(shape[3], ("assistant", "earlier answer"));
+    assert_eq!(shape[4], ("user", "new question"));
+    task.abort();
 }
 
 // Given a live session and its history

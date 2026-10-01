@@ -68,6 +68,7 @@ pub async fn run_agent(
 
         let request = build_request(
             &actor.model,
+            actor.system_prompt.as_deref(),
             actor.transcript.clone(),
             actor.registry.schemas(),
             actor.max_tokens,

@@ -1,8 +1,7 @@
 //! The navigator profile: creating a session with `profile: "navigator"`
-//! resolves the `cognition` alias and pushes the cognition role prompt as a
-//! SECOND system message at the head of the actor's transcript — observed
-//! on the wire as the request the provider receives (wiremock), with the
-//! Phase-1 agent loop's own system contract still first.
+//! resolves the `cognition` alias and sends the cognition role prompt as a
+//! SECOND system message after the agent loop's own contract — observed on
+//! the wire as the request the provider receives (wiremock).
 //!
 //! Also the conversation-feed seam: a feed shared with the AppState means
 //! a navigator session registers itself, driver events build the digest,

@@ -15,13 +15,10 @@ use crate::error::BusError;
 
 pub const INBOX_CAPACITY: usize = 256;
 
-/// What applying a drained batch did (besides pushing messages): the caller
-/// (todo-5 runtime / ticket-7 server) turns `stop_requested` into an actor
-/// token cancellation — a stop is never pushed into the transcript.
+/// What applying a drained batch did (besides pushing messages).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BatchOutcome {
     pub downgrade_notice: Option<DowngradeNotice>,
-    pub stop_requested: bool,
 }
 
 /// The sole holder of the inbox transport's receiver side. The todo-5 runtime
@@ -106,24 +103,14 @@ impl ActorInbox {
     /// Map the drained FIFO batch onto `push_user` semantics: the FIRST
     /// command after a Yield completes the pending ask (the existing
     /// `AgentActor` branch — untouched here), the rest are user messages.
-    /// The exhaustive match on [`crate::bus::command::RoutedAction`] pins the
-    /// stop contract: a stop ends the batch and is reported to the caller for
-    /// cancellation — it is never pushed as text.
+    /// Stop is not a command: it goes through session cancellation.
     pub fn apply_batch_to_actor(&mut self, actor: &mut AgentActor) -> BatchOutcome {
         let mut outcome = BatchOutcome::default();
         for cmd in self.commands.drain(..) {
             if outcome.downgrade_notice.is_none() {
                 outcome.downgrade_notice = cmd.downgrade_notice();
             }
-            match cmd.routed_action() {
-                crate::bus::command::RoutedAction::PushUser => {
-                    actor.push_user(cmd.text_content());
-                }
-                crate::bus::command::RoutedAction::Stop => {
-                    outcome.stop_requested = true;
-                    break;
-                }
-            }
+            actor.push_user(cmd.text_content());
         }
         outcome
     }
@@ -210,7 +197,6 @@ mod tests {
         actor.state = AgentState::Running;
         let outcome = inbox.apply_batch_to_actor(&mut actor);
         assert_eq!(outcome.downgrade_notice, None);
-        assert!(!outcome.stop_requested);
         assert_eq!(user_texts(&actor), vec!["m0", "m1", "m2"]);
         assert!(!inbox.has_buffered());
     }

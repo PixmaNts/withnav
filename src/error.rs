@@ -124,14 +124,6 @@ pub enum ServerError {
     History(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TurnOutcome {
-    Done,
-    Yielded,
-    Interrupted,
-    Error,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,11 +246,5 @@ mod tests {
             .is_empty());
         assert!(!ServerError::InboxFull.to_string().is_empty());
         assert!(!ServerError::NonTextContent.to_string().is_empty());
-    }
-
-    #[test]
-    fn turn_outcome_variants_distinct() {
-        assert_ne!(TurnOutcome::Done, TurnOutcome::Interrupted);
-        assert_ne!(TurnOutcome::Yielded, TurnOutcome::Error);
     }
 }

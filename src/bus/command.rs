@@ -99,25 +99,7 @@ impl fmt::Display for DowngradeNotice {
     }
 }
 
-/// What the runtime does with a routed command (ticket 02): every message
-/// command maps onto `push_user`; a `stop` is the DISTINCT cancel signal
-/// behind `POST /v1/sessions/:id/stop` (§20.2) — it cancels the actor token
-/// (session teardown, todos 5/7) and must never become a transcript message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RoutedAction {
-    PushUser,
-    Stop,
-}
-
 impl Command {
-    /// Inbox commands are message commands (POST /messages), so this is
-    /// `PushUser` for every constructible Command; `RoutedAction::Stop`
-    /// exists so the runtime/server route the stop ENDPOINT through the same
-    /// enum instead of conflating cancel with a text push.
-    pub fn routed_action(&self) -> RoutedAction {
-        RoutedAction::PushUser
-    }
-
     /// Phase-2 content rule: Text-only (PLAN §7.5). The server maps the typed
     /// error to 400 (ticket 7); the inbox rejects before buffering.
     pub fn validate_content(&self) -> Result<(), ServerError> {

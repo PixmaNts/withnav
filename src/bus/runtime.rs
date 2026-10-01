@@ -197,10 +197,7 @@ async fn runtime_loop(
             active_task_id = inbox.peek_first_buffered_command_id();
         }
 
-        let outcome_batch = inbox.apply_batch_to_actor(&mut actor);
-        if outcome_batch.stop_requested {
-            actor.cancel.cancel();
-        }
+        inbox.apply_batch_to_actor(&mut actor);
 
         let task_id = active_task_id.unwrap_or_default();
         let turn_id = Ulid::new();

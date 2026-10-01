@@ -140,6 +140,24 @@ pub fn resolve_models_path(
     None
 }
 
+/// Finds `models.json` (explicit path, then workspace, then config dir) and
+/// loads it. Returns the config with the path it came from; no file found is
+/// a `NotFound` read error.
+pub fn load_models(
+    explicit: Option<&Path>,
+    workspace: &Path,
+    config_dir: &Path,
+) -> Result<(ModelsConfig, PathBuf), ConfigError> {
+    let path = resolve_models_path(explicit, workspace, config_dir).ok_or_else(|| {
+        ConfigError::Read(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no models.json found (explicit, workspace, or config dir)",
+        ))
+    })?;
+    let config = ModelsConfig::load(&path)?;
+    Ok((config, path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,5 +288,34 @@ mod tests {
         std::fs::write(&explicit, "{}").unwrap();
         let chosen2 = resolve_models_path(Some(&explicit), &ws, &cfgd).unwrap();
         assert_eq!(chosen2, explicit);
+    }
+
+    #[test]
+    fn load_models_prefers_explicit_then_workspace_then_config_dir() {
+        let ws = tempfile::tempdir().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        let explicit = ws.path().join("explicit.json");
+        std::fs::write(&explicit, FIXTURE).unwrap();
+        std::fs::write(ws.path().join("models.json"), FIXTURE).unwrap();
+        std::fs::write(cfg.path().join("models.json"), FIXTURE).unwrap();
+
+        let (_, path) = load_models(Some(&explicit), ws.path(), cfg.path()).unwrap();
+        assert_eq!(path, explicit);
+        let (config, path) = load_models(None, ws.path(), cfg.path()).unwrap();
+        assert_eq!(path, ws.path().join("models.json"));
+        assert!(config.resolve("fast").is_ok());
+        std::fs::remove_file(ws.path().join("models.json")).unwrap();
+        let (_, path) = load_models(None, ws.path(), cfg.path()).unwrap();
+        assert_eq!(path, cfg.path().join("models.json"));
+    }
+
+    #[test]
+    fn load_models_without_any_file_is_a_not_found_error() {
+        let ws = tempfile::tempdir().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        match load_models(None, ws.path(), cfg.path()) {
+            Err(ConfigError::Read(e)) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
+            other => panic!("expected a NotFound read error, got {other:?}"),
+        }
     }
 }

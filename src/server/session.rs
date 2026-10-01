@@ -48,9 +48,9 @@ use crate::bus::inbox::ActorInbox;
 use crate::bus::runtime;
 use crate::bus::sequencer::{Candidate, Sequencer};
 use crate::bus::SessionBus;
-use crate::error::{ConfigError, ServerError};
+use crate::error::ServerError;
 use crate::provider::auth;
-use crate::provider::config::{resolve_models_path, ModelsConfig, ResolvedModel};
+use crate::provider::config::{load_models, ResolvedModel};
 use crate::provider::openai::ChatMessage;
 use crate::server::routes::route_message;
 use crate::tools::{Registry, ToolContext};
@@ -671,18 +671,11 @@ impl AppState {
     }
 
     fn resolve_model(&self, workspace: &Path, alias: &str) -> Result<ResolvedModel, ServerError> {
-        let models_path = match &self.config.models_path {
-            Some(path) => path.clone(),
-            None => {
-                resolve_models_path(None, workspace, &self.config.config_dir).ok_or_else(|| {
-                    ServerError::Config(ConfigError::Read(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "no models.json found (explicit, workspace, or config dir)",
-                    )))
-                })?
-            }
-        };
-        let config = ModelsConfig::load(&models_path)?;
+        let (config, _) = load_models(
+            self.config.models_path.as_deref(),
+            workspace,
+            &self.config.config_dir,
+        )?;
         Ok(config.resolve(alias)?)
     }
 

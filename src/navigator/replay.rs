@@ -424,6 +424,9 @@ pub struct ReplayReport {
     pub useful_kept: usize,
     /// Rated `noise` remarks the candidate still asks for.
     pub noise_kept: usize,
+    /// Of the useful ones (lost + kept), how many were `followed`: cleared
+    /// because the driver edited right next to them, not rated by hand.
+    pub followed: usize,
     /// Compared triggers whose historical remark has no `useful`/`noise`
     /// verdict (none, `dismissed`, or no remark at all).
     pub unknown_verdicts: usize,
@@ -507,13 +510,14 @@ impl ReplayReport {
 
         let _ = writeln!(
             out,
-            "verdicts      rated {}, noise avoided {}, useful lost {}, useful kept {}, noise kept {}, unknown {}",
+            "verdicts      rated {}, noise avoided {}, useful lost {}, useful kept {}, noise kept {}, unknown {} (followed {} counted as useful)",
             self.rated(),
             self.noise_avoided,
             self.useful_lost,
             self.useful_kept,
             self.noise_kept,
-            self.unknown_verdicts
+            self.unknown_verdicts,
+            self.followed
         );
         let _ = writeln!(
             out,
@@ -670,6 +674,7 @@ impl<'a> Replayer<'a> {
             useful_lost: 0,
             useful_kept: 0,
             noise_kept: 0,
+            followed: 0,
             unknown_verdicts: 0,
         };
         if let Some(path) = &log.path {
@@ -699,15 +704,20 @@ impl<'a> Replayer<'a> {
                     }
                     // A verdict labels one delivered remark: join it by
                     // remark id, and count only a `useful` or `noise` one.
+                    // `followed` (the driver edited next to the remark) is
+                    // implicit evidence it was acted on: counted as useful.
                     let verdict = trigger
                         .remark_id
                         .as_ref()
                         .and_then(|id| log.verdicts.get(id))
                         .cloned();
                     let would_remark = action == Action::Remark;
+                    if verdict.as_deref() == Some("followed") {
+                        report.followed += 1;
+                    }
                     match verdict.as_deref() {
-                        Some("useful") if !would_remark => report.useful_lost += 1,
-                        Some("useful") => report.useful_kept += 1,
+                        Some("useful" | "followed") if !would_remark => report.useful_lost += 1,
+                        Some("useful" | "followed") => report.useful_kept += 1,
                         Some("noise") if !would_remark => report.noise_avoided += 1,
                         Some("noise") => report.noise_kept += 1,
                         _ => report.unknown_verdicts += 1,
@@ -1056,6 +1066,22 @@ action = "silent"
     }
 
     #[tokio::test]
+    async fn a_followed_remark_counts_as_useful_and_is_reported_apart() {
+        let pipeline = pipeline();
+        let text = format!(
+            "{TRIGGER}\n{}\n",
+            r#"{"kind":"feedback","id":"r1","verdict":"followed"}"#
+        );
+        let report = Replayer::new(&pipeline).run(&ReplayLog::parse(&text)).await;
+        assert_eq!(report.useful_kept, 1, "followed is evidence of usefulness");
+        assert_eq!(report.followed, 1);
+        assert_eq!(report.unknown_verdicts, 0);
+        assert!(report
+            .render_text(DEFAULT_LIST_LIMIT)
+            .contains("followed 1 counted as useful"));
+    }
+
+    #[tokio::test]
     async fn the_same_pipeline_over_the_same_answers_changes_nothing() {
         let pipeline = pipeline();
         let report = Replayer::new(&pipeline)
@@ -1134,6 +1160,7 @@ action = "silent"
             useful_lost: 1,
             useful_kept: 0,
             noise_kept: 0,
+            followed: 0,
             unknown_verdicts: 0,
         };
         let text = report.render_text(DEFAULT_LIST_LIMIT);

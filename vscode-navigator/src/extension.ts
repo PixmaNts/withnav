@@ -266,6 +266,14 @@ function followEdits(event: vscode.TextDocumentChangeEvent) {
       const added = change.text.split("\n").length - 1;
       line += added - (end - start);
     } else if (start <= line + REMARK_NEIGHBOURHOOD) {
+      // Editing right next to a remark is the strongest hint it was acted
+      // on: record it, so a replay can count it, instead of losing it as an
+      // unrated remark.
+      if (client && client.state === State.Running) {
+        void client
+          .sendNotification(FeedbackNotification.type, { id: remark.id, verdict: "followed" })
+          .catch(() => undefined);
+      }
       removeRemark(uri);
       return;
     }

@@ -26,7 +26,8 @@ export interface StatusParams {
   message?: string;
 }
 
-export type Verdict = "useful" | "noise" | "dismissed";
+/** `followed`: cleared automatically because the driver edited right next to it. */
+export type Verdict = "useful" | "noise" | "dismissed" | "followed";
 
 export interface FeedbackParams {
   id: string;

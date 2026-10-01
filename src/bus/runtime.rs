@@ -593,9 +593,16 @@ mod tests {
     }
 
     async fn harness(server_url: String) -> Harness {
+        harness_with_steps(server_url, None).await
+    }
+
+    async fn harness_with_steps(server_url: String, max_steps: Option<usize>) -> Harness {
         let (inbox_tx, inbox) = ActorInbox::channel();
         let session_cancel = CancellationToken::new();
-        let actor = make_actor(server_url, CancellationToken::new());
+        let mut actor = make_actor(server_url, CancellationToken::new());
+        if let Some(n) = max_steps {
+            actor.max_steps = n;
+        }
         let session_id = Ulid::new();
         let sequencer = Sequencer::spawn(session_id, crate::bus::SessionBus::default(), 0);
         let live = sequencer.subscribe_since(None).await.unwrap().live.unwrap();
@@ -837,67 +844,43 @@ mod tests {
 
     #[tokio::test]
     async fn step_budget_exhausted_surfaces_as_yielded_never_the_internal_variant() {
-        std::env::set_var("RUST_AGENT_MAX_STEPS", "2");
         let toolcall = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"bash","arguments":"{\"command\":\"true\"}"}}]},"finish_reason":"tool_calls"}]}"#;
         let server = spawn_mock(vec![
             http_sse(&sse_body(&[toolcall])),
             http_sse(&sse_body(&[toolcall])),
         ])
         .await;
-        let mut h = harness(server.url.clone()).await;
+        let mut h = harness_with_steps(server.url.clone(), Some(2)).await;
         h.send("loop forever");
 
         let mut envelopes = drain_until(&mut h.live, |e| kind_of(e) == "agent.state").await;
         envelopes.extend(drain_ready(&mut h.live));
-        std::env::remove_var("RUST_AGENT_MAX_STEPS");
 
-        // The env var is process-global and the loop.rs budget test may clear
-        // it between our set_var and the runtime's read. In that world the
-        // run exhausts the script and ends in a provider error turn instead.
-        // BOTH branches pin the primary invariance: the internal variant is
-        // NEVER on the wire; the budget branch additionally pins the yield
-        // translation.
-        let budget_yield = envelopes
+        let kinds = assert_monotonic(&envelopes);
+        let yield_env = envelopes
             .iter()
-            .find(|e| kind_of(e) == "agent.yield" && e.payload["kind"] == "budget");
-        if let Some(yield_env) = budget_yield {
-            let kinds = assert_monotonic(&envelopes);
-            let yields: Vec<&EventEnvelope> = envelopes
+            .find(|e| kind_of(e) == "agent.yield")
+            .expect("the budget outcome yields");
+        assert_eq!(yield_env.payload["kind"], "budget");
+        assert_eq!(kinds.iter().filter(|k| **k == "agent.yield").count(), 1);
+        let turn_end = envelopes
+            .iter()
+            .find(|e| kind_of(e) == "turn.end")
+            .expect("turn.end present");
+        assert_eq!(turn_end.payload["outcome"], "yielded");
+        assert_eq!(turn_end.seq, yield_env.seq + 1, "agent.yield -> turn.end");
+        assert_eq!(
+            envelopes
                 .iter()
-                .filter(|e| kind_of(e) == "agent.yield")
-                .collect();
-            assert_eq!(yields.len(), 1);
-            let turn_end = envelopes
-                .iter()
-                .find(|e| kind_of(e) == "turn.end")
-                .expect("turn.end present");
-            assert_eq!(turn_end.payload["outcome"], "yielded");
-            assert_eq!(turn_end.seq, yield_env.seq + 1, "agent.yield -> turn.end");
-            assert_eq!(
-                envelopes
-                    .iter()
-                    .find(|e| kind_of(e) == "agent.state")
-                    .expect("agent.state after budget yield")
-                    .payload["to"],
-                "yielded"
-            );
-            assert!(
-                !kinds.contains(&"task.done"),
-                "no task.done on budget exhaustion: {kinds:?}"
-            );
-        } else {
-            let kinds = assert_monotonic(&envelopes);
-            assert_eq!(
-                envelopes
-                    .iter()
-                    .find(|e| kind_of(e) == "turn.end")
-                    .expect("turn.end present")
-                    .payload["outcome"],
-                "error",
-                "env budget lost to the parallel test race: error run expected"
-            );
-            assert!(!kinds.contains(&"task.done"));
-        }
+                .find(|e| kind_of(e) == "agent.state")
+                .expect("agent.state after budget yield")
+                .payload["to"],
+            "yielded"
+        );
+        assert!(
+            !kinds.contains(&"task.done"),
+            "no task.done on budget exhaustion: {kinds:?}"
+        );
         assert!(
             envelopes
                 .iter()

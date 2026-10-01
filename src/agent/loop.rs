@@ -54,7 +54,6 @@ pub async fn run_agent(
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> Result<RunOutcome, AgentError> {
     actor.state = AgentState::Running;
-    let budget = max_steps();
     // One client (one connection pool) for every step of this run.
     let client = ModelClient::new(
         "agent",
@@ -63,7 +62,7 @@ pub async fn run_agent(
         &ClientCache::new(),
     )?;
 
-    for _step in 0..budget {
+    for _step in 0..actor.max_steps {
         if actor.cancel.is_cancelled() {
             actor.state = AgentState::Idle;
             return Ok(RunOutcome::Interrupted);
@@ -352,8 +351,7 @@ mod tests {
         let mut noop = |_e: AgentEvent| {};
         let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
         assert!(matches!(outcome, RunOutcome::Done(_)));
-        // Two steps (the step-cap test lowers the process-wide limit to 2), one
-        // pooled client, one connection.
+        // Two steps, one pooled client, one connection.
         assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
@@ -428,7 +426,6 @@ mod tests {
 
     #[tokio::test]
     async fn max_steps_exhaustion_yields_not_forced_continuation() {
-        std::env::set_var("RUST_AGENT_MAX_STEPS", "2");
         let toolcall = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"bash","arguments":"{\"command\":\"true\"}"}}]},"finish_reason":"tool_calls"}]}"#;
         let server = spawn_mock(vec![
             http_sse(&sse_body(&[toolcall])),
@@ -437,10 +434,10 @@ mod tests {
         .await;
         let cancel = CancellationToken::new();
         let mut actor = make_actor(server.url.clone(), registry_all(), cancel);
+        actor.max_steps = 2;
         actor.push_user("loop forever");
         let mut noop = |_e: AgentEvent| {};
         let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
-        std::env::remove_var("RUST_AGENT_MAX_STEPS");
         assert!(matches!(outcome, RunOutcome::StepBudgetExhausted));
     }
 }

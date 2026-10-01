@@ -21,6 +21,9 @@ pub struct AgentActor {
     pub model: String,
     pub reasoning_history: ReasoningHistory,
     pub max_tokens: Option<u64>,
+    /// Model steps one run may take before it yields; read from the
+    /// environment once, when the actor is built.
+    pub max_steps: usize,
     /// An optional role prompt, sent as a second system message right after
     /// the system contract on every request. It is not part of the transcript.
     pub system_prompt: Option<String>,
@@ -50,6 +53,7 @@ impl AgentActor {
             model,
             reasoning_history,
             max_tokens,
+            max_steps: crate::agent::run_loop::max_steps(),
             system_prompt: None,
             cancel,
             state: AgentState::Idle,

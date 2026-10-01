@@ -2,7 +2,7 @@
   "name": "navigator",
   "displayName": "Navigator",
   "description": "Pair-programming navigator: a language server watches your edits and offers short end-of-line remarks.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "rust-agent",
   "private": true,
   "engines": {

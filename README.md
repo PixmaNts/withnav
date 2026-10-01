@@ -4,7 +4,28 @@ A personal, minimal-but-complete coding agent in Rust — inspired by `pi` / `oh
 but not constrained by compatibility with any of them. It does **not** fight its operator
 (no forced todo-completion), owns its core, and stays understandable.
 
-> **Status:** design phase. See [`docs/SPEC.md`](docs/SPEC.md) for the full v0.1 specification.
+> **Status:** v0.2.0, first usable release of the **navigator**, a pair-programming assistant in
+> VS Code built on this core. See [`CHANGELOG.md`](CHANGELOG.md), [`ARCHITECTURE.md`](ARCHITECTURE.md)
+> for the code map, and [`CONTEXT.md`](CONTEXT.md) for the vocabulary. The sections below describe
+> the original agent-core design ([`docs/SPEC.md`](docs/SPEC.md)).
+
+## Install the navigator
+
+```bash
+cargo build --release --bin rust-agent-lsp
+install -m755 target/release/rust-agent-lsp ~/.local/bin/
+(cd vscode-navigator && npm ci && npm run package)
+code --install-extension vscode-navigator/navigator-0.2.0.vsix
+```
+
+Models are aliases in `~/.config/rust-agent/models.json` (`reflex`, `instinct`, `metacognition`,
+`cognition`); keys go in `~/.config/rust-agent/auth.json` (`rust-agent auth set <provider>`).
+
+## Contributing
+
+`main` holds releases only. Work branches off `develop` as `feat/<name>` or `fix/<name>` and comes
+back through a merge request into `develop`. A release merges `develop` into `main` and is tagged
+`vX.Y.Z`. Details in [`AGENTS.md`](AGENTS.md).
 
 ## The idea in one paragraph
 

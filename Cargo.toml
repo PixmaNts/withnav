@@ -1,9 +1,9 @@
 [package]
 name = "rust-agent"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.85"
-description = "A personal, minimal-but-complete coding agent in Rust (Phase 1 vertical slice)"
+description = "Navigator: a pair-programming assistant around a coding-agent core (reflex, instinct, metacognition, cognition)"
 license = "MIT OR Apache-2.0"
 
 # LIB + BIN split: all behavior lives in the library; the binary is a thin CLI shell.

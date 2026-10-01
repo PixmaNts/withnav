@@ -60,12 +60,14 @@ pub fn delta_tool_call(id: &str, name: &str, args: &Value) -> Value {
 /// One scripted metacognition answer.
 /// - `Remark(line, text)` => Ok(Some(...))
 /// - `Silent` => Ok(None)
-/// - `Fail(msg)` => Err(msg)
+/// - `Fail(msg)` => a provider-side failure with that message
+/// - `Malformed(raw)` => an answer that violates the prompt contract
 #[derive(Clone)]
 pub enum RemarkAnswer {
     Remark(u32, &'static str),
     Silent,
     Fail(&'static str),
+    Malformed(&'static str),
 }
 
 /// Scripted [`Metacognition`]: consumes answers from a shared list, in order;
@@ -131,6 +133,7 @@ impl Metacognition for ScriptedCommenter {
                 })),
                 RemarkAnswer::Silent => Ok(None),
                 RemarkAnswer::Fail(msg) => Err(ModelError::Unavailable(msg.to_string())),
+                RemarkAnswer::Malformed(raw) => Err(ModelError::Malformed(raw.to_string())),
             }
         })
     }
@@ -459,6 +462,20 @@ impl LspClient {
         }
     }
 
+    /// Reads messages until a `navigator/status` with one of `states`.
+    pub async fn expect_status_in(&mut self, states: &[&str]) -> Value {
+        loop {
+            let msg = self.recv().await;
+            if msg.get("method").and_then(|m| m.as_str()) == Some("navigator/status")
+                && msg["params"]["state"]
+                    .as_str()
+                    .is_some_and(|s| states.contains(&s))
+            {
+                return msg;
+            }
+        }
+    }
+
     /// Collects every message readable within a virtual-time window, then
     /// stops. Used to assert that NOTHING (e.g. a stale remark) arrives.
     pub async fn collect_for(&mut self, window: Duration) -> Vec<Value> {
@@ -574,7 +591,12 @@ fn try_parse(buf: &[u8]) -> Option<(Value, usize)> {
 /// worth a short metacognition remark and drift enough to wake cognition
 /// when an intent exists.
 pub fn spawn_server(deps: NavigatorDeps) -> LspClient {
-    let deps = deps.with_decision(Arc::new(ScriptedDecision::routing_to_metacognition()));
+    spawn_server_as_is(deps.with_decision(Arc::new(ScriptedDecision::routing_to_metacognition())))
+}
+
+/// [`spawn_server`] without adding an instinct: the deps decide which
+/// layers exist.
+pub fn spawn_server_as_is(deps: NavigatorDeps) -> LspClient {
     let (server_input, client_write) = tokio::io::duplex(64 * 1024);
     let (client_read, server_output) = tokio::io::duplex(64 * 1024);
     tokio::spawn(navigator::serve(server_input, server_output, deps));

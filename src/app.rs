@@ -207,13 +207,7 @@ async fn post_prompt(
 ) -> anyhow::Result<()> {
     use crate::bus::command::{Command, ContentBlock, DeliveryMode};
     use crate::bus::event::ROOT_ACTOR_ID;
-    use crate::bus::sequencer::PendingCommand;
 
-    let permit = handle
-        .inbox_tx
-        .clone()
-        .try_reserve_owned()
-        .map_err(|_| anyhow::anyhow!("inbox unavailable"))?;
     let command = Command {
         command_id: ulid::Ulid::new(),
         session_id,
@@ -225,22 +219,7 @@ async fn post_prompt(
         }],
         created_at: std::time::SystemTime::now(),
     };
-    let pending = PendingCommand {
-        command_id: command.command_id,
-        content: command.text_content(),
-        source: command.source_actor_id.clone(),
-        target: command.target_actor_id.clone(),
-        mode: command.mode.as_str().to_string(),
-    };
-    let committed = command.clone();
-    handle
-        .sequencer
-        .accept_command(
-            pending,
-            Box::new(move || {
-                permit.send(committed);
-            }),
-        )
+    crate::server::routes::route_message(handle, command)
         .await
         .map_err(|e| anyhow::anyhow!("post failed: {e}"))?;
     Ok(())

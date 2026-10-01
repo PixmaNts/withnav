@@ -14,6 +14,15 @@
 //! metacognition remarked on every save. Replaying that log, 0.85 with a
 //! 45 s cooldown halves the remarks (25 -> 13). Rewording the question to
 //! discount mid-edit code silenced every remark, so the wording is kept.
+//!
+//! A second trigger listens to `conversation` (a driver turn ended in the
+//! chat): one question, `code_contradicts_conversation`, and a `remark`
+//! when the code already contradicts what was just agreed (> 0.8, only
+//! if `has_conversation`), else silent. It is a remark and not a wake
+//! because the cognition already knows the conversation; the driver is
+//! the one who needs to see the line. Its pre-filter is the 30 s cooldown
+//! alone: the change is in the conversation, not in the file, so
+//! `min_changed_lines` has nothing to count.
 //! Shipped in the binary via `include_str!`.
 
 /// `pipeline.toml` as it would sit in `.navigator/`.
@@ -24,6 +33,16 @@ pub const STATE_PROMPT: &str = include_str!("default_pipeline/prompts/state.md")
 
 /// `prompts/remark.md`: the metacognition's remark prompt.
 pub const REMARK_PROMPT: &str = include_str!("default_pipeline/prompts/remark.md");
+
+/// `prompts/conversation_state.md`: the instinct's state for the
+/// `conversation` event.
+pub const CONVERSATION_STATE_PROMPT: &str =
+    include_str!("default_pipeline/prompts/conversation_state.md");
+
+/// `prompts/conversation_remark.md`: the metacognition's remark prompt for
+/// the `conversation` event.
+pub const CONVERSATION_REMARK_PROMPT: &str =
+    include_str!("default_pipeline/prompts/conversation_remark.md");
 
 #[cfg(test)]
 mod tests {

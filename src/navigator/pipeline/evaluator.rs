@@ -152,7 +152,7 @@ impl Pipeline {
         };
 
         // Pre-filters before the instinct is paid for.
-        let prefilter = run_prefilters(&trigger.prefilters, inputs);
+        let prefilter = run_prefilters(&trigger.prefilters, event, inputs);
         if let PrefilterOutcome::Skip(_) = &prefilter {
             evaluation.prefilter = prefilter;
             return Ok(evaluation);
@@ -184,8 +184,18 @@ impl Pipeline {
     }
 }
 
-fn run_prefilters(prefilters: &super::Prefilters, inputs: TriggerInputs) -> PrefilterOutcome {
-    if inputs.changed_lines < prefilters.min_changed_lines as i64 {
+/// The pre-filters over the trigger's inputs. `min_changed_lines` does not
+/// apply to the `conversation` event: the change is in the conversation, not
+/// in the file, so the file's changed-line count says nothing. The cooldown
+/// applies to every event.
+pub(crate) fn run_prefilters(
+    prefilters: &super::Prefilters,
+    event: TriggerKind,
+    inputs: TriggerInputs,
+) -> PrefilterOutcome {
+    if event != TriggerKind::Conversation
+        && inputs.changed_lines < prefilters.min_changed_lines as i64
+    {
         return PrefilterOutcome::Skip("too_few_changed_lines");
     }
     if inputs.since_last_remark_ms < prefilters.cooldown_ms as i64 {
@@ -571,6 +581,64 @@ action = "silent"
             .await
             .unwrap();
         assert_eq!(eval.prefilter.skip_reason(), Some("cooldown"));
+    }
+
+    #[tokio::test]
+    async fn min_changed_lines_is_ignored_for_the_conversation_event() {
+        let on_conversation = TOML.replace("on = [\"save\"]", "on = [\"save\", \"conversation\"]");
+        let pipeline = Pipeline::new(
+            PipelineSnapshot::from_parts(
+                &on_conversation,
+                BTreeMap::from([
+                    ("prompts/state.md".to_string(), "{{file}}".to_string()),
+                    ("prompts/remark.md".to_string(), "say".to_string()),
+                ]),
+                super::super::snapshot::SnapshotSource::Builtin,
+            )
+            .unwrap(),
+        );
+        let model = FakeModel {
+            answers: answers_remark(),
+        };
+        // Zero changed lines: a save is skipped, a conversation is not.
+        let save = pipeline
+            .evaluate(
+                TriggerKind::Save,
+                inputs(0),
+                &template_inputs(),
+                &model,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(save.prefilter.skip_reason(), Some("too_few_changed_lines"));
+        let conversation = pipeline
+            .evaluate(
+                TriggerKind::Conversation,
+                inputs(0),
+                &template_inputs(),
+                &model,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(conversation.prefilter.as_str(), "pass");
+        assert!(conversation.answers.is_some());
+
+        // The cooldown still applies.
+        let mut cooling = inputs(0);
+        cooling.since_last_remark_ms = 1;
+        let cooled = pipeline
+            .evaluate(
+                TriggerKind::Conversation,
+                cooling,
+                &template_inputs(),
+                &model,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cooled.prefilter.skip_reason(), Some("cooldown"));
     }
 
     #[tokio::test]

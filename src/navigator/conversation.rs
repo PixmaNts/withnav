@@ -16,14 +16,21 @@
 //! driver, wakes are queued — coalesced, latest wins — and delivered right
 //! after the next driver message has been accepted. A navigator-sourced
 //! message is also never a conversation trigger: the digest marks it as the
-//! navigator's own words so a future trigger emitter can skip it (no
+//! navigator's own words, and the turn it provokes is reported as not
+//! driver-caused, so a wake never becomes a conversation trigger (no
 //! self-reinforcing loops).
+//!
+//! The language server subscribes ([`ConversationFeed::subscribe`]) to hear
+//! when a turn ends and whether the driver caused it. Replayed events
+//! rebuild state but stay silent: a resumed session must not re-trigger
+//! the turns it already lived.
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use tokio::sync::broadcast;
 use ulid::Ulid;
 
 use crate::bus::event::EventEnvelope;
@@ -61,6 +68,22 @@ pub enum WakeOutcome {
     Failed(Ulid, String),
 }
 
+/// What the feed tells its subscribers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConversationEvent {
+    /// A navigator session finished a turn. `caused_by_driver` is true only
+    /// when the turn answered a driver message (`message.received` whose
+    /// source starts with `user:`); a turn provoked by a navigator wake is
+    /// false, which keeps wakes from triggering themselves.
+    TurnEnded {
+        session_id: Ulid,
+        caused_by_driver: bool,
+    },
+}
+
+/// Capacity of the subscription channel; a lagging subscriber skips ahead.
+const EVENT_CAPACITY: usize = 32;
+
 /// Who said it, in the digest's vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Author {
@@ -92,6 +115,9 @@ struct SessionConversation {
     waiting_on_driver: bool,
     queued_wake: Option<String>,
     exchanges: VecDeque<Exchange>,
+    /// A driver message arrived since the last `turn.end`: the next turn
+    /// end answers the driver.
+    driver_pending: bool,
 }
 
 impl SessionConversation {
@@ -120,9 +146,16 @@ struct FeedState {
 /// The shared hub. Cheap to clone (one `Arc`); every method is safe under
 /// concurrency. Locks are standard mutexes held only across synchronous
 /// steps — awaits happen after the guard is dropped.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ConversationFeed {
     inner: Arc<Mutex<FeedState>>,
+    events: broadcast::Sender<ConversationEvent>,
+}
+
+impl Default for ConversationFeed {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl std::fmt::Debug for ConversationFeed {
@@ -140,7 +173,16 @@ impl std::fmt::Debug for ConversationFeed {
 
 impl ConversationFeed {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            inner: Arc::default(),
+            events: broadcast::channel(EVENT_CAPACITY).0,
+        }
+    }
+
+    /// A new subscription to the feed's [`ConversationEvent`]s, starting
+    /// now. Cheap; any number of subscribers.
+    pub fn subscribe(&self) -> broadcast::Receiver<ConversationEvent> {
+        self.events.subscribe()
     }
 
     /// Registers a navigator session the feed can watch and wake. Called by
@@ -154,6 +196,7 @@ impl ConversationFeed {
                 waiting_on_driver: false,
                 queued_wake: None,
                 exchanges: VecDeque::new(),
+                driver_pending: false,
             },
         );
     }
@@ -171,14 +214,41 @@ impl ConversationFeed {
     /// runs a subscriber per navigator session; replays flow through here
     /// too, so a resumed conversation rebuilds its digest and active flag.
     ///
-    /// Of the whole envelope stream only three kinds carry meaning:
+    /// Of the whole envelope stream only four kinds carry meaning:
     /// `message.received` (who wrote what, and the end of a pending ask),
-    /// `llm.response` (the cognition's own words) and `agent.yield` (the
-    /// cognition now waits on the driver). A driver message also makes its
-    /// session the active conversation and delivers a queued wake.
+    /// `llm.response` (the cognition's own words), `agent.yield` (the
+    /// cognition now waits on the driver) and `turn.end` (announced to
+    /// subscribers). A driver message also makes its session the active
+    /// conversation and delivers a queued wake.
     pub async fn observe(&self, envelope: &EventEnvelope) {
+        self.apply(envelope, true).await;
+    }
+
+    /// Like [`observe`](Self::observe) for events read back from storage:
+    /// state is rebuilt, nothing is announced to subscribers.
+    pub async fn observe_replayed(&self, envelope: &EventEnvelope) {
+        self.apply(envelope, false).await;
+    }
+
+    async fn apply(&self, envelope: &EventEnvelope, announce: bool) {
         match envelope.kind.as_str() {
             "message.received" => self.observe_message(envelope).await,
+            "turn.end" => {
+                let caused_by_driver = {
+                    let mut state = self.lock();
+                    match state.sessions.get_mut(&envelope.session_id) {
+                        Some(entry) => std::mem::take(&mut entry.driver_pending),
+                        None => return,
+                    }
+                };
+                if announce {
+                    // No subscriber is not an error.
+                    let _ = self.events.send(ConversationEvent::TurnEnded {
+                        session_id: envelope.session_id,
+                        caused_by_driver,
+                    });
+                }
+            }
             "llm.response" => {
                 let text = envelope
                     .payload
@@ -234,6 +304,7 @@ impl ConversationFeed {
                 // conversation and answers any pending ask: the wake
                 // queued behind that ask can finally be delivered.
                 entry.waiting_on_driver = false;
+                entry.driver_pending = true;
             }
             entry.push_exchange(
                 if driver {
@@ -563,6 +634,65 @@ mod tests {
         assert_eq!(feed.active_session(), None);
         assert_eq!(feed.digest(), "");
         assert_eq!(feed.post_wake("gone").await, WakeOutcome::NoSession);
+    }
+
+    fn turn_end_envelope(session: Ulid) -> EventEnvelope {
+        EventEnvelope::new(
+            session,
+            0,
+            EventKind::TurnEnd,
+            json!({ "turn_id": Ulid::new().to_string(), "actor_id": "agent:main", "outcome": "done", "duration_ms": 1 }),
+        )
+    }
+
+    #[tokio::test]
+    async fn turn_ended_tells_whether_the_driver_caused_it() {
+        let feed = ConversationFeed::new();
+        let id = Ulid::new();
+        let posted = Arc::new(Mutex::new(Vec::new()));
+        feed.register_session(id, recording_poster(posted));
+        let mut events = feed.subscribe();
+
+        feed.observe(&message_envelope(id, "user:http", "add a command"))
+            .await;
+        feed.observe(&turn_end_envelope(id)).await;
+        assert_eq!(
+            events.try_recv().unwrap(),
+            ConversationEvent::TurnEnded {
+                session_id: id,
+                caused_by_driver: true
+            },
+            "a driver message's turn"
+        );
+
+        feed.observe(&message_envelope(id, NAVIGATOR_ACTOR_ID, "wake: drift"))
+            .await;
+        feed.observe(&turn_end_envelope(id)).await;
+        assert_eq!(
+            events.try_recv().unwrap(),
+            ConversationEvent::TurnEnded {
+                session_id: id,
+                caused_by_driver: false
+            },
+            "a navigator wake's turn"
+        );
+        assert!(events.try_recv().is_err(), "one event per turn end");
+    }
+
+    #[tokio::test]
+    async fn replayed_turn_ends_and_unknown_sessions_announce_nothing() {
+        let feed = ConversationFeed::new();
+        let id = Ulid::new();
+        let posted = Arc::new(Mutex::new(Vec::new()));
+        feed.register_session(id, recording_poster(posted));
+        let mut events = feed.subscribe();
+
+        feed.observe_replayed(&message_envelope(id, "user:http", "old chat"))
+            .await;
+        feed.observe_replayed(&turn_end_envelope(id)).await;
+        feed.observe(&turn_end_envelope(Ulid::new())).await;
+        assert!(events.try_recv().is_err());
+        assert!(feed.digest().contains("driver: old chat"), "state rebuilt");
     }
 
     #[tokio::test]

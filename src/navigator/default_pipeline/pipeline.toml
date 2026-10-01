@@ -36,3 +36,23 @@ prompt = "prompts/remark.md"
 [[trigger.branch]]
 when = "true"
 action = "silent"
+
+# A driver turn ended in the conversation: is the code in the focused file at
+# odds with what was just agreed? min_changed_lines does not apply here.
+[[trigger]]
+on = ["conversation"]
+state = "prompts/conversation_state.md"
+prefilter = { cooldown_ms = 30000 }
+
+[trigger.questions.code_contradicts_conversation]
+type = "noul"
+instructions = "Does the code in this file already contradict what the driver and the cognition just agreed?"
+
+[[trigger.branch]]
+when = "has_conversation && code_contradicts_conversation > 0.8"
+action = "remark"
+prompt = "prompts/conversation_remark.md"
+
+[[trigger.branch]]
+when = "true"
+action = "silent"

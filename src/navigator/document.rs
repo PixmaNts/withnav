@@ -16,6 +16,9 @@ pub struct DocumentState {
     pub last_edit: Instant,
     /// Instant of the last emitted remark, if any.
     pub last_remark: Option<Instant>,
+    /// 1-based line of the last edit that inserted text (0: none yet).
+    /// The conversation trigger shows the code around it.
+    pub last_edit_line: usize,
     /// Version at which the in-flight request was started, if any.
     pub in_flight_version: Option<i32>,
     /// Cancel handle for the in-flight commenter call.
@@ -30,6 +33,7 @@ impl DocumentState {
             baseline: String::new(),
             last_edit: now,
             last_remark: None,
+            last_edit_line: 0,
             in_flight_version: None,
             in_flight_cancel: None,
         }
@@ -70,6 +74,30 @@ pub fn count_changed_lines(old: &str, new: &str) -> usize {
 pub fn unified_diff(old: &str, new: &str) -> String {
     let diff = similar::TextDiff::from_lines(old, new);
     diff.unified_diff().context_radius(3).to_string()
+}
+
+/// The text around `line` (1-based; 0 means the top of the file): a window
+/// of `context` lines on each side, every line numbered like
+/// [`text_around_changes`]. This is what the conversation trigger shows,
+/// as it has no diff to center on.
+pub fn text_around_line(text: &str, line: usize, context: usize) -> String {
+    let total = text.lines().count();
+    let (start, end) = if line == 0 {
+        (0, (2 * context + 1).min(total))
+    } else {
+        let center = (line - 1).min(total.saturating_sub(1));
+        (
+            center.saturating_sub(context),
+            (center + context + 1).min(total),
+        )
+    };
+    text.lines()
+        .enumerate()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .map(|(i, l)| format!("{:>4}| {l}", i + 1))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Extracts the current text truncated around the changed region: a window
@@ -122,6 +150,24 @@ pub fn text_around_changes(old: &str, new: &str, context: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_around_line_windows_a_line_or_the_top() {
+        let text = (1..=100)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let around = text_around_line(&text, 50, 2);
+        assert_eq!(around.lines().count(), 5);
+        assert!(around.starts_with("  48| l48"));
+        assert!(around.ends_with("  52| l52"));
+        let top = text_around_line(&text, 0, 2);
+        assert!(top.starts_with("   1| l1"));
+        assert_eq!(top.lines().count(), 5);
+        // A line past the end clamps to the last line.
+        assert!(text_around_line("a\nb", 9, 1).ends_with("   2| b"));
+        assert_eq!(text_around_line("", 3, 2), "");
+    }
 
     #[test]
     fn changed_lines_counts_inserts_and_deletes() {

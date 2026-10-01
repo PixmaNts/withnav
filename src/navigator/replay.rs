@@ -35,11 +35,13 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::navigator::pipeline::evaluator::{flatten_answers_into, SnapshotTrigger};
+use crate::navigator::pipeline::evaluator::{
+    flatten_answers_into, run_prefilters, SnapshotTrigger,
+};
 use crate::navigator::pipeline::validator::flatten_inputs;
 use crate::navigator::pipeline::{
-    Action, Pipeline, PipelineError, PipelineSnapshot, PrefilterOutcome, Prefilters,
-    SnapshotSource, TriggerInputs, TriggerKind, NO_REMARK_MS,
+    Action, Pipeline, PipelineError, PipelineSnapshot, PrefilterOutcome, SnapshotSource,
+    TriggerInputs, TriggerKind, NO_REMARK_MS,
 };
 use crate::navigator::ports::{Answers, DecisionModel, Questions};
 
@@ -754,7 +756,9 @@ impl<'a> Replayer<'a> {
         };
         // A candidate that skips never needs answers, so it stays comparable
         // whatever the logged questions were.
-        if let PrefilterOutcome::Skip(_) = run_prefilters(&candidate.prefilters, trigger.inputs) {
+        if let PrefilterOutcome::Skip(_) =
+            run_prefilters(&candidate.prefilters, trigger.event, trigger.inputs)
+        {
             return Decision::Comparable {
                 action: Action::Silent,
                 branch: None,
@@ -852,19 +856,6 @@ impl<'a> Replayer<'a> {
             Err(e) => Err(format!("reask_failed: {e}")),
         }
     }
-}
-
-/// The candidate's pre-filters over the logged inputs. Same two knobs as the
-/// evaluator, and the same reasons: a threshold-only candidate changes what
-/// passes without any model call.
-fn run_prefilters(prefilters: &Prefilters, inputs: TriggerInputs) -> PrefilterOutcome {
-    if inputs.changed_lines < prefilters.min_changed_lines as i64 {
-        return PrefilterOutcome::Skip("too_few_changed_lines");
-    }
-    if inputs.since_last_remark_ms < prefilters.cooldown_ms as i64 {
-        return PrefilterOutcome::Skip("cooldown");
-    }
-    PrefilterOutcome::Pass
 }
 
 /// The candidate's branches over the answers, in order; no branch holding is

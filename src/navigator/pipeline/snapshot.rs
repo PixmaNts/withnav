@@ -155,6 +155,14 @@ impl PipelineSnapshot {
                 "prompts/remark.md".to_string(),
                 crate::navigator::default_pipeline::REMARK_PROMPT.to_string(),
             ),
+            (
+                "prompts/conversation_state.md".to_string(),
+                crate::navigator::default_pipeline::CONVERSATION_STATE_PROMPT.to_string(),
+            ),
+            (
+                "prompts/conversation_remark.md".to_string(),
+                crate::navigator::default_pipeline::CONVERSATION_REMARK_PROMPT.to_string(),
+            ),
         ]);
         Self::from_parts(
             crate::navigator::default_pipeline::PIPELINE_TOML,

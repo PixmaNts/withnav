@@ -30,7 +30,9 @@ use tokio_util::sync::CancellationToken;
 
 pub use commenter::{Commenter, LlmCommenter, RemarkContext};
 pub use config::NavigatorConfig;
-pub use conversation::{ConversationFeed, SessionPost, WakeOutcome, NAVIGATOR_ACTOR_ID};
+pub use conversation::{
+    ConversationEvent, ConversationFeed, SessionPost, WakeOutcome, NAVIGATOR_ACTOR_ID,
+};
 pub use intent::{read_intent, IntentRecord};
 pub use log::new_ulid_string;
 pub use pipeline::{

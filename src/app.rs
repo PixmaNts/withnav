@@ -151,7 +151,7 @@ fn rpassword_prompt(provider: &str) -> anyhow::Result<String> {
 /// §6.2). It starts the session manager (sequencer + runtime task, NO HTTP
 /// server), subscribes to the session's event stream BEFORE posting the
 /// prompt (so no initial `llm.delta` is lost — deltas are not in the replay
-/// ring), renders each event through the byte-identical `event_to_ui` adapter,
+/// ring), renders each event through the `event_to_ui` adapter,
 /// and derives the exit code from the terminal events — NOT from a direct
 /// `run_agent` call (no shortcut, §6.2). Order: create -> subscribe -> post ->
 /// render-until-terminal -> close.
@@ -382,7 +382,7 @@ fn print_yield(renderer: &mut Renderer, req: &HumanRequest) {
 
 /// Render-behind-a-subscriber adapter (ticket 05, option a): maps a bus event
 /// onto the SAME UiEvent the Phase-1 `on_delta` closure + `finish` produced,
-/// so `render.rs` stays byte-identical and CLI stdout does not change.
+/// so `render.rs` and CLI stdout do not change.
 /// Returns `None` for events with no CLI rendering (session/turn lifecycle,
 /// llm.response, tool calls, agent.state, task.done, message.received) — the
 /// Phase-1 path rendered none of those either.

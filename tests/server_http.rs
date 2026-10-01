@@ -9,16 +9,13 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use http_body_util::BodyExt;
+use axum::http::StatusCode;
 use serde_json::{json, Value};
-use tower::ServiceExt;
 
 use rust_agent::server::{app, AppState, ServerConfig};
 
 mod common;
-use common::server::TestServerConfig;
+use common::server::{request_json, text_command, TestServerConfig};
 
 /// SIGTERM is PROCESS-GLOBAL: the real-signal test must not fire while
 /// another test's server (which installs its own shutdown_signal handler)
@@ -34,27 +31,15 @@ fn test_state(tmp: &Path) -> AppState {
 }
 
 async fn create_session(state: &AppState, workspace: &str, model: Option<&str>) -> Value {
-    let response = app(state.clone())
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/sessions")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({ "workspace": workspace, "model": model }).to_string(),
-                ))
-                .expect("request"),
-        )
-        .await
-        .expect("infallible");
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response
-        .into_body()
-        .collect()
-        .await
-        .expect("body")
-        .to_bytes();
-    serde_json::from_slice(&body).expect("create body is json")
+    let (status, body) = request_json(
+        &app(state.clone()),
+        "POST",
+        "/v1/sessions",
+        Some(&json!({ "workspace": workspace, "model": model })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    body
 }
 
 // Given the mounted router
@@ -63,23 +48,9 @@ async fn create_session(state: &AppState, workspace: &str, model: Option<&str>) 
 #[tokio::test]
 async fn health_returns_200_ok_body() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let response = app(test_state(tmp.path()))
-        .oneshot(
-            Request::builder()
-                .uri("/v1/health")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("infallible");
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response
-        .into_body()
-        .collect()
-        .await
-        .expect("body")
-        .to_bytes();
-    let value: Value = serde_json::from_slice(&body).expect("json");
+    let (status, value) =
+        request_json(&app(test_state(tmp.path())), "GET", "/v1/health", None).await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(value, json!({ "status": "ok" }));
 }
 
@@ -114,23 +85,14 @@ async fn get_session_reports_current_seq_zero_right_after_create() {
     let created = create_session(&state, ws.to_str().expect("utf8 ws"), None).await;
     let id = created["session_id"].as_str().expect("session id");
 
-    let response = app(state.clone())
-        .oneshot(
-            Request::builder()
-                .uri(format!("/v1/sessions/{id}"))
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("infallible");
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response
-        .into_body()
-        .collect()
-        .await
-        .expect("body")
-        .to_bytes();
-    let value: Value = serde_json::from_slice(&body).expect("json");
+    let (status, value) = request_json(
+        &app(state.clone()),
+        "GET",
+        &format!("/v1/sessions/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(value["session_id"], id);
     assert_eq!(value["actor_state"], "idle");
     assert_eq!(value["workspace"], ws.to_str().expect("utf8 ws"));
@@ -148,24 +110,8 @@ async fn unknown_session_id_is_a_structured_404() {
     let app = app(state);
 
     for id in ["01ARZ3NDEKTSV4RRFFQ69G5FAV", "not-a-ulid"] {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/v1/sessions/{id}"))
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("infallible");
-        assert_eq!(response.status(), StatusCode::NOT_FOUND, "id={id}");
-        let body = response
-            .into_body()
-            .collect()
-            .await
-            .expect("body")
-            .to_bytes();
-        let value: Value = serde_json::from_slice(&body).expect("json");
+        let (status, value) = request_json(&app, "GET", &format!("/v1/sessions/{id}"), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "id={id}");
         assert!(value.get("error").is_some(), "structured 404 body: {value}");
     }
 }
@@ -190,16 +136,14 @@ async fn registry_does_not_grow_from_connect_then_drop_loop() {
         let state_for_get = (*state).clone();
         let id = ids.last().expect("id").clone();
         let get_task = tokio::spawn(async move {
-            let response = app(state_for_get)
-                .oneshot(
-                    Request::builder()
-                        .uri(format!("/v1/sessions/{id}"))
-                        .body(Body::empty())
-                        .expect("request"),
-                )
-                .await
-                .expect("infallible");
-            response.status()
+            let (status, _) = request_json(
+                &app(state_for_get),
+                "GET",
+                &format!("/v1/sessions/{id}"),
+                None,
+            )
+            .await;
+            status
         });
         let got = get_task.await.expect("get task");
         assert_eq!(got, StatusCode::OK);
@@ -235,7 +179,7 @@ async fn real_socket_serve_answers_health_create_and_get() {
     );
 
     let server = tokio::spawn(bound);
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    common::server::wait_until_healthy(addr).await;
     let base = format!("http://{addr}");
 
     let health: Value = reqwest::get(format!("{base}/v1/health"))
@@ -389,21 +333,7 @@ async fn sigterm_drives_graceful_shutdown_sessions_end_and_clean_exit() {
     ));
 
     // Wait until the socket answers, then SIGTERM this process.
-    let mut probe = std::process::Command::new("curl")
-        .args(["-s", "-o", "/dev/null", &format!("http://{addr}/v1/health")])
-        .status()
-        .expect("probe health");
-    for _ in 0..50 {
-        if probe.success() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        probe = std::process::Command::new("curl")
-            .args(["-s", "-o", "/dev/null", &format!("http://{addr}/v1/health")])
-            .status()
-            .expect("probe health");
-    }
-    assert!(probe.success(), "server never answered health");
+    common::server::wait_until_healthy(addr).await;
 
     // SIGTERM: the same signal the production shutdown_signal handler
     // selects on (SignalKind::terminate).
@@ -458,17 +388,7 @@ async fn sigterm_drives_graceful_shutdown_sessions_end_and_clean_exit() {
 /// A command to a closed session is refused: the store answers reads, never
 /// commands.
 async fn assert_not_routable(state: &AppState, id: rust_agent::bus::command::SessionId) {
-    let command = rust_agent::server::routes::build_command(
-        id,
-        &rust_agent::server::routes::PostMessageRequest {
-            target_actor_id: "agent:main".to_string(),
-            mode: Some("next-turn".to_string()),
-            content: vec![rust_agent::bus::command::ContentBlock::Text {
-                text: "anyone there?".to_string(),
-            }],
-        },
-        rust_agent::bus::command::DeliveryMode::NextTurn,
-    );
+    let command = text_command(id, "anyone there?");
     assert!(
         matches!(
             state.send(command).await,

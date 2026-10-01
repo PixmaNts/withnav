@@ -20,7 +20,7 @@ use wiremock::{Mock, MockServer};
 use rust_agent::server::AppState;
 
 mod common;
-use common::server::TestServerConfig;
+use common::server::{collect_until, TestServerConfig};
 use common::sse::sse_response;
 
 fn test_state(tmp: &Path, base_url: &str) -> AppState {
@@ -35,36 +35,6 @@ fn test_state_with_feed(
     TestServerConfig::mock(tmp, base_url)
         .model_alias("cognition", "mock-opus")
         .navigator_state_with_conversation(conversation)
-}
-
-/// Drains the sequencer stream (replay + live) until `pred` matches, then
-/// settles and drains what is ready in the same tick.
-async fn collect_until(
-    sub: rust_agent::session::Subscription,
-    pred: impl Fn(&rust_agent::bus::event::EventEnvelope) -> bool,
-) -> Vec<rust_agent::bus::event::EventEnvelope> {
-    let mut out = Vec::new();
-    if let rust_agent::bus::ResumeOutcome::Replay(replay) = sub.replay {
-        out.extend(replay);
-    }
-    if let Some(mut live) = sub.live {
-        while let Some(env) = tokio::time::timeout(Duration::from_secs(5), live.recv())
-            .await
-            .ok()
-            .flatten()
-        {
-            let matched = pred(&env);
-            out.push(env);
-            if matched {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                while let Ok(env) = live.try_recv() {
-                    out.push(env);
-                }
-                break;
-            }
-        }
-    }
-    out
 }
 
 // Given a session created with profile "navigator" against a scripted

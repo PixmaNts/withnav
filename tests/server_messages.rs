@@ -9,51 +9,9 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use rust_agent::bus::event::EventEnvelope;
-
 mod common;
-use common::server::{create_session, post_message, post_message_body, TestServer};
+use common::server::{collect_until, create_session, post_message, post_message_body, TestServer};
 use common::sse::{http_sse, sse_body};
-
-/// Collects (kind, seq) pairs from replay + live until `pred` matches, then
-/// settles (same-tick sequenced events land in the same batch) and drains
-/// what is ready. Returns everything collected.
-async fn collect_until(
-    sub: rust_agent::session::Subscription,
-    pred: impl Fn(&EventEnvelope) -> bool,
-) -> Vec<EventEnvelope> {
-    const DEADLINE: Duration = Duration::from_secs(20);
-    let deadline = tokio::time::Instant::now() + DEADLINE;
-    let mut out = Vec::new();
-    if let rust_agent::bus::ResumeOutcome::Replay(replay) = sub.replay {
-        out.extend(replay);
-    }
-    if let Some(mut live) = sub.live {
-        loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            let env = tokio::time::timeout(remaining, live.recv())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!("timed out waiting for matching server event; seen: {out:?}")
-                });
-            let Some(env) = env else { break };
-            let matched = pred(&env);
-            out.push(env);
-            if matched {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                while let Ok(env) = live.try_recv() {
-                    out.push(env);
-                }
-                break;
-            }
-        }
-    }
-    assert!(
-        out.iter().any(&pred),
-        "live subscription closed before matching server event; seen: {out:?}"
-    );
-    out
-}
 
 // ---- (a) happy path: 200 {accepted:true} immediately; message reaches the agent ----
 

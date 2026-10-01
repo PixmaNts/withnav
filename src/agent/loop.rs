@@ -2,8 +2,9 @@ use crate::agent::actor::{AgentActor, AgentState};
 use crate::agent::prompt::{assistant_history_message, build_request};
 use crate::agent::response::{classify, HumanRequest, StepOutcome};
 use crate::error::{AgentError, ProviderError};
-use crate::provider::openai::{build_client, build_request as build_http, ChatMessage};
-use crate::provider::{start_and_consume, AssistantMessage, StreamDelta};
+use crate::provider::client::ModelClient;
+use crate::provider::openai::{ChatMessage, ClientCache};
+use crate::provider::{AssistantMessage, StreamDelta};
 use crate::tools::{ToolResult, ToolStatus};
 
 pub const DEFAULT_MAX_STEPS: usize = 50;
@@ -54,6 +55,13 @@ pub async fn run_agent(
 ) -> Result<RunOutcome, AgentError> {
     actor.state = AgentState::Running;
     let budget = max_steps();
+    // One client (one connection pool) for every step of this run.
+    let client = ModelClient::new(
+        "agent",
+        &actor.provider,
+        actor.api_key.clone(),
+        &ClientCache::new(),
+    )?;
 
     for _step in 0..budget {
         if actor.cancel.is_cancelled() {
@@ -71,14 +79,11 @@ pub async fn run_agent(
             actor.max_tokens,
         );
 
-        let client = build_client(&actor.provider)?;
-        let http = build_http(&client, &actor.provider, &actor.api_key, &request);
-        let response = http.send().await.map_err(ProviderError::Http)?;
-
-        let message = match start_and_consume(response, &actor.cancel, &mut |delta| {
-            observe(AgentEvent::Delta(delta))
-        })
-        .await
+        let message = match client
+            .chat(&request, &actor.cancel, &mut |delta| {
+                observe(AgentEvent::Delta(delta))
+            })
+            .await
         {
             Ok(m) => m,
             Err(ProviderError::Canceled { .. }) => {
@@ -294,6 +299,62 @@ mod tests {
         assert!(second.contains("\"tool_call_id\":\"call_1\""));
         assert!(second.contains("\"reasoning_content\":\"let me look\""));
         assert!(second.contains("\"tool_calls\""));
+    }
+
+    /// Serves keep-alive connections and counts how many were opened.
+    async fn spawn_keepalive_mock(
+        bodies: Vec<String>,
+    ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = connections.clone();
+        let bodies = Arc::new(Mutex::new(bodies.into_iter()));
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let bodies = bodies.clone();
+                tokio::spawn(async move {
+                    loop {
+                        let req = read_request(&mut sock).await;
+                        if req.is_empty() {
+                            break;
+                        }
+                        let Some(body) = bodies.lock().await.next() else {
+                            break;
+                        };
+                        let head = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = sock.write_all(head.as_bytes()).await;
+                        let _ = sock.write_all(body.as_bytes()).await;
+                        let _ = sock.flush().await;
+                    }
+                });
+            }
+        });
+        (format!("http://{addr}/v1"), connections)
+    }
+
+    #[tokio::test]
+    async fn one_connection_serves_every_step_of_a_turn() {
+        let toolcall = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"bash","arguments":"{\"command\":\"true\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;
+        let (url, connections) =
+            spawn_keepalive_mock(vec![sse_body(&[toolcall]), sse_body(&[done])]).await;
+
+        let mut actor = make_actor(url, registry_all(), CancellationToken::new());
+        actor.push_user("go");
+        let mut noop = |_e: AgentEvent| {};
+        let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
+        assert!(matches!(outcome, RunOutcome::Done(_)));
+        // Two steps (the step-cap test lowers the process-wide limit to 2), one
+        // pooled client, one connection.
+        assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

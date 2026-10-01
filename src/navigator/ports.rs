@@ -117,6 +117,27 @@ pub trait FimModel: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<FimAnswer, ModelError>> + Send + 'a>>;
 }
 
+/// What the metacognition sees when it rewrites the reflex context: the
+/// intent summary, the active conversation's digest (both may be empty),
+/// the active file, its language and a numbered excerpt around the cursor.
+#[derive(Debug, Clone)]
+pub struct ReflexContextRequest {
+    pub intent: String,
+    pub conversation: String,
+    pub file: String,
+    pub language_id: String,
+    pub excerpt: String,
+}
+
+/// The metacognition's reflex-context seam: one plain chat call (no tools)
+/// producing the short text placed in front of the code the reflex sees.
+pub trait ReflexContextModel: Send + Sync {
+    fn refresh<'a>(
+        &'a self,
+        request: &'a ReflexContextRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<String, ModelError>> + Send + 'a>>;
+}
+
 /// The instinct's model seam: answers several typed questions about a
 /// rendered state in one call. Never produces free text.
 pub trait DecisionModel: Send + Sync {

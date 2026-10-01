@@ -301,6 +301,9 @@ async fn main() -> anyhow::Result<()> {
     if let Some(decision) = layers.decision {
         deps = deps.with_decision(decision);
     }
+    if let Some(llm) = layers.metacognition {
+        deps = deps.with_reflex_context(llm);
+    }
 
     navigator::serve(tokio::io::stdin(), tokio::io::stdout(), deps).await;
 

@@ -1052,3 +1052,247 @@ async fn without_server_info_no_notification_is_sent() {
         "no serverInfo without server_info deps: {msgs:?}"
     );
 }
+
+// ---------- reflex context refresh ----------
+
+use rust_agent::navigator::ports::{ReflexContextModel, ReflexContextRequest};
+
+/// A reflex-context model answering from a script (one entry per call;
+/// `Err` fails the refresh) and recording every request it received.
+#[derive(Clone, Default)]
+struct ScriptedReflexContext {
+    answers: Arc<std::sync::Mutex<Vec<Result<&'static str, &'static str>>>>,
+    requests: Arc<std::sync::Mutex<Vec<ReflexContextRequest>>>,
+}
+
+impl ScriptedReflexContext {
+    fn new(answers: Vec<Result<&'static str, &'static str>>) -> Self {
+        Self {
+            answers: Arc::new(std::sync::Mutex::new(answers)),
+            requests: Arc::default(),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.requests.lock().unwrap().len()
+    }
+}
+
+impl ReflexContextModel for ScriptedReflexContext {
+    fn refresh<'a>(
+        &'a self,
+        request: &'a ReflexContextRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, ModelError>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            self.requests.lock().unwrap().push(request.clone());
+            let next = {
+                let mut answers = self.answers.lock().unwrap();
+                if answers.is_empty() {
+                    Err("script exhausted")
+                } else {
+                    answers.remove(0)
+                }
+            };
+            next.map(str::to_string)
+                .map_err(|m| ModelError::Malformed(m.to_string()))
+        })
+    }
+}
+
+/// A FIM that records the prompt of every request.
+#[derive(Clone, Default)]
+struct RecordingFim {
+    prompts: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl FimModel for RecordingFim {
+    fn complete<'a>(
+        &'a self,
+        request: FimRequest,
+        _cancel: &'a CancellationToken,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<FimAnswer, ModelError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            self.prompts.lock().unwrap().push(request.prompt);
+            Ok(FimAnswer {
+                text: "x".to_string(),
+                usage: Default::default(),
+                latency: Duration::from_millis(5),
+            })
+        })
+    }
+}
+
+impl LspClient {
+    /// One inline completion at the document start; returns once answered.
+    async fn complete(&mut self, id: u64, version: i32) {
+        self.send(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "navigator/inlineCompletion",
+            "params": {"uri": URI, "version": version, "line": 0, "character": 4}
+        }))
+        .await;
+        tokio::time::advance(Duration::from_millis(151)).await;
+        // Skip notifications (idle-timer status) until the response.
+        loop {
+            let resp = self.recv().await;
+            if resp["id"] == id {
+                return;
+            }
+        }
+    }
+}
+
+fn driver_message(
+    session_id: ulid::Ulid,
+    seq: u64,
+    content: &str,
+) -> rust_agent::bus::event::EventEnvelope {
+    rust_agent::bus::event::EventEnvelope::new(
+        session_id,
+        seq,
+        rust_agent::bus::event::EventKind::MessageReceived,
+        json!({
+            "command_id": ulid::Ulid::new().to_string(),
+            "source": "user:http",
+            "target": "agent:main",
+            "mode": "next-turn",
+            "content": content,
+        }),
+    )
+}
+
+/// The first completion serves the intent summary; once the refresh has
+/// completed the next one carries the refreshed text. Inside a minute with
+/// unchanged inputs the model is not called again; a changed conversation
+/// digest after a minute refreshes again; a changed digest inside a minute
+/// does not.
+#[tokio::test(start_paused = true)]
+async fn reflex_context_is_refreshed_by_the_metacognition() {
+    let tmp = tempfile::tempdir().unwrap();
+    let log_path = tmp.path().join("nav.jsonl");
+    let feed = navigator::ConversationFeed::new();
+    let session_id = ulid::Ulid::new();
+    feed.register_session(
+        session_id,
+        Arc::new(|_| Box::pin(async { Ok::<(), String>(()) })),
+    );
+    feed.observe(&driver_message(session_id, 1, "use anyhow for errors"))
+        .await;
+
+    let model = ScriptedReflexContext::new(vec![Ok("REFRESHED-ONE"), Ok("REFRESHED-TWO")]);
+    let fim = RecordingFim::default();
+    let deps = NavigatorDeps::new(Arc::new(MockCommenter::new(vec![])), log_path.clone())
+        .with_fim(Arc::new(fim.clone()))
+        .with_reflex_context(Arc::new(model.clone()))
+        .with_model_ids(None, None, Some("fast-model".into()))
+        .with_conversation(feed.clone());
+    let mut client = spawn_server(deps);
+
+    client.initialize(json!({})).await;
+    client
+        .notify("navigator/intent", json!({"text": "fix the parser"}))
+        .await;
+    client.did_open(URI, &base_text(), 1).await;
+
+    // 1. Intent summary first; the refresh starts in the background.
+    client.complete(21, 1).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(model.calls(), 1);
+    {
+        let prompts = fim.prompts.lock().unwrap();
+        assert!(prompts[0].contains("fix the parser"), "{}", prompts[0]);
+        assert!(!prompts[0].contains("REFRESHED-ONE"));
+    }
+    {
+        let requests = model.requests.lock().unwrap();
+        assert_eq!(requests[0].intent, "fix the parser");
+        assert!(requests[0].conversation.contains("use anyhow for errors"));
+        assert_eq!(requests[0].file, URI);
+        assert_eq!(requests[0].language_id, "rust");
+        assert!(requests[0].excerpt.contains("   1 | fn main() {"));
+    }
+
+    // 2. The refreshed text is served; same inputs inside a minute: no call.
+    client.complete(22, 1).await;
+    assert!(fim.prompts.lock().unwrap()[1].contains("REFRESHED-ONE"));
+    assert_eq!(model.calls(), 1);
+
+    // 3. A changed digest inside a minute does not refresh.
+    feed.observe(&driver_message(session_id, 2, "and add a --force flag"))
+        .await;
+    client.complete(23, 1).await;
+    assert_eq!(model.calls(), 1);
+
+    // 4. After a minute, with the digest changed, it refreshes.
+    tokio::time::advance(Duration::from_secs(61)).await;
+    client.complete(24, 1).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(model.calls(), 2);
+    assert!(model.requests.lock().unwrap()[1]
+        .conversation
+        .contains("and add a --force flag"));
+    client.complete(25, 1).await;
+    assert!(fim.prompts.lock().unwrap()[4].contains("REFRESHED-TWO"));
+
+    // 5. Unchanged inputs after another minute: still no call.
+    tokio::time::advance(Duration::from_secs(61)).await;
+    client.complete(26, 1).await;
+    assert_eq!(model.calls(), 2);
+
+    // The refresh calls are logged against the metacognition.
+    let records = std::fs::read_to_string(log_path).unwrap();
+    let calls: Vec<Value> = records
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .filter(|v: &Value| v["kind"] == "call" && v["purpose"] == "reflex_context")
+        .collect();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0]["layer"], "metacognition");
+    assert_eq!(calls[0]["model"], "fast-model");
+}
+
+/// A failed refresh keeps the previous context (here: the intent summary),
+/// logs the error, and is retried only after the minute.
+#[tokio::test(start_paused = true)]
+async fn reflex_context_refresh_failure_keeps_the_previous_context() {
+    let tmp = tempfile::tempdir().unwrap();
+    let log_path = tmp.path().join("nav.jsonl");
+    let model = ScriptedReflexContext::new(vec![Err("boom"), Ok("RECOVERED")]);
+    let fim = RecordingFim::default();
+    let deps = NavigatorDeps::new(Arc::new(MockCommenter::new(vec![])), log_path.clone())
+        .with_fim(Arc::new(fim.clone()))
+        .with_reflex_context(Arc::new(model.clone()));
+    let mut client = spawn_server(deps);
+
+    client.initialize(json!({})).await;
+    client
+        .notify("navigator/intent", json!({"text": "fix the parser"}))
+        .await;
+    client.did_open(URI, &base_text(), 1).await;
+
+    client.complete(31, 1).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    client.complete(32, 1).await;
+    {
+        let prompts = fim.prompts.lock().unwrap();
+        assert!(prompts[1].contains("fix the parser"), "{}", prompts[1]);
+    }
+    assert_eq!(model.calls(), 1, "no retry inside the minute");
+    let records = std::fs::read_to_string(&log_path).unwrap();
+    assert!(
+        records.contains("reflex context refresh") && records.contains("boom"),
+        "the error is logged: {records}"
+    );
+
+    // After the minute the inputs are still "never computed": retried.
+    tokio::time::advance(Duration::from_secs(61)).await;
+    client.complete(33, 1).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    client.complete(34, 1).await;
+    assert_eq!(model.calls(), 2);
+    assert!(fim.prompts.lock().unwrap()[3].contains("RECOVERED"));
+}

@@ -102,6 +102,10 @@ pub enum LogRecord<'a> {
         #[serde(skip_serializing_if = "Option::is_none")]
         output_tokens: Option<u64>,
         cancelled: bool,
+        /// What the call was for, when the layer makes several kinds of call
+        /// (`reflex_context`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        purpose: Option<&'a str>,
     },
     ReflexShown {
         request_id: &'a str,
@@ -283,6 +287,7 @@ mod tests {
             input_tokens: Some(454),
             output_tokens: Some(96),
             cancelled: false,
+            purpose: None,
         });
         log.append(&LogRecord::ReflexShown {
             request_id: "t2",

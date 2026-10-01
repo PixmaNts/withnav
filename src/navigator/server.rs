@@ -31,7 +31,7 @@ use crate::navigator::log::{
 use crate::navigator::pipeline::{
     Action, Pipeline, PipelineError, PipelineSnapshot, TriggerInputs, TriggerKind, NO_REMARK_MS,
 };
-use crate::navigator::ports::DecisionModel;
+use crate::navigator::ports::{DecisionModel, ReflexContextModel, ReflexContextRequest};
 use crate::navigator::protocol::{
     ClearNotification, ClearParams, DiagnosticItem, DiagnosticsParams, FeedbackParams,
     InlineCompletionResult, IntentParams, Position, ReflexShownParams, RemarkNotification,
@@ -83,7 +83,37 @@ struct Inner {
     conversation: Option<crate::navigator::ConversationFeed>,
     /// Startup notes about disabled layers, surfaced once after initialize.
     disabled_layers: Vec<String>,
+    /// The metacognition's reflex-context seam; None keeps the intent
+    /// summary as the reflex context.
+    reflex_context_model: Option<Arc<dyn ReflexContextModel>>,
+    /// The refreshed reflex context and what it was computed from.
+    reflex_context: Mutex<ReflexContextCache>,
 }
+
+/// The reflex context the metacognition keeps current: the text served in
+/// front of the code, when and from what it was computed. Until the first
+/// refresh succeeds `text` is None and the intent summary is served.
+#[derive(Default)]
+struct ReflexContextCache {
+    text: Option<String>,
+    computed_at: Option<Instant>,
+    /// Hash of (intent summary, conversation digest, active file uri) the
+    /// current text was computed from.
+    inputs: Option<u64>,
+    /// Start of the latest refresh attempt, successful or not.
+    last_attempt: Option<Instant>,
+    refreshing: bool,
+    /// The latest inline-completion cursor: the excerpt anchor for
+    /// refreshes triggered from `didSave`.
+    cursor: Option<(String, u32)>,
+}
+
+/// A refresh runs at most this often (and only when its inputs changed).
+const REFLEX_CONTEXT_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+/// The refreshed text is kept to about 300 tokens.
+const REFLEX_CONTEXT_MAX_CHARS: usize = 1200;
+/// Lines of document on each side of the cursor in the refresh excerpt.
+const REFLEX_EXCERPT_RADIUS: usize = 20;
 
 impl NavigatorBackend {
     pub fn new(client: Client, deps: NavigatorDeps) -> Self {
@@ -120,6 +150,8 @@ impl NavigatorBackend {
                 server_info: deps.server_info,
                 conversation: deps.conversation,
                 disabled_layers: deps.disabled_layers,
+                reflex_context_model: deps.reflex_context,
+                reflex_context: Mutex::new(ReflexContextCache::default()),
             }),
         }
     }
@@ -657,6 +689,7 @@ impl Inner {
                 input_tokens: None,
                 output_tokens: None,
                 cancelled: false,
+                purpose: None,
             });
         }
         record.pipeline_hash = Some(evaluation.hash.clone());
@@ -842,6 +875,7 @@ impl Inner {
                     input_tokens: None,
                     output_tokens: None,
                     cancelled: false,
+                    purpose: None,
                 });
                 self.log.append(&LogRecord::Remark {
                     id: &id,
@@ -874,6 +908,7 @@ impl Inner {
                     input_tokens: None,
                     output_tokens: None,
                     cancelled: false,
+                    purpose: None,
                 });
                 self.log.append(&LogRecord::Silent {
                     uri: &ctx.uri,
@@ -896,6 +931,7 @@ impl Inner {
                     input_tokens: None,
                     output_tokens: None,
                     cancelled: false,
+                    purpose: None,
                 });
                 // A malformed answer is a model failure, not a provider
                 // failure: different delivered outcome in the log.
@@ -1148,6 +1184,7 @@ impl Inner {
                 self.reload_pipeline().await;
             }
         }
+        self.refresh_reflex_context(&uri_key, None).await;
         self.evaluate(uri_key, TriggerKind::Save).await;
     }
 
@@ -1176,9 +1213,134 @@ impl Inner {
                 input_tokens: None,
                 output_tokens: None,
                 cancelled: false,
+                purpose: None,
             });
         }
     }
+}
+
+impl Inner {
+    /// The text served as the reflex context: the metacognition's refreshed
+    /// text once one exists, else the intent summary.
+    async fn reflex_context_text(&self) -> String {
+        if let Some(text) = self.reflex_context.lock().await.text.clone() {
+            return text;
+        }
+        self.current_intent().await.0
+    }
+
+    /// Starts a background refresh of the reflex context when it is due:
+    /// not already running, the latest attempt older than a minute, and the
+    /// inputs (intent summary, conversation digest, active file) changed
+    /// since the current text was computed. Never waits on the model: the
+    /// current text keeps being served meanwhile. A failed or empty refresh
+    /// keeps the previous text, is logged, and is retried after the interval.
+    async fn refresh_reflex_context(self: &Arc<Self>, uri: &str, cursor_line: Option<u32>) {
+        let Some(model) = self.reflex_context_model.clone() else {
+            return;
+        };
+        let (intent, _) = self.current_intent().await;
+        let conversation = self
+            .conversation
+            .as_ref()
+            .map(|feed| feed.digest())
+            .unwrap_or_default();
+        let inputs = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            (&intent, &conversation, uri).hash(&mut hasher);
+            hasher.finish()
+        };
+        let now = Instant::now();
+        let line = {
+            let mut cache = self.reflex_context.lock().await;
+            if let Some(line) = cursor_line {
+                cache.cursor = Some((uri.to_string(), line));
+            }
+            if cache.refreshing
+                || cache.inputs == Some(inputs)
+                || cache
+                    .last_attempt
+                    .is_some_and(|t| now.duration_since(t) < REFLEX_CONTEXT_MIN_INTERVAL)
+            {
+                return;
+            }
+            cache.refreshing = true;
+            cache.last_attempt = Some(now);
+            cache
+                .cursor
+                .as_ref()
+                .filter(|(u, _)| u == uri)
+                .map_or(0, |(_, l)| *l)
+        };
+        let text = self.state.lock().await.get(uri).map(|d| d.text.clone());
+        let Some(text) = text else {
+            self.reflex_context.lock().await.refreshing = false;
+            return;
+        };
+        let language_id = self
+            .language_ids
+            .lock()
+            .await
+            .get(uri)
+            .cloned()
+            .unwrap_or_else(|| "plaintext".to_string());
+        let request = ReflexContextRequest {
+            intent,
+            conversation,
+            file: uri.to_string(),
+            language_id,
+            excerpt: numbered_excerpt(&text, line as usize, REFLEX_EXCERPT_RADIUS),
+        };
+        let inner = Arc::clone(self);
+        let uri = uri.to_string();
+        tokio::spawn(async move {
+            let started = Instant::now();
+            let result = model.refresh(&request).await;
+            inner.log.append(&LogRecord::Call {
+                layer: "metacognition",
+                model: inner.metacognition_model.as_deref().unwrap_or("unknown"),
+                latency_ms: started.elapsed().as_millis(),
+                input_tokens: None,
+                output_tokens: None,
+                cancelled: false,
+                purpose: Some("reflex_context"),
+            });
+            let mut cache = inner.reflex_context.lock().await;
+            cache.refreshing = false;
+            match result {
+                Ok(text) if !text.trim().is_empty() => {
+                    cache.text = Some(crate::navigator::log::excerpt(
+                        text.trim(),
+                        REFLEX_CONTEXT_MAX_CHARS,
+                    ));
+                    cache.computed_at = Some(Instant::now());
+                    cache.inputs = Some(inputs);
+                }
+                Ok(_) => inner.log.append(&LogRecord::Error {
+                    uri: &uri,
+                    message: "reflex context refresh: empty answer",
+                }),
+                Err(e) => inner.log.append(&LogRecord::Error {
+                    uri: &uri,
+                    message: &format!("reflex context refresh: {e}"),
+                }),
+            }
+        });
+    }
+}
+
+/// The lines within `radius` of `line` (0-based), each prefixed by its
+/// 1-based number.
+fn numbered_excerpt(text: &str, line: usize, radius: usize) -> String {
+    let start = line.saturating_sub(radius);
+    text.lines()
+        .enumerate()
+        .skip(start)
+        .take(radius * 2 + 1)
+        .map(|(i, l)| format!("{:>4} | {l}", i + 1))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 impl LanguageServer for NavigatorBackend {
@@ -1337,9 +1499,13 @@ impl NavigatorBackend {
             line: params.line,
             character: params.character,
         };
-        // The reflex context: the intent record summary for now (the
-        // metacognition refreshes it in a later slice). The service caps it.
-        let (context, _) = self.inner.current_intent().await;
+        // The reflex context: the metacognition's refreshed text, else the
+        // intent summary. The refresh runs in the background; the service
+        // caps the text.
+        let context = self.inner.reflex_context_text().await;
+        self.inner
+            .refresh_reflex_context(&params.uri, Some(params.line))
+            .await;
         let started = Instant::now();
         match reflex
             .suggest(

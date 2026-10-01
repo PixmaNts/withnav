@@ -39,7 +39,7 @@ pub use pipeline::{
 };
 pub use ports::{
     Answer, Answers, DecisionModel, FimAnswer, FimModel, FimRequest, ModelError, Question,
-    Questions,
+    Questions, ReflexContextModel, ReflexContextRequest,
 };
 pub use protocol::{
     ClearParams, FeedbackParams, InlineCompletionItem, InlineCompletionParams,
@@ -89,6 +89,9 @@ pub struct NavigatorDeps {
     pub commenter: Arc<dyn Metacognition>,
     pub fim: Option<Arc<dyn FimModel>>,
     pub decision: Option<Arc<dyn DecisionModel>>,
+    /// The metacognition's reflex-context seam; `None` keeps the intent
+    /// summary as the reflex context.
+    pub reflex_context: Option<Arc<dyn ReflexContextModel>>,
     /// Model ids for the per-layer call records.
     pub reflex_model: Option<String>,
     pub instinct_model: Option<String>,
@@ -118,6 +121,7 @@ impl NavigatorDeps {
             commenter: Arc::new(CommenterAsMetacognition(commenter)),
             fim: None,
             decision: None,
+            reflex_context: None,
             reflex_model: None,
             instinct_model: None,
             metacognition_model: None,
@@ -136,6 +140,7 @@ impl NavigatorDeps {
             commenter,
             fim: None,
             decision: None,
+            reflex_context: None,
             reflex_model: None,
             instinct_model: None,
             metacognition_model: None,
@@ -157,6 +162,12 @@ impl NavigatorDeps {
     /// Builder-style: attaches the instinct layer's model seam.
     pub fn with_decision(mut self, decision: Arc<dyn DecisionModel>) -> Self {
         self.decision = Some(decision);
+        self
+    }
+
+    /// Builder-style: attaches the seam refreshing the reflex context.
+    pub fn with_reflex_context(mut self, model: Arc<dyn ReflexContextModel>) -> Self {
+        self.reflex_context = Some(model);
         self
     }
 

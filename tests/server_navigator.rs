@@ -281,8 +281,12 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
         .expect("create");
 
     // Turn 1: the cognition yields on ask.
+    // Subscribe before sending: `collect_until` matches live events only,
+    // and a fast turn would otherwise be over (in the replay) before the
+    // subscription existed.
+    let sub = subscribe(&state, id).await;
     send_text(&state, id, "add an auth remove command").await;
-    let yielded = collect_until(subscribe(&state, id).await, |e| {
+    let yielded = collect_until(sub, |e| {
         e.kind == "agent.state" && e.payload["to"] == "yielded"
     })
     .await;
@@ -308,8 +312,9 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
 
     // The driver answers the ask. Their message must become the TOOL
     // result; only then does the queued wake arrive, as a user message.
+    let sub = subscribe(&state, id).await;
     send_text(&state, id, "the local scope").await;
-    let events = collect_until(subscribe(&state, id).await, |e| {
+    let events = collect_until(sub, |e| {
         e.kind == "message.received"
             && e.payload["source"] == "navigator"
             && e.payload["content"]

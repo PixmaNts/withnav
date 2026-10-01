@@ -81,7 +81,7 @@ async fn list_sessions(base: &str, workspace: &Path) -> Value {
 
 /// Collects replay + live until `pred` matches, then settles.
 async fn collect_until(
-    sub: rust_agent::bus::SubscribeReply,
+    sub: rust_agent::session::Subscription,
     pred: impl Fn(&EventEnvelope) -> bool,
 ) -> Vec<EventEnvelope> {
     let mut out = Vec::new();
@@ -191,8 +191,11 @@ async fn converse_persists_events_title_and_transcript() {
     let created: Value = created.json().await.expect("json");
     let id = created["session_id"].as_str().expect("id").to_string();
 
-    let handle = server.state.handle(id.parse().unwrap()).expect("live");
-    let sub = handle.sequencer.subscribe_since(None).await.expect("sub");
+    let sub = server
+        .state
+        .subscribe(id.parse().unwrap(), None)
+        .await
+        .expect("sub");
     let msg = "Remember the word: pineapple<editor-context>{\"file\":\"a.rs\"}</editor-context>";
     post_message_ok(&server.base, &id, msg).await;
     let events = collect_until(sub, |e| e.kind == "turn.end").await;
@@ -211,7 +214,7 @@ async fn converse_persists_events_title_and_transcript() {
 
     // Direct store probe: events stored except llm.delta; no session.end
     // while live; transcript snapshot present.
-    let store = rust_agent::server::store::HistoryStore::open(&db).unwrap();
+    let store = rust_agent::session::store::HistoryStore::open(&db).unwrap();
     let loaded = tokio::time::timeout(Duration::from_secs(5), store.load(id.parse().unwrap()))
         .await
         .expect("load")
@@ -254,8 +257,11 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
     let id = created["session_id"].as_str().expect("id").to_string();
 
     // Turn 1 in the ORIGINAL state.
-    let handle = server.state.handle(id.parse().unwrap()).expect("live");
-    let sub = handle.sequencer.subscribe_since(None).await.expect("sub");
+    let sub = server
+        .state
+        .subscribe(id.parse().unwrap(), None)
+        .await
+        .expect("sub");
     post_message_ok(&server.base, &id, "Remember the word: pineapple").await;
     let events = collect_until(sub, |e| e.kind == "turn.end").await;
     let original_seqs: Vec<u64> = events.iter().map(|e| e.seq).collect();
@@ -286,8 +292,10 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
     let base2 = format!("http://{addr2}");
 
     // A fresh subscriber (no cursor) sees the WHOLE past conversation.
-    let handle2 = state2.handle(id.parse().unwrap()).expect("live 2");
-    let sub2 = handle2.sequencer.subscribe_since(None).await.expect("sub2");
+    let sub2 = state2
+        .subscribe(id.parse().unwrap(), None)
+        .await
+        .expect("sub2");
     if let rust_agent::bus::ResumeOutcome::Replay(replay) = &sub2.replay {
         assert!(
             replay.iter().any(|e| e.kind == "session.start"),
@@ -381,13 +389,12 @@ async fn a_resumed_session_continues_after_the_stored_session_end() {
     let id = created["session_id"].as_str().expect("id").to_string();
     let ulid: ulid::Ulid = id.parse().unwrap();
 
-    let handle = server.state.handle(ulid).expect("live");
-    let sub = handle.sequencer.subscribe_since(None).await.expect("sub");
+    let sub = server.state.subscribe(ulid, None).await.expect("sub");
     post_message_ok(&server.base, &id, "first turn").await;
     let _ = collect_until(sub, |e| e.kind == "turn.end").await;
 
     // Stop it, observing the real session.end.
-    let sub = handle.sequencer.subscribe_since(None).await.expect("sub");
+    let sub = server.state.subscribe(ulid, None).await.expect("sub");
     server.state.close_session(ulid).await.expect("close");
     let closed = collect_until(sub, |e| e.kind == "session.end").await;
     let end_seq = closed
@@ -402,8 +409,7 @@ async fn a_resumed_session_continues_after_the_stored_session_end() {
         .await
         .expect("resume");
     assert!(resumed);
-    let handle = server.state.handle(ulid).expect("live again");
-    let sub = handle.sequencer.subscribe_since(None).await.expect("sub");
+    let sub = server.state.subscribe(ulid, None).await.expect("sub");
     if let rust_agent::bus::ResumeOutcome::Replay(replay) = &sub.replay {
         assert!(
             !replay.iter().any(|e| e.kind == "session.end"),
@@ -466,7 +472,7 @@ async fn resuming_an_old_navigator_transcript_sends_the_role_prompt_once() {
     std::fs::create_dir_all(&ws).expect("ws");
 
     let id = ulid::Ulid::new();
-    let store = rust_agent::server::store::HistoryStore::open(&db).expect("open");
+    let store = rust_agent::session::store::HistoryStore::open(&db).expect("open");
     store
         .record_session(
             id,
@@ -508,8 +514,7 @@ async fn resuming_an_old_navigator_transcript_sends_the_role_prompt_once() {
     assert!(resumed);
     let (addr, task) = spawn_server(state.clone()).await;
     let base = format!("http://{addr}");
-    let handle = state.handle(id).expect("live");
-    let sub = handle.sequencer.subscribe_since(None).await.expect("sub");
+    let sub = state.subscribe(id, None).await.expect("sub");
     post_message_ok(&base, &id.to_string(), "new question").await;
     let _ = collect_until(sub, |e| e.kind == "turn.end").await;
 
@@ -547,8 +552,11 @@ async fn delete_removes_from_memory_and_store() {
     .await
     .expect("json");
     let id = created["session_id"].as_str().expect("id").to_string();
-    let handle = server.state.handle(id.parse().unwrap()).expect("live");
-    let sub = handle.sequencer.subscribe_since(None).await.expect("sub");
+    let sub = server
+        .state
+        .subscribe(id.parse().unwrap(), None)
+        .await
+        .expect("sub");
     post_message_ok(&server.base, &id, "hello").await;
     let _ = collect_until(sub, |e| e.kind == "turn.end").await;
     wait_for_list(&server.base, &server.ws, 1).await;
@@ -559,8 +567,10 @@ async fn delete_removes_from_memory_and_store() {
         .await
         .expect("delete");
     assert_eq!(resp.status(), 204);
-    assert!(server.state.handle(id.parse().unwrap()).is_none());
-    assert!(server.state.slot(id.parse().unwrap()).is_none());
+    assert!(matches!(
+        server.state.session_summary(id.parse().unwrap()).await,
+        Err(rust_agent::error::ServerError::SessionNotFound(_))
+    ));
 
     // Store is empty for the workspace.
     for _ in 0..50 {
@@ -617,8 +627,11 @@ async fn list_is_per_workspace() {
         .await
         .expect("json");
         let id = created["session_id"].as_str().expect("id").to_string();
-        let handle = server.state.handle(id.parse().unwrap()).expect("live");
-        let sub = handle.sequencer.subscribe_since(None).await.expect("sub");
+        let sub = server
+            .state
+            .subscribe(id.parse().unwrap(), None)
+            .await
+            .expect("sub");
         post_message_ok(&server.base, &id, text).await;
         let _ = collect_until(sub, |e| e.kind == "turn.end").await;
     }
@@ -653,8 +666,10 @@ async fn without_history_db_nothing_is_written() {
     .await
     .expect("json");
     let id = created["session_id"].as_str().expect("id").to_string();
-    let handle = state.handle(id.parse().unwrap()).expect("live");
-    let sub = handle.sequencer.subscribe_since(None).await.expect("sub");
+    let sub = state
+        .subscribe(id.parse().unwrap(), None)
+        .await
+        .expect("sub");
     post_message_ok(&format!("http://{addr}"), &id, "no persistence").await;
     let _ = collect_until(sub, |e| e.kind == "turn.end").await;
 

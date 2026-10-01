@@ -34,8 +34,8 @@ Dependencies point down this list. A module never imports one above it.
 | `tools/` | the tool trait, the registry, path validation (`validate_path`), the six tools | which tools a session gets |
 | `agent/` | `AgentActor` (transcript, pending `ask`, optional role prompt), `run_agent` with one `AgentEvent` observer, request building | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events | HTTP, storage |
-| `session/` | the `Service` (registry and router, `service.rs`), teardown, tombstones and their FIFO (`lifecycle.rs`), actor construction (`actor.rs`), the SQLite history (`store.rs`) | HTTP, SSE |
-| `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service`. `server::session` and `server::store` are temporary re-exports | session state, the model layers |
+| `session/` | the `Service` (registry and router, `service.rs`), teardown, tombstones and their FIFO (`lifecycle.rs`), actor construction (`actor.rs`), subscriptions, the `SessionHooks` seam (`hooks.rs`: default model, actor setup, a `started` callback with a `SessionSender` that can only post) and the SQLite history (`store.rs`) | HTTP, SSE, any profile by name |
+| `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service` | session state, the model layers |
 | `navigator/` | everything the driver perceives as the navigator, below | session internals |
 
 ### Inside `navigator/`
@@ -73,7 +73,7 @@ condition holds. `remark` calls the metacognition with the rendered branch promp
 
 **Chat to cognition.** The extension posts driver messages to the session server. The bus
 sequences them, the runtime task runs `run_agent` on the `cognition` alias, events stream back over
-SSE. A navigator session also feeds the `ConversationFeed`: its digest reaches the fast layers'
+SSE. A navigator session also feeds the `ConversationFeed`, attached by `NavigatorHooks::started` (`navigator/session_hooks.rs`; a resume replays without announcing old turns): its digest reaches the fast layers'
 prompts, and every driver turn end triggers a `conversation` evaluation on the focused document.
 
 ## State on disk
@@ -106,8 +106,6 @@ prompts, and every driver turn end triggers a `conversation` evaluation on the f
 
 Tracked in [`.scratch/refactor/plan.md`](.scratch/refactor/plan.md):
 
-- `session/` still imports the navigator's conversation feed (registration, wake poster); the
-  actor-profile policy already comes in through `session::SessionHooks`.
 - The same events live in the bus ring buffer and in SQLite; tombstones duplicate history. Planned:
   SQLite as the single history, after its writes are made trustworthy.
 - `navigator/replay.rs` (about 860 lines) and `navigator/metacognition.rs` (about 650) exceed the

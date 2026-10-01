@@ -312,7 +312,7 @@ async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
     };
     crate::server::routes::serve(
         config,
-        std::sync::Arc::new(crate::navigator::NavigatorHooks),
+        std::sync::Arc::new(crate::navigator::NavigatorHooks::new()),
     )
     .await?;
     Ok(EXIT_DONE)

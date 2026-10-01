@@ -38,11 +38,12 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
-use super::actor::{build_actor, spawn_feed_watch, start_candidate, wake_poster};
+use super::actor::{build_actor, start_candidate};
 use super::config::SessionConfig;
-use super::hooks::{NoHooks, SessionHooks};
+use super::hooks::{NoHooks, SessionHooks, StartedSession};
 use super::lifecycle::Tombstone;
 use super::message::{accept, MessageAccepted};
+use super::sender::SessionSender;
 use crate::agent::actor::AgentActor;
 use crate::bus::command::Command;
 use crate::bus::event::ROOT_ACTOR_ID;
@@ -143,18 +144,13 @@ pub struct SessionSummary {
 /// clone (all fields are `Arc`).
 #[derive(Clone, Debug)]
 pub struct Service {
-    pub sessions: Arc<Mutex<HashMap<SessionId, SessionSlot>>>,
+    pub(super) sessions: Arc<Mutex<HashMap<SessionId, SessionSlot>>>,
     /// Insertion order of tombstone ids — the FIFO eviction queue backing
     /// [`MAX_TOMBSTONES`].
     tombstone_order: Arc<Mutex<VecDeque<SessionId>>>,
-    pub config: Arc<SessionConfig>,
+    pub(super) config: Arc<SessionConfig>,
     /// The conversation-history store; `None` when `history_db` is unset.
     history: Option<Arc<super::store::HistoryStore>>,
-    /// The navigator's conversation hub, when this server shares its
-    /// process with the language server. Set once by the host binary
-    /// before any session exists; the feed is optional so plain HTTP
-    /// servers and tests keep working without one.
-    conversation: Option<crate::navigator::ConversationFeed>,
     /// Actor-profile policy injected by the host binary.
     hooks: Arc<dyn SessionHooks>,
 }
@@ -162,23 +158,12 @@ pub struct Service {
 impl Service {
     /// A service without any profile behaviour ([`NoHooks`]).
     pub fn new(config: SessionConfig) -> Self {
-        Self::with_conversation(config, Arc::new(NoHooks), None)
+        Self::with_hooks(config, Arc::new(NoHooks))
     }
 
-    /// [`Service::new`] with the host's actor-profile policy.
+    /// [`Service::new`] with the host's profile policy and lifecycle
+    /// callbacks.
     pub fn with_hooks(config: SessionConfig, hooks: Arc<dyn SessionHooks>) -> Self {
-        Self::with_conversation(config, hooks, None)
-    }
-
-    /// [`Service::with_hooks`] sharing the navigator's conversation hub: a
-    /// navigator-profile session registers itself there and a subscriber
-    /// task feeds its events, so the language server can read the digest
-    /// and wake the cognition.
-    pub fn with_conversation(
-        config: SessionConfig,
-        hooks: Arc<dyn SessionHooks>,
-        conversation: Option<crate::navigator::ConversationFeed>,
-    ) -> Self {
         let history = config.history_db.as_deref().and_then(|path| {
             match super::store::HistoryStore::open(path) {
                 Ok(store) => Some(Arc::new(store)),
@@ -195,14 +180,8 @@ impl Service {
             tombstone_order: Arc::new(Mutex::new(VecDeque::new())),
             config: Arc::new(config),
             history,
-            conversation,
             hooks,
         }
-    }
-
-    /// The conversation hub, when one was attached.
-    pub fn conversation(&self) -> Option<&crate::navigator::ConversationFeed> {
-        self.conversation.as_ref()
     }
 
     /// The history store, when persistence is enabled.
@@ -226,7 +205,7 @@ impl Service {
 
     /// A clone of the LIVE handle, for routing without holding the lock.
     /// `None` for tombstones (not routable) and unknown ids.
-    pub fn handle(&self, id: SessionId) -> Option<SessionHandle> {
+    pub(crate) fn handle(&self, id: SessionId) -> Option<SessionHandle> {
         match self.lock_sessions().get(&id) {
             Some(SessionSlot::Live(handle)) => Some(handle.clone()),
             Some(SessionSlot::Tombstone(_)) | None => None,
@@ -235,7 +214,7 @@ impl Service {
 
     /// A cloned slot (live handle vs tombstone) for the SSE endpoint, so it
     /// can distinguish a stopped session from an unknown id; `None` unknown.
-    pub fn slot(&self, id: SessionId) -> Option<SessionSlot> {
+    pub(crate) fn slot(&self, id: SessionId) -> Option<SessionSlot> {
         self.lock_sessions().get(&id).cloned()
     }
 
@@ -243,7 +222,7 @@ impl Service {
     /// unknown ids and tombstones, `Err(409 SessionStopping)` for a
     /// Stopping session. No lock is
     /// held past the return — the caller awaits only on the clone.
-    pub fn routable_handle(&self, id: SessionId) -> Result<SessionHandle, ServerError> {
+    pub(crate) fn routable_handle(&self, id: SessionId) -> Result<SessionHandle, ServerError> {
         match self.lock_sessions().get(&id) {
             Some(SessionSlot::Live(handle)) if handle.lifecycle == Lifecycle::Active => {
                 Ok(handle.clone())
@@ -533,53 +512,35 @@ impl Service {
         // A resumed id replaces its tombstone slot: also drop it from the
         // eviction queue so a later close cannot evict the now-live id.
         self.lock_tombstones().retain(|other| *other != session_id);
-        // The conversation hub knows this session (navigator profiles
-        // only): a poster that reuses the POST-message core in-process —
-        // same validation, same event-before-action sequencing, only the
-        // sender is the navigator itself — and a subscriber task that
-        // feeds the session's events into the digest. Failed posts
-        // (stopping, full inbox) surface as the error string the feed
-        // logs; the poster holds its own handle clone so no registry lock
-        // is ever held across an await.
-        let feed_watch = (profile == Some(crate::navigator::NAVIGATOR_PROFILE))
-            .then_some(self.conversation.as_ref())
-            .flatten()
-            .map(|feed| {
-                feed.register_session(
-                    session_id,
-                    wake_poster(
-                        SessionHandle {
-                            inbox_tx: inbox_tx.clone(),
-                            sequencer: sequencer.clone(),
-                            session_cancel: session_cancel.clone(),
-                            runtime_task: runtime_task.clone(),
-                            actor_id: ROOT_ACTOR_ID.to_string(),
-                            lifecycle: Lifecycle::Active,
-                            actor_state: "idle".to_string(),
-                            workspace: workspace.clone(),
-                            model: alias.clone(),
-                        },
-                        session_id,
-                    ),
-                );
-                (feed.clone(), session_cancel.clone())
-            });
-        self.lock_sessions().insert(
-            session_id,
-            SessionSlot::Live(SessionHandle {
-                inbox_tx,
-                sequencer,
-                session_cancel,
-                runtime_task,
-                actor_id: ROOT_ACTOR_ID.to_string(),
-                lifecycle: Lifecycle::Active,
-                actor_state: "idle".to_string(),
-                workspace: workspace.clone(),
-                model: alias.clone(),
-            }),
-        );
-        if let Some((feed, session_cancel)) = feed_watch {
-            spawn_feed_watch(self.clone(), feed, session_cancel, session_id);
+        let handle = SessionHandle {
+            inbox_tx,
+            sequencer,
+            session_cancel,
+            runtime_task,
+            actor_id: ROOT_ACTOR_ID.to_string(),
+            lifecycle: Lifecycle::Active,
+            actor_state: "idle".to_string(),
+            workspace: workspace.clone(),
+            model: alias,
+        };
+        let sender = SessionSender::new(session_id, handle.clone());
+        let cancel = handle.session_cancel.clone();
+        self.lock_sessions()
+            .insert(session_id, SessionSlot::Live(handle));
+        // The host learns of the session once it is routable. A session
+        // already closing hands back a subscription that ends at once.
+        if let Ok(subscription) = self.subscribe(session_id, None).await {
+            self.hooks.started(
+                StartedSession {
+                    id: session_id,
+                    profile: profile.map(str::to_string),
+                    workspace,
+                    resumed: is_resume,
+                },
+                sender,
+                subscription,
+                cancel,
+            );
         }
         Ok(session_id)
     }

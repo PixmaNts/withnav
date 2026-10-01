@@ -24,12 +24,7 @@ async fn service_create_without_http_emits_start_zero() {
         .await
         .expect("create without http");
 
-    let handle = service.handle(id).expect("session is live");
-    let mut reply = handle
-        .sequencer
-        .subscribe_since(None)
-        .await
-        .expect("subscribe");
+    let mut reply = service.subscribe(id, None).await.expect("subscribe");
     let ResumeOutcome::Replay(events) = &reply.replay else {
         panic!("a fresh subscription replays: {:?}", reply.replay);
     };
@@ -91,12 +86,7 @@ async fn service_send_rejects_invalid_content_without_event() {
         Err(ServerError::MalformedBody(_))
     ));
 
-    let handle = service.handle(id).expect("live");
-    let reply = handle
-        .sequencer
-        .subscribe_since(None)
-        .await
-        .expect("subscribe");
+    let reply = service.subscribe(id, None).await.expect("subscribe");
     let ResumeOutcome::Replay(events) = &reply.replay else {
         panic!("a fresh subscription replays");
     };

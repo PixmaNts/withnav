@@ -1,15 +1,10 @@
 //! HTTP state: [`AppState`] holds the session [`Service`] plus the HTTP
 //! configuration, and derefs to the service, so routes call
-//! `state.create_session(..)` and so on. The other items are compatibility
-//! re-exports of the moved session types.
+//! `state.create_session(..)` and so on.
 
 use std::ops::Deref;
 use std::sync::Arc;
 
-// Compatibility path: remove once callers import from `crate::session`.
-pub use crate::session::{
-    Lifecycle, SessionHandle, SessionId, SessionSlot, SessionSummary, Tombstone, MAX_TOMBSTONES,
-};
 use crate::session::{Service, SessionHooks};
 
 pub use super::config::{HttpConfig, ServerConfig};
@@ -25,23 +20,14 @@ pub struct AppState {
 impl AppState {
     /// A state without any profile behaviour.
     pub fn new(config: ServerConfig) -> Self {
-        Self::with_conversation(config, Arc::new(crate::session::NoHooks), None)
+        Self::with_hooks(config, Arc::new(crate::session::NoHooks))
     }
 
-    /// [`AppState::new`] with the host's actor-profile policy.
+    /// [`AppState::new`] with the host's session hooks.
     pub fn with_hooks(config: ServerConfig, hooks: Arc<dyn SessionHooks>) -> Self {
-        Self::with_conversation(config, hooks, None)
-    }
-
-    /// [`AppState::with_hooks`] sharing the navigator's conversation hub.
-    pub fn with_conversation(
-        config: ServerConfig,
-        hooks: Arc<dyn SessionHooks>,
-        conversation: Option<crate::navigator::ConversationFeed>,
-    ) -> Self {
         let (session, http) = config.split();
         Self {
-            service: Service::with_conversation(session, hooks, conversation),
+            service: Service::with_hooks(session, hooks),
             http: Arc::new(http),
         }
     }

@@ -48,7 +48,7 @@ fn state(tmp: &Path, url: &str, db: &Path) -> rust_agent::server::AppState {
 }
 
 async fn collect_until(
-    sub: rust_agent::bus::SubscribeReply,
+    sub: rust_agent::session::Subscription,
     pred: impl Fn(&EventEnvelope) -> bool,
 ) -> Vec<EventEnvelope> {
     let mut out = Vec::new();
@@ -99,8 +99,10 @@ async fn resumed_ask_is_answered_as_a_tool_result() {
             .await
             .expect("json");
     let id = created["session_id"].as_str().expect("id").to_string();
-    let handle = state1.handle(id.parse().unwrap()).expect("live");
-    let sub = handle.sequencer.subscribe_since(None).await.expect("sub");
+    let sub = state1
+        .subscribe(id.parse().unwrap(), None)
+        .await
+        .expect("sub");
     post_message_ok(&base1, &id, "remove an auth scope").await;
     let events = collect_until(sub, |e| {
         e.kind == "agent.state" && e.payload["to"] == "yielded"
@@ -109,7 +111,7 @@ async fn resumed_ask_is_answered_as_a_tool_result() {
     assert!(events.iter().any(|e| e.kind == "agent.yield"), "asked");
 
     // Wait until the turn-end transcript snapshot is stored.
-    let store = rust_agent::server::store::HistoryStore::open(&db).unwrap();
+    let store = rust_agent::session::store::HistoryStore::open(&db).unwrap();
     let mut saved = false;
     for _ in 0..100 {
         let loaded = store.load(id.parse().unwrap()).await.unwrap().unwrap();
@@ -121,7 +123,6 @@ async fn resumed_ask_is_answered_as_a_tool_result() {
     }
     assert!(saved, "transcript snapshot stored");
     task1.abort();
-    drop(handle);
     drop(state1);
 
     // Session 2: fresh state, same database.
@@ -135,8 +136,7 @@ async fn resumed_ask_is_answered_as_a_tool_result() {
     assert!(resumed);
     let (addr2, _task2) = spawn_server(state2.clone()).await;
     let base2 = format!("http://{addr2}");
-    let handle2 = state2.handle(resumed_id).expect("live 2");
-    let sub2 = handle2.sequencer.subscribe_since(None).await.expect("sub2");
+    let sub2 = state2.subscribe(resumed_id, None).await.expect("sub2");
     post_message_ok(&base2, &id, "the local scope").await;
     let events2 = collect_until(sub2, |e| {
         e.kind == "turn.end" && e.payload["outcome"] == "done"

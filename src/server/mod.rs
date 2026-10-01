@@ -10,9 +10,6 @@ pub mod routes;
 pub mod session;
 pub mod sse;
 
-// Compatibility path: remove once callers import from `crate::session::store`.
-pub use crate::session::store;
-
 pub use config::{HttpConfig, ServerConfig};
 pub use routes::{app, serve};
 pub use session::AppState;

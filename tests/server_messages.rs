@@ -19,7 +19,7 @@ use common::sse::{http_sse, sse_body};
 /// settles (same-tick sequenced events land in the same batch) and drains
 /// what is ready. Returns everything collected.
 async fn collect_until(
-    sub: rust_agent::bus::SubscribeReply,
+    sub: rust_agent::session::Subscription,
     pred: impl Fn(&EventEnvelope) -> bool,
 ) -> Vec<EventEnvelope> {
     let mut out = Vec::new();
@@ -58,13 +58,9 @@ async fn post_message_acks_immediately_and_drives_a_turn() {
     let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
 
     let id = create_session(&server.base, &server.ws).await;
-    let handle = server
+    let sub = server
         .state
-        .handle(id.parse().expect("ulid"))
-        .expect("live");
-    let sub = handle
-        .sequencer
-        .subscribe_since(None)
+        .subscribe(id.parse().expect("ulid"), None)
         .await
         .expect("subscribe");
 
@@ -165,13 +161,9 @@ async fn full_inbox_is_a_structured_503_inbox_full() {
     // event): a FRESH subscription replays the ring and shows exactly
     // session.start + 1 + INBOX_CAPACITY message.received envelopes.
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let handle = server
+    let fresh = server
         .state
-        .handle(id.parse().expect("ulid"))
-        .expect("live after 503");
-    let fresh = handle
-        .sequencer
-        .subscribe_since(None)
+        .subscribe(id.parse().expect("ulid"), None)
         .await
         .expect("fresh subscribe");
     let received = match fresh.replay {
@@ -197,13 +189,9 @@ async fn full_inbox_is_a_structured_503_inbox_full() {
 async fn non_text_content_is_a_structured_400_and_not_sequenced() {
     let server = TestServer::start(vec![]).await;
     let id = create_session(&server.base, &server.ws).await;
-    let handle = server
+    let sub = server
         .state
-        .handle(id.parse().expect("ulid"))
-        .expect("live");
-    let sub = handle
-        .sequencer
-        .subscribe_since(None)
+        .subscribe(id.parse().expect("ulid"), None)
         .await
         .expect("subscribe");
 
@@ -302,13 +290,9 @@ async fn stop_tears_down_in_order_and_later_messages_are_rejected() {
 
     let server = TestServer::start_with_provider_url(&format!("http://{addr}/v1")).await;
     let id = create_session(&server.base, &server.ws).await;
-    let handle = server
+    let sub = server
         .state
-        .handle(id.parse().expect("ulid"))
-        .expect("live");
-    let sub = handle
-        .sequencer
-        .subscribe_since(None)
+        .subscribe(id.parse().expect("ulid"), None)
         .await
         .expect("subscribe before stop");
 
@@ -473,13 +457,9 @@ async fn stop_during_a_slow_turn_still_orders_the_terminal_tail() {
 
     let server = TestServer::start_with_provider_url(&format!("http://{addr}/v1")).await;
     let id = create_session(&server.base, &server.ws).await;
-    let handle = server
+    let sub = server
         .state
-        .handle(id.parse().expect("ulid"))
-        .expect("live");
-    let sub = handle
-        .sequencer
-        .subscribe_since(None)
+        .subscribe(id.parse().expect("ulid"), None)
         .await
         .expect("subscribe before stop");
 
@@ -590,13 +570,9 @@ async fn message_received_is_sequenced_before_any_action_with_a_seq() {
         r#"{"choices":[{"index":0,"delta":{"content":"done here"},"finish_reason":"stop"}]}"#;
     let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
     let id = create_session(&server.base, &server.ws).await;
-    let handle = server
+    let sub = server
         .state
-        .handle(id.parse().expect("ulid"))
-        .expect("live");
-    let sub = handle
-        .sequencer
-        .subscribe_since(None)
+        .subscribe(id.parse().expect("ulid"), None)
         .await
         .expect("subscribe BEFORE the post");
 

@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use rust_agent::provider::openai::ChatMessage;
-use rust_agent::server::store::HistoryStore;
+use rust_agent::session::store::HistoryStore;
 
 mod common;
 use common::server::{post_create_session, post_message_ok, spawn_server, TestServerConfig};
@@ -63,8 +63,7 @@ async fn a_stopped_mid_turn_session_keeps_its_transcript() {
     let id = created["session_id"].as_str().expect("id").to_string();
     let ulid: ulid::Ulid = id.parse().unwrap();
 
-    let handle = state.handle(ulid).expect("live");
-    let sub = handle.sequencer.subscribe_since(None).await.expect("sub");
+    let sub = state.subscribe(ulid, None).await.expect("sub");
     let mut live = sub.live.expect("live queue");
     post_message_ok(&base, &id, "remember pineapple").await;
     // The turn is in flight once its first delta streamed.

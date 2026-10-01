@@ -40,7 +40,7 @@ fn test_state_with_feed(
 /// Drains the sequencer stream (replay + live) until `pred` matches, then
 /// settles and drains what is ready in the same tick.
 async fn collect_until(
-    sub: rust_agent::bus::SubscribeReply,
+    sub: rust_agent::session::Subscription,
     pred: impl Fn(&rust_agent::bus::event::EventEnvelope) -> bool,
 ) -> Vec<rust_agent::bus::event::EventEnvelope> {
     let mut out = Vec::new();
@@ -96,16 +96,12 @@ async fn navigator_profile_sends_the_cognition_prompt_as_second_system_message()
         .create_session(&ws, None, Some("navigator"))
         .await
         .expect("create navigator session");
-    let handle = state.handle(id).expect("live");
     assert_eq!(
-        handle.model, "cognition",
+        state.session_summary(id).await.expect("summary").model,
+        "cognition",
         "the navigator profile resolves the cognition alias"
     );
-    let sub = handle
-        .sequencer
-        .subscribe_since(None)
-        .await
-        .expect("subscribe");
+    let sub = state.subscribe(id, None).await.expect("subscribe");
 
     // Post the message through the same route core POST /messages uses.
     let command = rust_agent::server::routes::build_command(
@@ -185,12 +181,7 @@ async fn navigator_profile_without_feed_retains_prompt_and_intent() {
         .create_session(&ws, None, Some("navigator"))
         .await
         .expect("create navigator session");
-    let handle = state.handle(id).expect("live");
-    let sub = handle
-        .sequencer
-        .subscribe_since(None)
-        .await
-        .expect("subscribe");
+    let sub = state.subscribe(id, None).await.expect("subscribe");
     post_driver_message(&state, id, "hello").await;
     collect_until(sub, |e| e.kind == "turn.end").await;
 
@@ -259,7 +250,6 @@ async fn wake_through_the_feed_lands_as_a_navigator_sourced_message_and_turn() {
         .create_session(&ws, None, Some("navigator"))
         .await
         .expect("create navigator session");
-    let handle = state.handle(id).expect("live");
 
     // No driver message yet: the session is not the active conversation.
     assert_eq!(feed.active_session(), None);
@@ -268,11 +258,7 @@ async fn wake_through_the_feed_lands_as_a_navigator_sourced_message_and_turn() {
         rust_agent::navigator::WakeOutcome::NoSession
     );
 
-    let sub = handle
-        .sequencer
-        .subscribe_since(None)
-        .await
-        .expect("subscribe");
+    let sub = state.subscribe(id, None).await.expect("subscribe");
 
     post_driver_message(&state, id, "add an auth remove command").await;
     // The subscriber task needs a beat to observe the driver message.
@@ -386,11 +372,10 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
         .create_session(&ws, None, Some("navigator"))
         .await
         .expect("create");
-    let handle = state.handle(id).expect("live");
 
     // Turn 1: the cognition yields on ask.
     post_driver_message(&state, id, "add an auth remove command").await;
-    let yielded = collect_until(subscribe(&handle).await, |e| {
+    let yielded = collect_until(subscribe(&state, id).await, |e| {
         e.kind == "agent.state" && e.payload["to"] == "yielded"
     })
     .await;
@@ -415,7 +400,7 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
     // The driver answers the ask. Their message must become the TOOL
     // result; only then does the queued wake arrive, as a user message.
     post_driver_message(&state, id, "the local scope").await;
-    let events = collect_until(subscribe(&handle).await, |e| {
+    let events = collect_until(subscribe(&state, id).await, |e| {
         e.kind == "message.received"
             && e.payload["source"] == "navigator"
             && e.payload["content"]
@@ -499,14 +484,77 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
     );
 }
 
-/// A fresh subscription on the session's sequencer: replay (the whole
-/// retained history) then live, in the same shape `collect_until` drains.
-async fn subscribe(
-    handle: &rust_agent::server::session::SessionHandle,
-) -> rust_agent::bus::SubscribeReply {
-    handle
-        .sequencer
-        .subscribe_since(None)
+/// A fresh subscription: replay (the whole retained history) then live, in
+/// the same shape `collect_until` drains.
+async fn subscribe(state: &AppState, id: ulid::Ulid) -> rust_agent::session::Subscription {
+    state.subscribe(id, None).await.expect("subscribe")
+}
+
+// Given a navigator conversation with one completed driver turn, stopped
+// When it is resumed under a feed that never saw it
+// Then the feed's digest holds that turn (driver and cognition), and no
+//      `TurnEnded` is announced for it: replay rebuilds, it does not announce
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resumed_feed_rebuilds_without_announcing_old_turns() {
+    let server = MockServer::start().await;
+    let done = r#"{"choices":[{"index":0,"delta":{"content":"agreed, scope it locally"},"finish_reason":"stop"}]}"#;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(sse_response(&[done]))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    let ws = root.join("ws");
+    std::fs::create_dir_all(&ws).expect("ws dir");
+    let state = TestServerConfig::mock(&root, &server.uri())
+        .model_alias("cognition", "mock-opus")
+        .history_db(root.join("sessions.db"))
+        .navigator_state_with_conversation(Some(rust_agent::navigator::ConversationFeed::new()));
+
+    let id = state
+        .create_session(&ws, None, Some("navigator"))
         .await
-        .expect("subscribe")
+        .expect("create navigator session");
+    let sub = state.subscribe(id, None).await.expect("subscribe");
+    post_driver_message(&state, id, "scope the auth removal").await;
+    collect_until(sub, |e| e.kind == "turn.end").await;
+    state.close_session(id).await.expect("close");
+
+    // A second state over the same database: its feed has never seen the
+    // conversation.
+    let feed = rust_agent::navigator::ConversationFeed::new();
+    let resumed_state = TestServerConfig::mock(&root, &server.uri())
+        .model_alias("cognition", "mock-opus")
+        .history_db(root.join("sessions.db"))
+        .navigator_state_with_conversation(Some(feed.clone()));
+    let mut announced = feed.subscribe();
+    let (resumed_id, resumed) = resumed_state
+        .create_or_resume_session(&ws, None, None, Some(id))
+        .await
+        .expect("resume");
+    assert_eq!((resumed_id, resumed), (id, true));
+
+    let mut digest = String::new();
+    for _ in 0..40 {
+        digest = feed.digest();
+        if digest.contains("agreed, scope it locally") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        digest.contains("driver: scope the auth removal"),
+        "{digest}"
+    );
+    assert!(
+        digest.contains("cognition: agreed, scope it locally"),
+        "{digest}"
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        announced.try_recv().is_err(),
+        "the replayed turn is not announced"
+    );
 }

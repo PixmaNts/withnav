@@ -143,11 +143,11 @@ impl TestServerConfig {
         &self,
         conversation: Option<rust_agent::navigator::ConversationFeed>,
     ) -> AppState {
-        AppState::with_conversation(
-            self.config(),
-            std::sync::Arc::new(rust_agent::navigator::NavigatorHooks),
-            conversation,
-        )
+        let hooks = match conversation {
+            Some(feed) => rust_agent::navigator::NavigatorHooks::with_feed(feed),
+            None => rust_agent::navigator::NavigatorHooks::new(),
+        };
+        AppState::with_hooks(self.config(), std::sync::Arc::new(hooks))
     }
 }
 

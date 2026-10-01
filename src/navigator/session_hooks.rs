@@ -1,12 +1,21 @@
 //! The navigator's actor-profile policy for the session service: the
 //! `navigator` profile defaults to the `cognition` alias, carries the
 //! pair-programmer role prompt and the `intent` tool, and drops a legacy
-//! copy of that prompt from a restored transcript.
+//! copy of that prompt from a restored transcript. When a conversation feed
+//! is attached, a navigator session also registers with it and feeds it
+//! the session's events.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use tokio_util::sync::CancellationToken;
+use ulid::Ulid;
 
 use crate::agent::actor::AgentActor;
+use crate::navigator::conversation::{ConversationFeed, SessionPost, NAVIGATOR_ACTOR_ID};
 use crate::navigator::intent::IntentTool;
 use crate::provider::openai::ChatMessage;
-use crate::session::SessionHooks;
+use crate::session::{SessionHooks, SessionSender, StartedSession, Subscription};
 
 /// Session profile selecting the navigator's cognition: the `cognition`
 /// model alias by default and the pair-programmer system prompt.
@@ -16,8 +25,103 @@ pub const NAVIGATOR_PROFILE: &str = "navigator";
 pub const COGNITION_PROMPT: &str = include_str!("cognition.md");
 
 /// [`SessionHooks`] for the navigator profile; other profiles are left plain.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NavigatorHooks;
+#[derive(Debug, Clone, Default)]
+pub struct NavigatorHooks {
+    feed: Option<ConversationFeed>,
+    incarnations: Arc<Incarnations>,
+}
+
+impl NavigatorHooks {
+    /// Hooks without a conversation feed: prompt and tools only.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Hooks that also attach navigator sessions to `feed`, so the language
+    /// server can read the digest and wake the cognition.
+    pub fn with_feed(feed: ConversationFeed) -> Self {
+        Self {
+            feed: Some(feed),
+            ..Self::default()
+        }
+    }
+}
+
+/// Which incarnation of a session id the feed currently watches. A resumed
+/// session reuses its id, so the old incarnation's cleanup must not drop the
+/// new one's registration.
+#[derive(Debug, Default)]
+struct Incarnations {
+    next: Mutex<(u64, HashMap<Ulid, u64>)>,
+}
+
+impl Incarnations {
+    fn lock(&self) -> std::sync::MutexGuard<'_, (u64, HashMap<Ulid, u64>)> {
+        self.next.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A new incarnation of `id`; it supersedes any earlier one.
+    fn begin(&self, id: Ulid) -> u64 {
+        let mut guard = self.lock();
+        guard.0 += 1;
+        let incarnation = guard.0;
+        guard.1.insert(id, incarnation);
+        incarnation
+    }
+
+    /// Ends `incarnation`; true when it was still the current one.
+    fn end(&self, id: Ulid, incarnation: u64) -> bool {
+        let mut guard = self.lock();
+        if guard.1.get(&id) == Some(&incarnation) {
+            guard.1.remove(&id);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// The feed's wake poster: routes a navigator-sourced message through the
+/// session's own command path. A session already closing swallows the error
+/// (the wake has nowhere to land, not a fault worth logging).
+fn wake_poster(sender: SessionSender, cancel: CancellationToken) -> SessionPost {
+    Arc::new(move |text| {
+        let sender = sender.clone();
+        let cancel = cancel.clone();
+        Box::pin(async move {
+            match sender.send(text, NAVIGATOR_ACTOR_ID).await {
+                Ok(()) => Ok(()),
+                Err(_) if cancel.is_cancelled() => Ok(()),
+                Err(err) => Err(err.to_string()),
+            }
+        })
+    })
+}
+
+/// Feeds a session's events into the hub, until it is cancelled or its
+/// stream ends. Replay first (a resume rebuilds the digest and the active
+/// flag without announcing old turns), then live. A slow feed never slows
+/// the sequencer: the bus disconnects it and the digest simply stops
+/// growing at the tail.
+async fn watch(feed: ConversationFeed, subscription: Subscription, cancel: CancellationToken) {
+    if let crate::bus::ResumeOutcome::Replay(events) = subscription.replay {
+        for event in &events {
+            feed.observe_replayed(event).await;
+        }
+    }
+    let Some(mut live) = subscription.live else {
+        return;
+    };
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            event = live.recv() => match event {
+                Some(event) => feed.observe(&event).await,
+                None => break,
+            }
+        }
+    }
+}
 
 fn is_navigator(profile: Option<&str>) -> bool {
     profile == Some(NAVIGATOR_PROFILE)
@@ -47,5 +151,50 @@ impl SessionHooks for NavigatorHooks {
         ) {
             actor.transcript.remove(0);
         }
+    }
+
+    fn started(
+        &self,
+        info: StartedSession,
+        sender: SessionSender,
+        subscription: Subscription,
+        cancel: CancellationToken,
+    ) {
+        let Some(feed) = self.feed.clone() else {
+            return;
+        };
+        if !is_navigator(info.profile.as_deref()) {
+            return;
+        }
+        let id = info.id;
+        let incarnation = self.incarnations.begin(id);
+        feed.register_session(id, wake_poster(sender, cancel.clone()));
+        let incarnations = self.incarnations.clone();
+        tokio::spawn(async move {
+            watch(feed.clone(), subscription, cancel).await;
+            if incarnations.end(id, incarnation) {
+                feed.forget_session(id);
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Given a session id watched twice (a resume replaced the first
+    // incarnation)
+    // When the OLD incarnation ends after the new one began
+    // Then it must not forget the registration; the new one's end does
+    #[test]
+    fn an_old_incarnation_does_not_forget_a_resumed_one() {
+        let incarnations = Incarnations::default();
+        let id = Ulid::new();
+        let old = incarnations.begin(id);
+        let new = incarnations.begin(id);
+        assert!(!incarnations.end(id, old), "stale cleanup is a no-op");
+        assert!(incarnations.end(id, new), "the current one cleans up");
+        assert!(!incarnations.end(id, new), "and only once");
     }
 }

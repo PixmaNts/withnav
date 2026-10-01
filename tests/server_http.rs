@@ -295,10 +295,8 @@ async fn close_session_tombstones_and_get_answers_from_the_tombstone() {
         .expect("ulid");
 
     // THE TEST (not the manager) subscribes to observe session.end.
-    let handle = state.handle(id).expect("live handle");
-    let sub = handle
-        .sequencer
-        .subscribe_since(None)
+    let sub = state
+        .subscribe(id, None)
         .await
         .expect("subscribe before close");
 
@@ -330,7 +328,7 @@ async fn close_session_tombstones_and_get_answers_from_the_tombstone() {
     let summary = state.session_summary(id).await.expect("tombstone answers");
     assert_eq!(summary.actor_state, "stopped");
     assert_eq!(summary.current_seq, *seqs.last().expect("seqs"));
-    assert!(state.handle(id).is_none(), "closed session is not routable");
+    assert_not_routable(&state, id).await;
 
     state.close_session(id).await.expect("idempotent close");
     assert_eq!(state.tombstone_count(), 1, "no duplicate tombstone");
@@ -368,10 +366,8 @@ async fn sigterm_drives_graceful_shutdown_sessions_end_and_clean_exit() {
     // The TEST subscribes before shutdown so session.end is observable.
     let mut subs = Vec::new();
     for id in [id_a, id_b] {
-        let handle = state.handle(id).expect("live handle");
-        let sub = handle
-            .sequencer
-            .subscribe_since(None)
+        let sub = state
+            .subscribe(id, None)
             .await
             .expect("subscribe before shutdown");
         subs.push((id, sub));
@@ -449,6 +445,29 @@ async fn sigterm_drives_graceful_shutdown_sessions_end_and_clean_exit() {
     for id in [id_a, id_b] {
         let summary = state.session_summary(id).await.expect("tombstone");
         assert_eq!(summary.actor_state, "stopped");
-        assert!(state.handle(id).is_none());
+        assert_not_routable(&state, id).await;
     }
+}
+
+/// A command to a closed session is refused: a tombstone answers reads,
+/// never commands.
+async fn assert_not_routable(state: &AppState, id: rust_agent::bus::command::SessionId) {
+    let command = rust_agent::server::routes::build_command(
+        id,
+        &rust_agent::server::routes::PostMessageRequest {
+            target_actor_id: "agent:main".to_string(),
+            mode: Some("next-turn".to_string()),
+            content: vec![rust_agent::bus::command::ContentBlock::Text {
+                text: "anyone there?".to_string(),
+            }],
+        },
+        rust_agent::bus::command::DeliveryMode::NextTurn,
+    );
+    assert!(
+        matches!(
+            state.send(command).await,
+            Err(rust_agent::error::ServerError::SessionNotFound(_))
+        ),
+        "closed session is not routable"
+    );
 }

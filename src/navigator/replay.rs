@@ -35,10 +35,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::navigator::pipeline::evaluator::{
-    flatten_answers_into, run_prefilters, SnapshotTrigger,
-};
-use crate::navigator::pipeline::validator::flatten_inputs;
+use crate::navigator::pipeline::evaluator::{run_prefilters, SnapshotTrigger};
 use crate::navigator::pipeline::{
     Action, Pipeline, PipelineError, PipelineSnapshot, PrefilterOutcome, SnapshotSource,
     TriggerInputs, TriggerKind, NO_REMARK_MS,
@@ -779,7 +776,7 @@ impl<'a> Replayer<'a> {
             Ok(answers) => answers,
             Err(reason) => return Decision::NotComparable(reason),
         };
-        match branch_action(candidate, trigger.inputs, &answers) {
+        match candidate.select(trigger.inputs, &answers) {
             Ok((action, branch)) => Decision::Comparable {
                 action,
                 branch,
@@ -791,11 +788,7 @@ impl<'a> Replayer<'a> {
 
     /// The first trigger of the candidate pipeline that handles the event.
     fn pipeline_for(&self, event: TriggerKind) -> Option<&SnapshotTrigger> {
-        self.pipeline
-            .snapshot()
-            .triggers()
-            .iter()
-            .find(|trigger| trigger.on.contains(&event))
+        self.pipeline.snapshot().trigger_for(event)
     }
 
     /// The answers to replay, or why the trigger cannot be compared.
@@ -866,27 +859,6 @@ impl<'a> Replayer<'a> {
             Err(e) => Err(format!("reask_failed: {e}")),
         }
     }
-}
-
-/// The candidate's branches over the answers, in order; no branch holding is
-/// silence, as in the evaluator.
-fn branch_action(
-    trigger: &SnapshotTrigger,
-    inputs: TriggerInputs,
-    answers: &Answers,
-) -> Result<(Action, Option<usize>), String> {
-    let mut vars = flatten_inputs(inputs);
-    flatten_answers_into(answers, &mut vars);
-    for (index, branch) in trigger.branches.iter().enumerate() {
-        if branch
-            .when
-            .eval_boolean(&vars)
-            .map_err(|e| format!("branch {index}: {e}"))?
-        {
-            return Ok((branch.action, Some(index)));
-        }
-    }
-    Ok((Action::Silent, None))
 }
 
 #[cfg(test)]
@@ -1126,6 +1098,94 @@ action = "silent"
         assert!(report
             .render_text(DEFAULT_LIST_LIMIT)
             .contains("followed 1 counted as useful"));
+    }
+
+    /// A decision model that always returns the same answers.
+    struct FixedAnswers(Answers);
+
+    impl DecisionModel for FixedAnswers {
+        fn decide<'a>(
+            &'a self,
+            _state: &'a str,
+            _questions: &'a Questions,
+            _cancel: &'a CancellationToken,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<Answers, crate::navigator::ports::ModelError>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            let answers = self.0.clone();
+            Box::pin(async move { Ok(answers) })
+        }
+    }
+
+    /// No catch-all branch, so a low score leaves every branch false.
+    const PARITY: &str = r#"
+[instinct]
+model = "instinct"
+
+[[trigger]]
+on = ["idle"]
+state = "prompts/state.md"
+prefilter = { min_changed_lines = 0, cooldown_ms = 0 }
+
+[trigger.questions.worth_attention]
+type = "noul"
+instructions = "Worth a remark?"
+
+[[trigger.branch]]
+when = "worth_attention > 0.8"
+action = "remark"
+prompt = "prompts/remark.md"
+
+[[trigger.branch]]
+when = "worth_attention > 0.4"
+action = "silent"
+"#;
+
+    #[tokio::test]
+    async fn live_evaluation_and_replay_pick_the_same_action_and_branch() {
+        let snapshot = PipelineSnapshot::from_parts(
+            PARITY,
+            BTreeMap::from([
+                ("prompts/state.md".to_string(), "{{diff}}".to_string()),
+                ("prompts/remark.md".to_string(), "say {{diff}}".to_string()),
+            ]),
+            SnapshotSource::Builtin,
+        )
+        .unwrap();
+        let pipeline = Pipeline::new(snapshot);
+        let template_inputs = BTreeMap::from([("diff".to_string(), "+ x".to_string())]);
+        // (noul answer, expected branch): first branch, second branch, none.
+        for (noul, expected) in [(0.9, Some(0)), (0.5, Some(1)), (0.1, None)] {
+            let line = TRIGGER.replace(r#""noul":0.8"#, &format!(r#""noul":{noul}"#));
+            let log = ReplayLog::parse(&line);
+            let logged = &log.triggers[0];
+            let answers = logged.answers.clone().unwrap();
+
+            let live = pipeline
+                .evaluate(
+                    logged.event,
+                    logged.inputs,
+                    &template_inputs,
+                    &FixedAnswers(answers),
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            let Decision::Comparable { action, branch, .. } =
+                Replayer::new(&pipeline).decide(logged).await
+            else {
+                panic!("the replay of answer {noul} is not comparable");
+            };
+
+            assert_eq!(live.branch_index, expected, "live, answer {noul}");
+            assert_eq!(branch, live.branch_index, "branch, answer {noul}");
+            assert_eq!(action, live.requested_action, "action, answer {noul}");
+        }
     }
 
     #[tokio::test]

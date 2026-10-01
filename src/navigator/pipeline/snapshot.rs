@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::evaluator::{compile, CompiledSnapshot, SnapshotTrigger};
-use super::{PipelineError, PipelineFile};
+use super::{PipelineError, PipelineFile, TriggerKind};
 
 /// Where a snapshot was loaded from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +72,11 @@ impl PipelineSnapshot {
     /// The trigger table, for logging and the replay subcommand.
     pub fn triggers(&self) -> &[SnapshotTrigger] {
         &self.inner.triggers
+    }
+
+    /// The first trigger that handles the event; others are ignored.
+    pub(crate) fn trigger_for(&self, event: TriggerKind) -> Option<&SnapshotTrigger> {
+        self.inner.triggers.iter().find(|t| t.handles(event))
     }
 
     /// Parses and validates TOML text (built-in default path). Prompts are

@@ -155,7 +155,7 @@ pub(crate) fn flatten_inputs(inputs: TriggerInputs) -> BTreeMap<String, Value> {
     vars
 }
 
-/// Validates one trigger completely. Returns its compiled branches.
+/// Validates one trigger completely, compiling each condition once. Returns its compiled branches.
 pub(crate) fn validate_trigger(
     trigger: &TriggerDef,
     source: &'static str,
@@ -205,8 +205,7 @@ pub(crate) fn validate_trigger(
 
     let mut compiled_branches = Vec::with_capacity(trigger.branch.len());
     for (i, branch) in trigger.branch.iter().enumerate() {
-        validate_branch(branch, &declared, &dummies, source, i, trigger)?;
-        let compiled = compile_when(&branch.when, source)?;
+        let compiled = validate_branch(branch, &declared, &dummies, source, i, trigger)?;
         compiled_branches.push(CompiledBranch {
             when: compiled,
             action: branch.action.into(),
@@ -223,7 +222,7 @@ fn validate_branch(
     source: &'static str,
     index: usize,
     trigger: &TriggerDef,
-) -> Result<(), PipelineError> {
+) -> Result<CompiledWhen, PipelineError> {
     let compiled = compile_when(&branch.when, source)?;
 
     // Every identifier read must be declared by the questions or the
@@ -260,7 +259,7 @@ fn validate_branch(
             format!("branch {index} requests `remark` without a `prompt`"),
         ));
     }
-    Ok(())
+    Ok(compiled)
 }
 
 /// A validated branch, ready to evaluate.

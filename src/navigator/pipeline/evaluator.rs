@@ -11,7 +11,7 @@ use super::snapshot::PipelineSnapshot;
 use super::validator::{flatten_inputs, CompiledBranch};
 use super::{Action, Evaluation, PipelineError, PrefilterOutcome, TriggerInputs, TriggerKind};
 use crate::navigator::pipeline::templates;
-use crate::navigator::ports::{Answer, DecisionModel, ModelError, Question};
+use crate::navigator::ports::{Answer, Answers, DecisionModel, ModelError, Question};
 
 /// The evaluator over a validated snapshot. Clone it per reload; the
 /// snapshot is immutable.
@@ -37,13 +37,7 @@ impl Pipeline {
         kind: TriggerKind,
         vars: &BTreeMap<String, String>,
     ) -> Result<String, PipelineError> {
-        let Some(trigger) = self
-            .snapshot
-            .inner
-            .triggers
-            .iter()
-            .find(|t| t.handles(kind))
-        else {
+        let Some(trigger) = self.snapshot.trigger_for(kind) else {
             return Err(PipelineError::invalid(
                 self.snapshot.source.as_str(),
                 format!("no trigger handles event {}", kind.as_str()),
@@ -54,12 +48,7 @@ impl Pipeline {
 
     /// The questions of the trigger handling `kind`, for logging.
     pub fn questions(&self, kind: TriggerKind) -> Option<&BTreeMap<String, Question>> {
-        self.snapshot
-            .inner
-            .triggers
-            .iter()
-            .find(|t| t.handles(kind))
-            .map(|t| &t.questions)
+        self.snapshot.trigger_for(kind).map(|t| &t.questions)
     }
 
     /// The questions of the trigger handling `kind`, serialized for the
@@ -84,13 +73,7 @@ impl Pipeline {
         let Some(index) = branch_index else {
             return String::new();
         };
-        let Some(trigger) = self
-            .snapshot
-            .inner
-            .triggers
-            .iter()
-            .find(|t| t.handles(kind))
-        else {
+        let Some(trigger) = self.snapshot.trigger_for(kind) else {
             return String::new();
         };
         let Some(prompt_path) = trigger
@@ -119,13 +102,7 @@ impl Pipeline {
         cancel: &CancellationToken,
     ) -> Result<Evaluation, ModelError> {
         // First matching trigger wins; others are ignored.
-        let Some(trigger) = self
-            .snapshot
-            .inner
-            .triggers
-            .iter()
-            .find(|t| t.handles(event))
-        else {
+        let Some(trigger) = self.snapshot.trigger_for(event) else {
             // No trigger for this event at all: nothing requested, no
             // model call. A validated snapshot always handles something,
             // but the pipeline may simply not care about this event.
@@ -164,22 +141,12 @@ impl Pipeline {
             .await?;
         evaluation.answers = Some(answers.clone());
 
-        let mut vars = flatten_inputs(inputs);
-        flatten_answers_into(&answers, &mut vars);
-        for (i, branch) in trigger.branches.iter().enumerate() {
-            if branch
-                .when
-                .eval_boolean(&vars)
-                .map_err(|e| ModelError::Malformed(format!("branch {i}: {e}")))?
-            {
-                evaluation.branch_index = Some(i);
-                evaluation.requested_action = branch.action;
-                return Ok(evaluation);
-            }
-        }
         // No matching branch: silent, reason `no_branch`.
-        evaluation.requested_action = Action::Silent;
-        evaluation.branch_index = None;
+        let (action, branch_index) = trigger
+            .select(inputs, &answers)
+            .map_err(ModelError::Malformed)?;
+        evaluation.requested_action = action;
+        evaluation.branch_index = branch_index;
         Ok(evaluation)
     }
 }
@@ -271,8 +238,30 @@ pub struct SnapshotTrigger {
 }
 
 impl SnapshotTrigger {
-    fn handles(&self, kind: TriggerKind) -> bool {
+    pub(crate) fn handles(&self, kind: TriggerKind) -> bool {
         self.on.contains(&kind)
+    }
+
+    /// The first branch whose condition holds over the inputs and answers,
+    /// as its action and index; no branch holding is `silent` with no index.
+    /// The one selection the evaluator and the replay share.
+    pub(crate) fn select(
+        &self,
+        inputs: TriggerInputs,
+        answers: &Answers,
+    ) -> Result<(Action, Option<usize>), String> {
+        let mut vars = flatten_inputs(inputs);
+        flatten_answers_into(answers, &mut vars);
+        for (index, branch) in self.branches.iter().enumerate() {
+            if branch
+                .when
+                .eval_boolean(&vars)
+                .map_err(|e| format!("branch {index}: {e}"))?
+            {
+                return Ok((branch.action, Some(index)));
+            }
+        }
+        Ok((Action::Silent, None))
     }
 
     /// Branch count and per-branch (action, prompt) for logging and replay.

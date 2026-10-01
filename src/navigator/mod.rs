@@ -14,7 +14,6 @@ pub mod document;
 pub mod intent;
 pub mod log;
 pub mod pipeline;
-pub mod policy;
 pub mod ports;
 pub mod protocol;
 pub mod reflex;

@@ -8,7 +8,7 @@ use evalexpr::Value;
 use tokio_util::sync::CancellationToken;
 
 use super::snapshot::PipelineSnapshot;
-use super::validator::{compile_when, flatten_inputs, CompiledBranch};
+use super::validator::{flatten_inputs, CompiledBranch};
 use super::{Action, Evaluation, PipelineError, PrefilterOutcome, TriggerInputs, TriggerKind};
 use crate::navigator::pipeline::templates;
 use crate::navigator::ports::{Answer, DecisionModel, ModelError, Question};
@@ -324,10 +324,6 @@ pub(crate) fn compile(
         triggers,
     })
 }
-
-// compile_when is used by the validator; re-export for symmetry.
-#[allow(unused_imports)]
-use compile_when as _compile_when;
 
 #[cfg(test)]
 mod tests {

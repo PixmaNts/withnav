@@ -131,33 +131,17 @@ impl Publisher {
 /// cancellation, drives `run_agent`, publishes events, and tears the session
 /// down permanently on cancellation / stop / end-of-stream. Returns the
 /// actor so a caller (test or session manager) can assert its final state.
+///
+/// `on_turn_end(&[ChatMessage])`, when given, is called after each turn's
+/// terminal events (turn.end/task.done/agent.state) with the actor's
+/// transcript snapshot at that point — the history store's hook.
 pub fn spawn(
     session_id: Ulid,
     actor: AgentActor,
     inbox: ActorInbox,
     sequencer: Sequencer,
     session_cancel: CancellationToken,
-) -> tokio::task::JoinHandle<AgentActor> {
-    spawn_with_turn_end(
-        session_id,
-        actor,
-        inbox,
-        sequencer,
-        session_cancel,
-        Box::new(|_| {}),
-    )
-}
-
-/// [`spawn`] with an `on_turn_end(&[ChatMessage])` callback: called after
-/// each turn's terminal events (turn.end/task.done/agent.state) with the
-/// actor's transcript snapshot at that point — the history store's hook.
-pub fn spawn_with_turn_end(
-    session_id: Ulid,
-    actor: AgentActor,
-    inbox: ActorInbox,
-    sequencer: Sequencer,
-    session_cancel: CancellationToken,
-    on_turn_end: TurnEndHook,
+    on_turn_end: Option<TurnEndHook>,
 ) -> tokio::task::JoinHandle<AgentActor> {
     tokio::spawn(runtime_loop(
         session_id,
@@ -165,7 +149,7 @@ pub fn spawn_with_turn_end(
         inbox,
         sequencer,
         session_cancel,
-        on_turn_end,
+        on_turn_end.unwrap_or_else(|| Box::new(|_| {})),
     ))
 }
 
@@ -678,9 +662,16 @@ mod tests {
         let session_cancel = CancellationToken::new();
         let actor = make_actor(server_url, CancellationToken::new());
         let session_id = Ulid::new();
-        let sequencer = Sequencer::spawn(session_id, crate::bus::SessionBus::new());
+        let sequencer = Sequencer::spawn(session_id, crate::bus::SessionBus::default(), 0);
         let live = sequencer.subscribe_since(None).await.unwrap().live.unwrap();
-        let handle = spawn(session_id, actor, inbox, sequencer, session_cancel.clone());
+        let handle = spawn(
+            session_id,
+            actor,
+            inbox,
+            sequencer,
+            session_cancel.clone(),
+            None,
+        );
         Harness {
             inbox_tx,
             session_cancel,

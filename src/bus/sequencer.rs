@@ -134,15 +134,10 @@ pub struct Sequencer {
 }
 
 impl Sequencer {
-    /// Spawns the ONE authoritative sequencer task for a session.
-    pub fn spawn(session_id: Ulid, emitter: impl Emitter) -> Self {
-        Self::spawn_from(session_id, emitter, 0)
-    }
-
-    /// [`Sequencer::spawn`] resuming at `next_seq` (a resumed session's
-    /// sequencer continues at `last_seq + 1` so stored and live seqs form
-    /// one gapless sequence).
-    pub fn spawn_from(session_id: Ulid, emitter: impl Emitter, next_seq: u64) -> Self {
+    /// Spawns the ONE authoritative sequencer task for a session. It assigns
+    /// seqs from `next_seq`: 0 for a fresh session, `last_seq + 1` for a
+    /// resumed one so stored and live seqs form one gapless sequence.
+    pub fn spawn(session_id: Ulid, emitter: impl Emitter, next_seq: u64) -> Self {
         let (ingress_tx, ingress_rx) = mpsc::unbounded_channel();
         tokio::spawn(run(session_id, ingress_rx, emitter, next_seq));
         Self {
@@ -407,7 +402,7 @@ mod tests {
     fn spawn_with_collector() -> (Arc<Sequencer>, mpsc::UnboundedReceiver<EventEnvelope>) {
         let (tx, rx) = mpsc::unbounded_channel();
         (
-            Arc::new(Sequencer::spawn(Ulid::new(), ForwardEmitter { tx })),
+            Arc::new(Sequencer::spawn(Ulid::new(), ForwardEmitter { tx }, 0)),
             rx,
         )
     }
@@ -567,7 +562,7 @@ mod tests {
             timeline: Arc::clone(&timeline),
             tx,
         };
-        let seq = Sequencer::spawn(Ulid::new(), emitter);
+        let seq = Sequencer::spawn(Ulid::new(), emitter, 0);
 
         let command_id = Ulid::new();
         let commit_timeline = Arc::clone(&timeline);

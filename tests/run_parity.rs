@@ -85,7 +85,7 @@ async fn run_via_bus_renders_identically_to_the_direct_path() {
     // --- Path 2: THROUGH THE BUS (runtime task + event_to_ui). ---
     let bus_server = spawn_mock_provider(vec![http_sse(&sse_body(&[done]))]).await;
     let session_id = Ulid::new();
-    let sequencer = Sequencer::spawn(session_id, SessionBus::new());
+    let sequencer = Sequencer::spawn(session_id, SessionBus::default(), 0);
     let (inbox_tx, inbox) = ActorInbox::channel();
     let session_cancel = CancellationToken::new();
     let bus_actor = make_actor(bus_server.url.clone());
@@ -97,6 +97,7 @@ async fn run_via_bus_renders_identically_to_the_direct_path() {
         inbox,
         sequencer.clone(),
         session_cancel.clone(),
+        None,
     );
 
     inbox_tx

@@ -1,5 +1,11 @@
-//! Scripted chat-completion streams: SSE bodies and wiremock responses.
+//! Scripted chat-completion streams (SSE bodies, wiremock responses, TCP
+//! providers that record the requests they get) and a reader for the
+//! session server's `GET /events` stream.
 
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use wiremock::ResponseTemplate;
 
@@ -57,4 +63,208 @@ pub async fn spawn_mock_provider(responses: Vec<Vec<u8>>) -> MockProvider {
     MockProvider {
         url: format!("http://{addr}/v1"),
     }
+}
+
+/// A scripted TCP provider that keeps every raw request it received.
+pub struct CapturingProvider {
+    pub url: String,
+    requests: Arc<Mutex<Vec<String>>>,
+}
+
+impl CapturingProvider {
+    /// The raw HTTP requests (head and body), in arrival order.
+    pub fn requests(&self) -> Vec<String> {
+        self.requests.lock().expect("requests").clone()
+    }
+
+    /// The request bodies, in arrival order.
+    pub fn bodies(&self) -> Vec<String> {
+        self.requests()
+            .iter()
+            .map(|raw| {
+                let idx = raw.find("\r\n\r\n").expect("HTTP header/body separator");
+                raw[idx + 4..].to_string()
+            })
+            .collect()
+    }
+}
+
+/// Serves `responses` one per accepted connection, in order, after reading
+/// the whole request (head and `Content-Length` body).
+pub async fn spawn_capturing_provider(responses: Vec<Vec<u8>>) -> CapturingProvider {
+    let count = responses.len();
+    spawn_responding_provider(count, move |i, _| responses[i].clone()).await
+}
+
+/// Like [`spawn_capturing_provider`], but `respond(index, request)` picks the
+/// answer to the `index`th request, so a mock can reject a bad request.
+pub async fn spawn_responding_provider(
+    count: usize,
+    respond: impl Fn(usize, &str) -> Vec<u8> + Send + 'static,
+) -> CapturingProvider {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock bind");
+    let addr = listener.local_addr().expect("mock addr");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = requests.clone();
+    tokio::spawn(async move {
+        for i in 0..count {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                break;
+            };
+            let request = read_http_request(&mut sock).await;
+            let response = respond(i, &request);
+            captured.lock().expect("requests").push(request);
+            let _ = sock.write_all(&response).await;
+            let _ = sock.flush().await;
+            let _ = sock.shutdown().await;
+        }
+    });
+    CapturingProvider {
+        url: format!("http://{addr}/v1"),
+        requests,
+    }
+}
+
+/// Reads one HTTP request: until the head is complete and `Content-Length`
+/// body bytes followed it, or the peer closed.
+async fn read_http_request(sock: &mut tokio::net::TcpStream) -> String {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = sock.read(&mut chunk).await.unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        let text = String::from_utf8_lossy(&buf);
+        if let Some(idx) = text.find("\r\n\r\n") {
+            let content_len = text[..idx]
+                .lines()
+                .find_map(|l| {
+                    l.to_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                })
+                .unwrap_or(0);
+            if buf.len() >= idx + 4 + content_len {
+                break;
+            }
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// One parsed SSE frame: its `id:` (if any), `event:` name (default
+/// "message") and the concatenated `data:` payload.
+#[derive(Debug, Clone)]
+pub struct SseFrame {
+    pub id: Option<u64>,
+    pub event: String,
+    pub data: String,
+}
+
+impl SseFrame {
+    /// The envelope `kind`, for a frame that carries a durable envelope.
+    pub fn kind(&self) -> Option<String> {
+        serde_json::from_str::<Value>(&self.data)
+            .ok()
+            .and_then(|v| v["kind"].as_str().map(str::to_string))
+    }
+
+    /// The envelope `seq`, for a frame that carries a durable envelope.
+    pub fn seq(&self) -> Option<u64> {
+        serde_json::from_str::<Value>(&self.data).ok()?["seq"].as_u64()
+    }
+}
+
+/// How an SSE read stopped.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SseEnd {
+    /// The server closed the stream cleanly (body EOF).
+    Eof,
+    /// The `until` predicate was satisfied while the stream was still open.
+    Until,
+    /// [`SSE_CEILING`] elapsed first: a failure, never an expected end.
+    Timeout,
+    /// The transport errored mid-read.
+    Error,
+}
+
+pub struct SseRead {
+    pub frames: Vec<SseFrame>,
+    pub end: SseEnd,
+}
+
+/// The longest a read waits for its expected head or EOF.
+pub const SSE_CEILING: Duration = Duration::from_secs(10);
+
+/// Connects to `GET /v1/sessions/{id}/events` (with `Last-Event-ID` when
+/// given) and parses frames until `until` holds for the frames so far, the
+/// server ends the stream, or [`SSE_CEILING`] passes. Pass `|_| false` to
+/// read to EOF.
+pub async fn read_sse(
+    base: &str,
+    id: &str,
+    last_event_id: Option<u64>,
+    until: impl Fn(&[SseFrame]) -> bool,
+) -> SseRead {
+    let mut req = reqwest::Client::new().get(format!("{base}/v1/sessions/{id}/events"));
+    if let Some(k) = last_event_id {
+        req = req.header("last-event-id", k.to_string());
+    }
+    let mut resp = req.send().await.expect("sse connect");
+    assert_eq!(resp.status(), 200, "sse status");
+    let mut buf = String::new();
+    let mut frames = Vec::new();
+    let deadline = tokio::time::Instant::now() + SSE_CEILING;
+    let end = 'read: loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, resp.chunk()).await {
+            Ok(Ok(Some(chunk))) => {
+                buf.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(idx) = buf.find("\n\n") {
+                    let raw: String = buf.drain(..idx + 2).collect();
+                    frames.extend(parse_frame(&raw));
+                    if until(&frames) {
+                        break 'read SseEnd::Until;
+                    }
+                }
+            }
+            Ok(Ok(None)) => break SseEnd::Eof,
+            Ok(Err(_)) => break SseEnd::Error,
+            Err(_) => break SseEnd::Timeout,
+        }
+    };
+    SseRead { frames, end }
+}
+
+/// Whether some frame carries an envelope of this `kind`.
+pub fn has_kind(frames: &[SseFrame], kind: &str) -> bool {
+    frames.iter().any(|f| f.kind().as_deref() == Some(kind))
+}
+
+fn parse_frame(raw: &str) -> Option<SseFrame> {
+    let mut id = None;
+    let mut event = "message".to_string();
+    let mut data = String::new();
+    let mut saw_field = false;
+    for line in raw.lines() {
+        if let Some(v) = line.strip_prefix("id:") {
+            id = v.trim().parse::<u64>().ok();
+            saw_field = true;
+        } else if let Some(v) = line.strip_prefix("event:") {
+            event = v.trim().to_string();
+            saw_field = true;
+        } else if let Some(v) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(v.trim());
+            saw_field = true;
+        }
+        // ':' comment lines (keep-alive) are ignored.
+    }
+    saw_field.then_some(SseFrame { id, event, data })
 }

@@ -111,4 +111,5 @@ Tracked in [`.scratch/refactor/plan.md`](.scratch/refactor/plan.md):
   SQLite as the single history, after its writes are made trustworthy.
 - `navigator/replay.rs` (about 860 lines) and `navigator/metacognition.rs` (about 650) exceed the
   size rule.
-- Doc comments in `bus/` and `server/` still cite plan ids such as "todo 6" or "P1-3".
+- GET and SSE consult only the in-memory registry: a conversation that is resumable from SQLite but
+  has no tombstone in this process answers 404 until it is resumed.

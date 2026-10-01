@@ -5,13 +5,14 @@
 //! pre-filters, and the flattening contract.
 
 use std::collections::BTreeMap;
-use std::future::Future;
-use std::pin::Pin;
 
 use rust_agent::navigator::pipeline::{Pipeline, PipelineSnapshot, SnapshotSource};
-use rust_agent::navigator::ports::{Answer, DecisionModel, ModelError, Question};
+use rust_agent::navigator::ports::Answer;
 use rust_agent::navigator::{TriggerInputs, TriggerKind};
 use tokio_util::sync::CancellationToken;
+
+mod common;
+use common::navigator::{systemone_answers, ScriptedDecision};
 
 const BASE: &str = r#"
 [instinct]
@@ -65,59 +66,11 @@ fn snapshot_with(toml: &str) -> Result<PipelineSnapshot, rust_agent::navigator::
 }
 
 fn full_answers() -> BTreeMap<String, Answer> {
-    // Same shapes as tests/fixtures/navigator/systemone_multi.json.
-    BTreeMap::from([
-        ("worth_attention".to_string(), Answer::Noul { noul: 0.8 }),
-        (
-            "route".to_string(),
-            Answer::Choice {
-                choice: "cognition".to_string(),
-                probabilities: BTreeMap::from([
-                    ("silent".to_string(), 0.04),
-                    ("metacognition".to_string(), 0.45),
-                    ("cognition".to_string(), 0.51),
-                ]),
-                confidence: 0.27,
-            },
-        ),
-        (
-            "severity".to_string(),
-            Answer::Score {
-                score: 1.56,
-                legend: BTreeMap::from([
-                    ("0".to_string(), "none".to_string()),
-                    ("1".to_string(), "minor".to_string()),
-                    ("2".to_string(), "moderate".to_string()),
-                    ("3".to_string(), "major".to_string()),
-                ]),
-                probabilities: BTreeMap::from([
-                    ("0".to_string(), 0.14),
-                    ("1".to_string(), 0.35),
-                    ("2".to_string(), 0.31),
-                    ("3".to_string(), 0.2),
-                ]),
-                confidence: 0.16,
-            },
-        ),
-        ("drift".to_string(), Answer::Noul { noul: 0.54 }),
-    ])
-}
-
-struct FakeModel {
-    answers: BTreeMap<String, Answer>,
-}
-
-impl DecisionModel for FakeModel {
-    fn decide<'a>(
-        &'a self,
-        _state: &'a str,
-        _questions: &'a BTreeMap<String, Question>,
-        _cancel: &'a CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = Result<BTreeMap<String, Answer>, ModelError>> + Send + 'a>>
-    {
-        let answers = self.answers.clone();
-        Box::pin(async move { Ok(answers) })
-    }
+    // The captured System One response, minus the conversation question the
+    // test pipelines do not ask.
+    let mut answers = systemone_answers();
+    answers.remove("contradicts_conversation");
+    answers
 }
 
 fn inputs(changed: i64) -> TriggerInputs {
@@ -231,9 +184,10 @@ action = "remark"
 prompt = "r.md"
 "#;
     let pipeline = Pipeline::new(snapshot_with(toml).unwrap());
-    let model = FakeModel {
-        answers: BTreeMap::from([("worth_attention".to_string(), Answer::Noul { noul: 0.5 })]),
-    };
+    let model = ScriptedDecision::fixed(BTreeMap::from([(
+        "worth_attention".to_string(),
+        Answer::Noul { noul: 0.5 },
+    )]));
     let eval = pipeline
         .evaluate(
             TriggerKind::Save,
@@ -256,7 +210,7 @@ async fn first_matching_trigger_wins() {
     let pipeline = Pipeline::new(snapshot_with(&two).unwrap());
     let mut answers = full_answers();
     answers.insert("extra".to_string(), Answer::Noul { noul: 0.9 });
-    let model = FakeModel { answers };
+    let model = ScriptedDecision::fixed(answers);
     // save: the FIRST trigger wins (drift 0.54 < 0.8, worth 0.8 > 0.7 but
     // route == cognition, so the silent fallback branch index 2 matches).
     let eval = pipeline
@@ -305,9 +259,10 @@ when = "true"
 action = "silent"
 "#;
     let pipeline = Pipeline::new(snapshot_with(toml).unwrap());
-    let model = FakeModel {
-        answers: BTreeMap::from([("q".to_string(), Answer::Noul { noul: 1.0 })]),
-    };
+    let model = ScriptedDecision::fixed(BTreeMap::from([(
+        "q".to_string(),
+        Answer::Noul { noul: 1.0 },
+    )]));
 
     // Too few changed lines.
     let eval = pipeline
@@ -383,9 +338,7 @@ when = "true"
 action = "silent"
 "#;
     let pipeline = Pipeline::new(snapshot_with(toml).unwrap());
-    let model = FakeModel {
-        answers: full_answers(),
-    };
+    let model = ScriptedDecision::fixed(full_answers());
     let eval = pipeline
         .evaluate(
             TriggerKind::Save,
@@ -426,9 +379,10 @@ when = "true"
 action = "silent"
 "#;
     let pipeline = Pipeline::new(snapshot_with(toml).unwrap());
-    let model = FakeModel {
-        answers: BTreeMap::from([("drift".to_string(), Answer::Noul { noul: 0.95 })]),
-    };
+    let model = ScriptedDecision::fixed(BTreeMap::from([(
+        "drift".to_string(),
+        Answer::Noul { noul: 0.95 },
+    )]));
     let mut i = inputs(0);
     i.has_intent = false;
     let eval = pipeline
@@ -487,15 +441,13 @@ when = "true"
 action = "silent"
 "#;
     let pipeline = Pipeline::new(snapshot_with(toml).unwrap());
-    let model = FakeModel {
-        answers: BTreeMap::from([
-            ("drift".to_string(), Answer::Noul { noul: 0.1 }),
-            (
-                "contradicts_conversation".to_string(),
-                Answer::Noul { noul: 0.95 },
-            ),
-        ]),
-    };
+    let model = ScriptedDecision::fixed(BTreeMap::from([
+        ("drift".to_string(), Answer::Noul { noul: 0.1 }),
+        (
+            "contradicts_conversation".to_string(),
+            Answer::Noul { noul: 0.95 },
+        ),
+    ]));
     // No intent, no conversation: the contradiction alone wakes nobody.
     let mut i = inputs(0);
     i.has_intent = false;
@@ -533,9 +485,7 @@ action = "silent"
 #[tokio::test]
 async fn evaluation_carries_rendered_state_and_template_inputs() {
     let pipeline = Pipeline::new(snapshot_with(BASE).unwrap());
-    let model = FakeModel {
-        answers: full_answers(),
-    };
+    let model = ScriptedDecision::fixed(full_answers());
     let eval = pipeline
         .evaluate(
             TriggerKind::Save,
@@ -593,12 +543,10 @@ fn builtin_default_pipeline_loads_and_is_the_spec_shape() {
 #[tokio::test]
 async fn builtin_conversation_trigger_ignores_changed_lines_and_remarks_on_contradiction() {
     let pipeline = Pipeline::new(PipelineSnapshot::builtin().unwrap());
-    let model = FakeModel {
-        answers: BTreeMap::from([(
-            "code_contradicts_conversation".to_string(),
-            Answer::Noul { noul: 0.95 },
-        )]),
-    };
+    let model = ScriptedDecision::fixed(BTreeMap::from([(
+        "code_contradicts_conversation".to_string(),
+        Answer::Noul { noul: 0.95 },
+    )]));
     let mut conversing = inputs(0);
     conversing.has_conversation = true;
     let eval = pipeline

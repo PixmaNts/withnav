@@ -355,7 +355,6 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
             .and(header("authorization", "Bearer test-key"))
             .and(wiremock::matchers::body_string_contains(marker.to_string()))
             .respond_with(sse_response(&[body]))
-            .expect(1)
             .with_priority(priority)
             .mount(&server)
             .await;
@@ -437,60 +436,59 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
         "coalesced: only the latest wake is delivered"
     );
 
-    // The provider's second request (the resumed turn after the answer)
-    // must carry the answer as role "tool" — the ask tool result — not as
-    // a navigator message. The third request carries the wake as "user".
+    // The driver's answer must reach the provider as the ask's TOOL result,
+    // and the wake as a later USER message, never the other way round. The
+    // wake is flushed as soon as the answer is accepted, so it either rides
+    // the same inbox batch as the answer (one resumed turn) or starts a turn
+    // of its own; both keep the guard. Wait for the request that carries the
+    // wake rather than for a request count (observed 2026-10-01 under load:
+    // only two provider requests arrived, so waiting for a third timed out).
     let requests = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             let requests = server.received_requests().await.expect("wiremock retains");
-            if requests.len() >= 3 {
+            if requests
+                .iter()
+                .any(|r| String::from_utf8_lossy(&r.body).contains("latest wake"))
+            {
                 break requests;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("third provider request (queued wake turn) should arrive");
-    assert_eq!(requests.len(), 3);
-    let body2: Value = serde_json::from_slice(&requests[1].body).expect("body 2");
-    let roles2: Vec<&str> = body2["messages"]
-        .as_array()
-        .expect("messages")
+    .expect("a provider request carrying the queued wake should arrive");
+    let wake_request = requests
         .iter()
-        .map(|m| m["role"].as_str().unwrap_or(""))
-        .collect();
-    let tool_msg = body2["messages"]
-        .as_array()
-        .unwrap()
+        .find(|r| String::from_utf8_lossy(&r.body).contains("latest wake"))
+        .expect("the request carrying the wake");
+    let body: Value = serde_json::from_slice(&wake_request.body).expect("json body");
+    let messages = body["messages"].as_array().expect("messages");
+    let text = |m: &Value| m["content"].as_str().unwrap_or("").to_string();
+    let answer_at = messages
         .iter()
-        .rev()
-        .find(|m| m["role"] == "tool")
+        .position(|m| {
+            m["role"] == "tool"
+                && m["tool_call_id"] == "ask_1"
+                && text(m).contains("the local scope")
+        })
         .expect("the driver's answer became the ask tool result");
-    assert_eq!(tool_msg["tool_call_id"], "ask_1");
-    assert!(
-        tool_msg["content"]
-            .as_str()
-            .unwrap()
-            .contains("the local scope"),
-        "the answer text, not the wake: {:?}",
-        tool_msg["content"]
-    );
-    let _ = roles2;
-
-    let body3: Value = serde_json::from_slice(&requests[2].body).expect("body 3");
-    let wake_user = body3["messages"]
-        .as_array()
-        .unwrap()
+    let wake_at = messages
         .iter()
-        .rev()
-        .find(|m| m["role"] == "user")
-        .expect("the wake as the next user message");
+        .position(|m| m["role"] == "user" && text(m).contains("latest wake"))
+        .expect("the wake as a user message");
     assert!(
-        wake_user["content"]
-            .as_str()
-            .unwrap()
-            .contains("latest wake"),
-        "the coalesced wake text reached the provider"
+        answer_at < wake_at,
+        "the answer precedes the wake: {messages:?}"
+    );
+    assert!(
+        !messages
+            .iter()
+            .any(|m| m["role"] == "user" && text(m).contains("the local scope")),
+        "the answer is never a plain user message"
+    );
+    assert!(
+        !messages.iter().any(|m| text(m).contains("first wake")),
+        "coalesced: only the latest wake reaches the provider"
     );
 }
 

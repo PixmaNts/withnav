@@ -75,6 +75,10 @@ pub enum Ingress {
         reason: String,
         reply: Option<oneshot::Sender<u64>>,
     },
+    /// Runs `action` on the sequencer task once every earlier ingress message
+    /// has been handled (so every event published before it has been
+    /// emitted). The action must not block.
+    AfterEvents { action: Box<dyn FnOnce() + Send> },
     /// Head query (todo 6): reply with the next unassigned seq.
     CurrentSeq {
         reply: oneshot::Sender<Result<u64, BusError>>,
@@ -174,6 +178,14 @@ impl Sequencer {
         reply_rx
             .await
             .map_err(|_| BusError::SessionNotFound(self.session_id.to_string()))?
+    }
+
+    /// Hands `action` to the sequencer task, which runs it after every event
+    /// published before this call has been emitted (the mailbox is FIFO).
+    /// Fails, returning the action's ownership to nobody, only when the
+    /// session is closed. The action must not block.
+    pub fn after_events(&self, action: Box<dyn FnOnce() + Send>) -> Result<(), BusError> {
+        ingress_send(&self.ingress_tx, Ingress::AfterEvents { action })
     }
 
     /// Atomic subscribe-then-replay: ONE control op on the sequencer task.
@@ -308,6 +320,7 @@ async fn run(
                 // and the live registration (both live inside `emitter`).
                 emitter.subscribe_since(cursor, next_seq, reply);
             }
+            Ingress::AfterEvents { action } => action(),
             Ingress::CurrentSeq { reply } => {
                 let _ = reply.send(Ok(next_seq));
             }
@@ -620,6 +633,19 @@ mod tests {
     }
 
     /// Ingress send failure = session closed (never silent loss).
+    #[tokio::test]
+    async fn after_events_runs_behind_every_event_published_before_it() {
+        let (seq, mut rx) = spawn_with_collector();
+        seq.publish(start_candidate()).unwrap();
+        let (tx, done) = oneshot::channel();
+        seq.after_events(Box::new(move || {
+            let _ = tx.send(());
+        }))
+        .unwrap();
+        done.await.unwrap();
+        assert!(rx.try_recv().is_ok(), "the event was emitted first");
+    }
+
     #[tokio::test]
     async fn closed_ingress_maps_to_sequencer_closed() {
         let (tx, rx) = mpsc::unbounded_channel::<Ingress>();

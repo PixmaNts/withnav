@@ -20,7 +20,7 @@ use wiremock::{Mock, MockServer};
 use rust_agent::server::AppState;
 
 mod common;
-use common::server::{collect_until, TestServerConfig};
+use common::server::{collect_until, send_text, wait_for, TestServerConfig};
 use common::sse::sse_response;
 
 fn test_state(tmp: &Path, base_url: &str) -> AppState {
@@ -42,7 +42,8 @@ fn test_state_with_feed(
 // When a message is posted and the turn completes
 // Then the request the provider received carries TWO system messages — the
 //      agent loop's own contract FIRST, COGNITION_PROMPT SECOND — before
-//      the user message; and the session resolved the `cognition` alias.
+//      the user message; the session resolved the `cognition` alias; and the
+//      `intent` tool is offered (no conversation feed is involved).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn navigator_profile_sends_the_cognition_prompt_as_second_system_message() {
     let server = MockServer::start().await;
@@ -74,18 +75,7 @@ async fn navigator_profile_sends_the_cognition_prompt_as_second_system_message()
     let sub = state.subscribe(id, None).await.expect("subscribe");
 
     // Post the message through the same route core POST /messages uses.
-    let command = rust_agent::server::routes::build_command(
-        id,
-        &rust_agent::server::routes::PostMessageRequest {
-            target_actor_id: "agent:main".to_string(),
-            mode: Some("next-turn".to_string()),
-            content: vec![rust_agent::bus::command::ContentBlock::Text {
-                text: "hello there".to_string(),
-            }],
-        },
-        rust_agent::bus::command::DeliveryMode::NextTurn,
-    );
-    let ack = state.send(command).await.expect("routed");
+    let ack = send_text(&state, id, "hello there").await;
     assert!(ack.accepted);
 
     let events = collect_until(sub, |e| e.kind == "turn.end").await;
@@ -124,48 +114,6 @@ async fn navigator_profile_sends_the_cognition_prompt_as_second_system_message()
     );
     assert_eq!(messages[2]["role"], "user");
     assert_eq!(messages[2]["content"], "hello there");
-}
-
-// Given a navigator-profile session created without a conversation feed
-// When a message is posted and the turn completes
-// Then the provider request carries the cognition role prompt as the
-//      second system message AND offers the `intent` tool.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn navigator_profile_without_feed_retains_prompt_and_intent() {
-    let server = MockServer::start().await;
-    let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;
-    Mock::given(method("POST"))
-        .and(path("/chat/completions"))
-        .respond_with(sse_response(&[done]))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let root = tmp.path().to_path_buf();
-    let state = test_state(&root, &server.uri());
-    let ws = root.join("ws");
-    std::fs::create_dir_all(&ws).expect("ws dir");
-
-    let id = state
-        .create_session(&ws, None, Some("navigator"))
-        .await
-        .expect("create navigator session");
-    let sub = state.subscribe(id, None).await.expect("subscribe");
-    post_driver_message(&state, id, "hello").await;
-    collect_until(sub, |e| e.kind == "turn.end").await;
-
-    let requests = server.received_requests().await;
-    let requests = requests.expect("wiremock retains requests");
-    assert_eq!(requests.len(), 1, "exactly one provider call");
-    let body: Value = serde_json::from_slice(&requests[0].body).expect("chat request");
-    let messages = body["messages"].as_array().expect("messages array");
-    assert_eq!(messages[0]["role"], "system", "loop contract first");
-    assert_eq!(messages[1]["role"], "system", "role prompt second");
-    assert_eq!(
-        messages[1]["content"],
-        rust_agent::navigator::COGNITION_PROMPT
-    );
     let tools: Vec<&str> = body["tools"]
         .as_array()
         .expect("tools array")
@@ -173,22 +121,6 @@ async fn navigator_profile_without_feed_retains_prompt_and_intent() {
         .filter_map(|t| t["function"]["name"].as_str())
         .collect();
     assert!(tools.contains(&"intent"), "intent tool offered: {tools:?}");
-}
-
-/// Posts a driver message through the same route core POST /messages uses.
-async fn post_driver_message(state: &AppState, id: ulid::Ulid, text: &str) {
-    let command = rust_agent::server::routes::build_command(
-        id,
-        &rust_agent::server::routes::PostMessageRequest {
-            target_actor_id: "agent:main".to_string(),
-            mode: Some("next-turn".to_string()),
-            content: vec![rust_agent::bus::command::ContentBlock::Text {
-                text: text.to_string(),
-            }],
-        },
-        rust_agent::bus::command::DeliveryMode::NextTurn,
-    );
-    state.send(command).await.expect("routed");
 }
 
 // Given a navigator session created over an AppState sharing a
@@ -230,9 +162,12 @@ async fn wake_through_the_feed_lands_as_a_navigator_sourced_message_and_turn() {
 
     let sub = state.subscribe(id, None).await.expect("subscribe");
 
-    post_driver_message(&state, id, "add an auth remove command").await;
+    send_text(&state, id, "add an auth remove command").await;
     // The subscriber task needs a beat to observe the driver message.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_for("the driver message to activate the session", || {
+        feed.active_session() == Some(id)
+    })
+    .await;
     assert_eq!(feed.active_session(), Some(id), "driver message activates");
 
     let outcome = feed
@@ -286,7 +221,10 @@ async fn wake_through_the_feed_lands_as_a_navigator_sourced_message_and_turn() {
         .contains("drifts from the intent"));
 
     // The feed digest now holds both sides, navigator included.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_for("the digest to hold the wake", || {
+        feed.digest().contains("navigator: wake:")
+    })
+    .await;
     let digest = feed.digest();
     assert!(
         digest.contains("driver: add an auth remove command"),
@@ -343,7 +281,7 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
         .expect("create");
 
     // Turn 1: the cognition yields on ask.
-    post_driver_message(&state, id, "add an auth remove command").await;
+    send_text(&state, id, "add an auth remove command").await;
     let yielded = collect_until(subscribe(&state, id).await, |e| {
         e.kind == "agent.state" && e.payload["to"] == "yielded"
     })
@@ -353,8 +291,10 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
         "the cognition asked: {:?}",
         yielded.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>()
     );
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(feed.is_waiting_on_driver(), "agent.yield seen by the feed");
+    wait_for("the feed to see agent.yield", || {
+        feed.is_waiting_on_driver()
+    })
+    .await;
 
     // The wake while yielded: queued, coalesced, never the ask answer.
     assert_eq!(
@@ -368,7 +308,7 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
 
     // The driver answers the ask. Their message must become the TOOL
     // result; only then does the queued wake arrive, as a user message.
-    post_driver_message(&state, id, "the local scope").await;
+    send_text(&state, id, "the local scope").await;
     let events = collect_until(subscribe(&state, id).await, |e| {
         e.kind == "message.received"
             && e.payload["source"] == "navigator"
@@ -496,7 +436,7 @@ async fn resumed_feed_rebuilds_without_announcing_old_turns() {
         .await
         .expect("create navigator session");
     let sub = state.subscribe(id, None).await.expect("subscribe");
-    post_driver_message(&state, id, "scope the auth removal").await;
+    send_text(&state, id, "scope the auth removal").await;
     collect_until(sub, |e| e.kind == "turn.end").await;
     state.close_session(id).await.expect("close");
 

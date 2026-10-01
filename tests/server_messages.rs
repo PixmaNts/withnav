@@ -13,6 +13,48 @@ mod common;
 use common::server::{collect_until, create_session, post_message, post_message_body, TestServer};
 use common::sse::{http_sse, sse_body};
 
+/// A provider that sends one partial chunk, signals `started`, then either
+/// holds the stream open (`finish_after: None`, until the client leaves) or
+/// completes it after the given pause.
+async fn spawn_partial_stream_provider(
+    finish_after: Option<Duration>,
+) -> (String, tokio::sync::oneshot::Receiver<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock bind");
+    let addr = listener.local_addr().expect("mock addr");
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = [0u8; 16384];
+        let _ = sock.read(&mut buf).await;
+        let head =
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+        let _ = sock.write_all(head).await;
+        let first = b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n";
+        let _ = sock.write_all(first).await;
+        let _ = sock.flush().await;
+        let _ = started_tx.send(());
+        match finish_after {
+            None => {
+                // Never [DONE]; hold until the client disconnects.
+                let mut sink = [0u8; 1];
+                let _ = tokio::time::timeout(Duration::from_secs(20), sock.read(&mut sink)).await;
+            }
+            Some(pause) => {
+                tokio::time::sleep(pause).await;
+                let done = b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"late end\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+                let _ = sock.write_all(done).await;
+                let _ = sock.flush().await;
+                let _ = sock.shutdown().await;
+            }
+        }
+    });
+    (format!("http://{addr}/v1"), started_rx)
+}
+
 // ---- (a) happy path: 200 {accepted:true} immediately; message reaches the agent ----
 
 // Given a live session backed by a scripted one-turn mock provider
@@ -56,9 +98,12 @@ async fn post_message_acks_immediately_and_drives_a_turn() {
         received_pos < start_pos,
         "event-before-action: message.received ({received_pos}) before turn.start ({start_pos})"
     );
+    assert_eq!(kinds.first(), Some(&"session.start"));
     let received = &events[received_pos];
+    assert!(received.seq >= 1, "message.received has a real seq");
     assert_eq!(received.payload["command_id"], command_id.as_str());
     assert_eq!(received.payload["source"], "user:http");
+    assert_eq!(received.payload["target"], "agent:main");
     assert_eq!(received.payload["content"], "please finish the turn");
 }
 
@@ -76,30 +121,9 @@ async fn post_message_acks_immediately_and_drives_a_turn() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn full_inbox_is_a_structured_503_inbox_full() {
     // A stream that never completes: the turn parks mid-flight.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("mock bind");
-    let addr = listener.local_addr().expect("mock addr");
-    let (stream_started_tx, stream_started_rx) = tokio::sync::oneshot::channel::<()>();
-    tokio::spawn(async move {
-        let Ok((mut sock, _)) = listener.accept().await else {
-            return;
-        };
-        let mut buf = [0u8; 16384];
-        let _ = sock.read(&mut buf).await;
-        let head =
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
-        let _ = sock.write_all(head).await;
-        let first = b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n";
-        let _ = sock.write_all(first).await;
-        let _ = sock.flush().await;
-        let _ = stream_started_tx.send(());
-        // Never [DONE]; hold until the client disconnects.
-        let mut sink = [0u8; 1];
-        let _ = tokio::time::timeout(Duration::from_secs(15), sock.read(&mut sink)).await;
-    });
+    let (url, stream_started_rx) = spawn_partial_stream_provider(None).await;
 
-    let server = TestServer::start_with_provider_url(&format!("http://{addr}/v1")).await;
+    let server = TestServer::start_with_provider_url(&url).await;
 
     let id = create_session(&server.base, &server.ws).await;
 
@@ -127,7 +151,6 @@ async fn full_inbox_is_a_structured_503_inbox_full() {
     // The rejected command was never sequenced (reject happens BEFORE the
     // event): a FRESH subscription replays the ring and shows exactly
     // session.start + 1 + INBOX_CAPACITY message.received envelopes.
-    tokio::time::sleep(Duration::from_millis(100)).await;
     let fresh = server
         .state
         .subscribe(id.parse().expect("ulid"), None)
@@ -180,7 +203,6 @@ async fn non_text_content_is_a_structured_400_and_not_sequenced() {
     assert!(body.get("error").is_some(), "structured 400 body: {body}");
 
     // Nothing beyond session.start was sequenced (reject before the event).
-    tokio::time::sleep(Duration::from_millis(100)).await;
     let replayed = match sub.replay {
         rust_agent::bus::ResumeOutcome::Replay(replay) => replay,
         other => panic!("expected replay, got {other:?}"),
@@ -225,132 +247,115 @@ async fn steer_and_interrupt_modes_are_downgraded_with_a_notice() {
 
 // ---- (f) POST /stop -> ordered teardown, then 404/409, no event after session.end ----
 
-// Given a session mid-turn against a stream that never completes
+// Given a session mid-turn against a stream that never completes, and one
+//      whose provider stalls 700 ms before finishing its stream (the runtime
+//      needs real time to unwind, so the manager must await it, not fence
+//      first)
 // When POST /stop fires
 // Then the subscribed stream shows turn.end{interrupted} -> agent.state{idle}
-//      -> session.end{final_seq} IN ORDER, session.end is LAST, and a
-//      follow-up POST /messages is rejected (404/409)
+//      -> session.end{final_seq} IN ORDER, session.end is LAST with gapless
+//      seqs, a follow-up POST /messages is rejected (404/409), and GET
+//      answers from the store with the seq session.end carried
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stop_tears_down_in_order_and_later_messages_are_rejected() {
-    // A stream that never finishes (same technique as the 503 test).
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("mock bind");
-    let addr = listener.local_addr().expect("mock addr");
-    let (stream_started_tx, stream_started_rx) = tokio::sync::oneshot::channel::<()>();
-    tokio::spawn(async move {
-        let Ok((mut sock, _)) = listener.accept().await else {
-            return;
-        };
-        let mut buf = [0u8; 16384];
-        let _ = sock.read(&mut buf).await;
-        let head =
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
-        let _ = sock.write_all(head).await;
-        let first = b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n";
-        let _ = sock.write_all(first).await;
-        let _ = sock.flush().await;
-        let _ = stream_started_tx.send(());
-        let mut sink = [0u8; 1];
-        let _ = tokio::time::timeout(Duration::from_secs(20), sock.read(&mut sink)).await;
-    });
+    for (name, finish_after) in [
+        ("held-open stream", None),
+        ("stream stalled 700 ms", Some(Duration::from_millis(700))),
+    ] {
+        let (url, stream_started_rx) = spawn_partial_stream_provider(finish_after).await;
+        let server = TestServer::start_with_provider_url(&url).await;
+        let id = create_session(&server.base, &server.ws).await;
+        let sub = server
+            .state
+            .subscribe(id.parse().expect("ulid"), None)
+            .await
+            .expect("subscribe before stop");
 
-    let server = TestServer::start_with_provider_url(&format!("http://{addr}/v1")).await;
-    let id = create_session(&server.base, &server.ws).await;
-    let sub = server
-        .state
-        .subscribe(id.parse().expect("ulid"), None)
-        .await
-        .expect("subscribe before stop");
+        // Start the turn that will be interrupted.
+        let resp = post_message(&server.base, &id, "will be interrupted").await;
+        assert_eq!(resp.status(), 200, "{name}");
+        tokio::time::timeout(Duration::from_secs(5), stream_started_rx)
+            .await
+            .expect("stream started")
+            .expect("stream started");
 
-    // Start the turn that will be interrupted.
-    let resp = post_message(&server.base, &id, "will be interrupted").await;
-    assert_eq!(resp.status(), 200);
-    tokio::time::timeout(Duration::from_secs(5), stream_started_rx)
-        .await
-        .expect("stream started")
-        .expect("stream started");
+        // Stop.
+        let client = reqwest::Client::new();
+        let stop = client
+            .post(format!("{}/v1/sessions/{}/stop", server.base, id))
+            .send()
+            .await
+            .expect("stop");
+        assert_eq!(stop.status(), 200, "{name}");
+        let stop_body: Value = stop.json().await.expect("stop json");
+        assert_eq!(
+            stop_body,
+            json!({ "accepted": true, "actor_state": "stopped" })
+        );
 
-    // Stop.
-    let client = reqwest::Client::new();
-    let stop = client
-        .post(format!("{}/v1/sessions/{}/stop", server.base, id))
-        .send()
-        .await
-        .expect("stop");
-    assert_eq!(stop.status(), 200);
-    let stop_body: Value = stop.json().await.expect("stop json");
-    assert_eq!(
-        stop_body,
-        json!({ "accepted": true, "actor_state": "stopped" })
-    );
+        // Ordered terminal events, session.end LAST.
+        let events = collect_until(sub, |e| e.kind == "session.end").await;
+        let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
+        let turn_end_idx = kinds
+            .iter()
+            .position(|k| *k == "turn.end")
+            .expect("turn.end present");
+        let agent_state_idx = kinds[turn_end_idx + 1..]
+            .iter()
+            .position(|k| *k == "agent.state")
+            .expect("agent.state after turn.end")
+            + turn_end_idx
+            + 1;
+        let end_idx = kinds
+            .iter()
+            .rposition(|k| *k == "session.end")
+            .expect("end");
+        assert!(
+            turn_end_idx < agent_state_idx && agent_state_idx < end_idx,
+            "{name}: turn.end -> agent.state -> session.end IN ORDER: {kinds:?}"
+        );
+        assert_eq!(kinds.last(), Some(&"session.end"), "session.end is LAST");
+        assert_eq!(events[turn_end_idx].payload["outcome"], "interrupted");
+        assert_eq!(events[agent_state_idx].payload["to"], "idle");
+        let end_env = &events[end_idx];
+        assert_eq!(end_env.payload["final_seq"], end_env.seq);
 
-    // Ordered terminal events, session.end LAST.
-    let events = collect_until(sub, |e| e.kind == "session.end").await;
-    let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
-    let turn_end_idx = kinds
-        .iter()
-        .position(|k| *k == "turn.end")
-        .expect("turn.end present");
-    let agent_state_idx = kinds[turn_end_idx + 1..]
-        .iter()
-        .position(|k| *k == "agent.state")
-        .expect("agent.state after turn.end")
-        + turn_end_idx
-        + 1;
-    let end_idx = kinds
-        .iter()
-        .rposition(|k| *k == "session.end")
-        .expect("end");
-    assert!(
-        turn_end_idx < agent_state_idx && agent_state_idx < end_idx,
-        "turn.end -> agent.state -> session.end IN ORDER: {kinds:?}"
-    );
-    assert_eq!(kinds.last(), Some(&"session.end"), "session.end is LAST");
-    assert_eq!(events[turn_end_idx].payload["outcome"], "interrupted");
-    assert_eq!(events[agent_state_idx].payload["to"], "idle");
-    let end_env = &events[end_idx];
-    assert_eq!(end_env.payload["final_seq"], end_env.seq);
+        // Gapless seqs across the whole terminal stream; nothing after
+        // session.end.
+        let seqs: Vec<u64> = events.iter().map(|e| e.seq).collect();
+        assert!(
+            seqs.windows(2).all(|w| w[1] == w[0] + 1),
+            "{name}: gapless: {seqs:?}"
+        );
 
-    // Gapless seqs across the whole terminal stream.
-    let seqs: Vec<u64> = events.iter().map(|e| e.seq).collect();
-    assert!(
-        seqs.windows(2).all(|w| w[1] == w[0] + 1),
-        "gapless: {seqs:?}"
-    );
+        // Follow-up POST /messages -> 404/409.
+        let late = post_message(&server.base, &id, "too late").await;
+        assert!(
+            late.status() == 404 || late.status() == 409,
+            "{name}: post-stop message must be 404/409, got {}",
+            late.status()
+        );
 
-    // Follow-up POST /messages -> 404/409; nothing ever sequenced after
-    // session.end.
-    let late = post_message(&server.base, &id, "too late").await;
-    assert!(
-        late.status() == 404 || late.status() == 409,
-        "post-stop message must be 404/409, got {}",
-        late.status()
-    );
-    assert_eq!(
-        end_env.seq,
-        events.iter().map(|e| e.seq).max().expect("max")
-    );
-
-    // GET-after-stop answers from the store with
-    // current_seq == the seq session.end ACTUALLY carried on the wire.
-    let summary: Value = client
-        .get(format!("{}/v1/sessions/{}", server.base, id))
-        .send()
-        .await
-        .expect("get after stop")
-        .json()
-        .await
-        .expect("summary json");
-    assert_eq!(summary["actor_state"], "stopped");
-    assert_eq!(
-        summary["current_seq"], end_env.seq,
-        "stored last_seq == observed session.end payload seq"
-    );
-    assert_eq!(
-        summary["current_seq"], end_env.payload["final_seq"],
-        "stored last_seq == session.end.payload.final_seq"
-    );
+        // GET-after-stop answers from the store with
+        // current_seq == the seq session.end ACTUALLY carried on the wire.
+        let summary: Value = client
+            .get(format!("{}/v1/sessions/{}", server.base, id))
+            .send()
+            .await
+            .expect("get after stop")
+            .json()
+            .await
+            .expect("summary json");
+        assert_eq!(summary["actor_state"], "stopped");
+        assert_eq!(
+            summary["current_seq"], end_env.seq,
+            "{name}: stored last_seq == observed session.end seq"
+        );
+        assert_eq!(
+            summary["current_seq"], end_env.payload["final_seq"],
+            "{name}: stored last_seq == session.end.payload.final_seq"
+        );
+    }
 }
 
 // A stopped session's runtime is gone: GET still answers from the store,
@@ -389,118 +394,6 @@ async fn stopped_session_answers_get_but_routing_is_gone() {
     assert_eq!(body["reason"], "resume_required", "{body}");
 }
 
-// Slow-runtime variant, REAL HTTP: a mid-turn stop against
-// a provider that DELAYS its final SSE chunk. The runtime needs real time to
-// unwind, so the manager must AWAIT it (not fence first): the stream still
-// ends turn.end{interrupted} -> agent.state{idle} -> session.end, with
-// session.end LAST and nothing after it — even though the stop raced a
-// slow in-flight turn.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stop_during_a_slow_turn_still_orders_the_terminal_tail() {
-    // Scripted provider: one chunk, a real 700ms pause, then [DONE]. The
-    // turn is mid-flight when /stop arrives and takes >700ms to unwind.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("mock bind");
-    let addr = listener.local_addr().expect("mock addr");
-    let (stream_started_tx, stream_started_rx) = tokio::sync::oneshot::channel::<()>();
-    tokio::spawn(async move {
-        let Ok((mut sock, _)) = listener.accept().await else {
-            return;
-        };
-        let mut buf = [0u8; 16384];
-        let _ = sock.read(&mut buf).await;
-        let head =
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
-        let _ = sock.write_all(head).await;
-        let first =
-            b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"slow partial\"}}]}\n\n";
-        let _ = sock.write_all(first).await;
-        let _ = sock.flush().await;
-        let _ = stream_started_tx.send(());
-        tokio::time::sleep(Duration::from_millis(700)).await;
-        let done = b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"late end\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
-        let _ = sock.write_all(done).await;
-        let _ = sock.flush().await;
-        let _ = sock.shutdown().await;
-    });
-
-    let server = TestServer::start_with_provider_url(&format!("http://{addr}/v1")).await;
-    let id = create_session(&server.base, &server.ws).await;
-    let sub = server
-        .state
-        .subscribe(id.parse().expect("ulid"), None)
-        .await
-        .expect("subscribe before stop");
-
-    // Start the slow turn.
-    let resp = post_message(&server.base, &id, "slow turn").await;
-    assert_eq!(resp.status(), 200);
-    tokio::time::timeout(Duration::from_secs(5), stream_started_rx)
-        .await
-        .expect("stream started")
-        .expect("stream started");
-
-    // Stop ~immediately: the turn is still unwinding inside the provider
-    // stream for another ~700ms, so the manager MUST wait for the runtime.
-    let client = reqwest::Client::new();
-    let stop = client
-        .post(format!("{}/v1/sessions/{}/stop", server.base, id))
-        .send()
-        .await
-        .expect("stop");
-    assert_eq!(stop.status(), 200);
-    let stop_body: Value = stop.json().await.expect("stop json");
-    assert_eq!(
-        stop_body,
-        json!({ "accepted": true, "actor_state": "stopped" })
-    );
-
-    // Ordered terminal tail, session.end LAST even under the delay.
-    let events = collect_until(sub, |e| e.kind == "session.end").await;
-    let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
-    let turn_end_idx = kinds
-        .iter()
-        .rposition(|k| *k == "turn.end")
-        .expect("turn.end present");
-    let agent_state_idx = kinds[turn_end_idx + 1..]
-        .iter()
-        .position(|k| *k == "agent.state")
-        .expect("agent.state after turn.end")
-        + turn_end_idx
-        + 1;
-    let end_idx = kinds
-        .iter()
-        .rposition(|k| *k == "session.end")
-        .expect("end");
-    assert!(
-        turn_end_idx < agent_state_idx && agent_state_idx < end_idx,
-        "slow runtime still ordered turn.end -> agent.state -> session.end: {kinds:?}"
-    );
-    assert_eq!(events[turn_end_idx].payload["outcome"], "interrupted");
-    assert_eq!(events[agent_state_idx].payload["to"], "idle");
-    let seqs: Vec<u64> = events.iter().map(|e| e.seq).collect();
-    assert!(
-        seqs.windows(2).all(|w| w[1] == w[0] + 1),
-        "gapless: {seqs:?}"
-    );
-
-    // Slow variant: stored seq == the session.end the
-    // subscriber actually observed.
-    let summary: Value = client
-        .get(format!("{}/v1/sessions/{}", server.base, id))
-        .send()
-        .await
-        .expect("get")
-        .json()
-        .await
-        .expect("json");
-    assert_eq!(
-        summary["current_seq"], events[end_idx].seq,
-        "stored seq == observed session.end seq under slow teardown"
-    );
-}
-
 // ---- (g) unknown id on messages/stop -> structured 404 ----
 
 // Given an id that was never minted
@@ -525,46 +418,6 @@ async fn unknown_ids_are_structured_404_on_messages_and_stop() {
     assert_eq!(stop.status(), 404);
     let body: Value = stop.json().await.expect("404 json");
     assert!(body.get("error").is_some(), "structured 404 body: {body}");
-}
-
-// ---- (b) event-before-action, observed via sequencer.subscribe_since ----
-
-// Given a live session and a subscriber registered BEFORE the POST
-// When a message is POSTed
-// Then message.received appears with the session.start before it, a
-//      well-ordered seq, and its payload carries the server-assigned
-//      user:http source and the command_id echoed from the ack
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn message_received_is_sequenced_before_any_action_with_a_seq() {
-    let done =
-        r#"{"choices":[{"index":0,"delta":{"content":"done here"},"finish_reason":"stop"}]}"#;
-    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
-    let id = create_session(&server.base, &server.ws).await;
-    let sub = server
-        .state
-        .subscribe(id.parse().expect("ulid"), None)
-        .await
-        .expect("subscribe BEFORE the post");
-
-    let resp = post_message(&server.base, &id, "sequence me").await;
-    assert_eq!(resp.status(), 200);
-    let ack: Value = resp.json().await.expect("ack json");
-
-    let events = collect_until(sub, |e| {
-        e.kind == "session.end" || { e.kind == "agent.state" && e.payload["to"] == "idle" }
-    })
-    .await;
-    let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
-    assert_eq!(kinds.first(), Some(&"session.start"));
-    let received = events
-        .iter()
-        .find(|e| e.kind == "message.received")
-        .expect("message.received in the subscribed stream");
-    assert!(received.seq >= 1, "message.received has a real seq");
-    assert_eq!(received.payload["source"], "user:http");
-    assert_eq!(received.payload["target"], "agent:main");
-    assert_eq!(received.payload["command_id"], ack["command_id"]);
-    assert_eq!(received.payload["content"], "sequence me");
 }
 
 // ---- manual QA: pasteable real-HTTP transcript for the evidence file ----

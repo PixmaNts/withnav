@@ -372,6 +372,12 @@ impl TriggerContext {
                 "since_last_remark_ms".to_string(),
                 serde_json::json!(self.since_last_remark_ms),
             ),
+            ("has_errors".to_string(), serde_json::json!(self.has_errors)),
+            ("has_intent".to_string(), serde_json::json!(self.has_intent)),
+            (
+                "has_conversation".to_string(),
+                serde_json::json!(self.has_conversation),
+            ),
         ])
     }
 }

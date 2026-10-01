@@ -12,8 +12,9 @@ use serde_json::{json, Value};
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use rust_agent::navigator::commenter::{Commenter, LlmCommenter, RemarkContext};
+use rust_agent::navigator::commenter::{LlmCommenter, RemarkContext};
 use rust_agent::navigator::log::NavLog;
+use rust_agent::navigator::ports::Metacognition;
 use rust_agent::provider::config::{
     ApiKind, ModelConfig, ProviderConfig, ReasoningHistory, ResolvedModel,
 };
@@ -331,7 +332,7 @@ async fn buffer_read_honours_offset_and_limit() {
 }
 
 // Given a context carrying the rendered pipeline branch prompt
-// When the metacognition remarks through `Commenter::remark`
+// When the metacognition remarks through `Metacognition::remark`
 // Then the system message the model receives contains that prompt.
 #[tokio::test]
 async fn the_branch_prompt_reaches_the_models_system_message() {
@@ -357,4 +358,30 @@ async fn the_branch_prompt_reaches_the_models_system_message() {
         system.contains("driver: keep the parser"),
         "branch prompt in the system message: {system}"
     );
+}
+
+// Given a model answering prose instead of the JSON contract
+// When the metacognition remarks
+// Then the error is the typed `Malformed` carrying the raw output, not a
+//      provider failure.
+#[tokio::test]
+async fn a_prose_answer_is_a_typed_malformed_error() {
+    use rust_agent::navigator::ports::ModelError;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let answer = sse_stream(vec![sse_data(&delta_text("you should refactor this"))]);
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(answer, "text/event-stream"))
+        .mount(&server)
+        .await;
+
+    let c = commenter(server.uri(), None);
+    let ctx = remark_ctx(tmp.path(), vec![]);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    match c.remark(&ctx, &cancel).await {
+        Err(ModelError::Malformed(raw)) => assert_eq!(raw, "you should refactor this"),
+        other => panic!("expected Malformed, got {other:?}"),
+    }
 }

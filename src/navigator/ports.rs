@@ -5,21 +5,23 @@
 //!   suggestions while the driver types).
 //! - [`DecisionModel`]: the instinct's typed-question engine (one call,
 //!   several bounded questions, never free text).
-//! - [`Commenter`]: the prototype's remark seam, kept as-is.
+//! - [`Metacognition`]: the fast remark engine (one remark, or silence, for a
+//!   document state).
 //!
 //! The request/answer types here are the wire contract for the provider
 //! implementations: `Questions`/`Answers` follow the System One shape
 //! captured in `tests/fixtures/navigator/systemone_multi.json`.
 
 use std::collections::BTreeMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::time::Duration;
 
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ProviderError;
+use crate::navigator::commenter::RemarkContext;
+use crate::navigator::protocol::Remark;
 
 /// What can go wrong at a model seam: a provider failure (transport, API,
 /// cancellation) or an answer that does not parse per the wire contract.
@@ -31,6 +33,10 @@ pub enum ModelError {
     Provider(#[from] ProviderError),
     #[error("malformed model output: {0}")]
     Malformed(String),
+    /// The layer cannot run at all (it was disabled at startup); the message
+    /// is shown to the driver as is.
+    #[error("{0}")]
+    Unavailable(String),
 }
 
 /// One typed ask put to the instinct, answered as a yes-probability (`noul`),
@@ -114,7 +120,7 @@ pub trait FimModel: Send + Sync {
         &'a self,
         request: FimRequest,
         cancel: &'a CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = Result<FimAnswer, ModelError>> + Send + 'a>>;
+    ) -> BoxFuture<'a, Result<FimAnswer, ModelError>>;
 }
 
 /// What the metacognition sees when it rewrites the reflex context: the
@@ -135,7 +141,7 @@ pub trait ReflexContextModel: Send + Sync {
     fn refresh<'a>(
         &'a self,
         request: &'a ReflexContextRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<String, ModelError>> + Send + 'a>>;
+    ) -> BoxFuture<'a, Result<String, ModelError>>;
 }
 
 /// The instinct's model seam: answers several typed questions about a
@@ -146,7 +152,20 @@ pub trait DecisionModel: Send + Sync {
         state: &'a str,
         questions: &'a Questions,
         cancel: &'a CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = Result<Answers, ModelError>> + Send + 'a>>;
+    ) -> BoxFuture<'a, Result<Answers, ModelError>>;
+}
+
+/// The metacognition's remark seam: one remark (or silence) for a document
+/// state. The pipeline's rendered branch prompt travels on
+/// [`RemarkContext::prompt`]; without it the model would judge the diff
+/// alone. `Ok(None)` is silence; an error is a provider failure or an answer
+/// that violates the prompt contract ([`ModelError::Malformed`]).
+pub trait Metacognition: Send + Sync {
+    fn remark<'a>(
+        &'a self,
+        ctx: &'a RemarkContext,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Option<Remark>, ModelError>>;
 }
 
 #[cfg(test)]

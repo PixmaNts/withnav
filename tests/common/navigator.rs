@@ -2,21 +2,20 @@
 //! scripted reflex, instinct and metacognition models.
 
 use std::collections::VecDeque;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use futures::future::BoxFuture;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio_util::sync::CancellationToken;
 
 use rust_agent::error::ProviderError;
-use rust_agent::navigator::commenter::{Commenter, RemarkContext};
+use rust_agent::navigator::commenter::RemarkContext;
 use rust_agent::navigator::ports::{
-    Answer, Answers, DecisionModel, FimAnswer, FimModel, FimRequest, ModelError, Question,
-    Questions, ReflexContextModel, ReflexContextRequest,
+    Answer, Answers, DecisionModel, FimAnswer, FimModel, FimRequest, Metacognition, ModelError,
+    Question, Questions, ReflexContextModel, ReflexContextRequest,
 };
 use rust_agent::navigator::{self, NavigatorDeps, Remark};
 use rust_agent::provider::Usage;
@@ -69,7 +68,7 @@ pub enum RemarkAnswer {
     Fail(&'static str),
 }
 
-/// Scripted [`Commenter`]: consumes answers from a shared list, in order;
+/// Scripted [`Metacognition`]: consumes answers from a shared list, in order;
 /// when empty, answers `Silent`. Counts calls, and can hold every call on a
 /// gate so a test can interleave an edit while the request is in flight.
 #[derive(Clone, Default)]
@@ -100,12 +99,12 @@ impl ScriptedCommenter {
     }
 }
 
-impl Commenter for ScriptedCommenter {
+impl Metacognition for ScriptedCommenter {
     fn remark<'a>(
         &'a self,
         _ctx: &'a RemarkContext,
         cancel: &'a CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Remark>, String>> + Send + 'a>> {
+    ) -> BoxFuture<'a, Result<Option<Remark>, ModelError>> {
         Box::pin(async move {
             // The answer is assigned when the call starts: a cancelled call
             // still consumes its answer (it is discarded), like a real LLM
@@ -122,7 +121,7 @@ impl Commenter for ScriptedCommenter {
             if let Some(gate) = &self.gate {
                 tokio::select! {
                     _ = gate.cancelled() => {}
-                    _ = cancel.cancelled() => return Err("cancelled".into()),
+                    _ = cancel.cancelled() => return Err(ModelError::Unavailable("cancelled".into())),
                 }
             }
             match answer {
@@ -131,7 +130,7 @@ impl Commenter for ScriptedCommenter {
                     text: text.to_string(),
                 })),
                 RemarkAnswer::Silent => Ok(None),
-                RemarkAnswer::Fail(msg) => Err(msg.to_string()),
+                RemarkAnswer::Fail(msg) => Err(ModelError::Unavailable(msg.to_string())),
             }
         })
     }
@@ -240,7 +239,7 @@ impl DecisionModel for ScriptedDecision {
         state: &'a str,
         questions: &'a Questions,
         _cancel: &'a CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = Result<Answers, ModelError>> + Send + 'a>> {
+    ) -> BoxFuture<'a, Result<Answers, ModelError>> {
         let index = self.calls.fetch_add(1, Ordering::SeqCst);
         self.states.lock().unwrap().push(state.to_string());
         let result = match &self.mode {
@@ -319,7 +318,7 @@ impl FimModel for ScriptedFim {
         &'a self,
         request: FimRequest,
         cancel: &'a CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = Result<FimAnswer, ModelError>> + Send + 'a>> {
+    ) -> BoxFuture<'a, Result<FimAnswer, ModelError>> {
         Box::pin(async move {
             // The answer is assigned when the call starts: a cancelled call
             // still consumes it, like a real request whose tokens are paid
@@ -379,7 +378,7 @@ impl ReflexContextModel for ScriptedReflexContext {
     fn refresh<'a>(
         &'a self,
         request: &'a ReflexContextRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<String, ModelError>> + Send + 'a>> {
+    ) -> BoxFuture<'a, Result<String, ModelError>> {
         Box::pin(async move {
             self.requests.lock().unwrap().push(request.clone());
             let next = {

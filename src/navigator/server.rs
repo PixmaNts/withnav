@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 use tower_lsp_server::ls_types::*;
 use tower_lsp_server::{Client, LanguageServer};
 
-use crate::navigator::commenter::{Diag, RemarkContext, MALFORMED_PREFIX};
+use crate::navigator::commenter::{Diag, RemarkContext};
 use crate::navigator::config::NavigatorConfig;
 use crate::navigator::document::{text_around_line, DocumentState};
 use crate::navigator::log::{
@@ -31,7 +31,9 @@ use crate::navigator::log::{
 use crate::navigator::pipeline::{
     Action, Pipeline, PipelineError, PipelineSnapshot, TriggerInputs, TriggerKind, NO_REMARK_MS,
 };
-use crate::navigator::ports::{DecisionModel, ReflexContextModel, ReflexContextRequest};
+use crate::navigator::ports::{
+    DecisionModel, ModelError, ReflexContextModel, ReflexContextRequest,
+};
 use crate::navigator::protocol::{
     ClearNotification, ClearParams, DiagnosticItem, DiagnosticsParams, FeedbackParams,
     InlineCompletionResult, IntentParams, Position, ReflexShownParams, RemarkNotification,
@@ -720,9 +722,7 @@ impl Inner {
                 self.clear_in_flight(&uri).await;
                 let cancelled = matches!(
                     model_error,
-                    crate::navigator::ports::ModelError::Provider(
-                        crate::error::ProviderError::Canceled { .. }
-                    )
+                    ModelError::Provider(crate::error::ProviderError::Canceled { .. })
                 );
                 if cancelled {
                     record.model = self.instinct_model.clone();
@@ -994,7 +994,7 @@ impl Inner {
                 log_trigger(&record, "silent", None, None);
                 self.set_status("idle", None).await;
             }
-            Err(message) => {
+            Err(error) => {
                 self.log.append(&LogRecord::Call {
                     layer: "metacognition",
                     model: &model,
@@ -1006,7 +1006,7 @@ impl Inner {
                 });
                 // A malformed answer is a model failure, not a provider
                 // failure: different delivered outcome in the log.
-                if let Some(raw) = message.strip_prefix(MALFORMED_PREFIX) {
+                if let ModelError::Malformed(raw) = &error {
                     self.log.append(&LogRecord::Malformed {
                         uri: &ctx.uri,
                         model: &model,
@@ -1020,6 +1020,7 @@ impl Inner {
                     )
                     .await;
                 } else {
+                    let message = error.to_string();
                     self.log.append(&LogRecord::Error {
                         uri: &ctx.uri,
                         message: &message,

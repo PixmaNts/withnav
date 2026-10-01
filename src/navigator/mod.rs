@@ -20,14 +20,10 @@ pub mod reflex;
 pub mod replay;
 pub mod server;
 
-use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::Arc;
 
-use tokio_util::sync::CancellationToken;
-
-pub use commenter::{Commenter, LlmCommenter, RemarkContext};
+pub use commenter::{LlmCommenter, RemarkContext};
 pub use config::NavigatorConfig;
 pub use conversation::{
     ConversationEvent, ConversationFeed, SessionPost, WakeOutcome, NAVIGATOR_ACTOR_ID,
@@ -39,8 +35,8 @@ pub use pipeline::{
     TriggerKind,
 };
 pub use ports::{
-    Answer, Answers, DecisionModel, FimAnswer, FimModel, FimRequest, ModelError, Question,
-    Questions, ReflexContextModel, ReflexContextRequest,
+    Answer, Answers, DecisionModel, FimAnswer, FimModel, FimRequest, Metacognition, ModelError,
+    Question, Questions, ReflexContextModel, ReflexContextRequest,
 };
 pub use protocol::{
     ClearParams, FeedbackParams, InlineCompletionItem, InlineCompletionParams,
@@ -52,31 +48,6 @@ pub use reflex::{
 };
 use tower_lsp_server::ls_types::Uri;
 use tower_lsp_server::{LspService, Server};
-
-/// The metacognition seam: one remark (or silence) for a document state,
-/// including the pipeline branch prompt rendered through its templates.
-pub trait Metacognition: Send + Sync {
-    fn remark<'a>(
-        &'a self,
-        ctx: &'a RemarkContext,
-        cancel: &'a CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Remark>, String>> + Send + 'a>>;
-}
-
-/// Adapts a plain [`Commenter`] to [`Metacognition`], ignoring the branch
-/// prompt (prototype behaviour; scripted tests also use this when the
-/// prompt is not what they assert on).
-pub struct CommenterAsMetacognition(pub Arc<dyn Commenter>);
-
-impl Metacognition for CommenterAsMetacognition {
-    fn remark<'a>(
-        &'a self,
-        ctx: &'a RemarkContext,
-        cancel: &'a CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Remark>, String>> + Send + 'a>> {
-        self.0.remark(ctx, cancel)
-    }
-}
 
 /// Everything the navigator needs besides the LSP channel itself. The model
 /// seams (metacognition, and `fim`/`decision` for the reflex and instinct
@@ -116,27 +87,7 @@ pub struct NavigatorDeps {
 }
 
 impl NavigatorDeps {
-    /// Wraps a plain [`Commenter`] seam (prototype path).
-    pub fn new(commenter: Arc<dyn Commenter>, log_path: impl Into<PathBuf>) -> Self {
-        Self {
-            commenter: Arc::new(CommenterAsMetacognition(commenter)),
-            fim: None,
-            decision: None,
-            reflex_context: None,
-            reflex_model: None,
-            instinct_model: None,
-            metacognition_model: None,
-            conversation: None,
-            workspace: None,
-            user_dir: None,
-            server_info: None,
-            disabled_layers: Vec::new(),
-            log_path: log_path.into(),
-        }
-    }
-
-    /// Direct metacognition seam (prompt-aware).
-    pub fn with_layers(commenter: Arc<dyn Metacognition>, log_path: impl Into<PathBuf>) -> Self {
+    pub fn new(commenter: Arc<dyn Metacognition>, log_path: impl Into<PathBuf>) -> Self {
         Self {
             commenter,
             fim: None,

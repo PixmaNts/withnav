@@ -374,7 +374,7 @@ async fn stop_tears_down_in_order_and_later_messages_are_rejected() {
         events.iter().map(|e| e.seq).max().expect("max")
     );
 
-    // GET-after-stop answers from the tombstone with
+    // GET-after-stop answers from the store with
     // current_seq == the seq session.end ACTUALLY carried on the wire.
     let summary: Value = client
         .get(format!("{}/v1/sessions/{}", server.base, id))
@@ -387,16 +387,16 @@ async fn stop_tears_down_in_order_and_later_messages_are_rejected() {
     assert_eq!(summary["actor_state"], "stopped");
     assert_eq!(
         summary["current_seq"], end_env.seq,
-        "tombstone final_seq == observed session.end payload seq"
+        "stored last_seq == observed session.end payload seq"
     );
     assert_eq!(
         summary["current_seq"], end_env.payload["final_seq"],
-        "tombstone final_seq == session.end.payload.final_seq"
+        "stored last_seq == session.end.payload.final_seq"
     );
 }
 
-// A stopped session's runtime is gone: GET still answers from the tombstone,
-// but a message POST is a 409 asking to resume first (a tombstone answers
+// A stopped session's runtime is gone: GET still answers from the store,
+// but a message POST is a 409 asking to resume first (the store answers
 // reads, never commands).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stopped_session_answers_get_but_routing_is_gone() {
@@ -412,7 +412,7 @@ async fn stopped_session_answers_get_but_routing_is_gone() {
         .expect("stop");
     assert_eq!(stop.status(), 200);
 
-    // Tombstone answers GET (stopped, with the retained final_seq);
+    // The store answers GET (stopped, with the stored last_seq);
     // routing is gone for commands.
     let summary: Value = client
         .get(format!("{}/v1/sessions/{}", server.base, id))
@@ -527,7 +527,7 @@ async fn stop_during_a_slow_turn_still_orders_the_terminal_tail() {
         "gapless: {seqs:?}"
     );
 
-    // Slow variant: tombstone seq == the session.end the
+    // Slow variant: stored seq == the session.end the
     // subscriber actually observed.
     let summary: Value = client
         .get(format!("{}/v1/sessions/{}", server.base, id))
@@ -539,7 +539,7 @@ async fn stop_during_a_slow_turn_still_orders_the_terminal_tail() {
         .expect("json");
     assert_eq!(
         summary["current_seq"], events[end_idx].seq,
-        "tombstone == observed session.end seq under slow teardown"
+        "stored seq == observed session.end seq under slow teardown"
     );
 }
 

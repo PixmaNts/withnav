@@ -231,7 +231,8 @@ async fn a_resumed_stream_hides_the_stale_session_end() {
 //       replay range is corrupt)
 // When a client subscribes
 // Then the subscription falls back to the ring (replay + live receiver),
-//      and the conversation keeps working
+//      and the conversation keeps working. The session is fresh, so the ring
+//      (an empty cache after a resume) holds the whole turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failing_history_read_falls_back_to_the_ring() {
     let fx = fixture().await;

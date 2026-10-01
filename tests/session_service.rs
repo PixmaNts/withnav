@@ -148,7 +148,7 @@ async fn http_replay(
 
 // Given a session that ran one scripted turn
 // When `Service::subscribe(id, None)` and the HTTP SSE stream replay it,
-//      live and then after a stop (tombstone)
+//      live and then after a stop
 // Then both yield the same ordered envelopes, and a stopped session's
 //      subscription has no live receiver
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -186,7 +186,7 @@ async fn service_subscription_matches_http_replay() {
         http_replay(&server.base, id, expected.len()).await
     );
 
-    // Stopped session: the tombstone replays through `session.end`, then ends.
+    // Stopped session: the store replays through `session.end`, then ends.
     let stop = reqwest::Client::new()
         .post(format!("{}/v1/sessions/{id}/stop", server.base))
         .send()
@@ -194,9 +194,12 @@ async fn service_subscription_matches_http_replay() {
         .expect("stop");
     assert_eq!(stop.status(), 200);
     let stopped = server.state.subscribe(id, None).await.expect("subscribe");
-    assert!(stopped.live.is_none(), "a tombstone has no live receiver");
+    assert!(
+        stopped.live.is_none(),
+        "a stopped session has no live receiver"
+    );
     let ResumeOutcome::Replay(expected) = stopped.replay else {
-        panic!("a tombstone replays");
+        panic!("a stopped session replays");
     };
     assert_eq!(
         expected.last().map(|e| e.kind.as_str()),

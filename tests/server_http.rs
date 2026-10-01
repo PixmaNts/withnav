@@ -275,12 +275,12 @@ async fn real_socket_serve_answers_health_create_and_get() {
     server.abort();
 }
 
-// Given a created session closed through the manager (fence + tombstone)
+// Given a created session closed through the manager
 // When GET asks for it afterwards
-// Then it answers "stopped" with session.end's seq, is NOT routable, and a
-//      second close is idempotent (no second session.end)
+// Then it answers "stopped" with session.end's seq from the store, is NOT
+//      routable, and a second close is idempotent (no second session.end)
 #[tokio::test]
-async fn close_session_tombstones_and_get_answers_from_the_tombstone() {
+async fn close_session_removes_the_entry_and_get_answers_from_the_store() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let state = test_state(tmp.path());
     let ws = tmp.path().join("ws");
@@ -323,14 +323,19 @@ async fn close_session_tombstones_and_get_answers_from_the_tombstone() {
         "gapless terminal stream: {seqs:?}"
     );
 
-    // The tombstone answers GET with session.end's seq; routing is gone.
-    let summary = state.session_summary(id).await.expect("tombstone answers");
+    // The store answers GET with session.end's seq; routing is gone.
+    let summary = state.session_summary(id).await.expect("store answers");
     assert_eq!(summary.actor_state, "stopped");
     assert_eq!(summary.current_seq, *seqs.last().expect("seqs"));
     assert_not_routable(&state, id).await;
 
     state.close_session(id).await.expect("idempotent close");
-    assert_eq!(state.tombstone_count(), 1, "no duplicate tombstone");
+    assert_eq!(state.session_count(), 0, "the registry holds no entry");
+    let again = state.session_summary(id).await.expect("still answers");
+    assert_eq!(
+        again.current_seq, summary.current_seq,
+        "no second session.end"
+    );
 }
 
 // Given two active sessions and a REAL SIGTERM delivered to a server running
@@ -440,16 +445,18 @@ async fn sigterm_drives_graceful_shutdown_sessions_end_and_clean_exit() {
         );
     }
 
-    // Every session is tombstoned (routing released, GET still answers).
+    // Every session left the registry (routing released, GET still answers
+    // from the store).
+    assert_eq!(state.session_count(), 0);
     for id in [id_a, id_b] {
-        let summary = state.session_summary(id).await.expect("tombstone");
+        let summary = state.session_summary(id).await.expect("stored");
         assert_eq!(summary.actor_state, "stopped");
         assert_not_routable(&state, id).await;
     }
 }
 
-/// A command to a closed session is refused: a tombstone answers reads,
-/// never commands.
+/// A command to a closed session is refused: the store answers reads, never
+/// commands.
 async fn assert_not_routable(state: &AppState, id: rust_agent::bus::command::SessionId) {
     let command = rust_agent::server::routes::build_command(
         id,

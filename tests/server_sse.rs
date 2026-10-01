@@ -298,7 +298,7 @@ async fn reconnect_after_stop_replays_through_final_seq_then_terminates() {
         "observed a durable history: {expected:?}"
     );
 
-    // GET /events on the tombstone: 200 (not 404), replays the durable
+    // GET /events on the stopped session: 200 (not 404), replays the durable
     // history through final_seq (session.end LAST), then ends with a clean
     // server EOF — not a client-budget timeout, not a hang.
     let read = read_sse(&server.base, &id, None, 3000).await;
@@ -310,15 +310,15 @@ async fn reconnect_after_stop_replays_through_final_seq_then_terminates() {
     for pair in &expected {
         assert!(
             it.any(|r| r == pair),
-            "tombstone replay missing/misordered {pair:?}: got {replayed:?}"
+            "stopped replay missing/misordered {pair:?}: got {replayed:?}"
         );
     }
     let seqs: Vec<u64> = replayed.iter().map(|(s, _)| *s).collect();
     assert!(
         seqs.windows(2).all(|w| w[1] > w[0]),
-        "tombstone replay is seq-ordered: {seqs:?}"
+        "stopped replay is seq-ordered: {seqs:?}"
     );
-    let last = replayed.last().expect("tombstone replayed something");
+    let last = replayed.last().expect("stopped replayed something");
     assert_eq!(
         last.1, "session.end",
         "session.end (final_seq) is the LAST replayed event: {replayed:?}"

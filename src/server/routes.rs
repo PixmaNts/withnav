@@ -8,7 +8,7 @@
 //! - `POST /v1/sessions/:id/messages` -> `{command_id, accepted:true, actor_state, notice?}`
 //!   (frozen error bodies: 404 unknown id / 409 stopping / 503 `{"accepted":false,"reason":"inbox_full"}`
 //!   / 400 non-Text). All errors share the `{"error": ...}` shape.
-//!   A stopped conversation (tombstone, or stored only) answers 409
+//!   A stopped conversation (stopped, or stored only) answers 409
 //!   `{"error", "reason":"resume_required"}`: resume it first.
 //! - `POST /v1/sessions/:id/stop` -> `{accepted:true, actor_state:"stopped"}`
 

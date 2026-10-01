@@ -371,7 +371,7 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
 }
 
 // Given a session that completed a turn and was then stopped
-// When it is resumed (same state, from its tombstone) and driven again
+// When it is resumed (same state, after the stop) and driven again
 // Then every new event's seq is above the old session.end seq, and the
 //      replayed history does not contain the old session.end
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -34,7 +34,7 @@ Dependencies point down this list. A module never imports one above it.
 | `tools/` | the tool trait, the registry, path validation (`validate_path`), the six tools | which tools a session gets |
 | `agent/` | `AgentActor` (transcript, pending `ask`, optional role prompt), `run_agent` with one `AgentEvent` observer, request building | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events | HTTP, storage |
-| `session/` | the `Service` (registry and router, `service.rs`), teardown, tombstones and their FIFO (`lifecycle.rs`), actor construction (`actor.rs`), subscriptions, the `SessionHooks` seam (`hooks.rs`: default model, actor setup, a `started` callback with a `SessionSender` that can only post) and the SQLite history (`store.rs`) | HTTP, SSE, any profile by name |
+| `session/` | the `Service` (registry and router, `service.rs`), teardown and close (`lifecycle.rs`), actor construction (`actor.rs`), subscriptions, the `SessionHooks` seam (`hooks.rs`: default model, actor setup, a `started` callback with a `SessionSender` that can only post) and the SQLite history (`store.rs`) | HTTP, SSE, any profile by name |
 | `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service` | session state, the model layers |
 | `navigator/` | everything the driver perceives as the navigator, below | session internals |
 
@@ -111,9 +111,5 @@ starts fresh.
 
 Tracked in [`.scratch/refactor/plan.md`](.scratch/refactor/plan.md):
 
-- The same events live in the bus ring buffer and in SQLite; tombstones duplicate history. Planned:
-  SQLite as the single history, after its writes are made trustworthy.
 - `navigator/replay.rs` (about 860 lines) and `navigator/metacognition.rs` (about 650) exceed the
   size rule.
-- GET and SSE consult only the in-memory registry: a conversation that is resumable from SQLite but
-  has no tombstone in this process answers 404 until it is resumed.

@@ -57,11 +57,6 @@ pub enum ResumeOutcome {
 pub struct SubscribeReply {
     pub replay: ResumeOutcome,
     pub live: Option<mpsc::Receiver<EventEnvelope>>,
-    /// The evicted-durable watermark at handshake time (the resume floor):
-    /// durable seqs `<= resume_floor` are unreplayable. `None` while every
-    /// durable event is retained. The SSE tombstone snapshot
-    /// (reconnect after `final_seq`) consumes this to answer late cursors.
-    pub resume_floor: Option<u64>,
 }
 
 /// The atomic live-only subscription: no replay. Every event with
@@ -132,19 +127,6 @@ pub struct SessionBus {
 }
 
 impl SessionBus {
-    /// A bus whose ring is pre-filled with `retained` envelopes (a resumed
-    /// session; empty for a fresh one): the durable kinds re-enter the ring
-    /// in order, so a fresh (no-cursor) subscriber replays the whole past
-    /// conversation. The envelopes are already seq-stamped; the ring's
-    /// append (durable-only) is exactly the filter.
-    pub fn new(retained: Vec<EventEnvelope>) -> Self {
-        let mut bus = Self::default();
-        for envelope in retained {
-            bus.ring.append(&envelope);
-        }
-        bus
-    }
-
     /// The evicted-durable watermark (the resume floor), `None` while every
     /// durable event is still retained.
     pub fn last_evicted_durable_seq(&self) -> Option<u64> {
@@ -180,11 +162,7 @@ impl SessionBus {
             }
             _ => None,
         };
-        SubscribeReply {
-            replay,
-            live,
-            resume_floor: self.ring.last_evicted_durable_seq,
-        }
+        SubscribeReply { replay, live }
     }
 }
 

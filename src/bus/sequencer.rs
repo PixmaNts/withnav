@@ -74,12 +74,8 @@ pub enum Ingress {
     },
     /// Session teardown: sequence + emit `session.end`, pin
     /// `final_seq`, then the sequencer task EXITS — the fence that guarantees
-    /// no event is ever sequenced after `session.end`. `reply` gets
-    /// the seq the fence stamped on `session.end`.
-    CloseSession {
-        reason: String,
-        reply: Option<oneshot::Sender<u64>>,
-    },
+    /// no event is ever sequenced after `session.end`.
+    CloseSession { reason: String },
     /// Runs `action` on the sequencer task once every earlier ingress message
     /// has been handled (so every event published before it has been
     /// emitted). The action must not block.
@@ -275,43 +271,8 @@ impl Sequencer {
             &self.ingress_tx,
             Ingress::CloseSession {
                 reason: reason.into(),
-                reply: None,
             },
         )
-        .map(|_| ())
-    }
-
-    /// [`Sequencer::close_session`] that ALSO replies with the seq stamped on
-    /// `session.end` — the authoritative `final_seq` for a tombstone. When
-    /// the runtime's teardown fenced the session first (the normal stop
-    /// path), this is a `SequencerClosed` error and `None` is reported: the
-    /// caller falls back to the sequencer head (== `session.end`'s seq, the
-    /// last event assigned before the fence).
-    pub async fn close_session_with_final_seq(
-        &self,
-        reason: impl Into<String>,
-    ) -> Result<Option<u64>, BusError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        // An ingress send failure means the fence is ALREADY up (the
-        // sequencer task exited): that is the idempotent no-op path — report
-        // "no fence fired by us", never a second session.end.
-        if ingress_send(
-            &self.ingress_tx,
-            Ingress::CloseSession {
-                reason: reason.into(),
-                reply: Some(reply_tx),
-            },
-        )
-        .is_err()
-        {
-            return Ok(None);
-        }
-        match reply_rx.await {
-            Ok(seq) => Ok(Some(seq)),
-            // The reply channel dropped without sending: the sequencer task
-            // was already gone (runtime teardown fenced it first).
-            Err(_) => Ok(None),
-        }
     }
 }
 
@@ -378,7 +339,7 @@ async fn run(
             Ingress::CurrentSeq { reply } => {
                 let _ = reply.send(Ok(next_seq));
             }
-            Ingress::CloseSession { reason, reply } => {
+            Ingress::CloseSession { reason } => {
                 let Some(seq) = take_seq(&mut next_seq) else {
                     break;
                 };
@@ -393,9 +354,6 @@ async fn run(
                         }),
                     ),
                 ));
-                if let Some(reply) = reply {
-                    let _ = reply.send(seq);
-                }
                 // The fence: the task exits, so nothing can ever be
                 // sequenced after session.end. Queued candidates behind
                 // this CloseSession are dropped (the session is over).
@@ -718,27 +676,6 @@ mod tests {
         drop(rx);
         let err = ingress_send(&tx, Ingress::Candidate(turn_candidate("late")));
         assert!(matches!(err, Err(BusError::SequencerClosed)));
-    }
-
-    /// close_session_with_final_seq replies with the seq stamped on
-    /// session.end; on an ALREADY-closed sequencer it reports None (never a
-    /// second session.end) — the idempotence the stop path relies on.
-    #[tokio::test]
-    async fn close_session_with_final_seq_replies_then_reports_none_when_closed() {
-        let (seq, mut rx) = spawn_with_collector();
-
-        seq.publish(start_candidate()).unwrap();
-        let fenced = seq.close_session_with_final_seq("stop").await.unwrap();
-        assert_eq!(fenced, Some(1), "session.end is seq 1, replied");
-
-        let first = rx.recv().await.unwrap();
-        assert_eq!(first.kind.as_str(), "session.start");
-        let end = rx.recv().await.unwrap();
-        assert_eq!((end.kind.as_str(), end.seq), ("session.end", 1));
-        assert!(rx.recv().await.is_none(), "nothing after session.end");
-
-        let again = seq.close_session_with_final_seq("again").await.unwrap();
-        assert_eq!(again, None, "already-closed: no second fence, no seq");
     }
 
     /// close_session emits session.end{final_seq} as the LAST event and the

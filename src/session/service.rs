@@ -7,20 +7,17 @@
 //! Two notions of "gone", which are NOT the same thing:
 //!
 //! - Runtime stopped: the in-memory actor and sequencer no longer exist, so
-//!   nothing can be posted to the session. A [`Tombstone`] may still answer
-//!   `GET /v1/sessions/:id` ("stopped" at `final_seq`) and a late SSE
-//!   reconnect (it replays the retained durable history through
-//!   `session.end`, then ends). A tombstone is bounded and lives only in
-//!   memory: after eviction or a process restart the id is unknown here.
+//!   nothing can be posted to the session. The registry entry is removed
+//!   once `session.end` is stored.
 //! - Conversation resumable: the SQLite store ([`super::store`]) holds
-//!   the conversation. `POST /v1/sessions` with `resume` rebuilds a fresh
-//!   actor and sequencer under the SAME id, continuing at `last_seq + 1`.
-//!   This works from a tombstone or from disk alone.
+//!   the conversation, and is the only history. `POST /v1/sessions` with
+//!   `resume` rebuilds a fresh actor and sequencer under the SAME id,
+//!   continuing at `last_seq + 1`.
 //!
 //! `GET /v1/sessions/:id` and the SSE route answer a stored conversation
-//! with no memory slot (evicted, or from before a restart) from the store,
-//! as "stopped" at its `last_seq`; a message post to it is a 409 asking to
-//! resume first. Only an id the store does not know is a 404.
+//! with no registry entry (stopped, or from before a restart) from the
+//! store, as "stopped" at its `last_seq`; a message post to it is a 409
+//! asking to resume first. Only an id the store does not know is a 404.
 //!
 //! Lifecycle gate: resume, close and delete take one async mutex for their
 //! whole run, so an id never has two runtimes and is never resumed while it
@@ -32,7 +29,7 @@
 //! `mpsc::Sender` and [`Sequencer`] are `Clone`), release the lock, THEN
 //! await. clippy's `await_holding_lock` lint enforces this.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -44,7 +41,6 @@ use ulid::Ulid;
 use super::actor::{build_actor, start_candidate};
 use super::config::SessionConfig;
 use super::hooks::{NoHooks, SessionHooks, StartedSession};
-use super::lifecycle::Tombstone;
 use super::message::{accept, MessageAccepted};
 use super::sender::SessionSender;
 use crate::agent::actor::AgentActor;
@@ -109,28 +105,11 @@ impl std::fmt::Debug for SessionHandle {
     }
 }
 
-/// One registry slot: a live, routable session OR a closed tombstone.
-#[derive(Clone, Debug)]
-pub enum SessionSlot {
-    Live(SessionHandle),
-    Tombstone(Tombstone),
-}
-
-/// What a GET summary needs, extracted under the lock — the sequencer head
-/// query (a control-plane round-trip, not event reading) happens AFTER the
-/// guard is released.
-enum SummarySource {
-    Live {
-        sequencer: Sequencer,
-        actor_state: String,
-        workspace: String,
-        model: String,
-    },
-    Tombstone {
-        final_seq: u64,
-        workspace: String,
-        model: String,
-    },
+/// What a resume restores from the store: the row and the last transcript
+/// snapshot. The envelopes stay in the store.
+struct ResumedSession {
+    meta: super::store::StoredSession,
+    transcript: Vec<ChatMessage>,
 }
 
 /// Frozen `GET /v1/sessions/:id` body.
@@ -147,10 +126,8 @@ pub struct SessionSummary {
 /// clone (all fields are `Arc`).
 #[derive(Clone, Debug)]
 pub struct Service {
-    pub(super) sessions: Arc<Mutex<HashMap<SessionId, SessionSlot>>>,
-    /// Insertion order of tombstone ids — the FIFO eviction queue backing
-    /// [`MAX_TOMBSTONES`].
-    tombstone_order: Arc<Mutex<VecDeque<SessionId>>>,
+    /// The live sessions of this process; a closed session is removed.
+    pub(super) sessions: Arc<Mutex<HashMap<SessionId, SessionHandle>>>,
     pub(super) config: Arc<SessionConfig>,
     /// The conversation-history store: every conversation is persisted.
     history: Arc<super::store::HistoryStore>,
@@ -180,7 +157,6 @@ impl Service {
             super::store::HistoryStore::open(&config.history_db).map_err(ServerError::History)?;
         Ok(Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
-            tombstone_order: Arc::new(Mutex::new(VecDeque::new())),
             config: Arc::new(config),
             history: Arc::new(history),
             hooks,
@@ -199,51 +175,34 @@ impl Service {
         &self.history
     }
 
-    /// Live sessions + retained tombstones (the whole registry). Client
-    /// connects/disconnects never touch the registry: only `create_session`
-    /// inserts and each session occupies at most one slot, so a
-    /// connect-then-drop loop cannot grow it and the tombstone pool is
-    /// capped at [`MAX_TOMBSTONES`].
+    /// The sessions the registry holds (live or stopping). Client
+    /// connects/disconnects never touch the registry: only session creation
+    /// inserts and each session occupies one entry, so a connect-then-drop
+    /// loop cannot grow it.
     pub fn session_count(&self) -> usize {
         self.lock_sessions().len()
     }
 
-    /// Retained tombstones (the bounded pool).
-    pub fn tombstone_count(&self) -> usize {
-        self.lock_tombstones().len()
-    }
-
-    /// A clone of the LIVE handle, for routing without holding the lock.
-    /// `None` for tombstones (not routable) and unknown ids.
+    /// A clone of the session's handle, for routing without holding the
+    /// lock. `None` for a closed or unknown id.
     pub(crate) fn handle(&self, id: SessionId) -> Option<SessionHandle> {
-        match self.lock_sessions().get(&id) {
-            Some(SessionSlot::Live(handle)) => Some(handle.clone()),
-            Some(SessionSlot::Tombstone(_)) | None => None,
-        }
-    }
-
-    /// A cloned slot (live handle vs tombstone) for the SSE endpoint, so it
-    /// can distinguish a stopped session from an unknown id; `None` unknown.
-    pub(crate) fn slot(&self, id: SessionId) -> Option<SessionSlot> {
         self.lock_sessions().get(&id).cloned()
     }
 
-    /// A clone of the LIVE handle, gated on the lifecycle:
+    /// A clone of the handle, gated on the lifecycle:
     /// `Err(SessionStopping)` (409) for a Stopping session,
-    /// `Err(ResumeRequired)` (409) for a stopped conversation (tombstone, or
-    /// stored only), `Err(SessionNotFound)` (404) for an unknown or deleted
-    /// id. No lock is held past the lookup — the caller awaits only on the
-    /// clone.
+    /// `Err(ResumeRequired)` (409) for a stopped conversation (stored only),
+    /// `Err(SessionNotFound)` (404) for an unknown or deleted id. No lock is
+    /// held past the lookup — the caller awaits only on the clone.
     pub(crate) async fn routable_handle(
         &self,
         id: SessionId,
     ) -> Result<SessionHandle, ServerError> {
         match self.lock_sessions().get(&id) {
-            Some(SessionSlot::Live(handle)) if handle.lifecycle == Lifecycle::Active => {
+            Some(handle) if handle.lifecycle == Lifecycle::Active => {
                 return Ok(handle.clone());
             }
-            Some(SessionSlot::Live(_)) => return Err(ServerError::SessionStopping),
-            Some(SessionSlot::Tombstone(_)) => return Err(ServerError::ResumeRequired),
+            Some(_) => return Err(ServerError::SessionStopping),
             None => {}
         }
         let stored = self
@@ -285,11 +244,11 @@ impl Service {
     /// [`create_session`] with an optional `resume` id (the POST
     /// `/v1/sessions` `{"resume": "<id>"}` path):
     /// - live + active → the SAME id, no rebuild;
-    /// - tombstone, or disk-only → rebuilt from the store under the SAME id
+    /// - stopped, or only stored → rebuilt from the store under the SAME id
     ///   with its stored model and profile: the sequencer continues at
-    ///   `last_seq + 1`, the bus is pre-filled with the stored envelopes (a
-    ///   fresh subscriber replays the past conversation), NO new
-    ///   `session.start`, the actor's transcript restored from the snapshot;
+    ///   `last_seq + 1`, NO new `session.start`, the actor's transcript
+    ///   restored from the snapshot (a subscriber replays the past
+    ///   conversation from the store);
     /// - unknown id → [`ServerError::SessionNotFound`].
     ///
     /// Returns the id and whether the session was resumed.
@@ -305,13 +264,13 @@ impl Service {
             // and holds the gate until the new runtime is registered.
             let _gate = self.lifecycle_gate().await;
             // Live + active: the conversation never left.
-            if let Some(SessionSlot::Live(handle)) = self.lock_sessions().get(&id) {
+            if let Some(handle) = self.lock_sessions().get(&id) {
                 if handle.lifecycle == Lifecycle::Active {
                     return Ok((id, true));
                 }
             }
-            // Tombstone in memory, or only on disk: rebuild under the same
-            // id. Both need the stored row.
+            // Stopped, or only on disk: rebuild under the same id from the
+            // stored row.
             let store = &self.history;
             // The closing session's last events (`session.end` included) may
             // still be queued: the load must see them, or the resumed
@@ -324,15 +283,7 @@ impl Service {
             else {
                 return Err(ServerError::SessionNotFound(id.to_string()));
             };
-            let envelopes = store
-                .replay(id, None, meta.last_seq)
-                .await
-                .map_err(ServerError::History)?;
-            let loaded = super::store::LoadedSession {
-                meta,
-                envelopes,
-                transcript,
-            };
+            let loaded = ResumedSession { meta, transcript };
             self.spawn_session(workspace, None, None, Some(loaded), workspace)
                 .await?;
             return Ok((id, true));
@@ -344,66 +295,32 @@ impl Service {
     }
 
     /// The frozen `GET /v1/sessions/:id` summary. Unknown id is a structured
-    /// 404; a tombstone answers "stopped" at its recorded `final_seq`, and a
-    /// stored conversation with no memory slot answers "stopped" at its
-    /// stored `last_seq`.
-    /// `current_seq` = last EMITTED seq: for a live
-    /// session it is the sequencer head minus one; for a tombstone it is the
-    /// retained `final_seq`.
+    /// 404; a stored conversation with no registry entry answers "stopped"
+    /// at its stored `last_seq`. `current_seq` = last EMITTED seq: for a
+    /// live session it is the sequencer head minus one.
     pub async fn session_summary(&self, id: SessionId) -> Result<SessionSummary, ServerError> {
-        let source = {
-            let guard = self.lock_sessions();
-            match guard.get(&id) {
-                Some(SessionSlot::Live(handle)) => Some(SummarySource::Live {
-                    sequencer: handle.sequencer.clone(),
-                    actor_state: handle.actor_state.clone(),
-                    workspace: handle.workspace.display().to_string(),
-                    model: handle.model.clone(),
-                }),
-                Some(SessionSlot::Tombstone(tombstone)) => Some(SummarySource::Tombstone {
-                    final_seq: tombstone.final_seq,
-                    workspace: tombstone.workspace.display().to_string(),
-                    model: tombstone.model.clone(),
-                }),
-                None => None,
-            }
-        };
-        let Some(source) = source else {
+        // Clone out of the guard; the head query below is a plain sequencer
+        // round-trip (the manager reads no events).
+        let Some(handle) = self.handle(id) else {
             return self.stored_summary(id).await;
         };
-        // Guard released above; the head query is a plain sequencer
-        // round-trip (the manager reads no events).
-        let (current_seq, actor_state, workspace, model) = match source {
-            SummarySource::Live {
-                sequencer,
-                actor_state,
-                workspace,
-                model,
-            } => {
-                let current_seq = sequencer
-                    .current_seq()
-                    .await
-                    .map(|next| next.saturating_sub(1))
-                    .unwrap_or(0);
-                (current_seq, actor_state, workspace, model)
-            }
-            SummarySource::Tombstone {
-                final_seq,
-                workspace,
-                model,
-            } => (final_seq, "stopped".to_string(), workspace, model),
-        };
+        let current_seq = handle
+            .sequencer
+            .current_seq()
+            .await
+            .map(|next| next.saturating_sub(1))
+            .unwrap_or(0);
         Ok(SessionSummary {
             session_id: id.to_string(),
-            actor_state,
-            workspace,
-            model,
+            actor_state: handle.actor_state.clone(),
+            workspace: handle.workspace.display().to_string(),
+            model: handle.model.clone(),
             current_seq,
         })
     }
 
-    /// The summary of a conversation that only the store holds (after a
-    /// restart, or evicted): stopped at its stored `last_seq`.
+    /// The summary of a conversation that only the store holds (stopped, or
+    /// from before a restart): stopped at its stored `last_seq`.
     async fn stored_summary(&self, id: SessionId) -> Result<SessionSummary, ServerError> {
         let meta = self
             .history
@@ -420,17 +337,10 @@ impl Service {
         })
     }
 
-    pub(super) fn lock_sessions(&self) -> MutexGuard<'_, HashMap<SessionId, SessionSlot>> {
+    pub(super) fn lock_sessions(&self) -> MutexGuard<'_, HashMap<SessionId, SessionHandle>> {
         // Poison recovery via into_inner: a panicking writer must not wedge
         // the registry (same policy as the runtime observers).
         match self.sessions.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
-    }
-
-    pub(super) fn lock_tombstones(&self) -> MutexGuard<'_, VecDeque<SessionId>> {
-        match self.tombstone_order.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         }
@@ -446,7 +356,7 @@ impl Service {
     }
 
     /// The shared mint: resolves the model, builds the actor, spawns the
-    /// sequencer (pre-filled + continuing at `last_seq + 1` when resuming),
+    /// sequencer (continuing at `last_seq + 1` when resuming),
     /// publishes `session.start` (fresh only), spawns the runtime with the
     /// history hooks, registers the handle. `resume_workspace` is the
     /// workspace a resume request named; the FRESH path passes its own.
@@ -455,7 +365,7 @@ impl Service {
         workspace: &Path,
         model: Option<&str>,
         profile: Option<&str>,
-        resumed: Option<super::store::LoadedSession>,
+        resumed: Option<ResumedSession>,
         resume_workspace: &Path,
     ) -> Result<SessionId, ServerError> {
         // Resume keeps the stored model/profile/workspace (the stored row is
@@ -505,22 +415,9 @@ impl Service {
             .as_ref()
             .map(|loaded| loaded.meta.last_seq + 1)
             .unwrap_or(0);
-        // The bus is pre-filled with the stored conversation, minus every
-        // earlier `session.end`: the resumed stream must not look closed.
-        // (`next_seq` above still counts those ends, so seqs never repeat.)
-        let bus = SessionBus::new(
-            resumed
-                .as_ref()
-                .map(|loaded| {
-                    loaded
-                        .envelopes
-                        .iter()
-                        .filter(|envelope| envelope.kind != "session.end")
-                        .cloned()
-                        .collect()
-                })
-                .unwrap_or_default(),
-        );
+        // The in-memory ring starts empty on resume: subscribers replay from
+        // the store, and the ring is only a bounded fallback cache.
+        let bus = SessionBus::default();
         let is_resume = resumed.is_some();
 
         // History hooks: a persisting emitter + a turn-end transcript
@@ -563,9 +460,6 @@ impl Service {
             on_turn_end,
         ))));
 
-        // A resumed id replaces its tombstone slot: also drop it from the
-        // eviction queue so a later close cannot evict the now-live id.
-        self.lock_tombstones().retain(|other| *other != session_id);
         let handle = SessionHandle {
             inbox_tx,
             sequencer,
@@ -579,8 +473,7 @@ impl Service {
         };
         let sender = SessionSender::new(session_id, handle.clone());
         let cancel = handle.session_cancel.clone();
-        self.lock_sessions()
-            .insert(session_id, SessionSlot::Live(handle));
+        self.lock_sessions().insert(session_id, handle);
         // The host learns of the session once it is routable. A session
         // already closing hands back a subscription that ends at once.
         if let Ok(subscription) = self.subscribe(session_id, None).await {

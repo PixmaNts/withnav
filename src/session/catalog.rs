@@ -2,7 +2,7 @@
 //! stored conversations of a workspace joined with the registry's
 //! liveness, and the full removal of one (live teardown, memory, store).
 
-use super::service::{Lifecycle, Service, SessionId, SessionSlot};
+use super::service::{Lifecycle, Service, SessionId};
 use crate::error::ServerError;
 
 /// One conversation of a workspace: the stored summary plus whether a live,
@@ -30,8 +30,8 @@ impl Service {
             .into_iter()
             .map(|row| SessionListing {
                 live: matches!(
-                    self.slot(row.meta.id),
-                    Some(SessionSlot::Live(handle)) if handle.lifecycle == Lifecycle::Active
+                    self.handle(row.meta.id),
+                    Some(handle) if handle.lifecycle == Lifecycle::Active
                 ),
                 id: row.meta.id,
                 title: row.meta.title,
@@ -47,22 +47,9 @@ impl Service {
     /// in memory nor on disk.
     pub async fn delete(&self, id: SessionId) -> Result<(), ServerError> {
         let _gate = self.lifecycle_gate().await;
-        let known_to_memory = self.slot(id).is_some();
-        match self.close_session_gated(id).await {
-            Ok(()) => {}
-            Err(ServerError::SessionNotFound(_)) if !known_to_memory => {
-                // Disk-only id: it must exist in the store.
-                let on_disk = self
-                    .history()
-                    .exists(id)
-                    .await
-                    .map_err(ServerError::History)?;
-                if !on_disk {
-                    return Err(ServerError::SessionNotFound(id.to_string()));
-                }
-            }
-            Err(err) => return Err(err),
-        }
+        // A live session is closed; a stored one is a no-op; an id the store
+        // does not know is a 404.
+        self.close_session_gated(id).await?;
         self.discard(id);
         self.history()
             .delete(id)

@@ -558,7 +558,7 @@ fn builtin_default_pipeline_loads_and_is_the_spec_shape() {
     assert_eq!(snap.source(), SnapshotSource::Builtin);
     assert_eq!(snap.model_alias(), "instinct");
     let triggers = snap.triggers();
-    assert_eq!(triggers.len(), 1);
+    assert_eq!(triggers.len(), 2);
     assert_eq!(triggers[0].on.len(), 2);
     assert_eq!(triggers[0].prefilters.min_changed_lines, 3);
     assert_eq!(triggers[0].prefilters.cooldown_ms, 45_000);
@@ -572,6 +572,78 @@ fn builtin_default_pipeline_loads_and_is_the_spec_shape() {
     assert_eq!(specs[1].0.as_str(), "remark");
     assert_eq!(specs[1].1, Some("prompts/remark.md"));
     assert_eq!(specs[2].0.as_str(), "silent");
+
+    // The conversation trigger: one question, a remark or silence.
+    assert_eq!(triggers[1].on, vec![TriggerKind::Conversation]);
+    assert_eq!(triggers[1].prefilters.cooldown_ms, 30_000);
+    assert_eq!(triggers[1].questions.len(), 1);
+    assert!(triggers[1]
+        .questions
+        .contains_key("code_contradicts_conversation"));
+    let specs = triggers[1].branch_specs();
+    assert_eq!(specs.len(), 2);
+    assert_eq!(specs[0].0.as_str(), "remark");
+    assert_eq!(specs[0].1, Some("prompts/conversation_remark.md"));
+    assert_eq!(specs[1].0.as_str(), "silent");
+}
+
+/// The built-in conversation trigger ignores `min_changed_lines` (it has
+/// none, and an unchanged file must still be judged), keeps its cooldown and
+/// remarks only with a conversation.
+#[tokio::test]
+async fn builtin_conversation_trigger_ignores_changed_lines_and_remarks_on_contradiction() {
+    let pipeline = Pipeline::new(PipelineSnapshot::builtin().unwrap());
+    let model = FakeModel {
+        answers: BTreeMap::from([(
+            "code_contradicts_conversation".to_string(),
+            Answer::Noul { noul: 0.95 },
+        )]),
+    };
+    let mut conversing = inputs(0);
+    conversing.has_conversation = true;
+    let eval = pipeline
+        .evaluate(
+            TriggerKind::Conversation,
+            conversing,
+            &tvars(),
+            &model,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(eval.prefilter.as_str(), "pass", "0 changed lines is fine");
+    assert_eq!(eval.requested_action.as_str(), "remark");
+    assert_eq!(eval.branch_index, Some(0));
+
+    // No conversation digest: nothing to contradict.
+    let mut alone = inputs(0);
+    alone.has_conversation = false;
+    let eval = pipeline
+        .evaluate(
+            TriggerKind::Conversation,
+            alone,
+            &tvars(),
+            &model,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(eval.requested_action.as_str(), "silent");
+
+    // Cooldown still applies.
+    let mut cooling = conversing;
+    cooling.since_last_remark_ms = 29_999;
+    let eval = pipeline
+        .evaluate(
+            TriggerKind::Conversation,
+            cooling,
+            &tvars(),
+            &model,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(eval.prefilter.skip_reason(), Some("cooldown"));
 }
 
 #[test]

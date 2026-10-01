@@ -877,6 +877,17 @@ async fn feed_with_active_session() -> (
     navigator::ConversationFeed,
     Arc<std::sync::Mutex<Vec<String>>>,
 ) {
+    let (feed, posted, _session_id) = feed_with_session().await;
+    (feed, posted)
+}
+
+/// [`feed_with_active_session`], also returning the session's id so a test
+/// can feed it more events.
+async fn feed_with_session() -> (
+    navigator::ConversationFeed,
+    Arc<std::sync::Mutex<Vec<String>>>,
+    ulid::Ulid,
+) {
     use navigator::conversation::SessionPost;
     let feed = navigator::ConversationFeed::new();
     let posted = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -900,7 +911,7 @@ async fn feed_with_active_session() -> (
         }),
     ))
     .await;
-    (feed, posted)
+    (feed, posted, session_id)
 }
 
 /// With a feed whose active session exists and an instinct that requests
@@ -1051,4 +1062,156 @@ async fn without_server_info_no_notification_is_sent() {
             .all(|m| m.get("method").and_then(|m| m.as_str()) != Some("navigator/serverInfo")),
         "no serverInfo without server_info deps: {msgs:?}"
     );
+}
+
+// ---------- conversation trigger ----------
+
+fn session_event(
+    session_id: ulid::Ulid,
+    kind: rust_agent::bus::event::EventKind,
+    payload: Value,
+) -> rust_agent::bus::event::EventEnvelope {
+    rust_agent::bus::event::EventEnvelope::new(session_id, 0, kind, payload)
+}
+
+fn message_event(session_id: ulid::Ulid, source: &str) -> rust_agent::bus::event::EventEnvelope {
+    session_event(
+        session_id,
+        rust_agent::bus::event::EventKind::MessageReceived,
+        json!({
+            "command_id": ulid::Ulid::new().to_string(),
+            "source": source,
+            "target": "agent:main",
+            "mode": "next-turn",
+            "content": "keep the parser, drop the cache",
+        }),
+    )
+}
+
+fn turn_end_event(session_id: ulid::Ulid) -> rust_agent::bus::event::EventEnvelope {
+    session_event(
+        session_id,
+        rust_agent::bus::event::EventKind::TurnEnd,
+        json!({
+            "turn_id": ulid::Ulid::new().to_string(),
+            "actor_id": "agent:main",
+            "outcome": "done",
+            "duration_ms": 1,
+        }),
+    )
+}
+
+fn trigger_records(log_path: &std::path::Path, event: &str) -> Vec<Value> {
+    std::fs::read_to_string(log_path)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|v| v["kind"] == "trigger" && v["event"] == event)
+        .collect()
+}
+
+/// A driver turn ending evaluates the pipeline with event `conversation` on
+/// the focused document, and the built-in remarks on a contradiction. A
+/// second driver turn within the cooldown is skipped.
+#[tokio::test(start_paused = true)]
+async fn driver_turn_end_triggers_one_conversation_evaluation_and_the_cooldown_applies() {
+    let mock = MockCommenter::new(vec![Answer::Remark(2, "the cache is back")]);
+    let tmp = tempfile::tempdir().unwrap();
+    let log_path = tmp.path().join("nav.jsonl");
+    let (feed, _posted, session_id) = feed_with_session().await;
+    let deps = NavigatorDeps::new(Arc::new(mock.clone()), log_path.clone())
+        .with_conversation(feed.clone());
+    let mut client = spawn_server(deps);
+
+    client.initialize(json!({})).await;
+    // Unchanged document: min_changed_lines would skip it for a save.
+    client.did_open(URI, &base_text(), 1).await;
+    // Let the server take the notification in before the turn ends.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    feed.observe(&turn_end_event(session_id)).await;
+    let mut seen = Vec::new();
+    let remark = client.expect("navigator/remark", &mut seen).await;
+    assert_eq!(remark["params"]["uri"], URI);
+    assert_eq!(remark["params"]["text"], "the cache is back");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let records = trigger_records(&log_path, "conversation");
+    assert_eq!(records.len(), 1, "one conversation evaluation: {records:?}");
+    assert_eq!(records[0]["prefilter"]["outcome"], "pass");
+    assert_eq!(records[0]["requested_action"], "remark");
+    assert_eq!(records[0]["delivered"], "remark");
+    let state = records[0]["rendered_state"].as_str().unwrap();
+    assert!(
+        state.contains("driver: add an auth remove command"),
+        "the conversation digest is in the state: {state}"
+    );
+    assert!(
+        state.contains("   1| fn main() {"),
+        "numbered code: {state}"
+    );
+    assert_eq!(mock.calls(), 1);
+
+    // The cooldown: another driver turn right after is skipped.
+    feed.observe(&message_event(session_id, "user:http")).await;
+    feed.observe(&turn_end_event(session_id)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let records = trigger_records(&log_path, "conversation");
+    assert_eq!(records.len(), 2, "{records:?}");
+    assert_eq!(records[1]["prefilter"]["outcome"], "skip");
+    assert_eq!(records[1]["prefilter"]["reason"], "cooldown");
+    assert_eq!(mock.calls(), 1, "no second remark");
+}
+
+/// The turn a navigator wake provokes never triggers the pipeline, and
+/// neither does a turn end with no focused document.
+#[tokio::test(start_paused = true)]
+async fn navigator_caused_turn_end_and_no_focused_document_trigger_nothing() {
+    let mock = MockCommenter::new(vec![Answer::Remark(1, "unexpected")]);
+    let tmp = tempfile::tempdir().unwrap();
+    let log_path = tmp.path().join("nav.jsonl");
+    let (feed, _posted, session_id) = feed_with_session().await;
+    let deps = NavigatorDeps::new(Arc::new(mock.clone()), log_path.clone())
+        .with_conversation(feed.clone());
+    let mut client = spawn_server(deps);
+    client.initialize(json!({})).await;
+
+    // Driver turn, but no document was ever opened: nothing to judge.
+    feed.observe(&turn_end_event(session_id)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(trigger_records(&log_path, "conversation").is_empty());
+
+    // A wake's turn, with a focused document: still nothing.
+    client.did_open(URI, &base_text(), 1).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    feed.observe(&message_event(session_id, navigator::NAVIGATOR_ACTOR_ID))
+        .await;
+    feed.observe(&turn_end_event(session_id)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(trigger_records(&log_path, "conversation").is_empty());
+    assert_eq!(mock.calls(), 0);
+}
+
+/// The focused document is the last one opened, changed or saved.
+#[tokio::test(start_paused = true)]
+async fn conversation_trigger_targets_the_last_focused_document() {
+    let mock = MockCommenter::new(vec![Answer::Silent]);
+    let tmp = tempfile::tempdir().unwrap();
+    let log_path = tmp.path().join("nav.jsonl");
+    let (feed, _posted, session_id) = feed_with_session().await;
+    let deps = NavigatorDeps::new(Arc::new(mock), log_path.clone()).with_conversation(feed.clone());
+    let mut client = spawn_server(deps);
+    let other = "file:///ws/src/other.rs";
+
+    client.initialize(json!({})).await;
+    client.did_open(URI, &base_text(), 1).await;
+    client.did_open(other, &base_text(), 1).await;
+    client.did_change(URI, &base_text(), 2).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    feed.observe(&turn_end_event(session_id)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let records = trigger_records(&log_path, "conversation");
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0]["uri"], URI, "the document changed last");
 }

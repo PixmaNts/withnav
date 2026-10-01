@@ -24,7 +24,7 @@ use tower_lsp_server::{Client, LanguageServer};
 
 use crate::navigator::commenter::{Diag, RemarkContext, MALFORMED_PREFIX};
 use crate::navigator::config::NavigatorConfig;
-use crate::navigator::document::DocumentState;
+use crate::navigator::document::{text_around_line, DocumentState};
 use crate::navigator::log::{
     excerpt, now_iso8601, LogRecord, NavLog, PrefilterRecord, TriggerRecord,
 };
@@ -38,7 +38,7 @@ use crate::navigator::protocol::{
     RemarkParams, ServerInfoNotification, ServerInfoParams, StatusNotification, StatusParams,
 };
 use crate::navigator::reflex::{to_result, ReflexService, SuggestOutcome};
-use crate::navigator::{Metacognition, NavigatorDeps, WakeOutcome};
+use crate::navigator::{ConversationEvent, Metacognition, NavigatorDeps, WakeOutcome};
 
 pub struct NavigatorBackend {
     inner: Arc<Inner>,
@@ -83,6 +83,10 @@ struct Inner {
     conversation: Option<crate::navigator::ConversationFeed>,
     /// Startup notes about disabled layers, surfaced once after initialize.
     disabled_layers: Vec<String>,
+    /// The focused document: the last uri that received `didOpen`,
+    /// `didChange` or `didSave`. A driver turn in the conversation is
+    /// judged against it; None until the first of those arrives.
+    focused: Mutex<Option<String>>,
 }
 
 impl NavigatorBackend {
@@ -96,7 +100,8 @@ impl NavigatorBackend {
                 PipelineSnapshot::builtin().expect("the built-in pipeline must validate")
             });
         let reflex = deps.fim.map(ReflexService::new);
-        Self {
+        let turns = deps.conversation.as_ref().map(|feed| feed.subscribe());
+        let backend = Self {
             inner: Arc::new(Inner {
                 client,
                 metacognition: deps.commenter,
@@ -120,8 +125,51 @@ impl NavigatorBackend {
                 server_info: deps.server_info,
                 conversation: deps.conversation,
                 disabled_layers: deps.disabled_layers,
+                focused: Mutex::new(None),
             }),
+        };
+        if let Some(turns) = turns {
+            tokio::spawn(listen_for_driver_turns(
+                Arc::downgrade(&backend.inner),
+                turns,
+            ));
         }
+        backend
+    }
+}
+
+/// Evaluates the `conversation` event on the focused document each time a
+/// driver-caused turn ends. A turn caused by a navigator wake never gets
+/// here as a trigger (no loop). Holds the server weakly: once the server is
+/// gone the next event ends the task.
+async fn listen_for_driver_turns(
+    inner: std::sync::Weak<Inner>,
+    mut turns: tokio::sync::broadcast::Receiver<ConversationEvent>,
+) {
+    use tokio::sync::broadcast::error::RecvError;
+    loop {
+        let event = match turns.recv().await {
+            Ok(event) => event,
+            // Missed events: the next turn end triggers anyway.
+            Err(RecvError::Lagged(_)) => continue,
+            Err(RecvError::Closed) => return,
+        };
+        let ConversationEvent::TurnEnded {
+            caused_by_driver: true,
+            ..
+        } = event
+        else {
+            continue;
+        };
+        let Some(inner) = inner.upgrade() else {
+            return;
+        };
+        let Some(uri) = inner.focused.lock().await.clone() else {
+            continue;
+        };
+        tokio::spawn(async move {
+            inner.evaluate(uri, TriggerKind::Conversation).await;
+        });
     }
 }
 
@@ -234,6 +282,10 @@ struct EditSummary {
     first_line: usize,
     excerpt: String,
 }
+
+/// Lines on each side of the last edited line shown to the conversation
+/// trigger.
+const CONVERSATION_CONTEXT_LINES: usize = 20;
 
 /// Edit summaries kept per uri in the live state.
 const LIVE_STATE_EDITS: usize = 5;
@@ -413,8 +465,8 @@ impl Inner {
     }
 
     /// Gathers everything one trigger needs from the document state.
-    async fn gather(&self, uri: &str, now: Instant) -> Option<TriggerContext> {
-        let (changed_lines, since_last_remark_ms, version, doc_text, baseline) = {
+    async fn gather(&self, uri: &str, event: TriggerKind, now: Instant) -> Option<TriggerContext> {
+        let (changed_lines, since_last_remark_ms, version, doc_text, baseline, last_edit_line) = {
             let state = self.state.lock().await;
             let doc = state.get(uri)?;
             let since = doc
@@ -427,6 +479,7 @@ impl Inner {
                 doc.version,
                 doc.text.clone(),
                 doc.baseline.clone(),
+                doc.last_edit_line,
             )
         };
         let language_id = self
@@ -454,6 +507,14 @@ impl Inner {
         // {{context}} template variables.
         let mut ctx =
             RemarkContext::build(uri, &language_id, &baseline, &doc_text, Vec::new(), None);
+        if event == TriggerKind::Conversation {
+            // The change is in the conversation: no diff, and the context is
+            // the code around the last edited line (the top of the file when
+            // nothing was edited yet).
+            ctx.diff = String::new();
+            ctx.text_excerpt =
+                text_around_line(&doc_text, last_edit_line, CONVERSATION_CONTEXT_LINES);
+        }
         ctx.workspace = self.workspace.lock().await.clone();
         ctx.open_buffers = self.open_buffers().await;
         // The live state: this trigger's edit summary joins the ring, then
@@ -467,10 +528,13 @@ impl Inner {
         };
         let live_state_text = {
             let mut live = self.live_state.lock().await;
-            let ring = live.entry(uri.to_string()).or_default();
-            ring.push_back(summary);
-            while ring.len() > LIVE_STATE_EDITS {
-                ring.pop_front();
+            // A conversation trigger is not an edit: it adds no summary.
+            if event != TriggerKind::Conversation {
+                let ring = live.entry(uri.to_string()).or_default();
+                ring.push_back(summary);
+                while ring.len() > LIVE_STATE_EDITS {
+                    ring.pop_front();
+                }
             }
             let diagnostics = self.diagnostics.lock().await;
             render_live_state(&live, &diagnostics)
@@ -515,7 +579,7 @@ impl Inner {
         let Some(questions) = pipeline.questions_for(event) else {
             return;
         };
-        let mut ctx = match self.gather(&uri, Instant::now()).await {
+        let mut ctx = match self.gather(&uri, event, Instant::now()).await {
             Some(ctx) => ctx,
             None => return,
         };
@@ -710,9 +774,12 @@ impl Inner {
                     });
                 log_trigger(&record, "silent", None, reason);
                 // Silence rebases: this diff was considered and judged fine.
-                let mut state = self.state.lock().await;
-                if let Some(doc) = state.get_mut(&uri) {
-                    doc.rebase();
+                // A conversation trigger considered no diff.
+                if event != TriggerKind::Conversation {
+                    let mut state = self.state.lock().await;
+                    if let Some(doc) = state.get_mut(&uri) {
+                        doc.rebase();
+                    }
                 }
                 self.set_status("idle", None).await;
             }
@@ -824,7 +891,10 @@ impl Inner {
                     match state.get_mut(&uri) {
                         Some(doc) if doc.version == ctx.version => {
                             doc.last_remark = Some(Instant::now());
-                            doc.rebase();
+                            // A conversation remark considered no diff.
+                            if ctx.event != TriggerKind::Conversation.as_str() {
+                                doc.rebase();
+                            }
                         }
                         _ => {
                             tracing::info!(uri = %ctx.uri, "dropping remark for stale version");
@@ -881,9 +951,12 @@ impl Inner {
                     latency_ms: started.elapsed().as_millis(),
                 });
                 // Silence rebases: this diff was considered and judged fine.
-                let mut state = self.state.lock().await;
-                if let Some(doc) = state.get_mut(&uri) {
-                    doc.rebase();
+                // A conversation trigger considered no diff.
+                if ctx.event != TriggerKind::Conversation.as_str() {
+                    let mut state = self.state.lock().await;
+                    if let Some(doc) = state.get_mut(&uri) {
+                        doc.rebase();
+                    }
                 }
                 log_trigger(&record, "silent", None, None);
                 self.set_status("idle", None).await;
@@ -1108,6 +1181,7 @@ impl Inner {
             entry.rebase();
             version = entry.version;
         }
+        *self.focused.lock().await = Some(uri.clone());
         self.spawn_idle_timer(uri, version);
     }
 
@@ -1127,6 +1201,10 @@ impl Inner {
             match state.get_mut(&uri) {
                 Some(doc) => {
                     Self::cancel_in_flight(doc);
+                    let (line, _) = first_changed_line(&doc.text, &text);
+                    if line > 0 {
+                        doc.last_edit_line = line;
+                    }
                     doc.apply_change(text, version, now);
                 }
                 None => {
@@ -1136,11 +1214,13 @@ impl Inner {
                 }
             }
         }
+        *self.focused.lock().await = Some(uri.clone());
         self.spawn_idle_timer(uri, version);
     }
 
     async fn on_did_save(self: &Arc<Self>, params: DidSaveTextDocumentParams) {
         let uri_key = crate::navigator::uri_key(&params.text_document.uri);
+        *self.focused.lock().await = Some(uri_key.clone());
         {
             let workspace = self.workspace.lock().await.clone();
             let user_dir = self.user_dir.clone();
@@ -1155,6 +1235,12 @@ impl Inner {
         let uri = crate::navigator::uri_key(&params.text_document.uri);
         if let Some(mut doc) = self.state.lock().await.remove(&uri) {
             Self::cancel_in_flight(&mut doc);
+        }
+        {
+            let mut focused = self.focused.lock().await;
+            if focused.as_deref() == Some(uri.as_str()) {
+                *focused = None;
+            }
         }
         self.language_ids.lock().await.remove(&uri);
         self.diagnostics.lock().await.remove(&uri);

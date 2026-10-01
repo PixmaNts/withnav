@@ -859,7 +859,7 @@ impl AppState {
                 };
                 if let crate::bus::ResumeOutcome::Replay(events) = reply.replay {
                     for event in &events {
-                        feed.observe(event).await;
+                        feed.observe_replayed(event).await;
                     }
                 }
                 let mut live = match reply.live {

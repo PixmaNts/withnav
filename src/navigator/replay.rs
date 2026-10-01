@@ -19,10 +19,11 @@
 //!   trigger record is `skipped` (an older log format mixed into a newer one
 //!   is normal, and must never make the replay fail).
 //!
-//! Two inputs are reconstructed rather than logged: `has_intent` and
-//! `has_errors` are not pre-filter inputs, so they are derived from the
-//! stored template inputs (a non-empty `intent`, a `[error]` line in
-//! `diagnostics`) exactly as the server derived them from the intent record
+//! Three inputs are reconstructed rather than logged: `has_intent`,
+//! `has_errors` and `has_conversation` are not pre-filter inputs, so they
+//! are derived from the stored template inputs (a non-empty `intent`, a
+//! `[error]` line in `diagnostics`, a non-empty `conversation`) exactly as
+//! the server derived them from the intent record, the conversation feed
 //! and the latest diagnostics.
 
 use std::collections::BTreeMap;
@@ -220,6 +221,9 @@ impl LoggedTrigger {
         let has_errors = template_inputs
             .get("diagnostics")
             .is_some_and(|diagnostics| diagnostics.contains("[error]"));
+        let has_conversation = template_inputs
+            .get("conversation")
+            .is_some_and(|conversation| !conversation.trim().is_empty());
 
         Ok(Self {
             trigger_id,
@@ -239,6 +243,7 @@ impl LoggedTrigger {
                 since_last_remark_ms,
                 has_errors,
                 has_intent,
+                has_conversation,
             },
             questions: optional_from_value(value.get("questions"))?,
             answers: optional_from_value(value.get("answers"))?,
@@ -1014,6 +1019,28 @@ action = "silent"
         let trigger = &ReplayLog::parse(&line).triggers[0];
         assert!(trigger.inputs.has_intent);
         assert!(trigger.inputs.has_errors);
+    }
+
+    #[test]
+    fn has_conversation_is_derived_from_a_non_empty_digest() {
+        // The frozen TRIGGER line has no `conversation` key at all: none.
+        let trigger = &ReplayLog::parse(TRIGGER).triggers[0];
+        assert!(!trigger.inputs.has_conversation);
+        let line = TRIGGER.replace(
+            r#""template_inputs":{"file":"a.rs""#,
+            r#""template_inputs":{"conversation":"","file":"a.rs""#,
+        );
+        let trigger = &ReplayLog::parse(&line).triggers[0];
+        assert!(
+            !trigger.inputs.has_conversation,
+            "an empty digest is no conversation"
+        );
+        let line = TRIGGER.replace(
+            r#""template_inputs":{"file":"a.rs""#,
+            r#""template_inputs":{"conversation":"driver: add a retry","file":"a.rs""#,
+        );
+        let trigger = &ReplayLog::parse(&line).triggers[0];
+        assert!(trigger.inputs.has_conversation);
     }
 
     #[test]

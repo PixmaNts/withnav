@@ -15,3 +15,6 @@ Diagnostics:
 
 Live state:
 {{live_state}}
+
+Conversation:
+{{conversation}}

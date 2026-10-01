@@ -16,11 +16,12 @@ use super::{BranchDef, PipelineError, TriggerDef, TriggerInputs};
 use crate::navigator::pipeline::templates;
 
 /// The always-available expression variables.
-pub const ALWAYS_AVAILABLE: [&str; 4] = [
+pub const ALWAYS_AVAILABLE: [&str; 5] = [
     "changed_lines",
     "since_last_remark_ms",
     "has_errors",
     "has_intent",
+    "has_conversation",
 ];
 
 /// Compiles one `when` expression with builtin functions disabled and no
@@ -138,6 +139,7 @@ fn always_available_dummies() -> BTreeMap<String, Value> {
         since_last_remark_ms: 60_000,
         has_errors: true,
         has_intent: true,
+        has_conversation: true,
     };
     flatten_inputs(inputs)
 }
@@ -155,6 +157,10 @@ pub(crate) fn flatten_inputs(inputs: TriggerInputs) -> BTreeMap<String, Value> {
     );
     vars.insert("has_errors".to_string(), Value::from(inputs.has_errors));
     vars.insert("has_intent".to_string(), Value::from(inputs.has_intent));
+    vars.insert(
+        "has_conversation".to_string(),
+        Value::from(inputs.has_conversation),
+    );
     vars
 }
 
@@ -365,7 +371,8 @@ mod tests {
     #[test]
     fn always_available_variables_are_declared() {
         let t = trigger_def(
-            "changed_lines >= 3 && has_errors && has_intent && since_last_remark_ms > 1000",
+            "changed_lines >= 3 && has_errors && has_intent && since_last_remark_ms > 1000 \
+             && has_conversation",
         );
         assert!(validate_trigger(&t, "test").is_ok());
     }

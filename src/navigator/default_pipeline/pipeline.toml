@@ -20,8 +20,12 @@ criteria = { silent = "Nothing worth saying", metacognition = "A short local rem
 type = "noul"
 instructions = "Does the code drift away from the stated intent?"
 
+[trigger.questions.contradicts_conversation]
+type = "noul"
+instructions = "Does this change contradict what the driver and the cognition just agreed in the conversation?"
+
 [[trigger.branch]]
-when = "has_intent && drift > 0.8"
+when = "(has_intent && drift > 0.8) || (has_conversation && contradicts_conversation > 0.8)"
 action = "wake_cognition"
 
 [[trigger.branch]]

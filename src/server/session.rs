@@ -21,13 +21,13 @@
 //! through final_seq" describes TODO 8's reconnect-after-final_seq
 //! behavior: SSE resume (`Last-Event-ID`) is what consumes that. Until
 //! todo 8 lands, a reconnect to a stopped session is answered from the
-//! tombstone by GET ("stopped" at final_seq) and SSE/WS streaming targets
+//! tombstone by GET ("stopped" at final_seq) and SSE streaming targets
 //! return 404.
 //! `tests/server_messages.rs::stopped_session_answers_get_but_routing_is_gone_deferral_pin`
 //! pins this so the deferral is visible, not silent.
 //!
 //! allow: SIZE_OK — ticket 05's approved module map fixes the file set
-//! (mod/routes/sse/websocket/session); the manager's registry + lifecycle +
+//! (mod/routes/sse/session); the manager's registry + lifecycle +
 //! actor construction must stay in this one file.
 
 use std::collections::{HashMap, VecDeque};

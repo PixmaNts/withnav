@@ -1700,6 +1700,8 @@ Requirements:
 
 ### 20.4 WebSocket
 
+> **Removed 2026-10-01.** The WebSocket transport (`GET /v1/sessions/:session_id/ws`) was removed from the implementation because the only client uses HTTP + SSE. The text below is kept as historical specification and is not implemented.
+
 WebSocket is the preferred bidirectional transport for the TUI.
 
 Client frames carry commands:

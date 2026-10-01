@@ -54,7 +54,7 @@ regex = "1"
 bytes = "1"
 futures-util = "0.3"
 # Phase 2: event bus + local HTTP server (thin slice wrapping the Phase-1 loop).
-axum = { version = "0.8.9", features = ["ws", "macros"] }
+axum = { version = "0.8.9", features = ["macros"] }
 futures = "0.3"
 tower-lsp-server = "0.23.0"
 similar = "3.2.0"
@@ -67,7 +67,6 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 tokio = { version = "1.53", features = ["test-util"] }
 proptest = "1"
 wiremock = "0.6"
-tokio-tungstenite = "0.24"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 

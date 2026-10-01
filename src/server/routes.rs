@@ -11,7 +11,7 @@
 //! - `POST /v1/sessions/:id/stop` -> `{accepted:true, actor_state:"stopped"}`
 //!
 //! allow: SIZE_OK — ticket 05's approved module map fixes the file set
-//! (mod/routes/sse/websocket/session); every HTTP route lives here.
+//! (mod/routes/sse/session); every HTTP route lives here.
 
 use std::net::SocketAddr;
 use std::time::SystemTime;
@@ -19,7 +19,7 @@ use std::time::SystemTime;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde::Serialize;
@@ -152,10 +152,6 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/v1/sessions/{id}/events",
             get(crate::server::sse::get_events),
-        )
-        .route(
-            "/v1/sessions/{id}/ws",
-            any(crate::server::websocket::get_ws),
         )
         .with_state(state)
         .layer(axum::middleware::from_fn(

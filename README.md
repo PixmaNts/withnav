@@ -18,7 +18,7 @@ handful of focused vertical phases.
 ## Core decisions
 
 - **Rust core, headless, mono-binary.** Server/multi-client: the core exposes an event API
-  (SSE/WS via axum). TUI / WebUI / App are all just clients. Write the brain once, many faces.
+  (SSE via axum). TUI / WebUI / App are all just clients. Write the brain once, many faces.
 - **5 native tools only** (`read`, `write`, `edit`, `bash`, `grep`). Everything else via **MCP**.
 - **OpenAI-compatible providers only** → the local **OmniRoute** proxy works directly.
 - **Plugins = external processes** speaking JSON-RPC over stdio (Python/TS/bash) — never an

@@ -1,5 +1,5 @@
 //! Phase 2 local HTTP server (axum): loopback-only bind, session management,
-//! SSE/WS event streaming, and command routing. Implemented in todos 6-9.
+//! SSE event streaming, and command routing. Implemented in todos 6-9.
 //!
 //! Todo 6 surface: [`routes::app`] (health + session create/get), the
 //! [`session`] manager (registry + router), and [`routes::serve`] (loopback
@@ -9,7 +9,6 @@ pub mod routes;
 pub mod session;
 pub mod sse;
 pub mod store;
-pub mod websocket;
 
 pub use routes::{app, serve};
 pub use session::{AppState, ServerConfig};

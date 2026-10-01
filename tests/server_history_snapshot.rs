@@ -48,7 +48,7 @@ async fn a_stopped_mid_turn_session_keeps_its_transcript() {
     let state = TestServerConfig::mock(tmp.path(), &url)
         .model_alias("cognition", "mock-opus")
         .history_db(db.clone())
-        .state();
+        .navigator_state();
     let (addr, task) = spawn_server(state.clone()).await;
     let base = format!("http://{addr}");
     let ws = tmp.path().join("ws");

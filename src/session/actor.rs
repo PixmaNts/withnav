@@ -1,6 +1,5 @@
 //! Building a session's actor and the small pieces `Service` mints it from:
-//! the tool registry, the role prompt, the transcript restored on resume, the
-//! `session.start` candidate and the navigator feed's wake poster.
+//! the tool registry, the `session.start` candidate and the navigator feed's wake poster.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -16,15 +15,7 @@ use crate::bus::command::{Command, ContentBlock, DeliveryMode};
 use crate::bus::event::{EventKind, SessionStart, ROOT_ACTOR_ID};
 use crate::bus::sequencer::Candidate;
 use crate::provider::config::ResolvedModel;
-use crate::provider::openai::ChatMessage;
 use crate::tools::{Registry, ToolContext};
-
-/// Session profile selecting the navigator's cognition: the `cognition`
-/// model alias by default and the pair-programmer system prompt.
-pub const NAVIGATOR_PROFILE: &str = "navigator";
-
-/// The cognition's role in a navigator session, editable as Markdown.
-pub const COGNITION_PROMPT: &str = include_str!("../navigator/cognition.md");
 
 /// The feed's wake poster: routes a navigator-sourced message through the
 /// same core `POST /messages` uses. A session already closing swallows the
@@ -104,21 +95,21 @@ pub(super) fn start_candidate(workspace: &Path) -> Candidate {
 }
 
 /// The agent actor for a session, mirroring `app.rs run_command`'s build:
-/// 5 native tools + ask, workspace (+ config dir) writable.
+/// 5 native tools + ask, workspace (+ config dir) writable. Profile policy is
+/// applied afterwards by the session hooks.
 pub(super) fn build_actor(
     workspace: &Path,
     config_dir: &Path,
     resolved: ResolvedModel,
     api_key: String,
     cancel: CancellationToken,
-    navigator: bool,
 ) -> AgentActor {
     let tool_context = ToolContext {
         workspace: workspace.to_path_buf(),
         writable_roots: vec![workspace.to_path_buf(), config_dir.to_path_buf()],
     };
-    let mut actor = AgentActor::new(
-        build_registry(navigator),
+    AgentActor::new(
+        build_registry(),
         tool_context,
         resolved.provider,
         api_key,
@@ -126,29 +117,10 @@ pub(super) fn build_actor(
         resolved.model.reasoning_history,
         resolved.model.max_output_tokens,
         cancel,
-    );
-    if navigator {
-        // The navigator role rides as a second system message after the
-        // agent loop's own contract; it is not part of the transcript.
-        actor = actor.with_system_prompt(COGNITION_PROMPT);
-    }
-    actor
+    )
 }
 
-/// The stored transcript for a resumed session. A navigator transcript saved
-/// before the role prompt left the transcript starts with that prompt as a
-/// system message; it is dropped so the actor does not send it twice.
-pub(super) fn restore_transcript(stored: &[ChatMessage], navigator: bool) -> Vec<ChatMessage> {
-    let legacy_prompt = navigator
-        && matches!(
-            stored.first(),
-            Some(ChatMessage::System { content }) if content == COGNITION_PROMPT
-        );
-    let skip = usize::from(legacy_prompt);
-    stored[skip..].to_vec()
-}
-
-fn build_registry(navigator: bool) -> Registry {
+fn build_registry() -> Registry {
     let mut registry = Registry::new();
     registry.register(Box::new(crate::tools::native::ReadTool));
     registry.register(Box::new(crate::tools::native::WriteTool));
@@ -156,10 +128,5 @@ fn build_registry(navigator: bool) -> Registry {
     registry.register(Box::new(crate::tools::bash::BashTool));
     registry.register(Box::new(crate::tools::native::GrepTool));
     registry.register(Box::new(crate::tools::control::AskTool));
-    if navigator {
-        // The intent record is the navigator's working memory: only a
-        // navigator-profile cognition may update it.
-        registry.register(Box::new(crate::navigator::intent::IntentTool));
-    }
     registry
 }

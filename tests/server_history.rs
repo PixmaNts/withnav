@@ -12,8 +12,8 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use rust_agent::bus::event::{EventEnvelope, EventKind};
+use rust_agent::navigator::COGNITION_PROMPT;
 use rust_agent::provider::openai::ChatMessage;
-use rust_agent::server::session::COGNITION_PROMPT;
 use rust_agent::server::AppState;
 
 mod common;
@@ -27,7 +27,7 @@ fn make_state(tmp: &Path, base_url: &str, history_db: Option<PathBuf>) -> AppSta
     if let Some(db) = history_db {
         config = config.history_db(db);
     }
-    config.state()
+    config.navigator_state()
 }
 
 /// A scripted provider that answers EVERY connection with the given SSE

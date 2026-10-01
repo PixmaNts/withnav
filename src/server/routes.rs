@@ -123,11 +123,14 @@ pub fn app(state: AppState) -> Router {
 /// Loopback bind + graceful shutdown (SIGINT/SIGTERM -> every active session
 /// gets its sequencer fence fired, emitting `session.end`, then the server
 /// drains and exits).
-pub async fn serve(config: ServerConfig) -> Result<(), ServerError> {
+pub async fn serve(
+    config: ServerConfig,
+    hooks: std::sync::Arc<dyn crate::session::SessionHooks>,
+) -> Result<(), ServerError> {
     config.validate()?;
     let addr: SocketAddr = config.bind;
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    serve_state_on(AppState::new(config), listener).await
+    serve_state_on(AppState::with_hooks(config, hooks), listener).await
 }
 
 /// The serve body over an already-bound listener with a fresh shared state —

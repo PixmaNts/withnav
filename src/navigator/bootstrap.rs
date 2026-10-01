@@ -271,7 +271,11 @@ async fn spawn_cognition_server(
         bearer_token: Some(token.clone()),
         history_db,
     };
-    let state = AppState::with_conversation(config, Some(conversation));
+    let state = AppState::with_conversation(
+        config,
+        Arc::new(navigator::NavigatorHooks),
+        Some(conversation),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
 

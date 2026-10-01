@@ -310,7 +310,11 @@ async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
         bearer_token: None,
         history_db: None,
     };
-    crate::server::routes::serve(config).await?;
+    crate::server::routes::serve(
+        config,
+        std::sync::Arc::new(crate::navigator::NavigatorHooks),
+    )
+    .await?;
     Ok(EXIT_DONE)
 }
 

@@ -106,8 +106,8 @@ prompts, and every driver turn end triggers a `conversation` evaluation on the f
 
 Tracked in [`.scratch/refactor/plan.md`](.scratch/refactor/plan.md):
 
-- `session/` imports navigator types (feed registration, wake poster, intent tool): the
-  host binary should compose them. Planned with a `session::Service` that hides the sequencer.
+- `session/` still imports the navigator's conversation feed (registration, wake poster); the
+  actor-profile policy already comes in through `session::SessionHooks`.
 - The same events live in the bus ring buffer and in SQLite; tombstones duplicate history. Planned:
   SQLite as the single history, after its writes are made trustworthy.
 - `navigator/replay.rs` (about 860 lines) and `navigator/metacognition.rs` (about 650) exceed the

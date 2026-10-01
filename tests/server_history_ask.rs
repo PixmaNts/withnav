@@ -44,7 +44,7 @@ fn state(tmp: &Path, url: &str, db: &Path) -> rust_agent::server::AppState {
     TestServerConfig::mock(tmp, url)
         .model_alias("cognition", "mock-opus")
         .history_db(db.to_path_buf())
-        .state()
+        .navigator_state()
 }
 
 async fn collect_until(

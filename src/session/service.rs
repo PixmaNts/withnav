@@ -38,11 +38,9 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
-use super::actor::{
-    build_actor, restore_transcript, spawn_feed_watch, start_candidate, wake_poster,
-    NAVIGATOR_PROFILE,
-};
+use super::actor::{build_actor, spawn_feed_watch, start_candidate, wake_poster};
 use super::config::SessionConfig;
+use super::hooks::{NoHooks, SessionHooks};
 use super::lifecycle::Tombstone;
 use super::message::{accept, MessageAccepted};
 use crate::agent::actor::AgentActor;
@@ -157,19 +155,28 @@ pub struct Service {
     /// before any session exists; the feed is optional so plain HTTP
     /// servers and tests keep working without one.
     conversation: Option<crate::navigator::ConversationFeed>,
+    /// Actor-profile policy injected by the host binary.
+    hooks: Arc<dyn SessionHooks>,
 }
 
 impl Service {
+    /// A service without any profile behaviour ([`NoHooks`]).
     pub fn new(config: SessionConfig) -> Self {
-        Self::with_conversation(config, None)
+        Self::with_conversation(config, Arc::new(NoHooks), None)
     }
 
-    /// [`Service::new`] sharing the navigator's conversation hub: a
+    /// [`Service::new`] with the host's actor-profile policy.
+    pub fn with_hooks(config: SessionConfig, hooks: Arc<dyn SessionHooks>) -> Self {
+        Self::with_conversation(config, hooks, None)
+    }
+
+    /// [`Service::with_hooks`] sharing the navigator's conversation hub: a
     /// navigator-profile session registers itself there and a subscriber
     /// task feeds its events, so the language server can read the digest
     /// and wake the cognition.
     pub fn with_conversation(
         config: SessionConfig,
+        hooks: Arc<dyn SessionHooks>,
         conversation: Option<crate::navigator::ConversationFeed>,
     ) -> Self {
         let history = config.history_db.as_deref().and_then(|path| {
@@ -189,6 +196,7 @@ impl Service {
             config: Arc::new(config),
             history,
             conversation,
+            hooks,
         }
     }
 
@@ -425,12 +433,12 @@ impl Service {
                 loaded.meta.profile.as_deref(),
             ),
             None => {
-                let navigator = profile == Some(NAVIGATOR_PROFILE);
-                let alias = model.unwrap_or(if navigator { "cognition" } else { "default" });
+                let alias = model
+                    .or_else(|| self.hooks.default_model(profile))
+                    .unwrap_or("default");
                 (workspace.to_path_buf(), alias.to_string(), profile)
             }
         };
-        let navigator = profile == Some(NAVIGATOR_PROFILE);
         let resolved = self.resolve_model(resume_workspace, &alias)?;
         let api_key = auth::resolve_key(
             &self.config.config_dir,
@@ -444,10 +452,12 @@ impl Service {
             resolved,
             api_key,
             session_cancel.child_token(),
-            navigator,
         );
         if let Some(loaded) = &resumed {
-            actor.transcript = restore_transcript(&loaded.transcript, navigator);
+            actor.transcript = loaded.transcript.clone();
+        }
+        self.hooks.configure_actor(profile, &mut actor);
+        if resumed.is_some() {
             actor.restore_pending_ask();
         }
 
@@ -531,7 +541,7 @@ impl Service {
         // (stopping, full inbox) surface as the error string the feed
         // logs; the poster holds its own handle clone so no registry lock
         // is ever held across an await.
-        let feed_watch = navigator
+        let feed_watch = (profile == Some(crate::navigator::NAVIGATOR_PROFILE))
             .then_some(self.conversation.as_ref())
             .flatten()
             .map(|feed| {

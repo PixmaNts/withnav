@@ -6,15 +6,16 @@
 mod actor;
 mod catalog;
 mod config;
+mod hooks;
 pub mod lifecycle;
 mod message;
 pub mod service;
 pub mod store;
 mod subscription;
 
-pub use actor::{COGNITION_PROMPT, NAVIGATOR_PROFILE};
 pub use catalog::SessionListing;
 pub use config::SessionConfig;
+pub use hooks::{NoHooks, SessionHooks};
 pub use lifecycle::{Tombstone, MAX_TOMBSTONES};
 pub use message::MessageAccepted;
 pub use service::{Lifecycle, Service, SessionHandle, SessionId, SessionSlot, SessionSummary};

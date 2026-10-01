@@ -133,12 +133,21 @@ impl TestServerConfig {
         AppState::new(self.config())
     }
 
-    /// Like [`Self::state`], sharing the navigator's conversation feed.
-    pub fn state_with_conversation(
+    /// Like [`Self::state`], with the navigator profile's hooks.
+    pub fn navigator_state(&self) -> AppState {
+        self.navigator_state_with_conversation(None)
+    }
+
+    /// [`Self::navigator_state`] sharing the navigator's conversation feed.
+    pub fn navigator_state_with_conversation(
         &self,
         conversation: Option<rust_agent::navigator::ConversationFeed>,
     ) -> AppState {
-        AppState::with_conversation(self.config(), conversation)
+        AppState::with_conversation(
+            self.config(),
+            std::sync::Arc::new(rust_agent::navigator::NavigatorHooks),
+            conversation,
+        )
     }
 }
 

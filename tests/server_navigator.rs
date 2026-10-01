@@ -34,7 +34,7 @@ fn test_state_with_feed(
 ) -> AppState {
     TestServerConfig::mock(tmp, base_url)
         .model_alias("cognition", "mock-opus")
-        .state_with_conversation(conversation)
+        .navigator_state_with_conversation(conversation)
 }
 
 /// Drains the sequencer stream (replay + live) until `pred` matches, then
@@ -153,11 +153,65 @@ async fn navigator_profile_sends_the_cognition_prompt_as_second_system_message()
     assert_eq!(messages[1]["role"], "system", "cognition prompt second");
     assert_eq!(
         messages[1]["content"],
-        rust_agent::server::session::COGNITION_PROMPT,
+        rust_agent::navigator::COGNITION_PROMPT,
         "the second system message IS the cognition prompt"
     );
     assert_eq!(messages[2]["role"], "user");
     assert_eq!(messages[2]["content"], "hello there");
+}
+
+// Given a navigator-profile session created without a conversation feed
+// When a message is posted and the turn completes
+// Then the provider request carries the cognition role prompt as the
+//      second system message AND offers the `intent` tool.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn navigator_profile_without_feed_retains_prompt_and_intent() {
+    let server = MockServer::start().await;
+    let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(sse_response(&[done]))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    let state = test_state(&root, &server.uri());
+    let ws = root.join("ws");
+    std::fs::create_dir_all(&ws).expect("ws dir");
+
+    let id = state
+        .create_session(&ws, None, Some("navigator"))
+        .await
+        .expect("create navigator session");
+    let handle = state.handle(id).expect("live");
+    let sub = handle
+        .sequencer
+        .subscribe_since(None)
+        .await
+        .expect("subscribe");
+    post_driver_message(&state, id, "hello").await;
+    collect_until(sub, |e| e.kind == "turn.end").await;
+
+    let requests = server.received_requests().await;
+    let requests = requests.expect("wiremock retains requests");
+    assert_eq!(requests.len(), 1, "exactly one provider call");
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("chat request");
+    let messages = body["messages"].as_array().expect("messages array");
+    assert_eq!(messages[0]["role"], "system", "loop contract first");
+    assert_eq!(messages[1]["role"], "system", "role prompt second");
+    assert_eq!(
+        messages[1]["content"],
+        rust_agent::navigator::COGNITION_PROMPT
+    );
+    let tools: Vec<&str> = body["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str())
+        .collect();
+    assert!(tools.contains(&"intent"), "intent tool offered: {tools:?}");
 }
 
 /// Posts a driver message through the same route core POST /messages uses.

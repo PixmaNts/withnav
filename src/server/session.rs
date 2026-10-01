@@ -7,11 +7,10 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 // Compatibility path: remove once callers import from `crate::session`.
-use crate::session::Service;
 pub use crate::session::{
-    Lifecycle, SessionHandle, SessionId, SessionSlot, SessionSummary, Tombstone, COGNITION_PROMPT,
-    MAX_TOMBSTONES, NAVIGATOR_PROFILE,
+    Lifecycle, SessionHandle, SessionId, SessionSlot, SessionSummary, Tombstone, MAX_TOMBSTONES,
 };
+use crate::session::{Service, SessionHooks};
 
 pub use super::config::{HttpConfig, ServerConfig};
 
@@ -24,18 +23,25 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// A state without any profile behaviour.
     pub fn new(config: ServerConfig) -> Self {
-        Self::with_conversation(config, None)
+        Self::with_conversation(config, Arc::new(crate::session::NoHooks), None)
     }
 
-    /// [`AppState::new`] sharing the navigator's conversation hub.
+    /// [`AppState::new`] with the host's actor-profile policy.
+    pub fn with_hooks(config: ServerConfig, hooks: Arc<dyn SessionHooks>) -> Self {
+        Self::with_conversation(config, hooks, None)
+    }
+
+    /// [`AppState::with_hooks`] sharing the navigator's conversation hub.
     pub fn with_conversation(
         config: ServerConfig,
+        hooks: Arc<dyn SessionHooks>,
         conversation: Option<crate::navigator::ConversationFeed>,
     ) -> Self {
         let (session, http) = config.split();
         Self {
-            service: Service::with_conversation(session, conversation),
+            service: Service::with_conversation(session, hooks, conversation),
             http: Arc::new(http),
         }
     }

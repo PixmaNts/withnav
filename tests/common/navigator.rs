@@ -183,7 +183,8 @@ impl ScriptedDecision {
     }
 
     /// Answers every question the way the default pipeline's scenarios need:
-    /// noul 0.9 (worth a remark, drifting), choice `metacognition` when
+    /// noul 0.9 (worth a remark, drifting; but 0.1 for `unfinished` and
+    /// `stuck`), choice `metacognition` when
     /// offered (else the first option), score level 0.
     pub fn routing_to_metacognition() -> Self {
         Self::with_mode(DecisionMode::Routing)
@@ -257,7 +258,14 @@ impl DecisionModel for ScriptedDecision {
                 .unwrap_or_default()),
             DecisionMode::Routing => Ok(questions
                 .iter()
-                .map(|(name, question)| (name.clone(), routed_answer(question)))
+                .map(|(name, question)| {
+                    let answer = match name.as_str() {
+                        // The edit is finished and the driver not stuck.
+                        "unfinished" | "stuck" => Answer::Noul { noul: 0.1 },
+                        _ => routed_answer(question),
+                    };
+                    (name.clone(), answer)
+                })
                 .collect()),
             DecisionMode::Failing(message) => Err(ModelError::Malformed(message.clone())),
         };

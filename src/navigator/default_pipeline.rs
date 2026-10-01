@@ -1,5 +1,5 @@
-//! The built-in default pipeline: the four questions (`worth_attention`,
-//! `route`, `drift`, `contradicts_conversation`), pre-filters min 3
+//! The built-in default pipeline: the six questions (`worth_attention`,
+//! `route`, `drift`, `contradicts_conversation`, `unfinished`, `stuck`), pre-filters min 3
 //! lines / remark cooldown 45 s, then the branches in order:
 //!
 //! 0. `remark` (prompt `help_remark.md`) when `called_for_help`: the lines
@@ -10,20 +10,32 @@
 //!    times in a real evening), and this branch comes first so no score can
 //!    turn the call away. It stays a remark, never a wake: the driver is at
 //!    the editor, not in the chat.
-//! 1. `wake_cognition` on drift from the intent (> 0.8, only if
+//! 1. `wake_cognition` when `stuck > 0.8`: the instinct judges the driver
+//!    stuck (the same errors persist or come back across recent edits,
+//!    the same lines are undone and retried, a comment shows frustration).
+//!    It wakes whether the code compiles or not: a driver who does not
+//!    compile and struggles is who the chat is for. The wake message says
+//!    "you look stuck" and carries no intent section.
+//! 2. `wake_cognition` on drift from the intent (> 0.8, only if
 //!    `has_intent`) or a contradiction with what the driver and the
 //!    cognition just agreed (> 0.8, only if `has_conversation`: without a
-//!    conversation digest there is nothing to contradict), and only while
-//!    the code compiles (`!has_errors`): the instinct's drift on a
-//!    half-typed edit is noise. Wakes have their own cooldown,
-//!    `wake_cooldown_ms` = 120 s, apart from the remark cooldown: a wake
-//!    inside it does not match and the trigger falls to the next branch,
-//!    and a wake never silences the next remark.
-//! 2. `remark` when `worth_attention > 0.85 && route != "silent"`. The
-//!    route `cognition` without a wake (scores under the wake thresholds)
-//!    still gets its remark: the metacognition writes it, the cognition is
-//!    only woken by branch 1.
-//! 3. silent.
+//!    conversation digest there is nothing to contradict), and only if
+//!    `unfinished < 0.5`: the instinct judges whether the edit is one the
+//!    driver is still typing (a half-written statement, a copied body not
+//!    yet adapted). Compile errors alone do not make it unfinished, and
+//!    `has_errors` stays a variable no default branch uses. Wakes have
+//!    their own cooldown, `wake_cooldown_ms` = 120 s, apart from the remark
+//!    cooldown: a wake inside it does not match and the trigger falls to
+//!    the next branch, and a wake never silences the next remark.
+//! 3. `remark` when `unfinished < 0.5 && worth_attention > 0.85 &&
+//!    route != "silent"`. The route `cognition` without a wake (scores under
+//!    the wake thresholds) still gets its remark: the metacognition writes
+//!    it, the cognition is only woken by branches 1 and 2.
+//! 4. silent.
+//!
+//! All questions travel in one instinct call. `stuck` reads the diagnostics
+//! and the live state (recent edits, newest first, and error/warning
+//! diagnostics) the state template already gives.
 //!
 //! The instinct and the metacognition both see the conversation digest and
 //! a live state of recent edits and diagnostics, so their judgment is
@@ -76,5 +88,11 @@ mod tests {
         assert!(PIPELINE_TOML.contains("[instinct]"));
         assert!(STATE_PROMPT.contains("{{"));
         assert!(!REMARK_PROMPT.trim().is_empty());
+    }
+
+    #[test]
+    fn the_state_gives_the_instinct_what_stuck_needs() {
+        assert!(STATE_PROMPT.contains("{{diagnostics}}"));
+        assert!(STATE_PROMPT.contains("{{live_state}}"));
     }
 }

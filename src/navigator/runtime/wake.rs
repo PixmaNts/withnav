@@ -9,7 +9,7 @@
 //!   always present (1-based, at least 1);
 //! - the diff is the FIRST fenced block, opened with exactly ```` ```diff ````
 //!   and closed with ```` ``` ````;
-//! - the intent section, drift only, opens with `Intent on record:` alone
+//! - the intent section, drift only (never for `stuck`), opens with `Intent on record:` alone
 //!   on its line, after the diff block.
 
 use std::path::Path;
@@ -23,9 +23,17 @@ const DIFF_MAX_LINES: usize = 40;
 /// pipeline's own branch conditions decide whether a wake happens at all.
 const REASON_QUESTIONS: (&str, &str) = ("drift", "contradicts_conversation");
 
+/// The built-in `stuck` question and the score above which its branch wakes
+/// (first wake branch, so it names the reason whatever drift says).
+const STUCK_QUESTION: &str = "stuck";
+const STUCK_WAKE_THRESHOLD: f64 = 0.8;
+
 /// Why the instinct woke the cognition, with the score that fired it.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum WakeReason {
+    /// The driver looks stuck: the same errors persist, edits are undone and
+    /// retried, or a comment shows frustration.
+    Stuck(f64),
     /// The code drifts from the intent on record.
     Drift(f64),
     /// The code contradicts what was just agreed in the conversation.
@@ -37,7 +45,8 @@ pub(super) enum WakeReason {
 }
 
 impl WakeReason {
-    /// Picks the reason from the instinct's answers: of the `drift` question
+    /// Picks the reason from the instinct's answers: a `stuck` score over
+    /// the wake threshold first (its branch comes first); else of the `drift` question
     /// (when an intent exists) and the `contradicts_conversation` question
     /// (when a conversation exists), the higher score fired the branch.
     pub(super) fn from_answers(
@@ -49,6 +58,9 @@ impl WakeReason {
             Answer::Noul { noul } => Some(*noul),
             _ => None,
         };
+        if let Some(stuck) = score(STUCK_QUESTION).filter(|s| *s > STUCK_WAKE_THRESHOLD) {
+            return Self::Stuck(stuck);
+        }
         let drift = score(REASON_QUESTIONS.0).filter(|_| has_intent);
         let contradiction = score(REASON_QUESTIONS.1).filter(|_| has_conversation);
         match (drift, contradiction) {
@@ -70,6 +82,7 @@ impl WakeReason {
 
     fn sentence(&self) -> String {
         match self {
+            Self::Stuck(score) => format!("you look stuck ({score:.2})"),
             Self::Drift(score) => format!("the code drifts from the intent ({score:.2})"),
             Self::Contradiction(score) => {
                 format!("the code contradicts what was just agreed ({score:.2})")
@@ -188,6 +201,23 @@ mod tests {
     }
 
     #[test]
+    fn stuck_message_says_so_and_omits_the_intent() {
+        let message = wake_message(
+            &WakeReason::Stuck(0.87),
+            "src/lib.rs",
+            4,
+            "+x\n",
+            "some intent",
+        );
+        assert_eq!(
+            message.lines().next().unwrap(),
+            "Navigator noticed: you look stuck (0.87) in src/lib.rs:4"
+        );
+        assert!(!message.contains("Intent on record"));
+        assert!(!message.contains("some intent"));
+    }
+
+    #[test]
     fn a_long_diff_is_capped_and_the_rest_counted() {
         let diff: String = (0..100).map(|i| format!("+line {i}\n")).collect();
         let message = wake_message(&WakeReason::Contradiction(0.9), "a.rs", 1, &diff, "");
@@ -218,6 +248,7 @@ mod tests {
             (WakeReason::Drift(0.84), true),
             (WakeReason::Contradiction(0.81), false),
             (WakeReason::Other(0.0), false),
+            (WakeReason::Stuck(0.87), false),
         ] {
             // A file with a space in its name, with and without a line.
             let file = relative_path("file:///ws/my%20dir/a.rs", Some(Path::new("/ws")));
@@ -280,6 +311,28 @@ mod tests {
         assert_eq!(
             WakeReason::from_answers(None, true, true),
             WakeReason::Other(0.0)
+        );
+    }
+
+    #[test]
+    fn stuck_over_the_threshold_is_the_reason_whatever_drift_says() {
+        let answers: Answers = [
+            ("drift".to_string(), Answer::Noul { noul: 0.95 }),
+            ("stuck".to_string(), Answer::Noul { noul: 0.87 }),
+        ]
+        .into();
+        assert_eq!(
+            WakeReason::from_answers(Some(&answers), true, false),
+            WakeReason::Stuck(0.87)
+        );
+        let calm: Answers = [
+            ("drift".to_string(), Answer::Noul { noul: 0.85 }),
+            ("stuck".to_string(), Answer::Noul { noul: 0.8 }),
+        ]
+        .into();
+        assert_eq!(
+            WakeReason::from_answers(Some(&calm), true, false),
+            WakeReason::Drift(0.85)
         );
     }
 

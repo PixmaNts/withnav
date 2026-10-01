@@ -23,7 +23,9 @@ requests land in `develop`.
   the line it was about (moved along with your edits), and is dropped only if that line was
   rewritten or the file closed.
 - The remark time limit goes from 8 s to 20 s, so slow answers arrive instead of vanishing.
-- The navigator no longer wakes the chat about code that does not compile yet.
+- The navigator wakes the chat when you look stuck, whether the code compiles or not, and no longer
+  wakes it or remarks on an edit you are still in the middle of typing; it decides both by judging
+  the edit, not by whether it compiles.
 - A wake no longer silences the next remark; wakes have their own 120 s pause.
 - A remark routed to the cognition but below the wake thresholds is now written instead of dropped.
 - A wake message is short and renders properly: a one-line reason with the file and line, the diff

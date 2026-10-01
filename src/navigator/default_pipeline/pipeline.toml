@@ -24,6 +24,16 @@ instructions = "Does the code drift away from the stated intent?"
 type = "noul"
 instructions = "Does this change contradict what the driver and the cognition just agreed in the conversation?"
 
+# Whether the code compiles says nothing about whether the driver needs
+# help: the instinct judges "still typing" and "stuck" instead.
+[trigger.questions.unfinished]
+type = "noul"
+instructions = "Is this an edit the driver is still in the middle of typing (a half-written statement, a copied body not yet adapted, an intermediate state), rather than a step they consider done? Compile errors alone do not make it unfinished."
+
+[trigger.questions.stuck]
+type = "noul"
+instructions = "Does the driver look stuck: the same errors persist or come back across recent edits, they undo and retry the same lines, or a comment shows frustration?"
+
 # A comment that calls on the navigator ("help", "aide", a question) gets an
 # answer whatever the scores say; the prefilter let it past the size limit.
 [[trigger.branch]]
@@ -31,12 +41,17 @@ when = "called_for_help"
 action = "remark"
 prompt = "prompts/help_remark.md"
 
+# A driver who looks stuck gets the chat, whether the code compiles or not.
 [[trigger.branch]]
-when = "!has_errors && ((has_intent && drift > 0.8) || (has_conversation && contradicts_conversation > 0.8))"
+when = "stuck > 0.8"
 action = "wake_cognition"
 
 [[trigger.branch]]
-when = "worth_attention > 0.85 && route != \"silent\""
+when = "unfinished < 0.5 && ((has_intent && drift > 0.8) || (has_conversation && contradicts_conversation > 0.8))"
+action = "wake_cognition"
+
+[[trigger.branch]]
+when = "unfinished < 0.5 && worth_attention > 0.85 && route != \"silent\""
 action = "remark"
 prompt = "prompts/remark.md"
 

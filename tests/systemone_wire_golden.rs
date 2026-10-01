@@ -254,9 +254,15 @@ async fn client_is_reused_across_calls_through_the_cache() {
 async fn pipeline_over_systemone_end_to_end() {
     // The pipeline drives the real client against the mock end to end.
     let server = MockServer::start().await;
+    // The captured response predates `unfinished` and `stuck`: add them,
+    // both low, so the built-in branches have every variable they read.
+    let mut body: serde_json::Value = serde_json::from_str(&captured_response_body()).unwrap();
+    for name in ["unfinished", "stuck"] {
+        body["answers"][name] = serde_json::json!({"type": "noul", "noul": 0.1});
+    }
     Mock::given(method("POST"))
         .and(path("/v1/systemone"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(captured_response_body()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body.to_string()))
         .expect(1)
         .mount(&server)
         .await;
@@ -278,8 +284,8 @@ async fn pipeline_over_systemone_end_to_end() {
         has_intent: false,
         has_conversation: false,
     };
-    // The built-in default asks 3 questions; the captured fixture answers
-    // them (worth 0.8, route cognition, drift 0.54) -> no remark branch
+    // The built-in default asks 6 questions; the captured fixture answers
+    // the first four (worth 0.8, route cognition, drift 0.54) -> no remark branch
     // matches (route != metacognition, drift <= 0.8) -> silent.
     let eval = pipeline
         .evaluate(

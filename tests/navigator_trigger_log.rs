@@ -111,7 +111,7 @@ fn inputs(changed_lines: i64, has_conversation: bool, has_intent: bool) -> Value
 fn idle_remark_record(extra: Value) -> Value {
     let mut record = json!({
         "answers": "<object>",
-        "branch": 2,
+        "branch": 3,
         "event": "idle",
         "kind": "trigger",
         "model": "instinct",
@@ -138,7 +138,7 @@ fn idle_remark_record(extra: Value) -> Value {
 fn save_wake_record(has_conversation: bool, extra: Value) -> Value {
     let mut record = json!({
         "answers": "<object>",
-        "branch": 1,
+        "branch": 2,
         "event": "save",
         "kind": "trigger",
         "model": "instinct",

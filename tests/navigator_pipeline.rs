@@ -531,18 +531,25 @@ fn builtin_default_pipeline_loads_and_is_the_spec_shape() {
     assert_eq!(triggers[0].on.len(), 2);
     assert_eq!(triggers[0].prefilters.min_changed_lines, 3);
     assert_eq!(triggers[0].prefilters.cooldown_ms, 45_000);
-    assert_eq!(triggers[0].questions.len(), 4);
+    assert_eq!(triggers[0].questions.len(), 6);
+    assert!(triggers[0].questions.contains_key("unfinished"));
+    assert!(triggers[0].questions.contains_key("stuck"));
     assert!(triggers[0]
         .questions
         .contains_key("contradicts_conversation"));
     let specs = triggers[0].branch_specs();
-    assert_eq!(specs.len(), 4);
+    assert_eq!(specs.len(), 5);
     assert_eq!(specs[0].0.as_str(), "remark");
     assert_eq!(specs[0].1, Some("prompts/help_remark.md"));
-    assert_eq!(specs[1].0.as_str(), "wake_cognition");
-    assert_eq!(specs[2].0.as_str(), "remark");
-    assert_eq!(specs[2].1, Some("prompts/remark.md"));
-    assert_eq!(specs[3].0.as_str(), "silent");
+    assert_eq!(specs[1].0.as_str(), "wake_cognition", "stuck");
+    assert_eq!(
+        specs[2].0.as_str(),
+        "wake_cognition",
+        "drift or contradiction"
+    );
+    assert_eq!(specs[3].0.as_str(), "remark");
+    assert_eq!(specs[3].1, Some("prompts/remark.md"));
+    assert_eq!(specs[4].0.as_str(), "silent");
 
     // The conversation trigger: one question, a remark or silence.
     assert_eq!(triggers[1].on, vec![TriggerKind::Conversation]);
@@ -633,7 +640,19 @@ fn builtin_answers(worth: f64, route: &str, drift: f64) -> BTreeMap<String, Answ
             "contradicts_conversation".to_string(),
             Answer::Noul { noul: 0.1 },
         ),
+        ("unfinished".to_string(), Answer::Noul { noul: 0.1 }),
+        ("stuck".to_string(), Answer::Noul { noul: 0.1 }),
     ])
+}
+
+/// `answers` with the noul question `name` set to `value`.
+fn with_noul(
+    mut answers: BTreeMap<String, Answer>,
+    name: &str,
+    value: f64,
+) -> BTreeMap<String, Answer> {
+    answers.insert(name.to_string(), Answer::Noul { noul: value });
+    answers
 }
 
 async fn builtin_action(answers: BTreeMap<String, Answer>, i: TriggerInputs) -> String {
@@ -652,25 +671,68 @@ async fn builtin_action(answers: BTreeMap<String, Answer>, i: TriggerInputs) -> 
     eval.requested_action.as_str().to_string()
 }
 
-/// Code that does not compile is half-typed: a high drift on it is noise,
-/// and the remark branch still gets its turn.
+/// Compile errors are no criterion: the instinct judges whether the edit is
+/// unfinished (still being typed) or the driver stuck. With errors and a high
+/// drift the navigator wakes unless the edit is unfinished.
 #[tokio::test]
-async fn builtin_does_not_wake_on_code_with_errors() {
-    let drifting = builtin_answers(0.5, "silent", 0.95);
-    assert_eq!(
-        builtin_action(drifting.clone(), inputs(5)).await,
-        "wake_cognition"
-    );
+async fn builtin_judges_unfinished_edits_not_compile_errors() {
     let mut with_errors = inputs(5);
     with_errors.has_errors = true;
-    assert_eq!(builtin_action(drifting, with_errors).await, "silent");
+    let drifting = builtin_answers(0.5, "silent", 0.95);
 
-    let drifting_and_worth_it = builtin_answers(0.95, "cognition", 0.95);
     assert_eq!(
-        builtin_action(drifting_and_worth_it, with_errors).await,
-        "remark",
-        "the wake is guarded, the remark is not"
+        builtin_action(drifting.clone(), with_errors).await,
+        "wake_cognition",
+        "errors present, drift high, edit finished: wake"
     );
+    let unfinished = with_noul(drifting, "unfinished", 0.9);
+    assert_eq!(
+        builtin_action(unfinished, with_errors).await,
+        "silent",
+        "the edit is still being typed"
+    );
+
+    // The remark branch is gated by the same question.
+    let worth_it = builtin_answers(0.95, "cognition", 0.3);
+    assert_eq!(
+        builtin_action(worth_it.clone(), with_errors).await,
+        "remark"
+    );
+    assert_eq!(
+        builtin_action(with_noul(worth_it, "unfinished", 0.5), with_errors).await,
+        "silent",
+        "unfinished at 0.5 is not below 0.5"
+    );
+}
+
+/// A stuck driver gets the chat whether the code compiles or not, and even
+/// when the edit looks unfinished; a score at the threshold does not.
+#[tokio::test]
+async fn builtin_wakes_a_stuck_driver_with_or_without_errors() {
+    let stuck = with_noul(builtin_answers(0.1, "silent", 0.1), "stuck", 0.87);
+    let mut with_errors = inputs(5);
+    with_errors.has_errors = true;
+    for i in [inputs(5), with_errors] {
+        assert_eq!(builtin_action(stuck.clone(), i).await, "wake_cognition");
+    }
+    let stuck_and_typing = with_noul(stuck.clone(), "unfinished", 0.9);
+    assert_eq!(
+        builtin_action(stuck_and_typing, with_errors).await,
+        "wake_cognition"
+    );
+    // Intent-less: stuck does not need an intent.
+    let mut no_intent = inputs(5);
+    no_intent.has_intent = false;
+    assert_eq!(builtin_action(stuck, no_intent).await, "wake_cognition");
+
+    let at_threshold = with_noul(builtin_answers(0.1, "silent", 0.1), "stuck", 0.8);
+    assert_eq!(builtin_action(at_threshold, with_errors).await, "silent");
+
+    // The wake has its own cooldown: inside it, stuck falls through.
+    let mut just_woke = inputs(5);
+    just_woke.since_last_wake_ms = 1_000;
+    let stuck_and_worth = with_noul(builtin_answers(0.95, "cognition", 0.1), "stuck", 0.9);
+    assert_eq!(builtin_action(stuck_and_worth, just_woke).await, "remark");
 }
 
 /// Route `cognition` under the wake thresholds is a remark: only `silent`

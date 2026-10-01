@@ -17,7 +17,7 @@ async fn service_create_without_http_emits_start_zero() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace");
-    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config());
+    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0);
 
     let id = service
         .create_session(&ws, None, None)
@@ -56,7 +56,7 @@ async fn service_send_rejects_invalid_content_without_event() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace");
-    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config());
+    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0);
     let id = service
         .create_session(&ws, None, None)
         .await
@@ -216,5 +216,63 @@ async fn service_subscription_matches_http_replay() {
     assert!(matches!(
         server.state.subscribe(ulid::Ulid::new(), None).await,
         Err(rust_agent::error::ServerError::SessionNotFound(_))
+    ));
+}
+
+// Given a persisted session created through the Service
+// When it is deleted through the Service
+// Then it is gone from `list(workspace)`, `send` answers not-found, and
+//      `subscribe` answers not-found
+#[tokio::test]
+async fn service_delete_removes_listing_and_routing() {
+    use rust_agent::bus::command::{Command, ContentBlock, DeliveryMode};
+    use rust_agent::error::ServerError;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).expect("workspace");
+    let config = TestServerConfig::unreachable(tmp.path())
+        .history_db(tmp.path().join("history.db"))
+        .config()
+        .split()
+        .0;
+    let service = Service::new(config);
+    let ws_str = ws.display().to_string();
+
+    let id = service
+        .create_session(&ws, None, None)
+        .await
+        .expect("create");
+    let listed = service.list(&ws_str).await.expect("list");
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].id, id);
+    assert!(listed[0].live);
+
+    service.delete(id).await.expect("delete");
+
+    assert!(service.list(&ws_str).await.expect("list").is_empty());
+    let command = Command {
+        command_id: ulid::Ulid::new(),
+        session_id: id,
+        source_actor_id: "user:test".to_string(),
+        target_actor_id: "agent:main".to_string(),
+        mode: DeliveryMode::NextTurn,
+        content: vec![ContentBlock::Text {
+            text: "hi".to_string(),
+        }],
+        created_at: std::time::SystemTime::now(),
+    };
+    assert!(matches!(
+        service.send(command).await,
+        Err(ServerError::SessionNotFound(_))
+    ));
+    assert!(matches!(
+        service.subscribe(id, None).await,
+        Err(ServerError::SessionNotFound(_))
+    ));
+    // Deleting again: neither in memory nor on disk.
+    assert!(matches!(
+        service.delete(id).await,
+        Err(ServerError::SessionNotFound(_))
     ));
 }

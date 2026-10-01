@@ -26,7 +26,7 @@ use ulid::Ulid;
 use crate::bus::command::{Command, ContentBlock, DeliveryMode};
 use crate::bus::event::ROOT_ACTOR_ID;
 use crate::error::ServerError;
-use crate::server::session::{AppState, ServerConfig, SessionSlot};
+use crate::server::session::{AppState, ServerConfig};
 
 /// Frozen health body.
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -84,7 +84,7 @@ pub struct StopAccepted {
 /// The Axum router for this slice's routes. Tests mount it directly via
 /// `tower::ServiceExt::oneshot`.
 pub fn app(state: AppState) -> Router {
-    let token = state.config.bearer_token.clone();
+    let token = state.http.bearer_token.clone();
     Router::new()
         .route("/v1/health", get(health))
         .route("/v1/sessions", get(list_sessions).post(create_session))
@@ -287,69 +287,36 @@ async fn list_sessions(
             "missing query parameter: workspace".to_string(),
         ));
     };
-    let Some(store) = state.history() else {
-        return (
-            StatusCode::OK,
-            Json(SessionListBody {
-                sessions: Vec::new(),
-            }),
-        )
-            .into_response();
-    };
-    match store.list(workspace).await {
+    match state.list(workspace).await {
         Ok(rows) => {
             let sessions = rows
                 .into_iter()
                 .map(|row| SessionListEntry {
-                    live: matches!(
-                        state.slot(row.meta.id),
-                        Some(SessionSlot::Live(handle))
-                            if handle.lifecycle == crate::server::session::Lifecycle::Active
-                    ),
-                    id: row.meta.id.to_string(),
-                    title: row.meta.title,
-                    created_at: row.meta.created_at,
-                    updated_at: row.meta.updated_at,
+                    id: row.id.to_string(),
+                    title: row.title,
+                    created_at: row.created_at,
+                    updated_at: row.updated_at,
                     message_count: row.message_count,
+                    live: row.live,
                 })
                 .collect();
             (StatusCode::OK, Json(SessionListBody { sessions })).into_response()
         }
-        Err(err) => error_response(ServerError::History(err)),
+        Err(err) => error_response(err),
     }
 }
 
-/// `DELETE /v1/sessions/{id}`: stops it if live, removes it from memory and
-/// from the store. 204 on success; 404 only when the id is neither in
-/// memory nor on disk.
+/// `DELETE /v1/sessions/{id}`: 204 on success; 404 only when the id is
+/// neither in memory nor on disk.
 async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let parsed: Ulid = match id.parse() {
         Ok(parsed) => parsed,
         Err(_) => return error_response(ServerError::SessionNotFound(id)),
     };
-    let known_to_memory = state.slot(parsed).is_some();
-    match state.close_session(parsed).await {
-        Ok(()) => {}
-        Err(ServerError::SessionNotFound(_)) if !known_to_memory => {
-            // Disk-only id: it must exist in the store, else 404.
-            match state.history() {
-                Some(store) => match store.exists(parsed).await {
-                    Ok(true) => {}
-                    Ok(false) => return error_response(ServerError::SessionNotFound(id)),
-                    Err(err) => return error_response(ServerError::History(err)),
-                },
-                None => return error_response(ServerError::SessionNotFound(id)),
-            }
-        }
-        Err(err) => return error_response(err),
+    match state.delete(parsed).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => error_response(err),
     }
-    state.discard(parsed);
-    if let Some(store) = state.history() {
-        if let Err(err) = store.delete(parsed).await {
-            return error_response(ServerError::History(err));
-        }
-    }
-    StatusCode::NO_CONTENT.into_response()
 }
 
 /// The server-assigned sender for HTTP-submitted messages: clients can never

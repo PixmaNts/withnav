@@ -30,7 +30,6 @@
 //! await. clippy's `await_holding_lock` lint enforces this.
 
 use std::collections::{HashMap, VecDeque};
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -43,6 +42,7 @@ use super::actor::{
     build_actor, restore_transcript, spawn_feed_watch, start_candidate, wake_poster,
     NAVIGATOR_PROFILE,
 };
+use super::config::SessionConfig;
 use super::lifecycle::Tombstone;
 use super::message::{accept, MessageAccepted};
 use crate::agent::actor::AgentActor;
@@ -141,37 +141,6 @@ pub struct SessionSummary {
     pub current_seq: u64,
 }
 
-/// Immutable server configuration, validated at bind time.
-#[derive(Debug, Clone)]
-pub struct ServerConfig {
-    /// Loopback-only by default; a non-loopback bind is refused unless
-    /// `allow_non_loopback` is set (and even then: NO auth/TLS this slice).
-    pub bind: SocketAddr,
-    /// Explicit models.json path; `None` resolves per-workspace then the
-    /// config dir (same order as the CLI `run` path).
-    pub models_path: Option<PathBuf>,
-    /// Auth store directory for API-key resolution.
-    pub config_dir: PathBuf,
-    pub allow_non_loopback: bool,
-    /// When set, every route except health requires
-    /// `Authorization: Bearer <token>` (the navigator's in-process server).
-    pub bearer_token: Option<String>,
-    /// Conversation-history database (`sessions.db`); `None` keeps today's
-    /// behaviour with no persistence (tests, CLI `run`, `serve`).
-    pub history_db: Option<PathBuf>,
-}
-
-impl ServerConfig {
-    /// Bind-time validation: refuse a non-loopback address unless the
-    /// explicit escape hatch was passed.
-    pub fn validate(&self) -> Result<(), ServerError> {
-        if !self.bind.ip().is_loopback() && !self.allow_non_loopback {
-            return Err(ServerError::NonLoopbackBind(self.bind));
-        }
-        Ok(())
-    }
-}
-
 /// The session service: the registry plus the immutable config. Cheap to
 /// clone (all fields are `Arc`).
 #[derive(Clone, Debug)]
@@ -180,7 +149,7 @@ pub struct Service {
     /// Insertion order of tombstone ids — the FIFO eviction queue backing
     /// [`MAX_TOMBSTONES`].
     tombstone_order: Arc<Mutex<VecDeque<SessionId>>>,
-    pub config: Arc<ServerConfig>,
+    pub config: Arc<SessionConfig>,
     /// The conversation-history store; `None` when `history_db` is unset.
     history: Option<Arc<super::store::HistoryStore>>,
     /// The navigator's conversation hub, when this server shares its
@@ -191,7 +160,7 @@ pub struct Service {
 }
 
 impl Service {
-    pub fn new(config: ServerConfig) -> Self {
+    pub fn new(config: SessionConfig) -> Self {
         Self::with_conversation(config, None)
     }
 
@@ -200,7 +169,7 @@ impl Service {
     /// task feeds its events, so the language server can read the digest
     /// and wake the cognition.
     pub fn with_conversation(
-        config: ServerConfig,
+        config: SessionConfig,
         conversation: Option<crate::navigator::ConversationFeed>,
     ) -> Self {
         let history = config.history_db.as_deref().and_then(|path| {

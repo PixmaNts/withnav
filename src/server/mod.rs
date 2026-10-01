@@ -5,6 +5,7 @@
 //! Surface: [`routes::app`] (health + session create/get), [`AppState`]
 //! (the HTTP state wrapping the session service), and [`routes::serve`]
 //! (loopback bind with graceful shutdown).
+pub mod config;
 pub mod routes;
 pub mod session;
 pub mod sse;
@@ -12,5 +13,6 @@ pub mod sse;
 // Compatibility path: remove once callers import from `crate::session::store`.
 pub use crate::session::store;
 
+pub use config::{HttpConfig, ServerConfig};
 pub use routes::{app, serve};
-pub use session::{AppState, ServerConfig};
+pub use session::AppState;

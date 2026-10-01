@@ -5,8 +5,14 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
 use serde_json::{json, Value};
+use tower::ServiceExt;
 
+use rust_agent::bus::command::{Command, ContentBlock, DeliveryMode};
+use rust_agent::bus::event::EventEnvelope;
 use rust_agent::server::{AppState, ServerConfig};
 
 use super::sse::spawn_mock_provider;
@@ -158,6 +164,20 @@ impl TestServerConfig {
     }
 }
 
+/// Polls `/v1/health` on `addr` until it answers; panics after 2 s.
+pub async fn wait_until_healthy(addr: SocketAddr) {
+    for _ in 0..100 {
+        if reqwest::get(format!("http://{addr}/v1/health"))
+            .await
+            .is_ok()
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("server never came up");
+}
+
 /// Serves `state` on an ephemeral loopback socket (the real router) and
 /// waits until it answers `/v1/health`. The caller aborts the task.
 pub async fn spawn_server(state: AppState) -> (SocketAddr, tokio::task::JoinHandle<()>) {
@@ -168,18 +188,7 @@ pub async fn spawn_server(state: AppState) -> (SocketAddr, tokio::task::JoinHand
     let task = tokio::spawn(async move {
         let _ = rust_agent::server::routes::serve_state_on(state, listener).await;
     });
-    let mut up = false;
-    for _ in 0..100 {
-        if reqwest::get(format!("http://{addr}/v1/health"))
-            .await
-            .is_ok()
-        {
-            up = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(up, "server never came up");
+    wait_until_healthy(addr).await;
     (addr, task)
 }
 
@@ -278,4 +287,108 @@ pub async fn post_message(base: &str, id: &str, text: &str) -> reqwest::Response
 pub async fn post_message_ok(base: &str, id: &str, text: &str) {
     let resp = post_message(base, id, text).await;
     assert_eq!(resp.status(), 200);
+}
+
+/// The command `POST /messages` builds for a plain-text message to the main
+/// agent in session `id`.
+pub fn text_command(id: ulid::Ulid, text: &str) -> Command {
+    rust_agent::server::routes::build_command(
+        id,
+        &rust_agent::server::routes::PostMessageRequest {
+            target_actor_id: "agent:main".to_string(),
+            mode: Some("next-turn".to_string()),
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
+        },
+        DeliveryMode::NextTurn,
+    )
+}
+
+/// Sends a plain-text message through the same core `POST /messages` uses.
+pub async fn send_text(
+    state: &AppState,
+    id: ulid::Ulid,
+    text: &str,
+) -> rust_agent::session::MessageAccepted {
+    state.send(text_command(id, text)).await.expect("routed")
+}
+
+/// One in-process request through the router. Returns the status and the
+/// JSON body.
+pub async fn request_json(
+    app: &axum::Router,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> (StatusCode, Value) {
+    let builder = Request::builder().method(method).uri(path);
+    let request = match body {
+        Some(body) => builder
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string())),
+        None => builder.body(Body::empty()),
+    }
+    .expect("request");
+    let response = app.clone().oneshot(request).await.expect("infallible");
+    let status = response.status();
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    (status, serde_json::from_slice(&bytes).expect("json body"))
+}
+
+/// Collects replay + live events until a LIVE event matches `pred`, then
+/// settles briefly (same-tick sequenced events land in one batch) and drains
+/// what is ready. Panics, listing the events seen, if nothing matches within
+/// 20 s or the stream closes first.
+pub async fn collect_until(
+    sub: rust_agent::session::Subscription,
+    pred: impl Fn(&EventEnvelope) -> bool,
+) -> Vec<EventEnvelope> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut out = Vec::new();
+    if let rust_agent::bus::ResumeOutcome::Replay(replay) = sub.replay {
+        out.extend(replay);
+    }
+    if let Some(mut live) = sub.live {
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let env = tokio::time::timeout(remaining, live.recv())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("timed out waiting for matching server event; seen: {out:?}")
+                });
+            let Some(env) = env else { break };
+            let matched = pred(&env);
+            out.push(env);
+            if matched {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                while let Ok(env) = live.try_recv() {
+                    out.push(env);
+                }
+                break;
+            }
+        }
+    }
+    assert!(
+        out.iter().any(&pred),
+        "stream closed before the matching server event; seen: {out:?}"
+    );
+    out
+}
+
+/// Polls `cond` until it holds, panicking with `what` after 20 s.
+pub async fn wait_for(what: &str, cond: impl Fn() -> bool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while !cond() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }

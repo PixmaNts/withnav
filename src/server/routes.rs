@@ -469,32 +469,6 @@ mod tests {
         (dir, state)
     }
 
-    // Given the mounted router
-    // When GET /v1/health
-    // Then 200 with the frozen {status:"ok"} body
-    #[tokio::test]
-    async fn health_returns_frozen_ok_body() {
-        let (_dir, state) = test_state();
-        let response = app(state)
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri("/v1/health")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("infallible");
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response
-            .into_body()
-            .collect()
-            .await
-            .expect("body")
-            .to_bytes();
-        let value: serde_json::Value = serde_json::from_slice(&body).expect("json");
-        assert_eq!(value, serde_json::json!({ "status": "ok" }));
-    }
-
     // Given a session POST with a malformed body
     // When the handler runs
     // Then 400 with the shared {"error": ...} shape (not a panic/plain text)

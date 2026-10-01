@@ -17,7 +17,9 @@ use rust_agent::provider::openai::ChatMessage;
 use rust_agent::server::AppState;
 
 mod common;
-use common::server::{post_create_session, post_message_ok, spawn_server, TestServerConfig};
+use common::server::{
+    collect_until, post_create_session, post_message_ok, spawn_server, TestServerConfig,
+};
 use common::sse::{http_sse, sse_body};
 
 /// A state over a `cognition`-aliased mock provider at `base_url`, with
@@ -76,35 +78,6 @@ async fn list_sessions(base: &str, workspace: &Path) -> Value {
         .json()
         .await
         .expect("list json")
-}
-
-/// Collects replay + live until `pred` matches, then settles.
-async fn collect_until(
-    sub: rust_agent::session::Subscription,
-    pred: impl Fn(&EventEnvelope) -> bool,
-) -> Vec<EventEnvelope> {
-    let mut out = Vec::new();
-    if let rust_agent::bus::ResumeOutcome::Replay(replay) = sub.replay {
-        out.extend(replay);
-    }
-    if let Some(mut live) = sub.live {
-        while let Some(env) = tokio::time::timeout(Duration::from_secs(5), live.recv())
-            .await
-            .ok()
-            .flatten()
-        {
-            let matched = pred(&env);
-            out.push(env);
-            if matched {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                while let Ok(env) = live.try_recv() {
-                    out.push(env);
-                }
-                break;
-            }
-        }
-    }
-    out
 }
 
 /// Waits until the writer thread has drained (observed via the store's own
@@ -343,8 +316,8 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
         "What word did I ask you to remember?"
     );
 
-    // The provider saw the earlier conversation.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // The provider saw the earlier conversation (it records each request
+    // before answering, and the turn has ended).
     let requests = mock2.requests.lock().unwrap().clone();
     assert!(!requests.is_empty(), "provider called");
     let body: Value = serde_json::from_str(

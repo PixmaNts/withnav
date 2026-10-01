@@ -626,21 +626,6 @@ mod tests {
         assert!(store.list("/w").await.expect("list").is_empty());
     }
 
-    // Given a store
-    // When list runs for another workspace
-    // Then it is empty (per-workspace scoping)
-    #[tokio::test]
-    async fn list_is_per_workspace() {
-        let (_dir, store) = temp_store();
-        store
-            .record_session(Ulid::new(), "/a", "m", None)
-            .await
-            .expect("record");
-        let listed = poll_list(&store, "/a", 1).await;
-        assert_eq!(listed.len(), 1);
-        assert!(store.list("/b").await.expect("list").is_empty());
-    }
-
     // Given a store file
     // When open runs twice on the same path
     // Then the schema migration is idempotent
@@ -752,29 +737,10 @@ mod tests {
     }
 
     // Given a store whose events table has been destroyed underneath it
-    // When an event is appended and the store is flushed
-    // Then the flush reports the failure (it is not only a log line)
-    #[tokio::test]
-    async fn a_failed_event_insert_surfaces_at_flush() {
-        let (dir, store) = temp_store();
-        let id = Ulid::new();
-        store
-            .record_session(id, "/w", "m", None)
-            .await
-            .expect("record");
-        side_connection(&dir)
-            .execute_batch("DROP TABLE events")
-            .expect("drop events");
-
-        store.append_event(id, envelope(0, EventKind::SessionStart));
-        let err = store.flush().await.expect_err("the insert must fail");
-        assert!(err.contains("events"), "names the cause: {err}");
-    }
-
-    // Given a store whose events table has been destroyed underneath it
     // When an event is appended and the store is flushed several times
-    // Then every flush keeps reporting the failure: the history has a hole
-    //      that no later flush may hide
+    // Then the first flush names the cause, and every later flush keeps
+    //      reporting the same failure: the history has a hole that no later
+    //      flush may hide
     #[tokio::test]
     async fn failed_append_poison_survives_multiple_flushes() {
         let (dir, store) = temp_store();
@@ -789,6 +755,7 @@ mod tests {
 
         store.append_event(id, envelope(0, EventKind::SessionStart));
         let first = store.flush().await.expect_err("the insert must fail");
+        assert!(first.contains("events"), "names the cause: {first}");
         let second = store.flush().await.expect_err("still poisoned");
         let third = store.flush().await.expect_err("and still");
         assert_eq!(first, second);

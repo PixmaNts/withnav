@@ -2,6 +2,8 @@
 //! scripted reflex, instinct and metacognition models.
 
 use std::collections::VecDeque;
+use std::ops::{Deref, DerefMut};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -11,7 +13,9 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio_util::sync::CancellationToken;
 
+use rust_agent::bus::event::{EventEnvelope, EventKind};
 use rust_agent::error::ProviderError;
+use rust_agent::navigator::conversation::SessionPost;
 use rust_agent::navigator::metacognition::RemarkContext;
 use rust_agent::navigator::ports::{
     Answer, Answers, DecisionModel, FimAnswer, FimModel, FimRequest, Metacognition, ModelError,
@@ -630,4 +634,165 @@ pub fn spawn_server_as_is(deps: NavigatorDeps) -> LspClient {
         reader: client_read,
         buf: Vec::new(),
     }
+}
+
+// ---------- shared scenario setup ----------
+
+/// The document every LSP scenario edits.
+pub const URI: &str = "file:///ws/src/main.rs";
+
+pub fn base_text() -> String {
+    ["fn main() {", "    println!(\"hello\");", "}"].join("\n")
+}
+
+/// Four changed lines relative to [`base_text`] (the built-in pre-filter
+/// wants at least three).
+pub fn big_edit() -> String {
+    [
+        "fn main() {",
+        "    let x = 1;",
+        "    let y = 2;",
+        "    println!(\"{x}-{y}\");",
+        "}",
+    ]
+    .join("\n")
+}
+
+/// A running navigator server, its temporary directory and its decision log.
+/// Derefs to the [`LspClient`] so scenarios call `nav.did_change(..)`.
+pub struct Nav {
+    pub client: LspClient,
+    pub log: PathBuf,
+    pub tmp: tempfile::TempDir,
+}
+
+impl Deref for Nav {
+    type Target = LspClient;
+    fn deref(&self) -> &LspClient {
+        &self.client
+    }
+}
+
+impl DerefMut for Nav {
+    fn deref_mut(&mut self) -> &mut LspClient {
+        &mut self.client
+    }
+}
+
+impl Nav {
+    /// A server over `commenter` with the routing instinct, initialized with
+    /// no options.
+    pub async fn start(commenter: ScriptedCommenter) -> Self {
+        Self::start_with(commenter, json!({}), |deps, _| deps).await
+    }
+
+    /// [`Nav::start`] with initialization `options`; `configure` receives the
+    /// deps and the temporary directory (the workspace, if the scenario wants
+    /// one).
+    pub async fn start_with(
+        commenter: ScriptedCommenter,
+        options: Value,
+        configure: impl FnOnce(NavigatorDeps, &Path) -> NavigatorDeps,
+    ) -> Self {
+        Self::launch(spawn_server, commenter, options, configure).await
+    }
+
+    /// [`Nav::start_with`] without adding an instinct: `configure` decides
+    /// which layers exist.
+    pub async fn start_as_is(
+        commenter: ScriptedCommenter,
+        configure: impl FnOnce(NavigatorDeps, &Path) -> NavigatorDeps,
+    ) -> Self {
+        Self::launch(spawn_server_as_is, commenter, json!({}), configure).await
+    }
+
+    async fn launch(
+        spawn: fn(NavigatorDeps) -> LspClient,
+        commenter: ScriptedCommenter,
+        options: Value,
+        configure: impl FnOnce(NavigatorDeps, &Path) -> NavigatorDeps,
+    ) -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("nav.jsonl");
+        let deps = configure(
+            NavigatorDeps::new(Arc::new(commenter), log.clone()),
+            tmp.path(),
+        );
+        let mut client = spawn(deps);
+        client.initialize(options).await;
+        Self { client, log, tmp }
+    }
+
+    /// Opens [`URI`] with [`base_text`] (version 1).
+    pub async fn open_base(&mut self) {
+        self.did_open(URI, &base_text(), 1).await;
+    }
+
+    /// Opens [`URI`] and changes it to [`big_edit`] (version 2).
+    pub async fn open_and_edit(&mut self) {
+        self.open_base().await;
+        self.did_change(URI, &big_edit(), 2).await;
+    }
+
+    /// The decision log so far; empty before anything was written.
+    pub fn log_text(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_default()
+    }
+}
+
+/// An intent on disk under `workspace` (so the built-in wake branch can
+/// fire), the conversation `feed`, and the workspace as the navigator's dir.
+pub fn with_intent_and_feed(
+    deps: NavigatorDeps,
+    workspace: &Path,
+    feed: navigator::ConversationFeed,
+) -> NavigatorDeps {
+    std::fs::create_dir_all(workspace.join(".navigator")).unwrap();
+    std::fs::write(
+        workspace.join(".navigator/intent.md"),
+        "## Intent\nadd an auth remove command",
+    )
+    .unwrap();
+    deps.with_conversation(feed)
+        .with_dirs(Some(workspace.to_path_buf()), None)
+}
+
+/// A driver message observed by a conversation feed.
+pub fn driver_message(session_id: ulid::Ulid, seq: u64, content: &str) -> EventEnvelope {
+    EventEnvelope::new(
+        session_id,
+        seq,
+        EventKind::MessageReceived,
+        json!({
+            "command_id": ulid::Ulid::new().to_string(),
+            "source": "user:http",
+            "target": "agent:main",
+            "mode": "next-turn",
+            "content": content,
+        }),
+    )
+}
+
+/// A feed with one active session (one driver message observed) whose poster
+/// records every text and answers `post_result`.
+pub async fn feed_with_session(
+    post_result: Result<(), String>,
+) -> (
+    navigator::ConversationFeed,
+    Arc<Mutex<Vec<String>>>,
+    ulid::Ulid,
+) {
+    let feed = navigator::ConversationFeed::new();
+    let posted = Arc::new(Mutex::new(Vec::new()));
+    let sink = posted.clone();
+    let post: SessionPost = Arc::new(move |text| {
+        sink.lock().unwrap().push(text);
+        let result = post_result.clone();
+        Box::pin(async move { result })
+    });
+    let session_id = ulid::Ulid::new();
+    feed.register_session(session_id, post);
+    feed.observe(&driver_message(session_id, 1, "add an auth remove command"))
+        .await;
+    (feed, posted, session_id)
 }

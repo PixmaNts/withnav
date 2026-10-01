@@ -9,37 +9,18 @@ use serde_json::{json, Value};
 
 use tokio_util::sync::CancellationToken;
 
-use rust_agent::navigator::conversation::SessionPost;
-use rust_agent::navigator::{self, NavigatorDeps};
+use rust_agent::navigator;
 
 mod common;
 use common::navigator::{
-    spawn_server, spawn_server_as_is, LspClient, RemarkAnswer as Answer,
-    ScriptedCommenter as MockCommenter, ScriptedDecision,
+    big_edit, feed_with_session, with_intent_and_feed, Nav, RemarkAnswer as Answer,
+    ScriptedCommenter as MockCommenter, ScriptedDecision, URI,
 };
-
-const URI: &str = "file:///ws/src/main.rs";
-
-fn base_text() -> String {
-    ["fn main() {", "    println!(\"hello\");", "}"].join("\n")
-}
-
-/// Four changed lines relative to the base text.
-fn big_edit() -> String {
-    [
-        "fn main() {",
-        "    let x = 1;",
-        "    let y = 2;",
-        "    println!(\"{x}-{y}\");",
-        "}",
-    ]
-    .join("\n")
-}
 
 /// The one trigger record of a log, with the values that differ from run to
 /// run replaced by a type tag so the rest can be compared exactly.
-fn only_trigger_shape(log: &std::path::Path) -> Value {
-    let text = std::fs::read_to_string(log).unwrap_or_default();
+fn only_trigger_shape(nav: &Nav) -> Value {
+    let text = nav.log_text();
     let mut triggers: Vec<Value> = text
         .lines()
         .map(|l| serde_json::from_str::<Value>(l).unwrap())
@@ -72,51 +53,19 @@ fn only_trigger_shape(log: &std::path::Path) -> Value {
     record
 }
 
-async fn edit_and_wait_idle(client: &mut LspClient) {
-    client.initialize(json!({})).await;
-    client.did_open(URI, &base_text(), 1).await;
-    client.did_change(URI, &big_edit(), 2).await;
+async fn edit_and_wait_idle(client: &mut Nav) {
+    client.open_and_edit().await;
     // Sleeping (not advancing) lets the server read the edit before the
     // idle timer starts counting.
     tokio::time::sleep(Duration::from_millis(3100)).await;
 }
 
 async fn run_idle_trigger(answers: Vec<Answer>) -> Value {
-    let tmp = tempfile::tempdir().unwrap();
-    let log = tmp.path().join("nav.jsonl");
-    let mock = MockCommenter::new(answers);
-    let mut client = spawn_server(NavigatorDeps::new(Arc::new(mock), log.clone()));
+    let mut client = Nav::start(MockCommenter::new(answers)).await;
     edit_and_wait_idle(&mut client).await;
     client.expect_status_in(&["idle", "error"]).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    only_trigger_shape(&log)
-}
-
-/// A feed with one active session whose poster answers `post_result`.
-async fn feed_with_active_session(
-    post_result: Result<(), String>,
-) -> (navigator::ConversationFeed, ulid::Ulid) {
-    let feed = navigator::ConversationFeed::new();
-    let post: SessionPost = Arc::new(move |_| {
-        let result = post_result.clone();
-        Box::pin(async move { result })
-    });
-    let session_id = ulid::Ulid::new();
-    feed.register_session(session_id, post);
-    feed.observe(&rust_agent::bus::event::EventEnvelope::new(
-        session_id,
-        1,
-        rust_agent::bus::event::EventKind::MessageReceived,
-        json!({
-            "command_id": ulid::Ulid::new().to_string(),
-            "source": "user:http",
-            "target": "agent:main",
-            "mode": "next-turn",
-            "content": "add an auth remove command",
-        }),
-    ))
-    .await;
-    (feed, session_id)
+    only_trigger_shape(&client)
 }
 
 /// Runs one save with an intent on disk (so the built-in wake branch can
@@ -125,13 +74,6 @@ async fn run_wake_trigger(
     feed: navigator::ConversationFeed,
     ask_pending_for: Option<ulid::Ulid>,
 ) -> Value {
-    let tmp = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(tmp.path().join(".navigator")).unwrap();
-    std::fs::write(
-        tmp.path().join(".navigator/intent.md"),
-        "## Intent\nadd a command",
-    )
-    .unwrap();
     if let Some(session_id) = ask_pending_for {
         feed.observe(&rust_agent::bus::event::EventEnvelope::new(
             session_id,
@@ -141,18 +83,15 @@ async fn run_wake_trigger(
         ))
         .await;
     }
-    let log = tmp.path().join("nav.jsonl");
-    let deps = NavigatorDeps::new(Arc::new(MockCommenter::new(vec![])), log.clone())
-        .with_conversation(feed)
-        .with_dirs(Some(tmp.path().to_path_buf()), None);
-    let mut client = spawn_server(deps);
-    client.initialize(json!({})).await;
-    client.did_open(URI, &base_text(), 1).await;
-    client.did_change(URI, &big_edit(), 2).await;
+    let mut client = Nav::start_with(MockCommenter::new(vec![]), json!({}), |d, ws| {
+        with_intent_and_feed(d, ws, feed)
+    })
+    .await;
+    client.open_and_edit().await;
     client.did_save(URI).await;
     client.expect_status("idle").await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    only_trigger_shape(&log)
+    only_trigger_shape(&client)
 }
 
 fn inputs(changed_lines: i64, has_conversation: bool, has_intent: bool) -> Value {
@@ -254,35 +193,30 @@ async fn the_trigger_record_json_shape_per_delivered_outcome() {
 
 #[tokio::test(start_paused = true)]
 async fn the_trigger_record_json_shape_when_the_remark_is_superseded() {
-    let tmp = tempfile::tempdir().unwrap();
-    let log = tmp.path().join("nav.jsonl");
     let gate = Arc::new(CancellationToken::new());
     let mock = MockCommenter::gated(vec![Answer::Remark(0, "stale")], gate);
-    let mut client = spawn_server(NavigatorDeps::new(Arc::new(mock), log.clone()));
-    client.initialize(json!({})).await;
-    client.did_open(URI, &base_text(), 1).await;
-    client.did_change(URI, &big_edit(), 2).await;
+    let mut client = Nav::start(mock).await;
+    client.open_and_edit().await;
     client.expect_status("thinking").await;
     client
         .did_change(URI, &format!("{}\n// tail\n", big_edit()), 3)
         .await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(
-        only_trigger_shape(&log),
+        only_trigger_shape(&client),
         idle_remark_record(json!({"delivered": "cancelled"}))
     );
 }
 
 #[tokio::test(start_paused = true)]
 async fn the_trigger_record_json_shape_when_the_instinct_fails() {
-    let tmp = tempfile::tempdir().unwrap();
-    let log = tmp.path().join("nav.jsonl");
-    let deps = NavigatorDeps::new(Arc::new(MockCommenter::new(vec![])), log.clone())
-        .with_decision(Arc::new(ScriptedDecision::failing("bad")));
-    let mut client = spawn_server_as_is(deps);
+    let mut client = Nav::start_as_is(MockCommenter::new(vec![]), |d, _| {
+        d.with_decision(Arc::new(ScriptedDecision::failing("bad")))
+    })
+    .await;
     edit_and_wait_idle(&mut client).await;
     assert_eq!(
-        only_trigger_shape(&log),
+        only_trigger_shape(&client),
         json!({
             "delivered": "provider_error",
             "event": "idle",
@@ -300,13 +234,10 @@ async fn the_trigger_record_json_shape_when_the_instinct_fails() {
 
 #[tokio::test(start_paused = true)]
 async fn the_trigger_record_json_shape_without_an_instinct() {
-    let tmp = tempfile::tempdir().unwrap();
-    let log = tmp.path().join("nav.jsonl");
-    let deps = NavigatorDeps::new(Arc::new(MockCommenter::new(vec![])), log.clone());
-    let mut client = spawn_server_as_is(deps);
+    let mut client = Nav::start_as_is(MockCommenter::new(vec![]), |d, _| d).await;
     edit_and_wait_idle(&mut client).await;
     assert_eq!(
-        only_trigger_shape(&log),
+        only_trigger_shape(&client),
         json!({
             "delivered": "none",
             "event": "idle",
@@ -328,14 +259,8 @@ async fn the_trigger_record_json_shape_without_an_instinct() {
 
 #[tokio::test(start_paused = true)]
 async fn the_trigger_record_json_shape_for_a_pre_filter_skip() {
-    let tmp = tempfile::tempdir().unwrap();
-    let log = tmp.path().join("nav.jsonl");
-    let mut client = spawn_server(NavigatorDeps::new(
-        Arc::new(MockCommenter::new(vec![])),
-        log.clone(),
-    ));
-    client.initialize(json!({})).await;
-    client.did_open(URI, &base_text(), 1).await;
+    let mut client = Nav::start(MockCommenter::new(vec![])).await;
+    client.open_base().await;
     client
         .did_change(URI, "fn main() {\n    println!(\"hi\");\n}", 2)
         .await;
@@ -344,7 +269,7 @@ async fn the_trigger_record_json_shape_for_a_pre_filter_skip() {
     // A skip keeps the instinct's identity but not the heavy inputs, and
     // carries no requested action.
     assert_eq!(
-        only_trigger_shape(&log),
+        only_trigger_shape(&client),
         json!({
             "delivered": "none",
             "event": "save",
@@ -369,7 +294,7 @@ async fn the_trigger_record_json_shape_for_a_pre_filter_skip() {
 
 #[tokio::test(start_paused = true)]
 async fn the_trigger_record_json_shape_for_a_wake() {
-    let (feed, _session) = feed_with_active_session(Ok(())).await;
+    let (feed, _posted, _session) = feed_with_session(Ok(())).await;
     assert_eq!(
         run_wake_trigger(feed, None).await,
         save_wake_record(true, json!({"delivered": "wake", "session": "<string>"}))
@@ -378,7 +303,7 @@ async fn the_trigger_record_json_shape_for_a_wake() {
 
 #[tokio::test(start_paused = true)]
 async fn the_trigger_record_json_shape_for_a_queued_wake() {
-    let (feed, session) = feed_with_active_session(Ok(())).await;
+    let (feed, _posted, session) = feed_with_session(Ok(())).await;
     assert_eq!(
         run_wake_trigger(feed, Some(session)).await,
         save_wake_record(
@@ -398,7 +323,7 @@ async fn the_trigger_record_json_shape_when_no_cognition_can_be_woken() {
         "no session"
     );
     // A session that refuses the post.
-    let (feed, _session) = feed_with_active_session(Err("inbox full".into())).await;
+    let (feed, _posted, _session) = feed_with_session(Err("inbox full".into())).await;
     assert_eq!(
         run_wake_trigger(feed, None).await,
         save_wake_record(true, unavailable),
@@ -408,17 +333,11 @@ async fn the_trigger_record_json_shape_when_no_cognition_can_be_woken() {
 
 #[tokio::test(start_paused = true)]
 async fn a_save_without_any_change_writes_no_trigger_record() {
-    let tmp = tempfile::tempdir().unwrap();
-    let log = tmp.path().join("nav.jsonl");
-    let mut client = spawn_server(NavigatorDeps::new(
-        Arc::new(MockCommenter::new(vec![])),
-        log.clone(),
-    ));
-    client.initialize(json!({})).await;
-    client.did_open(URI, &base_text(), 1).await;
+    let mut client = Nav::start(MockCommenter::new(vec![])).await;
+    client.open_base().await;
     client.did_save(URI).await;
     client.expect_status("idle").await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    let text = client.log_text();
     assert!(!text.contains("\"kind\":\"trigger\""), "{text}");
 }

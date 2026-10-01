@@ -204,6 +204,9 @@ const REMARK_BUDGET: Duration = Duration::from_secs(8);
 /// At most this many rounds where the model may call tools; the call after
 /// the last one carries no tools, forcing the JSON answer.
 const MAX_TOOL_ROUNDS: usize = 2;
+/// Cap on the tokens of each metacognition round: a remark is a sentence or
+/// two, so a runaway generation is cost with no value.
+const REMARK_MAX_TOKENS: u64 = 1024;
 /// Cap on each tool output sent back to the model.
 const TOOL_OUTPUT_MAX_CHARS: usize = 4000;
 
@@ -330,7 +333,14 @@ impl LlmCommenter {
                     stream_options: Some(crate::provider::openai::StreamOptions {
                         include_usage: true,
                     }),
-                    max_tokens: self.resolved.model.max_output_tokens.min(Some(1024)),
+                    // `None.min(Some(n))` is `None`: a model without a stated
+                    // limit would run uncapped, so the cap is applied explicitly.
+                    max_tokens: Some(
+                        self.resolved
+                            .model
+                            .max_output_tokens
+                            .map_or(REMARK_MAX_TOKENS, |m| m.min(REMARK_MAX_TOKENS)),
+                    ),
                     temperature: Some(0.2),
                 };
                 let http = build_request(&client, &self.resolved.provider, &self.api_key, &request);

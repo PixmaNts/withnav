@@ -49,11 +49,17 @@ fn resolved(base_url: String) -> ResolvedModel {
 }
 
 fn commenter(base_url: String, log_path: Option<PathBuf>) -> LlmCommenter {
-    let mut c = LlmCommenter::new(
-        resolved(base_url),
-        "test-key".into(),
-        Arc::new(ClientCache::new()),
-    );
+    commenter_with_limit(base_url, log_path, None)
+}
+
+fn commenter_with_limit(
+    base_url: String,
+    log_path: Option<PathBuf>,
+    max_output_tokens: Option<u64>,
+) -> LlmCommenter {
+    let mut model = resolved(base_url);
+    model.model.max_output_tokens = max_output_tokens;
+    let mut c = LlmCommenter::new(model, "test-key".into(), Arc::new(ClientCache::new()));
     if let Some(p) = log_path {
         c = c.with_log(NavLog::new(p));
     }
@@ -383,5 +389,35 @@ async fn a_prose_answer_is_a_typed_malformed_error() {
     match c.remark(&ctx, &cancel).await {
         Err(ModelError::Malformed(raw)) => assert_eq!(raw, "you should refactor this"),
         other => panic!("expected Malformed, got {other:?}"),
+    }
+}
+
+// Given a model whose config states no output limit, a larger one, or a
+//       smaller one
+// When the metacognition remarks
+// Then the request never asks for more than 1024 tokens, and keeps a
+//      smaller configured limit.
+#[tokio::test]
+async fn the_remark_request_is_capped_at_1024_tokens() {
+    for (configured, expected) in [(None, 1024), (Some(8192), 1024), (Some(256), 256)] {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = MockServer::start().await;
+        let answer = sse_stream(vec![sse_data(&delta_text(r#"{"silent": true}"#))]);
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(answer, "text/event-stream"))
+            .mount(&server)
+            .await;
+
+        let c = commenter_with_limit(server.uri(), None, configured);
+        let ctx = remark_ctx(tmp.path(), vec![]);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let _ = c.remark(&ctx, &cancel).await.unwrap();
+
+        let bodies = received_bodies(&server).await;
+        assert_eq!(
+            bodies[0]["max_tokens"], expected,
+            "configured limit {configured:?}"
+        );
     }
 }

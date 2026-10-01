@@ -95,74 +95,63 @@ fn extract_json(raw: &str) -> Option<&str> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn parses_valid_remark() {
-        assert_eq!(
-            parse_answer(r#"{"line": 12, "text": "careful, missing error path"}"#),
-            ParsedAnswer::Remark(Remark {
-                line: 11,
-                text: "careful, missing error path".to_string()
-            })
-        );
+    fn remark(line: u32, text: &str) -> ParsedAnswer {
+        ParsedAnswer::Remark(Remark {
+            line,
+            text: text.to_string(),
+        })
     }
 
     #[test]
-    fn parses_silent() {
-        assert_eq!(parse_answer(r#"{"silent": true}"#), ParsedAnswer::Silent);
-    }
-
-    #[test]
-    fn garbage_is_malformed_not_silence() {
-        assert_eq!(
-            parse_answer("I think you should refactor this"),
-            ParsedAnswer::Malformed
-        );
-        assert_eq!(parse_answer(""), ParsedAnswer::Silent);
-    }
-
-    #[test]
-    fn json_without_silent_or_line_is_malformed() {
-        assert_eq!(
-            parse_answer(r#"{"silent": false}"#),
-            ParsedAnswer::Malformed
-        );
-        assert_eq!(parse_answer(r#"{"other": 1}"#), ParsedAnswer::Malformed);
-    }
-
-    #[test]
-    fn parse_model_answer_folds_malformed_to_silence() {
-        assert_eq!(parse_answer("nope"), ParsedAnswer::Malformed);
-        assert_eq!(
-            parse_answer(r#"{"line": 0, "text": "x"}"#),
-            ParsedAnswer::Malformed
-        );
-        assert_eq!(
-            parse_answer(r#"{"line": 1, "text": "  "}"#),
-            ParsedAnswer::Malformed
-        );
-    }
-
-    #[test]
-    fn json_in_code_fences_is_parsed() {
-        let raw = "```json\n{\"line\": 3, \"text\": \"off by one\"}\n```";
-        assert_eq!(
-            parse_answer(raw),
-            ParsedAnswer::Remark(Remark {
-                line: 2,
-                text: "off by one".to_string()
-            })
-        );
-    }
-
-    #[test]
-    fn json_wrapped_in_prose_is_parsed() {
-        let raw = "Here is my answer:\n{\"line\": 7, \"text\": \"edge case\"}\nHope it helps";
-        assert_eq!(
-            parse_answer(raw),
-            ParsedAnswer::Remark(Remark {
-                line: 6,
-                text: "edge case".to_string()
-            })
-        );
+    fn the_answer_contract_per_shape() {
+        use ParsedAnswer::{Malformed, Silent};
+        let cases = [
+            (
+                "a valid remark: the model counts from 1, the wire from 0",
+                r#"{"line": 12, "text": "careful, missing error path"}"#,
+                remark(11, "careful, missing error path"),
+            ),
+            ("explicit silence", r#"{"silent": true}"#, Silent),
+            ("an empty answer is silence", "", Silent),
+            (
+                "prose is malformed, not silence",
+                "I think you should refactor this",
+                Malformed,
+            ),
+            (
+                "silent: false names no line",
+                r#"{"silent": false}"#,
+                Malformed,
+            ),
+            (
+                "json with neither silent nor line",
+                r#"{"other": 1}"#,
+                Malformed,
+            ),
+            ("no json at all", "nope", Malformed),
+            (
+                "line 0 does not exist in a 1-based answer",
+                r#"{"line": 0, "text": "x"}"#,
+                Malformed,
+            ),
+            (
+                "blank text is malformed",
+                r#"{"line": 1, "text": "  "}"#,
+                Malformed,
+            ),
+            (
+                "json in code fences",
+                "```json\n{\"line\": 3, \"text\": \"off by one\"}\n```",
+                remark(2, "off by one"),
+            ),
+            (
+                "json wrapped in prose",
+                "Here is my answer:\n{\"line\": 7, \"text\": \"edge case\"}\nHope it helps",
+                remark(6, "edge case"),
+            ),
+        ];
+        for (case, raw, expected) in cases {
+            assert_eq!(parse_answer(raw), expected, "{case}: {raw:?}");
+        }
     }
 }

@@ -320,7 +320,6 @@ mod tests {
     use crate::navigator::pipeline::NO_REMARK_MS;
     use crate::navigator::ports::Questions;
     use std::collections::BTreeMap;
-    use std::path::PathBuf;
 
     const CANDIDATE: &str = r#"
 [instinct]
@@ -664,81 +663,5 @@ action = "silent"
         let report = Replayer::new(&pipeline).run(&ReplayLog::parse(&line)).await;
         assert_eq!(report.compared, 0);
         assert_eq!(report.not_comparable[0].reason, "no_trigger_for_event");
-    }
-
-    #[tokio::test]
-    async fn a_record_without_logged_questions_is_not_comparable() {
-        let pipeline = pipeline();
-        let line = concat!(
-            r#"{"kind":"trigger","trigger_id":"t1","run_id":"r1","uri":"file:///ws/a.rs","#,
-            r#""version":4,"event":"idle","#,
-            r#""prefilter":{"inputs":{"changed_lines":13},"outcome":"pass","reason":"instinct_unavailable"},"#,
-            r#""delivered":"none","reason":"instinct_unavailable"}"#
-        );
-        let report = Replayer::new(&pipeline).run(&ReplayLog::parse(line)).await;
-        assert_eq!(report.not_comparable[0].reason, "no_logged_questions");
-    }
-
-    #[test]
-    fn the_text_report_carries_the_counts_and_the_not_comparable_reasons() {
-        let report = ReplayReport {
-            log_path: PathBuf::from("/tmp/nav.jsonl").display().to_string(),
-            pipeline: "builtin".to_string(),
-            pipeline_hash: "abc123".to_string(),
-            reask: false,
-            log_lines: 3,
-            triggers: 1,
-            verdicts: 1,
-            skipped_records: 2,
-            skipped_by_reason: BTreeMap::from([("kind:call".to_string(), 2)]),
-            compared: 1,
-            not_comparable: vec![NotComparable {
-                trigger_id: "t2".to_string(),
-                event: "idle".to_string(),
-                ts: None,
-                uri: "file:///ws/b.rs".to_string(),
-                reason: "changed_question:route".to_string(),
-            }],
-            reasked: 0,
-            historical: ActionCounts {
-                remark: 1,
-                ..ActionCounts::default()
-            },
-            candidate: ActionCounts {
-                silent: 1,
-                ..ActionCounts::default()
-            },
-            changed: vec![ChangedDecision {
-                trigger_id: "t1".to_string(),
-                event: "save".to_string(),
-                ts: Some("2026-09-29T16:55:07.255Z".to_string()),
-                uri: "file:///ws/a.rs".to_string(),
-                historical: "remark",
-                candidate: "silent",
-                branch: Some(2),
-                reasked: false,
-                verdict: Some("useful".to_string()),
-            }],
-            noise_avoided: 0,
-            useful_lost: 1,
-            useful_kept: 0,
-            noise_kept: 0,
-            followed: 0,
-            unknown_verdicts: 0,
-        };
-        let text = report.render_text(DEFAULT_LIST_LIMIT);
-        assert!(text.contains("useful lost 1"), "{text}");
-        assert!(text.contains("remark -> silent"), "{text}");
-        assert!(text.contains("changed_question:route"), "{text}");
-        assert!(text.contains("kind:call 2"), "{text}");
-        // The table rows: the count per action, historical and candidate.
-        let row = text
-            .lines()
-            .find(|line| line.starts_with("remark"))
-            .expect("a remark row");
-        assert_eq!(
-            row.split_whitespace().collect::<Vec<_>>(),
-            ["remark", "1", "0", "-1"]
-        );
     }
 }

@@ -337,6 +337,15 @@ async fn the_text_report_counts_per_action_and_lists_what_changed() {
     assert!(text.contains("useful lost 1"), "{text}");
     assert!(text.contains("remark -> silent"), "{text}");
     assert!(text.contains("no_logged_questions"), "{text}");
+    // The table row: the count per action, historical, candidate and delta.
+    let row = text
+        .lines()
+        .find(|line| line.starts_with("remark"))
+        .expect("a remark row");
+    assert_eq!(
+        row.split_whitespace().collect::<Vec<_>>(),
+        ["remark", "2", "0", "-2"]
+    );
     // The changed list is truncated at the limit, the count is not.
     let text = report.render_text(0);
     assert!(text.contains("changed decisions (2)"), "{text}");

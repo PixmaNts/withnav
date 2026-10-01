@@ -1,14 +1,25 @@
 //! The built-in default pipeline: the four questions (`worth_attention`,
 //! `route`, `drift`, `contradicts_conversation`), pre-filters min 3
-//! lines / cooldown 45 s, drift -> wake_cognition (> 0.8, only if
-//! `has_intent`), a contradiction with what the driver and the cognition
-//! just agreed -> wake_cognition too (> 0.8, only if
-//! `has_conversation`: without a conversation digest there is nothing to
-//! contradict), remark when `worth_attention > 0.85 &&
-//! route == "metacognition"`, else silent. The instinct and the
-//! metacognition both see the conversation digest and a live state of
-//! recent edits and diagnostics, so their judgment is anchored on what
-//! the layers already agreed rather than the diff alone.
+//! lines / remark cooldown 45 s, then the branches in order:
+//!
+//! 1. `wake_cognition` on drift from the intent (> 0.8, only if
+//!    `has_intent`) or a contradiction with what the driver and the
+//!    cognition just agreed (> 0.8, only if `has_conversation`: without a
+//!    conversation digest there is nothing to contradict), and only while
+//!    the code compiles (`!has_errors`): the instinct's drift on a
+//!    half-typed edit is noise. Wakes have their own cooldown,
+//!    `wake_cooldown_ms` = 120 s, apart from the remark cooldown: a wake
+//!    inside it does not match and the trigger falls to the next branch,
+//!    and a wake never silences the next remark.
+//! 2. `remark` when `worth_attention > 0.85 && route != "silent"`. The
+//!    route `cognition` without a wake (scores under the wake thresholds)
+//!    still gets its remark: the metacognition writes it, the cognition is
+//!    only woken by branch 1.
+//! 3. silent.
+//!
+//! The instinct and the metacognition both see the conversation digest and
+//! a live state of recent edits and diagnostics, so their judgment is
+//! anchored on what the layers already agreed rather than the diff alone.
 //! The stricter values come from a first day of use (2026-09-29): at 0.7
 //! and 20 s, `worth_attention` sat at 0.93-0.95 during a refactoring and the
 //! metacognition remarked on every save. Replaying that log, 0.85 with a

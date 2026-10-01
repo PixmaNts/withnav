@@ -272,6 +272,7 @@ async fn pipeline_over_systemone_end_to_end() {
     let _ = TriggerInputs {
         changed_lines: 5,
         since_last_remark_ms: 60_000,
+        since_last_wake_ms: 60_000,
         has_errors: false,
         has_intent: false,
         has_conversation: false,
@@ -285,6 +286,7 @@ async fn pipeline_over_systemone_end_to_end() {
             TriggerInputs {
                 changed_lines: 5,
                 since_last_remark_ms: 60_000,
+                since_last_wake_ms: 60_000,
                 has_errors: false,
                 has_intent: true,
                 has_conversation: false,

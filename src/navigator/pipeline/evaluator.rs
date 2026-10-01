@@ -253,6 +253,13 @@ impl SnapshotTrigger {
         let mut vars = flatten_inputs(inputs);
         flatten_answers_into(answers, &mut vars);
         for (index, branch) in self.branches.iter().enumerate() {
+            // A wake inside its own cooldown does not match: the trigger
+            // falls through to the next branch.
+            if branch.action == Action::WakeCognition
+                && inputs.since_last_wake_ms < self.prefilters.wake_cooldown_ms as i64
+            {
+                continue;
+            }
             if branch
                 .when
                 .eval_boolean(&vars)
@@ -426,6 +433,7 @@ action = "silent"
         TriggerInputs {
             changed_lines: changed,
             since_last_remark_ms: 60_000,
+            since_last_wake_ms: 60_000,
             has_errors: false,
             has_intent: true,
             has_conversation: false,

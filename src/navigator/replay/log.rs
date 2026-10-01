@@ -165,6 +165,13 @@ impl LoggedTrigger {
             .and_then(Value::as_i64)
             .unwrap_or(NO_REMARK_MS);
 
+        // Records from before wakes had their own cooldown carry no such
+        // input: they replay as if no wake had happened.
+        let since_last_wake_ms = inputs
+            .get("since_last_wake_ms")
+            .and_then(Value::as_i64)
+            .unwrap_or(NO_REMARK_MS);
+
         let template_inputs: BTreeMap<String, String> = value
             .get("template_inputs")
             .and_then(Value::as_object)
@@ -213,6 +220,7 @@ impl LoggedTrigger {
             inputs: TriggerInputs {
                 changed_lines,
                 since_last_remark_ms,
+                since_last_wake_ms,
                 has_errors,
                 has_intent,
                 has_conversation,

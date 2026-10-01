@@ -5,7 +5,7 @@ model = "instinct"            # models.json alias
 [[trigger]]
 on = ["save", "idle"]         # save | idle | diagnostics | conversation
 state = "prompts/state.md"    # template rendering the state sent to the instinct
-prefilter = { min_changed_lines = 3, cooldown_ms = 45000 }
+prefilter = { min_changed_lines = 3, cooldown_ms = 45000, wake_cooldown_ms = 120000 }
 
 [trigger.questions.worth_attention]
 type = "noul"
@@ -25,11 +25,11 @@ type = "noul"
 instructions = "Does this change contradict what the driver and the cognition just agreed in the conversation?"
 
 [[trigger.branch]]
-when = "(has_intent && drift > 0.8) || (has_conversation && contradicts_conversation > 0.8)"
+when = "!has_errors && ((has_intent && drift > 0.8) || (has_conversation && contradicts_conversation > 0.8))"
 action = "wake_cognition"
 
 [[trigger.branch]]
-when = "worth_attention > 0.85 && route == \"metacognition\""
+when = "worth_attention > 0.85 && route != \"silent\""
 action = "remark"
 prompt = "prompts/remark.md"
 

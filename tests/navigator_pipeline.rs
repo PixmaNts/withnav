@@ -77,6 +77,7 @@ fn inputs(changed: i64) -> TriggerInputs {
     TriggerInputs {
         changed_lines: changed,
         since_last_remark_ms: 120_000,
+        since_last_wake_ms: 120_000,
         has_errors: false,
         has_intent: true,
         has_conversation: false,
@@ -609,4 +610,106 @@ async fn builtin_conversation_trigger_ignores_changed_lines_and_remarks_on_contr
         .await
         .unwrap();
     assert_eq!(eval.prefilter.skip_reason(), Some("cooldown"));
+}
+
+// ---------- built-in pipeline: wake guard, wake cooldown, routing ----------
+
+fn builtin_answers(worth: f64, route: &str, drift: f64) -> BTreeMap<String, Answer> {
+    BTreeMap::from([
+        ("worth_attention".to_string(), Answer::Noul { noul: worth }),
+        (
+            "route".to_string(),
+            Answer::Choice {
+                choice: route.to_string(),
+                probabilities: BTreeMap::from([(route.to_string(), 0.9)]),
+                confidence: 0.9,
+            },
+        ),
+        ("drift".to_string(), Answer::Noul { noul: drift }),
+        (
+            "contradicts_conversation".to_string(),
+            Answer::Noul { noul: 0.1 },
+        ),
+    ])
+}
+
+async fn builtin_action(answers: BTreeMap<String, Answer>, i: TriggerInputs) -> String {
+    let pipeline = Pipeline::new(PipelineSnapshot::builtin().unwrap());
+    let model = ScriptedDecision::fixed(answers);
+    let eval = pipeline
+        .evaluate(
+            TriggerKind::Save,
+            i,
+            &tvars(),
+            &model,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    eval.requested_action.as_str().to_string()
+}
+
+/// Code that does not compile is half-typed: a high drift on it is noise,
+/// and the remark branch still gets its turn.
+#[tokio::test]
+async fn builtin_does_not_wake_on_code_with_errors() {
+    let drifting = builtin_answers(0.5, "silent", 0.95);
+    assert_eq!(
+        builtin_action(drifting.clone(), inputs(5)).await,
+        "wake_cognition"
+    );
+    let mut with_errors = inputs(5);
+    with_errors.has_errors = true;
+    assert_eq!(builtin_action(drifting, with_errors).await, "silent");
+
+    let drifting_and_worth_it = builtin_answers(0.95, "cognition", 0.95);
+    assert_eq!(
+        builtin_action(drifting_and_worth_it, with_errors).await,
+        "remark",
+        "the wake is guarded, the remark is not"
+    );
+}
+
+/// Route `cognition` under the wake thresholds is a remark: only `silent`
+/// routing keeps the metacognition quiet.
+#[tokio::test]
+async fn builtin_remarks_on_cognition_route_below_the_wake_thresholds() {
+    for (route, expected) in [
+        ("cognition", "remark"),
+        ("metacognition", "remark"),
+        ("silent", "silent"),
+    ] {
+        assert_eq!(
+            builtin_action(builtin_answers(0.9, route, 0.3), inputs(5)).await,
+            expected,
+            "route {route}"
+        );
+    }
+    // Worth under the threshold stays silent whatever the route.
+    assert_eq!(
+        builtin_action(builtin_answers(0.8, "cognition", 0.3), inputs(5)).await,
+        "silent"
+    );
+}
+
+/// A wake inside its cooldown does not match: the trigger falls through to
+/// the remark branch (or silence) instead of skipping the instinct, and the
+/// remark cooldown plays no part in it.
+#[tokio::test]
+async fn builtin_wake_has_its_own_cooldown() {
+    let drifting = builtin_answers(0.95, "cognition", 0.95);
+    let mut just_woke = inputs(5);
+    just_woke.since_last_wake_ms = 119_999;
+    assert_eq!(
+        builtin_action(drifting.clone(), just_woke).await,
+        "remark",
+        "second wake inside 120 s falls through"
+    );
+    let mut long_ago = inputs(5);
+    long_ago.since_last_wake_ms = 120_000;
+    assert_eq!(builtin_action(drifting, long_ago).await, "wake_cognition");
+
+    let snap = PipelineSnapshot::builtin().unwrap();
+    assert_eq!(snap.triggers()[0].prefilters.wake_cooldown_ms, 120_000);
+    assert_eq!(snap.triggers()[1].prefilters.wake_cooldown_ms, 0);
 }

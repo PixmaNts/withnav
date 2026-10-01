@@ -17,6 +17,20 @@ requests land in `develop`.
 - `GET /v1/models`: the chat models with tools a new session can use, with their context window.
 - `duration_ms` in the metadata of `tool.post_call`.
 
+### Fixed
+
+- A remark is no longer thrown away because you kept typing: it arrives when the model answers, on
+  the line it was about (moved along with your edits), and is dropped only if that line was
+  rewritten or the file closed.
+- The remark time limit goes from 8 s to 20 s, so slow answers arrive instead of vanishing.
+- The navigator no longer wakes the chat about code that does not compile yet.
+- A wake no longer silences the next remark; wakes have their own 120 s pause.
+- A remark routed to the cognition but below the wake thresholds is now written instead of dropped.
+- A wake message is short and renders properly: a one-line reason with the file and line, the diff
+  in a code block (40 lines at most), the intent only for drift, no repeated conversation.
+- The short context note for ghost-text suggestions waits up to 25 s to refresh, and an empty
+  refresh answer keeps the previous note without an error in the log each time.
+
 ## [0.2.0] - 2026-10-01
 
 First usable release: the navigator, a pair-programming assistant in VS Code. The driver keeps the

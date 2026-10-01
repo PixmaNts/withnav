@@ -119,6 +119,10 @@ pub struct Prefilters {
     pub min_changed_lines: usize,
     /// A remark more recent than this (ms) skips the instinct.
     pub cooldown_ms: u64,
+    /// A `wake_cognition` branch does not match while the last wake is more
+    /// recent than this (ms): the trigger falls through to the next branch,
+    /// so a wake never silences remarks. 0 (the default) turns it off.
+    pub wake_cooldown_ms: u64,
 }
 
 /// One ordered branch: `when` is an evalexpr condition over the flattened
@@ -192,6 +196,9 @@ pub struct TriggerInputs {
     pub changed_lines: i64,
     /// Milliseconds since the last remark; a large value when there was none.
     pub since_last_remark_ms: i64,
+    /// Milliseconds since the last wake of the cognition; a large value when
+    /// there was none. Wakes are rate-limited apart from remarks.
+    pub since_last_wake_ms: i64,
     /// Whether the current diagnostics contain errors.
     pub has_errors: bool,
     /// Whether an intent record (or session intent) exists.
@@ -201,7 +208,8 @@ pub struct TriggerInputs {
     pub has_conversation: bool,
 }
 
-/// Large "never" for `since_last_remark_ms` when no remark was delivered.
+/// Large "never" for `since_last_remark_ms` and `since_last_wake_ms` when
+/// nothing was delivered yet.
 pub const NO_REMARK_MS: i64 = i64::MAX / 2;
 
 /// How the pre-filters decided.

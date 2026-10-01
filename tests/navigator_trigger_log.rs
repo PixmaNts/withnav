@@ -13,7 +13,7 @@ use rust_agent::navigator;
 
 mod common;
 use common::navigator::{
-    big_edit, feed_with_session, with_intent_and_feed, Nav, RemarkAnswer as Answer,
+    feed_with_session, with_intent_and_feed, Nav, RemarkAnswer as Answer,
     ScriptedCommenter as MockCommenter, ScriptedDecision, URI,
 };
 
@@ -101,6 +101,7 @@ fn inputs(changed_lines: i64, has_conversation: bool, has_intent: bool) -> Value
         "has_errors": false,
         "has_intent": has_intent,
         "since_last_remark_ms": 4611686018427387903i64,
+        "since_last_wake_ms": 4611686018427387903i64,
     })
 }
 
@@ -192,14 +193,17 @@ async fn the_trigger_record_json_shape_per_delivered_outcome() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn the_trigger_record_json_shape_when_the_remark_is_superseded() {
+async fn the_trigger_record_json_shape_when_the_remark_is_cancelled_by_a_close() {
     let gate = Arc::new(CancellationToken::new());
     let mock = MockCommenter::gated(vec![Answer::Remark(0, "stale")], gate);
     let mut client = Nav::start(mock).await;
     client.open_and_edit().await;
     client.expect_status("thinking").await;
     client
-        .did_change(URI, &format!("{}\n// tail\n", big_edit()), 3)
+        .notify(
+            "textDocument/didClose",
+            json!({"textDocument": {"uri": URI}}),
+        )
         .await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(

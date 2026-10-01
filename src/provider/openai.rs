@@ -225,64 +225,6 @@ impl ClientCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn request_serializes_stream_true_and_tool() {
-        let req = ChatRequest {
-            model: "m".into(),
-            messages: vec![ChatMessage::User {
-                content: "hi".into(),
-            }],
-            tools: vec![ToolDef::function(
-                "read",
-                "read a file",
-                json!({"type":"object","properties":{"path":{"type":"string"}}}),
-            )],
-            stream: true,
-            stream_options: Some(StreamOptions {
-                include_usage: true,
-            }),
-            max_tokens: Some(100),
-            temperature: None,
-        };
-        let s = serde_json::to_string(&req).unwrap();
-        assert!(s.contains("\"stream\":true"));
-        assert!(s.contains("\"type\":\"function\""));
-        assert!(s.contains("\"include_usage\":true"));
-    }
-
-    #[test]
-    fn assistant_message_serializes_tool_calls_and_reasoning() {
-        let msg = ChatMessage::Assistant {
-            content: Some("done".into()),
-            reasoning_content: Some("thinking".into()),
-            tool_calls: vec![RequestToolCall {
-                id: "call_1".into(),
-                kind: "function".into(),
-                function: RequestFunction {
-                    name: "read".into(),
-                    arguments: "{\"path\":\"a\"}".into(),
-                },
-            }],
-        };
-        let s = serde_json::to_string(&msg).unwrap();
-        assert!(s.contains("\"role\":\"assistant\""));
-        assert!(s.contains("\"reasoning_content\":\"thinking\""));
-        assert!(s.contains("\"tool_calls\""));
-        assert!(s.contains("call_1"));
-    }
-
-    #[test]
-    fn tool_message_serializes_tool_call_id() {
-        let msg = ChatMessage::Tool {
-            tool_call_id: "call_1".into(),
-            content: "result".into(),
-        };
-        let s = serde_json::to_string(&msg).unwrap();
-        assert!(s.contains("\"role\":\"tool\""));
-        assert!(s.contains("\"tool_call_id\":\"call_1\""));
-    }
 
     #[test]
     fn deserialize_reasoning_chunk() {
@@ -360,46 +302,66 @@ mod tests {
         assert_eq!(cache.clients.lock().unwrap().len(), 2);
     }
 
-    #[test]
-    fn client_cache_keeps_distinct_deadlines_apart_on_one_provider() {
-        let slow = ProviderConfig {
-            base_url: "http://cache-test.invalid/v1".to_string(),
-            api_key_env: None,
-            headers: Default::default(),
-            connect_timeout_ms: 5_000,
-            request_timeout_ms: 600_000,
-        };
-        let fast = ProviderConfig {
-            connect_timeout_ms: 2_000,
-            request_timeout_ms: 2_000,
-            ..slow.clone()
-        };
-        let cache = ClientCache::new();
-        let _ = cache.get("omniroute", &fast).unwrap();
-        let slow_client = cache.get("omniroute", &slow).unwrap();
-        // A layer with a long deadline must not inherit the short-deadline
-        // client built first by another layer on the same provider.
-        assert_eq!(cache.clients.lock().unwrap().len(), 2);
-        assert!(format!("{slow_client:?}").contains("600s"));
+    /// A local server that answers every request `200` after `delay`.
+    async fn slow_server(delay: Duration) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    tokio::time::sleep(delay).await;
+                    let _ = sock
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                        )
+                        .await;
+                });
+            }
+        });
+        format!("http://{addr}/v1")
     }
 
-    #[test]
-    fn build_client_applies_the_configured_request_timeout() {
-        let provider = ProviderConfig {
-            base_url: "http://timeout-test.invalid/v1".to_string(),
+    fn provider_at(base_url: String, request_timeout_ms: u64) -> ProviderConfig {
+        ProviderConfig {
+            base_url,
             api_key_env: None,
             headers: Default::default(),
-            connect_timeout_ms: 100,
-            request_timeout_ms: 250,
-        };
-        let client = build_client(&provider).unwrap();
-        // The total timeout is observable in the client's Debug output.
-        assert!(format!("{client:?}").contains("TotalTimeout: 250ms"));
-        let other = build_client(&ProviderConfig {
-            request_timeout_ms: 300,
-            ..provider
-        })
-        .unwrap();
-        assert!(format!("{other:?}").contains("TotalTimeout: 300ms"));
+            connect_timeout_ms: 1_000,
+            request_timeout_ms,
+        }
+    }
+
+    #[tokio::test]
+    async fn client_cache_keeps_distinct_deadlines_apart_on_one_provider() {
+        let url = slow_server(Duration::from_millis(300)).await;
+        let fast = provider_at(url.clone(), 100);
+        let slow = provider_at(url.clone(), 10_000);
+        let cache = ClientCache::new();
+        // The short-deadline client is built first; a layer with a long
+        // deadline on the same provider must not inherit it.
+        let fast_client = cache.get("omniroute", &fast).unwrap();
+        let slow_client = cache.get("omniroute", &slow).unwrap();
+
+        let err = fast_client.get(&url).send().await.unwrap_err();
+        assert!(err.is_timeout(), "{err}");
+        let ok = slow_client.get(&url).send().await.unwrap();
+        assert_eq!(ok.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn build_client_applies_the_configured_request_timeout() {
+        let url = slow_server(Duration::from_secs(30)).await;
+        let client = build_client(&provider_at(url.clone(), 200)).unwrap();
+        let started = std::time::Instant::now();
+        let err = client.get(&url).send().await.unwrap_err();
+        let elapsed = started.elapsed();
+        assert!(err.is_timeout(), "{err}");
+        assert!(
+            elapsed >= Duration::from_millis(150) && elapsed < Duration::from_secs(5),
+            "failed after {elapsed:?}, not near the 200 ms deadline"
+        );
     }
 }

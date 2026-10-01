@@ -12,7 +12,7 @@ use rust_agent::server::AppState;
 
 mod common;
 use common::server::{post_message, post_message_ok, spawn_server, TestServerConfig};
-use common::sse::{http_sse, spawn_mock_provider, sse_body};
+use common::sse::{http_sse, read_sse, spawn_mock_provider, sse_body, SseEnd, SseFrame};
 
 /// One finished conversation on a first server, then a second, fresh server
 /// on the same database file. Returns the second server's base URL, the
@@ -81,43 +81,15 @@ async fn stored_events(state: &AppState, id: ulid::Ulid) -> Vec<EventEnvelope> {
     }
 }
 
-/// The SSE frames of `GET /events` until the server ends the stream.
-async fn sse_frames(base: &str, id: &str, last_event_id: Option<u64>) -> Vec<(String, String)> {
-    let mut request = reqwest::Client::new().get(format!("{base}/v1/sessions/{id}/events"));
-    if let Some(k) = last_event_id {
-        request = request.header("last-event-id", k.to_string());
-    }
-    let response = request.send().await.expect("sse connect");
-    assert_eq!(response.status(), 200);
-    let body = tokio::time::timeout(Duration::from_secs(5), response.text())
-        .await
-        .expect("the stream ends")
-        .expect("body");
-    body.split("\n\n")
-        .filter(|frame| !frame.trim().is_empty())
-        .map(|frame| {
-            let field = |name: &str| {
-                frame
-                    .lines()
-                    .filter_map(|line| line.strip_prefix(name))
-                    .map(|v| v.trim_start().to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            };
-            (field("event:"), field("data:"))
-        })
-        .collect()
+/// The SSE frames of `GET /events`; the server must end the stream itself.
+async fn sse_frames(base: &str, id: &str, last_event_id: Option<u64>) -> Vec<SseFrame> {
+    let read = read_sse(base, id, last_event_id, |_| false).await;
+    assert_eq!(read.end, SseEnd::Eof, "the stream ends: {:?}", read.frames);
+    read.frames
 }
 
-fn seqs(frames: &[(String, String)]) -> Vec<u64> {
-    frames
-        .iter()
-        .map(|(_, data)| {
-            serde_json::from_str::<Value>(data).expect("envelope")["seq"]
-                .as_u64()
-                .expect("seq")
-        })
-        .collect()
+fn seqs(frames: &[SseFrame]) -> Vec<u64> {
+    frames.iter().map(|f| f.seq().expect("seq")).collect()
 }
 
 // Given a session that ran a turn and was stopped in this same process
@@ -227,7 +199,7 @@ async fn restarted_server_replays_the_stored_history_over_sse() {
     assert_eq!(seqs(&frames), all, "everything, seq 0 included");
     let replayed: Vec<EventEnvelope> = frames
         .iter()
-        .map(|(_, data)| serde_json::from_str(data).expect("envelope"))
+        .map(|f| serde_json::from_str(&f.data).expect("envelope"))
         .collect();
     assert_eq!(replayed, restarted.events);
 
@@ -239,7 +211,7 @@ async fn restarted_server_replays_the_stored_history_over_sse() {
 
     let frames = sse_frames(&restarted.base, &restarted.id, Some(last + 1)).await;
     assert_eq!(frames.len(), 1, "{frames:?}");
-    assert_eq!(frames[0].0, "resync");
+    assert_eq!(frames[0].event, "resync");
 }
 
 // Given a stored conversation, a resumed-then-stopped one and an unknown id

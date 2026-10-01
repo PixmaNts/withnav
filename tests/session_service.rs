@@ -7,6 +7,7 @@ use rust_agent::session::Service;
 
 mod common;
 use common::server::TestServerConfig;
+use common::sse::{read_sse, SseEnd};
 
 // Given a Service over a provider nothing listens on
 // When a session is created without any router
@@ -112,38 +113,19 @@ async fn service_replay(
     }
 }
 
-/// Reads `GET /events` until `count` envelopes arrived, the server ended
-/// the stream, or the budget elapsed.
+/// Reads `GET /events` until `count` envelopes arrived or the server ended
+/// the stream.
 async fn http_replay(
     base: &str,
     id: ulid::Ulid,
     count: usize,
 ) -> Vec<rust_agent::bus::event::EventEnvelope> {
-    let mut resp = reqwest::get(format!("{base}/v1/sessions/{id}/events"))
-        .await
-        .expect("sse connect");
-    assert_eq!(resp.status(), 200);
-    let mut buf = String::new();
-    let mut events = Vec::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while events.len() < count {
-        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-        match tokio::time::timeout(left, resp.chunk()).await {
-            Ok(Ok(Some(chunk))) => buf.push_str(&String::from_utf8_lossy(&chunk)),
-            _ => break,
-        }
-        while let Some(end) = buf.find("\n\n") {
-            let frame: String = buf.drain(..end + 2).collect();
-            let data: Vec<&str> = frame
-                .lines()
-                .filter_map(|line| line.strip_prefix("data:"))
-                .collect();
-            if !data.is_empty() {
-                events.push(serde_json::from_str(data.join("\n").trim()).expect("envelope"));
-            }
-        }
-    }
-    events
+    let read = read_sse(base, &id.to_string(), None, |frames| frames.len() >= count).await;
+    assert_ne!(read.end, SseEnd::Timeout, "{:?}", read.frames);
+    read.frames
+        .iter()
+        .map(|f| serde_json::from_str(&f.data).expect("envelope"))
+        .collect()
 }
 
 // Given a session that ran one scripted turn

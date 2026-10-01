@@ -49,6 +49,25 @@ fn empty_request() -> DecisionRequest<'static> {
     }
 }
 
+/// A client for `server` with its key in a temp auth store (never printed);
+/// the temp dir must outlive the client.
+fn client_for(
+    server: &MockServer,
+    cache: std::sync::Arc<ClientCache>,
+) -> (tempfile::TempDir, SystemOneClient) {
+    let tmp = tempfile::tempdir().unwrap();
+    rust_agent::provider::auth::set_key(tmp.path(), "omniroute", "test-key").unwrap();
+    let client = SystemOneClient::new(
+        "omniroute",
+        &provider_at(server.uri().to_string() + "/v1"),
+        &model_config(),
+        tmp.path(),
+        cache,
+    )
+    .unwrap();
+    (tmp, client)
+}
+
 /// The captured response body: the fixture's `response` object verbatim.
 fn captured_response_body() -> String {
     let fixture: serde_json::Value = serde_json::from_str(FIXTURE_RESPONSE).unwrap();
@@ -75,17 +94,7 @@ async fn posts_model_state_questions_and_parses_answers() {
         .mount(&server)
         .await;
 
-    // The key is written to a temp auth store; never printed.
-    let tmp = tempfile::tempdir().unwrap();
-    rust_agent::provider::auth::set_key(tmp.path(), "omniroute", "test-key").unwrap();
-    let client = SystemOneClient::new(
-        "omniroute",
-        &provider_at(server.uri().to_string() + "/v1"),
-        &model_config(),
-        tmp.path(),
-        std::sync::Arc::new(ClientCache::new()),
-    )
-    .unwrap();
+    let (_tmp, client) = client_for(&server, std::sync::Arc::new(ClientCache::new()));
 
     let mut questions = BTreeMap::new();
     questions.insert(
@@ -147,16 +156,7 @@ async fn non_2xx_is_a_provider_error() {
         .mount(&server)
         .await;
 
-    let tmp = tempfile::tempdir().unwrap();
-    rust_agent::provider::auth::set_key(tmp.path(), "omniroute", "test-key").unwrap();
-    let client = SystemOneClient::new(
-        "omniroute",
-        &provider_at(server.uri().to_string() + "/v1"),
-        &model_config(),
-        tmp.path(),
-        std::sync::Arc::new(ClientCache::new()),
-    )
-    .unwrap();
+    let (_tmp, client) = client_for(&server, std::sync::Arc::new(ClientCache::new()));
 
     let err = client
         .decide(
@@ -179,16 +179,7 @@ async fn garbage_body_is_malformed_not_provider_error() {
         .mount(&server)
         .await;
 
-    let tmp = tempfile::tempdir().unwrap();
-    rust_agent::provider::auth::set_key(tmp.path(), "omniroute", "test-key").unwrap();
-    let client = SystemOneClient::new(
-        "omniroute",
-        &provider_at(server.uri().to_string() + "/v1"),
-        &model_config(),
-        tmp.path(),
-        std::sync::Arc::new(ClientCache::new()),
-    )
-    .unwrap();
+    let (_tmp, client) = client_for(&server, std::sync::Arc::new(ClientCache::new()));
 
     let err = client
         .decide(
@@ -215,16 +206,7 @@ async fn slow_body_hits_the_two_second_deadline() {
         .mount(&server)
         .await;
 
-    let tmp = tempfile::tempdir().unwrap();
-    rust_agent::provider::auth::set_key(tmp.path(), "omniroute", "test-key").unwrap();
-    let client = SystemOneClient::new(
-        "omniroute",
-        &provider_at(server.uri().to_string() + "/v1"),
-        &model_config(),
-        tmp.path(),
-        std::sync::Arc::new(ClientCache::new()),
-    )
-    .unwrap();
+    let (_tmp, client) = client_for(&server, std::sync::Arc::new(ClientCache::new()));
 
     let started = std::time::Instant::now();
     let err = client
@@ -252,25 +234,9 @@ async fn client_is_reused_across_calls_through_the_cache() {
         .mount(&server)
         .await;
 
-    let tmp = tempfile::tempdir().unwrap();
-    rust_agent::provider::auth::set_key(tmp.path(), "omniroute", "test-key").unwrap();
     let cache = std::sync::Arc::new(ClientCache::new());
-    let client = SystemOneClient::new(
-        "omniroute",
-        &provider_at(server.uri().to_string() + "/v1"),
-        &model_config(),
-        tmp.path(),
-        cache.clone(),
-    )
-    .unwrap();
-    let client2 = SystemOneClient::new(
-        "omniroute",
-        &provider_at(server.uri().to_string() + "/v1"),
-        &model_config(),
-        tmp.path(),
-        cache,
-    )
-    .unwrap();
+    let (_tmp, client) = client_for(&server, cache.clone());
+    let (_tmp2, client2) = client_for(&server, cache);
 
     for c in [&client, &client2, &client] {
         c.decide(
@@ -295,16 +261,7 @@ async fn pipeline_over_systemone_end_to_end() {
         .mount(&server)
         .await;
 
-    let tmp = tempfile::tempdir().unwrap();
-    rust_agent::provider::auth::set_key(tmp.path(), "omniroute", "test-key").unwrap();
-    let client = SystemOneClient::new(
-        "omniroute",
-        &provider_at(server.uri().to_string() + "/v1"),
-        &model_config(),
-        tmp.path(),
-        std::sync::Arc::new(ClientCache::new()),
-    )
-    .unwrap();
+    let (_tmp, client) = client_for(&server, std::sync::Arc::new(ClientCache::new()));
 
     let pipeline = rust_agent::navigator::Pipeline::new(
         rust_agent::navigator::PipelineSnapshot::builtin().unwrap(),

@@ -9,6 +9,7 @@
 //! inbox wait; `session.end` is sequenced ONLY at teardown via
 //! [`Sequencer::close_session`] — never on a natural turn end.
 
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use tokio_util::sync::CancellationToken;
@@ -168,6 +169,7 @@ async fn runtime_loop(
     session_cancel: CancellationToken,
     on_turn_end: TurnEndHook,
 ) -> AgentActor {
+    let on_turn_end: SharedHook = Arc::new(Mutex::new(on_turn_end));
     let mut active_task_id: Option<Ulid> = None;
 
     loop {
@@ -244,6 +246,7 @@ async fn runtime_loop(
                 }),
             );
             emit_agent_state(&mut turn, "idle");
+            snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
             break;
         }
 
@@ -342,17 +345,43 @@ async fn runtime_loop(
             }
         }
 
+        // Every terminal outcome saves the transcript, a cancelled turn too.
+        snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
+
         if actor.cancel.is_cancelled() || session_cancel.is_cancelled() {
             break;
         }
-
-        // Terminal events of the turn are sequenced: snapshot the transcript
-        // for the history hook (bounded store write, fire-and-forget).
-        on_turn_end(&actor.transcript);
     }
 
     teardown(&mut actor, &sequencer);
     actor
+}
+
+type SharedHook = Arc<Mutex<TurnEndHook>>;
+
+/// Hands the transcript to the turn-end hook THROUGH the sequencer: the
+/// sequencer runs the hook after every event this turn already published
+/// has been emitted, so the store's FIFO writer sees the snapshot behind the
+/// turn's events, never before them. The hook is only a channel send, so the
+/// sequencer never waits on SQLite. If the session is already closed no
+/// more events can be written and the hook runs here directly.
+fn snapshot_transcript(
+    sequencer: &Sequencer,
+    hook: &SharedHook,
+    transcript: &[crate::provider::openai::ChatMessage],
+) {
+    fn run(hook: &SharedHook, transcript: &[crate::provider::openai::ChatMessage]) {
+        let guard = match hook.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        (guard)(transcript);
+    }
+    let (queued_hook, owned) = (Arc::clone(hook), transcript.to_vec());
+    let queued = sequencer.after_events(Box::new(move || run(&queued_hook, &owned)));
+    if queued.is_err() {
+        run(hook, transcript);
+    }
 }
 
 fn emit_turn_end(

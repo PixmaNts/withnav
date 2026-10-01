@@ -286,8 +286,21 @@ impl Service {
             // still be queued: the load must see them, or the resumed
             // sequence could restart below a seq a client already saw.
             store.flush().await.map_err(ServerError::History)?;
-            let Some(loaded) = store.load(id).await.map_err(ServerError::History)? else {
+            let Some((meta, transcript)) = store
+                .load_for_resume(id)
+                .await
+                .map_err(ServerError::History)?
+            else {
                 return Err(ServerError::SessionNotFound(id.to_string()));
+            };
+            let envelopes = store
+                .replay(id, None, meta.last_seq)
+                .await
+                .map_err(ServerError::History)?;
+            let loaded = super::store::LoadedSession {
+                meta,
+                envelopes,
+                transcript,
             };
             self.spawn_session(workspace, None, None, Some(loaded), workspace)
                 .await?;

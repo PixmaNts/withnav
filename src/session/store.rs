@@ -41,11 +41,13 @@
 //! `transcript` is the JSON of the actor's `Vec<ChatMessage>`, snapshotted
 //! after every turn end.
 
+mod read;
+
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 use tokio::sync::oneshot;
 use ulid::Ulid;
 
@@ -242,41 +244,6 @@ impl HistoryStore {
     pub async fn delete(&self, id: Ulid) -> Result<(), String> {
         self.acked(Write::Delete { id }).await
     }
-
-    /// Sessions of one workspace with their driver message counts, newest
-    /// `updated_at` first.
-    pub async fn list(&self, workspace: &str) -> Result<Vec<ListedSession>, String> {
-        let path = Arc::clone(&self.path);
-        let workspace = workspace.to_string();
-        tokio::task::spawn_blocking(move || list_sync(&path, &workspace))
-            .await
-            .map_err(|e| format!("join: {e}"))?
-    }
-
-    /// Full load for resume: metadata, envelopes, transcript.
-    pub async fn load(&self, id: Ulid) -> Result<Option<LoadedSession>, String> {
-        let path = Arc::clone(&self.path);
-        tokio::task::spawn_blocking(move || load_sync(&path, id))
-            .await
-            .map_err(|e| format!("join: {e}"))?
-    }
-
-    /// Whether the store knows this id (cheap EXISTS probe).
-    pub async fn exists(&self, id: Ulid) -> Result<bool, String> {
-        let path = Arc::clone(&self.path);
-        tokio::task::spawn_blocking(move || {
-            let conn = Connection::open(path.as_ref()).map_err(|e| format!("open: {e}"))?;
-            conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1)",
-                params![id.to_string()],
-                |row| row.get::<_, i64>(0),
-            )
-            .map(|v| v != 0)
-            .map_err(|e| format!("exists: {e}"))
-        })
-        .await
-        .map_err(|e| format!("join: {e}"))?
-    }
 }
 
 /// One row of the list projection: the session metadata plus its driver
@@ -414,98 +381,6 @@ fn migrate(path: &Path) -> Result<(), String> {
     )
     .map_err(|e| format!("migrate: {e}"))?;
     Ok(())
-}
-
-fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSession> {
-    let id: String = row.get(0)?;
-    let profile: Option<String> = row.get(3)?;
-    Ok(StoredSession {
-        id: Ulid::from_string(&id).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-        })?,
-        workspace: row.get(1)?,
-        model: row.get(2)?,
-        profile,
-        title: row.get(4)?,
-        created_at: row.get(5)?,
-        updated_at: row.get(6)?,
-        last_seq: row.get::<_, i64>(7)?.max(0) as u64,
-    })
-}
-
-fn list_sync(path: &Path, workspace: &str) -> Result<Vec<ListedSession>, String> {
-    let conn = Connection::open(path).map_err(|e| format!("open: {e}"))?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT s.id, s.workspace, s.model, s.profile, s.title,
-                    s.created_at, s.updated_at, s.last_seq,
-                    (SELECT COUNT(*) FROM events e
-                     WHERE e.session_id = s.id AND e.kind = 'message.received')
-             FROM sessions s WHERE s.workspace = ?1
-             ORDER BY s.updated_at DESC, s.id DESC",
-        )
-        .map_err(|e| format!("prepare: {e}"))?;
-    let rows = stmt
-        .query_map(params![workspace], |row| {
-            Ok(ListedSession {
-                meta: row_to_session(row)?,
-                message_count: row.get::<_, i64>(8)?.max(0) as u64,
-            })
-        })
-        .map_err(|e| format!("query: {e}"))?;
-    let mut out = Vec::new();
-    for row in rows {
-        match row {
-            Ok(session) => out.push(session),
-            Err(err) => tracing::error!("history list: bad row skipped: {err}"),
-        }
-    }
-    Ok(out)
-}
-
-fn load_sync(path: &Path, id: Ulid) -> Result<Option<LoadedSession>, String> {
-    let conn = Connection::open(path).map_err(|e| format!("open: {e}"))?;
-    let Some(meta) = conn
-        .query_row(
-            "SELECT id, workspace, model, profile, title, created_at, updated_at, last_seq,
-                    transcript
-             FROM sessions WHERE id = ?1",
-            params![id.to_string()],
-            |row| {
-                let meta = row_to_session(row)?;
-                let transcript: Option<String> = row.get(8)?;
-                Ok((meta, transcript))
-            },
-        )
-        .optional()
-        .map_err(|e| format!("load row: {e}"))?
-    else {
-        return Ok(None);
-    };
-    let mut stmt = conn
-        .prepare("SELECT envelope FROM events WHERE session_id = ?1 ORDER BY seq ASC")
-        .map_err(|e| format!("prepare: {e}"))?;
-    let rows = stmt
-        .query_map(params![id.to_string()], |row| row.get::<_, String>(0))
-        .map_err(|e| format!("query: {e}"))?;
-    let mut envelopes = Vec::new();
-    for row in rows {
-        let raw = row.map_err(|e| format!("row: {e}"))?;
-        match serde_json::from_str::<EventEnvelope>(&raw) {
-            Ok(envelope) => envelopes.push(envelope),
-            Err(err) => tracing::error!("history load: bad envelope skipped: {err}"),
-        }
-    }
-    let transcript = meta
-        .1
-        .as_deref()
-        .and_then(|raw| serde_json::from_str::<Vec<ChatMessage>>(raw).ok())
-        .unwrap_or_default();
-    Ok(Some(LoadedSession {
-        meta: meta.0,
-        envelopes,
-        transcript,
-    }))
 }
 
 /// Current UTC time as RFC 3339 with millisecond precision — same shape as
@@ -782,6 +657,94 @@ mod tests {
     /// server process (or a corrupting accident) would.
     fn side_connection(dir: &tempfile::TempDir) -> Connection {
         Connection::open(dir.path().join("sessions.db")).expect("side connection")
+    }
+
+    // Given a session with events 0..=4
+    // When replay runs with each bound combination
+    // Then it returns exactly after < seq <= through in seq order, and a row
+    //      that does not decode is an error naming its seq
+    #[tokio::test]
+    async fn replay_respects_both_bounds_and_rejects_corruption() {
+        let (dir, store) = temp_store();
+        let id = Ulid::new();
+        store
+            .record_session(id, "/w", "m", None)
+            .await
+            .expect("record");
+        store.append_event(id, envelope(0, EventKind::SessionStart));
+        for seq in 1..=4 {
+            store.append_event(id, envelope(seq, EventKind::MessageReceived));
+        }
+        store.flush().await.expect("flush");
+        let seqs = |events: Vec<EventEnvelope>| events.iter().map(|e| e.seq).collect::<Vec<_>>();
+
+        let all = store.replay(id, None, 4).await.expect("replay all");
+        assert_eq!(seqs(all), vec![0, 1, 2, 3, 4]);
+        let tail = store.replay(id, Some(2), 4).await.expect("replay tail");
+        assert_eq!(seqs(tail), vec![3, 4]);
+        let head = store.replay(id, None, 2).await.expect("replay head");
+        assert_eq!(seqs(head), vec![0, 1, 2]);
+        let middle = store.replay(id, Some(1), 3).await.expect("replay middle");
+        assert_eq!(seqs(middle), vec![2, 3]);
+        let none_after = store.replay(id, Some(4), 4).await.expect("empty range");
+        assert!(none_after.is_empty());
+        let inverted = store.replay(id, Some(3), 2).await.expect("inverted range");
+        assert!(inverted.is_empty());
+        let unknown = store.replay(Ulid::new(), None, 4).await.expect("unknown");
+        assert!(unknown.is_empty());
+
+        side_connection(&dir)
+            .execute(
+                "UPDATE events SET envelope = 'not json' WHERE session_id = ?1 AND seq = 3",
+                params![id.to_string()],
+            )
+            .expect("corrupt row");
+        let err = store
+            .replay(id, None, 4)
+            .await
+            .expect_err("a corrupt row is an error");
+        assert!(err.contains("seq 3"), "names the seq: {err}");
+        // A range that avoids the bad row still reads.
+        let clean = store.replay(id, None, 2).await.expect("clean range");
+        assert_eq!(seqs(clean), vec![0, 1, 2]);
+    }
+
+    // Given a recorded session
+    // When meta and load_for_resume read it
+    // Then they return its row and transcript, and None for an unknown id
+    #[tokio::test]
+    async fn meta_and_resume_load_omit_the_envelopes() {
+        let (_dir, store) = temp_store();
+        let id = Ulid::new();
+        store
+            .record_session(id, "/w", "m", Some("p"))
+            .await
+            .expect("record");
+        store.append_event(id, envelope(0, EventKind::SessionStart));
+        store.save_transcript(
+            id,
+            vec![ChatMessage::User {
+                content: "hi".into(),
+            }],
+        );
+        store.flush().await.expect("flush");
+
+        let meta = store.meta(id).await.expect("meta").expect("present");
+        assert_eq!(meta.profile.as_deref(), Some("p"));
+        assert_eq!(meta.last_seq, 0);
+        let (resumed, transcript) = store
+            .load_for_resume(id)
+            .await
+            .expect("resume")
+            .expect("present");
+        assert_eq!(resumed.id, id);
+        assert_eq!(transcript.len(), 1);
+        assert!(store.meta(Ulid::new()).await.expect("meta").is_none());
+        assert!(store
+            .load_for_resume(Ulid::new())
+            .await
+            .expect("resume")
+            .is_none());
     }
 
     // Given a store whose events table has been destroyed underneath it

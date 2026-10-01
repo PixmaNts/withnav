@@ -2,6 +2,12 @@
 
 Guidance for AI agents working in this repository.
 
+## Read first
+
+[`ARCHITECTURE.md`](ARCHITECTURE.md): what runs, which module owns what, the data flows, and where
+new code goes. Check its "Where new code goes" list before writing a helper or a test harness: the
+one you need probably exists.
+
 ## Agent skills
 
 ### Issue tracker

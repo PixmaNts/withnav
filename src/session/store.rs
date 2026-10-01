@@ -439,6 +439,10 @@ impl Emitter for PersistingEmitter {
     ) {
         self.bus.subscribe_since(cursor, next_seq, reply);
     }
+
+    fn subscribe_live(&mut self) -> tokio::sync::mpsc::Receiver<EventEnvelope> {
+        self.bus.subscribe_live()
+    }
 }
 
 /// Derives the session title from the first driver message: any trailing

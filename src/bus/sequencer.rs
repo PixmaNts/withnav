@@ -15,12 +15,12 @@
 //! the runtime (a separate task) can never consume a command whose
 //! `message.received` is not already sequenced.
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use ulid::Ulid;
 
 use crate::bus::event::EventEnvelope;
 use crate::bus::event::EventKind;
-use crate::bus::SubscribeReply;
+use crate::bus::{LiveSubscription, SubscribeReply};
 use crate::error::BusError;
 
 /// A command still unsequenced by the runtime (the full shape is frozen in `bus::command`).
@@ -66,6 +66,11 @@ pub enum Ingress {
     SubscribeSince {
         cursor: Option<u64>,
         reply: oneshot::Sender<crate::bus::SubscribeReply>,
+    },
+    /// Atomic live registration: capture the last emitted seq and register
+    /// a live queue in ONE synchronous mailbox step, with no replay.
+    SubscribeLive {
+        reply: oneshot::Sender<LiveSubscription>,
     },
     /// Session teardown: sequence + emit `session.end`, pin
     /// `final_seq`, then the sequencer task EXITS — the fence that guarantees
@@ -126,6 +131,11 @@ pub trait Emitter: Send + 'static {
         next_seq: u64,
         reply: oneshot::Sender<crate::bus::SubscribeReply>,
     );
+
+    /// Registers a new live queue that receives every event emitted from now
+    /// on (no replay). Called from the single mailbox handler with NO await
+    /// around it, in the same step that captures the high-water mark.
+    fn subscribe_live(&mut self) -> mpsc::Receiver<EventEnvelope>;
 }
 
 /// Handle to a running sequencer task. Cloning clones the ingress sender;
@@ -135,6 +145,9 @@ pub trait Emitter: Send + 'static {
 pub struct Sequencer {
     session_id: Ulid,
     ingress_tx: mpsc::UnboundedSender<Ingress>,
+    /// Never sent on: `run` drops the sender when the task is done, which
+    /// is what [`Sequencer::closed`] waits for.
+    done_rx: watch::Receiver<()>,
 }
 
 impl Sequencer {
@@ -143,10 +156,12 @@ impl Sequencer {
     /// resumed one so stored and live seqs form one gapless sequence.
     pub fn spawn(session_id: Ulid, emitter: impl Emitter, next_seq: u64) -> Self {
         let (ingress_tx, ingress_rx) = mpsc::unbounded_channel();
-        tokio::spawn(run(session_id, ingress_rx, emitter, next_seq));
+        let (done_tx, done_rx) = watch::channel(());
+        tokio::spawn(run(session_id, ingress_rx, emitter, next_seq, done_tx));
         Self {
             session_id,
             ingress_tx,
+            done_rx,
         }
     }
 
@@ -206,6 +221,34 @@ impl Sequencer {
         reply_rx
             .await
             .map_err(|_| BusError::SessionNotFound(self.session_id.to_string()))
+    }
+
+    /// Atomic live subscription: ONE control op on the sequencer task. The
+    /// mailbox handler, without awaiting, captures the last emitted seq and
+    /// registers a bounded live queue, and returns no replay. Every event
+    /// with `seq <= high_water` was emitted before the registration; every
+    /// later event goes to the receiver, exactly once and in order.
+    ///
+    /// `llm.delta` shares the seq space, so `high_water` may be a delta's
+    /// seq. Deltas are never stored: a store read through `high_water` plus
+    /// the receiver covers every durable event. A resumed session reports the
+    /// last stored seq even before its first new emit. A closed session maps
+    /// to `BusError::SessionNotFound`.
+    pub async fn subscribe_live(&self) -> Result<LiveSubscription, BusError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        ingress_send(&self.ingress_tx, Ingress::SubscribeLive { reply: reply_tx })?;
+        reply_rx
+            .await
+            .map_err(|_| BusError::SessionNotFound(self.session_id.to_string()))
+    }
+
+    /// Resolves once the sequencer task has finished: after `session.end`
+    /// (or the last handle dropping) every event is emitted and the emitter
+    /// is dropped. Resolves immediately when it already finished.
+    pub async fn closed(&self) {
+        let mut done = self.done_rx.clone();
+        // `changed` only errors once the sender is dropped; nothing sends.
+        while done.changed().await.is_ok() {}
     }
 
     /// Head accessor (`GET /sessions/:id` `current_seq`): replies
@@ -283,6 +326,7 @@ async fn run(
     mut ingress_rx: mpsc::UnboundedReceiver<Ingress>,
     mut emitter: impl Emitter,
     next_seq: u64,
+    done: watch::Sender<()>,
 ) {
     // `next_seq` lives ONLY inside this task (single assignment point).
     let mut next_seq: u64 = next_seq;
@@ -320,6 +364,16 @@ async fn run(
                 // and the live registration (both live inside `emitter`).
                 emitter.subscribe_since(cursor, next_seq, reply);
             }
+            Ingress::SubscribeLive { reply } => {
+                // `next_seq - 1` is the last assigned (== emitted) seq; a
+                // resumed session starts from its stored head.
+                let high_water = next_seq.checked_sub(1);
+                let receiver = emitter.subscribe_live();
+                let _ = reply.send(LiveSubscription {
+                    high_water,
+                    receiver,
+                });
+            }
             Ingress::AfterEvents { action } => action(),
             Ingress::CurrentSeq { reply } => {
                 let _ = reply.send(Ok(next_seq));
@@ -349,6 +403,10 @@ async fn run(
             }
         }
     }
+    // Emitter first (flushes its hand-offs, closes live queues), then the
+    // completion signal.
+    drop(emitter);
+    drop(done);
 }
 
 /// The single seq-assignment point. Takes `&mut u64` so no other code path
@@ -409,6 +467,10 @@ mod tests {
             // has no subscriber registry, so the request fails like a closed
             // session would.
             drop(reply);
+        }
+
+        fn subscribe_live(&mut self) -> mpsc::Receiver<EventEnvelope> {
+            mpsc::channel(1).1
         }
     }
 
@@ -568,6 +630,10 @@ mod tests {
             ) {
                 drop(reply);
             }
+
+            fn subscribe_live(&mut self) -> mpsc::Receiver<EventEnvelope> {
+                mpsc::channel(1).1
+            }
         }
 
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -709,6 +775,32 @@ mod tests {
         }
         assert!(saw_closed, "publish must fail closed once the fence is up");
         assert!(rx.recv().await.is_none(), "nothing after session.end");
+    }
+
+    /// `closed` stays pending while the session lives and resolves once the
+    /// sequencer task finished, i.e. after `session.end` was emitted.
+    #[tokio::test]
+    async fn closed_resolves_after_close_session_emitted_session_end() {
+        let (seq, mut rx) = spawn_with_collector();
+        let clone = seq.as_ref().clone();
+        seq.publish(start_candidate()).unwrap();
+
+        let pending = tokio::time::timeout(std::time::Duration::from_millis(50), seq.closed());
+        assert!(pending.await.is_err(), "open session: closed is pending");
+
+        let waiter = tokio::spawn(async move { clone.closed().await });
+        seq.close_session("stop").unwrap();
+        waiter.await.unwrap();
+        seq.closed().await;
+
+        let start = rx.try_recv().unwrap();
+        assert_eq!(start.kind.as_str(), "session.start");
+        let end = rx.try_recv().expect("session.end emitted before closed");
+        assert_eq!((end.kind.as_str(), end.seq), ("session.end", 1));
+        assert!(matches!(
+            seq.publish(turn_candidate("late")),
+            Err(BusError::SequencerClosed)
+        ));
     }
 
     /// Seq assignment is strictly monotonic and panic-free: the seq space is

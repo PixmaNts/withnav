@@ -7,7 +7,8 @@
 //! kinds only) → fan-out to per-subscriber bounded mpsc queues. Subscribers
 //! are best-effort: a full queue disconnects that subscriber (never blocks the
 //! sequencer, never silently drops a durable event — the client reconnects and
-//! replays via [`Sequencer::subscribe_since`]). The in-memory [`EventRing`]
+//! replays via [`Sequencer::subscribe_since`], or reads the store up to the
+//! [`LiveSubscription`] high-water mark). The in-memory [`EventRing`]
 //! retains the 11 durable kinds and tracks `last_evicted_durable_seq`, the
 //! resume floor for the [`ResumeOutcome`] contract.
 pub mod command;
@@ -61,6 +62,20 @@ pub struct SubscribeReply {
     /// durable event is retained. The SSE tombstone snapshot
     /// (reconnect after `final_seq`) consumes this to answer late cursors.
     pub resume_floor: Option<u64>,
+}
+
+/// The atomic live-only subscription: no replay. Every event with
+/// `seq <= high_water` was emitted before the registration and every later
+/// event goes to `receiver`, exactly once and in order.
+///
+/// `llm.delta` shares the seq space, so `high_water` may be a delta's seq;
+/// deltas are never stored. A store read through `high_water` plus
+/// `receiver` therefore covers every durable event. `high_water` is `None`
+/// when no seq was assigned yet.
+#[derive(Debug)]
+pub struct LiveSubscription {
+    pub high_water: Option<u64>,
+    pub receiver: mpsc::Receiver<EventEnvelope>,
 }
 
 /// FIFO over the durable subsequence makes evicted durables exactly the
@@ -195,6 +210,12 @@ impl sequencer::Emitter for SessionBus {
         reply: oneshot::Sender<SubscribeReply>,
     ) {
         let _ = reply.send(self.subscribe_since(cursor, next_seq));
+    }
+
+    fn subscribe_live(&mut self) -> mpsc::Receiver<EventEnvelope> {
+        let (tx, rx) = mpsc::channel(SUBSCRIBER_QUEUE_CAP);
+        self.subscribers.push(tx);
+        rx
     }
 }
 
@@ -519,6 +540,96 @@ mod tests {
 
         // Exactly once across replay ∪ live: [1, 2], no dup, no gap.
         drop(sequencer);
+    }
+
+    /// Wraps a bus and records how many events were emitted at the moment
+    /// the live receiver was registered.
+    struct Probe {
+        bus: SessionBus,
+        emitted: u64,
+        at_registration: std::sync::Arc<std::sync::Mutex<Option<u64>>>,
+    }
+
+    impl Emitter for Probe {
+        fn emit(&mut self, envelope: EventEnvelope) {
+            self.emitted += 1;
+            self.bus.emit(envelope);
+        }
+
+        fn subscribe_since(
+            &mut self,
+            cursor: Option<u64>,
+            next_seq: u64,
+            reply: oneshot::Sender<SubscribeReply>,
+        ) {
+            let _ = reply.send(self.bus.subscribe_since(cursor, next_seq));
+        }
+
+        fn subscribe_live(&mut self) -> mpsc::Receiver<EventEnvelope> {
+            *self.at_registration.lock().unwrap() = Some(self.emitted);
+            self.bus.subscribe_live()
+        }
+    }
+
+    /// Publishing races `subscribe_live`: the receiver gets exactly the
+    /// events above `high_water`, in order, none missing, none duplicated,
+    /// and everything at or below it was emitted before the registration.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn atomic_live_subscription_partitions_at_high_water() {
+        // Below SUBSCRIBER_QUEUE_CAP: the receiver is only drained at the end.
+        const EVENTS: u64 = 200;
+        for iteration in 0..300u64 {
+            let at_registration = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let probe = Probe {
+                bus: SessionBus::default(),
+                emitted: 0,
+                at_registration: std::sync::Arc::clone(&at_registration),
+            };
+            let sequencer = Sequencer::spawn(Ulid::new(), probe, 0);
+
+            // An OS thread publishes while this task subscribes, so the two
+            // genuinely race; the spin length sweeps the landing point.
+            let publisher = {
+                let sequencer = sequencer.clone();
+                std::thread::spawn(move || {
+                    for n in 0..EVENTS {
+                        // Deltas share the seq space and must not break it.
+                        let candidate = if n % 3 == 0 {
+                            Candidate::new(EventKind::LlmDelta, serde_json::json!({ "n": n }))
+                        } else {
+                            durable_candidate(n)
+                        };
+                        sequencer.publish(candidate).unwrap();
+                    }
+                })
+            };
+            for _ in 0..(iteration * 37 % 3000) {
+                std::hint::spin_loop();
+            }
+            let LiveSubscription {
+                high_water,
+                mut receiver,
+            } = sequencer.subscribe_live().await.unwrap();
+            publisher.join().unwrap();
+            // session.end is the last event (seq EVENTS) and ends the stream.
+            sequencer.close_session("done").unwrap();
+
+            let mut seqs = Vec::new();
+            while let Some(envelope) = receiver.recv().await {
+                seqs.push(envelope.seq);
+            }
+            let first = high_water.map_or(0, |h| h + 1);
+            let expected: Vec<u64> = (first..=EVENTS).collect();
+            assert_eq!(
+                seqs, expected,
+                "iteration {iteration}, high_water {high_water:?}"
+            );
+            assert_eq!(
+                *at_registration.lock().unwrap(),
+                Some(first),
+                "events at or below high_water were emitted before registration"
+            );
+        }
     }
 
     /// After the session closes (sequencer task gone), the live stream of an

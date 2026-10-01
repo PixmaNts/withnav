@@ -96,6 +96,7 @@ async fn run_wake_trigger(
 
 fn inputs(changed_lines: i64, has_conversation: bool, has_intent: bool) -> Value {
     json!({
+        "called_for_help": false,
         "changed_lines": changed_lines,
         "has_conversation": has_conversation,
         "has_errors": false,
@@ -110,7 +111,7 @@ fn inputs(changed_lines: i64, has_conversation: bool, has_intent: bool) -> Value
 fn idle_remark_record(extra: Value) -> Value {
     let mut record = json!({
         "answers": "<object>",
-        "branch": 1,
+        "branch": 2,
         "event": "idle",
         "kind": "trigger",
         "model": "instinct",
@@ -137,7 +138,7 @@ fn idle_remark_record(extra: Value) -> Value {
 fn save_wake_record(has_conversation: bool, extra: Value) -> Value {
     let mut record = json!({
         "answers": "<object>",
-        "branch": 0,
+        "branch": 1,
         "event": "save",
         "kind": "trigger",
         "model": "instinct",

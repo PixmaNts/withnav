@@ -221,6 +221,11 @@ impl LoggedTrigger {
                 changed_lines,
                 since_last_remark_ms,
                 since_last_wake_ms,
+                // Records from before the call-for-help input replay as none.
+                called_for_help: inputs
+                    .get("called_for_help")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
                 has_errors,
                 has_intent,
                 has_conversation,

@@ -129,6 +129,7 @@ fn always_available_dummies() -> BTreeMap<String, Value> {
         changed_lines: 3,
         since_last_remark_ms: 60_000,
         since_last_wake_ms: 60_000,
+        called_for_help: true,
         has_errors: true,
         has_intent: true,
         has_conversation: true,
@@ -150,6 +151,10 @@ pub(crate) fn flatten_inputs(inputs: TriggerInputs) -> BTreeMap<String, Value> {
     vars.insert(
         "since_last_wake_ms".to_string(),
         Value::from_int(inputs.since_last_wake_ms),
+    );
+    vars.insert(
+        "called_for_help".to_string(),
+        Value::from(inputs.called_for_help),
     );
     vars.insert("has_errors".to_string(), Value::from(inputs.has_errors));
     vars.insert("has_intent".to_string(), Value::from(inputs.has_intent));

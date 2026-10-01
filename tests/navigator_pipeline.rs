@@ -78,6 +78,7 @@ fn inputs(changed: i64) -> TriggerInputs {
         changed_lines: changed,
         since_last_remark_ms: 120_000,
         since_last_wake_ms: 120_000,
+        called_for_help: false,
         has_errors: false,
         has_intent: true,
         has_conversation: false,
@@ -535,11 +536,13 @@ fn builtin_default_pipeline_loads_and_is_the_spec_shape() {
         .questions
         .contains_key("contradicts_conversation"));
     let specs = triggers[0].branch_specs();
-    assert_eq!(specs.len(), 3);
-    assert_eq!(specs[0].0.as_str(), "wake_cognition");
-    assert_eq!(specs[1].0.as_str(), "remark");
-    assert_eq!(specs[1].1, Some("prompts/remark.md"));
-    assert_eq!(specs[2].0.as_str(), "silent");
+    assert_eq!(specs.len(), 4);
+    assert_eq!(specs[0].0.as_str(), "remark");
+    assert_eq!(specs[0].1, Some("prompts/help_remark.md"));
+    assert_eq!(specs[1].0.as_str(), "wake_cognition");
+    assert_eq!(specs[2].0.as_str(), "remark");
+    assert_eq!(specs[2].1, Some("prompts/remark.md"));
+    assert_eq!(specs[3].0.as_str(), "silent");
 
     // The conversation trigger: one question, a remark or silence.
     assert_eq!(triggers[1].on, vec![TriggerKind::Conversation]);
@@ -712,4 +715,55 @@ async fn builtin_wake_has_its_own_cooldown() {
     let snap = PipelineSnapshot::builtin().unwrap();
     assert_eq!(snap.triggers()[0].prefilters.wake_cooldown_ms, 120_000);
     assert_eq!(snap.triggers()[1].prefilters.wake_cooldown_ms, 0);
+}
+
+// ---------- built-in pipeline: an explicit call for help ----------
+
+/// A one-line comment that calls on the navigator passes the size limit and
+/// the remark cooldown, and is answered with a remark (never a wake) whatever
+/// the instinct's scores; the same line without the call is skipped.
+#[tokio::test]
+async fn builtin_a_call_for_help_bypasses_the_small_change_filter_and_remarks() {
+    let pipeline = Pipeline::new(PipelineSnapshot::builtin().unwrap());
+    let run = |i: TriggerInputs, answers| {
+        let pipeline = pipeline.clone();
+        async move {
+            pipeline
+                .evaluate(
+                    TriggerKind::Idle,
+                    i,
+                    &tvars(),
+                    &ScriptedDecision::fixed(answers),
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap()
+        }
+    };
+
+    let mut one_line = inputs(1);
+    one_line.since_last_remark_ms = 1_000;
+    let skipped = run(one_line, builtin_answers(0.1, "silent", 0.1)).await;
+    assert_eq!(
+        skipped.prefilter.skip_reason(),
+        Some("too_few_changed_lines")
+    );
+    assert!(skipped.answers.is_none(), "the instinct is not paid for");
+
+    one_line.called_for_help = true;
+    // Scores that would be silent, and scores that would wake: both remark.
+    for answers in [
+        builtin_answers(0.1, "silent", 0.1),
+        builtin_answers(0.95, "cognition", 0.95),
+    ] {
+        let eval = run(one_line, answers).await;
+        assert_eq!(eval.prefilter.skip_reason(), None);
+        assert_eq!(eval.requested_action.as_str(), "remark");
+        assert_eq!(eval.branch_index, Some(0));
+    }
+
+    // The conversation trigger has no such bypass.
+    let snap = PipelineSnapshot::builtin().unwrap();
+    assert!(snap.triggers()[0].prefilters.bypass_on_help_call);
+    assert!(!snap.triggers()[1].prefilters.bypass_on_help_call);
 }

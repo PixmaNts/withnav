@@ -2,6 +2,14 @@
 //! `route`, `drift`, `contradicts_conversation`), pre-filters min 3
 //! lines / remark cooldown 45 s, then the branches in order:
 //!
+//! 0. `remark` (prompt `help_remark.md`) when `called_for_help`: the lines
+//!    the driver just added hold a comment addressing the navigator
+//!    ("help", "aide", "navigator", a question). The first trigger's
+//!    `bypass_on_help_call` lets such a change past `min_changed_lines` and
+//!    the remark cooldown (a one-line `// J'ai besoin d'aide` was skipped 92
+//!    times in a real evening), and this branch comes first so no score can
+//!    turn the call away. It stays a remark, never a wake: the driver is at
+//!    the editor, not in the chat.
 //! 1. `wake_cognition` on drift from the intent (> 0.8, only if
 //!    `has_intent`) or a contradiction with what the driver and the
 //!    cognition just agreed (> 0.8, only if `has_conversation`: without a
@@ -44,6 +52,10 @@ pub const STATE_PROMPT: &str = include_str!("default_pipeline/prompts/state.md")
 
 /// `prompts/remark.md`: the metacognition's remark prompt.
 pub const REMARK_PROMPT: &str = include_str!("default_pipeline/prompts/remark.md");
+
+/// `prompts/help_remark.md`: the metacognition's prompt when the driver's
+/// comment calls on it.
+pub const HELP_REMARK_PROMPT: &str = include_str!("default_pipeline/prompts/help_remark.md");
 
 /// `prompts/conversation_state.md`: the instinct's state for the
 /// `conversation` event.

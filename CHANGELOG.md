@@ -28,6 +28,8 @@ requests land in `develop`.
 - A remark routed to the cognition but below the wake thresholds is now written instead of dropped.
 - A wake message is short and renders properly: a one-line reason with the file and line, the diff
   in a code block (40 lines at most), the intent only for drift, no repeated conversation.
+- A comment that calls on the navigator ("help", "aide", "navigator", or a question) now gets an
+  answer even when it is a single added line.
 - The short context note for ghost-text suggestions waits up to 25 s to refresh, and an empty
   refresh answer keeps the previous note without an error in the log each time.
 

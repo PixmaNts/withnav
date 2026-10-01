@@ -119,6 +119,30 @@ async fn cooldown_suppresses_second_remark() {
     assert_eq!(second["params"]["text"], "second");
 }
 
+/// A one-line comment that calls on the navigator reaches it: the instinct
+/// runs and the remark is delivered, where an ordinary one-line edit is
+/// skipped (`one_line_change_never_triggers`).
+#[tokio::test(start_paused = true)]
+async fn a_one_line_call_for_help_in_a_comment_reaches_the_metacognition() {
+    let mock = MockCommenter::new(vec![Answer::Remark(2, "what part is stuck?")]);
+    let mut client = Nav::start(mock.clone()).await;
+    client.open_base().await;
+    client
+        .did_change(
+            URI,
+            "fn main() {\n    println!(\"hello\");\n    // J'ai besoin d'aide\n}",
+            2,
+        )
+        .await;
+    tokio::time::advance(Duration::from_millis(3001)).await;
+    let mut seen = Vec::new();
+    let remark = client.expect("navigator/remark", &mut seen).await;
+    assert_eq!(remark["params"]["text"], "what part is stuck?");
+    assert_eq!(mock.calls(), 1);
+    let records = client.log_text();
+    assert!(records.contains("\"called_for_help\":true"), "{records}");
+}
+
 /// Silent answer emits no remark.
 #[tokio::test(start_paused = true)]
 async fn silent_answer_emits_no_remark() {

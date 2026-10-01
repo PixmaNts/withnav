@@ -30,6 +30,7 @@ pub(super) struct TriggerContext {
     pub(super) changed_lines: i64,
     pub(super) since_last_remark_ms: i64,
     pub(super) since_last_wake_ms: i64,
+    pub(super) called_for_help: bool,
     pub(super) has_errors: bool,
     pub(super) has_intent: bool,
     pub(super) has_conversation: bool,
@@ -74,6 +75,10 @@ impl TriggerContext {
             (
                 "since_last_wake_ms".to_string(),
                 serde_json::json!(self.since_last_wake_ms),
+            ),
+            (
+                "called_for_help".to_string(),
+                serde_json::json!(self.called_for_help),
             ),
             ("has_errors".to_string(), serde_json::json!(self.has_errors)),
             ("has_intent".to_string(), serde_json::json!(self.has_intent)),
@@ -128,6 +133,9 @@ impl Runtime {
             .map(|f| f.digest())
             .unwrap_or_default();
         let has_conversation = !conversation_text.trim().is_empty();
+        // A conversation turn changed nothing in the file.
+        let called_for_help = event != TriggerKind::Conversation
+            && crate::navigator::help_call::called_for_help(&snapshot.baseline, &snapshot.text);
         let (first_changed_line, _) = first_changed_line(&snapshot.baseline, &snapshot.text);
         Some(TriggerContext {
             uri: uri.to_string(),
@@ -136,6 +144,7 @@ impl Runtime {
             changed_lines: snapshot.changed_lines,
             since_last_remark_ms: snapshot.since_last_remark_ms,
             since_last_wake_ms: snapshot.since_last_wake_ms,
+            called_for_help,
             has_errors,
             has_intent,
             has_conversation,
@@ -175,6 +184,7 @@ impl Runtime {
             changed_lines: ctx.changed_lines,
             since_last_remark_ms: ctx.since_last_remark_ms,
             since_last_wake_ms: ctx.since_last_wake_ms,
+            called_for_help: ctx.called_for_help,
             has_errors: ctx.has_errors,
             has_intent: ctx.has_intent,
             has_conversation: ctx.has_conversation,

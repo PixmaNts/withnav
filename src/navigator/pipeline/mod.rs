@@ -123,6 +123,10 @@ pub struct Prefilters {
     /// recent than this (ms): the trigger falls through to the next branch,
     /// so a wake never silences remarks. 0 (the default) turns it off.
     pub wake_cooldown_ms: u64,
+    /// A change that adds a comment addressing the navigator (see
+    /// `called_for_help`) passes `min_changed_lines` and the remark cooldown:
+    /// an explicit call must reach the navigator.
+    pub bypass_on_help_call: bool,
 }
 
 /// One ordered branch: `when` is an evalexpr condition over the flattened
@@ -199,6 +203,9 @@ pub struct TriggerInputs {
     /// Milliseconds since the last wake of the cognition; a large value when
     /// there was none. Wakes are rate-limited apart from remarks.
     pub since_last_wake_ms: i64,
+    /// Whether the lines added since the baseline include a comment that
+    /// addresses the navigator ("help", "aide", a question...).
+    pub called_for_help: bool,
     /// Whether the current diagnostics contain errors.
     pub has_errors: bool,
     /// Whether an intent record (or session intent) exists.

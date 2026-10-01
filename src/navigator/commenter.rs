@@ -2,12 +2,17 @@
 //! silence) for a document state. The real implementation calls the `fast`
 //! model alias through the existing provider layer; tests use a scripted mock.
 
+use std::collections::BTreeMap;
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 
 use crate::navigator::document::{text_around_changes, unified_diff};
+use crate::navigator::log::{LogRecord, NavLog};
 use crate::navigator::protocol::Remark;
 
 /// Everything the commenter sees about a document.
@@ -23,6 +28,11 @@ pub struct RemarkContext {
     pub intent: Option<String>,
     /// Pipeline-selected metacognition prompt, already template-rendered.
     pub prompt: Option<String>,
+    /// The workspace root; unlocks the read/grep tools for the metacognition.
+    pub workspace: Option<PathBuf>,
+    /// Open editor buffers keyed by absolute path: `read` answers from the
+    /// buffer (unsaved edits), not from disk.
+    pub open_buffers: BTreeMap<PathBuf, String>,
 }
 
 /// A compiler/editor diagnostic forwarded by the extension.
@@ -50,7 +60,22 @@ impl RemarkContext {
             diagnostics,
             intent,
             prompt: None,
+            workspace: None,
+            open_buffers: BTreeMap::new(),
         }
+    }
+
+    /// Builder seam: stamps workspace and open buffers on a context built
+    /// by [`RemarkContext::build`] (the server fills them at its two
+    /// `RemarkContext` sites).
+    pub fn into_context(
+        mut self,
+        workspace: PathBuf,
+        open_buffers: BTreeMap<PathBuf, String>,
+    ) -> Self {
+        self.workspace = Some(workspace);
+        self.open_buffers = open_buffers;
+        self
     }
 }
 
@@ -178,31 +203,62 @@ or:
 pub const MALFORMED_PREFIX: &str = "malformed answer: ";
 
 /// Commenter calling the fast model alias via the provider layer
-/// (non-tool streaming chat call). Holds one HTTP client per provider
-/// through a shared [`ClientCache`], so repeated remarks reuse
-/// connections instead of rebuilding a client per call.
+/// (streaming chat call with a small read/grep tool loop). Holds one HTTP
+/// client per provider through a shared [`ClientCache`], so repeated
+/// remarks reuse connections instead of rebuilding a client per call.
 pub struct LlmCommenter {
     resolved: crate::provider::config::ResolvedModel,
     api_key: String,
-    clients: std::sync::Arc<crate::provider::openai::ClientCache>,
+    clients: Arc<crate::provider::openai::ClientCache>,
+    log: Option<NavLog>,
 }
+
+/// The whole remark (tool rounds + final answer) is capped at this budget;
+/// past it the metacognition stays silent.
+const REMARK_BUDGET: Duration = Duration::from_secs(8);
+/// At most this many rounds where the model may call tools; the call after
+/// the last one carries no tools, forcing the JSON answer.
+const MAX_TOOL_ROUNDS: usize = 2;
+/// Cap on each tool output sent back to the model.
+const TOOL_OUTPUT_MAX_CHARS: usize = 4000;
 
 impl LlmCommenter {
     pub fn new(
         resolved: crate::provider::config::ResolvedModel,
         api_key: String,
-        clients: std::sync::Arc<crate::provider::openai::ClientCache>,
+        clients: Arc<crate::provider::openai::ClientCache>,
     ) -> Self {
         Self {
             resolved,
             api_key,
             clients,
+            log: None,
         }
+    }
+
+    /// Attaches the navigator log so each round and tool execution is
+    /// recorded as a `Call`.
+    pub fn with_log(mut self, log: NavLog) -> Self {
+        self.log = Some(log);
+        self
     }
 
     /// The model identifier sent on the wire (for the call records).
     pub fn model_id(&self) -> &str {
         &self.resolved.model.model
+    }
+
+    fn log_call(&self, layer: &str, model: &str, started: Instant, cancelled: bool) {
+        if let Some(log) = &self.log {
+            log.append(&LogRecord::Call {
+                layer,
+                model,
+                latency_ms: started.elapsed().as_millis(),
+                input_tokens: None,
+                output_tokens: None,
+                cancelled,
+            });
+        }
     }
 
     fn build_user_message(&self, ctx: &RemarkContext) -> String {
@@ -232,6 +288,269 @@ impl LlmCommenter {
         m.push_str("\n\nDecide: stay silent, or give one short remark. JSON only.");
         m
     }
+
+    /// The shared remark loop: up to [`MAX_TOOL_ROUNDS`] rounds offering
+    /// `read`/`grep`, then one final call without tools to force the JSON
+    /// answer. Everything runs under one [`REMARK_BUDGET`] timeout; past it
+    /// the metacognition stays silent.
+    async fn remark_with_tools(
+        &self,
+        ctx: &RemarkContext,
+        branch_prompt: &str,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Remark>, String> {
+        use crate::provider::openai::{build_request, ChatMessage, ChatRequest};
+        use crate::provider::{start_and_consume, StreamDelta};
+
+        let body = match tokio::time::timeout(REMARK_BUDGET, async {
+            let system = if branch_prompt.trim().is_empty() {
+                NAVIGATOR_SYSTEM_PROMPT.to_string()
+            } else {
+                format!("{NAVIGATOR_SYSTEM_PROMPT}\n\n{branch_prompt}")
+            };
+            let tools = ctx
+                .workspace
+                .as_ref()
+                .map(|ws| vec![tool_def_read(ws), tool_def_grep(ws)]);
+            let mut messages = vec![
+                ChatMessage::System {
+                    content: system.clone(),
+                },
+                ChatMessage::User {
+                    content: self.build_user_message(ctx),
+                },
+            ];
+
+            let client = self
+                .clients
+                .get(&self.resolved.provider_name, &self.resolved.provider)
+                .map_err(|e| e.to_string())?;
+
+            let mut message = None;
+            for round in 0..=MAX_TOOL_ROUNDS {
+                // The final round carries no tools, forcing the JSON answer.
+                let round_tools = if round < MAX_TOOL_ROUNDS {
+                    tools.clone().unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                let request = ChatRequest {
+                    model: self.resolved.model.model.clone(),
+                    messages: messages.clone(),
+                    tools: round_tools,
+                    stream: true,
+                    stream_options: Some(crate::provider::openai::StreamOptions {
+                        include_usage: true,
+                    }),
+                    max_tokens: self.resolved.model.max_output_tokens.min(Some(1024)),
+                    temperature: Some(0.2),
+                };
+                let http = build_request(&client, &self.resolved.provider, &self.api_key, &request);
+                let started = Instant::now();
+                let response = match http.send().await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.log_call("metacognition_round", self.model_id(), started, false);
+                        return Err(format!("http: {e}"));
+                    }
+                };
+                let mut noop = |_d: StreamDelta| {};
+                let msg = match start_and_consume(response, cancel, &mut noop).await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        let cancelled = matches!(e, crate::error::ProviderError::Canceled { .. });
+                        self.log_call("metacognition_round", self.model_id(), started, cancelled);
+                        return Err(e.to_string());
+                    }
+                };
+                self.log_call("metacognition_round", self.model_id(), started, false);
+
+                if round == MAX_TOOL_ROUNDS || msg.tool_calls.is_empty() {
+                    message = Some(msg);
+                    break;
+                }
+                // Feed the assistant turn (tool calls) back, execute each
+                // tool, append its result.
+                messages.push(ChatMessage::Assistant {
+                    content: if msg.text.is_empty() {
+                        None
+                    } else {
+                        Some(msg.text.clone())
+                    },
+                    reasoning_content: None,
+                    tool_calls: msg
+                        .tool_calls
+                        .iter()
+                        .map(|tc| crate::provider::openai::RequestToolCall {
+                            id: tc.id.clone(),
+                            kind: "function".to_string(),
+                            function: crate::provider::openai::RequestFunction {
+                                name: tc.name.clone(),
+                                arguments: tc.args.to_string(),
+                            },
+                        })
+                        .collect(),
+                });
+                for tc in &msg.tool_calls {
+                    let output = self.execute_tool(ctx, tc).await;
+                    messages.push(ChatMessage::Tool {
+                        tool_call_id: tc.id.clone(),
+                        content: output,
+                    });
+                }
+            }
+            let message = message.expect("the loop always sets the final message");
+            Ok::<_, String>(message)
+        })
+        .await
+        {
+            Ok(body) => body?,
+            Err(_) => {
+                tracing::warn!(
+                    budget_ms = REMARK_BUDGET.as_millis() as u64,
+                    "navigator: metacognition remark over budget, staying silent"
+                );
+                if let Some(log) = &self.log {
+                    log.append(&LogRecord::Call {
+                        layer: "metacognition_round",
+                        model: self.model_id(),
+                        latency_ms: REMARK_BUDGET.as_millis(),
+                        input_tokens: None,
+                        output_tokens: None,
+                        cancelled: true,
+                    });
+                }
+                return Ok(None);
+            }
+        };
+
+        match parse_answer(&body.text) {
+            ParsedAnswer::Remark(remark) => Ok(Some(remark)),
+            ParsedAnswer::Silent => Ok(None),
+            ParsedAnswer::Malformed => {
+                tracing::warn!(raw = %body.text, "navigator: model answer violates the prompt contract");
+                Err(format!("{MALFORMED_PREFIX}{}", body.text))
+            }
+        }
+    }
+
+    /// Executes one tool call from the model: `read` (with the open-buffer
+    /// override) or `grep`, through the shared `Tool` implementations.
+    /// Relative paths anchor to the workspace first, so the model may pass
+    /// either form.
+    async fn execute_tool(&self, ctx: &RemarkContext, tc: &crate::provider::ToolCall) -> String {
+        use crate::tools::native::{GrepTool, ReadTool};
+        use crate::tools::{Tool, ToolContext};
+
+        let started = Instant::now();
+        let Some(workspace) = ctx.workspace.clone() else {
+            return "error: no workspace; tools are unavailable".to_string();
+        };
+        let mut args = tc.args.clone();
+        if let Some(path) = args.get("path").and_then(|p| p.as_str()) {
+            if !path.starts_with('/') {
+                args["path"] =
+                    serde_json::Value::String(workspace.join(path).to_string_lossy().into_owned());
+            }
+        }
+        // Reading requires the root in `validate_path`'s roots; the
+        // metacognition never writes, so the workspace root is the only
+        // root it gets.
+        let cx = ToolContext {
+            workspace: workspace.clone(),
+            writable_roots: vec![workspace.clone()],
+        };
+        let output = match tc.name.as_str() {
+            "read" => {
+                // An open buffer wins over disk: unsaved edits are what
+                // the driver actually sees.
+                if let Some(buffer) = args
+                    .get("path")
+                    .and_then(|p| p.as_str())
+                    .and_then(|p| ctx.open_buffers.get(Path::new(p)))
+                {
+                    let offset = args.get("offset").and_then(|v| v.as_u64());
+                    let limit = args.get("limit").and_then(|v| v.as_u64());
+                    Ok(crate::tools::ToolResult::ok(slice_buffer(
+                        buffer, offset, limit,
+                    )))
+                } else {
+                    ReadTool.call(args, CancellationToken::new(), &cx).await
+                }
+            }
+            "grep" => GrepTool.call(args, CancellationToken::new(), &cx).await,
+            other => Ok(crate::tools::ToolResult::error(
+                "unknown_tool",
+                format!("no such tool: {other}"),
+            )),
+        };
+        let text = match output {
+            Ok(result) => match &result.error {
+                Some(err) => format!("error[{}]: {}", err.code, err.message),
+                None => result.output,
+            },
+            Err(e) => format!("error: {e}"),
+        };
+        self.log_call("metacognition_tool", &tc.name, started, false);
+        crate::navigator::log::excerpt(&text, TOOL_OUTPUT_MAX_CHARS)
+    }
+}
+
+/// `read` tool definition with workspace-anchored path hint.
+fn tool_def_read(ws: &Path) -> crate::provider::openai::ToolDef {
+    crate::provider::openai::ToolDef::function(
+        "read",
+        format!(
+            "Read a file (a bounded line range) under {}. Reports the file's lines.",
+            ws.display()
+        ),
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "absolute path, or relative to the workspace"},
+                "offset": {"type": "integer", "description": "1-indexed start line"},
+                "limit": {"type": "integer", "description": "max lines to read"}
+            },
+            "required": ["path"]
+        }),
+    )
+}
+
+/// `grep` tool definition.
+fn tool_def_grep(ws: &Path) -> crate::provider::openai::ToolDef {
+    crate::provider::openai::ToolDef::function(
+        "grep",
+        format!(
+            "Search file contents for a regex pattern under {}.",
+            ws.display()
+        ),
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string", "description": "file or directory; default the workspace"}
+            },
+            "required": ["pattern"]
+        }),
+    )
+}
+
+/// Slices an open buffer like `ReadTool` slices a file: 1-indexed offset,
+/// optional limit, joined lines. Public for tests.
+pub fn slice_buffer(text: &str, offset: Option<u64>, limit: Option<u64>) -> String {
+    if offset.is_none() && limit.is_none() {
+        return text.to_string();
+    }
+    let start = offset.unwrap_or(1).max(1) as usize - 1;
+    let lines: Vec<&str> = text.lines().collect();
+    let end = match limit {
+        Some(l) => (start + l as usize).min(lines.len()),
+        None => lines.len(),
+    };
+    if start >= lines.len() {
+        return String::new();
+    }
+    lines[start..end].join("\n")
 }
 
 impl Commenter for LlmCommenter {
@@ -240,50 +559,7 @@ impl Commenter for LlmCommenter {
         ctx: &'a RemarkContext,
         cancel: &'a CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Remark>, String>> + Send + 'a>> {
-        Box::pin(async move {
-            use crate::provider::openai::{build_request, ChatMessage, ChatRequest};
-            use crate::provider::{start_and_consume, StreamDelta};
-            let system = ctx
-                .prompt
-                .as_deref()
-                .filter(|prompt| !prompt.trim().is_empty())
-                .map(|prompt| format!("{NAVIGATOR_SYSTEM_PROMPT}\n\n{prompt}"))
-                .unwrap_or_else(|| NAVIGATOR_SYSTEM_PROMPT.to_string());
-            let request = ChatRequest {
-                model: self.resolved.model.model.clone(),
-                messages: vec![
-                    ChatMessage::System { content: system },
-                    ChatMessage::User {
-                        content: self.build_user_message(ctx),
-                    },
-                ],
-                tools: Vec::new(),
-                stream: true,
-                stream_options: Some(crate::provider::openai::StreamOptions {
-                    include_usage: true,
-                }),
-                max_tokens: self.resolved.model.max_output_tokens.min(Some(1024)),
-                temperature: Some(0.2),
-            };
-            let client = self
-                .clients
-                .get(&self.resolved.provider_name, &self.resolved.provider)
-                .map_err(|e| e.to_string())?;
-            let http = build_request(&client, &self.resolved.provider, &self.api_key, &request);
-            let response = http.send().await.map_err(|e| format!("http: {e}"))?;
-            let mut noop = |_d: StreamDelta| {};
-            let message = start_and_consume(response, cancel, &mut noop)
-                .await
-                .map_err(|e| e.to_string())?;
-            match parse_answer(&message.text) {
-                ParsedAnswer::Remark(remark) => Ok(Some(remark)),
-                ParsedAnswer::Silent => Ok(None),
-                ParsedAnswer::Malformed => {
-                    tracing::warn!(raw = %message.text, "navigator: model answer violates the prompt contract");
-                    Err(format!("{MALFORMED_PREFIX}{}", message.text))
-                }
-            }
-        })
+        Box::pin(self.remark_with_tools(ctx, "", cancel))
     }
 }
 
@@ -297,57 +573,7 @@ impl LlmCommenter {
         branch_prompt: &'a str,
         cancel: &'a CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Remark>, String>> + Send + 'a>> {
-        Box::pin(async move {
-            use crate::navigator::commenter::{parse_answer, ParsedAnswer, MALFORMED_PREFIX};
-            use crate::provider::openai::{build_request, ChatMessage, ChatRequest};
-            use crate::provider::{start_and_consume, StreamDelta};
-
-            let system = if branch_prompt.trim().is_empty() {
-                NAVIGATOR_SYSTEM_PROMPT.to_string()
-            } else {
-                format!("{NAVIGATOR_SYSTEM_PROMPT}\n\n{branch_prompt}")
-            };
-            let request = ChatRequest {
-                model: self.resolved.model.model.clone(),
-                messages: vec![
-                    ChatMessage::System { content: system },
-                    ChatMessage::User {
-                        content: self.build_user_message(ctx),
-                    },
-                ],
-                tools: Vec::new(),
-                stream: true,
-                stream_options: Some(crate::provider::openai::StreamOptions {
-                    include_usage: true,
-                }),
-                max_tokens: self.resolved.model.max_output_tokens.min(Some(1024)),
-                temperature: Some(0.2),
-            };
-
-            let client = self
-                .clients
-                .get(&self.resolved.provider_name, &self.resolved.provider)
-                .map_err(|e| e.to_string())?;
-            let http = build_request(&client, &self.resolved.provider, &self.api_key, &request);
-            let response = http.send().await.map_err(|e| format!("http: {e}"))?;
-
-            let mut noop = |_d: StreamDelta| {};
-            let message = start_and_consume(response, cancel, &mut noop)
-                .await
-                .map_err(|e| e.to_string())?;
-
-            match parse_answer(&message.text) {
-                ParsedAnswer::Remark(remark) => Ok(Some(remark)),
-                ParsedAnswer::Silent => Ok(None),
-                ParsedAnswer::Malformed => {
-                    tracing::warn!(
-                        raw = %message.text,
-                        "navigator: model answer violates the prompt contract"
-                    );
-                    Err(format!("{MALFORMED_PREFIX}{}", message.text))
-                }
-            }
-        })
+        Box::pin(self.remark_with_tools(ctx, branch_prompt, cancel))
     }
 }
 

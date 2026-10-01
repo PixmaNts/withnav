@@ -11,6 +11,7 @@ use std::sync::Arc;
 use clap::Parser;
 use rust_agent::navigator;
 use rust_agent::navigator::commenter::LlmCommenter;
+use rust_agent::navigator::log::NavLog;
 use rust_agent::navigator::{Commenter, CommenterAsMetacognition, Metacognition};
 use rust_agent::provider::auth;
 use rust_agent::provider::config::ModelsConfig;
@@ -174,7 +175,18 @@ fn build_layers(cli: &Cli, clients: Arc<ClientCache>) -> Layers {
     }
 
     // Metacognition: the fast chat commenter on the `metacognition` alias.
-    match build_llm_commenter(&models, "metacognition", &config_dir, clients.clone()) {
+    // The log path is known only later in `main`; the commenter's log is
+    // attached there (`with_log`), after `default_log_path` resolves.
+    let metacognition_log = navigator::default_log_path();
+    match build_llm_commenter(
+        &models,
+        "metacognition",
+        &config_dir,
+        clients.clone(),
+        metacognition_log
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from("/dev/null")),
+    ) {
         Ok(commenter) => {
             layers.metacognition_model = Some(commenter.model_id().to_string());
             layers.metacognition = Some(Arc::new(commenter));
@@ -194,6 +206,7 @@ fn build_llm_commenter(
     alias: &str,
     config_dir: &std::path::Path,
     clients: Arc<ClientCache>,
+    log_path: std::path::PathBuf,
 ) -> anyhow::Result<LlmCommenter> {
     let resolved = models
         .resolve(alias)
@@ -204,7 +217,7 @@ fn build_llm_commenter(
         resolved.provider.api_key_env.as_deref(),
     )
     .map_err(|e| anyhow::anyhow!("no API key for provider '{}': {e}", resolved.provider_name))?;
-    Ok(LlmCommenter::new(resolved, api_key, clients))
+    Ok(LlmCommenter::new(resolved, api_key, clients).with_log(NavLog::new(log_path)))
 }
 
 impl Layers {

@@ -312,6 +312,18 @@ impl Inner {
         }
     }
 
+    /// The open documents keyed by absolute path (current editor text): the
+    /// metacognition's `read` tool answers from these instead of disk.
+    async fn open_buffers(&self) -> std::collections::BTreeMap<PathBuf, String> {
+        let state = self.state.lock().await;
+        state
+            .iter()
+            .filter_map(|(uri, doc)| {
+                crate::navigator::uri_to_path_str(uri).map(|p| (PathBuf::from(p), doc.text.clone()))
+            })
+            .collect()
+    }
+
     /// Gathers everything one trigger needs from the document state.
     async fn gather(&self, uri: &str, now: Instant) -> Option<TriggerContext> {
         let (changed_lines, since_last_remark_ms, version, doc_text, baseline) = {
@@ -352,7 +364,10 @@ impl Inner {
         let (intent_text, has_intent) = self.current_intent().await;
         // Reuse the prototype's diff/excerpt builders for the {{diff}} and
         // {{context}} template variables.
-        let ctx = RemarkContext::build(uri, &language_id, &baseline, &doc_text, Vec::new(), None);
+        let mut ctx =
+            RemarkContext::build(uri, &language_id, &baseline, &doc_text, Vec::new(), None);
+        ctx.workspace = self.workspace.lock().await.clone();
+        ctx.open_buffers = self.open_buffers().await;
         Some(TriggerContext {
             uri: uri.to_string(),
             event: "",
@@ -660,6 +675,8 @@ impl Inner {
                 Some(ctx.intent_text.clone())
             },
             prompt: Some(prompt),
+            workspace: self.workspace.lock().await.clone(),
+            open_buffers: self.open_buffers().await,
         };
         let started = Instant::now();
         let result = tokio::select! {

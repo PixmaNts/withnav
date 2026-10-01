@@ -370,10 +370,13 @@ impl AppState {
             let Some(loaded) = store.load(id).await.map_err(ServerError::History)? else {
                 return Err(ServerError::SessionNotFound(id.to_string()));
             };
-            self.spawn_session(workspace, None, None, Some(loaded), workspace)?;
+            self.spawn_session(workspace, None, None, Some(loaded), workspace)
+                .await?;
             return Ok((id, true));
         }
-        let id = self.spawn_session(workspace, model, profile, None, workspace)?;
+        let id = self
+            .spawn_session(workspace, model, profile, None, workspace)
+            .await?;
         Ok((id, false))
     }
 
@@ -684,7 +687,7 @@ impl AppState {
     /// publishes `session.start` (fresh only), spawns the runtime with the
     /// history hooks, registers the handle. `resume_workspace` is the
     /// workspace a resume request named; the FRESH path passes its own.
-    fn spawn_session(
+    async fn spawn_session(
         &self,
         workspace: &Path,
         model: Option<&str>,
@@ -751,12 +754,17 @@ impl AppState {
         let history = self.history.clone();
         let sequencer = match &history {
             Some(store) => {
-                store.record_session(
-                    session_id,
-                    &workspace.display().to_string(),
-                    &alias,
-                    profile,
-                );
+                // Acknowledged: a session whose row cannot be written would
+                // silently lose every later event and snapshot.
+                store
+                    .record_session(
+                        session_id,
+                        &workspace.display().to_string(),
+                        &alias,
+                        profile,
+                    )
+                    .await
+                    .map_err(ServerError::History)?;
                 Sequencer::spawn(
                     session_id,
                     crate::server::store::PersistingEmitter::new(

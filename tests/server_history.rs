@@ -393,12 +393,15 @@ async fn resuming_an_old_navigator_transcript_sends_the_role_prompt_once() {
 
     let id = ulid::Ulid::new();
     let store = rust_agent::server::store::HistoryStore::open(&db).expect("open");
-    store.record_session(
-        id,
-        &ws.display().to_string(),
-        "cognition",
-        Some("navigator"),
-    );
+    store
+        .record_session(
+            id,
+            &ws.display().to_string(),
+            "cognition",
+            Some("navigator"),
+        )
+        .await
+        .expect("record");
     store.append_event(
         id,
         EventEnvelope::new(id, 0, EventKind::SessionStart, json!({})),
@@ -419,15 +422,7 @@ async fn resuming_an_old_navigator_transcript_sends_the_role_prompt_once() {
             },
         ],
     );
-    // The writer is fire-and-forget: wait until the transcript is readable.
-    for _ in 0..200 {
-        if let Some(loaded) = store.load(id).await.expect("load") {
-            if loaded.transcript.len() == 3 {
-                break;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    store.flush().await.expect("flush");
 
     let mock = spawn_mock_provider(done_response("fine")).await;
     let state = make_state(&root, &mock.url, Some(db.clone()));

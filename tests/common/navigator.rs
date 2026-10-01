@@ -424,6 +424,17 @@ impl LspClient {
     /// Reads one framed JSON-RPC message from the server. Keeps leftover
     /// bytes buffered so coalesced messages are not lost between calls.
     pub async fn recv(&mut self) -> Value {
+        tokio::time::timeout(Duration::from_secs(20), self.recv_inner())
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "timed out waiting for navigator JSON-RPC message; buffered bytes: {}",
+                    self.buf.len()
+                )
+            })
+    }
+
+    async fn recv_inner(&mut self) -> Value {
         loop {
             if let Some((msg, consumed)) = try_parse(&self.buf) {
                 self.buf.drain(..consumed);
@@ -439,41 +450,55 @@ impl LspClient {
     /// Reads messages until one matches method; returns it. Other messages
     /// (e.g. navigator/status) are skipped but recorded in `seen`.
     pub async fn expect(&mut self, method: &str, seen: &mut Vec<Value>) -> Value {
-        loop {
-            let msg = self.recv().await;
-            if msg.get("method").and_then(|m| m.as_str()) == Some(method) {
-                return msg;
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let msg = self.recv().await;
+                if msg.get("method").and_then(|m| m.as_str()) == Some(method) {
+                    return msg;
+                }
+                seen.push(msg);
             }
-            seen.push(msg);
-        }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!("timed out waiting for navigator method {method}; seen: {seen:?}")
+        })
     }
 
     /// Reads notifications until a `navigator/status` with the given state
     /// arrives; other notifications are skipped. This is the synchronization
     /// point for tests that expect no remark (silent) or an error.
     pub async fn expect_status(&mut self, state: &str) -> Value {
-        loop {
-            let msg = self.recv().await;
-            if msg.get("method").and_then(|m| m.as_str()) == Some("navigator/status")
-                && msg["params"]["state"].as_str() == Some(state)
-            {
-                return msg;
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let msg = self.recv().await;
+                if msg.get("method").and_then(|m| m.as_str()) == Some("navigator/status")
+                    && msg["params"]["state"].as_str() == Some(state)
+                {
+                    return msg;
+                }
             }
-        }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for navigator/status {state}"))
     }
 
     /// Reads messages until a `navigator/status` with one of `states`.
     pub async fn expect_status_in(&mut self, states: &[&str]) -> Value {
-        loop {
-            let msg = self.recv().await;
-            if msg.get("method").and_then(|m| m.as_str()) == Some("navigator/status")
-                && msg["params"]["state"]
-                    .as_str()
-                    .is_some_and(|s| states.contains(&s))
-            {
-                return msg;
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let msg = self.recv().await;
+                if msg.get("method").and_then(|m| m.as_str()) == Some("navigator/status")
+                    && msg["params"]["state"]
+                        .as_str()
+                        .is_some_and(|s| states.contains(&s))
+                {
+                    return msg;
+                }
             }
-        }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for navigator/status in {states:?}"))
     }
 
     /// Collects every message readable within a virtual-time window, then

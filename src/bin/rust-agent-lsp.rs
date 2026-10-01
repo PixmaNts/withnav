@@ -256,7 +256,11 @@ async fn main() -> anyhow::Result<()> {
     // `navigator/serverInfo`. It lives exactly as long as the LSP session:
     // when `navigator::serve` returns (exit/EOF) the shutdown trigger fires,
     // every session is closed and the server drains so the process exits.
-    let http = match spawn_cognition_server(&cli).await {
+    // The SAME conversation hub goes to the session server (sessions
+    // register themselves there) and to the navigator deps (wakes post
+    // through it): one process, two channels, one conversation.
+    let conversation = navigator::ConversationFeed::new();
+    let http = match spawn_cognition_server(&cli, conversation.clone()).await {
         Ok(http) => Some(http),
         Err(e) => {
             // A failed bind must not take the navigator down: run the LSP
@@ -268,6 +272,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut deps = navigator::NavigatorDeps::with_layers(layers.metacognition(), log_path)
         .with_dirs(workspace, user_dir)
+        .with_conversation(conversation)
         .with_model_ids(
             layers.reflex_model.clone(),
             layers.instinct_model.clone(),
@@ -306,7 +311,10 @@ struct CognitionHttp {
 /// The in-process cognition server: an [`AppState`] over the same models
 /// resolution as the LSP layers, bound to a loopback ephemeral port, with a
 /// random 64-hex-char bearer token.
-async fn spawn_cognition_server(cli: &Cli) -> anyhow::Result<CognitionHttp> {
+async fn spawn_cognition_server(
+    cli: &Cli,
+    conversation: navigator::ConversationFeed,
+) -> anyhow::Result<CognitionHttp> {
     use rust_agent::server::session::{AppState, ServerConfig};
 
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -330,7 +338,7 @@ async fn spawn_cognition_server(cli: &Cli) -> anyhow::Result<CognitionHttp> {
         bearer_token: Some(token.clone()),
         history_db,
     };
-    let state = AppState::new(config);
+    let state = AppState::with_conversation(config, Some(conversation));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
 

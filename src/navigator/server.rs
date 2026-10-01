@@ -35,7 +35,7 @@ use crate::navigator::protocol::{
     RemarkParams, ServerInfoNotification, ServerInfoParams, StatusNotification, StatusParams,
 };
 use crate::navigator::reflex::{to_result, ReflexService, SuggestOutcome};
-use crate::navigator::{Metacognition, NavigatorDeps};
+use crate::navigator::{Metacognition, NavigatorDeps, WakeOutcome};
 
 pub struct NavigatorBackend {
     inner: Arc<Inner>,
@@ -71,6 +71,10 @@ struct Inner {
     /// The cognition chat server's endpoint; sent as `navigator/serverInfo`
     /// after `initialized`. None keeps the chat unannounced.
     server_info: Option<ServerInfoParams>,
+    /// The conversation hub shared with the session server: the seam a
+    /// wake posts through. None keeps wakes logged as
+    /// `cognition_unavailable`.
+    conversation: Option<crate::navigator::ConversationFeed>,
     /// Startup notes about disabled layers, surfaced once after initialize.
     disabled_layers: Vec<String>,
 }
@@ -107,6 +111,7 @@ impl NavigatorBackend {
                 reflex,
                 reflex_model: deps.reflex_model,
                 server_info: deps.server_info,
+                conversation: deps.conversation,
                 disabled_layers: deps.disabled_layers,
             }),
         }
@@ -125,6 +130,34 @@ fn load_snapshot(
         }
         None => PipelineSnapshot::builtin(),
     }
+}
+
+/// The wake message the metacognition sends the cognition: what changed,
+/// where, why it looks like drift, and the intent it drifts from — plus the
+/// recent conversation so the cognition can place the remark. Short by
+/// construction: it starts a deliberate discussion, it is not the
+/// discussion.
+fn wake_message(ctx: &TriggerContext, digest: &str) -> String {
+    let mut out = format!(
+        "Navigator wake — this edit looks like it drifts from the intent.\n\n\
+         File: {file}\nWhat changed:\n{diff}\n\nIntent on record:\n{intent}",
+        file = ctx.uri,
+        diff = if ctx.diff.trim().is_empty() {
+            "(no diff captured)".to_string()
+        } else {
+            ctx.diff.trim().to_string()
+        },
+        intent = if ctx.intent_text.trim().is_empty() {
+            "(none recorded)".to_string()
+        } else {
+            ctx.intent_text.trim().to_string()
+        },
+    );
+    if !digest.trim().is_empty() {
+        out.push_str("\n\nRecent conversation:\n");
+        out.push_str(digest);
+    }
+    out
 }
 
 /// One trigger's gathered context: everything the pipeline inputs, the
@@ -185,6 +218,8 @@ struct RecordData {
     requested: Option<&'static str>,
     prefilter_outcome: &'static str,
     prefilter_reason: Option<&'static str>,
+    /// The cognition session a wake targeted, when one did.
+    session: Option<String>,
 }
 
 impl Inner {
@@ -380,6 +415,7 @@ impl Inner {
             requested: None,
             prefilter_outcome: "pass",
             prefilter_reason: None,
+            session: None,
         };
 
         // Writes the one trigger record for this trigger, once the delivered
@@ -411,6 +447,7 @@ impl Inner {
                 delivered,
                 remark_id,
                 reason,
+                session: record.session.as_deref(),
             }));
         };
 
@@ -547,10 +584,8 @@ impl Inner {
             }
             Action::WakeCognition => {
                 self.clear_in_flight(&uri).await;
-                // The cognition layer arrives in later slices: requested
-                // wake_cognition, delivered nothing.
-                log_trigger(&record, "none", None, Some("cognition_unavailable"));
-                self.set_status("idle", None).await;
+                self.deliver_wake(uri, ctx, trigger_id, record, prefilter_inputs)
+                    .await;
             }
             Action::Remark => {
                 let prompt =
@@ -609,6 +644,7 @@ impl Inner {
                 delivered,
                 remark_id,
                 reason,
+                session: record.session.as_deref(),
             }));
         };
 
@@ -750,6 +786,83 @@ impl Inner {
                 }
             }
         }
+    }
+
+    /// Delivers a `wake_cognition` branch: builds the wake message from
+    /// what the instinct judged and posts it to the active conversation
+    /// through the feed. The guard is the feed's: while the cognition
+    /// waits on the driver's `ask` answer, the wake is queued (latest
+    /// wins) and delivered right after the driver's next message.
+    #[allow(clippy::too_many_arguments)]
+    async fn deliver_wake(
+        self: &Arc<Self>,
+        uri: String,
+        ctx: TriggerContext,
+        trigger_id: String,
+        mut record: RecordData,
+        prefilter_inputs: std::collections::BTreeMap<String, serde_json::Value>,
+    ) {
+        let log_trigger = |record: &RecordData,
+                           delivered: &'static str,
+                           reason: Option<&str>,
+                           session: Option<&str>| {
+            self.log.append(&LogRecord::Trigger(TriggerRecord {
+                trigger_id: &trigger_id,
+                run_id: &self.run_id,
+                workspace: record.workspace.as_deref(),
+                uri: &ctx.uri,
+                version: ctx.version,
+                event: ctx.event,
+                prefilter: PrefilterRecord {
+                    inputs: &prefilter_inputs,
+                    outcome: record.prefilter_outcome,
+                    reason: record.prefilter_reason,
+                },
+                pipeline_hash: record.pipeline_hash.as_deref(),
+                template_inputs: record.template_inputs.as_ref(),
+                rendered_state: record.rendered_state.as_deref(),
+                questions: record.questions.as_ref(),
+                model: record.model.as_deref(),
+                answers: record.answers.as_ref(),
+                branch: record.branch,
+                requested_action: record.requested,
+                delivered,
+                remark_id: None,
+                reason,
+                session,
+            }));
+        };
+
+        let unavailable =
+            |record: &RecordData| log_trigger(record, "none", Some("cognition_unavailable"), None);
+        let Some(feed) = self.conversation.clone() else {
+            unavailable(&record);
+            self.set_status("idle", None).await;
+            return;
+        };
+        if feed.active_session().is_none() {
+            unavailable(&record);
+            self.set_status("idle", None).await;
+            return;
+        }
+        record.session = feed.active_session().map(|id| id.to_string());
+        let message = wake_message(&ctx, &feed.digest());
+        match feed.post_wake(&message).await {
+            WakeOutcome::Posted(session_id) => {
+                log_trigger(&record, "wake", None, Some(&session_id.to_string()));
+            }
+            WakeOutcome::Queued(session_id) => {
+                log_trigger(&record, "wake_queued", None, Some(&session_id.to_string()));
+            }
+            // The session exists but refused the post (stopping, full
+            // inbox): an honest outcome, logged for tuning like any skip.
+            WakeOutcome::Failed(_, error) => {
+                tracing::warn!(uri = %uri, error = %error, "wake post failed");
+                unavailable(&record);
+            }
+            WakeOutcome::NoSession => unavailable(&record),
+        }
+        self.set_status("idle", None).await;
     }
 
     async fn clear_in_flight(&self, uri: &str) {

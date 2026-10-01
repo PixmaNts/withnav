@@ -78,10 +78,18 @@ pub struct TriggerRecord<'a> {
     pub remark_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<&'a str>,
+    /// The cognition session a `wake_cognition` action targeted: set when
+    /// delivered `wake` or `wake_queued`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<&'a str>,
 }
 
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+// The trigger record is the fat one by design: one structured decision per
+// line. Records are built on the stack for one append and dropped; boxing
+// the variant would trade a copy for an allocation on every log line.
+#[allow(clippy::large_enum_variant)]
 pub enum LogRecord<'a> {
     Trigger(TriggerRecord<'a>),
     Call {
@@ -243,6 +251,7 @@ mod tests {
             delivered: "remark",
             remark_id: Some("r1"),
             reason: None,
+            session: None,
         }));
         log.append(&LogRecord::Feedback {
             id: "r1",

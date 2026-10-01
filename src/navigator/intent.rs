@@ -1,10 +1,20 @@
-//! Read-only access to `.navigator/intent.md`: the workspace's intent
+//! Read/write access to `.navigator/intent.md`: the workspace's intent
 //! record (sections Intent / Plan / Decisions / Active spec). The driver
-//! may edit it by hand; layers only read it here (writing from the
-//! cognition is a later slice). When the sections are missing the file is
-//! treated as opaque text: whatever is there is better than nothing.
+//! may edit it by hand; the cognition updates it through the `intent`
+//! tool when the conversation settles an intent, a plan or a decision.
+//! When the sections are missing the file is treated as opaque text:
+//! whatever is there is better than nothing.
 
-use std::path::Path;
+use std::future::Future;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+
+use serde_json::{json, Value};
+use tokio_util::sync::CancellationToken;
+
+use crate::error::ToolError;
+use crate::tools::{Tool, ToolContext, ToolResult};
 
 /// The parsed intent record.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -92,6 +102,161 @@ pub fn parse_intent(raw: &str) -> IntentRecord {
     record
 }
 
+/// Writes `.navigator/intent.md` from the workspace, replacing only the
+/// sections given (the others keep their current text). The file is
+/// created with all four headings when missing, and the write is atomic
+/// (temp file + rename in the same directory). Sections set to an empty
+/// string are cleared.
+pub fn write_intent_sections(
+    workspace: &Path,
+    sections: &IntentSections,
+) -> std::io::Result<PathBuf> {
+    let dir = workspace.join(".navigator");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("intent.md");
+    let current = std::fs::read_to_string(&path).unwrap_or_default();
+    let updated = apply_sections(&current, sections);
+    // Atomic: a temp file in the SAME directory, fsynced, then renamed over
+    // the target, so the driver never sees a half-written record (the file
+    // is version-controlled and may be open in the editor).
+    let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
+    tmp.write_all(updated.as_bytes())?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(&path).map_err(|e| e.error)?;
+    Ok(path)
+}
+
+/// The sections a write may replace; `None` keeps the current text.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct IntentSections {
+    pub intent: Option<String>,
+    pub plan: Option<String>,
+    pub decisions: Option<String>,
+    pub active_spec: Option<String>,
+}
+
+impl IntentSections {
+    fn from_args(args: &Value) -> Self {
+        let take = |key: &str| {
+            args.get(key)
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+        };
+        Self {
+            intent: take("intent"),
+            plan: take("plan"),
+            decisions: take("decisions"),
+            active_spec: take("active_spec"),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.intent.is_none()
+            && self.plan.is_none()
+            && self.decisions.is_none()
+            && self.active_spec.is_none()
+    }
+}
+
+/// The four headings, in file order.
+const SECTIONS: [&str; 4] = ["Intent", "Plan", "Decisions", "Active spec"];
+
+/// Rebuilds the record: the four headings in order, each carrying its new
+/// text when replaced, else its current text; any other content the file
+/// carried is dropped (the record is machine-writable from the moment the
+/// cognition first updates it).
+fn apply_sections(current: &str, sections: &IntentSections) -> String {
+    let record = parse_intent(current);
+    let new_texts = [
+        sections.intent.clone(),
+        sections.plan.clone(),
+        sections.decisions.clone(),
+        sections.active_spec.clone(),
+    ];
+    let current_texts = [
+        record.intent,
+        record.plan,
+        record.decisions,
+        record.active_spec,
+    ];
+    let mut out = String::from("# Intent record\n\n");
+    for (heading, (new_text, current_text)) in SECTIONS
+        .into_iter()
+        .zip(new_texts.into_iter().zip(current_texts))
+    {
+        let text = new_text
+            .filter(|t| !t.is_empty())
+            .or(current_text)
+            .unwrap_or_default();
+        out.push_str(&format!("## {heading}\n"));
+        if !text.is_empty() {
+            out.push_str(&text);
+            if !text.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// The cognition's `intent` tool: replaces sections of the workspace's
+/// intent record. Registered only in navigator-profile sessions, so a
+/// plain session keeps the default toolset. Restricted to the one path:
+/// it never takes a path argument.
+pub struct IntentTool;
+
+impl Tool for IntentTool {
+    fn name(&self) -> &str {
+        "intent"
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "description": "Update the workspace intent record (.navigator/intent.md). Each given \
+                section replaces its current text; omitted sections are kept. Update it briefly, \
+                without asking, when the conversation settles an intent, a plan or a decision.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "intent": {"type": "string", "description": "What the driver is trying to do"},
+                    "plan": {"type": "string", "description": "The current plan"},
+                    "decisions": {"type": "string", "description": "Settled decisions"},
+                    "active_spec": {"type": "string", "description": "Link to the spec being worked on"}
+                },
+                "additionalProperties": false
+            }
+        })
+    }
+
+    fn call<'a>(
+        &'a self,
+        args: Value,
+        _cancel: CancellationToken,
+        cx: &'a ToolContext,
+    ) -> Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + 'a>> {
+        let sections = IntentSections::from_args(&args);
+        Box::pin(async move {
+            if sections.is_empty() {
+                return Ok(ToolResult::error(
+                    "invalid_args",
+                    "no section to update: give at least one of intent, plan, decisions, active_spec",
+                ));
+            }
+            // The tool context's workspace is the session's workspace: the
+            // same root the editor and the other layers resolve the record
+            // from. There is no path argument to abuse.
+            match write_intent_sections(&cx.workspace, &sections) {
+                Ok(path) => Ok(ToolResult::ok(format!(
+                    "intent record updated: {}",
+                    path.display()
+                ))),
+                Err(e) => Ok(ToolResult::error("io_error", e.to_string())),
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,5 +322,126 @@ Add retry with backoff to the HTTP client.
         let r = parse_intent("## Intent\n\n## Plan\nreal plan");
         assert_eq!(r.intent, None);
         assert_eq!(r.plan.as_deref(), Some("real plan"));
+    }
+
+    fn tool_context(root: &Path) -> crate::tools::ToolContext {
+        crate::tools::ToolContext {
+            workspace: root.to_path_buf(),
+            writable_roots: vec![root.to_path_buf()],
+        }
+    }
+
+    #[test]
+    fn write_replaces_given_sections_and_keeps_the_rest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".navigator");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("intent.md"), SAMPLE).unwrap();
+
+        write_intent_sections(
+            tmp.path(),
+            &IntentSections {
+                intent: Some("add an `auth remove` command".into()),
+                decisions: None,
+                plan: None,
+                active_spec: None,
+            },
+        )
+        .unwrap();
+        let r = read_intent(tmp.path()).unwrap().unwrap();
+        assert_eq!(
+            r.intent.as_deref(),
+            Some("add an `auth remove` command"),
+            "the given section is replaced"
+        );
+        assert!(r.plan.as_deref().unwrap().contains("retry wrapper"), "kept");
+        assert!(r.decisions.as_deref().unwrap().contains("exponential"));
+        assert_eq!(r.active_spec.as_deref(), Some(".scratch/navigator/spec.md"));
+    }
+
+    #[test]
+    fn write_creates_the_record_with_all_headings_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_intent_sections(
+            tmp.path(),
+            &IntentSections {
+                intent: Some("ship the navigator".into()),
+                plan: None,
+                decisions: None,
+                active_spec: Some(".scratch/navigator/spec.md".into()),
+            },
+        )
+        .unwrap();
+        let raw = std::fs::read_to_string(tmp.path().join(".navigator/intent.md")).unwrap();
+        for heading in [
+            "# Intent record",
+            "## Intent",
+            "## Plan",
+            "## Decisions",
+            "## Active spec",
+        ] {
+            assert!(
+                raw.contains(heading),
+                "missing heading {heading} in:\n{raw}"
+            );
+        }
+        let r = parse_intent(&raw);
+        assert_eq!(r.intent.as_deref(), Some("ship the navigator"));
+        assert_eq!(r.plan, None);
+        assert_eq!(r.active_spec.as_deref(), Some(".scratch/navigator/spec.md"));
+    }
+
+    #[test]
+    fn an_empty_section_clears_its_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_intent_sections(
+            tmp.path(),
+            &IntentSections {
+                intent: Some("kept".into()),
+                plan: None,
+                decisions: None,
+                active_spec: None,
+            },
+        )
+        .unwrap();
+        write_intent_sections(
+            tmp.path(),
+            &IntentSections {
+                intent: None,
+                plan: Some("   ".into()),
+                decisions: None,
+                active_spec: None,
+            },
+        )
+        .unwrap();
+        let r = read_intent(tmp.path()).unwrap().unwrap();
+        assert_eq!(r.intent.as_deref(), Some("kept"));
+        assert_eq!(r.plan, None, "whitespace-only clears the section");
+    }
+
+    #[tokio::test]
+    async fn intent_tool_updates_the_workspace_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cx = tool_context(tmp.path());
+        let result = IntentTool
+            .call(
+                json!({"intent": "add an `auth remove` command", "decisions": "CLI subcommand, not a flag"}),
+                CancellationToken::new(),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.status, crate::tools::ToolStatus::Ok, "{result:?}");
+        let r = read_intent(tmp.path()).unwrap().unwrap();
+        assert_eq!(r.intent.as_deref(), Some("add an `auth remove` command"));
+        assert!(r.decisions.as_deref().unwrap().contains("CLI subcommand"));
+
+        // A call with no section is a structured tool error, not a panic.
+        let empty = IntentTool
+            .call(json!({}), CancellationToken::new(), &cx)
+            .await
+            .unwrap();
+        assert_eq!(empty.status, crate::tools::ToolStatus::Error);
+        assert_eq!(empty.error.unwrap().code, "invalid_args");
     }
 }

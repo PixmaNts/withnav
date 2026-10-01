@@ -34,7 +34,7 @@ use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -42,7 +42,7 @@ use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
 use crate::agent::actor::AgentActor;
-use crate::bus::command::Command;
+use crate::bus::command::{Command, ContentBlock, DeliveryMode};
 use crate::bus::event::{EventEnvelope, EventKind, SessionStart, ROOT_ACTOR_ID};
 use crate::bus::inbox::ActorInbox;
 use crate::bus::runtime;
@@ -51,6 +51,7 @@ use crate::bus::SessionBus;
 use crate::error::{ConfigError, ServerError};
 use crate::provider::auth;
 use crate::provider::config::{resolve_models_path, ModelsConfig, ResolvedModel};
+use crate::server::routes::route_message;
 use crate::tools::{Registry, ToolContext};
 
 /// Retained closed-session tombstones before the OLDEST is evicted (FIFO).
@@ -225,10 +226,26 @@ pub struct AppState {
     pub config: Arc<ServerConfig>,
     /// The conversation-history store; `None` when `history_db` is unset.
     history: Option<Arc<crate::server::store::HistoryStore>>,
+    /// The navigator's conversation hub, when this server shares its
+    /// process with the language server. Set once by the host binary
+    /// before any session exists; the feed is optional so plain HTTP
+    /// servers and tests keep working without one.
+    conversation: Option<crate::navigator::ConversationFeed>,
 }
 
 impl AppState {
     pub fn new(config: ServerConfig) -> Self {
+        Self::with_conversation(config, None)
+    }
+
+    /// [`AppState::new`] sharing the navigator's conversation hub: a
+    /// navigator-profile session registers itself there and a subscriber
+    /// task feeds its events, so the language server can read the digest
+    /// and wake the cognition.
+    pub fn with_conversation(
+        config: ServerConfig,
+        conversation: Option<crate::navigator::ConversationFeed>,
+    ) -> Self {
         let history = config.history_db.as_deref().and_then(|path| {
             match crate::server::store::HistoryStore::open(path) {
                 Ok(store) => Some(Arc::new(store)),
@@ -245,7 +262,13 @@ impl AppState {
             tombstone_order: Arc::new(Mutex::new(VecDeque::new())),
             config: Arc::new(config),
             history,
+            conversation,
         }
+    }
+
+    /// The conversation hub, when one was attached.
+    pub fn conversation(&self) -> Option<&crate::navigator::ConversationFeed> {
+        self.conversation.as_ref()
     }
 
     /// The history store, when persistence is enabled.
@@ -779,6 +802,37 @@ impl AppState {
         // A resumed id replaces its tombstone slot: also drop it from the
         // eviction queue so a later close cannot evict the now-live id.
         self.lock_tombstones().retain(|other| *other != session_id);
+        // The conversation hub knows this session (navigator profiles
+        // only): a poster that reuses the POST-message core in-process —
+        // same validation, same event-before-action sequencing, only the
+        // sender is the navigator itself — and a subscriber task that
+        // feeds the session's events into the digest. Failed posts
+        // (stopping, full inbox) surface as the error string the feed
+        // logs; the poster holds its own handle clone so no registry lock
+        // is ever held across an await.
+        let feed_watch = navigator
+            .then_some(self.conversation.as_ref())
+            .flatten()
+            .map(|feed| {
+                feed.register_session(
+                    session_id,
+                    wake_poster(
+                        SessionHandle {
+                            inbox_tx: inbox_tx.clone(),
+                            sequencer: sequencer.clone(),
+                            session_cancel: session_cancel.clone(),
+                            runtime_task: runtime_task.clone(),
+                            actor_id: ROOT_ACTOR_ID.to_string(),
+                            lifecycle: Lifecycle::Active,
+                            actor_state: "idle".to_string(),
+                            workspace: workspace.clone(),
+                            model: alias.clone(),
+                        },
+                        session_id,
+                    ),
+                );
+                (feed.clone(), sequencer.clone(), session_cancel.clone())
+            });
         self.lock_sessions().insert(
             session_id,
             SessionSlot::Live(SessionHandle {
@@ -793,8 +847,64 @@ impl AppState {
                 model: alias.clone(),
             }),
         );
+        if let Some((feed, sequencer, session_cancel)) = feed_watch {
+            tokio::spawn(async move {
+                // Replay first (a resume rebuilds the digest and the
+                // active flag from the stored conversation), then live
+                // until the session ends. A slow feed never slows the
+                // sequencer: the bus disconnects it and the digest simply
+                // stops growing at the tail.
+                let Ok(reply) = sequencer.subscribe_since(None).await else {
+                    return;
+                };
+                if let crate::bus::ResumeOutcome::Replay(events) = reply.replay {
+                    for event in &events {
+                        feed.observe(event).await;
+                    }
+                }
+                let mut live = match reply.live {
+                    Some(live) => live,
+                    None => return,
+                };
+                loop {
+                    tokio::select! {
+                        _ = session_cancel.cancelled() => break,
+                        event = live.recv() => match event {
+                            Some(event) => feed.observe(&event).await,
+                            None => break,
+                        }
+                    }
+                }
+                feed.forget_session(session_id);
+            });
+        }
         Ok(session_id)
     }
+}
+
+/// The feed's wake poster: routes a navigator-sourced message through the
+/// same core `POST /messages` uses. A session already closing swallows the
+/// error (the wake has nowhere to land, not a fault worth logging).
+fn wake_poster(handle: SessionHandle, session_id: SessionId) -> crate::navigator::SessionPost {
+    Arc::new(move |text| {
+        let handle = handle.clone();
+        Box::pin(async move {
+            let command = Command {
+                command_id: Ulid::new(),
+                session_id,
+                source_actor_id: crate::navigator::NAVIGATOR_ACTOR_ID.to_string(),
+                target_actor_id: ROOT_ACTOR_ID.to_string(),
+                mode: DeliveryMode::NextTurn,
+                content: vec![ContentBlock::Text { text }],
+                created_at: SystemTime::now(),
+            };
+            match route_message(&handle, command).await {
+                Ok(_) => Ok(()),
+                Err(_) if handle.session_cancel.is_cancelled() => Ok(()),
+                Err(err) => Err(err.to_string()),
+            }
+        })
+    })
 }
 
 /// The `session.start` candidate: always seq 0 for a fresh session.
@@ -822,7 +932,7 @@ fn build_actor(
         writable_roots: vec![workspace.to_path_buf(), config_dir.to_path_buf()],
     };
     let mut actor = AgentActor::new(
-        build_registry(),
+        build_registry(navigator),
         tool_context,
         resolved.provider,
         api_key,
@@ -844,7 +954,7 @@ fn build_actor(
     actor
 }
 
-fn build_registry() -> Registry {
+fn build_registry(navigator: bool) -> Registry {
     let mut registry = Registry::new();
     registry.register(Box::new(crate::tools::native::ReadTool));
     registry.register(Box::new(crate::tools::native::WriteTool));
@@ -852,6 +962,11 @@ fn build_registry() -> Registry {
     registry.register(Box::new(crate::tools::bash::BashTool));
     registry.register(Box::new(crate::tools::native::GrepTool));
     registry.register(Box::new(crate::tools::control::AskTool));
+    if navigator {
+        // The intent record is the navigator's working memory: only a
+        // navigator-profile cognition may update it.
+        registry.register(Box::new(crate::navigator::intent::IntentTool));
+    }
     registry
 }
 

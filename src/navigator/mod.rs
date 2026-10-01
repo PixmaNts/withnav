@@ -8,6 +8,7 @@
 
 pub mod commenter;
 pub mod config;
+pub mod conversation;
 pub mod default_pipeline;
 pub mod document;
 pub mod intent;
@@ -29,6 +30,7 @@ use tokio_util::sync::CancellationToken;
 
 pub use commenter::{Commenter, LlmCommenter, RemarkContext};
 pub use config::NavigatorConfig;
+pub use conversation::{ConversationFeed, SessionPost, WakeOutcome, NAVIGATOR_ACTOR_ID};
 pub use intent::{read_intent, IntentRecord};
 pub use log::new_ulid_string;
 pub use pipeline::{
@@ -91,6 +93,10 @@ pub struct NavigatorDeps {
     pub reflex_model: Option<String>,
     pub instinct_model: Option<String>,
     pub metacognition_model: Option<String>,
+    /// The conversation feed shared with the session server: the seam a
+    /// `wake_cognition` action posts through. `None` keeps wakes logged as
+    /// `cognition_unavailable` (no active conversation to wake).
+    pub conversation: Option<ConversationFeed>,
     /// The workspace root (upgraded from `rootUri` at initialize when the
     /// client sends one).
     pub workspace: Option<PathBuf>,
@@ -115,6 +121,7 @@ impl NavigatorDeps {
             reflex_model: None,
             instinct_model: None,
             metacognition_model: None,
+            conversation: None,
             workspace: None,
             user_dir: None,
             server_info: None,
@@ -132,6 +139,7 @@ impl NavigatorDeps {
             reflex_model: None,
             instinct_model: None,
             metacognition_model: None,
+            conversation: None,
             workspace: None,
             user_dir: None,
             server_info: None,
@@ -177,6 +185,13 @@ impl NavigatorDeps {
     /// `navigator/serverInfo` after `initialized`.
     pub fn with_server_info(mut self, info: ServerInfoParams) -> Self {
         self.server_info = Some(info);
+        self
+    }
+
+    /// Builder-style: the conversation feed the `wake_cognition` action
+    /// posts through (shared with the in-process session server).
+    pub fn with_conversation(mut self, feed: ConversationFeed) -> Self {
+        self.conversation = Some(feed);
         self
     }
 

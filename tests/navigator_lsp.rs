@@ -868,6 +868,132 @@ async fn server_info_arrives_after_initialized_with_the_configured_values() {
     assert_eq!(info["params"]["token"], "tok-123");
 }
 
+// ---------- wake_cognition delivery ----------
+
+/// A feed whose active conversation is a scripted poster: records every
+/// text posted and answers Ok. Active means one driver message was
+/// observed for a registered session.
+async fn feed_with_active_session() -> (
+    navigator::ConversationFeed,
+    Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    use navigator::conversation::SessionPost;
+    let feed = navigator::ConversationFeed::new();
+    let posted = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = posted.clone();
+    let post: SessionPost = Arc::new(move |text| {
+        sink.lock().unwrap().push(text);
+        Box::pin(async { Ok::<(), String>(()) })
+    });
+    let session_id = ulid::Ulid::new();
+    feed.register_session(session_id, post);
+    feed.observe(&rust_agent::bus::event::EventEnvelope::new(
+        session_id,
+        1,
+        rust_agent::bus::event::EventKind::MessageReceived,
+        serde_json::json!({
+            "command_id": ulid::Ulid::new().to_string(),
+            "source": "user:http",
+            "target": "agent:main",
+            "mode": "next-turn",
+            "content": "add an auth remove command",
+        }),
+    ))
+    .await;
+    (feed, posted)
+}
+
+/// With a feed whose active session exists and an instinct that requests
+/// `wake_cognition`, the branch posts ONCE through the feed and the
+/// trigger record is delivered `wake` with the session id.
+#[tokio::test(start_paused = true)]
+async fn wake_cognition_posts_once_and_logs_wake() {
+    let mock = MockCommenter::new(vec![]);
+    let tmp = tempfile::tempdir().unwrap();
+    let (feed, posted) = feed_with_active_session().await;
+    // The intent record must exist for the built-in wake branch.
+    let ws = tmp.path();
+    std::fs::create_dir_all(ws.join(".navigator")).unwrap();
+    std::fs::write(
+        ws.join(".navigator/intent.md"),
+        "## Intent\nadd an auth remove command",
+    )
+    .unwrap();
+
+    let deps = NavigatorDeps::new(Arc::new(mock), ws.join("nav.jsonl"))
+        .with_conversation(feed)
+        .with_dirs(Some(ws.to_path_buf()), None);
+    // spawn_server wires its ScriptedDecision, whose noul answers (0.9)
+    // fire the built-in drift branch when an intent exists.
+    let mut client = spawn_server(deps);
+
+    client.initialize(json!({})).await;
+    client.did_open(URI, &base_text(), 1).await;
+    client.did_change(URI, &big_edit(), 2).await;
+    client.did_save(URI).await;
+    // The wake path ends with the idle status.
+    client.expect_status("idle").await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let posted = posted.lock().unwrap().clone();
+    assert_eq!(posted.len(), 1, "exactly one wake posted");
+    let message = &posted[0];
+    assert!(message.contains(URI), "names the file: {message}");
+    assert!(
+        message.contains("auth remove command"),
+        "carries the intent: {message}"
+    );
+
+    let records = std::fs::read_to_string(ws.join("nav.jsonl")).unwrap();
+    let trigger: Value = records
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .find(|v: &Value| v["kind"] == "trigger")
+        .expect("a trigger record");
+    assert_eq!(trigger["requested_action"], "wake_cognition");
+    assert_eq!(trigger["delivered"], "wake");
+    assert!(trigger["session"].as_str().is_some(), "session id logged");
+}
+
+/// Without a feed (or with no active conversation), the wake branch keeps
+/// today's behaviour: nothing posted, delivered `none`, reason
+/// `cognition_unavailable`.
+#[tokio::test(start_paused = true)]
+async fn wake_cognition_without_a_feed_logs_cognition_unavailable() {
+    let mock = MockCommenter::new(vec![]);
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path();
+    std::fs::create_dir_all(ws.join(".navigator")).unwrap();
+    std::fs::write(
+        ws.join(".navigator/intent.md"),
+        "## Intent\nadd an auth remove command",
+    )
+    .unwrap();
+    let feed = navigator::ConversationFeed::new(); // registered nothing: no active session
+    let deps = NavigatorDeps::new(Arc::new(mock), ws.join("nav.jsonl"))
+        .with_conversation(feed)
+        .with_dirs(Some(ws.to_path_buf()), None);
+    // spawn_server wires its ScriptedDecision, whose noul answers (0.9)
+    // fire the built-in drift branch when an intent exists.
+    let mut client = spawn_server(deps);
+
+    client.initialize(json!({})).await;
+    client.did_open(URI, &base_text(), 1).await;
+    client.did_change(URI, &big_edit(), 2).await;
+    client.did_save(URI).await;
+    client.expect_status("idle").await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let records = std::fs::read_to_string(ws.join("nav.jsonl")).unwrap();
+    let trigger: Value = records
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .find(|v: &Value| v["kind"] == "trigger")
+        .expect("a trigger record");
+    assert_eq!(trigger["delivered"], "none");
+    assert_eq!(trigger["reason"], "cognition_unavailable");
+}
+
 /// Without `server_info` in the deps, NO `navigator/serverInfo` ever leaves
 /// the server (the chat stays unannounced when its server failed to bind).
 #[tokio::test(start_paused = true)]

@@ -346,3 +346,32 @@ async fn buffer_read_honours_offset_and_limit() {
     assert_eq!(slice("l1\nl2\nl3\n", Some(2), Some(1)), "l2");
     assert_eq!(slice("l1\nl2\nl3\n", Some(9), None), "");
 }
+
+// Given a context carrying the rendered pipeline branch prompt
+// When the metacognition remarks through `Commenter::remark`
+// Then the system message the model receives contains that prompt.
+#[tokio::test]
+async fn the_branch_prompt_reaches_the_models_system_message() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let answer = sse_stream(vec![sse(&delta_text(r#"{"silent": true}"#))]);
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(answer, "text/event-stream"))
+        .mount(&server)
+        .await;
+
+    let c = commenter(server.uri(), None);
+    let mut ctx = remark_ctx(tmp.path(), vec![]);
+    ctx.prompt = Some("Conversation:\ndriver: keep the parser".to_string());
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let _ = c.remark(&ctx, &cancel).await.unwrap();
+
+    let bodies = received_bodies(&server).await;
+    let system = bodies[0]["messages"][0]["content"].as_str().unwrap();
+    assert_eq!(bodies[0]["messages"][0]["role"], "system");
+    assert!(
+        system.contains("driver: keep the parser"),
+        "branch prompt in the system message: {system}"
+    );
+}

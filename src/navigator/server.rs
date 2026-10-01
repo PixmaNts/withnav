@@ -54,8 +54,6 @@ struct Inner {
     state: Mutex<HashMap<String, DocumentState>>,
     language_ids: Mutex<HashMap<String, String>>,
     diagnostics: Mutex<HashMap<String, Vec<Diag>>>,
-    /// Latest remark id per uri (feedback targets it).
-    last_remark_ids: Mutex<HashMap<String, String>>,
     intent: Mutex<Option<String>>,
     /// The recent live state per uri: the last few edit summaries each
     /// `gather` saw, newest last, rendered into `{{live_state}}`.
@@ -95,12 +93,11 @@ struct Inner {
 }
 
 /// The reflex context the metacognition keeps current: the text served in
-/// front of the code, when and from what it was computed. Until the first
+/// front of the code and what it was computed from. Until the first
 /// refresh succeeds `text` is None and the intent summary is served.
 #[derive(Default)]
 struct ReflexContextCache {
     text: Option<String>,
-    computed_at: Option<Instant>,
     /// Hash of (intent summary, conversation digest, active file uri) the
     /// current text was computed from.
     inputs: Option<u64>,
@@ -141,7 +138,6 @@ impl NavigatorBackend {
                 state: Mutex::new(HashMap::new()),
                 language_ids: Mutex::new(HashMap::new()),
                 diagnostics: Mutex::new(HashMap::new()),
-                last_remark_ids: Mutex::new(HashMap::new()),
                 intent: Mutex::new(None),
                 live_state: Mutex::new(HashMap::new()),
                 workspace: Mutex::new(deps.workspace),
@@ -371,6 +367,12 @@ impl TriggerContext {
             (
                 "since_last_remark_ms".to_string(),
                 serde_json::json!(self.since_last_remark_ms),
+            ),
+            ("has_errors".to_string(), serde_json::json!(self.has_errors)),
+            ("has_intent".to_string(), serde_json::json!(self.has_intent)),
+            (
+                "has_conversation".to_string(),
+                serde_json::json!(self.has_conversation),
             ),
         ])
     }
@@ -955,10 +957,6 @@ impl Inner {
                     model: &model,
                     latency_ms: latency,
                 });
-                self.last_remark_ids
-                    .lock()
-                    .await
-                    .insert(uri.clone(), id.clone());
                 self.client
                     .send_notification::<RemarkNotification>(RemarkParams {
                         id: id.clone(),
@@ -1206,14 +1204,13 @@ impl Inner {
             .lock()
             .await
             .insert(uri.clone(), doc.language_id.clone());
-        let now = Instant::now();
         let version;
         {
             let mut state = self.state.lock().await;
             let entry = state
                 .entry(uri.clone())
-                .or_insert_with(|| DocumentState::new(String::new(), 0, now));
-            entry.apply_change(doc.text, doc.version, now);
+                .or_insert_with(|| DocumentState::new(String::new(), 0));
+            entry.apply_change(doc.text, doc.version);
             entry.rebase();
             version = entry.version;
         }
@@ -1231,7 +1228,6 @@ impl Inner {
             .next()
             .map(|c| c.text)
             .unwrap_or_default();
-        let now = Instant::now();
         {
             let mut state = self.state.lock().await;
             match state.get_mut(&uri) {
@@ -1241,10 +1237,10 @@ impl Inner {
                     if line > 0 {
                         doc.last_edit_line = line;
                     }
-                    doc.apply_change(text, version, now);
+                    doc.apply_change(text, version);
                 }
                 None => {
-                    let mut doc = DocumentState::new(text, version, now);
+                    let mut doc = DocumentState::new(text, version);
                     doc.rebase();
                     state.insert(uri.clone(), doc);
                 }
@@ -1281,7 +1277,6 @@ impl Inner {
         }
         self.language_ids.lock().await.remove(&uri);
         self.diagnostics.lock().await.remove(&uri);
-        self.last_remark_ids.lock().await.remove(&uri);
         self.live_state.lock().await.remove(&uri);
         self.client
             .send_notification::<ClearNotification>(ClearParams { uri })
@@ -1400,7 +1395,6 @@ impl Inner {
                         text.trim(),
                         REFLEX_CONTEXT_MAX_CHARS,
                     ));
-                    cache.computed_at = Some(Instant::now());
                     cache.inputs = Some(inputs);
                 }
                 Ok(_) => inner.log.append(&LogRecord::Error {

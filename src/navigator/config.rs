@@ -1,16 +1,14 @@
 use serde::{Deserialize, Serialize};
 
-/// Navigator thresholds, passed as `initializationOptions` and updated via
-/// `workspace/didChangeConfiguration`. All fields have defaults matching the
-/// spec: idle 3000 ms, min changed lines 3, cooldown 20000 ms.
+/// Navigator settings, passed as `initializationOptions` and updated via
+/// `workspace/didChangeConfiguration`. The pre-filter thresholds and the
+/// instinct's model live in the decision pipeline; keys the editor still
+/// sends for them are ignored, never rejected.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct NavigatorConfig {
     pub enabled: bool,
     pub idle_ms: u64,
-    pub min_changed_lines: usize,
-    pub cooldown_ms: u64,
-    pub model_alias: String,
 }
 
 impl Default for NavigatorConfig {
@@ -18,9 +16,6 @@ impl Default for NavigatorConfig {
         Self {
             enabled: true,
             idle_ms: 3000,
-            min_changed_lines: 3,
-            cooldown_ms: 20_000,
-            model_alias: "fast".to_string(),
         }
     }
 }
@@ -43,19 +38,28 @@ mod tests {
         let c = NavigatorConfig::default();
         assert!(c.enabled);
         assert_eq!(c.idle_ms, 3000);
-        assert_eq!(c.min_changed_lines, 3);
-        assert_eq!(c.cooldown_ms, 20_000);
-        assert_eq!(c.model_alias, "fast");
     }
 
     #[test]
     fn parse_overrides_some_fields() {
         let base = NavigatorConfig::default();
-        let v = serde_json::json!({"idleMs": 1500, "modelAlias": "default"});
+        let v = serde_json::json!({"idleMs": 1500});
         let c = NavigatorConfig::from_value(&v, &base);
         assert_eq!(c.idle_ms, 1500);
-        assert_eq!(c.model_alias, "default");
-        assert_eq!(c.min_changed_lines, base.min_changed_lines);
+        assert!(c.enabled);
+    }
+
+    #[test]
+    fn keys_the_pipeline_now_owns_still_parse() {
+        let base = NavigatorConfig::default();
+        let v = serde_json::json!({
+            "idleMs": 1500,
+            "minChangedLines": 1,
+            "cooldownMs": 60000,
+            "modelAlias": "default",
+        });
+        let c = NavigatorConfig::from_value(&v, &base);
+        assert_eq!(c.idle_ms, 1500, "the rest of the object is not discarded");
     }
 
     #[test]

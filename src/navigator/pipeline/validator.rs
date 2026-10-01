@@ -15,15 +15,6 @@ type CtxNumeric = evalexpr::DefaultNumericTypes;
 use super::{BranchDef, PipelineError, TriggerDef, TriggerInputs};
 use crate::navigator::pipeline::templates;
 
-/// The always-available expression variables.
-pub const ALWAYS_AVAILABLE: [&str; 5] = [
-    "changed_lines",
-    "since_last_remark_ms",
-    "has_errors",
-    "has_intent",
-    "has_conversation",
-];
-
 /// Compiles one `when` expression with builtin functions disabled and no
 /// assignment. Returns the variable identifiers it reads.
 pub(crate) fn compile_when(

@@ -215,17 +215,27 @@ impl LoggedTrigger {
             })
             .unwrap_or_default();
         let has_template_inputs = value.get("template_inputs").is_some();
-        // The server derived these two from the intent record and the latest
-        // diagnostics, both of which are in the stored template inputs.
-        let has_intent = template_inputs
-            .get("intent")
-            .is_some_and(|intent| !intent.trim().is_empty());
-        let has_errors = template_inputs
-            .get("diagnostics")
-            .is_some_and(|diagnostics| diagnostics.contains("[error]"));
-        let has_conversation = template_inputs
-            .get("conversation")
-            .is_some_and(|conversation| !conversation.trim().is_empty());
+        // Records carry the flags the server computed. Older records did
+        // not, so those are derived from the stored template inputs (the
+        // intent record, the latest diagnostics, the conversation digest);
+        // that guess can be fooled by prose, which is why a logged value
+        // always wins.
+        let logged_flag = |key: &str| inputs.get(key).and_then(Value::as_bool);
+        let has_intent = logged_flag("has_intent").unwrap_or_else(|| {
+            template_inputs
+                .get("intent")
+                .is_some_and(|intent| !intent.trim().is_empty())
+        });
+        let has_errors = logged_flag("has_errors").unwrap_or_else(|| {
+            template_inputs
+                .get("diagnostics")
+                .is_some_and(|diagnostics| diagnostics.contains("[error]"))
+        });
+        let has_conversation = logged_flag("has_conversation").unwrap_or_else(|| {
+            template_inputs
+                .get("conversation")
+                .is_some_and(|conversation| !conversation.trim().is_empty())
+        });
 
         Ok(Self {
             trigger_id,
@@ -1010,6 +1020,25 @@ action = "silent"
         let trigger = &ReplayLog::parse(&line).triggers[0];
         assert!(trigger.inputs.has_intent);
         assert!(trigger.inputs.has_errors);
+    }
+
+    #[test]
+    fn logged_flags_win_over_the_prose_derivation() {
+        // The diagnostics text mentions `[error]` and the intent is filled,
+        // but the server logged that neither flag held: replay believes it.
+        let line = TRIGGER
+            .replace(
+                r#""intent":"","diagnostics":"""#,
+                r#""intent":"ship the replay","diagnostics":"line 3: [error] quoted in a comment""#,
+            )
+            .replace(
+                r#""since_last_remark_ms":4611686018427387903}"#,
+                r#""since_last_remark_ms":4611686018427387903,"has_errors":false,"has_intent":false,"has_conversation":true}"#,
+            );
+        let trigger = &ReplayLog::parse(&line).triggers[0];
+        assert!(!trigger.inputs.has_errors);
+        assert!(!trigger.inputs.has_intent);
+        assert!(trigger.inputs.has_conversation, "even with no digest text");
     }
 
     #[test]

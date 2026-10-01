@@ -11,9 +11,6 @@ pub struct DocumentState {
     pub version: i32,
     /// Text at the last remark, or at open.
     pub baseline: String,
-    /// Instant of the last edit (didOpen or didChange). Pausable clock
-    /// (tokio Instant) so tests control cooldowns deterministically.
-    pub last_edit: Instant,
     /// Instant of the last emitted remark, if any.
     pub last_remark: Option<Instant>,
     /// 1-based line of the last edit that inserted text (0: none yet).
@@ -26,12 +23,11 @@ pub struct DocumentState {
 }
 
 impl DocumentState {
-    pub fn new(text: String, version: i32, now: Instant) -> Self {
+    pub fn new(text: String, version: i32) -> Self {
         Self {
             text,
             version,
             baseline: String::new(),
-            last_edit: now,
             last_remark: None,
             last_edit_line: 0,
             in_flight_version: None,
@@ -39,11 +35,10 @@ impl DocumentState {
         }
     }
 
-    /// Full-sync update: replaces text, bumps version, stamps the edit time.
-    pub fn apply_change(&mut self, text: String, version: i32, now: Instant) {
+    /// Full-sync update: replaces text and bumps version.
+    pub fn apply_change(&mut self, text: String, version: i32) {
         self.text = text;
         self.version = version;
-        self.last_edit = now;
     }
 
     /// Number of changed lines since the baseline (added + removed).

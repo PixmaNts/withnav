@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rust_agent::agent::actor::AgentActor;
@@ -10,13 +10,11 @@ use rust_agent::tools::bash::BashTool;
 use rust_agent::tools::control::AskTool;
 use rust_agent::tools::native::{EditTool, GrepTool, ReadTool, WriteTool};
 use rust_agent::tools::{Registry, ToolContext};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
 mod common;
-use common::sse::{http_sse, sse_body};
+use common::sse::{http_sse, spawn_responding_provider, sse_body, CapturingProvider};
 
 fn bad_request(reason: &str) -> Vec<u8> {
     let body = format!("{{\"error\":{{\"message\":\"malformed continuation: {reason}\"}}}}");
@@ -28,143 +26,71 @@ fn bad_request(reason: &str) -> Vec<u8> {
     .into_bytes()
 }
 
-fn tool_chunk(id: &str, name: &str, args: &str) -> String {
-    format!(
-        r#"{{"choices":[{{"index":0,"delta":{{"reasoning_content":"planning {name}","tool_calls":[{{"index":0,"id":"{id}","function":{{"name":"{name}","arguments":{args}}}}}]}},"finish_reason":"tool_calls"}}]}}"#
-    )
+/// One streamed assistant turn calling `name` with the JSON `args`.
+fn tool_chunk(id: &str, name: &str, args: &Value) -> String {
+    json!({"choices": [{"index": 0, "finish_reason": "tool_calls", "delta": {
+        "reasoning_content": format!("planning {name}"),
+        "tool_calls": [{"index": 0, "id": id, "function": {
+            "name": name, "arguments": args.to_string(),
+        }}],
+    }}]})
+    .to_string()
 }
 
 fn done_chunk(text: &str) -> String {
-    format!(
-        r#"{{"choices":[{{"index":0,"delta":{{"content":"{text}"}},"finish_reason":"stop"}}]}}"#
-    )
-}
-
-async fn read_http(sock: &mut TcpStream) -> String {
-    let mut buf = Vec::new();
-    let mut tmp = [0u8; 8192];
-    loop {
-        let n = sock.read(&mut tmp).await.unwrap_or(0);
-        if n == 0 {
-            break;
-        }
-        buf.extend_from_slice(&tmp[..n]);
-        let s = String::from_utf8_lossy(&buf);
-        if let Some(idx) = s.find("\r\n\r\n") {
-            let header = &s[..idx];
-            let clen = header
-                .lines()
-                .find_map(|l| {
-                    l.to_lowercase()
-                        .strip_prefix("content-length:")
-                        .map(|v| v.trim().parse::<usize>().unwrap_or(0))
-                })
-                .unwrap_or(0);
-            if buf.len() >= idx + 4 + clen {
-                break;
-            }
-        }
-    }
-    String::from_utf8_lossy(&buf).into_owned()
+    json!({"choices": [{"index": 0, "finish_reason": "stop", "delta": {"content": text}}]})
+        .to_string()
 }
 
 /// A scripted mock OmniRoute that drives the agent through all five native
 /// tools plus `ask`, and rejects any continuation whose previous tool result is
 /// missing (so a broken transcript implementation FAILS the test).
-async fn spawn_scripted_mock(workspace: PathBuf) -> (String, Arc<Mutex<Vec<String>>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let requests = Arc::new(Mutex::new(Vec::new()));
-    let reqs = requests.clone();
+async fn spawn_scripted_mock(workspace: &Path) -> CapturingProvider {
+    let src = workspace.join("src").display().to_string();
+    let lib_rs = format!("{src}/lib.rs");
+    let notes = workspace.join("NOTES.txt").display().to_string();
 
-    let src = workspace.join("src");
-    let lib_rs = src.join("lib.rs").to_string_lossy().into_owned();
-    let created = workspace.join("NOTES.txt").to_string_lossy().into_owned();
-
-    let script: Vec<(String, Vec<u8>)> = vec![
+    // (call id, tool, arguments): each request must carry the result of the
+    // previous row's call id, and is answered with this row's call.
+    let calls = [
+        ("c_read", "read", json!({"path": lib_rs})),
+        ("c_grep", "grep", json!({"pattern": "add", "path": src})),
         (
-            String::new(),
-            http_sse(&sse_body(&[&tool_chunk(
-                "c_read",
-                "read",
-                &format!("\"{{\\\"path\\\":\\\"{}\\\"}}\"", lib_rs.replace('\\', "\\\\")),
-            )])),
+            "c_write",
+            "write",
+            json!({"path": notes, "content": "notes"}),
         ),
         (
-            "c_read".into(),
-            http_sse(&sse_body(&[&tool_chunk(
-                "c_grep",
-                "grep",
-                &format!(
-                    "\"{{\\\"pattern\\\":\\\"add\\\",\\\"path\\\":\\\"{}\\\"}}\"",
-                    src.to_string_lossy().replace('\\', "\\\\")
-                ),
-            )])),
+            "c_edit",
+            "edit",
+            json!({"path": notes, "old_string": "notes", "new_string": "edited"}),
         ),
-        (
-            "c_grep".into(),
-            http_sse(&sse_body(&[&tool_chunk(
-                "c_write",
-                "write",
-                &format!(
-                    "\"{{\\\"path\\\":\\\"{}\\\",\\\"content\\\":\\\"notes\\\"}}\"",
-                    created.replace('\\', "\\\\")
-                ),
-            )])),
-        ),
-        (
-            "c_write".into(),
-            http_sse(&sse_body(&[&tool_chunk(
-                "c_edit",
-                "edit",
-                &format!(
-                    "\"{{\\\"path\\\":\\\"{}\\\",\\\"old_string\\\":\\\"notes\\\",\\\"new_string\\\":\\\"edited\\\"}}\"",
-                    created.replace('\\', "\\\\")
-                ),
-            )])),
-        ),
-        (
-            "c_edit".into(),
-            http_sse(&sse_body(&[&tool_chunk(
-                "c_bash",
-                "bash",
-                "\"{\\\"command\\\":\\\"echo done\\\"}\"",
-            )])),
-        ),
-        (
-            "c_bash".into(),
-            http_sse(&sse_body(&[&tool_chunk(
-                "c_ask",
-                "ask",
-                "\"{\\\"question\\\":\\\"proceed?\\\"}\"",
-            )])),
-        ),
-        ("c_ask".into(), http_sse(&sse_body(&[&done_chunk("all tools exercised")]))),
+        ("c_bash", "bash", json!({"command": "echo done"})),
+        ("c_ask", "ask", json!({"question": "proceed?"})),
     ];
+    let mut script: Vec<(Option<&str>, Vec<u8>)> = Vec::new();
+    for (i, (id, name, args)) in calls.iter().enumerate() {
+        let prev = i.checked_sub(1).map(|p| calls[p].0);
+        script.push((prev, http_sse(&sse_body(&[&tool_chunk(id, name, args)]))));
+    }
+    script.push((
+        Some("c_ask"),
+        http_sse(&sse_body(&[&done_chunk("all tools exercised")])),
+    ));
 
-    tokio::spawn(async move {
-        for (expect_prev_id, resp) in script {
-            let Ok((mut sock, _)) = listener.accept().await else {
-                break;
-            };
-            let req = read_http(&mut sock).await;
-            reqs.lock().await.push(req.clone());
-
-            let response = if !expect_prev_id.is_empty()
-                && !(req.contains(&format!("\"tool_call_id\":\"{expect_prev_id}\""))
-                    && req.contains("\"role\":\"tool\""))
+    spawn_responding_provider(script.len(), move |i, req| {
+        let (expect_prev_id, resp) = &script[i];
+        match expect_prev_id {
+            Some(prev)
+                if !(req.contains(&format!("\"tool_call_id\":\"{prev}\""))
+                    && req.contains("\"role\":\"tool\"")) =>
             {
-                bad_request(&format!("missing role:tool for {expect_prev_id}"))
-            } else {
-                resp
-            };
-            let _ = sock.write_all(&response).await;
-            let _ = sock.flush().await;
-            let _ = sock.shutdown().await;
+                bad_request(&format!("missing role:tool for {prev}"))
+            }
+            _ => resp.clone(),
         }
-    });
-
-    (format!("http://{addr}/v1"), requests)
+    })
+    .await
 }
 
 fn build_actor(base_url: String, workspace: PathBuf, cancel: CancellationToken) -> AgentActor {
@@ -209,9 +135,8 @@ async fn mock_full_loop_exercises_all_five_tools_and_ask() {
     )
     .unwrap();
 
-    let (url, requests) = spawn_scripted_mock(ws.clone()).await;
-    let cancel = CancellationToken::new();
-    let mut actor = build_actor(url, ws.clone(), cancel);
+    let mock = spawn_scripted_mock(&ws).await;
+    let mut actor = build_actor(mock.url.clone(), ws.clone(), CancellationToken::new());
     actor.push_user("exercise every tool then ask");
 
     let mut noop = |_e: AgentEvent| {};
@@ -232,7 +157,7 @@ async fn mock_full_loop_exercises_all_five_tools_and_ask() {
         "edited"
     );
 
-    let reqs = requests.lock().await;
+    let reqs = mock.requests();
     assert!(reqs.len() >= 7, "expected >=7 requests, got {}", reqs.len());
     for prev in ["c_read", "c_grep", "c_write", "c_edit", "c_bash"] {
         assert!(

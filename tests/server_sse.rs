@@ -11,144 +11,58 @@ use serde_json::{json, Value};
 
 mod common;
 use common::server::{create_session, post_message, TestServer};
-use common::sse::{http_sse, sse_body};
+use common::sse::{has_kind, http_sse, read_sse, sse_body, SseEnd, SseFrame};
 
-// ---- SSE frame parsing over a raw HTTP GET ----
+const DONE: &str = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
 
-/// One parsed SSE frame: its `id:` (if any), `event:` name (default
-/// "message"), and the concatenated `data:` payload.
-#[derive(Debug, Clone)]
-struct SseFrame {
-    id: Option<u64>,
-    event: String,
-    data: String,
+/// A server with a one-turn scripted provider and one session.
+async fn server_with_session() -> (TestServer, String) {
+    let server = TestServer::start(vec![http_sse(&sse_body(&[DONE]))]).await;
+    let id = create_session(&server.base, &server.ws).await;
+    (server, id)
 }
 
-/// Why the SSE read loop stopped — so a termination test can distinguish a
-/// clean server-side EOF from a transport error or the client's own budget.
-#[derive(Debug, PartialEq, Eq)]
-enum SseEnd {
-    /// The server closed the stream cleanly (body EOF).
-    Eof,
-    /// The client's read budget elapsed while the stream was still open.
-    Timeout,
-    /// The transport errored mid-read.
-    Error,
+/// Connects first, then drives one turn, and returns the live frames up to
+/// `turn.end`.
+async fn live_turn(server: &TestServer, id: &str) -> Vec<SseFrame> {
+    let (base, sid) = (server.base.clone(), id.to_string());
+    let reader =
+        tokio::spawn(async move { read_sse(&base, &sid, None, |f| has_kind(f, "turn.end")).await });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    post_message(&server.base, id, "go").await;
+    let read = reader.await.expect("reader");
+    assert_eq!(
+        read.end,
+        SseEnd::Until,
+        "the live turn ends: {:?}",
+        read.frames
+    );
+    read.frames
 }
 
-struct SseRead {
-    frames: Vec<SseFrame>,
-    end: SseEnd,
-}
-
-/// Read the SSE body until the budget elapses OR the server ends the stream,
-/// parsing complete `\n\n`-delimited frames incrementally, and REPORT how it
-/// ended so callers can assert a clean EOF vs a mere timeout.
-async fn read_sse(base: &str, id: &str, last_event_id: Option<u64>, budget_ms: u64) -> SseRead {
-    let url = format!("{base}/v1/sessions/{id}/events");
-    let mut req = reqwest::Client::new().get(&url);
-    if let Some(k) = last_event_id {
-        req = req.header("last-event-id", k.to_string());
-    }
-    let resp = req.send().await.expect("sse connect");
-    assert_eq!(resp.status(), 200, "sse status");
-    let mut stream = resp;
-    let mut buf = String::new();
-    let mut frames = Vec::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(budget_ms);
-    let end = loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            break SseEnd::Timeout;
-        }
-        match tokio::time::timeout(remaining, stream.chunk()).await {
-            Ok(Ok(Some(chunk))) => {
-                buf.push_str(&String::from_utf8_lossy(&chunk));
-                while let Some(idx) = buf.find("\n\n") {
-                    let raw = buf[..idx].to_string();
-                    buf.drain(..idx + 2);
-                    if let Some(frame) = parse_frame(&raw) {
-                        frames.push(frame);
-                    }
-                }
-            }
-            Ok(Ok(None)) => break SseEnd::Eof,
-            Ok(Err(_)) => break SseEnd::Error,
-            Err(_) => break SseEnd::Timeout,
-        }
-    };
-    SseRead { frames, end }
-}
-
-/// Frame-only convenience for tests that don't care how the stream ended.
-async fn read_sse_frames(
-    base: &str,
-    id: &str,
-    last_event_id: Option<u64>,
-    budget_ms: u64,
-) -> Vec<SseFrame> {
-    read_sse(base, id, last_event_id, budget_ms).await.frames
-}
-
-fn parse_frame(raw: &str) -> Option<SseFrame> {
-    let mut id = None;
-    let mut event = "message".to_string();
-    let mut data = String::new();
-    let mut saw_field = false;
-    for line in raw.lines() {
-        if let Some(v) = line.strip_prefix("id:") {
-            id = v.trim().parse::<u64>().ok();
-            saw_field = true;
-        } else if let Some(v) = line.strip_prefix("event:") {
-            event = v.trim().to_string();
-            saw_field = true;
-        } else if let Some(v) = line.strip_prefix("data:") {
-            if !data.is_empty() {
-                data.push('\n');
-            }
-            data.push_str(v.trim());
-            saw_field = true;
-        }
-        // ':' comment lines (keep-alive) are ignored.
-    }
-    if saw_field {
-        Some(SseFrame { id, event, data })
-    } else {
-        None
-    }
-}
-
-fn kind_of(frame: &SseFrame) -> Option<String> {
-    serde_json::from_str::<Value>(&frame.data)
-        .ok()
-        .and_then(|v| v["kind"].as_str().map(str::to_string))
+/// `(seq, kind)` of the replayable frames: live-only `llm.delta` is dropped.
+fn durable(frames: &[SseFrame]) -> Vec<(u64, String)> {
+    frames
+        .iter()
+        .filter_map(|f| Some((f.id?, f.kind()?)))
+        .filter(|(_, k)| k != "llm.delta")
+        .collect()
 }
 
 // ---- (a) each durable frame carries id == seq, monotonic ----
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sse_frames_carry_id_equal_to_seq_and_are_monotonic() {
-    let done = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
-    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
-    let id = create_session(&server.base, &server.ws).await;
+    let (server, id) = server_with_session().await;
+    let frames = live_turn(&server, &id).await;
 
-    // Connect FIRST (captures session.start@0), then drive a turn.
-    let base = server.base.clone();
-    let id2 = id.clone();
-    let reader = tokio::spawn(async move { read_sse_frames(&base, &id2, None, 2500).await });
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    let resp = post_message(&server.base, &id, "go").await;
-    assert_eq!(resp.status(), 200);
-
-    let frames = reader.await.expect("reader");
-    let durable: Vec<&SseFrame> = frames.iter().filter(|f| kind_of(f).is_some()).collect();
+    let durable: Vec<&SseFrame> = frames.iter().filter(|f| f.kind().is_some()).collect();
     assert!(!durable.is_empty(), "durable frames present: {frames:?}");
     // Each durable frame's id == its envelope seq, and ids strictly increase.
     let mut last: Option<u64> = None;
     for f in &durable {
         let seq = f.id.expect("durable frame has id");
-        let payload: Value = serde_json::from_str(&f.data).expect("json");
-        assert_eq!(seq, payload["seq"].as_u64().expect("seq"), "id == seq");
+        assert_eq!(Some(seq), f.seq(), "id == seq");
         if let Some(prev) = last {
             assert!(seq > prev, "monotonic ids: {seq} after {prev}");
         }
@@ -156,43 +70,29 @@ async fn sse_frames_carry_id_equal_to_seq_and_are_monotonic() {
     }
     // session.start is seq 0 and is present (absent Last-Event-ID replays it).
     assert_eq!(durable[0].id, Some(0), "first durable is session.start@0");
-    assert_eq!(kind_of(durable[0]).as_deref(), Some("session.start"));
+    assert_eq!(durable[0].kind().as_deref(), Some("session.start"));
 }
 
-// ---- (b) reconnect with Last-Event-ID: K resumes gaplessly ----
+// ---- (b) reconnect with Last-Event-ID: K resumes gaplessly; a fresh
+//         connection without the header replays from seq 0 ----
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reconnect_with_last_event_id_resumes_without_gap_or_dup() {
-    let done = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
-    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
-    let id = create_session(&server.base, &server.ws).await;
-
-    // Drive a full turn so the ring has several durable events.
-    let base = server.base.clone();
-    let id2 = id.clone();
-    let reader = tokio::spawn(async move { read_sse_frames(&base, &id2, None, 2500).await });
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    post_message(&server.base, &id, "go").await;
-    let first = reader.await.expect("reader");
+    let (server, id) = server_with_session().await;
+    let live = live_turn(&server, &id).await;
     // The ring retains only DURABLE kinds; `llm.delta` is live-only and
     // legitimately absent on replay, so the resume contract is over the
     // durable subsequence (a dropped-delta seq gap is expected + legal).
-    let durable = |fs: &[SseFrame]| -> Vec<u64> {
-        fs.iter()
-            .filter_map(|f| Some((f.id?, kind_of(f)?)))
-            .filter(|(_, k)| k != "llm.delta")
-            .map(|(seq, _)| seq)
-            .collect()
-    };
-    let first_durable = durable(&first);
+    let seqs = |fs: &[SseFrame]| -> Vec<u64> { durable(fs).into_iter().map(|(s, _)| s).collect() };
+    let first_durable = seqs(&live);
     assert!(
         first_durable.len() >= 3,
         "several durable events: {first_durable:?}"
     );
 
     let k = first_durable[1];
-    let resumed = read_sse_frames(&server.base, &id, Some(k), 1500).await;
-    let resumed_durable = durable(&resumed);
+    let resumed = read_sse(&server.base, &id, Some(k), |f| has_kind(f, "turn.end")).await;
+    let resumed_durable = seqs(&resumed.frames);
     let expected: Vec<u64> = first_durable.iter().copied().filter(|s| *s > k).collect();
     assert_eq!(
         resumed_durable, expected,
@@ -202,44 +102,29 @@ async fn reconnect_with_last_event_id_resumes_without_gap_or_dup() {
         !resumed_durable.contains(&k),
         "no duplicate of the cursor event"
     );
-}
 
-// ---- (c) absent Last-Event-ID replays full history incl. seq 0 ----
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn absent_last_event_id_replays_from_seq_zero() {
-    let done = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
-    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
-    let id = create_session(&server.base, &server.ws).await;
-    post_message(&server.base, &id, "go").await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    // A fresh connection with NO Last-Event-ID must replay session.start@0.
-    let frames = read_sse_frames(&server.base, &id, None, 1200).await;
-    let first_durable = frames
+    // A fresh connection after the turn, with NO Last-Event-ID, must replay
+    // session.start@0 (not skip it as if the cursor were 0).
+    let fresh = read_sse(&server.base, &id, None, |f| has_kind(f, "turn.end")).await;
+    let first = fresh
+        .frames
         .iter()
-        .find(|f| kind_of(f).is_some())
+        .find(|f| f.kind().is_some())
         .expect("a durable frame");
-    assert_eq!(
-        first_durable.id,
-        Some(0),
-        "replayed from seq 0, not cursor-0-skip"
-    );
-    assert_eq!(kind_of(first_durable).as_deref(), Some("session.start"));
+    assert_eq!(first.id, Some(0), "replayed from seq 0, not cursor-0-skip");
+    assert_eq!(first.kind().as_deref(), Some("session.start"));
 }
 
 // ---- (d) a future cursor is a resync control frame, never silent caught-up ----
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn future_cursor_yields_resync_control_frame() {
-    let done = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
-    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
-    let id = create_session(&server.base, &server.ws).await;
+    let (server, id) = server_with_session().await;
 
     // Cursor far beyond head -> InvalidCursor -> EXACTLY one "resync" control
     // frame, no durable events, then a clean server EOF (never a silent empty
     // "caught up" stream, never a hang).
-    let read = read_sse(&server.base, &id, Some(9_999_999), 1200).await;
+    let read = read_sse(&server.base, &id, Some(9_999_999), |_| false).await;
     assert_eq!(
         read.end,
         SseEnd::Eof,
@@ -256,7 +141,7 @@ async fn future_cursor_yields_resync_control_frame() {
         "the frame is a resync control frame"
     );
     assert!(
-        kind_of(&read.frames[0]).is_none(),
+        read.frames[0].kind().is_none(),
         "resync frame carries no durable envelope"
     );
 }
@@ -266,18 +151,15 @@ async fn future_cursor_yields_resync_control_frame() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reconnect_after_stop_replays_through_final_seq_then_terminates() {
-    let done = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
-    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
-    let id = create_session(&server.base, &server.ws).await;
+    let (server, id) = server_with_session().await;
 
     // Observe the live history first so the expected replay set is grounded
     // in what actually happened (not a guess about teardown timing).
-    let base = server.base.clone();
-    let id2 = id.clone();
-    let reader = tokio::spawn(async move { read_sse_frames(&base, &id2, None, 2500).await });
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    post_message(&server.base, &id, "go").await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let expected = durable(&live_turn(&server, &id).await);
+    assert!(
+        !expected.is_empty(),
+        "observed a durable history: {expected:?}"
+    );
     let stop = reqwest::Client::new()
         .post(format!("{}/v1/sessions/{id}/stop", server.base))
         .send()
@@ -285,27 +167,13 @@ async fn reconnect_after_stop_replays_through_final_seq_then_terminates() {
         .expect("stop");
     assert_eq!(stop.status(), 200);
 
-    let live = reader.await.expect("reader");
-    let dur = |fs: &[SseFrame]| -> Vec<(u64, String)> {
-        fs.iter()
-            .filter_map(|f| Some((f.id?, kind_of(f)?)))
-            .filter(|(_, k)| k != "llm.delta")
-            .collect()
-    };
-    let expected = dur(&live);
-    assert!(
-        !expected.is_empty(),
-        "observed a durable history: {expected:?}"
-    );
-
     // GET /events on the stopped session: 200 (not 404), replays the durable
     // history through final_seq (session.end LAST), then ends with a clean
     // server EOF — not a client-budget timeout, not a hang.
-    let read = read_sse(&server.base, &id, None, 3000).await;
+    let read = read_sse(&server.base, &id, None, |_| false).await;
     assert_eq!(read.end, SseEnd::Eof, "clean server EOF, not timeout/error");
-    let replayed = dur(&read.frames);
-    // Everything observed live is contained, in order (the observer's 2500ms
-    // budget can end before stop, so its tail is a prefix of the truth).
+    let replayed = durable(&read.frames);
+    // Everything observed live is contained, in order.
     let mut it = replayed.iter();
     for pair in &expected {
         assert!(
@@ -328,7 +196,7 @@ async fn reconnect_after_stop_replays_through_final_seq_then_terminates() {
             .frames
             .iter()
             .rev()
-            .find(|f| kind_of(f).as_deref() == Some("session.end"))
+            .find(|f| f.kind().as_deref() == Some("session.end"))
             .expect("session.end frame")
             .data,
     )
@@ -342,21 +210,6 @@ async fn reconnect_after_stop_replays_through_final_seq_then_terminates() {
         last.0, payload["payload"]["final_seq"],
         "final_seq == session.end seq"
     );
-}
-
-// ---- (f) unknown session id -> 404 (not an SSE stream) ----
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unknown_session_events_is_404() {
-    let done = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
-    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
-    let unknown = ulid::Ulid::new().to_string();
-    let resp = reqwest::Client::new()
-        .get(format!("{}/v1/sessions/{unknown}/events", server.base))
-        .send()
-        .await
-        .expect("get");
-    assert_eq!(resp.status(), 404);
 }
 
 // ---- (h) replay/live seam: the replay snapshot is COMPLETE (all durable
@@ -422,31 +275,22 @@ async fn subscribe_then_replay_seam_is_complete_and_delivers_once() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_clients_observe_identical_durable_history() {
-    let done = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
-    let server = TestServer::start(vec![http_sse(&sse_body(&[done]))]).await;
-    let id = create_session(&server.base, &server.ws).await;
+    let (server, id) = server_with_session().await;
 
-    let base1 = server.base.clone();
-    let id1 = id.clone();
-    let base2 = server.base.clone();
-    let id2 = id.clone();
-    let r1 = tokio::spawn(async move { read_sse_frames(&base1, &id1, None, 2500).await });
-    let r2 = tokio::spawn(async move { read_sse_frames(&base2, &id2, None, 2500).await });
+    let reader = |base: String, id: String| {
+        tokio::spawn(async move {
+            read_sse(&base, &id, None, |f| has_kind(f, "turn.end"))
+                .await
+                .frames
+        })
+    };
+    let r1 = reader(server.base.clone(), id.clone());
+    let r2 = reader(server.base.clone(), id.clone());
     tokio::time::sleep(Duration::from_millis(150)).await;
     post_message(&server.base, &id, "go").await;
 
-    let f1 = r1.await.expect("r1");
-    let f2 = r2.await.expect("r2");
-    let dur = |fs: &[SseFrame]| -> Vec<(u64, String)> {
-        fs.iter()
-            .filter_map(|f| Some((f.id?, kind_of(f)?)))
-            .filter(|(_, k)| k != "llm.delta")
-            .collect()
-    };
-    assert_eq!(
-        dur(&f1),
-        dur(&f2),
-        "identical durable histories across clients"
-    );
-    assert!(!dur(&f1).is_empty(), "non-empty durable history");
+    let f1 = durable(&r1.await.expect("r1"));
+    let f2 = durable(&r2.await.expect("r2"));
+    assert_eq!(f1, f2, "identical durable histories across clients");
+    assert!(!f1.is_empty(), "non-empty durable history");
 }

@@ -119,9 +119,7 @@ async fn navigator_profile_sends_the_cognition_prompt_as_second_system_message()
         },
         rust_agent::bus::command::DeliveryMode::NextTurn,
     );
-    let ack = rust_agent::server::routes::route_message(&handle, command)
-        .await
-        .expect("routed");
+    let ack = state.send(command).await.expect("routed");
     assert!(ack.accepted);
 
     let events = collect_until(sub, |e| e.kind == "turn.end").await;
@@ -163,11 +161,7 @@ async fn navigator_profile_sends_the_cognition_prompt_as_second_system_message()
 }
 
 /// Posts a driver message through the same route core POST /messages uses.
-async fn post_driver_message(
-    handle: &rust_agent::server::session::SessionHandle,
-    id: ulid::Ulid,
-    text: &str,
-) {
+async fn post_driver_message(state: &AppState, id: ulid::Ulid, text: &str) {
     let command = rust_agent::server::routes::build_command(
         id,
         &rust_agent::server::routes::PostMessageRequest {
@@ -179,9 +173,7 @@ async fn post_driver_message(
         },
         rust_agent::bus::command::DeliveryMode::NextTurn,
     );
-    rust_agent::server::routes::route_message(handle, command)
-        .await
-        .expect("routed");
+    state.send(command).await.expect("routed");
 }
 
 // Given a navigator session created over an AppState sharing a
@@ -228,7 +220,7 @@ async fn wake_through_the_feed_lands_as_a_navigator_sourced_message_and_turn() {
         .await
         .expect("subscribe");
 
-    post_driver_message(&handle, id, "add an auth remove command").await;
+    post_driver_message(&state, id, "add an auth remove command").await;
     // The subscriber task needs a beat to observe the driver message.
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(feed.active_session(), Some(id), "driver message activates");
@@ -343,7 +335,7 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
     let handle = state.handle(id).expect("live");
 
     // Turn 1: the cognition yields on ask.
-    post_driver_message(&handle, id, "add an auth remove command").await;
+    post_driver_message(&state, id, "add an auth remove command").await;
     let yielded = collect_until(subscribe(&handle).await, |e| {
         e.kind == "agent.state" && e.payload["to"] == "yielded"
     })
@@ -368,7 +360,7 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
 
     // The driver answers the ask. Their message must become the TOOL
     // result; only then does the queued wake arrive, as a user message.
-    post_driver_message(&handle, id, "the local scope").await;
+    post_driver_message(&state, id, "the local scope").await;
     let events = collect_until(subscribe(&handle).await, |e| {
         e.kind == "message.received"
             && e.payload["source"] == "navigator"

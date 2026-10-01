@@ -189,7 +189,7 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
         .await
         .map_err(|e| anyhow::anyhow!("subscribe failed: {e}"))?;
 
-    post_prompt(&handle, session_id, &prompt).await?;
+    post_prompt(&state, session_id, &prompt).await?;
 
     let mut renderer = Renderer::new(args.show_thinking);
     let exit = render_until_terminal(&mut sub, &mut renderer).await;
@@ -201,7 +201,7 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
 /// Post the user prompt as a `next-turn` command through the in-process
 /// inbox, sequencing `message.received` before the command is consumed.
 async fn post_prompt(
-    handle: &crate::server::session::SessionHandle,
+    state: &crate::server::session::AppState,
     session_id: ulid::Ulid,
     prompt: &str,
 ) -> anyhow::Result<()> {
@@ -219,7 +219,8 @@ async fn post_prompt(
         }],
         created_at: std::time::SystemTime::now(),
     };
-    crate::server::routes::route_message(handle, command)
+    state
+        .send(command)
         .await
         .map_err(|e| anyhow::anyhow!("post failed: {e}"))?;
     Ok(())

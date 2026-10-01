@@ -44,6 +44,7 @@ use super::actor::{
     NAVIGATOR_PROFILE,
 };
 use super::lifecycle::Tombstone;
+use super::message::{accept, MessageAccepted};
 use crate::agent::actor::AgentActor;
 use crate::bus::command::Command;
 use crate::bus::event::ROOT_ACTOR_ID;
@@ -275,6 +276,15 @@ impl Service {
                 Err(ServerError::SessionNotFound(id.to_string()))
             }
         }
+    }
+
+    /// Accepts one command into its session: the session must be live and
+    /// active, the target the root agent and the content text-only. The
+    /// caller names the source actor. `message.received` is sequenced before
+    /// the command reaches the inbox, and only for an accepted command.
+    pub async fn send(&self, command: Command) -> Result<MessageAccepted, ServerError> {
+        let handle = self.routable_handle(command.session_id)?;
+        accept(&handle, command).await
     }
 
     /// Creates a session: resolves models.json + the key (NO live provider

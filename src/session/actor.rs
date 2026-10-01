@@ -9,6 +9,7 @@ use std::time::SystemTime;
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
+use super::message::accept;
 use super::service::{SessionHandle, SessionId};
 use crate::agent::actor::AgentActor;
 use crate::bus::command::{Command, ContentBlock, DeliveryMode};
@@ -16,7 +17,6 @@ use crate::bus::event::{EventKind, SessionStart, ROOT_ACTOR_ID};
 use crate::bus::sequencer::{Candidate, Sequencer};
 use crate::provider::config::ResolvedModel;
 use crate::provider::openai::ChatMessage;
-use crate::server::routes::route_message;
 use crate::tools::{Registry, ToolContext};
 
 /// Session profile selecting the navigator's cognition: the `cognition`
@@ -45,7 +45,7 @@ pub(super) fn wake_poster(
                 content: vec![ContentBlock::Text { text }],
                 created_at: SystemTime::now(),
             };
-            match route_message(&handle, command).await {
+            match accept(&handle, command).await {
                 Ok(_) => Ok(()),
                 Err(_) if handle.session_cancel.is_cancelled() => Ok(()),
                 Err(err) => Err(err.to_string()),

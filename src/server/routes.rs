@@ -25,9 +25,8 @@ use ulid::Ulid;
 
 use crate::bus::command::{Command, ContentBlock, DeliveryMode};
 use crate::bus::event::ROOT_ACTOR_ID;
-use crate::bus::sequencer::PendingCommand;
 use crate::error::ServerError;
-use crate::server::session::{AppState, ServerConfig, SessionHandle, SessionSlot};
+use crate::server::session::{AppState, ServerConfig, SessionSlot};
 
 /// Frozen health body.
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -66,17 +65,6 @@ pub struct PostMessageRequest {
     #[serde(default)]
     pub mode: Option<String>,
     pub content: Vec<ContentBlock>,
-}
-
-/// The frozen message ack: `notice` carries the visible
-/// steer/interrupt downgrade and is absent for next-turn.
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct MessageAccepted {
-    pub command_id: String,
-    pub accepted: bool,
-    pub actor_state: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub notice: Option<String>,
 }
 
 /// The frozen 503 body.
@@ -379,7 +367,7 @@ pub fn build_command(
         command_id: Ulid::new(),
         session_id,
         source_actor_id: HTTP_USER_ACTOR_ID.to_string(),
-        target_actor_id: ROOT_ACTOR_ID.to_string(),
+        target_actor_id: request.target_actor_id.clone(),
         mode,
         content: request.content.clone(),
         created_at: SystemTime::now(),
@@ -415,89 +403,18 @@ async fn post_message(
         Ok(parsed) => parsed,
         Err(_) => return error_response(ServerError::SessionNotFound(id)),
     };
-    // Clone the handle and release the registry guard BEFORE any await.
-    let handle = match state.routable_handle(session_id) {
-        Ok(handle) => handle,
-        Err(err) => return error_response(err),
-    };
+    // Unknown or stopping sessions answer 404/409 before the body is judged.
+    if let Err(err) = state.routable_handle(session_id) {
+        return error_response(err);
+    }
     let mode = match parse_mode(request.mode.as_deref()) {
         Ok(mode) => mode,
         Err(err) => return error_response(err),
     };
-    // One root actor this slice: the request names the target, the server
-    // pins it to the session's agent (a foreign target is a malformed ask).
-    if request.target_actor_id != ROOT_ACTOR_ID {
-        return error_response(ServerError::MalformedBody(format!(
-            "unknown target_actor_id: {} (this server routes to {ROOT_ACTOR_ID})",
-            request.target_actor_id
-        )));
-    }
     let command = build_command(session_id, &request, mode);
-    if let Err(err) = command.validate_content() {
-        return error_response(err);
-    }
-    match route_message(&handle, command).await {
+    match state.send(command).await {
         Ok(accepted) => Json(accepted).into_response(),
         Err(err) => error_response(err),
-    }
-}
-
-/// The event-before-action route for ONE validated command: reserve an inbox
-/// permit up front (a full inbox is a 503 BEFORE the event is sequenced, so
-/// there is nothing to un-publish — the rejected permit releases its slot),
-/// sequence `message.received` via `accept_command`, commit the command into
-/// the reserved permit, ack. Public so the WS route and integration tests
-/// share the exact POST core.
-pub async fn route_message(
-    handle: &SessionHandle,
-    command: Command,
-) -> Result<MessageAccepted, ServerError> {
-    let permit = match handle.inbox_tx.clone().try_reserve_owned() {
-        Ok(permit) => permit,
-        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-            return Err(ServerError::InboxFull);
-        }
-        Err(_) => {
-            return Err(ServerError::SessionStopping);
-        }
-    };
-    let command_id = command.command_id;
-    let actor_state = handle.actor_state.clone();
-    let notice = command.downgrade_notice().map(|n| n.to_string());
-    let pending = PendingCommand {
-        command_id,
-        content: command.text_content(),
-        source: command.source_actor_id.clone(),
-        target: command.target_actor_id.clone(),
-        mode: command.mode.as_str().to_string(),
-    };
-    let committed = command.clone();
-    handle
-        .sequencer
-        .accept_command(
-            pending,
-            Box::new(move || {
-                permit.send(committed);
-            }),
-        )
-        .await
-        .map_err(map_bus_error)?;
-    Ok(MessageAccepted {
-        command_id: command_id.to_string(),
-        accepted: true,
-        actor_state,
-        notice,
-    })
-}
-
-/// Map a routing failure onto the typed server error: full inbox stays 503;
-/// a sequencer that closed under us means the session is stopping.
-fn map_bus_error(err: crate::error::BusError) -> ServerError {
-    match err {
-        crate::error::BusError::InboxFull => ServerError::InboxFull,
-        crate::error::BusError::SequencerClosed
-        | crate::error::BusError::SessionNotFound(_)
-        | crate::error::BusError::SeqSpaceExhausted => ServerError::SessionStopping,
     }
 }
 

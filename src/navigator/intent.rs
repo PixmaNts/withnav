@@ -106,7 +106,8 @@ pub fn parse_intent(raw: &str) -> IntentRecord {
 /// sections given (the others keep their current text). The file is
 /// created with all four headings when missing, and the write is atomic
 /// (temp file + rename in the same directory). Sections set to an empty
-/// string are cleared.
+/// string are cleared. A record that exists but cannot be read is an error
+/// and is never overwritten.
 pub fn write_intent_sections(
     workspace: &Path,
     sections: &IntentSections,
@@ -114,7 +115,14 @@ pub fn write_intent_sections(
     let dir = workspace.join(".navigator");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("intent.md");
-    let current = std::fs::read_to_string(&path).unwrap_or_default();
+    // Only a missing record starts empty. Any other failure (permissions,
+    // invalid UTF-8, a directory in the way) leaves the file as it is:
+    // rebuilding from nothing would erase what the driver wrote.
+    let current = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
     let updated = apply_sections(&current, sections);
     // Atomic: a temp file in the SAME directory, fsynced, then renamed over
     // the target, so the driver never sees a half-written record (the file
@@ -389,6 +397,29 @@ Add retry with backoff to the HTTP client.
         assert_eq!(r.intent.as_deref(), Some("ship the navigator"));
         assert_eq!(r.plan, None);
         assert_eq!(r.active_spec.as_deref(), Some(".scratch/navigator/spec.md"));
+    }
+
+    #[test]
+    fn an_unreadable_record_is_an_error_and_stays_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".navigator");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Not valid UTF-8: the read fails, the bytes must survive.
+        let raw: &[u8] = b"## Intent\nkeep me \xff\xfe\n";
+        std::fs::write(dir.join("intent.md"), raw).unwrap();
+
+        let result = write_intent_sections(
+            tmp.path(),
+            &IntentSections {
+                intent: Some("overwrite".into()),
+                ..IntentSections::default()
+            },
+        );
+        assert!(
+            result.is_err(),
+            "an unreadable record must not be rewritten"
+        );
+        assert_eq!(std::fs::read(dir.join("intent.md")).unwrap(), raw);
     }
 
     #[test]

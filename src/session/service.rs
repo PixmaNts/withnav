@@ -153,6 +153,10 @@ pub struct Service {
     history: Arc<super::store::HistoryStore>,
     /// Actor-profile policy injected by the host binary.
     hooks: Arc<dyn SessionHooks>,
+    /// The lifecycle gate: resume, close and delete run one at a time, so a
+    /// session id never has two runtimes and is never resumed while it is
+    /// being stopped or deleted. One client, so one gate for the service.
+    gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Service {
@@ -177,7 +181,14 @@ impl Service {
             config: Arc::new(config),
             history: Arc::new(history),
             hooks,
+            gate: Arc::new(tokio::sync::Mutex::new(())),
         })
+    }
+
+    /// Takes the lifecycle gate. Hold the guard across the whole of a
+    /// resume, close or delete; never call a gated method while holding it.
+    pub(super) async fn lifecycle_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.gate.lock().await
     }
 
     /// The history store.
@@ -273,6 +284,9 @@ impl Service {
         resume: Option<SessionId>,
     ) -> Result<(SessionId, bool), ServerError> {
         if let Some(id) = resume {
+            // A resume waits for any stop or delete of this id to finish,
+            // and holds the gate until the new runtime is registered.
+            let _gate = self.lifecycle_gate().await;
             // Live + active: the conversation never left.
             if let Some(SessionSlot::Live(handle)) = self.lock_sessions().get(&id) {
                 if handle.lifecycle == Lifecycle::Active {

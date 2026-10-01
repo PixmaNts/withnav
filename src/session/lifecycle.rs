@@ -57,6 +57,13 @@ impl Service {
     /// the live slot is replaced by a bounded [`Tombstone`]. Idempotent: an
     /// already-Stopping or already-closed session is a no-op.
     pub async fn close_session(&self, id: SessionId) -> Result<(), ServerError> {
+        let _gate = self.lifecycle_gate().await;
+        self.close_session_gated(id).await
+    }
+
+    /// [`Service::close_session`] for a caller that already holds the
+    /// lifecycle gate.
+    pub(super) async fn close_session_gated(&self, id: SessionId) -> Result<(), ServerError> {
         let Some(handle) = self.mark_stopping(id)? else {
             return Ok(());
         };
@@ -68,6 +75,7 @@ impl Service {
     /// its `session.end`), tombstone them all, then return so axum finishes
     /// draining.
     pub async fn close_all(&self) {
+        let _gate = self.lifecycle_gate().await;
         let targets: Vec<(SessionId, SessionHandle)> = {
             let mut guard = self.lock_sessions();
             guard

@@ -46,8 +46,9 @@ impl Service {
     /// store. [`ServerError::SessionNotFound`] only when the id is neither
     /// in memory nor on disk.
     pub async fn delete(&self, id: SessionId) -> Result<(), ServerError> {
+        let _gate = self.lifecycle_gate().await;
         let known_to_memory = self.slot(id).is_some();
-        match self.close_session(id).await {
+        match self.close_session_gated(id).await {
             Ok(()) => {}
             Err(ServerError::SessionNotFound(_)) if !known_to_memory => {
                 // Disk-only id: it must exist in the store.

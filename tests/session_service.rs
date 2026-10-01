@@ -289,3 +289,120 @@ async fn service_construction_fails_on_an_unopenable_history_db() {
     let result = Service::new(config);
     assert!(matches!(result, Err(ServerError::History(_))));
 }
+
+/// Counts incarnations per session id: every new one must find all earlier
+/// ones already cancelled, or two runtimes would exist for one id.
+#[derive(Debug, Default)]
+struct IncarnationWatch {
+    tokens: std::sync::Mutex<
+        std::collections::HashMap<ulid::Ulid, Vec<tokio_util::sync::CancellationToken>>,
+    >,
+    violations: std::sync::Mutex<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct WatchHooks(std::sync::Arc<IncarnationWatch>);
+
+impl rust_agent::session::SessionHooks for WatchHooks {
+    fn default_model(&self, _profile: Option<&str>) -> Option<&str> {
+        None
+    }
+
+    fn configure_actor(
+        &self,
+        _profile: Option<&str>,
+        _actor: &mut rust_agent::agent::actor::AgentActor,
+    ) {
+    }
+
+    fn started(
+        &self,
+        info: rust_agent::session::StartedSession,
+        _sender: rust_agent::session::SessionSender,
+        _subscription: rust_agent::session::Subscription,
+        cancel: tokio_util::sync::CancellationToken,
+    ) {
+        let mut tokens = self.0.tokens.lock().expect("tokens");
+        let earlier = tokens.entry(info.id).or_default();
+        if earlier.iter().any(|token| !token.is_cancelled()) {
+            self.0
+                .violations
+                .lock()
+                .expect("violations")
+                .push(format!("{}: a second runtime started", info.id));
+        }
+        earlier.push(cancel);
+    }
+}
+
+// Given one session id and many interleaved resume, stop and delete calls
+// When they all run concurrently, round after round
+// Then a new incarnation never starts while an earlier one is alive, a
+//      resume never fails except on a deleted id, and the final state is
+//      whole: live or stopped with a stored row, or gone with none
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_resume_stop_delete_never_creates_two_runtimes() {
+    use rust_agent::error::ServerError;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).expect("workspace");
+    let hooks = WatchHooks::default();
+    let service = Service::with_hooks(
+        TestServerConfig::unreachable(tmp.path()).config().split().0,
+        std::sync::Arc::new(hooks.clone()),
+    )
+    .expect("service");
+
+    for round in 0..16 {
+        let with_delete = round % 2 == 1;
+        let id = service
+            .create_session(&ws, None, None)
+            .await
+            .expect("create");
+        let mut calls = Vec::new();
+        for step in 0..12 {
+            let service = service.clone();
+            let ws = ws.clone();
+            let delete = with_delete && step == 7;
+            calls.push(tokio::spawn(async move {
+                if delete {
+                    service.delete(id).await
+                } else if step % 2 == 0 {
+                    service
+                        .create_or_resume_session(&ws, None, None, Some(id))
+                        .await
+                        .map(|_| ())
+                } else {
+                    service.close_session(id).await
+                }
+            }));
+        }
+        for call in calls {
+            match call.await.expect("call task") {
+                Ok(()) => {}
+                Err(ServerError::SessionNotFound(_)) if with_delete => {}
+                Err(err) => panic!("round {round}: unexpected error: {err}"),
+            }
+        }
+
+        let stored = service.history().meta(id).await.expect("meta");
+        match service.session_summary(id).await {
+            Ok(summary) => {
+                assert!(stored.is_some(), "round {round}: {summary:?} has no row");
+                assert!(
+                    summary.actor_state == "idle" || summary.actor_state == "stopped",
+                    "round {round}: half state {summary:?}"
+                );
+            }
+            Err(ServerError::SessionNotFound(_)) => {
+                assert!(with_delete, "round {round}: lost without a delete");
+                assert!(stored.is_none(), "round {round}: gone but still stored");
+            }
+            Err(err) => panic!("round {round}: {err}"),
+        }
+    }
+    service.close_all().await;
+    let violations = hooks.0.violations.lock().expect("violations");
+    assert!(violations.is_empty(), "{violations:?}");
+}

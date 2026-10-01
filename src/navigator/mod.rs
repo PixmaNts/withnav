@@ -3,9 +3,13 @@
 //! (typed decision questions), metacognition (fast remarks) and cognition
 //! (deliberate chat). It never edits code.
 //!
-//! This module hosts the Language Server; the layer model seams live in
-//! [`ports`], injected through [`NavigatorDeps`] so tests can script them.
+//! This module only declares the submodules and re-exports their public
+//! paths. The Language Server lives in [`lsp`], the shared state and trigger
+//! scheduling in [`runtime`], the process wiring in [`bootstrap`]; the layer
+//! model seams are in [`ports`], injected through [`NavigatorDeps`] so tests
+//! can script them.
 
+pub mod bootstrap;
 pub mod config;
 pub mod conversation;
 pub mod default_pipeline;

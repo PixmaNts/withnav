@@ -360,7 +360,9 @@ async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -
     }
     state.discard(parsed);
     if let Some(store) = state.history() {
-        store.delete(parsed);
+        if let Err(err) = store.delete(parsed).await {
+            return error_response(ServerError::History(err));
+        }
     }
     StatusCode::NO_CONTENT.into_response()
 }

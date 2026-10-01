@@ -367,13 +367,20 @@ impl AppState {
             let Some(store) = self.history.as_ref() else {
                 return Err(ServerError::SessionNotFound(id.to_string()));
             };
+            // The closing session's last events (`session.end` included) may
+            // still be queued: the load must see them, or the resumed
+            // sequence could restart below a seq a client already saw.
+            store.flush().await.map_err(ServerError::History)?;
             let Some(loaded) = store.load(id).await.map_err(ServerError::History)? else {
                 return Err(ServerError::SessionNotFound(id.to_string()));
             };
-            self.spawn_session(workspace, None, None, Some(loaded), workspace)?;
+            self.spawn_session(workspace, None, None, Some(loaded), workspace)
+                .await?;
             return Ok((id, true));
         }
-        let id = self.spawn_session(workspace, model, profile, None, workspace)?;
+        let id = self
+            .spawn_session(workspace, model, profile, None, workspace)
+            .await?;
         Ok((id, false))
     }
 
@@ -684,7 +691,7 @@ impl AppState {
     /// publishes `session.start` (fresh only), spawns the runtime with the
     /// history hooks, registers the handle. `resume_workspace` is the
     /// workspace a resume request named; the FRESH path passes its own.
-    fn spawn_session(
+    async fn spawn_session(
         &self,
         workspace: &Path,
         model: Option<&str>,
@@ -738,10 +745,20 @@ impl AppState {
             .as_ref()
             .map(|loaded| loaded.meta.last_seq + 1)
             .unwrap_or(0);
+        // The bus is pre-filled with the stored conversation, minus every
+        // earlier `session.end`: the resumed stream must not look closed.
+        // (`next_seq` above still counts those ends, so seqs never repeat.)
         let bus = SessionBus::new(
             resumed
                 .as_ref()
-                .map(|loaded| loaded.envelopes.clone())
+                .map(|loaded| {
+                    loaded
+                        .envelopes
+                        .iter()
+                        .filter(|envelope| envelope.kind != "session.end")
+                        .cloned()
+                        .collect()
+                })
                 .unwrap_or_default(),
         );
         let is_resume = resumed.is_some();
@@ -751,12 +768,17 @@ impl AppState {
         let history = self.history.clone();
         let sequencer = match &history {
             Some(store) => {
-                store.record_session(
-                    session_id,
-                    &workspace.display().to_string(),
-                    &alias,
-                    profile,
-                );
+                // Acknowledged: a session whose row cannot be written would
+                // silently lose every later event and snapshot.
+                store
+                    .record_session(
+                        session_id,
+                        &workspace.display().to_string(),
+                        &alias,
+                        profile,
+                    )
+                    .await
+                    .map_err(ServerError::History)?;
                 Sequencer::spawn(
                     session_id,
                     crate::server::store::PersistingEmitter::new(

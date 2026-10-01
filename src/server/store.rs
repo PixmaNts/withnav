@@ -3,9 +3,19 @@
 //!
 //! SQLite is blocking: ONE dedicated writer thread owns a connection and is
 //! fed by an `std::sync::mpsc` channel; read methods open their own
-//! connection in `tokio::task::spawn_blocking`. WAL mode. Persistence
-//! errors are logged, never fatal: a failed write must never break a live
-//! conversation.
+//! connection in `tokio::task::spawn_blocking`. WAL mode.
+//!
+//! Writes: every write is ONE transaction (an event insert and the
+//! `last_seq` bump commit together or not at all). Enqueueing never waits
+//! on SQLite, so the sequencer stays off the disk. A failure is never only a
+//! log line: writes whose caller needs to know ([`HistoryStore::record_session`],
+//! [`HistoryStore::delete`]) are acknowledged through a oneshot; every other
+//! write (event appends, transcript snapshots, titles) is fire-and-forget and
+//! its failure is remembered by the writer until [`HistoryStore::flush`],
+//! which is also a barrier: it returns once every earlier write has been
+//! applied, carrying the first error since the previous flush. A failed write
+//! still never breaks a live conversation: the callers decide what a failure
+//! means.
 //!
 //! Schema:
 //! - `sessions(id TEXT PRIMARY KEY, workspace TEXT, model TEXT, profile TEXT,
@@ -13,16 +23,20 @@
 //! - `events(session_id TEXT, seq INTEGER, kind TEXT, envelope TEXT,
 //!   PRIMARY KEY(session_id, seq))`
 //!
-//! Stored events: every durable envelope in order, except `session.end` (a
-//! resumed stream must not look closed). `llm.delta` is live-only and never
-//! stored. `transcript` is the JSON of the actor's `Vec<ChatMessage>`,
-//! snapshotted after every turn end.
+//! Stored events: every durable envelope in order, `session.end` included.
+//! Recording it keeps `last_seq` at the highest seq any client has seen, so a
+//! resumed session continues after it and never reuses a seq; the resume path
+//! (not the store) keeps it from replaying to subscribers, so the resumed
+//! stream does not look closed. `llm.delta` is live-only and never stored.
+//! `transcript` is the JSON of the actor's `Vec<ChatMessage>`, snapshotted
+//! after every turn end.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
 
 use rusqlite::{params, Connection, OptionalExtension};
+use tokio::sync::oneshot;
 use ulid::Ulid;
 
 use crate::bus::event::EventEnvelope;
@@ -43,7 +57,7 @@ pub struct StoredSession {
 }
 
 /// A full session load: the row's metadata, its stored envelopes (in seq
-/// order, `session.end` excluded), and the last transcript snapshot.
+/// order, any `session.end` included), and the last transcript snapshot.
 #[derive(Debug, Clone)]
 pub struct LoadedSession {
     pub meta: StoredSession,
@@ -51,8 +65,10 @@ pub struct LoadedSession {
     pub transcript: Vec<ChatMessage>,
 }
 
-/// What the writer thread accepts. Every variant is fire-and-forget;
-/// failures are logged on the writer thread.
+/// The result channel of an acknowledged write.
+type Ack = oneshot::Sender<Result<(), String>>;
+
+/// What the writer thread accepts.
 enum Write {
     RecordSession {
         id: Ulid,
@@ -77,11 +93,31 @@ enum Write {
     },
 }
 
+/// One message on the writer channel.
+enum Msg {
+    /// A write; `ack` (when present) receives its outcome, otherwise a
+    /// failure is remembered for the next [`Msg::Flush`].
+    Write(Box<Write>, Option<Ack>),
+    /// Barrier: replies with the first error recorded since the last flush.
+    Flush(Ack),
+}
+
+/// Why a single write failed.
+#[derive(Debug, thiserror::Error)]
+enum WriteError {
+    #[error("sqlite: {0}")]
+    Sql(#[from] rusqlite::Error),
+    #[error("serialize: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("no stored session {0}")]
+    UnknownSession(Ulid),
+}
+
 /// The handle side of the store: clones a sender into the single writer
 /// thread plus the shared path for blocking reads. Cheap to clone.
 #[derive(Clone)]
 pub struct HistoryStore {
-    tx: mpsc::Sender<Write>,
+    tx: mpsc::Sender<Msg>,
     path: Arc<PathBuf>,
 }
 
@@ -93,21 +129,29 @@ impl std::fmt::Debug for HistoryStore {
     }
 }
 
+const WRITER_GONE: &str = "history writer stopped";
+
 impl HistoryStore {
-    /// Opens (creating parents) and migrates the database, then spawns the
-    /// single writer thread. Fails only when the database cannot be opened
-    /// at all — the caller treats that as "no history".
+    /// Opens (creating parents) and migrates the database, opens the writer's
+    /// connection, then spawns the single writer thread. Fails when the
+    /// database cannot be opened at all — the caller treats that as "no
+    /// history".
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, String> {
         let path: PathBuf = path.into();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         migrate(&path)?;
-        let (tx, rx) = mpsc::channel::<Write>();
-        let writer_path = path.clone();
+        let conn = Connection::open(&path).map_err(|e| format!("writer open: {e}"))?;
+        let _ = conn.pragma_update(None, "journal_mode", "WAL");
+        // Several server processes share the file: wait for the lock
+        // instead of failing the write.
+        conn.busy_timeout(WRITER_BUSY_TIMEOUT)
+            .map_err(|e| format!("writer busy timeout: {e}"))?;
+        let (tx, rx) = mpsc::channel::<Msg>();
         std::thread::Builder::new()
             .name("history-writer".into())
-            .spawn(move || writer_loop(writer_path, rx))
+            .spawn(move || writer_loop(conn, rx))
             .map_err(|e| format!("history writer thread: {e}"))?;
         Ok(Self {
             tx,
@@ -115,37 +159,77 @@ impl HistoryStore {
         })
     }
 
+    /// Enqueues a fire-and-forget write. Never waits on SQLite.
+    fn enqueue(&self, write: Write) {
+        if self.tx.send(Msg::Write(Box::new(write), None)).is_err() {
+            tracing::error!("history write dropped: {WRITER_GONE}");
+        }
+    }
+
+    /// Enqueues a write and waits for its outcome.
+    async fn acked(&self, write: Write) -> Result<(), String> {
+        let (ack, outcome) = oneshot::channel();
+        self.tx
+            .send(Msg::Write(Box::new(write), Some(ack)))
+            .map_err(|_| WRITER_GONE.to_string())?;
+        outcome.await.map_err(|_| WRITER_GONE.to_string())?
+    }
+
+    /// Barrier: resolves once every write enqueued before this call has been
+    /// applied, with the FIRST error any fire-and-forget write hit since the
+    /// previous flush (the slot is cleared). `Ok` means all of them are in
+    /// the database.
+    pub async fn flush(&self) -> Result<(), String> {
+        let (reply, outcome) = oneshot::channel();
+        self.tx
+            .send(Msg::Flush(reply))
+            .map_err(|_| WRITER_GONE.to_string())?;
+        outcome.await.map_err(|_| WRITER_GONE.to_string())?
+    }
+
     /// Registers a session row (INSERT OR IGNORE: a resumed id already has
-    /// its row).
-    pub fn record_session(&self, id: Ulid, workspace: &str, model: &str, profile: Option<&str>) {
-        let _ = self.tx.send(Write::RecordSession {
+    /// its row) and waits for the commit: a session whose row cannot be
+    /// written would later lose every event and snapshot.
+    pub async fn record_session(
+        &self,
+        id: Ulid,
+        workspace: &str,
+        model: &str,
+        profile: Option<&str>,
+    ) -> Result<(), String> {
+        self.acked(Write::RecordSession {
             id,
             workspace: workspace.to_string(),
             model: model.to_string(),
             profile: profile.map(str::to_string),
-        });
+        })
+        .await
     }
 
-    /// Appends one durable envelope (the caller filters `llm.delta` and
-    /// `session.end`).
+    /// Appends one durable envelope (the caller filters `llm.delta`) and
+    /// bumps `last_seq` in the same transaction. Fire-and-forget: a failure
+    /// surfaces at the next [`HistoryStore::flush`].
     pub fn append_event(&self, id: Ulid, envelope: EventEnvelope) {
-        let _ = self.tx.send(Write::AppendEvent { id, envelope });
+        self.enqueue(Write::AppendEvent { id, envelope });
     }
 
     /// Snapshots the actor transcript after a turn end (also bumps
-    /// `updated_at`; `last_seq` is owned by `append_event`).
+    /// `updated_at`; `last_seq` is owned by `append_event`). Fire-and-forget:
+    /// a failure surfaces at the next [`HistoryStore::flush`].
     pub fn save_transcript(&self, id: Ulid, transcript: Vec<ChatMessage>) {
-        let _ = self.tx.send(Write::SaveTranscript { id, transcript });
+        self.enqueue(Write::SaveTranscript { id, transcript });
     }
 
     /// Sets the session title (first driver message; only when unset).
+    /// Fire-and-forget, like [`HistoryStore::append_event`].
     pub fn set_title(&self, id: Ulid, title: String) {
-        let _ = self.tx.send(Write::SetTitle { id, title });
+        self.enqueue(Write::SetTitle { id, title });
     }
 
-    /// Removes a session row and its events.
-    pub fn delete(&self, id: Ulid) {
-        let _ = self.tx.send(Write::Delete { id });
+    /// Removes a session row and its events in one transaction, and waits
+    /// for the commit.
+    pub async fn delete(&self, id: Ulid) -> Result<(), String> {
+        self.acked(Write::Delete { id }).await
     }
 
     /// Sessions of one workspace with their driver message counts, newest
@@ -192,24 +276,43 @@ pub struct ListedSession {
     pub message_count: u64,
 }
 
-/// The single writer thread: one connection, one command at a time.
-fn writer_loop(path: PathBuf, rx: mpsc::Receiver<Write>) {
-    let Ok(conn) = Connection::open(&path) else {
-        tracing::error!("history writer: cannot open {}", path.display());
-        // Drain so senders never block (the channel is unbounded anyway,
-        // but staying here until disconnect keeps the semantics simple).
-        for _ in rx {}
-        return;
-    };
-    let _ = conn.pragma_update(None, "journal_mode", "WAL");
-    for write in rx {
-        if let Err(err) = apply(&conn, write) {
-            tracing::error!("history write failed: {err}");
+/// How long the writer waits on a lock held by another server process.
+const WRITER_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The single writer thread: one connection, one message at a time, FIFO.
+/// A failed write is reported to its ack, or else remembered (first one
+/// wins) until the next flush; it is always logged.
+fn writer_loop(mut conn: Connection, rx: mpsc::Receiver<Msg>) {
+    let mut first_error: Option<String> = None;
+    for msg in rx {
+        match msg {
+            Msg::Write(write, ack) => {
+                let outcome = apply(&mut conn, *write).map_err(|e| e.to_string());
+                if let Err(err) = &outcome {
+                    tracing::error!("history write failed: {err}");
+                }
+                match ack {
+                    Some(ack) => {
+                        let _ = ack.send(outcome);
+                    }
+                    None => {
+                        if let Err(err) = outcome {
+                            first_error.get_or_insert(err);
+                        }
+                    }
+                }
+            }
+            Msg::Flush(reply) => {
+                let _ = reply.send(first_error.take().map_or(Ok(()), Err));
+            }
         }
     }
 }
 
-fn apply(conn: &Connection, write: Write) -> Result<(), rusqlite::Error> {
+/// Applies one write as ONE transaction: it commits whole or leaves the
+/// database untouched.
+fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
+    let tx = conn.transaction()?;
     match write {
         Write::RecordSession {
             id,
@@ -218,57 +321,59 @@ fn apply(conn: &Connection, write: Write) -> Result<(), rusqlite::Error> {
             profile,
         } => {
             let now = now_rfc3339();
-            conn.execute(
+            tx.execute(
                 "INSERT OR IGNORE INTO sessions
                  (id, workspace, model, profile, title, created_at, updated_at, last_seq, transcript)
                  VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5, -1, NULL)",
                 params![id.to_string(), workspace, model, profile, now],
             )?;
-            Ok(())
         }
         Write::AppendEvent { id, envelope } => {
-            let payload = serde_json::to_string(&envelope)
-                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-            conn.execute(
+            let payload = serde_json::to_string(&envelope)?;
+            tx.execute(
                 "INSERT OR IGNORE INTO events (session_id, seq, kind, envelope)
                  VALUES (?1, ?2, ?3, ?4)",
                 params![id.to_string(), envelope.seq as i64, envelope.kind, payload],
             )?;
-            conn.execute(
+            let touched = tx.execute(
                 "UPDATE sessions SET updated_at = ?2, last_seq = MAX(last_seq, ?3)
                  WHERE id = ?1",
                 params![id.to_string(), now_rfc3339(), envelope.seq as i64],
             )?;
-            Ok(())
+            if touched == 0 {
+                // Dropping the transaction rolls the orphan event back.
+                return Err(WriteError::UnknownSession(id));
+            }
         }
         Write::SaveTranscript { id, transcript } => {
-            let payload = serde_json::to_string(&transcript)
-                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-            conn.execute(
+            let payload = serde_json::to_string(&transcript)?;
+            let touched = tx.execute(
                 "UPDATE sessions SET transcript = ?2, updated_at = ?3 WHERE id = ?1",
                 params![id.to_string(), payload, now_rfc3339()],
             )?;
-            Ok(())
+            if touched == 0 {
+                return Err(WriteError::UnknownSession(id));
+            }
         }
         Write::SetTitle { id, title } => {
-            conn.execute(
+            tx.execute(
                 "UPDATE sessions SET title = ?2 WHERE id = ?1 AND title IS NULL",
                 params![id.to_string(), title],
             )?;
-            Ok(())
         }
         Write::Delete { id } => {
-            conn.execute(
+            tx.execute(
                 "DELETE FROM events WHERE session_id = ?1",
                 params![id.to_string()],
             )?;
-            conn.execute(
+            tx.execute(
                 "DELETE FROM sessions WHERE id = ?1",
                 params![id.to_string()],
             )?;
-            Ok(())
         }
     }
+    tx.commit()?;
+    Ok(())
 }
 
 /// Creates the schema when missing. Idempotent.
@@ -401,12 +506,11 @@ fn now_rfc3339() -> String {
 
 use crate::bus::sequencer::Emitter;
 use crate::bus::SubscribeReply;
-use tokio::sync::oneshot;
 
 /// Wraps a session's [`SessionBus`] as the sequencer's emitter and forwards
-/// every DURABLE envelope — except `llm.delta` (live-only, never stored) and
-/// `session.end` (a resumed stream must not look closed) — to the writer
-/// thread, in seq order, synchronously inside the single sequencer task.
+/// every DURABLE envelope — everything except `llm.delta` (live-only, never
+/// stored), `session.end` included — to the writer thread, in seq order, synchronously inside the single sequencer task. The
+/// hand-off is a channel send: the sequencer never waits on SQLite.
 pub struct PersistingEmitter {
     bus: crate::bus::SessionBus,
     session_id: Ulid,
@@ -426,9 +530,7 @@ impl PersistingEmitter {
 impl Emitter for PersistingEmitter {
     fn emit(&mut self, envelope: EventEnvelope) {
         let kind = envelope.kind.as_str();
-        let durable = kind != "llm.delta";
-        let is_end = kind == "session.end";
-        if durable && !is_end {
+        if kind != "llm.delta" {
             // The first driver message becomes the title (the store guards:
             // only when the title is still NULL).
             if kind == "message.received" {
@@ -534,8 +636,14 @@ mod tests {
         let (_dir, store) = temp_store();
         let id = Ulid::new();
         let id2 = Ulid::new();
-        store.record_session(id, "/w", "cognition", Some("navigator"));
-        store.record_session(id2, "/w", "default", None);
+        store
+            .record_session(id, "/w", "cognition", Some("navigator"))
+            .await
+            .expect("record");
+        store
+            .record_session(id2, "/w", "default", None)
+            .await
+            .expect("record");
         store.append_event(id, envelope(0, EventKind::SessionStart));
         store.append_event(id, envelope(1, EventKind::MessageReceived));
         store.save_transcript(
@@ -545,24 +653,12 @@ mod tests {
             }],
         );
         // id2 updated later: it must list first even though id was created
-        // first. The writer stamps at write time; when both stamps share a
-        // millisecond (starved writer thread) the order between them is
-        // undefined, so the assertion runs only on a real timestamp gap.
+        // first. When both stamps share a millisecond the order between them
+        // is undefined, so the assertion runs only on a real timestamp gap.
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         store.append_event(id2, envelope(0, EventKind::SessionStart));
+        store.flush().await.expect("flush");
 
-        // Poll until the writer applied id2's event. Both rows exist as soon
-        // as `record_session` ran, so waiting for two rows alone returned
-        // before that last write under full-suite load and listed id first
-        // (observed 2026-10-01). The writer is FIFO: once this write is
-        // visible, every earlier one is too.
-        for _ in 0..200 {
-            let loaded = store.load(id2).await.expect("load id2");
-            if loaded.is_some_and(|session| !session.envelopes.is_empty()) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
         let listed = poll_list(&store, "/w", 2).await;
         assert_eq!(listed.len(), 2);
         if listed[0].meta.updated_at != listed[1].meta.updated_at {
@@ -596,9 +692,13 @@ mod tests {
     async fn title_is_set_once() {
         let (_dir, store) = temp_store();
         let id = Ulid::new();
-        store.record_session(id, "/w", "m", None);
+        store
+            .record_session(id, "/w", "m", None)
+            .await
+            .expect("record");
         store.set_title(id, "first".into());
         store.set_title(id, "second".into());
+        store.flush().await.expect("flush");
         let loaded = poll_title(&store, id).await;
         assert_eq!(loaded.meta.title.as_deref(), Some("first"));
     }
@@ -610,7 +710,10 @@ mod tests {
     async fn delete_removes_row_and_events() {
         let (_dir, store) = temp_store();
         let id = Ulid::new();
-        store.record_session(id, "/w", "m", None);
+        store
+            .record_session(id, "/w", "m", None)
+            .await
+            .expect("record");
         store.append_event(id, envelope(0, EventKind::SessionStart));
         // Wait for the row to EXIST first (the channel is fire-and-forget,
         // so observing the insert proves the earlier commands drained).
@@ -620,7 +723,7 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        store.delete(id);
+        store.delete(id).await.expect("delete");
         // Then wait for it to be GONE.
         for _ in 0..200 {
             if store.load(id).await.expect("load").is_none() {
@@ -638,7 +741,10 @@ mod tests {
     #[tokio::test]
     async fn list_is_per_workspace() {
         let (_dir, store) = temp_store();
-        store.record_session(Ulid::new(), "/a", "m", None);
+        store
+            .record_session(Ulid::new(), "/a", "m", None)
+            .await
+            .expect("record");
         let listed = poll_list(&store, "/a", 1).await;
         assert_eq!(listed.len(), 1);
         assert!(store.list("/b").await.expect("list").is_empty());
@@ -653,9 +759,91 @@ mod tests {
         let path = dir.path().join("sessions.db");
         let _a = HistoryStore::open(&path).expect("first open");
         let b = HistoryStore::open(&path).expect("second open");
-        b.record_session(Ulid::new(), "/w", "m", None);
+        b.record_session(Ulid::new(), "/w", "m", None)
+            .await
+            .expect("record");
         let listed = poll_list(&b, "/w", 1).await;
         assert_eq!(listed.len(), 1);
+    }
+
+    /// Opens a second connection on the store's file, the way another
+    /// server process (or a corrupting accident) would.
+    fn side_connection(dir: &tempfile::TempDir) -> Connection {
+        Connection::open(dir.path().join("sessions.db")).expect("side connection")
+    }
+
+    // Given a store whose events table has been destroyed underneath it
+    // When an event is appended and the store is flushed
+    // Then the flush reports the failure (it is not only a log line), and
+    //      the next flush is clean again
+    #[tokio::test]
+    async fn a_failed_event_insert_surfaces_at_flush() {
+        let (dir, store) = temp_store();
+        let id = Ulid::new();
+        store
+            .record_session(id, "/w", "m", None)
+            .await
+            .expect("record");
+        side_connection(&dir)
+            .execute_batch("DROP TABLE events")
+            .expect("drop events");
+
+        store.append_event(id, envelope(0, EventKind::SessionStart));
+        let err = store.flush().await.expect_err("the insert must fail");
+        assert!(err.contains("events"), "names the cause: {err}");
+        store.flush().await.expect("the error is reported once");
+    }
+
+    // Given a store whose sessions table has been destroyed underneath it
+    // When a session is recorded
+    // Then the acknowledgement carries the error to the caller
+    #[tokio::test]
+    async fn record_session_reports_a_failed_insert() {
+        let (dir, store) = temp_store();
+        side_connection(&dir)
+            .execute_batch("DROP TABLE sessions")
+            .expect("drop sessions");
+
+        let result = store.record_session(Ulid::new(), "/w", "m", None).await;
+        assert!(result.is_err(), "the ack must carry the failure");
+    }
+
+    // Given a store with a session
+    // When two snapshots race a failing write
+    // Then flush reports only the FIRST error since the previous flush
+    #[tokio::test]
+    async fn flush_reports_the_first_error_only() {
+        let (_dir, store) = temp_store();
+        let known = Ulid::new();
+        let unknown_a = Ulid::new();
+        let unknown_b = Ulid::new();
+        store
+            .record_session(known, "/w", "m", None)
+            .await
+            .expect("record");
+        store.save_transcript(unknown_a, vec![]);
+        store.save_transcript(known, vec![]);
+        store.save_transcript(unknown_b, vec![]);
+
+        let err = store.flush().await.expect_err("first failure surfaces");
+        assert!(err.contains(&unknown_a.to_string()), "first error: {err}");
+    }
+
+    // Given an event for a session that has no row
+    // When it is appended
+    // Then the write fails AND leaves no orphan event behind: the event
+    //      insert and the last_seq update are one transaction
+    #[tokio::test]
+    async fn event_and_last_seq_commit_together_or_not_at_all() {
+        let (dir, store) = temp_store();
+        let id = Ulid::new();
+        store.append_event(id, envelope(0, EventKind::SessionStart));
+        store.flush().await.expect_err("no session row");
+
+        let orphans: i64 = side_connection(&dir)
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(orphans, 0, "the failed write was rolled back");
     }
 
     // ---- title derivation ----

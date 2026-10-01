@@ -363,6 +363,80 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
     task2.abort();
 }
 
+// Given a session that completed a turn and was then stopped
+// When it is resumed (same state, from its tombstone) and driven again
+// Then every new event's seq is above the old session.end seq, and the
+//      replayed history does not contain the old session.end
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resumed_session_continues_after_the_stored_session_end() {
+    let (server, _db, _keep) = spawn_history_server().await;
+    let created: Value = post_create_session(
+        &server.base,
+        &json!({ "workspace": server.ws, "profile": "navigator" }),
+    )
+    .await
+    .json()
+    .await
+    .expect("json");
+    let id = created["session_id"].as_str().expect("id").to_string();
+    let ulid: ulid::Ulid = id.parse().unwrap();
+
+    let handle = server.state.handle(ulid).expect("live");
+    let sub = handle.sequencer.subscribe_since(None).await.expect("sub");
+    post_message_ok(&server.base, &id, "first turn").await;
+    let _ = collect_until(sub, |e| e.kind == "turn.end").await;
+
+    // Stop it, observing the real session.end.
+    let sub = handle.sequencer.subscribe_since(None).await.expect("sub");
+    server.state.close_session(ulid).await.expect("close");
+    let closed = collect_until(sub, |e| e.kind == "session.end").await;
+    let end_seq = closed
+        .iter()
+        .find(|e| e.kind == "session.end")
+        .expect("session.end observed")
+        .seq;
+
+    let (_, resumed) = server
+        .state
+        .create_or_resume_session(&server.ws, None, None, Some(ulid))
+        .await
+        .expect("resume");
+    assert!(resumed);
+    let handle = server.state.handle(ulid).expect("live again");
+    let sub = handle.sequencer.subscribe_since(None).await.expect("sub");
+    if let rust_agent::bus::ResumeOutcome::Replay(replay) = &sub.replay {
+        assert!(
+            !replay.iter().any(|e| e.kind == "session.end"),
+            "the old session.end is not replayed to the resumed stream"
+        );
+    } else {
+        panic!("expected replay");
+    }
+    post_message_ok(&server.base, &id, "second turn").await;
+    let events = collect_until(sub, |e| e.kind == "turn.end").await;
+    let from_second: Vec<&EventEnvelope> = events
+        .iter()
+        .skip_while(|e| !(e.kind == "message.received" && e.payload["content"] == "second turn"))
+        .collect();
+    assert!(
+        from_second.len() >= 2,
+        "the second turn produced events: {from_second:?}"
+    );
+    for event in &from_second {
+        assert!(
+            event.seq > end_seq,
+            "{} seq {} must be above the old session.end seq {end_seq}",
+            event.kind,
+            event.seq
+        );
+    }
+    let seqs: Vec<u64> = events.iter().map(|e| e.seq).collect();
+    assert!(
+        seqs.windows(2).all(|pair| pair[0] < pair[1]),
+        "seqs strictly increase: {seqs:?}"
+    );
+}
+
 /// The messages of the last request the mock provider saw.
 fn last_request_messages(mock: &MockProvider) -> Vec<Value> {
     let requests = mock.requests.lock().unwrap().clone();
@@ -393,12 +467,15 @@ async fn resuming_an_old_navigator_transcript_sends_the_role_prompt_once() {
 
     let id = ulid::Ulid::new();
     let store = rust_agent::server::store::HistoryStore::open(&db).expect("open");
-    store.record_session(
-        id,
-        &ws.display().to_string(),
-        "cognition",
-        Some("navigator"),
-    );
+    store
+        .record_session(
+            id,
+            &ws.display().to_string(),
+            "cognition",
+            Some("navigator"),
+        )
+        .await
+        .expect("record");
     store.append_event(
         id,
         EventEnvelope::new(id, 0, EventKind::SessionStart, json!({})),
@@ -419,15 +496,7 @@ async fn resuming_an_old_navigator_transcript_sends_the_role_prompt_once() {
             },
         ],
     );
-    // The writer is fire-and-forget: wait until the transcript is readable.
-    for _ in 0..200 {
-        if let Some(loaded) = store.load(id).await.expect("load") {
-            if loaded.transcript.len() == 3 {
-                break;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    store.flush().await.expect("flush");
 
     let mock = spawn_mock_provider(done_response("fine")).await;
     let state = make_state(&root, &mock.url, Some(db.clone()));

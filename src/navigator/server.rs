@@ -146,7 +146,8 @@ fn load_snapshot(
 /// discussion.
 fn wake_message(ctx: &TriggerContext, digest: &str) -> String {
     let mut out = format!(
-        "Navigator wake — this edit looks like it drifts from the intent.\n\n\
+        "Navigator wake: this edit looks at odds with the intent on record or with what was \
+         just agreed in this conversation.\n\n\
          File: {file}\nWhat changed:\n{diff}\n\nIntent on record:\n{intent}",
         file = ctx.uri,
         diff = if ctx.diff.trim().is_empty() {
@@ -982,7 +983,21 @@ impl Inner {
         }
         record.session = feed.active_session().map(|id| id.to_string());
         let message = wake_message(&ctx, &feed.digest());
-        match feed.post_wake(&message).await {
+        let outcome = feed.post_wake(&message).await;
+        if matches!(outcome, WakeOutcome::Posted(_) | WakeOutcome::Queued(_)) {
+            // A wake consumes the edit like a remark does: stamp the cooldown
+            // and rebase, or the idle trigger right after the save wakes the
+            // cognition a second time about the same change (observed
+            // 2026-10-01: two identical wakes 1.5 s apart).
+            let mut state = self.state.lock().await;
+            if let Some(doc) = state.get_mut(&uri) {
+                if doc.version == ctx.version {
+                    doc.last_remark = Some(Instant::now());
+                    doc.rebase();
+                }
+            }
+        }
+        match outcome {
             WakeOutcome::Posted(session_id) => {
                 log_trigger(&record, "wake", None, Some(&session_id.to_string()));
             }

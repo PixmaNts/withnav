@@ -22,7 +22,7 @@ use super::sse::spawn_mock_provider;
 pub const UNREACHABLE_PROVIDER_URL: &str = "http://127.0.0.1:1/v1";
 
 /// Name of the provider in the generated `models.json` and `auth.json`.
-const PROVIDER: &str = "mock";
+pub const PROVIDER: &str = "mock";
 
 /// Writes `auth.json` under `config_dir` with `api_key` for `provider`,
 /// readable by the owner only.

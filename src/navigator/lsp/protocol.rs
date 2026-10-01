@@ -105,7 +105,7 @@ pub struct Position {
 
 /// Server -> client: the answer to `navigator/inlineCompletion`. Empty when
 /// the reflex layer is absent or had nothing to say.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct InlineCompletionResult {
     pub items: Vec<InlineCompletionItem>,
     /// The reflex call's id, echoed back in `navigator/reflexShown` so the

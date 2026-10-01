@@ -18,7 +18,7 @@ pub mod pipeline;
 pub mod ports;
 pub mod reflex;
 pub mod replay;
-pub mod server;
+pub mod runtime;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -36,6 +36,7 @@ pub use lsp::protocol::{
     ServerInfoParams, StatusParams,
 };
 pub use lsp::uri::{uri_key, uri_to_path, uri_to_path_str};
+pub use lsp::{build_service, serve};
 pub use metacognition::{LlmCommenter, RemarkContext};
 pub use pipeline::{
     Action, Evaluation, Pipeline, PipelineError, PipelineSnapshot, PrefilterOutcome, TriggerInputs,
@@ -48,7 +49,6 @@ pub use ports::{
 pub use reflex::{
     SuggestOutcome, Suggestion, DEBOUNCE_MS, MAX_CONTEXT_BYTES, MAX_PREFIX_BYTES, MAX_SUFFIX_BYTES,
 };
-use tower_lsp_server::{LspService, Server};
 
 /// Everything the navigator needs besides the LSP channel itself. The model
 /// seams (metacognition, and `fim`/`decision` for the reflex and instinct
@@ -170,43 +170,6 @@ impl NavigatorDeps {
 /// (`~/.config/rust-agent/navigator/`), when it can be resolved.
 pub fn default_user_dir() -> Option<PathBuf> {
     crate::provider::auth::default_config_dir().map(|d| d.join("navigator"))
-}
-
-/// Builds the [`LspService`] for a navigator backend. Split from [`serve`] so
-/// the binary and the tests share the exact same wiring.
-pub fn build_service(
-    deps: NavigatorDeps,
-) -> (
-    LspService<server::NavigatorBackend>,
-    tower_lsp_server::ClientSocket,
-) {
-    LspService::build(move |client| server::NavigatorBackend::new(client, deps))
-        .custom_method("navigator/feedback", server::NavigatorBackend::feedback)
-        .custom_method(
-            "navigator/diagnostics",
-            server::NavigatorBackend::diagnostics,
-        )
-        .custom_method("navigator/intent", server::NavigatorBackend::intent)
-        .custom_method(
-            "navigator/inlineCompletion",
-            server::NavigatorBackend::inline_completion,
-        )
-        .custom_method(
-            "navigator/reflexShown",
-            server::NavigatorBackend::reflex_shown,
-        )
-        .finish()
-}
-
-/// Serves the navigator over the given in/out streams until the client exits.
-/// Used by the binary (stdio) and by the integration tests (duplex streams).
-pub async fn serve<I, O>(input: I, output: O, deps: NavigatorDeps)
-where
-    I: tokio::io::AsyncRead + Unpin + Send + 'static,
-    O: tokio::io::AsyncWrite + Unpin + Send + 'static,
-{
-    let (service, socket) = build_service(deps);
-    Server::new(input, output, socket).serve(service).await;
 }
 
 /// Default JSONL log path under the user data dir

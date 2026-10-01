@@ -6,377 +6,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio_util::sync::CancellationToken;
 
-use rust_agent::navigator::commenter::{Commenter, RemarkContext};
-use rust_agent::navigator::ports::{
-    Answer as DecisionAnswer, DecisionModel, FimAnswer, FimModel, FimRequest, ModelError, Question,
+use rust_agent::navigator::{self, NavigatorDeps};
+
+mod common;
+use common::navigator::{
+    spawn_server, LspClient, RemarkAnswer as Answer, ScriptedCommenter as MockCommenter,
+    ScriptedFim, ScriptedReflexContext,
 };
-use rust_agent::navigator::{self, NavigatorDeps, Remark};
-use std::collections::BTreeMap;
-
-// ---------- mock commenter ----------
-
-/// Scripted mock: consumes answers from a shared Vec, in order. An answer is:
-/// - `Remark(line, text)` => Ok(Some(...))
-/// - `Silent` => Ok(None)
-/// - `Fail(msg)` => Err(msg)
-///
-/// When empty, returns Silent.
-#[derive(Clone)]
-enum Answer {
-    Remark(u32, &'static str),
-    Silent,
-    Fail(&'static str),
-}
-
-#[derive(Clone, Default)]
-struct MockCommenter {
-    answers: Arc<std::sync::Mutex<Vec<Answer>>>,
-    /// Number of remark() calls observed.
-    calls: Arc<std::sync::Mutex<usize>>,
-    /// When set, remark() waits on this token before answering (lets tests
-    /// interleave an edit while the request is in flight).
-    gate: Option<Arc<CancellationToken>>,
-}
-
-impl MockCommenter {
-    fn new(answers: Vec<Answer>) -> Self {
-        Self {
-            answers: Arc::new(std::sync::Mutex::new(answers)),
-            calls: Arc::new(std::sync::Mutex::new(0)),
-            gate: None,
-        }
-    }
-
-    fn gated(answers: Vec<Answer>, gate: Arc<CancellationToken>) -> Self {
-        Self {
-            answers: Arc::new(std::sync::Mutex::new(answers)),
-            calls: Arc::new(std::sync::Mutex::new(0)),
-            gate: Some(gate),
-        }
-    }
-
-    fn calls(&self) -> usize {
-        *self.calls.lock().unwrap()
-    }
-}
-
-impl Commenter for MockCommenter {
-    fn remark<'a>(
-        &'a self,
-        _ctx: &'a RemarkContext,
-        cancel: &'a CancellationToken,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Option<Remark>, String>> + Send + 'a>,
-    > {
-        Box::pin(async move {
-            // The answer is assigned when the call starts: a cancelled call
-            // still consumes its answer (it is discarded), like a real LLM
-            // request whose tokens are thrown away.
-            *self.calls.lock().unwrap() += 1;
-            let answer = {
-                let mut answers = self.answers.lock().unwrap();
-                if answers.is_empty() {
-                    Answer::Silent
-                } else {
-                    answers.remove(0)
-                }
-            };
-            if let Some(gate) = &self.gate {
-                tokio::select! {
-                    _ = gate.cancelled() => {}
-                    _ = cancel.cancelled() => return Err("cancelled".into()),
-                }
-            }
-            match answer {
-                Answer::Remark(line, text) => Ok(Some(Remark {
-                    line,
-                    text: text.to_string(),
-                })),
-                Answer::Silent => Ok(None),
-                Answer::Fail(msg) => Err(msg.to_string()),
-            }
-        })
-    }
-}
-
-// ---------- LSP client harness ----------
-
-struct LspClient {
-    writer: DuplexStream,
-    reader: DuplexStream,
-    /// Leftover bytes from previous reads (messages can coalesce).
-    buf: Vec<u8>,
-}
-
-impl LspClient {
-    fn frame(&mut self, msg: &Value) -> String {
-        let body = serde_json::to_string(msg).unwrap();
-        format!("Content-Length: {}\r\n\r\n{}", body.len(), body)
-    }
-
-    async fn send(&mut self, msg: &Value) {
-        let frame = self.frame(msg);
-        self.writer.write_all(frame.as_bytes()).await.unwrap();
-        self.writer.flush().await.unwrap();
-    }
-
-    /// Reads one framed JSON-RPC message from the server. Keeps leftover
-    /// bytes buffered so coalesced messages are not lost between calls.
-    async fn recv(&mut self) -> Value {
-        loop {
-            if let Some((msg, consumed)) = try_parse(&self.buf) {
-                self.buf.drain(..consumed);
-                return msg;
-            }
-            let mut tmp = [0u8; 4096];
-            let n = self.reader.read(&mut tmp).await.unwrap_or(0);
-            assert!(n > 0, "server closed the stream");
-            self.buf.extend_from_slice(&tmp[..n]);
-        }
-    }
-
-    /// Reads messages until one matches method; returns it. Other messages
-    /// (e.g. navigator/status) are skipped but recorded in `seen`.
-    async fn expect(&mut self, method: &str, seen: &mut Vec<Value>) -> Value {
-        loop {
-            let msg = self.recv().await;
-            if msg.get("method").and_then(|m| m.as_str()) == Some(method) {
-                return msg;
-            }
-            seen.push(msg);
-        }
-    }
-
-    /// Reads notifications until a `navigator/status` with the given state
-    /// arrives; other notifications are skipped. This is the synchronization
-    /// point for tests that expect no remark (silent) or an error.
-    async fn expect_status(&mut self, state: &str) -> Value {
-        loop {
-            let msg = self.recv().await;
-            if msg.get("method").and_then(|m| m.as_str()) == Some("navigator/status")
-                && msg["params"]["state"].as_str() == Some(state)
-            {
-                return msg;
-            }
-        }
-    }
-
-    /// Collects every message readable within a virtual-time window, then
-    /// stops. Used to assert that NOTHING (e.g. a stale remark) arrives.
-    async fn collect_for(&mut self, window: Duration) -> Vec<Value> {
-        let mut out = Vec::new();
-        let mut scratch = [0u8; 4096];
-        loop {
-            match tokio::time::timeout(window, self.reader.read(&mut scratch)).await {
-                Ok(Ok(n)) if n > 0 => {
-                    self.buf.extend_from_slice(&scratch[..n]);
-                    while let Some((msg, consumed)) = try_parse(&self.buf) {
-                        self.buf.drain(..consumed);
-                        out.push(msg);
-                    }
-                }
-                _ => return out,
-            }
-        }
-    }
-
-    async fn initialize(&mut self, options: Value) {
-        self.send(&json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "processId": null,
-                "capabilities": {},
-                "initializationOptions": options
-            }
-        }))
-        .await;
-        let resp = self.recv().await;
-        assert!(resp.get("result").is_some(), "initialize failed: {resp}");
-        self.send(&json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}))
-            .await;
-    }
-
-    async fn did_open(&mut self, uri: &str, text: &str, version: i32) {
-        self.send(&json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "rust",
-                    "version": version,
-                    "text": text
-                }
-            }
-        }))
-        .await;
-    }
-
-    async fn did_change(&mut self, uri: &str, text: &str, version: i32) {
-        self.send(&json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didChange",
-            "params": {
-                "textDocument": { "uri": uri, "version": version },
-                "contentChanges": [{ "text": text }]
-            }
-        }))
-        .await;
-    }
-
-    async fn did_save(&mut self, uri: &str) {
-        self.send(&json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didSave",
-            "params": { "textDocument": { "uri": uri } }
-        }))
-        .await;
-    }
-
-    async fn notify(&mut self, method: &str, params: Value) {
-        self.send(&json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params
-        }))
-        .await;
-    }
-}
-
-/// Parses one framed message; returns it plus total bytes consumed.
-fn try_parse(buf: &[u8]) -> Option<(Value, usize)> {
-    if buf.is_empty() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(buf);
-    let idx = s.find("\r\n\r\n")?;
-    let header = &s[..idx];
-    let content_len: usize = header
-        .lines()
-        .find_map(|l| {
-            l.to_lowercase()
-                .strip_prefix("content-length:")
-                .and_then(|v| v.trim().parse().ok())
-        })
-        .unwrap_or(0);
-    let body_start = idx + 4;
-    let total = body_start + content_len;
-    if buf.len() < total {
-        return None;
-    }
-    let msg = serde_json::from_str(&s[body_start..total]).ok()?;
-    Some((msg, total))
-}
-
-/// Spawns the server on duplex pairs; returns the client side.
-/// Wireup: client writes -> server input; server output -> client reads.
-fn spawn_server(deps: NavigatorDeps) -> LspClient {
-    let deps = deps.with_decision(Arc::new(ScriptedDecision));
-    let (server_input, client_write) = tokio::io::duplex(64 * 1024);
-    let (client_read, server_output) = tokio::io::duplex(64 * 1024);
-    tokio::spawn(navigator::serve(server_input, server_output, deps));
-    LspClient {
-        writer: client_write,
-        reader: client_read,
-        buf: Vec::new(),
-    }
-}
-
-/// The default pipeline's answers for existing integration scenarios:
-/// changes are worth a short metacognition remark, but do not drift from
-/// intent enough to wake cognition.
-struct ScriptedDecision;
-
-impl DecisionModel for ScriptedDecision {
-    fn decide<'a>(
-        &'a self,
-        _state: &'a str,
-        questions: &'a BTreeMap<String, Question>,
-        _cancel: &'a CancellationToken,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<BTreeMap<String, DecisionAnswer>, ModelError>>
-                + Send
-                + 'a,
-        >,
-    > {
-        Box::pin(async move {
-            let mut answers = BTreeMap::new();
-            for (name, question) in questions {
-                match question {
-                    Question::Noul { .. } => {
-                        answers.insert(name.clone(), DecisionAnswer::Noul { noul: 0.9 });
-                    }
-                    Question::Choice { criteria, .. } => {
-                        let choice = if criteria.contains_key("metacognition") {
-                            "metacognition"
-                        } else {
-                            criteria.keys().next().map(String::as_str).unwrap_or("")
-                        };
-                        let probabilities = criteria
-                            .keys()
-                            .map(|k| (k.clone(), if k == choice { 1.0 } else { 0.0 }))
-                            .collect();
-                        answers.insert(
-                            name.clone(),
-                            DecisionAnswer::Choice {
-                                choice: choice.to_string(),
-                                probabilities,
-                                confidence: 1.0,
-                            },
-                        );
-                    }
-                    Question::Score { criteria, .. } => {
-                        let probabilities = (0..criteria.len())
-                            .map(|i| (i.to_string(), if i == 0 { 1.0 } else { 0.0 }))
-                            .collect();
-                        answers.insert(
-                            name.clone(),
-                            DecisionAnswer::Score {
-                                score: 0.0,
-                                legend: criteria
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(i, s)| (i.to_string(), s.clone()))
-                                    .collect(),
-                                probabilities,
-                                confidence: 1.0,
-                            },
-                        );
-                    }
-                }
-            }
-            Ok(answers)
-        })
-    }
-}
-
-struct ScriptedFim {
-    text: &'static str,
-}
-
-impl FimModel for ScriptedFim {
-    fn complete<'a>(
-        &'a self,
-        _request: FimRequest,
-        _cancel: &'a CancellationToken,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<FimAnswer, ModelError>> + Send + 'a>,
-    > {
-        Box::pin(async move {
-            Ok(FimAnswer {
-                text: self.text.to_string(),
-                usage: Default::default(),
-                latency: Duration::from_millis(5),
-            })
-        })
-    }
-}
 
 const URI: &str = "file:///ws/src/main.rs";
 
@@ -762,7 +400,7 @@ async fn inline_completion_answers_empty_items() {
     let mock = MockCommenter::new(vec![]);
     let tmp = tempfile::tempdir().unwrap();
     let deps = NavigatorDeps::new(Arc::new(mock), tmp.path().join("nav.jsonl"))
-        .with_fim(Arc::new(ScriptedFim { text: "hello" }))
+        .with_fim(Arc::new(ScriptedFim::fixed("hello")))
         .with_model_ids(Some("mercury-edit-2".into()), None, None);
     let mut client = spawn_server(deps);
 
@@ -1064,78 +702,6 @@ async fn without_server_info_no_notification_is_sent() {
     );
 }
 
-// ---------- reflex context refresh ----------
-
-use rust_agent::navigator::ports::{ReflexContextModel, ReflexContextRequest};
-
-/// A reflex-context model answering from a script (one entry per call;
-/// `Err` fails the refresh) and recording every request it received.
-#[derive(Clone, Default)]
-struct ScriptedReflexContext {
-    answers: Arc<std::sync::Mutex<Vec<Result<&'static str, &'static str>>>>,
-    requests: Arc<std::sync::Mutex<Vec<ReflexContextRequest>>>,
-}
-
-impl ScriptedReflexContext {
-    fn new(answers: Vec<Result<&'static str, &'static str>>) -> Self {
-        Self {
-            answers: Arc::new(std::sync::Mutex::new(answers)),
-            requests: Arc::default(),
-        }
-    }
-
-    fn calls(&self) -> usize {
-        self.requests.lock().unwrap().len()
-    }
-}
-
-impl ReflexContextModel for ScriptedReflexContext {
-    fn refresh<'a>(
-        &'a self,
-        request: &'a ReflexContextRequest,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, ModelError>> + Send + 'a>>
-    {
-        Box::pin(async move {
-            self.requests.lock().unwrap().push(request.clone());
-            let next = {
-                let mut answers = self.answers.lock().unwrap();
-                if answers.is_empty() {
-                    Err("script exhausted")
-                } else {
-                    answers.remove(0)
-                }
-            };
-            next.map(str::to_string)
-                .map_err(|m| ModelError::Malformed(m.to_string()))
-        })
-    }
-}
-
-/// A FIM that records the prompt of every request.
-#[derive(Clone, Default)]
-struct RecordingFim {
-    prompts: Arc<std::sync::Mutex<Vec<String>>>,
-}
-
-impl FimModel for RecordingFim {
-    fn complete<'a>(
-        &'a self,
-        request: FimRequest,
-        _cancel: &'a CancellationToken,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<FimAnswer, ModelError>> + Send + 'a>,
-    > {
-        Box::pin(async move {
-            self.prompts.lock().unwrap().push(request.prompt);
-            Ok(FimAnswer {
-                text: "x".to_string(),
-                usage: Default::default(),
-                latency: Duration::from_millis(5),
-            })
-        })
-    }
-}
-
 impl LspClient {
     /// One inline completion at the document start; returns once answered.
     async fn complete(&mut self, id: u64, version: i32) {
@@ -1195,7 +761,7 @@ async fn reflex_context_is_refreshed_by_the_metacognition() {
         .await;
 
     let model = ScriptedReflexContext::new(vec![Ok("REFRESHED-ONE"), Ok("REFRESHED-TWO")]);
-    let fim = RecordingFim::default();
+    let fim = ScriptedFim::fixed("x");
     let deps = NavigatorDeps::new(Arc::new(MockCommenter::new(vec![])), log_path.clone())
         .with_fim(Arc::new(fim.clone()))
         .with_reflex_context(Arc::new(model.clone()))
@@ -1214,12 +780,12 @@ async fn reflex_context_is_refreshed_by_the_metacognition() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(model.calls(), 1);
     {
-        let prompts = fim.prompts.lock().unwrap();
+        let prompts = fim.prompts();
         assert!(prompts[0].contains("fix the parser"), "{}", prompts[0]);
         assert!(!prompts[0].contains("REFRESHED-ONE"));
     }
     {
-        let requests = model.requests.lock().unwrap();
+        let requests = model.requests();
         assert_eq!(requests[0].intent, "fix the parser");
         assert!(requests[0].conversation.contains("use anyhow for errors"));
         assert_eq!(requests[0].file, URI);
@@ -1229,7 +795,7 @@ async fn reflex_context_is_refreshed_by_the_metacognition() {
 
     // 2. The refreshed text is served; same inputs inside a minute: no call.
     client.complete(22, 1).await;
-    assert!(fim.prompts.lock().unwrap()[1].contains("REFRESHED-ONE"));
+    assert!(fim.prompts()[1].contains("REFRESHED-ONE"));
     assert_eq!(model.calls(), 1);
 
     // 3. A changed digest inside a minute does not refresh.
@@ -1243,11 +809,11 @@ async fn reflex_context_is_refreshed_by_the_metacognition() {
     client.complete(24, 1).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(model.calls(), 2);
-    assert!(model.requests.lock().unwrap()[1]
+    assert!(model.requests()[1]
         .conversation
         .contains("and add a --force flag"));
     client.complete(25, 1).await;
-    assert!(fim.prompts.lock().unwrap()[4].contains("REFRESHED-TWO"));
+    assert!(fim.prompts()[4].contains("REFRESHED-TWO"));
 
     // 5. Unchanged inputs after another minute: still no call.
     tokio::time::advance(Duration::from_secs(61)).await;
@@ -1273,7 +839,7 @@ async fn reflex_context_refresh_failure_keeps_the_previous_context() {
     let tmp = tempfile::tempdir().unwrap();
     let log_path = tmp.path().join("nav.jsonl");
     let model = ScriptedReflexContext::new(vec![Err("boom"), Ok("RECOVERED")]);
-    let fim = RecordingFim::default();
+    let fim = ScriptedFim::fixed("x");
     let deps = NavigatorDeps::new(Arc::new(MockCommenter::new(vec![])), log_path.clone())
         .with_fim(Arc::new(fim.clone()))
         .with_reflex_context(Arc::new(model.clone()));
@@ -1289,7 +855,7 @@ async fn reflex_context_refresh_failure_keeps_the_previous_context() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     client.complete(32, 1).await;
     {
-        let prompts = fim.prompts.lock().unwrap();
+        let prompts = fim.prompts();
         assert!(prompts[1].contains("fix the parser"), "{}", prompts[1]);
     }
     assert_eq!(model.calls(), 1, "no retry inside the minute");
@@ -1305,7 +871,7 @@ async fn reflex_context_refresh_failure_keeps_the_previous_context() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     client.complete(34, 1).await;
     assert_eq!(model.calls(), 2);
-    assert!(fim.prompts.lock().unwrap()[3].contains("RECOVERED"));
+    assert!(fim.prompts()[3].contains("RECOVERED"));
 }
 
 // ---------- conversation trigger ----------

@@ -7,15 +7,14 @@
 //! never fail on it.
 
 use std::collections::BTreeMap;
-use std::future::Future;
 use std::path::Path;
-use std::pin::Pin;
-use std::sync::Arc;
 
 use rust_agent::navigator::pipeline::Pipeline;
-use rust_agent::navigator::ports::{Answer, DecisionModel, ModelError, Questions};
+use rust_agent::navigator::ports::Answer;
 use rust_agent::navigator::replay::{load_candidate, ReplayLog, Replayer};
-use tokio_util::sync::CancellationToken;
+
+mod common;
+use common::navigator::ScriptedDecision;
 
 const LOG: &str = include_str!("fixtures/navigator/replay/mixed_log.jsonl");
 const STRICTER: &str = "fixtures/navigator/replay/stricter";
@@ -46,53 +45,6 @@ fn recorded() -> Pipeline {
         load_candidate(Some(&fixture("fixtures/navigator/replay/recorded")))
             .expect("recorded pipeline"),
     )
-}
-
-/// Scripted instinct: answers per call, in order, recording the states it
-/// was asked about. No network, and the last answer repeats once the script
-/// runs out.
-struct ScriptedModel {
-    answers: Vec<BTreeMap<String, Answer>>,
-    states: Arc<std::sync::Mutex<Vec<String>>>,
-    calls: Arc<std::sync::atomic::AtomicUsize>,
-}
-
-impl ScriptedModel {
-    fn new(answers: Vec<BTreeMap<String, Answer>>) -> Self {
-        Self {
-            answers,
-            states: Arc::new(std::sync::Mutex::new(Vec::new())),
-            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        }
-    }
-
-    fn states(&self) -> Vec<String> {
-        self.states.lock().unwrap().clone()
-    }
-
-    fn calls(&self) -> usize {
-        self.calls.load(std::sync::atomic::Ordering::SeqCst)
-    }
-}
-
-impl DecisionModel for ScriptedModel {
-    fn decide<'a>(
-        &'a self,
-        state: &'a str,
-        _questions: &'a Questions,
-        _cancel: &'a CancellationToken,
-    ) -> Pin<Box<dyn Future<Output = Result<BTreeMap<String, Answer>, ModelError>> + Send + 'a>>
-    {
-        let index = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let answers = self
-            .answers
-            .get(index)
-            .or_else(|| self.answers.last())
-            .cloned()
-            .unwrap_or_default();
-        self.states.lock().unwrap().push(state.to_string());
-        Box::pin(async move { Ok(answers) })
-    }
 }
 
 fn noul(name: &str, value: f64) -> (String, Answer) {
@@ -281,7 +233,7 @@ async fn a_changed_question_is_not_comparable_without_a_reask() {
 
 #[tokio::test]
 async fn a_reask_rerenders_the_state_from_the_stored_template_inputs() {
-    let model = ScriptedModel::new(vec![
+    let model = ScriptedDecision::new(vec![
         all_three(0.95, "metacognition", 0.1),
         all_three(0.2, "silent", 0.1),
         all_three(0.95, "metacognition", 0.95),
@@ -326,19 +278,8 @@ async fn a_reask_rerenders_the_state_from_the_stored_template_inputs() {
 
 #[tokio::test]
 async fn a_failing_reask_leaves_the_trigger_not_comparable() {
-    struct Failing;
-    impl DecisionModel for Failing {
-        fn decide<'a>(
-            &'a self,
-            _state: &'a str,
-            _questions: &'a Questions,
-            _cancel: &'a CancellationToken,
-        ) -> Pin<Box<dyn Future<Output = Result<BTreeMap<String, Answer>, ModelError>> + Send + 'a>>
-        {
-            Box::pin(async { Err(ModelError::Malformed("no answers".to_string())) })
-        }
-    }
-    let report = Replayer::with_reask(&pipeline(REWORDED), &Failing)
+    let failing = ScriptedDecision::failing("no answers");
+    let report = Replayer::with_reask(&pipeline(REWORDED), &failing)
         .run(&log())
         .await;
     assert_eq!(report.reasked, 0, "a failed re-ask is not a re-ask");

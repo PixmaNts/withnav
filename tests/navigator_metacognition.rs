@@ -19,6 +19,9 @@ use rust_agent::provider::config::{
 };
 use rust_agent::provider::openai::ClientCache;
 
+mod common;
+use common::navigator::{delta_text, delta_tool_call, sse_data, sse_stream};
+
 fn resolved(base_url: String) -> ResolvedModel {
     ResolvedModel {
         alias: "metacognition".to_string(),
@@ -72,28 +75,6 @@ fn remark_ctx(ws: &Path, buffers: Vec<(PathBuf, &str)>) -> RemarkContext {
     .into_context(ws.to_path_buf(), open_buffers)
 }
 
-/// One SSE data line carrying `payload` (already-serialized JSON value).
-fn sse(payload: &Value) -> String {
-    format!("data: {payload}\n\n")
-}
-
-fn sse_stream(lines: Vec<String>) -> String {
-    let mut out = lines.concat();
-    out.push_str("data: [DONE]\n\n");
-    out
-}
-
-/// A text-only assistant delta.
-fn delta_text(text: &str) -> Value {
-    json!({"choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]})
-}
-
-/// A tool-call assistant delta (single chunk, full arguments).
-fn delta_tool_call(id: &str, name: &str, args: &Value) -> Value {
-    json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":id,
-        "function":{"name":name,"arguments":args.to_string()}}]},"finish_reason":"tool_calls"}]})
-}
-
 async fn received_bodies(server: &MockServer) -> Vec<Value> {
     server
         .received_requests()
@@ -118,13 +99,13 @@ async fn one_read_round_then_a_remark() {
 
     let server = MockServer::start().await;
     // Round 1: tool call. Round 2: the remark.
-    let round1 = sse_stream(vec![sse(&delta_tool_call(
+    let round1 = sse_stream(vec![sse_data(&delta_tool_call(
         "call-1",
         "read",
         &json!({"path": "src/other.rs"}),
     ))]);
     let answer = r#"{"line": 2, "text": "helper is fine"}"#;
-    let round2 = sse_stream(vec![sse(&delta_text(answer))]);
+    let round2 = sse_stream(vec![sse_data(&delta_text(answer))]);
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .and(body_partial_json(json!({"tools": [{"type": "function"}]})))
@@ -191,7 +172,7 @@ async fn tool_loop_is_capped_at_two_rounds_then_forces_the_answer() {
     std::fs::write(ws.join("a.rs"), "a\n").unwrap();
 
     let server = MockServer::start().await;
-    let tool_round = sse_stream(vec![sse(&delta_tool_call(
+    let tool_round = sse_stream(vec![sse_data(&delta_tool_call(
         "c",
         "read",
         &json!({"path": "a.rs"}),
@@ -202,7 +183,7 @@ async fn tool_loop_is_capped_at_two_rounds_then_forces_the_answer() {
         .respond_with(ResponseTemplate::new(200).set_body_raw(tool_round, "text/event-stream"))
         .mount(&server)
         .await;
-    let final_answer = sse_stream(vec![sse(&delta_text(r#"{"silent": true}"#))]);
+    let final_answer = sse_stream(vec![sse_data(&delta_text(r#"{"silent": true}"#))]);
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(final_answer, "text/event-stream"))
@@ -244,7 +225,9 @@ async fn over_budget_returns_silence() {
     let ws = tmp.path().to_path_buf();
 
     let server = MockServer::start().await;
-    let slow = sse_stream(vec![sse(&delta_text(r#"{"line": 1, "text": "late"}"#))]);
+    let slow = sse_stream(vec![sse_data(&delta_text(
+        r#"{"line": 1, "text": "late"}"#,
+    ))]);
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .respond_with(
@@ -296,12 +279,12 @@ async fn read_of_an_open_buffer_answers_from_the_buffer() {
     let buffer_text = "EDITED IN THE BUFFER\nsecond line\n";
 
     let server = MockServer::start().await;
-    let round1 = sse_stream(vec![sse(&delta_tool_call(
+    let round1 = sse_stream(vec![sse_data(&delta_tool_call(
         "call-1",
         "read",
         &json!({"path": file.to_string_lossy()}),
     ))]);
-    let round2 = sse_stream(vec![sse(&delta_text(r#"{"silent": true}"#))]);
+    let round2 = sse_stream(vec![sse_data(&delta_text(r#"{"silent": true}"#))]);
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .and(body_partial_json(json!({"tools": [{"type": "function"}]})))
@@ -354,7 +337,7 @@ async fn buffer_read_honours_offset_and_limit() {
 async fn the_branch_prompt_reaches_the_models_system_message() {
     let tmp = tempfile::tempdir().unwrap();
     let server = MockServer::start().await;
-    let answer = sse_stream(vec![sse(&delta_text(r#"{"silent": true}"#))]);
+    let answer = sse_stream(vec![sse_data(&delta_text(r#"{"silent": true}"#))]);
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(answer, "text/event-stream"))

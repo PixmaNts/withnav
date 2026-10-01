@@ -8,95 +8,18 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio_util::sync::CancellationToken;
-
-use rust_agent::error::ProviderError;
-use rust_agent::navigator::ports::{FimAnswer, FimModel, FimRequest, ModelError};
 use rust_agent::navigator::protocol::Position;
 use rust_agent::navigator::reflex::{
     build_fim_request, render_context_block, ReflexService, DEBOUNCE_MS, MAX_CONTEXT_BYTES,
     MAX_PREFIX_BYTES, MAX_SUFFIX_BYTES,
 };
-use rust_agent::provider::Usage;
 
-/// Scripted FIM fake: answers from a shared queue consumed in call order;
-/// records every request it saw; can delay its answer (virtual time) so a
-/// second request arrives while the first is in flight.
-#[derive(Clone, Default)]
-struct FakeFim {
-    answers: Arc<std::sync::Mutex<Vec<String>>>,
-    requests: Arc<std::sync::Mutex<Vec<FimRequest>>>,
-    delay_ms: u64,
-}
-
-impl FakeFim {
-    fn with_answers(answers: Vec<String>) -> Self {
-        Self {
-            answers: Arc::new(std::sync::Mutex::new(answers)),
-            requests: Arc::new(std::sync::Mutex::new(Vec::new())),
-            delay_ms: 0,
-        }
-    }
-
-    fn with_answers_and_delay(answers: Vec<String>, delay_ms: u64) -> Self {
-        Self {
-            delay_ms,
-            ..Self::with_answers(answers)
-        }
-    }
-
-    fn calls(&self) -> usize {
-        self.requests.lock().unwrap().len()
-    }
-
-    fn last_request(&self) -> FimRequest {
-        self.requests.lock().unwrap().last().cloned().unwrap()
-    }
-}
-
-impl FimModel for FakeFim {
-    fn complete<'a>(
-        &'a self,
-        request: FimRequest,
-        cancel: &'a CancellationToken,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<FimAnswer, ModelError>> + Send + 'a>,
-    > {
-        Box::pin(async move {
-            // The answer is assigned when the call starts: a cancelled call
-            // still consumes it, like a real request whose tokens are paid
-            // and thrown away.
-            self.requests.lock().unwrap().push(request);
-            let text = {
-                let mut answers = self.answers.lock().unwrap();
-                if answers.is_empty() {
-                    String::new()
-                } else {
-                    answers.remove(0)
-                }
-            };
-            if self.delay_ms > 0 {
-                tokio::select! {
-                    _ = cancel.cancelled() => {
-                        return Err(ModelError::Provider(ProviderError::Canceled {
-                            partial: None,
-                        }));
-                    }
-                    _ = tokio::time::sleep(Duration::from_millis(self.delay_ms)) => {}
-                }
-            }
-            Ok(FimAnswer {
-                text,
-                usage: Usage::default(),
-                latency: Duration::from_millis(0),
-            })
-        })
-    }
-}
+mod common;
+use common::navigator::ScriptedFim;
 
 const URI: &str = "file:///ws/src/main.rs";
 
-fn service(model: FakeFim) -> Arc<ReflexService> {
+fn service(model: ScriptedFim) -> Arc<ReflexService> {
     Arc::new(ReflexService::new(Arc::new(model)))
 }
 
@@ -128,7 +51,7 @@ fn spawn_suggest(
 /// split at the right byte offset, not the UTF-16 count.
 #[tokio::test(start_paused = true)]
 async fn non_ascii_cursor_splits_prompt_at_the_byte_offset() {
-    let model = FakeFim::with_answers(vec!["world".to_string()]);
+    let model = ScriptedFim::new(vec!["world".to_string()]);
     let svc = service(model.clone());
     // "héllo\n😀x" — line 1, after the emoji (2 UTF-16 units).
     let doc = "héllo\n😀x";
@@ -165,7 +88,7 @@ async fn non_ascii_cursor_splits_prompt_at_the_byte_offset() {
 /// above the code prefix.
 #[tokio::test(start_paused = true)]
 async fn reflex_context_renders_as_comment_block() {
-    let model = FakeFim::with_answers(vec!["x".to_string()]);
+    let model = ScriptedFim::new(vec!["x".to_string()]);
     let svc = service(model.clone());
     let _ = spawn_suggest(
         &svc,
@@ -192,7 +115,7 @@ async fn reflex_context_renders_as_comment_block() {
 /// cancels it before the model is called.
 #[tokio::test(start_paused = true)]
 async fn newer_request_cancels_the_older_one() {
-    let model = FakeFim::with_answers(vec!["first".to_string()]);
+    let model = ScriptedFim::new(vec!["first".to_string()]);
     let svc = service(model.clone());
     let doc = "fn main() {}";
 
@@ -239,7 +162,7 @@ async fn newer_request_cancels_the_older_one() {
 /// newer one gets the next answer.
 #[tokio::test(start_paused = true)]
 async fn superseded_while_answering_never_surfaces() {
-    let model = FakeFim::with_answers_and_delay(vec!["late".to_string(), "fresh".to_string()], 100);
+    let model = ScriptedFim::new(vec!["late".to_string(), "fresh".to_string()]).with_delay(100);
     let svc = service(model.clone());
 
     let older = spawn_suggest(
@@ -285,7 +208,7 @@ async fn superseded_while_answering_never_surfaces() {
 /// A model error or empty text resolves as ModelSilent, never a panic.
 #[tokio::test(start_paused = true)]
 async fn empty_model_answer_is_silent() {
-    let svc = service(FakeFim::with_answers(vec![String::new()]));
+    let svc = service(ScriptedFim::new(vec![String::new()]));
     let outcome = spawn_suggest(
         &svc,
         URI,
@@ -309,7 +232,7 @@ async fn empty_model_answer_is_silent() {
 /// model.
 #[tokio::test(start_paused = true)]
 async fn out_of_bounds_position_is_silent_without_a_model_call() {
-    let model = FakeFim::with_answers(vec!["x".to_string()]);
+    let model = ScriptedFim::new(vec!["x".to_string()]);
     let svc = service(model.clone());
     let outcome = spawn_suggest(
         &svc,
@@ -334,7 +257,7 @@ async fn out_of_bounds_position_is_silent_without_a_model_call() {
 /// The debounce holds the request back: nothing is sent before it elapses.
 #[tokio::test(start_paused = true)]
 async fn nothing_is_sent_before_the_debounce_elapses() {
-    let model = FakeFim::with_answers(vec!["x".to_string()]);
+    let model = ScriptedFim::new(vec!["x".to_string()]);
     let svc = service(model.clone());
     let task = spawn_suggest(
         &svc,
@@ -359,7 +282,7 @@ async fn nothing_is_sent_before_the_debounce_elapses() {
 /// so the pair is compared as a set).
 #[tokio::test(start_paused = true)]
 async fn different_documents_do_not_cancel_each_other() {
-    let model = FakeFim::with_answers(vec!["one".to_string(), "two".to_string()]);
+    let model = ScriptedFim::new(vec!["one".to_string(), "two".to_string()]);
     let svc = service(model);
     let a = spawn_suggest(
         &svc,

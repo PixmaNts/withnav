@@ -721,32 +721,6 @@ mod tests {
         h.take_actor().await;
     }
 
-    #[tokio::test]
-    async fn multi_step_run_emits_one_llm_response_per_model_response() {
-        let toolcall = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"bash","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}"#;
-        let done =
-            r#"{"choices":[{"index":0,"delta":{"content":"all done"},"finish_reason":"stop"}]}"#;
-        let server = spawn_mock(vec![
-            http_sse(&sse_body(&[toolcall])),
-            http_sse(&sse_body(&[done])),
-        ])
-        .await;
-        let mut h = harness(server.url.clone()).await;
-        h.send("run echo");
-
-        let envelopes = drain_until(&mut h.live, |e| {
-            kind_of(e) == "turn.end" && e.payload["outcome"] == "done"
-        })
-        .await;
-        let kinds = assert_monotonic(&envelopes);
-        assert_eq!(
-            kinds.iter().filter(|k| **k == "llm.response").count(),
-            2,
-            "one llm.response per model response: {kinds:?}"
-        );
-        h.take_actor().await;
-    }
-
     // ---- (b) Yielded run: agent.yield -> turn.end{yielded} -> agent.state{Yielded}, NO task.done ----
 
     #[tokio::test]
@@ -849,6 +823,11 @@ mod tests {
             response.seq,
             pre.seq,
             post.seq
+        );
+        assert_eq!(
+            kinds.iter().filter(|k| **k == "llm.response").count(),
+            2,
+            "one llm.response per model response: {kinds:?}"
         );
         assert!(kinds.contains(&"turn.end"));
         h.take_actor().await;
@@ -1101,65 +1080,5 @@ mod tests {
             .nth(1)
             .unwrap_or_default()
             .to_string()
-    }
-
-    // ---- manual QA observables ----
-
-    #[tokio::test]
-    async fn manual_qa_prints_ordered_event_sequences_for_done_and_yielded() {
-        let done =
-            r#"{"choices":[{"index":0,"delta":{"content":"all done"},"finish_reason":"stop"}]}"#;
-        let server = spawn_mock(vec![http_sse(&sse_body(&[done]))]).await;
-        let mut h = harness(server.url.clone()).await;
-        h.send("manual done");
-        let envelopes = drain_until(&mut h.live, |e| {
-            kind_of(e) == "turn.end" && e.payload["outcome"] == "done"
-        })
-        .await;
-        eprintln!("manual QA Done run:");
-        for env in &envelopes {
-            eprintln!("  (kind={}, seq={})", env.kind, env.seq);
-        }
-
-        let ask = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"ask_1","function":{"name":"ask","arguments":"{\"question\":\"insert SD card\"}"}}]},"finish_reason":"tool_calls"}]}"#;
-        let server = spawn_mock(vec![http_sse(&sse_body(&[ask]))]).await;
-        let mut h2 = harness(server.url.clone()).await;
-        h2.send("manual yield");
-        let envelopes2 = drain_until(&mut h2.live, |e| {
-            kind_of(e) == "agent.state" && e.payload["to"] == "yielded"
-        })
-        .await;
-        eprintln!("manual QA Yielded run:");
-        for env in &envelopes2 {
-            eprintln!("  (kind={}, seq={})", env.kind, env.seq);
-        }
-
-        let done_kinds: Vec<&str> = envelopes.iter().map(kind_of).collect();
-        assert_eq!(
-            done_kinds,
-            vec![
-                "turn.start",
-                "llm.delta",
-                "llm.response",
-                "turn.end",
-                "task.done",
-                "agent.state",
-            ]
-        );
-        let yield_kinds: Vec<&str> = envelopes2.iter().map(kind_of).collect();
-        assert_eq!(
-            yield_kinds,
-            vec![
-                "turn.start",
-                "llm.delta",
-                "llm.delta",
-                "llm.response",
-                "agent.yield",
-                "turn.end",
-                "agent.state",
-            ]
-        );
-        h.take_actor().await;
-        h2.take_actor().await;
     }
 }

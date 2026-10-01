@@ -4,13 +4,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 use tokio_util::sync::CancellationToken;
 
-#[cfg(test)]
-use crate::agent::response::HumanRequest;
-#[cfg(test)]
-use crate::agent::run_loop::RunOutcome;
 use crate::bus::event::{AgentYield, EventEnvelope, EventKind, LlmDelta, TurnEnd, TurnEndOutcome};
-#[cfg(test)]
-use crate::error::AgentError;
 use crate::provider::auth;
 use crate::render::{Renderer, UiEvent};
 
@@ -325,46 +319,6 @@ async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
     Ok(EXIT_DONE)
 }
 
-/// The Phase-1 exit-code + rendering oracle. `run` now derives the same
-/// mapping from the event stream via [`exit_code_for`] + [`event_to_ui`],
-/// so this stays as the reference the parity test checks against.
-#[cfg(test)]
-fn finish(outcome: Result<RunOutcome, AgentError>, renderer: &mut Renderer) -> anyhow::Result<i32> {
-    match outcome {
-        Ok(RunOutcome::Done(_)) => {
-            renderer.render(UiEvent::Done);
-            Ok(EXIT_DONE)
-        }
-        Ok(RunOutcome::Yielded(req)) => {
-            print_yield(renderer, &req);
-            Ok(EXIT_YIELDED)
-        }
-        Ok(RunOutcome::StepBudgetExhausted) => {
-            renderer.render(UiEvent::Yielded {
-                question: "step budget exhausted".to_string(),
-                kind: Some("budget".to_string()),
-            });
-            Ok(EXIT_YIELDED)
-        }
-        Ok(RunOutcome::Interrupted) => {
-            eprintln!("\ninterrupted");
-            Ok(EXIT_INTERRUPTED)
-        }
-        Err(e) => {
-            eprintln!("\nerror: {e}");
-            Ok(EXIT_ERROR)
-        }
-    }
-}
-
-#[cfg(test)]
-fn print_yield(renderer: &mut Renderer, req: &HumanRequest) {
-    renderer.render(UiEvent::Yielded {
-        question: req.question.clone(),
-        kind: req.kind.clone(),
-    });
-}
-
 /// Render-behind-a-subscriber adapter : maps a bus event
 /// onto the SAME UiEvent the Phase-1 `on_delta` closure + `finish` produced,
 /// so `render.rs` and CLI stdout do not change.
@@ -452,36 +406,19 @@ mod tests {
         assert_eq!(EXIT_ERROR, 1);
         assert_eq!(EXIT_YIELDED, 2);
         assert_eq!(EXIT_INTERRUPTED, 130);
-    }
 
-    #[test]
-    fn finish_maps_outcomes_to_exit_codes() {
-        let mut r = Renderer::new(false);
-        assert_eq!(
-            finish(Ok(RunOutcome::Done(Default::default())), &mut r).unwrap(),
-            EXIT_DONE
-        );
-        assert_eq!(
-            finish(
-                Ok(RunOutcome::Yielded(HumanRequest {
-                    tool_call_id: "a".into(),
-                    question: "q".into(),
-                    kind: None,
-                    details: None,
-                })),
-                &mut r
-            )
-            .unwrap(),
-            EXIT_YIELDED
-        );
-        assert_eq!(
-            finish(Ok(RunOutcome::StepBudgetExhausted), &mut r).unwrap(),
-            EXIT_YIELDED
-        );
-        assert_eq!(
-            finish(Ok(RunOutcome::Interrupted), &mut r).unwrap(),
-            EXIT_INTERRUPTED
-        );
+        // The production mapping, one row per terminal outcome.
+        for (outcome, expected) in [
+            (TurnEndOutcome::Done, EXIT_DONE),
+            (TurnEndOutcome::Yielded, EXIT_YIELDED),
+            (TurnEndOutcome::Interrupted, EXIT_INTERRUPTED),
+            (TurnEndOutcome::Error, EXIT_ERROR),
+        ] {
+            assert_eq!(exit_code_for(&turn_end_envelope(outcome)), expected);
+        }
+        // A turn.end whose payload cannot be parsed is an error, not a success.
+        let malformed = kind_envelope(EventKind::TurnEnd, serde_json::json!({}));
+        assert_eq!(exit_code_for(&malformed), EXIT_ERROR);
     }
 
     #[test]
@@ -531,6 +468,18 @@ mod tests {
         EventEnvelope::new(Ulid::new(), 2, kind, payload)
     }
 
+    fn turn_end_envelope(outcome: TurnEndOutcome) -> EventEnvelope {
+        let payload = TurnEndPayload {
+            turn_id: Ulid::new(),
+            actor_id: "agent:main".into(),
+            outcome,
+            usage: None,
+            duration_ms: 5,
+            error: None,
+        };
+        kind_envelope(EventKind::TurnEnd, serde_json::to_value(&payload).unwrap())
+    }
+
     // Given the scripted delta sequence of a simple Phase-1 run (thinking,
     // text, a tool starting, more text) followed by a Done turn end
     // When each envelope passes through event_to_ui
@@ -555,18 +504,7 @@ mod tests {
             delta_envelope(StreamDelta::Text {
                 text: "world".into(),
             }),
-            kind_envelope(
-                EventKind::TurnEnd,
-                serde_json::to_value(&TurnEndPayload {
-                    turn_id: Ulid::new(),
-                    actor_id: "agent:main".into(),
-                    outcome: TurnEndOutcome::Done,
-                    usage: None,
-                    duration_ms: 5,
-                    error: None,
-                })
-                .unwrap(),
-            ),
+            turn_end_envelope(TurnEndOutcome::Done),
         ];
 
         let ui: Vec<UiEvent> = envelopes.iter().filter_map(event_to_ui).collect();
@@ -656,44 +594,6 @@ mod tests {
                 event_to_ui(&env).is_none(),
                 "{outcome:?} rendered to stderr in Phase 1"
             );
-        }
-    }
-
-    // Manual-QA observable: the exact UiEvent sequence event_to_ui produces
-    // for a scripted simple run (thinking + two text deltas + tool + Done).
-    #[test]
-    fn event_to_ui_scripted_run_eprints_the_ui_sequence() {
-        let envelopes = vec![
-            delta_envelope(StreamDelta::Text {
-                text: "counting: ".into(),
-            }),
-            delta_envelope(StreamDelta::Text {
-                text: "1 2 3".into(),
-            }),
-            delta_envelope(StreamDelta::ToolCallStarted {
-                index: 0,
-                name: "read".into(),
-            }),
-            delta_envelope(StreamDelta::Text {
-                text: " done".into(),
-            }),
-            kind_envelope(
-                EventKind::TurnEnd,
-                serde_json::to_value(&TurnEndPayload {
-                    turn_id: Ulid::new(),
-                    actor_id: "agent:main".into(),
-                    outcome: TurnEndOutcome::Done,
-                    usage: None,
-                    duration_ms: 1,
-                    error: None,
-                })
-                .unwrap(),
-            ),
-        ];
-        for env in &envelopes {
-            if let Some(ui) = event_to_ui(env) {
-                eprintln!("UIEVENT {ui:?}");
-            }
         }
     }
 }

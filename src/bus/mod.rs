@@ -477,30 +477,6 @@ mod tests {
         assert!(resume.live.is_some(), "reconnect re-registers live");
     }
 
-    /// (g) Atomic subscribe-then-replay, driven deterministically on the bus
-    /// (the same synchronous mailbox step the sequencer task performs): the
-    /// replay snapshot is taken and the live receiver registered with NO await
-    /// between, so an event published after the handshake lands in live ONLY —
-    /// exactly once, never replayed, never lost.
-    #[tokio::test]
-    async fn atomic_subscribe_then_replay_delivers_the_seam_event_exactly_once() {
-        let mut bus = SessionBus::default();
-        for seq in 0..3u64 {
-            bus.emit(durable_envelope(seq));
-        }
-
-        // The handshake (one synchronous step inside the sequencer task).
-        let reply = subscribe(&mut bus, Some(0), 3);
-        assert_eq!(replay_seqs(&reply.replay), vec![1, 2]);
-
-        // An event published EXACTLY after the handshake: live only.
-        bus.emit(durable_envelope(3));
-        let mut live = reply.live.expect("accepted cursor has a live stream");
-        assert_eq!(live.recv().await.unwrap().seq, 3);
-        // The replay vector above provably does not contain seq 3, and the
-        // live stream provably does — delivered exactly once.
-    }
-
     /// (g) Through the real sequencer: replay-then-live chains without a gap
     /// or a duplicate across the subscribe boundary.
     #[tokio::test]
@@ -625,85 +601,5 @@ mod tests {
         // Draining to None proves the sequencer task (holding the only
         // subscriber senders) has exited.
         assert!(live.recv().await.is_none());
-    }
-
-    /// Manual QA observable (deterministic, same structure as the disconnect
-    /// test): two subscribers on one session; the slow one fills to exactly
-    /// QUEUE_CAP and is disconnected, the healthy one receives everything,
-    /// and the reconnect replays gaplessly via `since(Some(k))`. Prints the
-    /// per-subscriber seq sequences and the reconnect ResumeOutcome.
-    #[test]
-    fn manual_qa_two_subscribers_disconnect_then_resume() {
-        let mut bus = SessionBus::default();
-        let mut slow = subscribe(&mut bus, None, 0).live.take().unwrap();
-        let mut healthy = subscribe(&mut bus, None, 0).live.take().unwrap();
-
-        let total = (SUBSCRIBER_QUEUE_CAP + 3) as u64;
-        let mut healthy_seqs = Vec::new();
-        for seq in 0..total {
-            bus.emit(durable_envelope(seq));
-            while let Ok(envelope) = healthy.try_recv() {
-                healthy_seqs.push(envelope.seq);
-            }
-        }
-        while let Ok(envelope) = healthy.try_recv() {
-            healthy_seqs.push(envelope.seq);
-        }
-
-        let mut slow_seqs = Vec::new();
-        while let Ok(envelope) = slow.try_recv() {
-            slow_seqs.push(envelope.seq);
-        }
-        assert!(slow.is_closed(), "slow disconnected on overflow");
-
-        // Reconnect the slow client from its last observed seq on the SAME
-        // live session: the overflow replays gaplessly.
-        let resume_cursor = *slow_seqs.last().unwrap();
-        let resume = subscribe(&mut bus, Some(resume_cursor), total);
-        let resume_seqs = replay_seqs(&resume.replay);
-
-        eprintln!(
-            "manual QA: healthy subscriber seqs (count={}): {:?}",
-            healthy_seqs.len(),
-            edge(&healthy_seqs)
-        );
-        eprintln!(
-            "manual QA: slow subscriber  seqs before disconnect (count={}): {:?}",
-            slow_seqs.len(),
-            edge(&slow_seqs)
-        );
-        eprintln!(
-            "manual QA: slow DISCONNECTED after seq {resume_cursor} (queue full) — durable overflow retained, not dropped"
-        );
-        eprintln!(
-            "manual QA: reconnect since(Some({resume_cursor})) → ResumeOutcome::Replay seqs {resume_seqs:?}"
-        );
-        eprintln!(
-            "manual QA: union(replay, live) for the slow client is gapless {}..={}",
-            resume_cursor + 1,
-            total - 1
-        );
-
-        assert_eq!(healthy_seqs, (0..total).collect::<Vec<_>>());
-        assert_eq!(
-            slow_seqs,
-            (0..SUBSCRIBER_QUEUE_CAP as u64).collect::<Vec<_>>()
-        );
-        assert_eq!(
-            resume_seqs,
-            (SUBSCRIBER_QUEUE_CAP as u64..total).collect::<Vec<_>>()
-        );
-    }
-
-    /// First/last few elements of a long sequence for readable QA output.
-    fn edge(seqs: &[u64]) -> Vec<u64> {
-        if seqs.len() <= 8 {
-            seqs.to_vec()
-        } else {
-            let mut shown = seqs[..4].to_vec();
-            shown.push(u64::MAX); // "... " separator marker
-            shown.extend_from_slice(&seqs[seqs.len() - 3..]);
-            shown
-        }
     }
 }

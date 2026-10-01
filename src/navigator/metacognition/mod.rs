@@ -124,7 +124,7 @@ pub struct LlmCommenter {
 
 /// The whole remark (tool rounds + final answer) is capped at this budget;
 /// past it the metacognition stays silent.
-const REMARK_BUDGET: Duration = Duration::from_secs(8);
+const REMARK_BUDGET: Duration = Duration::from_secs(20);
 /// At most this many rounds where the model may call tools; the call after
 /// the last one carries no tools, forcing the JSON answer.
 const MAX_TOOL_ROUNDS: usize = 2;

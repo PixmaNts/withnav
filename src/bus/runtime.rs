@@ -9,22 +9,20 @@
 //! inbox wait; `session.end` is sequenced ONLY at teardown via
 //! [`Sequencer::close_session`] — never on a natural turn end.
 
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
 use crate::agent::actor::{AgentActor, AgentState};
-use crate::agent::run_loop::{run_agent, RunOutcome, StepEvent, ToolEvent};
+use crate::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
 use crate::bus::event::{
-    AgentStateChanged, AgentYield, TaskDone, TaskStatus, ToolPostCall, ToolPreCall, ToolSource,
-    TurnEnd, TurnEndOutcome, TurnError, TurnStart, ROOT_ACTOR_ID,
+    AgentStateChanged, AgentYield, EventKind, TaskDone, TaskStatus, ToolPostCall, ToolPreCall,
+    ToolSource, TurnEnd, TurnEndOutcome, TurnError, TurnStart, ROOT_ACTOR_ID,
 };
 use crate::bus::inbox::ActorInbox;
 use crate::bus::sequencer::{Candidate, Sequencer};
 use crate::error::AgentError;
-use crate::provider::StreamDelta;
 
 /// The turn-end transcript hook: called with the actor's transcript after
 /// each turn's terminal events (the history store's snapshot seam).
@@ -37,92 +35,101 @@ const END_OF_STREAM_REASON: &str = "inbox_closed";
 /// Wire cap for `turn.end{error}.message` (Oracle P1-4: bounded, no secrets).
 const ERROR_SUMMARY_CAP: usize = 256;
 
-/// Step + task identity shared between the runtime task and its synchronous
-/// observers via `Arc<std::sync::Mutex<..>>` — sync locks, never held across
-/// an await; poisoned locks are recovered via `into_inner` (no unwrap).
-#[derive(Clone)]
-struct StepState {
-    turn_id: Ulid,
-    step_id: Arc<Mutex<Ulid>>,
-    task_id: Arc<Mutex<Option<Ulid>>>,
-}
-
-impl StepState {
-    fn step_id(&self) -> Ulid {
-        match self.step_id.lock() {
-            Ok(guard) => *guard,
-            Err(poisoned) => *poisoned.into_inner(),
-        }
-    }
-
-    fn set_step_id(&self, id: Ulid) {
-        match self.step_id.lock() {
-            Ok(mut guard) => *guard = id,
-            Err(poisoned) => *poisoned.into_inner() = id,
-        }
-    }
-
-    fn task_id(&self) -> Option<Ulid> {
-        match self.task_id.lock() {
-            Ok(guard) => *guard,
-            Err(poisoned) => *poisoned.into_inner(),
-        }
-    }
-
-    fn set_task_id(&self, id: Ulid) {
-        match self.task_id.lock() {
-            Ok(mut guard) => *guard = Some(id),
-            Err(poisoned) => *poisoned.into_inner() = Some(id),
-        }
-    }
-
-    fn candidate(&self, kind: EventKind, payload: serde_json::Value) -> Candidate {
-        let mut candidate = Candidate::new(kind, payload);
-        if let Some(task_id) = self.task_id() {
-            candidate = candidate.with_correlation_id(task_id);
-        }
-        candidate
-    }
-}
-
-use crate::bus::event::EventKind;
-
-/// Publishing seam with collapse semantics: on the FIRST publish failure the
-/// error is retained for the runtime turn driver and later publishes become
-/// silent no-ops (the session is collapsed; the runtime tears it down).
-struct Publisher {
+/// One turn's publishing state: identity (turn, task, current step, last
+/// response message) plus the publishing seam. The run observer mutates it;
+/// the runtime reads it back once the run future is dropped.
+///
+/// Publishing has collapse semantics: on the FIRST publish failure the error
+/// is retained for the turn driver and later publishes become silent no-ops
+/// (the session is collapsed; the runtime tears it down).
+struct TurnPublisher {
     sequencer: Sequencer,
-    error: Arc<Mutex<Option<crate::error::BusError>>>,
+    turn_id: Ulid,
+    task_id: Ulid,
+    step_id: Ulid,
+    message_id: Ulid,
+    error: Option<crate::error::BusError>,
 }
 
-impl Publisher {
-    fn new(sequencer: Sequencer) -> Self {
+impl TurnPublisher {
+    fn new(sequencer: Sequencer, turn_id: Ulid, task_id: Ulid) -> Self {
         Self {
             sequencer,
-            error: Arc::new(Mutex::new(None)),
+            turn_id,
+            task_id,
+            step_id: Ulid::new(),
+            message_id: Ulid::new(),
+            error: None,
         }
     }
 
-    fn publish(&self, candidate: Candidate) {
-        let ok = match self.error.lock() {
-            Ok(guard) => guard.is_none(),
-            Err(poisoned) => poisoned.into_inner().is_none(),
-        };
-        if !ok {
+    /// Publishes `payload` as `kind`, correlated to the turn's task.
+    fn publish(&mut self, kind: EventKind, payload: serde_json::Value) {
+        if self.error.is_some() {
             return;
         }
+        let candidate = Candidate::new(kind, payload).with_correlation_id(self.task_id);
         if let Err(e) = self.sequencer.publish(candidate) {
-            match self.error.lock() {
-                Ok(mut guard) => *guard = Some(e),
-                Err(poisoned) => *poisoned.into_inner() = Some(e),
-            }
+            self.error = Some(e);
         }
     }
 
-    fn take_error(&self) -> Option<crate::error::BusError> {
-        match self.error.lock() {
-            Ok(mut guard) => guard.take(),
-            Err(poisoned) => poisoned.into_inner().take(),
+    fn take_error(&mut self) -> Option<crate::error::BusError> {
+        self.error.take()
+    }
+
+    /// Translates one run event onto the bus. Pure: never feeds back into
+    /// the loop's control flow.
+    fn observe(&mut self, event: AgentEvent<'_>) {
+        match event {
+            AgentEvent::StepStarted => self.step_id = Ulid::new(),
+            AgentEvent::Delta(delta) => {
+                let payload = to_value(&crate::bus::event::LlmDelta {
+                    turn_id: self.turn_id,
+                    step_id: self.step_id,
+                    delta,
+                });
+                self.publish(EventKind::LlmDelta, payload);
+            }
+            AgentEvent::Response(message) => {
+                self.message_id = Ulid::new();
+                let payload = to_value(&crate::bus::event::LlmResponse {
+                    turn_id: self.turn_id,
+                    step_id: self.step_id,
+                    message: message.clone(),
+                    usage: message.usage,
+                    finish_reason: message.finish_reason.clone(),
+                });
+                self.publish(EventKind::LlmResponse, payload);
+            }
+            AgentEvent::PreCall {
+                tool_call_id,
+                name,
+                args,
+            } => {
+                let payload = to_value(&ToolPreCall {
+                    tool_call_id: tool_call_id.to_string(),
+                    name: name.to_string(),
+                    source: ToolSource::Native,
+                    args: args.clone(),
+                    actor_id: ROOT_ACTOR_ID.to_string(),
+                });
+                self.publish(EventKind::ToolPreCall, payload);
+            }
+            AgentEvent::PostCall {
+                tool_call_id,
+                name,
+                result,
+            } => {
+                let payload = to_value(&ToolPostCall {
+                    tool_call_id: tool_call_id.to_string(),
+                    name: name.to_string(),
+                    status: result.status,
+                    output: result.output.clone(),
+                    metadata: result.metadata.clone(),
+                });
+                self.publish(EventKind::ToolPostCall, payload);
+            }
         }
     }
 }
@@ -185,25 +192,18 @@ async fn runtime_loop(
 
         let task_id = active_task_id.unwrap_or_default();
         let turn_id = Ulid::new();
-        let state = StepState {
-            turn_id,
-            step_id: Arc::new(Mutex::new(Ulid::new())),
-            task_id: Arc::new(Mutex::new(None)),
-        };
-        state.set_task_id(task_id);
-        let publisher = Publisher::new(sequencer.clone());
+        let mut turn = TurnPublisher::new(sequencer.clone(), turn_id, task_id);
 
-        publisher.publish(state.candidate(
+        turn.publish(
             EventKind::TurnStart,
             to_value(&TurnStart {
                 turn_id,
                 actor_id: ROOT_ACTOR_ID.to_string(),
                 task_id,
             }),
-        ));
+        );
 
         let started = Instant::now();
-        let message_id: Arc<Mutex<Ulid>> = Arc::new(Mutex::new(Ulid::new()));
         // Session cancellation must interrupt a MID-FLIGHT turn too: the
         // select cancels the ACTOR token (cloned handle avoids aliasing the
         // `&mut actor` the future holds), the in-flight provider call
@@ -212,12 +212,9 @@ async fn runtime_loop(
         // block scope drops the future (+ its &mut actor borrow) BEFORE the
         // outcome handling below assigns actor.state.
         let actor_cancel = actor.cancel.clone();
-        let turn = {
-            let mut on_delta = |delta: StreamDelta| observers_delta(&state, &publisher, delta);
-            let mut on_tool = |event: ToolEvent<'_>| observers_tool(&state, &publisher, event);
-            let mut on_step =
-                |event: StepEvent<'_>| observers_step(&state, &publisher, &message_id, event);
-            let turn_fut = run_agent(&mut actor, &mut on_delta, &mut on_tool, &mut on_step);
+        let outcome = {
+            let mut observe = |event: AgentEvent<'_>| turn.observe(event);
+            let turn_fut = run_agent(&mut actor, &mut observe);
             tokio::pin!(turn_fut);
             tokio::select! {
                 biased;
@@ -225,19 +222,18 @@ async fn runtime_loop(
                     actor_cancel.cancel();
                     (&mut turn_fut).await
                 }
-                turn = &mut turn_fut => turn,
+                outcome = &mut turn_fut => outcome,
             }
         };
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let result_message_id = lock_get(&message_id);
+        let result_message_id = turn.message_id;
 
         // A collapsed session surfaces its first publish failure as the turn
         // error (checked BEFORE translating the natural outcome).
-        if let Some(err) = publisher.take_error() {
+        if let Some(err) = turn.take_error() {
             actor.state = AgentState::Idle;
             emit_turn_end(
-                &state,
-                &publisher,
+                &mut turn,
                 turn_id,
                 TurnEndOutcome::Error,
                 None,
@@ -247,22 +243,21 @@ async fn runtime_loop(
                     message: bounded(&err.to_string(), ERROR_SUMMARY_CAP),
                 }),
             );
-            emit_agent_state(&state, &publisher, "idle");
+            emit_agent_state(&mut turn, "idle");
             break;
         }
 
-        match turn {
+        match outcome {
             Ok(RunOutcome::Done(message)) => {
                 emit_turn_end(
-                    &state,
-                    &publisher,
+                    &mut turn,
                     turn_id,
                     TurnEndOutcome::Done,
                     message.usage,
                     duration_ms,
                     None,
                 );
-                publisher.publish(state.candidate(
+                turn.publish(
                     EventKind::TaskDone,
                     to_value(&TaskDone {
                         task_id,
@@ -270,12 +265,12 @@ async fn runtime_loop(
                         result_message_id,
                         status: TaskStatus::Done,
                     }),
-                ));
-                emit_agent_state(&state, &publisher, "idle");
+                );
+                emit_agent_state(&mut turn, "idle");
                 active_task_id = None;
             }
             Ok(RunOutcome::Yielded(request)) => {
-                publisher.publish(state.candidate(
+                turn.publish(
                     EventKind::AgentYield,
                     to_value(&AgentYield {
                         actor_id: ROOT_ACTOR_ID.to_string(),
@@ -284,34 +279,32 @@ async fn runtime_loop(
                         kind: request.kind,
                         details: request.details,
                     }),
-                ));
+                );
                 emit_turn_end(
-                    &state,
-                    &publisher,
+                    &mut turn,
                     turn_id,
                     TurnEndOutcome::Yielded,
                     None,
                     duration_ms,
                     None,
                 );
-                emit_agent_state(&state, &publisher, "yielded");
+                emit_agent_state(&mut turn, "yielded");
             }
             Ok(RunOutcome::Interrupted) => {
                 emit_turn_end(
-                    &state,
-                    &publisher,
+                    &mut turn,
                     turn_id,
                     TurnEndOutcome::Interrupted,
                     None,
                     duration_ms,
                     None,
                 );
-                emit_agent_state(&state, &publisher, "idle");
+                emit_agent_state(&mut turn, "idle");
             }
             Ok(RunOutcome::StepBudgetExhausted) => {
                 // The internal variant NEVER leaks: the wire sees a yield of
                 // kind "budget" and the actor stays Yielded.
-                publisher.publish(state.candidate(
+                turn.publish(
                     EventKind::AgentYield,
                     to_value(&AgentYield {
                         actor_id: ROOT_ACTOR_ID.to_string(),
@@ -320,24 +313,22 @@ async fn runtime_loop(
                         kind: Some("budget".to_string()),
                         details: None,
                     }),
-                ));
+                );
                 emit_turn_end(
-                    &state,
-                    &publisher,
+                    &mut turn,
                     turn_id,
                     TurnEndOutcome::Yielded,
                     None,
                     duration_ms,
                     None,
                 );
-                emit_agent_state(&state, &publisher, "yielded");
+                emit_agent_state(&mut turn, "yielded");
             }
             Err(err) => {
                 // Err sets Idle FIRST, then the events observe it.
                 actor.state = AgentState::Idle;
                 emit_turn_end(
-                    &state,
-                    &publisher,
+                    &mut turn,
                     turn_id,
                     TurnEndOutcome::Error,
                     None,
@@ -347,7 +338,7 @@ async fn runtime_loop(
                         message: bounded(&err.to_string(), ERROR_SUMMARY_CAP),
                     }),
                 );
-                emit_agent_state(&state, &publisher, "idle");
+                emit_agent_state(&mut turn, "idle");
             }
         }
 
@@ -364,87 +355,15 @@ async fn runtime_loop(
     actor
 }
 
-/// The three pure observers bound to the current turn's state + publisher.
-/// They never branch loop control flow; they only translate events.
-fn observers_delta(state: &StepState, publisher: &Publisher, delta: StreamDelta) {
-    let payload = to_value(&crate::bus::event::LlmDelta {
-        turn_id: state.turn_id,
-        step_id: state.step_id(),
-        delta,
-    });
-    publisher.publish(state.candidate(EventKind::LlmDelta, payload));
-}
-
-fn observers_tool(state: &StepState, publisher: &Publisher, event: ToolEvent<'_>) {
-    let candidate = match event {
-        ToolEvent::PreCall {
-            tool_call_id,
-            name,
-            args,
-        } => state.candidate(
-            EventKind::ToolPreCall,
-            to_value(&ToolPreCall {
-                tool_call_id: tool_call_id.to_string(),
-                name: name.to_string(),
-                source: ToolSource::Native,
-                args: args.clone(),
-                actor_id: ROOT_ACTOR_ID.to_string(),
-            }),
-        ),
-        ToolEvent::PostCall {
-            tool_call_id,
-            name,
-            result,
-        } => state.candidate(
-            EventKind::ToolPostCall,
-            to_value(&ToolPostCall {
-                tool_call_id: tool_call_id.to_string(),
-                name: name.to_string(),
-                status: result.status,
-                output: result.output.clone(),
-                metadata: result.metadata.clone(),
-            }),
-        ),
-    };
-    publisher.publish(candidate);
-}
-
-fn observers_step(
-    state: &StepState,
-    publisher: &Publisher,
-    message_id: &Arc<Mutex<Ulid>>,
-    event: StepEvent<'_>,
-) {
-    match event {
-        StepEvent::Started => {
-            state.set_step_id(Ulid::new());
-        }
-        StepEvent::Response(message) => {
-            lock_set(message_id, Ulid::new());
-            publisher.publish(state.candidate(
-                EventKind::LlmResponse,
-                to_value(&crate::bus::event::LlmResponse {
-                    turn_id: state.turn_id,
-                    step_id: state.step_id(),
-                    message: message.clone(),
-                    usage: message.usage,
-                    finish_reason: message.finish_reason.clone(),
-                }),
-            ));
-        }
-    }
-}
-
 fn emit_turn_end(
-    state: &StepState,
-    publisher: &Publisher,
+    turn: &mut TurnPublisher,
     turn_id: Ulid,
     outcome: TurnEndOutcome,
     usage: Option<crate::provider::Usage>,
     duration_ms: u64,
     error: Option<TurnError>,
 ) {
-    publisher.publish(state.candidate(
+    turn.publish(
         EventKind::TurnEnd,
         to_value(&TurnEnd {
             turn_id,
@@ -454,11 +373,11 @@ fn emit_turn_end(
             duration_ms,
             error,
         }),
-    ));
+    );
 }
 
-fn emit_agent_state(state: &StepState, publisher: &Publisher, to: &str) {
-    publisher.publish(state.candidate(
+fn emit_agent_state(turn: &mut TurnPublisher, to: &str) {
+    turn.publish(
         EventKind::AgentState,
         to_value(&AgentStateChanged {
             actor_id: ROOT_ACTOR_ID.to_string(),
@@ -466,25 +385,11 @@ fn emit_agent_state(state: &StepState, publisher: &Publisher, to: &str) {
             to: to.to_string(),
             reason: None,
         }),
-    ));
+    );
 }
 
 fn to_value<T: serde::Serialize + ?Sized>(value: &T) -> serde_json::Value {
     serde_json::to_value(value).unwrap_or(serde_json::Value::Null)
-}
-
-fn lock_get(guard: &Mutex<Ulid>) -> Ulid {
-    match guard.lock() {
-        Ok(g) => *g,
-        Err(poisoned) => *poisoned.into_inner(),
-    }
-}
-
-fn lock_set(guard: &Mutex<Ulid>, value: Ulid) {
-    match guard.lock() {
-        Ok(mut g) => *g = value,
-        Err(poisoned) => *poisoned.into_inner() = value,
-    }
 }
 
 /// Bounded, secret-free error summary for the wire (Oracle P1-4).
@@ -531,6 +436,7 @@ mod tests {
     use crate::provider::test_support::{http_sse, sse_body};
     use crate::tools::{Registry, ToolContext};
     use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -1126,12 +1032,8 @@ mod tests {
         .await;
         let mut actor = make_actor(server_direct.url.clone(), CancellationToken::new());
         actor.push_user("run echo hi");
-        let mut noop_delta = |_d: StreamDelta| {};
-        let mut noop_tool = |_e: ToolEvent<'_>| {};
-        let mut noop_step = |_s: StepEvent<'_>| {};
-        let direct = run_agent(&mut actor, &mut noop_delta, &mut noop_tool, &mut noop_step)
-            .await
-            .unwrap();
+        let mut noop = |_e: AgentEvent<'_>| {};
+        let direct = run_agent(&mut actor, &mut noop).await.unwrap();
         assert!(matches!(direct, RunOutcome::Done(_)));
 
         // Runtime drive: same scripted responses, prompt via the bus.

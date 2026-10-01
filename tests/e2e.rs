@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use rust_agent::agent::actor::AgentActor;
-use rust_agent::agent::run_loop::{run_agent, RunOutcome};
+use rust_agent::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
 use rust_agent::provider::config::{ProviderConfig, ReasoningHistory};
 use rust_agent::provider::StreamDelta;
 use rust_agent::tools::bash::BashTool;
@@ -214,30 +214,16 @@ async fn mock_full_loop_exercises_all_five_tools_and_ask() {
     let mut actor = build_actor(url, ws.clone(), cancel);
     actor.push_user("exercise every tool then ask");
 
-    let mut noop = |_d: StreamDelta| {};
+    let mut noop = |_e: AgentEvent| {};
 
-    let first = run_agent(
-        &mut actor,
-        &mut noop,
-        &mut |_e: rust_agent::agent::run_loop::ToolEvent| {},
-        &mut |_s: rust_agent::agent::run_loop::StepEvent| {},
-    )
-    .await
-    .unwrap();
+    let first = run_agent(&mut actor, &mut noop).await.unwrap();
     match first {
         RunOutcome::Yielded(req) => assert_eq!(req.question, "proceed?"),
         other => panic!("expected Yielded at ask, got {other:?}"),
     }
 
     actor.push_user("yes proceed");
-    let second = run_agent(
-        &mut actor,
-        &mut noop,
-        &mut |_e: rust_agent::agent::run_loop::ToolEvent| {},
-        &mut |_s: rust_agent::agent::run_loop::StepEvent| {},
-    )
-    .await
-    .unwrap();
+    let second = run_agent(&mut actor, &mut noop).await.unwrap();
     assert!(matches!(second, RunOutcome::Done(m) if m.text == "all tools exercised"));
 
     assert!(actor.tool_context.workspace.join("NOTES.txt").is_file());
@@ -328,19 +314,12 @@ async fn live_omniroute_edit_and_test() {
     let saw_thinking = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let saw2 = saw_thinking.clone();
     let outcome = {
-        let mut on_delta = move |d: StreamDelta| {
-            if let StreamDelta::Thinking { .. } = d {
+        let mut on_delta = move |e: AgentEvent| {
+            if let AgentEvent::Delta(StreamDelta::Thinking { .. }) = e {
                 saw2.store(true, std::sync::atomic::Ordering::SeqCst);
             }
         };
-        run_agent(
-            &mut actor,
-            &mut on_delta,
-            &mut |_e: rust_agent::agent::run_loop::ToolEvent| {},
-            &mut |_s: rust_agent::agent::run_loop::StepEvent| {},
-        )
-        .await
-        .unwrap()
+        run_agent(&mut actor, &mut on_delta).await.unwrap()
     };
 
     let lib = std::fs::read_to_string(ws.join("src").join("lib.rs")).unwrap();

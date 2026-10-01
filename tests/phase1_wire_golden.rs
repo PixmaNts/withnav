@@ -10,9 +10,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use rust_agent::agent::actor::AgentActor;
-use rust_agent::agent::run_loop::{run_agent, RunOutcome};
+use rust_agent::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
 use rust_agent::provider::config::{ProviderConfig, ReasoningHistory};
-use rust_agent::provider::StreamDelta;
 use rust_agent::tools::bash::BashTool;
 use rust_agent::tools::control::AskTool;
 use rust_agent::tools::native::ReadTool;
@@ -168,15 +167,8 @@ fn lock_fixture(name: &str, bodies: &[String]) {
 }
 
 async fn run_once(actor: &mut AgentActor) -> RunOutcome {
-    let mut noop = |_d: StreamDelta| {};
-    run_agent(
-        actor,
-        &mut noop,
-        &mut |_e: rust_agent::agent::run_loop::ToolEvent| {},
-        &mut |_s: rust_agent::agent::run_loop::StepEvent| {},
-    )
-    .await
-    .unwrap()
+    let mut noop = |_e: AgentEvent| {};
+    run_agent(actor, &mut noop).await.unwrap()
 }
 
 #[tokio::test]

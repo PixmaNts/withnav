@@ -243,19 +243,44 @@ async fn did_close_clears_remark() {
     assert_eq!(clear["params"]["uri"], URI);
 }
 
-/// The pipeline's configured pre-filter, rather than the prototype's LSP
-/// minChangedLines setting, controls whether the instinct runs.
+/// A `workspace/didChangeConfiguration` with a new `idleMs` moves the idle
+/// timer boundary for the next edit. The legacy keys the pipeline now owns
+/// (`minChangedLines`, `cooldownMs`) are still accepted, and ignored: the
+/// pipeline's own pre-filter keeps deciding whether the instinct runs.
 #[tokio::test(start_paused = true)]
 async fn config_update_changes_idle_threshold() {
+    let mock = MockCommenter::new(vec![Answer::Remark(0, "cfg-driven")]);
     let mut client = Nav::start_with(
-        MockCommenter::new(vec![Answer::Remark(0, "cfg-driven")]),
-        json!({"idleMs": 1000, "minChangedLines": 1, "cooldownMs": 60000}),
+        mock.clone(),
+        json!({"idleMs": 5000, "minChangedLines": 1, "cooldownMs": 60000}),
         |d, _| d,
     )
     .await;
-    // The built-in pipeline still requires at least three changed lines.
     client.open_and_edit().await;
+
+    // Past the default 3 s, still short of the configured 5 s.
     tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    assert_eq!(mock.calls(), 0, "the initial idleMs, not the default");
+
+    // A new idle delay applies to the next edit, which restarts the timer.
+    client
+        .notify(
+            "workspace/didChangeConfiguration",
+            json!({"settings": {"idleMs": 1000, "minChangedLines": 99, "cooldownMs": 1}}),
+        )
+        .await;
+    client
+        .did_change(URI, &format!("{}\n// tail\n", big_edit()), 3)
+        .await;
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    tokio::time::advance(Duration::from_millis(900)).await;
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    assert_eq!(mock.calls(), 0, "still inside the new 1 s delay");
+
+    tokio::time::advance(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    assert_eq!(mock.calls(), 1, "fired at the new 1 s delay");
     let mut seen = Vec::new();
     let remark = client.expect("navigator/remark", &mut seen).await;
     assert_eq!(remark["params"]["text"], "cfg-driven");

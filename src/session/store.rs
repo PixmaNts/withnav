@@ -23,7 +23,7 @@
 //! session is still in memory. "Runtime stopped" means the in-memory actor
 //! and sequencer are gone; that says nothing about the store, which keeps the
 //! conversation until `DELETE` removes it. The store knows only the former;
-//! the registry in `server::session` owns the latter. A stopped runtime's
+//! the registry in `session::service` owns the latter. A stopped runtime's
 //! `session.end` is stored like any other durable event, so a stored
 //! conversation does not by itself say whether a runtime is live.
 //!

@@ -34,7 +34,8 @@ Dependencies point down this list. A module never imports one above it.
 | `tools/` | the tool trait, the registry, path validation (`validate_path`), the six tools | which tools a session gets |
 | `agent/` | `AgentActor` (transcript, pending `ask`, optional role prompt), `run_agent` with one `AgentEvent` observer, request building | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events | HTTP, storage |
-| `server/` | the session registry and lifecycle (`session.rs`), HTTP routes, SSE with `Last-Event-ID` resume, the SQLite history (`store.rs`) | the model layers |
+| `session/` | the `Service` (registry and router, `service.rs`), teardown, tombstones and their FIFO (`lifecycle.rs`), actor construction (`actor.rs`), the SQLite history (`store.rs`) | HTTP, SSE |
+| `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service`. `server::session` and `server::store` are temporary re-exports | session state, the model layers |
 | `navigator/` | everything the driver perceives as the navigator, below | session internals |
 
 ### Inside `navigator/`
@@ -83,7 +84,7 @@ prompts, and every driver turn end triggers a `conversation` evaluation on the f
 | `<workspace>/.navigator/pipeline.toml`, `prompts/*.md` | the project's pipeline | the driver |
 | `<workspace>/.navigator/intent.md` | intent, plan, decisions | the cognition and the driver |
 | `~/.local/share/rust-agent/navigator.jsonl` | decision log, replay input | `navigator/log.rs` |
-| `~/.local/share/rust-agent/navigator/sessions.db` | conversations | `server/store.rs` |
+| `~/.local/share/rust-agent/navigator/sessions.db` | conversations | `session/store.rs` |
 
 ## Where new code goes
 
@@ -105,7 +106,7 @@ prompts, and every driver turn end triggers a `conversation` evaluation on the f
 
 Tracked in [`.scratch/refactor/plan.md`](.scratch/refactor/plan.md):
 
-- `server/session.rs` imports navigator types (feed registration, wake poster, intent tool): the
+- `session/` imports navigator types (feed registration, wake poster, intent tool): the
   host binary should compose them. Planned with a `session::Service` that hides the sequencer.
 - The same events live in the bus ring buffer and in SQLite; tombstones duplicate history. Planned:
   SQLite as the single history, after its writes are made trustworthy.

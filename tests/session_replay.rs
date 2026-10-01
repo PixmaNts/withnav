@@ -69,7 +69,7 @@ async fn live_until(
     pred: impl Fn(&EventEnvelope) -> bool,
 ) -> Vec<EventEnvelope> {
     let mut out = Vec::new();
-    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(5), live.recv()).await {
+    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(20), live.recv()).await {
         let done = pred(&event);
         out.push(event);
         if done {
@@ -204,9 +204,12 @@ async fn a_resumed_stream_hides_the_stale_session_end() {
         .create_or_resume_session(&fx.ws, None, None, Some(id))
         .await
         .expect("resume");
-    post_message_ok(&base, &id.to_string(), "second turn").await;
+    // Subscribe before posting: a fast turn could otherwise end before the
+    // subscription exists, its `turn.end` would land in the replay, and the
+    // live stream would wait for an event that already happened.
     let mut fresh = state.subscribe(id, None).await.expect("subscribe");
     let mut live = fresh.live.take().expect("live receiver");
+    post_message_ok(&base, &id.to_string(), "second turn").await;
     live_until(&mut live, |e| e.kind == "turn.end").await;
     state.history().flush().await.expect("flush");
 

@@ -551,7 +551,18 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         store.append_event(id2, envelope(0, EventKind::SessionStart));
 
-        // Poll until the writer drained (fire-and-forget channel).
+        // Poll until the writer applied id2's event. Both rows exist as soon
+        // as `record_session` ran, so waiting for two rows alone returned
+        // before that last write under full-suite load and listed id first
+        // (observed 2026-10-01). The writer is FIFO: once this write is
+        // visible, every earlier one is too.
+        for _ in 0..200 {
+            let loaded = store.load(id2).await.expect("load id2");
+            if loaded.is_some_and(|session| !session.envelopes.is_empty()) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
         let listed = poll_list(&store, "/w", 2).await;
         assert_eq!(listed.len(), 2);
         if listed[0].meta.updated_at != listed[1].meta.updated_at {

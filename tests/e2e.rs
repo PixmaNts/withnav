@@ -15,25 +15,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-fn sse(events: &[&str]) -> String {
-    let mut b = String::new();
-    for e in events {
-        b.push_str("data: ");
-        b.push_str(e);
-        b.push_str("\n\n");
-    }
-    b.push_str("data: [DONE]\n\n");
-    b
-}
-
-fn ok_response(body: &str) -> Vec<u8> {
-    format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    )
-    .into_bytes()
-}
+mod common;
+use common::sse::{http_sse, sse_body};
 
 fn bad_request(reason: &str) -> Vec<u8> {
     let body = format!("{{\"error\":{{\"message\":\"malformed continuation: {reason}\"}}}}");
@@ -101,7 +84,7 @@ async fn spawn_scripted_mock(workspace: PathBuf) -> (String, Arc<Mutex<Vec<Strin
     let script: Vec<(String, Vec<u8>)> = vec![
         (
             String::new(),
-            ok_response(&sse(&[&tool_chunk(
+            http_sse(&sse_body(&[&tool_chunk(
                 "c_read",
                 "read",
                 &format!("\"{{\\\"path\\\":\\\"{}\\\"}}\"", lib_rs.replace('\\', "\\\\")),
@@ -109,7 +92,7 @@ async fn spawn_scripted_mock(workspace: PathBuf) -> (String, Arc<Mutex<Vec<Strin
         ),
         (
             "c_read".into(),
-            ok_response(&sse(&[&tool_chunk(
+            http_sse(&sse_body(&[&tool_chunk(
                 "c_grep",
                 "grep",
                 &format!(
@@ -120,7 +103,7 @@ async fn spawn_scripted_mock(workspace: PathBuf) -> (String, Arc<Mutex<Vec<Strin
         ),
         (
             "c_grep".into(),
-            ok_response(&sse(&[&tool_chunk(
+            http_sse(&sse_body(&[&tool_chunk(
                 "c_write",
                 "write",
                 &format!(
@@ -131,7 +114,7 @@ async fn spawn_scripted_mock(workspace: PathBuf) -> (String, Arc<Mutex<Vec<Strin
         ),
         (
             "c_write".into(),
-            ok_response(&sse(&[&tool_chunk(
+            http_sse(&sse_body(&[&tool_chunk(
                 "c_edit",
                 "edit",
                 &format!(
@@ -142,7 +125,7 @@ async fn spawn_scripted_mock(workspace: PathBuf) -> (String, Arc<Mutex<Vec<Strin
         ),
         (
             "c_edit".into(),
-            ok_response(&sse(&[&tool_chunk(
+            http_sse(&sse_body(&[&tool_chunk(
                 "c_bash",
                 "bash",
                 "\"{\\\"command\\\":\\\"echo done\\\"}\"",
@@ -150,13 +133,13 @@ async fn spawn_scripted_mock(workspace: PathBuf) -> (String, Arc<Mutex<Vec<Strin
         ),
         (
             "c_bash".into(),
-            ok_response(&sse(&[&tool_chunk(
+            http_sse(&sse_body(&[&tool_chunk(
                 "c_ask",
                 "ask",
                 "\"{\\\"question\\\":\\\"proceed?\\\"}\"",
             )])),
         ),
-        ("c_ask".into(), ok_response(&sse(&[&done_chunk("all tools exercised")]))),
+        ("c_ask".into(), http_sse(&sse_body(&[&done_chunk("all tools exercised")]))),
     ];
 
     tokio::spawn(async move {

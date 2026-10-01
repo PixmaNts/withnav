@@ -646,7 +646,10 @@ impl Commenter for LlmCommenter {
         ctx: &'a RemarkContext,
         cancel: &'a CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Remark>, String>> + Send + 'a>> {
-        Box::pin(self.remark_with_tools(ctx, "", cancel))
+        // The pipeline renders the branch prompt (conversation, live state)
+        // into the context; without it the metacognition would judge the
+        // diff alone.
+        Box::pin(self.remark_with_tools(ctx, ctx.prompt.as_deref().unwrap_or(""), cancel))
     }
 }
 

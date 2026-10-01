@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::ProviderError;
 use crate::navigator::ports::{Answers, DecisionModel, ModelError, Questions};
+use crate::provider::client::ModelClient;
 use crate::provider::config::{ModelConfig, ProviderConfig};
 use crate::provider::openai::ClientCache;
 
@@ -63,10 +64,7 @@ pub struct SystemOneAnswer {
 pub struct SystemOneClient {
     base_url: String,
     model: String,
-    api_key: String,
-    extra_headers: Vec<(String, String)>,
-    cache: std::sync::Arc<ClientCache>,
-    provider_name: String,
+    client: ModelClient,
 }
 
 impl std::fmt::Debug for SystemOneClient {
@@ -93,13 +91,21 @@ impl SystemOneClient {
             provider_name,
             provider.api_key_env.as_deref(),
         )?;
+        let base_url = provider.base_url.trim_end_matches('/').to_string();
+        // The per-layer deadline overrides the configured request timeout, so
+        // a slow-configured provider still answers within ~2 s.
+        let deadline_ms = SYSTEMONE_DEADLINE.as_millis() as u64;
+        let layer_config = ProviderConfig {
+            base_url: base_url.clone(),
+            api_key_env: None,
+            headers: provider.headers.clone(),
+            connect_timeout_ms: deadline_ms,
+            request_timeout_ms: deadline_ms,
+        };
         Ok(Self {
-            base_url: provider.base_url.trim_end_matches('/').to_string(),
+            base_url,
             model: model.model.clone(),
-            api_key,
-            extra_headers: provider.headers.clone().into_iter().collect(),
-            cache,
-            provider_name: provider_name.to_string(),
+            client: ModelClient::new(provider_name, &layer_config, api_key, &cache)?,
         })
     }
 
@@ -135,69 +141,15 @@ impl SystemOneClient {
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<SystemOneAnswer, ModelError> {
         let started = std::time::Instant::now();
-        let client = self
-            .cache
-            .get(&self.provider_name, &self.request_config())?;
-        let url = format!("{}/systemone", self.base_url);
         let body = SystemOneRequest {
             model: &self.model,
             state,
             questions,
         };
-        let mut req = client.post(&url).bearer_auth(&self.api_key).json(&body);
-        for (k, v) in &self.extra_headers {
-            req = req.header(k, v);
-        }
-
-        let response = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
-                return Err(ModelError::Provider(ProviderError::Canceled {
-                    partial: None,
-                }));
-            }
-            r = req.send() => r.map_err(ProviderError::from)?,
-        };
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            let message = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|v| {
-                    v.get("error")
-                        .and_then(|e| e.get("message"))
-                        .and_then(|m| m.as_str())
-                        .map(String::from)
-                })
-                .unwrap_or(body);
-            return Err(ModelError::Provider(ProviderError::Api {
-                status: status.as_u16(),
-                message,
-                partial: None,
-            }));
-        }
-        let bytes = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
-                return Err(ModelError::Provider(ProviderError::Canceled {
-                    partial: None,
-                }));
-            }
-            b = tokio::time::timeout(SYSTEMONE_DEADLINE, response.bytes()) => {
-                match b {
-                    Ok(Ok(bytes)) => bytes,
-                    // The deadline covering send and body elapsed.
-                    Err(_) => {
-                        return Err(ModelError::Provider(ProviderError::Api {
-                            status: 0,
-                            message: "systemone deadline exceeded (~2 s)".to_string(),
-                            partial: None,
-                        }));
-                    }
-                    Ok(Err(e)) => return Err(ProviderError::from(e).into()),
-                }
-            }
-        };
+        let bytes = self
+            .client
+            .post_json("systemone", &body, SYSTEMONE_DEADLINE, cancel)
+            .await?;
         let latency = started.elapsed();
 
         let parsed: SystemOneResponse = serde_json::from_slice(&bytes).map_err(|e| {
@@ -214,19 +166,6 @@ impl SystemOneClient {
             input_tokens: parsed.usage.map(|u| u.input_tokens),
             output_tokens: parsed.usage.map(|u| u.output_tokens),
         })
-    }
-
-    /// The provider config this client's deadline is expressed through. The
-    /// per-layer deadline overrides the configured request timeout: it is
-    /// applied here so a slow-configured provider still answers within ~2 s.
-    fn request_config(&self) -> ProviderConfig {
-        ProviderConfig {
-            base_url: self.base_url.clone(),
-            api_key_env: None,
-            headers: self.extra_headers.iter().cloned().collect(),
-            connect_timeout_ms: SYSTEMONE_DEADLINE.as_millis() as u64,
-            request_timeout_ms: SYSTEMONE_DEADLINE.as_millis() as u64,
-        }
     }
 }
 
@@ -293,10 +232,19 @@ mod tests {
         let client = SystemOneClient {
             base_url: "http://localhost/v1".to_string(),
             model: "m".to_string(),
-            api_key: "sk-SUPERSECRET".to_string(),
-            extra_headers: vec![],
-            cache: std::sync::Arc::new(ClientCache::new()),
-            provider_name: "p".to_string(),
+            client: ModelClient::new(
+                "p",
+                &ProviderConfig {
+                    base_url: "http://localhost/v1".to_string(),
+                    api_key_env: None,
+                    headers: Default::default(),
+                    connect_timeout_ms: 1_000,
+                    request_timeout_ms: 1_000,
+                },
+                "sk-SUPERSECRET".to_string(),
+                &ClientCache::new(),
+            )
+            .unwrap(),
         };
         let rendered = format!("{client:?}");
         assert!(!rendered.contains("sk-SUPERSECRET"));

@@ -5,14 +5,14 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-use crate::error::ProviderError;
 use crate::navigator::ports::{FimAnswer, FimModel, FimRequest, ModelError};
+use crate::provider::client::ModelClient;
 use crate::provider::config::{ProviderConfig, ResolvedModel};
 use crate::provider::openai::ClientCache;
 use crate::provider::Usage;
@@ -35,6 +35,8 @@ pub struct InceptionFim {
     model: String,
     api_key: String,
     clients: Arc<ClientCache>,
+    /// Built on the first call (the constructor cannot fail), then reused.
+    client: OnceLock<ModelClient>,
 }
 
 impl InceptionFim {
@@ -50,7 +52,21 @@ impl InceptionFim {
             model: resolved.model.model,
             api_key,
             clients,
+            client: OnceLock::new(),
         }
+    }
+
+    fn client(&self) -> Result<&ModelClient, ModelError> {
+        if let Some(client) = self.client.get() {
+            return Ok(client);
+        }
+        let built = ModelClient::new(
+            &self.provider_name,
+            &self.provider,
+            self.api_key.clone(),
+            &self.clients,
+        )?;
+        Ok(self.client.get_or_init(|| built))
     }
 
     /// The deadline actually applied to this engine's HTTP client.
@@ -90,11 +106,7 @@ impl FimModel for InceptionFim {
     ) -> Pin<Box<dyn Future<Output = Result<FimAnswer, ModelError>> + Send + 'a>> {
         Box::pin(async move {
             let started = Instant::now();
-            let client = self.clients.get(&self.provider_name, &self.provider)?;
-            let url = format!(
-                "{}/fim/completions",
-                self.provider.base_url.trim_end_matches('/')
-            );
+            let client = self.client()?;
             let body = FimBody {
                 model: self.model.as_str(),
                 prompt: request.prompt.as_str(),
@@ -102,38 +114,9 @@ impl FimModel for InceptionFim {
                 max_tokens: request.max_tokens,
                 temperature: TEMPERATURE,
             };
-            let mut req = client.post(url).bearer_auth(&self.api_key).json(&body);
-            for (k, v) in &self.provider.headers {
-                req = req.header(k, v);
-            }
-            let response = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => {
-                    return Err(ModelError::Provider(ProviderError::Canceled {
-                        partial: None,
-                    }));
-                }
-                r = req.send() => r.map_err(ProviderError::from)?,
-            };
-            let status = response.status();
-            if !status.is_success() {
-                let text = response.text().await.unwrap_or_default();
-                let message = super::extract_error_message(&text).unwrap_or(text);
-                return Err(ModelError::Provider(ProviderError::Api {
-                    status: status.as_u16(),
-                    message,
-                    partial: None,
-                }));
-            }
-            let bytes = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => {
-                    return Err(ModelError::Provider(ProviderError::Canceled {
-                        partial: None,
-                    }));
-                }
-                b = response.bytes() => b.map_err(ProviderError::from)?,
-            };
+            let bytes = client
+                .post_json("fim/completions", &body, self.deadline(), cancel)
+                .await?;
             let parsed: FimResponseBody = serde_json::from_slice(&bytes)
                 .map_err(|e| ModelError::Malformed(format!("fim response is not JSON: {e}")))?;
             let Some(choice) = parsed.choices.into_iter().next() else {

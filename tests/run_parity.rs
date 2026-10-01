@@ -233,6 +233,8 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     std::fs::create_dir_all(root.join("ws")).unwrap();
+    let data_home = root.join("data");
+    let config_home = root.join("config");
     let models = root.join("models.json");
     std::fs::write(
         &models,
@@ -265,6 +267,12 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
                     "go",
                 ])
                 .env("RUST_AGENT_RUN_PARITY_KEY", "test-key")
+                // The binary opens the conversation history in the XDG data
+                // dir and migrates legacy files there. Without these two, a
+                // test run wrote into the driver's real database and moved
+                // their data (observed 2026-10-01).
+                .env("XDG_DATA_HOME", data_home.as_os_str())
+                .env("XDG_CONFIG_HOME", config_home.as_os_str())
                 .output()
                 .expect("run the binary")
         }

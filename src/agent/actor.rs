@@ -63,6 +63,35 @@ impl AgentActor {
         self
     }
 
+    /// Re-derives `pending_ask_id` from a restored transcript: the `ask` call
+    /// of the last assistant message that has no `Tool` message after it. The
+    /// transcript is used (not the stored `agent.yield` event) because that
+    /// event does not carry the tool call id, and a dangling `ask` needs its
+    /// result whatever the events say.
+    pub fn restore_pending_ask(&mut self) {
+        self.pending_ask_id = None;
+        let Some(last) = self
+            .transcript
+            .iter()
+            .rposition(|m| matches!(m, ChatMessage::Assistant { .. }))
+        else {
+            return;
+        };
+        let ChatMessage::Assistant { tool_calls, .. } = &self.transcript[last] else {
+            return;
+        };
+        let answered = |id: &str| {
+            self.transcript[last + 1..]
+                .iter()
+                .any(|m| matches!(m, ChatMessage::Tool { tool_call_id, .. } if tool_call_id == id))
+        };
+        self.pending_ask_id = tool_calls
+            .iter()
+            .rev()
+            .find(|tc| tc.function.name == "ask" && !answered(&tc.id))
+            .map(|tc| tc.id.clone());
+    }
+
     pub fn push_user(&mut self, text: impl Into<String>) {
         let text = text.into();
         if let Some(ask_id) = self.pending_ask_id.take() {

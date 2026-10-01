@@ -739,6 +739,7 @@ impl AppState {
         );
         if let Some(loaded) = &resumed {
             actor.transcript = restore_transcript(&loaded.transcript, navigator);
+            actor.restore_pending_ask();
         }
 
         let next_seq = resumed

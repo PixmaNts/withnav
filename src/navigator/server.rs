@@ -341,6 +341,12 @@ impl Inner {
         if !config.enabled {
             return;
         }
+        // An event no trigger of the pipeline listens to: nothing to decide,
+        // nothing worth logging.
+        let pipeline = self.pipeline.lock().await.clone();
+        let Some(questions) = pipeline.questions_for(event) else {
+            return;
+        };
         let mut ctx = match self.gather(&uri, Instant::now()).await {
             Some(ctx) => ctx,
             None => return,
@@ -432,15 +438,7 @@ impl Inner {
 
         self.set_status("thinking", None).await;
         let started = Instant::now();
-        let pipeline = self.pipeline.lock().await.clone();
-        let Some(questions) = pipeline.questions_for(event) else {
-            self.clear_in_flight(&uri).await;
-            record.prefilter_outcome = "skip";
-            record.prefilter_reason = Some("no_trigger");
-            log_trigger(&record, "none", None, Some("no_trigger"));
-            self.set_status("idle", None).await;
-            return;
-        };
+
         let questions_json =
             Some(serde_json::to_value(&questions).unwrap_or(serde_json::Value::Null));
 
@@ -508,6 +506,19 @@ impl Inner {
 
         if let Some(reason) = evaluation.prefilter.skip_reason() {
             self.clear_in_flight(&uri).await;
+            if reason == "too_few_changed_lines" {
+                // Unchanged text (an idle after an undo or a rebase) teaches no
+                // candidate pipeline anything: not logged. A small change is kept
+                // for counting, without the ~10 KiB of template inputs and
+                // rendered state (2026-09-30 log: 547 of 641 such skips had 0
+                // changed lines).
+                if ctx.changed_lines == 0 {
+                    self.set_status("idle", None).await;
+                    return;
+                }
+                record.template_inputs = None;
+                record.rendered_state = None;
+            }
             record.requested = None;
             log_trigger(&record, "none", None, Some(reason));
             self.set_status("idle", None).await;

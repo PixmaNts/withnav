@@ -445,6 +445,39 @@ async fn one_line_change_never_triggers() {
     assert_eq!(mock.calls(), 0, "commenter must not be called");
 }
 
+/// A diagnostics event no trigger listens to logs nothing; a too-small
+/// change logs a light record, without the rendered state.
+#[tokio::test(start_paused = true)]
+async fn skips_logs_light_or_not_at_all() {
+    let tmp = tempfile::tempdir().unwrap();
+    let log_path = tmp.path().join("nav.jsonl");
+    let mock = MockCommenter::new(vec![Answer::Silent]);
+    let mut client = spawn_server(NavigatorDeps::new(Arc::new(mock), log_path.clone()));
+
+    client.initialize(json!({})).await;
+    client.did_open(URI, &base_text(), 1).await;
+    client
+        .notify("navigator/diagnostics", json!({"uri": URI, "items": []}))
+        .await;
+    client
+        .did_change(URI, "fn main() {\n    println!(\"hi\");\n}", 2)
+        .await;
+    client.did_save(URI).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let records = std::fs::read_to_string(&log_path).unwrap_or_default();
+    let triggers: Vec<Value> = records
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|r| r["kind"] == "trigger")
+        .collect();
+    assert_eq!(triggers.len(), 1, "{records}");
+    assert_eq!(triggers[0]["event"], "save");
+    assert_eq!(triggers[0]["reason"], "too_few_changed_lines");
+    assert!(triggers[0].get("template_inputs").is_none());
+    assert!(triggers[0].get("rendered_state").is_none());
+}
+
 /// Cooldown suppresses a second remark on the same file.
 #[tokio::test(start_paused = true)]
 async fn cooldown_suppresses_second_remark() {

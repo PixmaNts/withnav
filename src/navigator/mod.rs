@@ -6,16 +6,16 @@
 //! This module hosts the Language Server; the layer model seams live in
 //! [`ports`], injected through [`NavigatorDeps`] so tests can script them.
 
-pub mod commenter;
 pub mod config;
 pub mod conversation;
 pub mod default_pipeline;
 pub mod document;
 pub mod intent;
 pub mod log;
+pub mod lsp;
+pub mod metacognition;
 pub mod pipeline;
 pub mod ports;
-pub mod protocol;
 pub mod reflex;
 pub mod replay;
 pub mod server;
@@ -23,13 +23,20 @@ pub mod server;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub use commenter::{LlmCommenter, RemarkContext};
 pub use config::NavigatorConfig;
 pub use conversation::{
     ConversationEvent, ConversationFeed, SessionPost, WakeOutcome, NAVIGATOR_ACTOR_ID,
 };
 pub use intent::{read_intent, IntentRecord};
 pub use log::new_ulid_string;
+pub use lsp::protocol;
+pub use lsp::protocol::{
+    ClearParams, FeedbackParams, InlineCompletionItem, InlineCompletionParams,
+    InlineCompletionResult, IntentParams, Range, ReflexShownParams, Remark, RemarkParams,
+    ServerInfoParams, StatusParams,
+};
+pub use lsp::uri::{uri_key, uri_to_path, uri_to_path_str};
+pub use metacognition::{LlmCommenter, RemarkContext};
 pub use pipeline::{
     Action, Evaluation, Pipeline, PipelineError, PipelineSnapshot, PrefilterOutcome, TriggerInputs,
     TriggerKind,
@@ -38,15 +45,9 @@ pub use ports::{
     Answer, Answers, DecisionModel, FimAnswer, FimModel, FimRequest, Metacognition, ModelError,
     Question, Questions, ReflexContextModel, ReflexContextRequest,
 };
-pub use protocol::{
-    ClearParams, FeedbackParams, InlineCompletionItem, InlineCompletionParams,
-    InlineCompletionResult, IntentParams, Range, ReflexShownParams, Remark, RemarkParams,
-    ServerInfoParams, StatusParams,
-};
 pub use reflex::{
     SuggestOutcome, Suggestion, DEBOUNCE_MS, MAX_CONTEXT_BYTES, MAX_PREFIX_BYTES, MAX_SUFFIX_BYTES,
 };
-use tower_lsp_server::ls_types::Uri;
 use tower_lsp_server::{LspService, Server};
 
 /// Everything the navigator needs besides the LSP channel itself. The model
@@ -215,86 +216,9 @@ pub fn default_log_path() -> Option<std::path::PathBuf> {
         .map(|p| p.data_dir().join("navigator.jsonl"))
 }
 
-/// Normalizes a URI for use as a state key (documents are keyed by their
-/// string form).
-pub fn uri_key(uri: &Uri) -> String {
-    uri.as_str().to_string()
-}
-
 /// Resolves the models config path the same way the main binary does.
 pub fn resolve_models(explicit: Option<&Path>, workspace: &Path) -> Option<std::path::PathBuf> {
     let config_dir =
         crate::provider::auth::default_config_dir().unwrap_or_else(|| Path::new(".").to_path_buf());
     crate::provider::config::resolve_models_path(explicit, workspace, &config_dir)
-}
-
-/// Extracts a percent-decoded path from a `file://` URI string (the form
-/// documents are keyed by). Returns `None` for other schemes and for a
-/// malformed escape.
-pub fn uri_to_path_str(uri: &str) -> Option<String> {
-    let rest = uri.strip_prefix("file://")?;
-    // `file://host/path`: the host is dropped, only the path locates the file.
-    let rest = &rest[rest.find('/')?..];
-    let decoded = percent_decode(rest)?;
-    if decoded.starts_with('/') {
-        Some(decoded)
-    } else {
-        None
-    }
-}
-
-/// Extracts a filesystem path from a `file://` URI, percent-decoded.
-pub fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
-    uri_to_path_str(uri.as_str()).map(PathBuf::from)
-}
-
-/// Percent-decodes a URI component (the `%XX` escapes of the path).
-/// Returns `None` when a `%` is not followed by two hex digits: guessing a
-/// path from a malformed URI would key the document under the wrong file.
-fn percent_decode(s: &str) -> Option<String> {
-    let hex = |b: u8| -> Option<u8> {
-        match b {
-            b'0'..=b'9' => Some(b - b'0'),
-            b'a'..=b'f' => Some(b - b'a' + 10),
-            b'A'..=b'F' => Some(b - b'A' + 10),
-            _ => None,
-        }
-    };
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' {
-            let hi = hex(*bytes.get(i + 1)?)?;
-            let lo = hex(*bytes.get(i + 2)?)?;
-            out.push(hi * 16 + lo);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    Some(String::from_utf8_lossy(&out).into_owned())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn uri_paths_decode() {
-        assert_eq!(
-            uri_to_path_str("file:///ws/src/main.rs").as_deref(),
-            Some("/ws/src/main.rs")
-        );
-        assert_eq!(
-            uri_to_path_str("file:///ws/a%20b/c%C3%A9.rs").as_deref(),
-            Some("/ws/a b/cé.rs")
-        );
-        assert_eq!(uri_to_path_str("file:///bad%2"), None, "incomplete escape");
-        assert_eq!(uri_to_path_str("untitled:Untitled-1"), None);
-        // A host-bearing file URI keeps its path (no host stripping: VS Code
-        // never sends one for local files).
-        assert_eq!(uri_to_path_str("file://localhost/x").as_deref(), Some("/x"));
-    }
 }

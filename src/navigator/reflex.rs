@@ -14,8 +14,10 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+use crate::navigator::lsp::protocol::{
+    InlineCompletionItem, InlineCompletionResult, Position, Range,
+};
 use crate::navigator::ports::{FimModel, FimRequest};
-use crate::navigator::protocol::{InlineCompletionItem, InlineCompletionResult, Position, Range};
 
 /// Debounce after the last keystroke before a suggestion is asked for.
 pub const DEBOUNCE_MS: u64 = 150;

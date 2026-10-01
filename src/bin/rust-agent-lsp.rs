@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use clap::Parser;
 use rust_agent::navigator;
-use rust_agent::navigator::commenter::LlmCommenter;
 use rust_agent::navigator::log::NavLog;
+use rust_agent::navigator::metacognition::LlmCommenter;
 use rust_agent::navigator::Metacognition;
 use rust_agent::provider::auth;
 use rust_agent::provider::config::ModelsConfig;

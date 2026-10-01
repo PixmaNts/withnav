@@ -20,8 +20,8 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ProviderError;
-use crate::navigator::commenter::RemarkContext;
-use crate::navigator::protocol::Remark;
+use crate::navigator::lsp::protocol::Remark;
+use crate::navigator::metacognition::RemarkContext;
 
 /// What can go wrong at a model seam: a provider failure (transport, API,
 /// cancellation) or an answer that does not parse per the wire contract.

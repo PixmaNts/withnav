@@ -22,22 +22,22 @@ use tokio_util::sync::CancellationToken;
 use tower_lsp_server::ls_types::*;
 use tower_lsp_server::{Client, LanguageServer};
 
-use crate::navigator::commenter::{Diag, RemarkContext};
 use crate::navigator::config::NavigatorConfig;
 use crate::navigator::document::{text_around_line, DocumentState};
 use crate::navigator::log::{
     excerpt, now_iso8601, DeliveryOutcome, LogRecord, NavLog, PendingTrigger,
 };
+use crate::navigator::lsp::protocol::{
+    ClearNotification, ClearParams, DiagnosticItem, DiagnosticsParams, FeedbackParams,
+    InlineCompletionResult, IntentParams, Position, ReflexShownParams, RemarkNotification,
+    RemarkParams, ServerInfoNotification, ServerInfoParams, StatusNotification, StatusParams,
+};
+use crate::navigator::metacognition::{Diag, RemarkContext};
 use crate::navigator::pipeline::{
     Action, Pipeline, PipelineError, PipelineSnapshot, TriggerInputs, TriggerKind, NO_REMARK_MS,
 };
 use crate::navigator::ports::{
     DecisionModel, ModelError, ReflexContextModel, ReflexContextRequest,
-};
-use crate::navigator::protocol::{
-    ClearNotification, ClearParams, DiagnosticItem, DiagnosticsParams, FeedbackParams,
-    InlineCompletionResult, IntentParams, Position, ReflexShownParams, RemarkNotification,
-    RemarkParams, ServerInfoNotification, ServerInfoParams, StatusNotification, StatusParams,
 };
 use crate::navigator::reflex::{to_result, ReflexService};
 use crate::navigator::{ConversationEvent, Metacognition, NavigatorDeps, WakeOutcome};
@@ -1435,8 +1435,9 @@ impl NavigatorBackend {
     /// empty item list.
     pub async fn inline_completion(
         &self,
-        params: crate::navigator::protocol::InlineCompletionParams,
-    ) -> tower_lsp_server::jsonrpc::Result<crate::navigator::protocol::InlineCompletionResult> {
+        params: crate::navigator::lsp::protocol::InlineCompletionParams,
+    ) -> tower_lsp_server::jsonrpc::Result<crate::navigator::lsp::protocol::InlineCompletionResult>
+    {
         let Some(reflex) = &self.inner.reflex else {
             return Ok(InlineCompletionResult {
                 items: Vec::new(),

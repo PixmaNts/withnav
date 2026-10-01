@@ -202,10 +202,25 @@ fn end_position(start: Position, text: &str) -> Position {
 pub enum SuggestOutcome {
     /// The debounced position was superseded before the model was called.
     Debounced,
+    /// A newer request cancelled this one while the model was answering.
+    Superseded,
     /// The document version moved while the model was answering.
     StaleVersion,
+    /// The position lies outside the document; the model was not called.
+    OutOfRange,
     /// The model returned nothing insertable (error or empty text).
     ModelSilent,
+}
+
+impl SuggestOutcome {
+    /// Whether the model was called before the attempt ended: only then
+    /// does the attempt belong in the cost log.
+    pub fn called_model(&self) -> bool {
+        match self {
+            Self::Debounced | Self::OutOfRange => false,
+            Self::Superseded | Self::StaleVersion | Self::ModelSilent => true,
+        }
+    }
 }
 
 /// The reflex service. Holds one in-flight request per document; a newer
@@ -274,12 +289,12 @@ impl ReflexService {
         }
 
         let Some(offset) = utf16_position_to_offset(doc_text, line, character) else {
-            return Err(SuggestOutcome::ModelSilent);
+            return Err(SuggestOutcome::OutOfRange);
         };
         let request = build_fim_request(doc_text, offset, reflex_context, language_id);
         let answer = tokio::select! {
             biased;
-            _ = cancel.cancelled() => return Err(SuggestOutcome::Debounced),
+            _ = cancel.cancelled() => return Err(SuggestOutcome::Superseded),
             a = self.model.complete(request, &cancel) => a,
         };
         let answer = match answer {

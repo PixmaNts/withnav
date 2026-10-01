@@ -39,7 +39,7 @@ use crate::navigator::protocol::{
     InlineCompletionResult, IntentParams, Position, ReflexShownParams, RemarkNotification,
     RemarkParams, ServerInfoNotification, ServerInfoParams, StatusNotification, StatusParams,
 };
-use crate::navigator::reflex::{to_result, ReflexService, SuggestOutcome};
+use crate::navigator::reflex::{to_result, ReflexService};
 use crate::navigator::{ConversationEvent, Metacognition, NavigatorDeps, WakeOutcome};
 
 pub struct NavigatorBackend {
@@ -1490,15 +1490,12 @@ impl NavigatorBackend {
                 self.inner.log_reflex_call(started.elapsed().as_millis());
                 Ok(to_result(&suggestion))
             }
-            Err(SuggestOutcome::Debounced | SuggestOutcome::StaleVersion) => {
-                self.inner.log_reflex_call(started.elapsed().as_millis());
-                Ok(InlineCompletionResult {
-                    items: Vec::new(),
-                    request_id: None,
-                })
-            }
-            Err(SuggestOutcome::ModelSilent) => {
-                self.inner.log_reflex_call(started.elapsed().as_millis());
+            Err(outcome) => {
+                // A debounced or out-of-range request never reached the
+                // model: logging it would bill a call that did not happen.
+                if outcome.called_model() {
+                    self.inner.log_reflex_call(started.elapsed().as_millis());
+                }
                 Ok(InlineCompletionResult {
                     items: Vec::new(),
                     request_id: None,

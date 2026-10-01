@@ -421,6 +421,49 @@ async fn inline_completion_answers_empty_items() {
     assert!(resp["result"]["requestId"].as_str().is_some());
 }
 
+/// A request superseded during its debounce never reaches the model, so only
+/// the request that did is logged as a reflex call.
+#[tokio::test(start_paused = true)]
+async fn a_debounced_inline_completion_is_not_logged_as_a_model_call() {
+    let tmp = tempfile::tempdir().unwrap();
+    let log_path = tmp.path().join("nav.jsonl");
+    let fim = ScriptedFim::fixed("hello");
+    let deps = NavigatorDeps::new(Arc::new(MockCommenter::new(vec![])), log_path.clone())
+        .with_fim(Arc::new(fim.clone()))
+        .with_model_ids(Some("mercury-edit-2".into()), None, None);
+    let mut client = spawn_server(deps);
+
+    client.initialize(json!({})).await;
+    client.did_open(URI, &base_text(), 1).await;
+    for id in [51, 52] {
+        client
+            .send(&json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "navigator/inlineCompletion",
+                "params": {"uri": URI, "version": 1, "line": 0, "character": 4}
+            }))
+            .await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+    }
+    tokio::time::advance(Duration::from_millis(151)).await;
+    let mut answered = 0;
+    while answered < 2 {
+        if client.recv().await["id"].is_u64() {
+            answered += 1;
+        }
+    }
+
+    assert_eq!(fim.calls(), 1, "only the last request called the model");
+    let records = std::fs::read_to_string(&log_path).unwrap();
+    let reflex_calls = records
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|v| v["kind"] == "call" && v["layer"] == "reflex")
+        .count();
+    assert_eq!(reflex_calls, 1, "{records}");
+}
+
 /// navigator/reflexShown is accepted and logged as a reflex_shown record.
 #[tokio::test(start_paused = true)]
 async fn reflex_shown_is_logged() {

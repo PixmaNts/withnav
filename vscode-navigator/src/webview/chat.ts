@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 import type { HostToWebview, WebviewToHost } from "../chatProtocol";
 import { mountConversations } from "./conversations";
+import { diffKind, parseWake } from "./wake";
 
 type ViewState = { includeContext?: boolean };
 declare function acquireVsCodeApi(): { postMessage(message: WebviewToHost): void; getState(): ViewState | undefined; setState(state: ViewState): void };
@@ -25,6 +26,8 @@ const turns = new Map<string, Turn>();
 let state = "connecting";
 let pendingQuestion = false;
 let stickToBottom = true;
+/** True while a history replay renders: only live wakes get the arrival cue. */
+let replaying = false;
 
 function updateControls(): void {
   prompt.disabled = state === "connecting";
@@ -60,6 +63,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
 }
 
 function message(author: string, text: string, context?: string): void {
+  if (author === "navigator") { add(navigatorNote(text)); return; }
   const root = el("article", `message ${author}`);
   root.append(el("div", "byline", author === "driver" ? pendingQuestion ? "You · Answer" : "You" : author === "cognition" ? "Cognition" : "Navigator"));
   const body = el("div", "message-body");
@@ -72,6 +76,123 @@ function message(author: string, text: string, context?: string): void {
   }
   add(root);
   if (pendingQuestion && author === "driver") pendingQuestion = false;
+}
+
+// A wake: the navigator glancing over the driver's shoulder. One quiet
+// summary, the change and the intent behind a disclosure.
+let noteCount = 0;
+function navigatorNote(text: string): HTMLElement {
+  const wake = parseWake(text);
+  const root = el("article", "message note");
+  if (!replaying) root.classList.add("arrived");
+  const head = el("div", "note-head");
+  head.append(navigatorMark());
+  const line = el("div", "note-line");
+  line.append(el("span", "note-label", "Navigator noticed"));
+  if (wake.reason) line.append(el("span", "note-reason", wake.reason));
+  head.append(line);
+  root.append(head);
+
+  const meta = el("div", "note-meta");
+  if (wake.path) {
+    const link = el("button", "file-link note-file", displayPath(wake.path) + (wake.line ? `:${wake.line}` : ""));
+    link.type = "button";
+    link.title = `Open ${wake.path}${wake.line ? ` at line ${wake.line}` : ""}`;
+    const target = { path: wake.path, line: wake.line };
+    link.addEventListener("click", () => vscode.postMessage({ type: "openFile", ...target }));
+    meta.append(link);
+  }
+  if (wake.score) {
+    const score = el("span", "note-score", wake.score);
+    score.title = "Score, from 0 to 1";
+    meta.append(score);
+  }
+
+  const details = el("div", "note-details");
+  details.id = `note-${++noteCount}`;
+  details.hidden = true;
+  if (wake.lead) details.append(el("p", "note-lead", wake.lead));
+  if (wake.diff) details.append(diffBlock(wake.diff));
+  if (wake.intent) {
+    const intent = el("section", "note-intent");
+    intent.append(el("div", "note-section", "Intent on record"));
+    const body = el("div", "message-body");
+    renderMarkdown(body, wake.intent);
+    intent.append(body);
+    details.append(intent);
+  }
+  if (wake.rest) {
+    const body = el("div", "message-body note-rest");
+    renderMarkdown(body, wake.rest);
+    details.append(body);
+  }
+  if (details.childElementCount) {
+    const toggle = el("button", "note-toggle");
+    toggle.type = "button";
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-controls", details.id);
+    const label = el("span", "", wake.diff ? "Show change" : "Show details");
+    toggle.append(chevron(), label);
+    toggle.addEventListener("click", () => {
+      const open = details.hidden;
+      details.hidden = !open;
+      toggle.setAttribute("aria-expanded", String(open));
+      label.textContent = open ? "Hide" : wake.diff ? "Show change" : "Show details";
+      if (open) follow();
+    });
+    meta.append(toggle);
+  }
+  if (meta.childElementCount) root.append(meta);
+  root.append(details);
+  return root;
+}
+
+/** A relative path stays whole; an absolute one keeps its last two parts. */
+function displayPath(path: string): string {
+  if (!/^(\/|[A-Za-z]:[\\/])/.test(path)) return path;
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : path;
+}
+
+const SVG = "http://www.w3.org/2000/svg";
+function svgIcon(className: string, d: string): SVGSVGElement {
+  const svg = document.createElementNS(SVG, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("class", className);
+  const path = document.createElementNS(SVG, "path");
+  path.setAttribute("d", d);
+  svg.append(path);
+  return svg;
+}
+const navigatorMark = (): SVGSVGElement => svgIcon("note-mark", "M8 2.5 12.5 13 8 10.4 3.5 13Z");
+const chevron = (): SVGSVGElement => svgIcon("note-chevron", "M6 4l4 4-4 4");
+
+function codeBlock(label: string, value: string, fill: (code: HTMLElement) => void): HTMLElement {
+  const wrap = el("div", "code-block");
+  const bar = el("div", "code-bar");
+  bar.append(el("span", "", label));
+  const copy = el("button", "copy", "Copy");
+  copy.type = "button";
+  copy.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(value); copy.textContent = "Copied"; }
+    catch { copy.textContent = "Copy failed"; }
+  });
+  bar.append(copy);
+  const pre = el("pre");
+  const code = el("code");
+  fill(code);
+  pre.append(code);
+  wrap.append(bar, pre);
+  return wrap;
+}
+
+function diffBlock(diff: string): HTMLElement {
+  const block = codeBlock("Diff", diff, code => {
+    for (const text of diff.split("\n")) code.append(el("span", `diff-line ${diffKind(text)}`, text || " "));
+  });
+  block.classList.add("diff");
+  return block;
 }
 
 function turn(id: string): Turn {
@@ -139,7 +260,9 @@ function receive(event: HostToWebview): void {
       turns.clear();
       pendingQuestion = false;
       stickToBottom = true;
-      for (const item of event.items) if (item.type !== "history") receive(item);
+      replaying = true;
+      try { for (const item of event.items) if (item.type !== "history") receive(item); }
+      finally { replaying = false; }
       if (state === "connecting") setStatus("ready");
       follow();
       break;
@@ -203,21 +326,8 @@ function renderMarkdown(root: HTMLElement, source: string): void {
       i++;
       while (i < lines.length && !new RegExp(`^\\s{0,3}${marker[0]}{${marker.length},}\\s*$`).test(lines[i])) code.push(lines[i++]);
       if (i < lines.length) i++;
-      const wrap = el("div", "code-block");
-      const bar = el("div", "code-bar");
-      bar.append(el("span", "", fence[2] || "Code"));
-      const copy = el("button", "copy", "Copy");
-      copy.type = "button";
       const value = code.join("\n");
-      copy.addEventListener("click", async () => {
-        try { await navigator.clipboard.writeText(value); copy.textContent = "Copied"; }
-        catch { copy.textContent = "Copy failed"; }
-      });
-      bar.append(copy);
-      const pre = el("pre");
-      pre.append(el("code", "", value));
-      wrap.append(bar, pre);
-      root.append(wrap);
+      root.append(fence[2] === "diff" ? diffBlock(value) : codeBlock(fence[2] || "Code", value, node => { node.textContent = value; }));
       continue;
     }
     const heading = /^\s{0,3}(#{1,4})\s+(.+)$/.exec(line);

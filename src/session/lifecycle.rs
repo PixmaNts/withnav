@@ -163,6 +163,7 @@ mod tests {
             ToolContext {
                 workspace: std::env::temp_dir(),
                 writable_roots: vec![std::env::temp_dir()],
+                readable_roots: Vec::new(),
             },
             ProviderConfig {
                 base_url: "http://127.0.0.1:1".into(),

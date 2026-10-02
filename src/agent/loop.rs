@@ -74,6 +74,7 @@ pub async fn run_agent(
             &actor.model,
             actor.system_prompt.as_deref(),
             actor.rules.message(),
+            actor.skills.catalog(),
             actor.transcript.clone(),
             actor.registry.schemas(),
             actor.max_tokens,
@@ -250,6 +251,7 @@ mod tests {
             ToolContext {
                 workspace: ws.clone(),
                 writable_roots: vec![ws],
+                readable_roots: Vec::new(),
             },
             ProviderConfig {
                 base_url,

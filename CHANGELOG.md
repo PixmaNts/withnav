@@ -14,6 +14,14 @@ requests land in `develop`.
   model as one system message after the role prompt. Files over 16 KiB, or beyond 64 KiB in all, are
   cut with a visible marker; the log tells what was loaded, shadowed, truncated or unreadable. Edits
   take effect in the next session or resume.
+- **Skills**: a session finds, once when it is created or resumed, the `SKILL.md` files under
+  `~/.agents/skills`, `~/.claude/skills` and each project's `.agents/skills`, `.claude/skills` and
+  `.opencode/skills` (nested folders included), lists them to the model in a catalog after the rules,
+  and lets it load one with the `skill` tool. `read` and `grep` may open the files of a skill, even
+  outside the workspace. This adds no write permission: `write` and `edit` keep their roots, a
+  project skill inside the workspace stays writable as any workspace file, and `bash` is not
+  sandboxed. A skill with `disable-model-invocation: true` stays out of the catalog; a broken
+  file is logged and the others still load.
 - **Terminal client**: `navai tui` starts a private server (or connects to one with `--url`,
   token in `NAVAI_SERVER_TOKEN`) and opens a chat in the terminal.
 - Streaming chat with reasoning, tool calls with their duration, and the model with the context

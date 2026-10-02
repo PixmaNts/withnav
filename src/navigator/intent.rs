@@ -336,6 +336,7 @@ Add retry with backoff to the HTTP client.
         crate::tools::ToolContext {
             workspace: root.to_path_buf(),
             writable_roots: vec![root.to_path_buf()],
+            readable_roots: Vec::new(),
         }
     }
 

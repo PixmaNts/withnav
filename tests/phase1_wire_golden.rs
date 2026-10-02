@@ -44,6 +44,7 @@ async fn make_actor(base_url: String, registry: Registry) -> TestActor {
         ToolContext {
             workspace: ws.clone(),
             writable_roots: vec![ws],
+            readable_roots: Vec::new(),
         },
         ProviderConfig {
             base_url,

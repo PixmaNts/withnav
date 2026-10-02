@@ -105,6 +105,7 @@ fn build_actor(base_url: String, workspace: PathBuf, cancel: CancellationToken) 
     let tool_context = ToolContext {
         workspace: workspace.clone(),
         writable_roots: vec![workspace.clone()],
+        readable_roots: Vec::new(),
     };
     AgentActor::new(
         registry,
@@ -222,6 +223,7 @@ async fn live_omniroute_edit_and_test() {
         ToolContext {
             workspace: ws.clone(),
             writable_roots: vec![ws.clone()],
+            readable_roots: Vec::new(),
         },
         provider,
         key,

@@ -107,7 +107,22 @@ impl ToolResult {
 
 pub struct ToolContext {
     pub workspace: PathBuf,
+    /// Where `write`, `edit` and `bash` may change files (and `read`/`grep`
+    /// may look).
     pub writable_roots: Vec<PathBuf>,
+    /// Extra places `read` and `grep` may look, never change: the skill
+    /// roots.
+    pub readable_roots: Vec<PathBuf>,
+}
+
+impl ToolContext {
+    /// The roots `read` and `grep` accept: the writable roots, then the
+    /// read-only ones.
+    pub fn read_roots(&self) -> Vec<PathBuf> {
+        let mut roots = self.writable_roots.clone();
+        roots.extend(self.readable_roots.iter().cloned());
+        roots
+    }
 }
 
 pub trait Tool: Send + Sync {
@@ -291,6 +306,7 @@ mod tests {
         ToolContext {
             workspace: root.to_path_buf(),
             writable_roots: vec![root.to_path_buf()],
+            readable_roots: Vec::new(),
         }
     }
 

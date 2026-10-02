@@ -34,6 +34,7 @@ pub(super) fn build_actor(
     let tool_context = ToolContext {
         workspace: workspace.to_path_buf(),
         writable_roots: vec![workspace.to_path_buf(), config_dir.to_path_buf()],
+        readable_roots: Vec::new(),
     };
     AgentActor::new(
         build_registry(),

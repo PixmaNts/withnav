@@ -1,6 +1,6 @@
 # The driver is the default author; the cognition assists unless asked to do the work
 
-The point of rust-agent is that the human keeps a mental model of their own codebase, which agentic
+The point of Navai is that the human keeps a mental model of their own codebase, which agentic
 "vibe coding" destroys: the agent writes everything, planning always misses something, and the early
 speed turns into long iteration loops. The layers around the cognition exist to make pair
 programming possible, not to take capabilities away: the cognition stays a classic coding agent with

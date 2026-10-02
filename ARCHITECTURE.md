@@ -1,6 +1,6 @@
 # Architecture
 
-The map of this codebase: what runs, which module owns what, how data flows, and where new code
+The map of Navai's codebase: what runs, which module owns what, how data flows, and where new code
 goes. Vocabulary is defined in [`CONTEXT.md`](CONTEXT.md); the decisions behind this shape are in
 [`docs/adr/`](docs/adr/). Read this before adding a module or a helper: most past duplication came
 from agents who did not know the piece already existed.
@@ -12,7 +12,7 @@ VS Code ── vscode-navigator (TypeScript)
    │   ├─ LSP over stdio ─────────────────┐  edits, saves, diagnostics, inline completion, remarks
    │   └─ HTTP + SSE, bearer token ───┐   │  the conversation with the cognition
    ▼                                  ▼   ▼
-rust-agent-lsp   (one process, two channels: ADR 0006)
+navai-lsp   (one process, two channels: ADR 0006)
    ├─ navigator/   Language Server, the four layers, decision pipeline, log, replay
    ├─ server/      session HTTP/SSE API, SQLite conversation history
    ├─ bus/         per-session sequencer, event envelopes, inboxes, the agent runtime task
@@ -21,7 +21,7 @@ rust-agent-lsp   (one process, two channels: ADR 0006)
    └─ provider/    model access: config, auth, one HTTP client, chat SSE, FIM, System One
 ```
 
-A second binary, `rust-agent` (`src/main.rs`, `src/app.rs`), is a thin CLI over the same library:
+A second binary, `navai` (`src/main.rs`, `src/app.rs`), is a thin CLI over the same library:
 `run` (one task in a terminal), `serve` (the session server alone), `auth`, and `tui` (the terminal
 chat client, below).
 
@@ -121,16 +121,19 @@ prompts, and every driver turn end triggers a `conversation` evaluation on the f
 
 | Path | What | Written by |
 |---|---|---|
-| `~/.config/rust-agent/models.json`, `auth.json` | aliases and keys | the driver, `rust-agent auth` |
+| `~/.config/navai/models.json`, `auth.json` | aliases and keys | the driver, `navai auth` |
 | `<workspace>/.navigator/pipeline.toml`, `prompts/*.md` | the project's pipeline | the driver |
 | `<workspace>/.navigator/intent.md` | intent, plan, decisions | the cognition and the driver |
-| `~/.local/share/navigator/navigator.jsonl` | decision log, replay input | `navigator/log.rs` |
-| `~/.local/share/navigator/navigator.db` | conversations | `session/store.rs` |
+| `~/.local/share/navai/navai.jsonl` | decision log, replay input | `navigator/log.rs` |
+| `~/.local/share/navai/navai.db` | conversations | `session/store.rs` |
 
-Data paths come from `paths.rs`; on first start `paths::migrate_legacy_data` moves the files of the former
-`~/.local/share/rust-agent/` location (`navigator.jsonl`, `navigator/sessions.db` with its `-wal` and `-shm`)
-to the new ones when the new ones do not exist yet. If a move fails the old files stay and the navigator
-starts fresh.
+Data and config paths come from `paths.rs` and `provider/auth.rs`. On every start `paths::migrate_legacy`
+(`paths/migrate.rs`) moves what the former names left behind to the Navai dirs: `~/.local/share/navigator/*`
+and `~/.local/share/rust-agent/*` (`navigator.db` or `navigator/sessions.db`, with their `-wal` and `-shm`,
+`navigator.jsonl`, `tui.log`) to `~/.local/share/navai/`, and `~/.config/rust-agent/*` (`auth.json`,
+`models.json`, `navigator/pipeline.toml`) to `~/.config/navai/`. A file is never overwritten, a second
+start does nothing, and a database moves only when no other process holds it: otherwise it stays where
+it is and that run keeps using it.
 
 ## Where new code goes
 

@@ -65,7 +65,7 @@ export function activate(_context: vscode.ExtensionContext) {
   });
 
   statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusItem.name = "Navigator";
+  statusItem.name = "Navai";
   statusItem.command = "navai.setIntent";
   statusItem.show();
 
@@ -148,7 +148,7 @@ async function startClient(): Promise<void> {
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: "file" }],
     initializationOptions: readConfig(),
-    outputChannelName: "Navigator",
+    outputChannelName: "Navai",
   };
   const newClient = new LanguageClient(CLIENT_NAME, "Navai", serverOptions, clientOptions);
   newClient.onNotification(RemarkNotification.type, handleRemark);
@@ -312,7 +312,7 @@ function currentRemark(): ActiveRemark | undefined {
 function sendFeedback(verdict: Verdict) {
   const remark = currentRemark();
   if (!remark) {
-    void vscode.window.setStatusBarMessage("Navigator: no remark to rate", 3000);
+    void vscode.window.setStatusBarMessage("Navai: no remark to rate", 3000);
     return;
   }
   if (client && client.state === State.Running) {
@@ -396,17 +396,17 @@ function refreshStatusBar() {
   let text: string;
   let tooltip: string;
   if (state === "error") {
-    text = "$(error) Navigator";
-    tooltip = stateMessage ?? "Navigator error";
+    text = "$(error) Navai";
+    tooltip = stateMessage ?? "Navai error";
   } else if (hasRemark) {
-    text = "$(comment) Navigator";
+    text = "$(comment) Navai";
     tooltip = "Remark available — rate it: useful (Ctrl+Alt+Y), noise (Ctrl+Alt+N), dismiss (Ctrl+Alt+D)";
   } else if (state === "thinking") {
-    text = "$(sync~spin) Navigator";
-    tooltip = "Navigator is thinking…";
+    text = "$(sync~spin) Navai";
+    tooltip = "Navai is thinking…";
   } else {
-    text = "$(eye) Navigator";
-    tooltip = "Navigator idle — click to set your current intent";
+    text = "$(eye) Navai";
+    tooltip = "Navai idle — click to set your current intent";
   }
   statusItem.text = text;
   statusItem.tooltip = tooltip;

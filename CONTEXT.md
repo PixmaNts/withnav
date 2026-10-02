@@ -1,4 +1,4 @@
-# rust-agent
+# Navai
 
 A pair-programming system in which the human keeps the keyboard and stays the author of the code,
 while several models of different speeds watch, complete, judge and discuss. It exists to get the

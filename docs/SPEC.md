@@ -1,14 +1,14 @@
-# Rust Agent v0.1 Specification
+# Navai v0.1 Specification
 
 **Status:** Draft  
 **Audience:** Pixma and coding agents implementing the project  
-**Project location:** `~/dev/rust-agent`  
+**Project location:** `~/dev/navai`  
 **Primary artifact:** A headless, single-binary Rust coding-agent core with an event API  
 **Delivery model:** Four vertical phases, each a demonstrable end-to-end slice
 
 ## 1. Vision
 
-Rust Agent is a personal, minimal-but-complete coding agent inspired by `pi` and `oh-my-pi`, but not constrained by compatibility with either. It must remain understandable, fast, reliable, and cooperative with its operator. The core agent loop should be approximately 200 lines of direct orchestration: call a model, execute requested tools, append results, and either continue, finish, or yield to the human.
+Navai is a personal, minimal-but-complete coding agent inspired by `pi` and `oh-my-pi`, but not constrained by compatibility with either. It must remain understandable, fast, reliable, and cooperative with its operator. The core agent loop should be approximately 200 lines of direct orchestration: call a model, execute requested tools, append results, and either continue, finish, or yield to the human.
 
 The system is built around one unifying primitive: an asynchronous event bus connecting independent actors. Main agents, subagents, users, plugins, persistence, user interfaces, and the optional co-agent all participate through messages and events rather than bespoke integration paths.
 
@@ -160,7 +160,7 @@ flowchart LR
         USER[Human user]
     end
 
-    subgraph Core["rust-agent core process"]
+    subgraph Core["navai core process"]
         API[Axum HTTP / SSE API]
         ROUTER[Inbox router]
         BUS[Session event bus and sequencer]
@@ -213,9 +213,9 @@ flowchart LR
 The core is a single Rust binary with multiple operating modes:
 
 ```text
-rust-agent serve
-rust-agent tui
-rust-agent run
+navai serve
+navai tui
+navai run
 ```
 
 - `serve` starts the authoritative core, event bus, agent actors, plugin supervisor, SQLite subscriber, and Axum API.
@@ -574,7 +574,7 @@ They exist because they interact with core state rather than operating on the wo
 ### 9.3 Tool Safety Defaults
 
 - `read`, `write`, `edit`, and `grep` MUST reject path traversal outside configured roots.
-- Default writable roots SHOULD be the workspace and the Rust Agent user configuration directory.
+- Default writable roots SHOULD be the workspace and the Navai user configuration directory.
 - `bash` is not sandboxed in v0.1 and runs with the operator's OS permissions.
 - Shell subprocesses MUST run in their own process group so `interrupt` can terminate descendants.
 - Output MUST be bounded. Truncation metadata MUST include original byte counts when known.
@@ -742,7 +742,7 @@ The core starts the process and sends:
   "params": {
     "protocol_version": "0.1",
     "core_version": "0.1.0",
-    "workspace": "/home/pixma/dev/rust-agent",
+    "workspace": "/home/pixma/dev/navai",
     "session_id": "session-01J...",
     "capabilities": {
       "json_patch": "rfc6902",
@@ -1081,7 +1081,7 @@ Version 0.1 does not require:
 - Remote HTTP MCP transport.
 - MCP resources.
 - MCP prompts.
-- Exposing Rust Agent itself as an MCP server.
+- Exposing Navai itself as an MCP server.
 - Dynamic installation of MCP servers.
 
 MCP covers external tools. The mini hook protocol covers inverse control flow where the core calls a plugin during lifecycle processing.
@@ -1471,11 +1471,11 @@ Security invariants enforced by the core cannot be overridden by files or prompt
 Suggested locations:
 
 ```text
-/etc/rust-agent/AGENTS.md
-/etc/rust-agent/rules.md
+/etc/navai/AGENTS.md
+/etc/navai/rules.md
 
-~/.config/rust-agent/AGENTS.md
-~/.config/rust-agent/rules.md
+~/.config/navai/AGENTS.md
+~/.config/navai/rules.md
 
 <workspace>/AGENTS.md
 <workspace>/rules.md
@@ -1511,8 +1511,8 @@ Search order:
 
 ```text
 <workspace>/agents/<name>.md
-~/.config/rust-agent/agents/<name>.md
-/etc/rust-agent/agents/<name>.md
+~/.config/navai/agents/<name>.md
+/etc/navai/agents/<name>.md
 ```
 
 The first match wins.
@@ -1537,8 +1537,8 @@ Skills use progressive disclosure:
 
 ```text
 <workspace>/skills/<name>/SKILL.md
-~/.config/rust-agent/skills/<name>/SKILL.md
-/etc/rust-agent/skills/<name>/SKILL.md
+~/.config/navai/skills/<name>/SKILL.md
+/etc/navai/skills/<name>/SKILL.md
 ```
 
 The core exposes:
@@ -1976,7 +1976,7 @@ The hardest practical areas are expected to be:
 ## 27. Suggested Repository Layout
 
 ```text
-rust-agent/
+navai/
 ├── Cargo.toml
 ├── README.md
 ├── models.json

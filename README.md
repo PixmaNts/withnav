@@ -1,4 +1,4 @@
-# rust-agent
+# Navai
 
 A personal, minimal-but-complete coding agent in Rust — inspired by `pi` / `oh-my-pi`,
 but not constrained by compatibility with any of them. It does **not** fight its operator
@@ -12,14 +12,20 @@ but not constrained by compatibility with any of them. It does **not** fight its
 ## Install the navigator
 
 ```bash
-cargo build --release --bin rust-agent-lsp
-install -m755 target/release/rust-agent-lsp ~/.local/bin/
+cargo build --release --bins
+install -m755 target/release/navai target/release/navai-lsp ~/.local/bin/
 (cd vscode-navigator && npm ci && npm run package)
-code --install-extension vscode-navigator/navigator-0.2.0.vsix
+code --install-extension vscode-navigator/navai-0.2.0.vsix
 ```
 
-Models are aliases in `~/.config/rust-agent/models.json` (`reflex`, `instinct`, `metacognition`,
-`cognition`); keys go in `~/.config/rust-agent/auth.json` (`rust-agent auth set <provider>`).
+Models are aliases in `~/.config/navai/models.json` (`reflex`, `instinct`, `metacognition`,
+`cognition`); keys go in `~/.config/navai/auth.json` (`navai auth set <provider>`). Data (the
+conversation history and the decision log) lives in `~/.local/share/navai/`.
+
+Coming from `rust-agent`? The first start of `navai` or `navai-lsp` moves your data and config from
+`~/.local/share/navigator/`, `~/.local/share/rust-agent/` and `~/.config/rust-agent/` to the new
+dirs; nothing is overwritten. Remove the old `rust-agent` binaries and the old `Navigator`
+extension (`rust-agent.navigator`) yourself.
 
 ## Contributing
 

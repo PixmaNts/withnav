@@ -244,9 +244,9 @@ mod tests {
     fn a_remark_in_flight_covers_only_the_calls_it_answers() {
         let mut calls = HelpCalls::default();
         let (a, b) = ("a help".to_string(), "b help".to_string());
-        assert!(!calls.covers(&[a.clone()]));
-        calls.begin(&[a.clone()]);
-        assert!(calls.covers(&[a.clone()]));
+        assert!(!calls.covers(std::slice::from_ref(&a)));
+        calls.begin(std::slice::from_ref(&a));
+        assert!(calls.covers(std::slice::from_ref(&a)));
         assert!(!calls.covers(&[a.clone(), b]));
         assert!(!calls.covers(&[]));
         calls.end();

@@ -8,6 +8,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::navigator::pipeline::Action;
+use crate::navigator::ports::{Answer, Answers};
 
 /// Per-action counts, historical and candidate over the same comparable
 /// triggers.
@@ -77,6 +78,22 @@ pub struct ChangedDecision {
     pub reasked: bool,
     /// The driver's verdict on the historical remark, when it has one.
     pub verdict: Option<String>,
+    /// The answers the fired branch reads: the scores that decided it.
+    pub fired_answers: Answers,
+}
+
+/// One compared trigger with the answers the candidate used for it.
+#[derive(Debug, Clone, Serialize)]
+pub struct ComparedTrigger {
+    pub trigger_id: String,
+    pub ts: Option<String>,
+    pub uri: String,
+    pub historical: &'static str,
+    pub candidate: &'static str,
+    pub branch: Option<usize>,
+    /// Whether the answers come from a fresh model call (else the log).
+    pub reasked: bool,
+    pub answers: Answers,
 }
 
 /// The whole replay: what was read, what was compared, and what it changes.
@@ -101,6 +118,8 @@ pub struct ReplayReport {
     pub historical: ActionCounts,
     pub candidate: ActionCounts,
     pub changed: Vec<ChangedDecision>,
+    /// Every compared trigger with its answers, changed or not.
+    pub compared_triggers: Vec<ComparedTrigger>,
     /// Historical remarks rated `noise` that the candidate would not have
     /// asked for.
     pub noise_avoided: usize,
@@ -229,7 +248,7 @@ impl ReplayReport {
             let reasked = if change.reasked { "  re-asked" } else { "" };
             let _ = writeln!(
                 out,
-                "  {}  {}  {} -> {}  {}{}{}  {}",
+                "  {}  {}  {} -> {}  {}{}{}{}  {}",
                 change.trigger_id,
                 change.event,
                 change.historical,
@@ -237,6 +256,7 @@ impl ReplayReport {
                 branch,
                 verdict,
                 reasked,
+                scores_label(&change.fired_answers),
                 file_label(&change.uri)
             );
         }
@@ -257,6 +277,22 @@ impl ReplayReport {
 
         out
     }
+}
+
+/// `  [stuck 0.91, route cognition]`: the answers the fired branch read.
+fn scores_label(answers: &Answers) -> String {
+    if answers.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = answers
+        .iter()
+        .map(|(name, answer)| match answer {
+            Answer::Noul { noul } => format!("{name} {noul:.2}"),
+            Answer::Choice { choice, .. } => format!("{name} {choice}"),
+            Answer::Score { score, .. } => format!("{name} {score:.2}"),
+        })
+        .collect();
+    format!("  [{}]", parts.join(", "))
 }
 
 fn push_more(out: &mut String, total: usize, limit: usize) {

@@ -51,6 +51,10 @@ pub struct DocumentState {
     /// running (the remark is delivered if its line survives); a newer
     /// remark or a close cancels it.
     pub remark_cancel: Option<CancellationToken>,
+    /// Document version the running remark request was written for. A
+    /// trigger for the same version brings nothing new: it would restart
+    /// the request on identical content.
+    pub remark_version: Option<i32>,
     /// The calls for help this document's remarks are answering or answered.
     pub help: HelpCalls,
 }
@@ -67,6 +71,7 @@ impl DocumentState {
             in_flight_version: None,
             in_flight_cancel: None,
             remark_cancel: None,
+            remark_version: None,
             help: HelpCalls::default(),
         }
     }
@@ -107,14 +112,18 @@ impl DocumentState {
         if let Some(cancel) = self.remark_cancel.take() {
             cancel.cancel();
         }
+        self.remark_version = None;
         self.help.end();
     }
 }
 
-/// One recorded edit of the live state: when a snapshot was taken, how many
-/// lines changed, where the first change sits and what that line says.
+/// One recorded edit of the live state: when it was seen, in which file and
+/// at which document version, how many lines changed, where the first change
+/// sits and what that line says.
 struct EditSummary {
     ts: String,
+    file: String,
+    version: i32,
     changed_lines: i64,
     first_line: usize,
     excerpt: String,
@@ -153,6 +162,9 @@ pub struct DocumentSnapshot {
     pub help_calls: Vec<String>,
     /// A remark is already being written for every one of `help_calls`.
     pub help_in_flight: bool,
+    /// A remark request is already running on this exact version of the
+    /// text (never for a conversation turn, which judges no edit).
+    pub remark_in_flight: bool,
 }
 
 /// The documents the editor has open, keyed by uri string. Diagnostics
@@ -264,9 +276,9 @@ impl Documents {
     }
 
     /// Gathers everything one trigger needs about `uri` under one short
-    /// lock. Unless the trigger is a conversation turn (not an edit), this
-    /// trigger's edit summary joins the uri's ring before the live state is
-    /// rendered. `None` when the uri is not open.
+    /// lock. When the trigger sees an edit not recorded yet (a changed text
+    /// whose version is not the last one noted), its summary joins the uri's
+    /// ring before the live state is rendered. `None` when the uri is not open.
     pub fn snapshot(
         &mut self,
         uri: &str,
@@ -295,10 +307,21 @@ impl Documents {
             .map(|t| (now.duration_since(t)).as_millis() as i64)
             .unwrap_or(NO_REMARK_MS);
         let changed_lines = state.changed_lines_since_baseline() as i64;
-        let summary = (event != TriggerKind::Conversation).then(|| {
+        // Only a real edit joins the history: a conversation turn changed
+        // nothing, an unchanged text has nothing to say, and a save followed
+        // by an idle on the same version is one edit seen twice.
+        let is_new_edit = event != TriggerKind::Conversation
+            && changed_lines > 0
+            && doc
+                .edits
+                .back()
+                .is_none_or(|last| last.version != state.version);
+        let summary = is_new_edit.then(|| {
             let (first_line, first_line_text) = first_changed_line(&state.baseline, &state.text);
             EditSummary {
                 ts: now_rfc3339(),
+                file: uri.rsplit('/').next().unwrap_or(uri).to_string(),
+                version: state.version,
                 changed_lines,
                 first_line,
                 excerpt: excerpt(&first_line_text, 120),
@@ -321,6 +344,9 @@ impl Documents {
             open_buffers: self.open_buffers(),
             help_calls,
             help_in_flight,
+            remark_in_flight: event != TriggerKind::Conversation
+                && state.remark_cancel.is_some()
+                && state.remark_version == Some(state.version),
         };
         if let Some(summary) = summary {
             if let Some(doc) = self.open.get_mut(uri) {
@@ -347,8 +373,8 @@ impl Documents {
         for e in edits.iter().take(LIVE_STATE_EDITS) {
             let _ = writeln!(
                 out,
-                "{} changed {} line(s) at {} | {}",
-                e.ts, e.changed_lines, e.first_line, e.excerpt
+                "{} {} v{}: changed {} line(s) at {} | {}",
+                e.ts, e.file, e.version, e.changed_lines, e.first_line, e.excerpt
             );
         }
         let open = self.open.iter().map(|(uri, d)| (uri, &d.diagnostics));
@@ -499,117 +525,4 @@ pub fn text_around_changes(old: &str, new: &str, context: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn first_changed_line_finds_the_first_insert() {
-        let (line, text) = first_changed_line("a\nb\n", "a\nb\nc\nd\n");
-        assert_eq!(line, 3);
-        assert_eq!(text, "c");
-        // A pure deletion quotes nothing.
-        assert_eq!(first_changed_line("a\nb\n", "a\n"), (0, String::new()));
-        assert_eq!(first_changed_line("a\n", "a\n"), (0, String::new()));
-    }
-
-    #[test]
-    fn live_state_renders_edits_newest_first_and_diagnostics() {
-        let mut docs = Documents::default();
-        docs.open("file:///ws/a.rs", "rust".to_string(), String::new(), 1);
-        let ring = &mut docs.open.get_mut("file:///ws/a.rs").unwrap().edits;
-        for (ts, line) in [
-            ("2026-10-01T10:00:00.000Z", 1),
-            ("2026-10-01T10:01:00.000Z", 2),
-        ] {
-            ring.push_back(EditSummary {
-                ts: ts.to_string(),
-                changed_lines: 4,
-                first_line: line,
-                excerpt: "let x = 1;".to_string(),
-            });
-        }
-        docs.set_diagnostics(
-            "file:///ws/a.rs",
-            vec![
-                Diag {
-                    line: 4,
-                    severity: "error".to_string(),
-                    message: "cannot find value `y`".to_string(),
-                },
-                Diag {
-                    line: 9,
-                    severity: "info".to_string(),
-                    message: "unrelated hint".to_string(),
-                },
-            ],
-        );
-        let text = docs.render_live_state();
-        // Newest edit first.
-        let first = text.lines().next().unwrap();
-        assert!(first.starts_with("2026-10-01T10:01:00.000Z"), "{text}");
-        // Only errors and warnings make it in.
-        assert!(text.contains("[error] cannot find value `y`"), "{text}");
-        assert!(!text.contains("unrelated hint"), "{text}");
-    }
-
-    #[test]
-    fn text_around_line_windows_a_line_or_the_top() {
-        let text = (1..=100)
-            .map(|i| format!("l{i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let around = text_around_line(&text, 50, 2);
-        assert_eq!(around.lines().count(), 5);
-        assert!(around.starts_with("  48| l48"));
-        assert!(around.ends_with("  52| l52"));
-        let top = text_around_line(&text, 0, 2);
-        assert!(top.starts_with("   1| l1"));
-        assert_eq!(top.lines().count(), 5);
-        // A line past the end clamps to the last line.
-        assert!(text_around_line("a\nb", 9, 1).ends_with("   2| b"));
-        assert_eq!(text_around_line("", 3, 2), "");
-    }
-
-    #[test]
-    fn changed_lines_counts_inserts_and_deletes() {
-        let old = "a\nb\nc\n";
-        let new = "a\nX\nc\nd\n";
-        // replaced b with X (1 del + 1 ins), added d (1 ins)
-        assert_eq!(count_changed_lines(old, new), 3);
-    }
-
-    #[test]
-    fn identical_texts_have_zero_changes() {
-        assert_eq!(count_changed_lines("a\nb\n", "a\nb\n"), 0);
-    }
-
-    #[test]
-    fn unified_diff_has_hunk_header() {
-        let d = unified_diff("a\nb\nc\n", "a\nB\nc\n");
-        assert!(d.contains("@@"));
-    }
-
-    #[test]
-    fn text_around_changes_windows_the_region() {
-        let old = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n";
-        let new = "l1\nl2\nl3\nl4\nCHANGED\nl6\nl7\nl8\n";
-        let win = text_around_changes(old, new, 1);
-        // window = [l4, CHANGED, l6] with their real line numbers.
-        assert_eq!(win, "   4| l4\n   5| CHANGED\n   6| l6");
-    }
-
-    #[test]
-    fn text_around_changes_all_inserts_keeps_neighborhood() {
-        let old = "a\nz\n";
-        let new = "a\nb\nc\nd\nz\n";
-        // the diff inserts b, c, d between a and z
-        assert_eq!(
-            text_around_changes(old, new, 0),
-            "   2| b\n   3| c\n   4| d"
-        );
-        assert_eq!(
-            text_around_changes(old, new, 1),
-            "   1| a\n   2| b\n   3| c\n   4| d\n   5| z"
-        );
-    }
-}
+mod tests;

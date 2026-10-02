@@ -36,6 +36,8 @@ pub(super) struct TriggerContext {
     pub(super) help_calls: Vec<String>,
     /// A remark is already being written for every one of `help_calls`.
     pub(super) help_in_flight: bool,
+    /// A remark request is already running on this version of the text.
+    pub(super) remark_in_flight: bool,
     pub(super) has_errors: bool,
     pub(super) has_intent: bool,
     pub(super) has_conversation: bool,
@@ -152,6 +154,7 @@ impl Runtime {
             called_for_help,
             help_calls: snapshot.help_calls,
             help_in_flight: snapshot.help_in_flight,
+            remark_in_flight: snapshot.remark_in_flight,
             has_errors,
             has_intent,
             has_conversation,
@@ -221,6 +224,21 @@ impl Runtime {
                 &self.log,
                 DeliveryOutcome::None {
                     reason: "help_in_flight",
+                },
+            );
+            return;
+        }
+
+        // A save and an idle on the same text: the remark being written
+        // for that text already answers both, and restarting it would
+        // only throw its model calls away. Newer text still supersedes it.
+        if ctx.remark_in_flight {
+            pending.prefilter_outcome = "skip";
+            pending.prefilter_reason = Some("remark_in_flight");
+            pending.finish(
+                &self.log,
+                DeliveryOutcome::None {
+                    reason: "remark_in_flight",
                 },
             );
             return;

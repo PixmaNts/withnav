@@ -266,12 +266,14 @@ impl Runtime {
     /// document is superseded, and the new remark's handle is returned.
     /// `None` when typing already cancelled the instinct stage or the
     /// document is gone. `help_calls` are the calls for help the remark answers
-    /// (empty for an ordinary remark).
+    /// (empty for an ordinary remark); `conversation` marks a remark about
+    /// the conversation, which is not tied to a version of the text.
     async fn begin_remark(
         &self,
         uri: &str,
         instinct_cancel: &CancellationToken,
         help_calls: &[String],
+        conversation: bool,
     ) -> Option<CancellationToken> {
         let mut state = self.documents.lock().await;
         let doc = state.get_mut(uri)?;
@@ -285,6 +287,7 @@ impl Runtime {
         }
         let cancel = CancellationToken::new();
         doc.remark_cancel = Some(cancel.clone());
+        doc.remark_version = (!conversation).then_some(doc.version);
         doc.help.begin(help_calls);
         Some(cancel)
     }
@@ -295,6 +298,7 @@ impl Runtime {
         if let Some(doc) = state.get_mut(uri) {
             if !cancel.is_cancelled() {
                 doc.remark_cancel = None;
+                doc.remark_version = None;
                 doc.help.end();
             }
         }

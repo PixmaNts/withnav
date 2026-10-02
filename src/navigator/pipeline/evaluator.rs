@@ -277,6 +277,14 @@ impl SnapshotTrigger {
         Ok((Action::Silent, None))
     }
 
+    /// The identifiers the condition of branch `index` reads: the answers
+    /// that decided it, for the replay report.
+    pub fn branch_reads(&self, index: usize) -> &[String] {
+        self.branches
+            .get(index)
+            .map_or(&[], |branch| branch.when.reads())
+    }
+
     /// Branch count and per-branch (action, prompt) for logging and replay.
     pub fn branch_specs(&self) -> Vec<(Action, Option<&str>)> {
         self.branches

@@ -13,7 +13,7 @@ use rust_agent::navigator;
 
 mod common;
 use common::navigator::{
-    feed_with_session, with_intent_and_feed, Nav, RemarkAnswer as Answer,
+    feed_with_session, with_intent_and_feed, with_min_changed_lines, Nav, RemarkAnswer as Answer,
     ScriptedCommenter as MockCommenter, ScriptedDecision, URI,
 };
 
@@ -264,7 +264,10 @@ async fn the_trigger_record_json_shape_without_an_instinct() {
 
 #[tokio::test(start_paused = true)]
 async fn the_trigger_record_json_shape_for_a_pre_filter_skip() {
-    let mut client = Nav::start(MockCommenter::new(vec![])).await;
+    let mut client = Nav::start_with(MockCommenter::new(vec![]), json!({}), |d, ws| {
+        with_min_changed_lines(d, ws, 3)
+    })
+    .await;
     client.open_base().await;
     client
         .did_change(URI, "fn main() {\n    println!(\"hi\");\n}", 2)
@@ -293,6 +296,7 @@ async fn the_trigger_record_json_shape_for_a_pre_filter_skip() {
             "ts": "<string>",
             "uri": URI,
             "version": 2,
+            "workspace": "<string>",
         })
     );
 }

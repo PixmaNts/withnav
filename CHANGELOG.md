@@ -19,6 +19,20 @@ requests land in `develop`.
 
 ### Fixed
 
+- The navigator no longer holds back its advice while your code is still unfinished: a remark worth
+  making is shown even when the edit is mid-way, and a one-line fix counts as a change worth
+  looking at. A remark is still shown at most once every 45 seconds, and a stuck or drifting file
+  still wakes the chat on its own schedule.
+- Saving and then pausing on the same text no longer restarts the remark being written; newer
+  text still replaces it and closing the file still cancels it.
+- The navigator's view of your recent edits lists each real edit once, with its file and version,
+  instead of repeating the same text for every save and pause, and says that it does not know
+  whether an error lasted across edits.
+- A navigator remark is written faster: it reads at most one extra file before answering (a
+  request for help still gets three), and the code it is about is sent once instead of twice.
+- The chat assistant answers a guidance question from the relevant code only, without running
+  project-wide checks or reopening unrelated work, and treats every navigator wake, including
+  "you look stuck", as something to check rather than an order to implement.
 - A comment that calls on the navigator is answered once: saving or pausing again with the same
   comment no longer cancels the answer being written, and the same comment does not ask again until
   it is removed and written anew. Such a call also gets one more round of reading files.

@@ -42,7 +42,7 @@ use crate::navigator::pipeline::{
 use crate::navigator::ports::{Answers, DecisionModel};
 
 pub use log::{LoggedTrigger, ReplayLog};
-pub use report::{ActionCounts, ChangedDecision, NotComparable, ReplayReport};
+pub use report::{ActionCounts, ChangedDecision, ComparedTrigger, NotComparable, ReplayReport};
 
 /// How many changed and not-comparable triggers a text report lists before
 /// truncating; the JSON report always carries all of them.
@@ -87,6 +87,10 @@ enum Decision {
         action: Action,
         branch: Option<usize>,
         reasked: bool,
+        /// The answers the candidate used, logged or re-asked.
+        answers: Answers,
+        /// The answers the fired branch reads.
+        fired_answers: Answers,
     },
     NotComparable(String),
 }
@@ -137,6 +141,7 @@ impl<'a> Replayer<'a> {
             historical: ActionCounts::default(),
             candidate: ActionCounts::default(),
             changed: Vec::new(),
+            compared_triggers: Vec::new(),
             noise_avoided: 0,
             useful_lost: 0,
             useful_kept: 0,
@@ -161,8 +166,20 @@ impl<'a> Replayer<'a> {
                     action,
                     branch,
                     reasked,
+                    answers,
+                    fired_answers,
                 } => {
                     let historical = trigger.historical_action;
+                    report.compared_triggers.push(ComparedTrigger {
+                        trigger_id: trigger.trigger_id.clone(),
+                        ts: trigger.ts.clone(),
+                        uri: trigger.uri.clone(),
+                        historical: historical.map_or("unknown", Action::as_str),
+                        candidate: action.as_str(),
+                        branch,
+                        reasked,
+                        answers,
+                    });
                     report.historical.add(historical);
                     report.candidate.add(Some(action));
                     report.compared += 1;
@@ -200,6 +217,7 @@ impl<'a> Replayer<'a> {
                             branch,
                             reasked,
                             verdict,
+                            fired_answers,
                         });
                     }
                 }
@@ -223,6 +241,8 @@ impl<'a> Replayer<'a> {
                 action: Action::Silent,
                 branch: None,
                 reasked: false,
+                answers: Answers::new(),
+                fired_answers: Answers::new(),
             };
         }
         let AnswersSource { answers, reasked } = match self.answers_for(trigger, candidate).await {
@@ -230,11 +250,21 @@ impl<'a> Replayer<'a> {
             Err(reason) => return Decision::NotComparable(reason),
         };
         match candidate.select(trigger.inputs, &answers) {
-            Ok((action, branch)) => Decision::Comparable {
-                action,
-                branch,
-                reasked,
-            },
+            Ok((action, branch)) => {
+                let fired_answers = branch
+                    .map(|index| candidate.branch_reads(index))
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|name| Some((name.clone(), answers.get(name)?.clone())))
+                    .collect();
+                Decision::Comparable {
+                    action,
+                    branch,
+                    reasked,
+                    answers,
+                    fired_answers,
+                }
+            }
             Err(e) => Decision::NotComparable(format!("branch_failed: {e}")),
         }
     }
@@ -318,7 +348,7 @@ impl<'a> Replayer<'a> {
 mod tests {
     use super::*;
     use crate::navigator::pipeline::NO_REMARK_MS;
-    use crate::navigator::ports::Questions;
+    use crate::navigator::ports::{Answer, Questions};
     use std::collections::BTreeMap;
 
     const CANDIDATE: &str = r#"
@@ -656,6 +686,70 @@ action = "silent"
         assert_eq!(report.historical.remark, 1);
         assert_eq!(report.candidate.remark, 1);
         assert_eq!(report.unknown_verdicts, 1, "no verdict for the remark");
+    }
+
+    #[tokio::test]
+    async fn the_report_carries_the_answers_used_and_the_scores_that_fired() {
+        let pipeline = pipeline();
+        // Logged under another wording: the instinct is asked again.
+        let line = TRIGGER.replace("Worth a remark?", "An older wording?");
+        let log = ReplayLog::parse(&line);
+        let model = FixedAnswers(Answers::from([(
+            "worth_attention".to_string(),
+            Answer::Noul { noul: 0.1 },
+        )]));
+        let report = Replayer::with_reask(&pipeline, &model).run(&log).await;
+        let compared = &report.compared_triggers[0];
+        assert!(compared.reasked);
+        assert_eq!(
+            compared.answers["worth_attention"],
+            Answer::Noul { noul: 0.1 }
+        );
+        // remark -> silent through the catch-all: it reads no answer.
+        assert_eq!(report.changed[0].candidate, "silent");
+        assert!(report.changed[0].fired_answers.is_empty());
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["compared_triggers"][0]["reasked"], true);
+        assert_eq!(
+            json["compared_triggers"][0]["answers"]["worth_attention"]["noul"],
+            0.1
+        );
+
+        // Same wording: the logged answer is used as logged.
+        let log = ReplayLog::parse(TRIGGER);
+        let report = Replayer::new(&pipeline).run(&log).await;
+        assert!(!report.compared_triggers[0].reasked);
+        assert_eq!(
+            report.compared_triggers[0].answers["worth_attention"],
+            Answer::Noul { noul: 0.8 }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_changed_trigger_shows_the_scores_of_the_branch_that_fired() {
+        let pipeline = pipeline();
+        let line = TRIGGER.replace("Worth a remark?", "An older wording?");
+        let model = FixedAnswers(Answers::from([(
+            "worth_attention".to_string(),
+            Answer::Noul { noul: 0.93 },
+        )]));
+        // Historical remark, candidate remark: unchanged. Make it change by
+        // logging a silent decision.
+        let line = line.replace(
+            r#""branch":0,"requested_action":"remark""#,
+            r#""branch":1,"requested_action":"silent""#,
+        );
+        let report = Replayer::with_reask(&pipeline, &model)
+            .run(&ReplayLog::parse(&line))
+            .await;
+        assert_eq!(report.changed[0].candidate, "remark");
+        assert_eq!(
+            report.changed[0].fired_answers["worth_attention"],
+            Answer::Noul { noul: 0.93 }
+        );
+        assert!(report
+            .render_text(DEFAULT_LIST_LIMIT)
+            .contains("re-asked  [worth_attention 0.93]"));
     }
 
     #[tokio::test]

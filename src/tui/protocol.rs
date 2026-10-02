@@ -122,6 +122,11 @@ pub enum ClientEvent {
         generation: Generation,
         message: String,
     },
+    /// Saving the user settings failed; the change still applies until the client quits.
+    SettingsNotSaved {
+        generation: Generation,
+        message: String,
+    },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
@@ -144,6 +149,10 @@ pub enum Action {
     Scroll(i32),
     ToggleBlock(String),
     SetMode(Mode),
+    /// Draws with this theme while the picker is open, without saving it.
+    PreviewTheme(crate::tui::theme::ThemeId),
+    /// Keeps this theme and saves it in the settings.
+    PickTheme(crate::tui::theme::ThemeId),
     /// Submit with the editor revision the text was read at; `Submit(t)` is `SubmitAt { t, 0 }`.
     SubmitAt {
         text: String,
@@ -156,6 +165,7 @@ pub enum Overlay {
     Sessions,
     Commands,
     Help,
+    Themes,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
@@ -172,6 +182,8 @@ pub enum Effect {
     Send(SubmitRequest),
     Stop(String),
     Quit,
+    /// Writes the theme id to the user settings.
+    SaveTheme(crate::tui::theme::ThemeId),
     /// Clears the editor if it still holds the text sent at `revision`.
     ClearEditor {
         revision: u64,

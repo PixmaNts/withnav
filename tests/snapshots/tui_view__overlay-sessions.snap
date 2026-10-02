@@ -16,7 +16,7 @@ expression: snapshot
  │ ASSISTANT                                                                                        
  │  I found ┌───────────────────────────── Conversations ──────────────────────────────┐            
  │          │ filter:                                                                  │            
-            │ Fix parser  ·  2026-10-02  ·  01JABCDEFGH                                │            
+            │▌Fix parser  ·  2026-10-02  ·  01JABCDEFGH                                │            
             │                                                                          │            
             └──────────────────────────────────────────────────────────────────────────┘            
                                                                                                     

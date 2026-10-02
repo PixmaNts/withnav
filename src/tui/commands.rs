@@ -28,6 +28,10 @@ pub const CATALOG: &[Command] = &[
         description: "cycle delivery mode (steer and interrupt send as next-turn)",
     },
     Command {
+        name: "/theme",
+        description: "choose the colour theme",
+    },
+    Command {
         name: "/help",
         description: "show keyboard shortcuts",
     },
@@ -65,6 +69,7 @@ pub fn command_action(name: &str, mode: Mode) -> Option<Action> {
             Mode::Steer => Mode::Interrupt,
             Mode::Interrupt => Mode::NextTurn,
         }),
+        "/theme" => Action::OpenOverlay(Overlay::Themes),
         "/help" => Action::OpenOverlay(Overlay::Help),
         "/quit" => Action::Quit,
         _ => return None,

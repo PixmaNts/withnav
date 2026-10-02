@@ -3,6 +3,7 @@ use super::{refresh_model, send_effect, start_conversation};
 use crate::tui::{
     protocol::{Action, CreateSessionRequest, Effect, Overlay},
     state::{Activity, State, UiState},
+    theme::ThemeId,
 };
 
 fn submit(s: &mut State, text: String, revision: u64) -> Vec<Effect> {
@@ -69,12 +70,35 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             match o {
                 Overlay::Models => vec![Effect::FetchModels],
                 Overlay::Sessions => vec![Effect::ListSessions],
+                Overlay::Themes => {
+                    ui.theme_on_open = Some(ui.theme);
+                    let current = ThemeId::ALL.iter().position(|t| *t == ui.theme);
+                    ui.selection
+                        .insert(format!("{o:?}"), current.unwrap_or_default());
+                    vec![]
+                }
                 _ => vec![],
             }
         }
         Action::CloseOverlay => {
             ui.overlay = None;
+            // Leaving the theme picker without choosing puts back the theme it opened with.
+            if let Some(theme) = ui.theme_on_open.take() {
+                ui.theme = theme;
+            }
             vec![]
+        }
+        Action::PreviewTheme(theme) => {
+            ui.theme = theme;
+            vec![]
+        }
+        Action::PickTheme(theme) => {
+            ui.overlay = None;
+            ui.theme = theme;
+            ui.theme_on_open = None;
+            // Saved on every confirmation, even of the theme in effect, so a failed save can be
+            // retried by picking the same theme again.
+            vec![Effect::SaveTheme(theme)]
         }
         Action::Select(_) => vec![],
         Action::Scroll(n) => {

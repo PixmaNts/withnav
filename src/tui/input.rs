@@ -4,6 +4,7 @@ use super::{
     commands,
     protocol::{Action, Overlay},
     state::{Activity, Focus, State, UiState},
+    theme::ThemeId,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui_textarea::TextArea;
@@ -76,39 +77,7 @@ pub fn route_key(
         return None;
     }
     if let Some(overlay) = ui.overlay {
-        let names: Vec<String> = match overlay {
-            Overlay::Models => state
-                .catalog
-                .iter()
-                .filter(|x| {
-                    x.alias.to_lowercase().contains(&ui.filter.to_lowercase())
-                        || x.model.to_lowercase().contains(&ui.filter.to_lowercase())
-                })
-                .map(|x| x.alias.clone())
-                .collect(),
-            Overlay::Sessions => state
-                .sessions
-                .iter()
-                .filter(|x| {
-                    x.id.to_lowercase().contains(&ui.filter.to_lowercase())
-                        || x.title
-                            .as_deref()
-                            .unwrap_or("")
-                            .to_lowercase()
-                            .contains(&ui.filter.to_lowercase())
-                })
-                .map(|x| x.id.clone())
-                .collect(),
-            Overlay::Commands => commands::CATALOG
-                .iter()
-                .filter(|x| {
-                    x.name.contains(&ui.filter.to_lowercase())
-                        || x.description.contains(&ui.filter.to_lowercase())
-                })
-                .map(|x| x.name.to_string())
-                .collect(),
-            Overlay::Help => Vec::new(),
-        };
+        let names = overlay_names(overlay, state, ui);
         let selected = ui.selection.entry(format!("{overlay:?}")).or_default();
         match key.code {
             KeyCode::Esc => {
@@ -126,6 +95,7 @@ pub fn route_key(
                     Overlay::Models => Action::PickModel(name.clone()),
                     Overlay::Sessions => Action::ResumeSession(name.clone()),
                     Overlay::Commands => commands::command_action(name, ui.mode)?,
+                    Overlay::Themes => Action::PickTheme(ThemeId::from_id(name)?),
                     Overlay::Help => return None,
                 };
                 ui.overlay = None;
@@ -143,6 +113,18 @@ pub fn route_key(
                 *selected = 0;
             }
             _ => {}
+        }
+        if overlay == Overlay::Themes {
+            // The highlighted theme is drawn at once; enter keeps it, esc puts the old one back.
+            // The rows are listed again because the key may have changed the filter; with no
+            // row left, the theme on screen stays.
+            let selected = *selected;
+            let previewed = overlay_names(overlay, state, ui)
+                .get(selected)
+                .and_then(|id| ThemeId::from_id(id));
+            if let Some(theme) = previewed.filter(|theme| *theme != ui.theme) {
+                return Some(Action::PreviewTheme(theme));
+            }
         }
         return None;
     }
@@ -251,6 +233,51 @@ pub fn route_key(
         editor.bump();
     }
     None
+}
+
+/// The keys of the rows an overlay lists under the current filter, in display order.
+fn overlay_names(overlay: Overlay, state: &State, ui: &UiState) -> Vec<String> {
+    match overlay {
+        Overlay::Models => state
+            .catalog
+            .iter()
+            .filter(|x| {
+                x.alias.to_lowercase().contains(&ui.filter.to_lowercase())
+                    || x.model.to_lowercase().contains(&ui.filter.to_lowercase())
+            })
+            .map(|x| x.alias.clone())
+            .collect(),
+        Overlay::Sessions => state
+            .sessions
+            .iter()
+            .filter(|x| {
+                x.id.to_lowercase().contains(&ui.filter.to_lowercase())
+                    || x.title
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&ui.filter.to_lowercase())
+            })
+            .map(|x| x.id.clone())
+            .collect(),
+        Overlay::Commands => commands::CATALOG
+            .iter()
+            .filter(|x| {
+                x.name.contains(&ui.filter.to_lowercase())
+                    || x.description.contains(&ui.filter.to_lowercase())
+            })
+            .map(|x| x.name.to_string())
+            .collect(),
+        Overlay::Themes => ThemeId::ALL
+            .iter()
+            .filter(|x| {
+                x.id().contains(&ui.filter.to_lowercase())
+                    || x.name().to_lowercase().contains(&ui.filter.to_lowercase())
+            })
+            .map(|x| x.id().to_string())
+            .collect(),
+        Overlay::Help => Vec::new(),
+    }
 }
 
 /// Inserts pasted text into the editor (newlines kept), unless an overlay

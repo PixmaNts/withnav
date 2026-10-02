@@ -17,6 +17,7 @@ use super::{
     reducer,
     state::{Activity, ConnectionStatus, State, UiState},
     terminal::TerminalGuard,
+    theme::ThemeId,
     view::{self, RenderCache},
     TuiError, TuiOptions,
 };
@@ -43,6 +44,7 @@ pub struct Runtime {
     dirty: bool,
     needs_clear: bool,
     quit: bool,
+    config_dir: Option<std::path::PathBuf>,
 }
 
 impl Runtime {
@@ -57,6 +59,11 @@ impl Runtime {
         };
         let ui = UiState {
             follow_bottom: true,
+            theme: options
+                .config_dir
+                .as_deref()
+                .map(saved_theme)
+                .unwrap_or_default(),
             ..UiState::default()
         };
         Self {
@@ -70,6 +77,7 @@ impl Runtime {
             dirty: true,
             needs_clear: false,
             quit: false,
+            config_dir: options.config_dir.clone(),
         }
     }
 
@@ -168,6 +176,7 @@ impl Runtime {
             generation: self.state.generation.clone(),
             session_id: self.state.session.as_ref().map(|s| s.session_id.clone()),
             workspace: self.state.workspace.clone(),
+            config_dir: self.config_dir.clone(),
         };
         for effect in effects {
             if self.exec.execute(effect, &ctx, &mut self.editor) == Flow::Quit {
@@ -188,6 +197,24 @@ impl Runtime {
         guard.draw(|frame| self.render(frame)).map_err(draw_error)?;
         self.dirty = false;
         Ok(())
+    }
+}
+
+/// The theme saved in `config_dir`; the default when none is saved or the file is unreadable.
+pub fn saved_theme(config_dir: &std::path::Path) -> ThemeId {
+    let settings = match crate::settings::load(config_dir) {
+        Ok(settings) => settings,
+        Err(err) => {
+            tracing::warn!("cannot read the settings, using the default theme: {err}");
+            return ThemeId::default();
+        }
+    };
+    match settings.tui_theme() {
+        None => ThemeId::default(),
+        Some(id) => ThemeId::from_id(id).unwrap_or_else(|| {
+            tracing::warn!("unknown theme {id:?} in the settings, using the default theme");
+            ThemeId::default()
+        }),
     }
 }
 

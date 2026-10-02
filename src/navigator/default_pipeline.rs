@@ -12,9 +12,12 @@
 //!    times in a real evening). It stays a remark, never a wake: the driver is at
 //!    the editor, not in the chat.
 //! 1. `wake_cognition` when `stuck > 0.8`: the instinct judges the driver
-//!    stuck (the same errors persist or come back across recent edits,
-//!    the same lines are undone and retried, a comment shows frustration).
-//!    It wakes whether the code compiles or not: a driver who does not
+//!    stuck, and the question demands specifics: the same obstacle tried
+//!    and failed at least twice in the recorded edits (same error, same
+//!    lines reworked), "no" for edits that move forward or for one snapshot
+//!    or repeated saves of the same text. It does not ask for an explicit
+//!    request for help: that is branch 0, and putting it in this question
+//!    scored 0.87-0.94 on every trigger of a real day. It wakes whether the code compiles or not: a driver who does not
 //!    compile and struggles is who the chat is for. The wake message says
 //!    "you look stuck" and carries no intent section.
 //! 2. `wake_cognition` on drift from the intent (> 0.8, only if
@@ -28,7 +31,7 @@
 //!    their own cooldown, `wake_cooldown_ms` = 120 s: a wake inside it does
 //!    not match and the trigger falls to the next branch, and a wake never
 //!    silences the next remark.
-//! 3. `remark` when `worth_attention > 0.85 && route != "silent" &&
+//! 3. `remark` when `worth_attention > 0.8 && route != "silent" &&
 //!    since_last_remark_ms >= 45000`. There is no `unfinished` gate: code in
 //!    the middle of being written can still hold a concrete correction, and
 //!    nearly everything a person does while implementing looks unfinished.
@@ -48,7 +51,10 @@
 //! The stricter values come from a first day of use (2026-09-29): at 0.7
 //! and 20 s, `worth_attention` sat at 0.93-0.95 during a refactoring and the
 //! metacognition remarked on every save. Replaying that log, 0.85 with a
-//! 45 s cooldown halves the remarks (25 -> 13).
+//! 45 s cooldown halves the remarks (25 -> 13). The reworded
+//! `worth_attention` question scores lower (median 0.80 against 0.86 on the
+//! same inputs), so the remark threshold is 0.8: re-asked over the log of
+//! 2026-10-02 that is 17 remarks over 48 triggers.
 //!
 //! A second trigger listens to `conversation` (a driver turn ended in the
 //! chat): one question, `code_contradicts_conversation`, and a `remark`
@@ -121,7 +127,8 @@ mod tests {
         );
         let toml = PIPELINE_TOML;
         assert!(toml.contains("Incomplete code can still merit help"));
-        assert!(toml.contains("several saves of the same text, is not enough"));
+        assert!(toml.contains("at least twice in the recorded edits"));
+        assert!(!toml.contains("explicit request for help"));
         assert!(toml.contains("copied scaffolding being adapted"));
         assert!(STATE_PROMPT.contains("claims, not agreements"));
         assert!(CONVERSATION_STATE_PROMPT.contains("claims, not agreements"));

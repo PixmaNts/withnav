@@ -34,7 +34,7 @@ instructions = "Is this an edit the driver is still in the middle of typing (a h
 
 [trigger.questions.stuck]
 type = "noul"
-instructions = "Is there evidence of repeated unsuccessful attempts at the same obstacle, or an explicit request for help? One broken snapshot, or several saves of the same text, is not enough."
+instructions = "Has the driver tried and failed at the same obstacle at least twice in the recorded edits (same error or same lines reworked)? Answer no when the edits move forward, or when the evidence is only one snapshot or repeated saves of the same text."
 
 # A comment that calls on the navigator ("help", "aide", a question) gets an
 # answer whatever the scores say; the prefilter let it past the size limit.
@@ -53,7 +53,7 @@ when = "unfinished < 0.5 && ((has_intent && drift > 0.8) || (has_conversation &&
 action = "wake_cognition"
 
 [[trigger.branch]]
-when = "worth_attention > 0.85 && route != \"silent\" && since_last_remark_ms >= 45000"
+when = "worth_attention > 0.8 && route != \"silent\" && since_last_remark_ms >= 45000"
 action = "remark"
 prompt = "prompts/remark.md"
 

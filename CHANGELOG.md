@@ -13,6 +13,18 @@ requests land in `develop`.
   data dir. An explicit `context_window` wins without any network call; if it differs from what the
   provider reports, the log says so. `GET /v1/models` lists each alias with the resolved window,
   `enabled`, and `disabled_reason` when there is none.
+- **Metacognition window check**: the editor's remarks model is resolved like a chat session before
+  its first call. If its alias has no known context window, only the remarks are turned off, with one
+  warning and a line in `navigator/status`; completion, the instinct, history and the chat server keep
+  working.
+- **A conversation keeps its model's limits**: a session saves, when it is created, which provider,
+  model and API it runs on and its context window and other limits (`sessions.model_resolution`, with
+  where each value came from and no credentials). A resume uses the saved limits, so it works with the
+  provider down, and a model list refresh never changes a conversation in progress. A conversation
+  from before this change gets them the first time it is resumed. If the alias now points at another
+  provider, model or API, the resume stops with an error naming both, instead of continuing on another
+  model; the server answers `409` with `"reason": "model_identity_changed"`. A saved value that cannot
+  be read stops the resume with a clear error.
 - **Project and user rules**: a session reads, once when it is created or resumed, `~/.agents/AGENTS.md`
   (else `~/.claude/CLAUDE.md`), `~/.agents/rules.md`, then in each directory from the Git worktree
   root down to the workspace `AGENTS.md` (else `CLAUDE.md`) and `rules.md`, and sends them to the

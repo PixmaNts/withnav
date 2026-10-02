@@ -366,3 +366,87 @@ impl Metacognition for FailingCommenter {
         Box::pin(async move { Err(ModelError::Unavailable(msg)) })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A provider nothing listens on, with the three navigator aliases on
+    /// it. `metacognition_window` of `None` leaves that alias without a
+    /// window, so only discovery could supply one.
+    fn config(metacognition_window: Option<u64>) -> ModelsConfig {
+        let mut metacognition = serde_json::json!({
+            "provider": "omni", "model": "m-chat", "supports_tools": true
+        });
+        if let Some(w) = metacognition_window {
+            metacognition["context_window"] = w.into();
+        }
+        ModelsConfig::parse(
+            &serde_json::json!({
+                "providers": { "omni": {
+                    "base_url": "http://127.0.0.1:1/v1",
+                    "connect_timeout_ms": 200, "request_timeout_ms": 500
+                }},
+                "models": {
+                    "metacognition": metacognition,
+                    "reflex": { "provider": "omni", "model": "m-fim", "api": "fim" },
+                    "instinct": { "provider": "omni", "model": "m-s1", "api": "systemone" }
+                }
+            })
+            .to_string(),
+        )
+        .expect("config")
+    }
+
+    async fn layers(models: &ModelsConfig) -> (tempfile::TempDir, Layers) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = dir.path().join("cfg");
+        auth::set_key(&cfg, "omni", "test-key").expect("key");
+        let layers = build_layers_from(
+            models,
+            &cfg,
+            &ModelCatalog::new(Some(dir.path().join("data"))),
+            dir.path().join("log.jsonl"),
+            Arc::new(ClientCache::new()),
+        )
+        .await;
+        (dir, layers)
+    }
+
+    // Given a metacognition alias with no window and a provider that cannot
+    //       be reached
+    // When the layers are built
+    // Then only the remarks are disabled, once, with the reason; FIM and the
+    //      instinct stay up, and the stand-in answers with an error
+    #[tokio::test]
+    async fn an_unresolved_metacognition_disables_only_the_remarks() {
+        let (_dir, layers) = layers(&config(None)).await;
+        assert!(layers.metacognition.is_none());
+        assert!(layers.metacognition_model.is_none());
+        assert!(layers.fim.is_some(), "FIM is not touched");
+        assert!(layers.decision.is_some(), "the instinct is not touched");
+        assert_eq!(layers.disabled.len(), 1, "{:?}", layers.disabled);
+        assert!(
+            layers.disabled[0].starts_with("metacognition:")
+                && layers.disabled[0].contains("no known context window")
+                && layers.disabled[0].contains("'metacognition'"),
+            "{:?}",
+            layers.disabled
+        );
+        let ctx = RemarkContext::build("file:///a.rs", "rust", "a", "b", Vec::new(), None);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        assert!(layers.metacognition().remark(&ctx, &cancel).await.is_err());
+    }
+
+    // Given the same alias with its own window
+    // When the layers are built
+    // Then the commenter is built without any lookup and nothing is disabled
+    #[tokio::test]
+    async fn a_metacognition_with_a_window_is_built() {
+        let (_dir, layers) = layers(&config(Some(128_000))).await;
+        assert!(layers.metacognition.is_some());
+        assert_eq!(layers.metacognition_model.as_deref(), Some("m-chat"));
+        assert!(layers.fim.is_some() && layers.decision.is_some());
+        assert!(layers.disabled.is_empty(), "{:?}", layers.disabled);
+    }
+}

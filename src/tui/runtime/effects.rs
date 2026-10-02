@@ -158,7 +158,7 @@ impl Executor {
                     if let Err(err) = crate::settings::save_tui_theme(dir, theme.id()) {
                         tracing::warn!("cannot save the theme: {err}");
                         let message = format!(
-                            "theme {} is not saved and lasts until you quit: {err}",
+                            "could not confirm theme {} was saved; pick it again to retry: {err}",
                             theme.name()
                         );
                         self.spawn_event(async move {

@@ -75,8 +75,9 @@ pub fn load(config_dir: &Path) -> Result<Settings, SettingsError> {
     }
 }
 
-/// Writes the settings through a temporary file renamed over the old one, so a crash never
-/// leaves a half-written file.
+/// Writes the settings through a synced temporary file renamed over the old one, then syncs the
+/// directory: atomic (a crash never leaves a half-written file) and durable (the rename itself
+/// survives a crash).
 pub fn save(config_dir: &Path, settings: &Settings) -> Result<(), SettingsError> {
     let path = path(config_dir);
     let write_err = |source| SettingsError::Write {
@@ -91,6 +92,9 @@ pub fn save(config_dir: &Path, settings: &Settings) -> Result<(), SettingsError>
     tmp.write_all(text.as_bytes()).map_err(write_err)?;
     tmp.as_file().sync_all().map_err(write_err)?;
     tmp.persist(&path).map_err(|err| write_err(err.error))?;
+    std::fs::File::open(config_dir)
+        .and_then(|dir| dir.sync_all())
+        .map_err(write_err)?;
     Ok(())
 }
 

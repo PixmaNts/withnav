@@ -28,6 +28,8 @@ requests land in `develop`.
 - The navigator's view of your recent edits lists each real edit once, with its file and version,
   instead of repeating the same text for every save and pause, and says that it does not know
   whether an error lasted across edits.
+- A navigator remark is written faster: it reads at most one extra file before answering (a
+  request for help still gets three), and the code it is about is sent once instead of twice.
 - A comment that calls on the navigator is answered once: saving or pausing again with the same
   comment no longer cancels the answer being written, and the same comment does not ask again until
   it is removed and written anew. Such a call also gets one more round of reading files.

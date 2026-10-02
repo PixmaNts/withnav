@@ -127,6 +127,9 @@ being written.
     answer_contract!()
 );
 
+/// The closing instruction of the user turn.
+const DECIDE_INSTRUCTION: &str = "Decide: stay silent, or give one short remark. JSON only.";
+
 /// Appended when the model has no tools left (the last round, or the retry
 /// after it tried a tool anyway): it must answer with what it already read.
 const NO_MORE_TOOLS_NOTICE: &str = concat!(
@@ -151,9 +154,11 @@ pub struct LlmCommenter {
 /// The whole remark (tool rounds + final answer) is capped at this budget;
 /// past it the metacognition stays silent.
 const REMARK_BUDGET: Duration = Duration::from_secs(20);
-/// Tool rounds of an ordinary remark; the call after the last one carries no
-/// tools, forcing the JSON answer.
-pub const REMARK_TOOL_ROUNDS: usize = 2;
+/// Tool rounds of an ordinary remark: one optional round of reading, then the
+/// answer. Each round is a model round trip the driver waits for, and an
+/// ordinary remark rests on the diff it was given. The call after the last
+/// round carries no tools, forcing the JSON answer.
+pub const REMARK_TOOL_ROUNDS: usize = 1;
 /// Tool rounds of a remark answering a call for help: the driver asked, so
 /// the model may read more before it speaks.
 pub const HELP_TOOL_ROUNDS: usize = 3;
@@ -201,7 +206,14 @@ impl LlmCommenter {
         }
     }
 
+    /// The user turn. When the pipeline rendered a branch prompt (it already
+    /// carries the file, intent, diff, context and diagnostics, and goes into
+    /// the system message) only the instruction to decide is left; repeating
+    /// the context would double the input of every round.
     fn build_user_message(&self, ctx: &RemarkContext) -> String {
+        if ctx.prompt.as_deref().is_some_and(|p| !p.trim().is_empty()) {
+            return DECIDE_INSTRUCTION.to_string();
+        }
         let mut m = String::new();
         m.push_str(&format!(
             "File: {}\nLanguage: {}\n",
@@ -225,7 +237,8 @@ impl LlmCommenter {
         m.push_str(&ctx.diff);
         m.push_str("\n\nCurrent text around the changed region:\n");
         m.push_str(&ctx.text_excerpt);
-        m.push_str("\n\nDecide: stay silent, or give one short remark. JSON only.");
+        m.push_str("\n\n");
+        m.push_str(DECIDE_INSTRUCTION);
         m
     }
 

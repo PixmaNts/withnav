@@ -1166,7 +1166,7 @@ async fn an_answered_call_for_help_fires_again_only_once_rewritten() {
 }
 
 /// A trigger that is not a call for help still supersedes the remark in
-/// flight, and help remarks get three tool rounds, ordinary ones two.
+/// flight, and help remarks get three tool rounds, ordinary ones one.
 #[tokio::test(start_paused = true)]
 async fn an_ordinary_trigger_still_supersedes_a_help_remark_and_tool_rounds_differ() {
     let gate = Arc::new(CancellationToken::new());
@@ -1195,7 +1195,7 @@ async fn an_ordinary_trigger_still_supersedes_a_help_remark_and_tool_rounds_diff
     tokio::time::advance(Duration::from_millis(3001)).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(mock.calls(), 2, "the ordinary trigger asked for its own");
-    assert_eq!(mock.tool_rounds(), vec![3, 2]);
+    assert_eq!(mock.tool_rounds(), vec![3, 1]);
 
     gate.cancel();
     let mut seen = Vec::new();

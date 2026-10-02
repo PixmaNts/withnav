@@ -129,7 +129,8 @@ async fn one_read_round_then_a_remark() {
     let log_path = ws.join("nav.jsonl");
     let c = commenter(server.uri(), Some(log_path.clone()));
     let cancel = tokio_util::sync::CancellationToken::new();
-    let ctx = remark_ctx(&ws, vec![]);
+    let mut ctx = remark_ctx(&ws, vec![]);
+    ctx.tool_rounds = 2;
     let remark = c.remark(&ctx, &cancel).await.unwrap().expect("a remark");
     assert_eq!(remark.line, 1);
     assert_eq!(remark.text, "helper is fine");
@@ -170,10 +171,10 @@ async fn one_read_round_then_a_remark() {
 
 // Given a model that keeps calling tools
 // When the metacognition remarks
-// Then after 2 tool rounds the third call carries NO tools and its answer
-//      is the remark.
+// Then after the 2 tool rounds the context allows, the third call carries NO
+//      tools and its answer is the remark.
 #[tokio::test]
-async fn tool_loop_is_capped_at_two_rounds_then_forces_the_answer() {
+async fn tool_loop_is_capped_then_forces_the_answer() {
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path().to_path_buf();
     std::fs::write(ws.join("a.rs"), "a\n").unwrap();
@@ -199,7 +200,8 @@ async fn tool_loop_is_capped_at_two_rounds_then_forces_the_answer() {
 
     let c = commenter(server.uri(), None);
     let cancel = tokio_util::sync::CancellationToken::new();
-    let ctx = remark_ctx(&ws, vec![]);
+    let mut ctx = remark_ctx(&ws, vec![]);
+    ctx.tool_rounds = 2;
     let out = c.remark(&ctx, &cancel).await.unwrap();
     assert!(out.is_none(), "the forced final answer is silence");
 
@@ -473,7 +475,9 @@ async fn the_final_round_tells_the_model_to_answer_now() {
 
     let c = commenter(server.uri(), None);
     let cancel = tokio_util::sync::CancellationToken::new();
-    c.remark(&remark_ctx(&ws, vec![]), &cancel).await.unwrap();
+    let mut ctx = remark_ctx(&ws, vec![]);
+    ctx.tool_rounds = 2;
+    c.remark(&ctx, &cancel).await.unwrap();
 
     let bodies = received_bodies(&server).await;
     assert_eq!(bodies.len(), 3);
@@ -620,13 +624,13 @@ async fn prose_without_tool_markup_is_not_retried() {
 // Given a model that keeps calling tools
 // When the context allows the help-call number of tool rounds, or the
 //      ordinary one
-// Then the help call gets three rounds with tools, an ordinary remark two.
+// Then the help call gets three rounds with tools, an ordinary remark one.
 #[tokio::test]
-async fn a_help_remark_gets_three_tool_rounds_and_an_ordinary_one_two() {
+async fn a_help_remark_gets_three_tool_rounds_and_an_ordinary_one_one() {
     use rust_agent::navigator::metacognition::{HELP_TOOL_ROUNDS, REMARK_TOOL_ROUNDS};
 
-    assert_eq!((HELP_TOOL_ROUNDS, REMARK_TOOL_ROUNDS), (3, 2));
-    for (rounds, expected_requests) in [(HELP_TOOL_ROUNDS, 4), (REMARK_TOOL_ROUNDS, 3)] {
+    assert_eq!((HELP_TOOL_ROUNDS, REMARK_TOOL_ROUNDS), (3, 1));
+    for (rounds, expected_requests) in [(HELP_TOOL_ROUNDS, 4), (REMARK_TOOL_ROUNDS, 2)] {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().to_path_buf();
         std::fs::write(ws.join("a.rs"), "a\n").unwrap();
@@ -653,4 +657,56 @@ async fn a_help_remark_gets_three_tool_rounds_and_an_ordinary_one_two() {
         assert_eq!(bodies.len(), expected_requests, "rounds {rounds}");
         assert!(bodies.last().unwrap().get("tools").is_none());
     }
+}
+
+// Given a context carrying the rendered branch prompt, with its diff and
+//      excerpt
+// When the metacognition remarks
+// Then the diff and the code excerpt reach the model exactly once, in the
+//      system message, and the user turn is only the instruction to decide.
+#[tokio::test]
+async fn the_branch_context_is_sent_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    script_texts(&server, &[r#"{"silent": true}"#]).await;
+
+    let c = commenter(server.uri(), None);
+    let mut ctx = remark_ctx(tmp.path(), vec![]);
+    ctx.diff = "+UNIQUE_DIFF_MARKER".to_string();
+    ctx.text_excerpt = "   2| UNIQUE_EXCERPT_MARKER".to_string();
+    ctx.prompt = Some(format!(
+        "Diff:\n{}\nContext:\n{}",
+        ctx.diff, ctx.text_excerpt
+    ));
+    let cancel = tokio_util::sync::CancellationToken::new();
+    c.remark(&ctx, &cancel).await.unwrap();
+
+    let bodies = received_bodies(&server).await;
+    let wire = bodies[0]["messages"].to_string();
+    assert_eq!(wire.matches("UNIQUE_DIFF_MARKER").count(), 1, "{wire}");
+    assert_eq!(wire.matches("UNIQUE_EXCERPT_MARKER").count(), 1, "{wire}");
+    let users = user_messages(&bodies[0]);
+    assert_eq!(users.len(), 1, "{users:?}");
+    assert!(users[0].contains("JSON only"), "{users:?}");
+    assert!(!users[0].contains("UNIQUE"), "{users:?}");
+}
+
+// Given no branch prompt (a direct caller)
+// When the metacognition remarks
+// Then the user turn still carries the diff and the excerpt.
+#[tokio::test]
+async fn without_a_branch_prompt_the_user_turn_carries_the_context() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    script_texts(&server, &[r#"{"silent": true}"#]).await;
+
+    let c = commenter(server.uri(), None);
+    let mut ctx = remark_ctx(tmp.path(), vec![]);
+    ctx.diff = "+UNIQUE_DIFF_MARKER".to_string();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    c.remark(&ctx, &cancel).await.unwrap();
+
+    let bodies = received_bodies(&server).await;
+    let users = user_messages(&bodies[0]);
+    assert!(users[0].contains("UNIQUE_DIFF_MARKER"), "{users:?}");
 }

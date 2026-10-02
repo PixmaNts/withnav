@@ -25,6 +25,7 @@ fn tui_with(args: &[&str], env: &[(&str, &str)]) -> Run {
         .args(args)
         .env("XDG_DATA_HOME", &data)
         .env("XDG_CONFIG_HOME", &config)
+        .env("HOME", dirs.path())
         .env_remove("NAVAI_SERVER_TOKEN")
         .stdin(Stdio::null());
     for (key, value) in env {
@@ -184,6 +185,7 @@ fn a_start_moves_the_former_data_and_config_once() {
             .args(["tui", "--workspace", "."])
             .env("XDG_DATA_HOME", &data)
             .env("XDG_CONFIG_HOME", &config)
+            .env("HOME", dirs.path())
             .stdin(Stdio::null())
             .output()
             .unwrap()

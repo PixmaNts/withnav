@@ -37,6 +37,7 @@ fn isolate_xdg() {
         let dir = tempfile::tempdir().expect("xdg tempdir");
         std::env::set_var("XDG_DATA_HOME", dir.path().join("data"));
         std::env::set_var("XDG_CONFIG_HOME", dir.path().join("config"));
+        std::env::set_var("HOME", dir.path());
         dir
     });
 }

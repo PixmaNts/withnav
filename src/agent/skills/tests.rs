@@ -557,7 +557,10 @@ fn the_catalog_is_bounded_and_counts_what_it_omits() {
     let skills = load(&fx);
     assert_eq!(skills.len(), 200);
     let catalog = skills.catalog().unwrap();
-    assert!(catalog.len() <= MAX_TOKENS * 4, "{} bytes", catalog.len());
+    // The ceiling is asserted on its own number, not through the constant, so
+    // changing the constant breaks this test on purpose.
+    assert_eq!(MAX_TOKENS, 8_192);
+    assert!(catalog.len() <= 8_192 * 4, "{} bytes", catalog.len());
     let last = catalog.lines().last().unwrap();
     let omitted: usize = last
         .strip_suffix(" additional skills omitted")

@@ -3,7 +3,10 @@
 
 use super::Skill;
 
-/// The most estimated tokens (bytes / 4) the message may take.
+/// The most estimated tokens (bytes / 4) the message may take. Deliberately
+/// larger than a minimal catalog would need: the driver's own library holds
+/// about 110 skills of up to [`MAX_DESCRIPTION_CHARS`] characters each, and
+/// every one that does not fit is invisible to the model.
 pub const MAX_TOKENS: usize = 8192;
 /// The longest description, in characters.
 pub const MAX_DESCRIPTION_CHARS: usize = 256;

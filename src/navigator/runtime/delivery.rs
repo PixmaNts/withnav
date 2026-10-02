@@ -36,7 +36,12 @@ impl Runtime {
         // cancels: the remark request runs on its own handle, which only a
         // newer remark for the document or a close cancels.
         let Some(cancel) = self
-            .begin_remark(&uri, &instinct_cancel, &ctx.help_calls)
+            .begin_remark(
+                &uri,
+                &instinct_cancel,
+                &ctx.help_calls,
+                ctx.event == TriggerKind::Conversation.as_str(),
+            )
             .await
         else {
             pending.finish(&self.log, DeliveryOutcome::Cancelled { reason: None });

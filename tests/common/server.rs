@@ -11,6 +11,7 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
+use navai::agent::instructions::RulesRoots;
 use navai::bus::command::{Command, ContentBlock, DeliveryMode};
 use navai::bus::event::EventEnvelope;
 use navai::server::{AppState, ServerConfig};
@@ -55,6 +56,7 @@ pub struct TestServerConfig {
     request_timeout_ms: u64,
     bearer_token: Option<String>,
     history_db: Option<PathBuf>,
+    rules_roots: RulesRoots,
     chat_tools: Option<u64>,
     extra_aliases: Vec<(String, String)>,
 }
@@ -80,6 +82,7 @@ impl TestServerConfig {
             request_timeout_ms: 600_000,
             bearer_token: None,
             history_db: None,
+            rules_roots: RulesRoots::default(),
             chat_tools: None,
             extra_aliases: Vec::new(),
         }
@@ -109,6 +112,14 @@ impl TestServerConfig {
 
     pub fn bearer_token(mut self, token: &str) -> Self {
         self.bearer_token = Some(token.to_string());
+        self
+    }
+
+    /// Reads the global rules from `home` instead of none.
+    pub fn rules_home(mut self, home: &Path) -> Self {
+        self.rules_roots = RulesRoots {
+            home: Some(home.to_path_buf()),
+        };
         self
     }
 
@@ -166,6 +177,7 @@ impl TestServerConfig {
                 .history_db
                 .clone()
                 .unwrap_or_else(|| self.root.join("history.db")),
+            rules_roots: self.rules_roots.clone(),
         }
     }
 

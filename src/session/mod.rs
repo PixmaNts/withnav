@@ -2,7 +2,7 @@
 //! to run (`config`), listing and deletion (`catalog`), teardown and close
 //! (`lifecycle`), command acceptance (`message`), the host's posting handle
 //! (`sender`), subscriptions (`subscription`), the host's profile policy and
-//! lifecycle callbacks (`hooks`), actor construction (`actor`) and the SQLite
+//! lifecycle callbacks (`hooks`), the instructions log (`rules_log`), actor construction (`actor`) and the SQLite
 //! history (`store`). Transport-free: HTTP and SSE live in `server/`.
 mod actor;
 mod catalog;
@@ -10,6 +10,7 @@ mod config;
 mod hooks;
 mod lifecycle;
 mod message;
+mod rules_log;
 mod sender;
 mod service;
 pub mod store;

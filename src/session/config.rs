@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use crate::agent::instructions::RulesRoots;
+
 /// Immutable session-service configuration.
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
@@ -12,4 +14,7 @@ pub struct SessionConfig {
     pub config_dir: PathBuf,
     /// Conversation-history database; every conversation is written there.
     pub history_db: PathBuf,
+    /// Where the local instructions of a session are looked for beyond its
+    /// workspace.
+    pub rules_roots: RulesRoots,
 }

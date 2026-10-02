@@ -506,6 +506,7 @@ mod tests {
             allow_non_loopback: false,
             bearer_token: None,
             history_db: dir.path().join("history.db"),
+            rules_roots: Default::default(),
         })
         .expect("state over a temp database");
         (dir, state)

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::instructions::RulesRoots;
 use crate::bus::event::{AgentYield, EventEnvelope, EventKind, LlmDelta, TurnEnd, TurnEndOutcome};
 use crate::provider::auth;
 use crate::render::{Renderer, UiEvent};
@@ -190,6 +191,7 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
         allow_non_loopback: false,
         bearer_token: None,
         history_db: history_db_path()?,
+        rules_roots: RulesRoots::from_user_home(),
     })?;
     let session_id = state
         .create_session(&workspace, args.model.as_deref(), None)
@@ -337,6 +339,7 @@ async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
         allow_non_loopback: args.allow_non_loopback,
         bearer_token: None,
         history_db: history_db_path()?,
+        rules_roots: RulesRoots::from_user_home(),
     };
     crate::server::routes::serve(
         config,

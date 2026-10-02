@@ -267,6 +267,7 @@ async fn spawn_cognition_server(
         allow_non_loopback: false,
         bearer_token: Some(token.clone()),
         history_db,
+        rules_roots: crate::agent::instructions::RulesRoots::from_user_home(),
     };
     let state = AppState::with_hooks(
         config,

@@ -254,6 +254,7 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
 
     let out = tokio::task::spawn_blocking({
         let models = models.clone();
+        let home = root.to_path_buf();
         let ws = root.join("ws");
         move || {
             std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
@@ -273,6 +274,8 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
                 // their data (observed 2026-10-01).
                 .env("XDG_DATA_HOME", data_home.as_os_str())
                 .env("XDG_CONFIG_HOME", config_home.as_os_str())
+                // The home directory holds the global rules files.
+                .env("HOME", &home)
                 .output()
                 .expect("run the binary")
         }

@@ -8,6 +8,12 @@ requests land in `develop`.
 
 ### Added
 
+- **Project and user rules**: a session reads, once when it is created or resumed, `~/.agents/AGENTS.md`
+  (else `~/.claude/CLAUDE.md`), `~/.agents/rules.md`, then in each directory from the Git worktree
+  root down to the workspace `AGENTS.md` (else `CLAUDE.md`) and `rules.md`, and sends them to the
+  model as one system message after the role prompt. Files over 16 KiB, or beyond 64 KiB in all, are
+  cut with a visible marker; the log tells what was loaded, shadowed, truncated or unreadable. Edits
+  take effect in the next session or resume.
 - **Terminal client**: `navai tui` starts a private server (or connects to one with `--url`,
   token in `NAVAI_SERVER_TOKEN`) and opens a chat in the terminal.
 - Streaming chat with reasoning, tool calls with their duration, and the model with the context

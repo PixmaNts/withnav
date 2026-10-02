@@ -44,6 +44,7 @@ use super::hooks::{NoHooks, SessionHooks, StartedSession};
 use super::message::{accept, MessageAccepted};
 use super::sender::SessionSender;
 use crate::agent::actor::AgentActor;
+use crate::agent::instructions::Instructions;
 use crate::bus::command::Command;
 use crate::bus::event::ROOT_ACTOR_ID;
 use crate::bus::inbox::ActorInbox;
@@ -374,6 +375,18 @@ impl Service {
         Ok(config.resolve(alias)?)
     }
 
+    /// Reads the session's local instructions once and logs what became of
+    /// each source. The snapshot lives on the actor for the whole session.
+    async fn load_rules(&self, workspace: &Path, id: SessionId, resumed: bool) -> Instructions {
+        let roots = self.config.rules_roots.clone();
+        let dir = workspace.to_path_buf();
+        let rules = tokio::task::spawn_blocking(move || Instructions::load(&roots, &dir))
+            .await
+            .unwrap_or_default();
+        super::rules_log::log(id, resumed, &rules);
+        rules
+    }
+
     /// The shared mint: resolves the model, builds the actor, spawns the
     /// sequencer (continuing at `last_seq + 1` when resuming),
     /// publishes `session.start` (fresh only), spawns the runtime with the
@@ -425,6 +438,9 @@ impl Service {
         if let Some(loaded) = &resumed {
             actor.transcript = loaded.transcript.clone();
         }
+        actor.rules = self
+            .load_rules(&workspace, session_id, resumed.is_some())
+            .await;
         self.hooks.configure_actor(profile, &mut actor);
         if resumed.is_some() {
             actor.restore_pending_ask();

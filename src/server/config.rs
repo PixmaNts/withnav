@@ -5,6 +5,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use crate::agent::instructions::RulesRoots;
 use crate::error::ServerError;
 use crate::session::SessionConfig;
 
@@ -26,6 +27,9 @@ pub struct ServerConfig {
     /// Conversation-history database; the binaries default it to
     /// [`crate::paths::history_db`], tests give each server its own.
     pub history_db: PathBuf,
+    /// Where session instructions are read from besides the workspace; the
+    /// binaries use the user's home, tests an empty or temporary one.
+    pub rules_roots: RulesRoots,
 }
 
 /// The HTTP-only half of [`ServerConfig`].
@@ -53,6 +57,7 @@ impl ServerConfig {
                 models_path: self.models_path,
                 config_dir: self.config_dir,
                 history_db: self.history_db,
+                rules_roots: self.rules_roots,
             },
             HttpConfig {
                 bind: self.bind,
@@ -75,6 +80,7 @@ mod tests {
             allow_non_loopback,
             bearer_token: None,
             history_db: PathBuf::from("/tmp/navai-test/history.db"),
+            rules_roots: RulesRoots::default(),
         }
     }
 

@@ -154,6 +154,7 @@ impl EmbeddedServer {
             allow_non_loopback: false,
             bearer_token: Some(token.clone()),
             history_db: super::history_db_path()?,
+            rules_roots: crate::agent::instructions::RulesRoots::from_user_home(),
         };
         let state = AppState::with_hooks(config, Arc::new(crate::navigator::NavigatorHooks::new()))
             .context("cannot start the embedded server")?;

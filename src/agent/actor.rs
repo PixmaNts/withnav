@@ -1,5 +1,6 @@
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::instructions::Instructions;
 use crate::provider::config::{ProviderConfig, ReasoningHistory};
 use crate::provider::openai::ChatMessage;
 use crate::tools::{Registry, ToolContext};
@@ -27,6 +28,10 @@ pub struct AgentActor {
     /// An optional role prompt, sent as a second system message right after
     /// the system contract on every request. It is not part of the transcript.
     pub system_prompt: Option<String>,
+    /// The local instructions read when the session was created or resumed,
+    /// sent as one system message after the role prompt. A snapshot: the
+    /// files are not read again.
+    pub rules: Instructions,
     pub cancel: CancellationToken,
     pub state: AgentState,
     pub pending_ask_id: Option<String>,
@@ -55,6 +60,7 @@ impl AgentActor {
             max_tokens,
             max_steps: crate::agent::run_loop::max_steps(),
             system_prompt: None,
+            rules: Instructions::default(),
             cancel,
             state: AgentState::Idle,
             pending_ask_id: None,

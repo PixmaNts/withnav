@@ -576,6 +576,7 @@ mod tests {
             ToolContext {
                 workspace: ws.clone(),
                 writable_roots: vec![ws],
+                readable_roots: Vec::new(),
             },
             ProviderConfig {
                 base_url,

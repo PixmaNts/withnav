@@ -58,7 +58,7 @@ impl Tool for ReadTool {
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + 'a>> {
         boxed(async move {
             let path = arg_str(&args, "path")?;
-            let resolved = validate_path(&cx.writable_roots, Path::new(&path))?;
+            let resolved = validate_path(&cx.read_roots(), Path::new(&path))?;
             if !resolved.is_file() {
                 return Err(ToolError::NotFound(resolved));
             }
@@ -245,7 +245,7 @@ impl Tool for GrepTool {
                 .and_then(|v| v.as_str())
                 .map(String::from)
                 .unwrap_or_else(|| cx.workspace.to_string_lossy().into_owned());
-            let search_root = validate_path(&cx.writable_roots, Path::new(&path))?;
+            let search_root = validate_path(&cx.read_roots(), Path::new(&path))?;
 
             if rg_available() {
                 if let Some(result) = grep_rg(&pattern, &search_root).await {
@@ -348,6 +348,7 @@ mod tests {
         ToolContext {
             workspace: root.to_path_buf(),
             writable_roots: vec![root.to_path_buf()],
+            readable_roots: Vec::new(),
         }
     }
 

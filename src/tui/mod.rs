@@ -27,6 +27,7 @@ pub enum TuiError {
     #[error("{0}")]
     Other(String),
 }
-pub async fn run(_options: TuiOptions) -> Result<(), TuiError> {
-    Err(TuiError::NotImplemented)
+/// Runs the terminal client until the user quits.
+pub async fn run(options: TuiOptions) -> Result<(), TuiError> {
+    runtime::run(options).await
 }

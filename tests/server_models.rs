@@ -22,7 +22,7 @@ async fn lists_chat_models_with_tools_only() {
             "providers": {
                 PROVIDER: {
                     "base_url": "http://127.0.0.1:9",
-                    "api_key_env": "RUST_AGENT_TEST_KEY",
+                    "api_key_env": "NAVAI_TEST_KEY",
                     "headers": {}
                 }
             },

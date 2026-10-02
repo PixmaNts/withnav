@@ -148,19 +148,19 @@ mod tests {
     fn file_key_wins_over_env() {
         let tmp = tempfile::tempdir().unwrap();
         set_key(tmp.path(), "omniroute", "from-file").unwrap();
-        std::env::set_var("RUST_AGENT_TEST_KEY", "from-env");
-        let key = resolve_key(tmp.path(), "omniroute", Some("RUST_AGENT_TEST_KEY")).unwrap();
+        std::env::set_var("NAVAI_TEST_KEY", "from-env");
+        let key = resolve_key(tmp.path(), "omniroute", Some("NAVAI_TEST_KEY")).unwrap();
         assert_eq!(key, "from-file");
-        std::env::remove_var("RUST_AGENT_TEST_KEY");
+        std::env::remove_var("NAVAI_TEST_KEY");
     }
 
     #[test]
     fn env_fallback_when_no_file_entry() {
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("RUST_AGENT_TEST_KEY2", "env-only");
-        let key = resolve_key(tmp.path(), "someprovider", Some("RUST_AGENT_TEST_KEY2")).unwrap();
+        std::env::set_var("NAVAI_TEST_KEY2", "env-only");
+        let key = resolve_key(tmp.path(), "someprovider", Some("NAVAI_TEST_KEY2")).unwrap();
         assert_eq!(key, "env-only");
-        std::env::remove_var("RUST_AGENT_TEST_KEY2");
+        std::env::remove_var("NAVAI_TEST_KEY2");
     }
 
     #[test]
@@ -175,12 +175,8 @@ mod tests {
     #[test]
     fn missing_everywhere_returns_missing_api_key() {
         let tmp = tempfile::tempdir().unwrap();
-        let e = resolve_key(
-            tmp.path(),
-            "omniroute",
-            Some("RUST_AGENT_DEFINITELY_UNSET_XYZ"),
-        )
-        .unwrap_err();
+        let e =
+            resolve_key(tmp.path(), "omniroute", Some("NAVAI_DEFINITELY_UNSET_XYZ")).unwrap_err();
         assert!(matches!(e, ProviderError::MissingApiKey));
     }
 

@@ -241,7 +241,7 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
         serde_json::json!({
             "providers": { "mock": {
                 "base_url": format!("http://{addr}/v1"),
-                "api_key_env": "RUST_AGENT_RUN_PARITY_KEY",
+                "api_key_env": "NAVAI_RUN_PARITY_KEY",
                 "headers": {}, "connect_timeout_ms": 2000, "request_timeout_ms": 30000
             }},
             "models": { "default": {
@@ -266,7 +266,7 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
                     "--prompt",
                     "go",
                 ])
-                .env("RUST_AGENT_RUN_PARITY_KEY", "test-key")
+                .env("NAVAI_RUN_PARITY_KEY", "test-key")
                 // The binary opens the conversation history in the XDG data
                 // dir and migrates legacy files there. Without these two, a
                 // test run wrote into the driver's real database and moved

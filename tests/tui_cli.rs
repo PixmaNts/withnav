@@ -25,7 +25,7 @@ fn tui_with(args: &[&str], env: &[(&str, &str)]) -> Run {
         .args(args)
         .env("XDG_DATA_HOME", &data)
         .env("XDG_CONFIG_HOME", &config)
-        .env_remove("RUST_AGENT_SERVER_TOKEN")
+        .env_remove("NAVAI_SERVER_TOKEN")
         .stdin(Stdio::null());
     for (key, value) in env {
         command.env(key, value);
@@ -54,7 +54,7 @@ fn help_lists_every_flag() {
         assert!(help.contains(flag), "{flag} missing from:\n{help}");
     }
     assert!(
-        help.contains("RUST_AGENT_SERVER_TOKEN"),
+        help.contains("NAVAI_SERVER_TOKEN"),
         "the token variable is not documented:\n{help}"
     );
 }
@@ -137,10 +137,37 @@ fn the_token_is_never_written_to_the_log() {
     let url = closed_port_url();
     let run = tui_with(
         &["--url", &url, "--workspace", "."],
-        &[("RUST_AGENT_SERVER_TOKEN", "super-secret-token-value")],
+        &[("NAVAI_SERVER_TOKEN", "super-secret-token-value")],
     );
     let log_dir = run.dirs.path().join("data").join("navigator");
     let log = std::fs::read_to_string(log_dir.join("tui.log")).unwrap_or_default();
     assert!(!log.contains("super-secret-token-value"));
     assert!(!stderr(&run).contains("super-secret-token-value"));
+}
+
+#[test]
+fn the_former_token_variable_works_with_one_deprecation_warning() {
+    let url = closed_port_url();
+    let run = tui_with(
+        &["--url", &url, "--workspace", "."],
+        &[("RUST_AGENT_SERVER_TOKEN", "super-secret-token-value")],
+    );
+    let err = stderr(&run);
+    assert_eq!(
+        err.matches("RUST_AGENT_SERVER_TOKEN is deprecated").count(),
+        1,
+        "{err}"
+    );
+    assert!(err.contains("NAVAI_SERVER_TOKEN"), "{err}");
+    assert!(!err.contains("super-secret-token-value"));
+}
+
+#[test]
+fn the_new_token_variable_prints_no_warning() {
+    let url = closed_port_url();
+    let run = tui_with(
+        &["--url", &url, "--workspace", "."],
+        &[("NAVAI_SERVER_TOKEN", "super-secret-token-value")],
+    );
+    assert!(!stderr(&run).contains("deprecated"), "{}", stderr(&run));
 }

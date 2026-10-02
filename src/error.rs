@@ -126,6 +126,23 @@ pub enum ServerError {
     Model(#[from] crate::error::ProviderError),
     #[error("malformed request body: {0}")]
     MalformedBody(String),
+    #[error("Chat alias '{alias}' (provider '{provider}', model '{model}') has no known context window: the provider's model list did not report one. Set \"context_window\" for it in {models_path}, or make the provider reachable and try again.")]
+    NoContextWindow {
+        alias: String,
+        provider: String,
+        model: String,
+        models_path: String,
+    },
+    #[error("Session {session} was started on {saved} and alias '{alias}' now maps to {current}. A conversation never moves to another model on its own: point '{alias}' back at the saved model in {models_path}, or start a new session.")]
+    ModelIdentityChanged {
+        session: String,
+        alias: String,
+        saved: String,
+        current: String,
+        models_path: String,
+    },
+    #[error("Session {session} has an unreadable saved model resolution ({reason}); it cannot be resumed until the sessions.model_resolution column of that row is fixed or cleared.")]
+    SavedResolutionInvalid { session: String, reason: String },
     #[error("history store error: {0}")]
     History(String),
 }

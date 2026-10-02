@@ -53,8 +53,7 @@ use crate::bus::runtime;
 use crate::bus::sequencer::Sequencer;
 use crate::bus::SessionBus;
 use crate::error::ServerError;
-use crate::provider::auth;
-use crate::provider::config::{load_models, ApiKind, ModelConfig, ResolvedModel};
+use crate::provider::config::{load_models, ApiKind, ModelConfig};
 use crate::provider::openai::ChatMessage;
 
 /// A session id on the wire and in the registry.
@@ -139,6 +138,7 @@ pub struct Service {
     /// session id never has two runtimes and is never resumed while it is
     /// being stopped or deleted. One client, so one gate for the service.
     gate: Arc<tokio::sync::Mutex<()>>,
+    catalog: crate::provider::catalog::ModelCatalog,
 }
 
 impl Service {
@@ -157,12 +157,14 @@ impl Service {
         // No fallback: a conversation that cannot be saved is not served.
         let history =
             super::store::HistoryStore::open(&config.history_db).map_err(ServerError::History)?;
+        let catalog = crate::provider::catalog::ModelCatalog::new(Some(config.data_dir.clone()));
         Ok(Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             config: Arc::new(config),
             history: Arc::new(history),
             hooks,
             gate: Arc::new(tokio::sync::Mutex::new(())),
+            catalog,
         })
     }
 
@@ -228,8 +230,10 @@ impl Service {
         accept(&handle, command).await
     }
 
-    /// Creates a session: resolves models.json + the key (NO live provider
-    /// call — the actor is built but not run until a message arrives),
+    /// Creates a session: resolves models.json + the key and the context
+    /// window (no chat call: the actor is built but not run until a message
+    /// arrives; the provider's model list is read only when the alias has no
+    /// window of its own),
     /// mints tokens, spawns the sequencer FIRST, publishes `session.start`
     /// (seq 0), THEN spawns the runtime task, and registers the handle.
     pub async fn create_session(
@@ -367,15 +371,6 @@ impl Service {
         self.hooks.default_model(profile)
     }
 
-    fn resolve_model(&self, workspace: &Path, alias: &str) -> Result<ResolvedModel, ServerError> {
-        let (config, _) = load_models(
-            self.config.models_path.as_deref(),
-            workspace,
-            &self.config.config_dir,
-        )?;
-        Ok(config.resolve(alias)?)
-    }
-
     /// Reads the session's local instructions once and logs what became of
     /// each source. The snapshot lives on the actor for the whole session.
     async fn load_rules(&self, workspace: &Path, id: SessionId, resumed: bool) -> Instructions {
@@ -433,12 +428,9 @@ impl Service {
                 (workspace.to_path_buf(), alias.to_string(), profile)
             }
         };
-        let resolved = self.resolve_model(resume_workspace, &alias)?;
-        let api_key = auth::resolve_key(
-            &self.config.config_dir,
-            &resolved.provider_name,
-            resolved.provider.api_key_env.as_deref(),
-        )?;
+        let (resolved, api_key, snapshot, save_late) = self
+            .resolve_for_spawn(session_id, resume_workspace, &alias, resumed.as_ref())
+            .await?;
         let session_cancel = CancellationToken::new();
         let mut actor = build_actor(
             &workspace,
@@ -477,14 +469,18 @@ impl Service {
         // Acknowledged: a session whose row cannot be written would
         // silently lose every later event and snapshot.
         history
-            .record_session(
+            .record_session_resolved(
                 session_id,
                 &workspace.display().to_string(),
                 &alias,
                 profile,
+                Some(&snapshot),
             )
             .await
             .map_err(ServerError::History)?;
+        if save_late {
+            self.save_legacy_snapshot(session_id, &snapshot).await?;
+        }
         let sequencer = Sequencer::spawn(
             session_id,
             super::store::PersistingEmitter::new(session_id, bus, (*history).clone()),
@@ -543,6 +539,8 @@ impl Service {
         Ok(session_id)
     }
 }
+
+mod resolve;
 
 #[cfg(test)]
 pub(crate) mod tests;

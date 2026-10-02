@@ -3,8 +3,9 @@
 //!
 //! Response bodies are FROZEN:
 //! - `GET  /v1/health`        -> `{status:"ok"}`
-//! - `GET  /v1/models?workspace=` -> `{models:[{alias, model, context_window?}], default?}`
+//! - `GET  /v1/models?workspace=` -> `{models:[{alias, model, context_window?, enabled?, disabled_reason?, window_source?, stale?, stale_age_secs?, refresh_error?, reported_output?, max_input_tokens?, discrepancy?}], default?}`
 //! - `POST /v1/sessions`      -> `{session_id, root_actor_id:"agent:main", actor_state:"idle"}`
+//!   (422 `{"error", "reason":"no_context_window"}` for a chat alias with no known window)
 //! - `GET  /v1/sessions/:id`  -> `{session_id, actor_state, workspace, model, current_seq}`
 //! - `POST /v1/sessions/:id/messages` -> `{command_id, accepted:true, actor_state, notice?}`
 //!   (frozen error bodies: 404 unknown id / 409 stopping / 503 `{"accepted":false,"reason":"inbox_full"}`
@@ -330,6 +331,35 @@ pub struct ModelEntry {
     pub alias: String,
     pub model: String,
     pub context_window: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
+    /// Where `context_window` came from: `models.json` or a `discovered.*` field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_source: Option<String>,
+    /// The provider's model list could not be refreshed and the discovered
+    /// values shown are past their 24 h TTL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stale: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stale_age_secs: Option<u64>,
+    /// Short, secret-free reason of the failed refresh.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reported_output: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_input_tokens: Option<u64>,
+    /// An explicit `context_window` that differs from the provider's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discrepancy: Option<DiscrepancyBody>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DiscrepancyBody {
+    pub configured: u64,
+    pub discovered: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -350,14 +380,48 @@ async fn list_models(
     };
     match state.list_models(std::path::Path::new(workspace)) {
         Ok(entries) => {
-            let models = entries
+            let mut models = entries
                 .into_iter()
                 .map(|(alias, m)| ModelEntry {
                     alias,
                     model: m.model,
                     context_window: m.context_window,
+                    enabled: None,
+                    disabled_reason: None,
+                    window_source: None,
+                    stale: None,
+                    stale_age_secs: None,
+                    refresh_error: None,
+                    reported_output: None,
+                    max_input_tokens: None,
+                    discrepancy: None,
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            for entry in &mut models {
+                match state
+                    .resolve_model_metadata(std::path::Path::new(workspace), &entry.alias)
+                    .await
+                {
+                    Ok(resolution) => {
+                        entry.context_window = Some(resolution.window);
+                        entry.enabled = Some(true);
+                        entry.window_source = Some(resolution.window_source);
+                        entry.stale = Some(resolution.stale);
+                        entry.stale_age_secs = resolution.stale_age_secs;
+                        entry.refresh_error = resolution.refresh_error;
+                        entry.reported_output = resolution.reported_output;
+                        entry.max_input_tokens = resolution.max_input_tokens;
+                        entry.discrepancy = resolution.discrepancy.map(|d| DiscrepancyBody {
+                            configured: d.configured,
+                            discovered: d.discovered,
+                        });
+                    }
+                    Err(error) => {
+                        entry.enabled = Some(false);
+                        entry.disabled_reason = Some(error.to_string());
+                    }
+                }
+            }
             let default = state.default_model(Some("navigator")).map(str::to_string);
             (StatusCode::OK, Json(ModelsBody { models, default })).into_response()
         }
@@ -457,6 +521,9 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         ServerError::NonLoopbackBind(_) | ServerError::Bind(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::InboxFull => StatusCode::SERVICE_UNAVAILABLE,
         ServerError::NonTextContent | ServerError::MalformedBody(_) => StatusCode::BAD_REQUEST,
+        ServerError::NoContextWindow { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+        ServerError::ModelIdentityChanged { .. } => StatusCode::CONFLICT,
+        ServerError::SavedResolutionInvalid { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::History(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::Config(_) | ServerError::Model(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -471,6 +538,20 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         return (
             status,
             Json(json!({ "error": err.to_string(), "reason": "resume_required" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::NoContextWindow { .. }) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "no_context_window" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::ModelIdentityChanged { .. }) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "model_identity_changed" })),
         )
             .into_response();
     }
@@ -506,6 +587,7 @@ mod tests {
             allow_non_loopback: false,
             bearer_token: None,
             history_db: dir.path().join("history.db"),
+            data_dir: dir.path().join("data"),
             rules_roots: Default::default(),
         })
         .expect("state over a temp database");

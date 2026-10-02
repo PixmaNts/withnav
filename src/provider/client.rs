@@ -13,6 +13,9 @@ use crate::provider::config::ProviderConfig;
 use crate::provider::openai::{ChatRequest, ClientCache};
 use crate::provider::{extract_error_message, start_and_consume, AssistantMessage, StreamDelta};
 
+/// The largest model list accepted.
+const MAX_CATALOG_BYTES: usize = 2_000_000;
+
 /// A provider's base URL, auth and extra headers over a pooled
 /// `reqwest::Client`. Build it once and reuse it across calls.
 #[derive(Clone)]
@@ -61,6 +64,74 @@ impl ModelClient {
             req = req.header(k, v);
         }
         req
+    }
+
+    /// [`Self::new`] over the cache's no-cross-origin-redirect client, for
+    /// the model list: its credentials and headers never leave the endpoint.
+    pub fn for_catalog(
+        provider_name: &str,
+        provider: &ProviderConfig,
+        api_key: String,
+        cache: &ClientCache,
+    ) -> Result<Self, ProviderError> {
+        let mut client = Self::new(provider_name, provider, api_key, cache)?;
+        client.http = cache.get_same_origin(provider_name, provider)?;
+        Ok(client)
+    }
+
+    /// Fetch model metadata (bounded in time and size). A redirect to
+    /// another origin is not followed, so this client's credentials and
+    /// headers never reach it.
+    pub async fn get_json(
+        &self,
+        endpoint: &str,
+        budget: Duration,
+        cancel: &CancellationToken,
+    ) -> Result<bytes::Bytes, ProviderError> {
+        let url = format!("{}/{}", self.base_url, endpoint);
+        let mut req = self.http.get(url).bearer_auth(&self.api_key);
+        for (k, v) in &self.headers {
+            req = req.header(k, v);
+        }
+        let call = async {
+            let mut response = cancellable(cancel, req.send()).await??;
+            let status = response.status();
+            if !status.is_success() {
+                return Err(ProviderError::Api {
+                    status: status.as_u16(),
+                    message: if status.is_redirection() {
+                        "model catalog redirected to another origin (not followed)"
+                    } else {
+                        "model catalog request failed"
+                    }
+                    .into(),
+                    partial: None,
+                });
+            }
+            let too_big =
+                || ProviderError::MalformedResponse("model catalog response exceeds 2 MB".into());
+            if response
+                .content_length()
+                .is_some_and(|n| n > MAX_CATALOG_BYTES as u64)
+            {
+                return Err(too_big());
+            }
+            let mut body = Vec::new();
+            while let Some(chunk) = cancellable(cancel, response.chunk()).await?? {
+                if body.len() + chunk.len() > MAX_CATALOG_BYTES {
+                    return Err(too_big());
+                }
+                body.extend_from_slice(&chunk);
+            }
+            Ok(bytes::Bytes::from(body))
+        };
+        tokio::time::timeout(budget, call)
+            .await
+            .map_err(|_| ProviderError::Api {
+                status: 0,
+                message: "model catalog deadline exceeded".into(),
+                partial: None,
+            })?
     }
 
     /// POSTs `body` as JSON to `{base_url}/{endpoint}` and returns the raw

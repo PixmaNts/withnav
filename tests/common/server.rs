@@ -58,6 +58,7 @@ pub struct TestServerConfig {
     history_db: Option<PathBuf>,
     rules_roots: RulesRoots,
     chat_tools: Option<u64>,
+    without_window: bool,
     extra_aliases: Vec<(String, String)>,
 }
 
@@ -84,6 +85,7 @@ impl TestServerConfig {
             history_db: None,
             rules_roots: RulesRoots::default(),
             chat_tools: None,
+            without_window: false,
             extra_aliases: Vec::new(),
         }
     }
@@ -93,6 +95,18 @@ impl TestServerConfig {
     pub fn chat_tools(mut self, context_window: u64) -> Self {
         self.chat_tools = Some(context_window);
         self
+    }
+
+    /// Leaves the alias without a `context_window`, as a models.json written
+    /// before windows were required.
+    pub fn without_window(mut self) -> Self {
+        self.without_window = true;
+        self
+    }
+
+    /// Path of the `models.json` [`Self::config`] writes.
+    pub fn models_path(&self) -> PathBuf {
+        self.root.join("models.json")
     }
 
     /// Names the single model alias the `models.json` defines.
@@ -134,11 +148,18 @@ impl TestServerConfig {
         let mut alias_entry = json!({
             "provider": PROVIDER,
             "model": self.model,
-            "reasoning_history": "preserve"
+            "reasoning_history": "preserve",
+            "context_window": 128000
         });
         if let Some(window) = self.chat_tools {
             alias_entry["supports_tools"] = json!(true);
             alias_entry["context_window"] = json!(window);
+        }
+        if self.without_window {
+            alias_entry
+                .as_object_mut()
+                .unwrap()
+                .remove("context_window");
         }
         let mut models = serde_json::Map::new();
         models.insert(self.alias.clone(), alias_entry.clone());
@@ -177,6 +198,7 @@ impl TestServerConfig {
                 .history_db
                 .clone()
                 .unwrap_or_else(|| self.root.join("history.db")),
+            data_dir: self.root.join("data"),
             rules_roots: self.rules_roots.clone(),
         }
     }
@@ -505,4 +527,25 @@ impl Drop for CuttableProxy {
         self.cut();
         self.accept.abort();
     }
+}
+
+/// Points the model resolution saved on session `id` at `endpoint`, so a
+/// resume against another scripted provider is not refused as a moved
+/// endpoint.
+pub fn move_saved_endpoint(db: &Path, id: &str, endpoint: &str) {
+    let conn = rusqlite::Connection::open(db).expect("open history db");
+    let raw: String = conn
+        .query_row(
+            "SELECT model_resolution FROM sessions WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .expect("saved resolution");
+    let mut saved: serde_json::Value = serde_json::from_str(&raw).expect("resolution json");
+    saved["endpoint"] = json!(endpoint);
+    conn.execute(
+        "UPDATE sessions SET model_resolution = ?2 WHERE id = ?1",
+        rusqlite::params![id, saved.to_string()],
+    )
+    .expect("move the saved endpoint");
 }

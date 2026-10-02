@@ -245,7 +245,8 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
                 "headers": {}, "connect_timeout_ms": 2000, "request_timeout_ms": 30000
             }},
             "models": { "default": {
-                "provider": "mock", "model": "m", "reasoning_history": "preserve"
+                "provider": "mock", "model": "m", "reasoning_history": "preserve",
+                "context_window": 128000
             }}
         })
         .to_string(),
@@ -341,4 +342,88 @@ fn make_actor(base_url: String) -> AgentActor {
 
 fn cancel_placeholder() -> CancellationToken {
     CancellationToken::new()
+}
+
+/// A chat alias without a window is refused at `navai run` startup with the
+/// usual `error:` line naming the models.json to fix, and exits 1.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_binary_refuses_an_alias_without_a_known_window() {
+    // The provider's model list does not know the model, and a chat call
+    // must never be reached.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                break;
+            };
+            let mut buf = vec![0u8; 8192];
+            let _ = sock.read(&mut buf).await;
+            let body = "{\"data\":[]}";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+            let _ = sock.shutdown().await;
+        }
+    });
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("ws")).unwrap();
+    let models = root.join("models.json");
+    std::fs::write(
+        &models,
+        serde_json::json!({
+            "providers": { "mock": {
+                "base_url": format!("http://{addr}/v1"),
+                "api_key_env": "NAVAI_RUN_PARITY_KEY",
+                "headers": {}, "connect_timeout_ms": 2000, "request_timeout_ms": 30000
+            }},
+            "models": { "default": {
+                "provider": "mock", "model": "m", "reasoning_history": "preserve"
+            }}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let out = tokio::task::spawn_blocking({
+        let models = models.clone();
+        let home = root.to_path_buf();
+        let ws = root.join("ws");
+        move || {
+            std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
+                .args([
+                    "run",
+                    "--workspace",
+                    ws.to_str().unwrap(),
+                    "--models",
+                    models.to_str().unwrap(),
+                    "--prompt",
+                    "go",
+                ])
+                .env("NAVAI_RUN_PARITY_KEY", "test-key")
+                .env("XDG_DATA_HOME", home.join("data"))
+                .env("XDG_CONFIG_HOME", home.join("config"))
+                .env("HOME", &home)
+                .output()
+                .expect("run the binary")
+        }
+    })
+    .await
+    .expect("join");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let expected = format!(
+        "error: Chat alias 'default' (provider 'mock', model 'm') has no known context window: the provider's model list did not report one. Set \"context_window\" for it in {}, or make the provider reachable and try again.",
+        models.display()
+    );
+    assert!(
+        stderr.contains(&expected),
+        "stderr lacks the window refusal; got {stderr:?}"
+    );
+    assert_eq!(out.status.code(), Some(1));
 }

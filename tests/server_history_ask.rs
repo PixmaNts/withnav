@@ -129,6 +129,8 @@ async fn resumed_ask_is_answered_as_a_tool_result() {
     let (url2, requests2) = spawn_mock(http_sse(&sse_body(&[done]))).await;
     let tmp2 = tempfile::tempdir().expect("tempdir 2");
     let state2 = state(tmp2.path(), &url2, &db);
+    // A resume refuses another endpoint; this test is about the pending ask.
+    common::server::move_saved_endpoint(&db, &id, &url2);
     let (resumed_id, resumed) = state2
         .create_or_resume_session(&ws, None, None, Some(id.parse().unwrap()))
         .await

@@ -29,7 +29,8 @@
 //!
 //! Schema:
 //! - `sessions(id TEXT PRIMARY KEY, workspace TEXT, model TEXT, profile TEXT,
-//!   title TEXT, created_at TEXT, updated_at TEXT, last_seq INTEGER, transcript TEXT)`
+//!   title TEXT, created_at TEXT, updated_at TEXT, last_seq INTEGER, transcript TEXT,
+//!   model_resolution TEXT)`
 //! - `events(session_id TEXT, seq INTEGER, kind TEXT, envelope TEXT,
 //!   PRIMARY KEY(session_id, seq))`
 //!
@@ -40,6 +41,12 @@
 //! stream does not look closed. `llm.delta` is live-only and never stored.
 //! `transcript` is the JSON of the actor's `Vec<ChatMessage>`, snapshotted
 //! after every turn end.
+//!
+//! `model_resolution` is NULL or the versioned JSON of a
+//! [`ModelResolution`](crate::provider::catalog::ModelResolution): the model
+//! identity and bounds the conversation runs on. It is written once (at
+//! creation, or at the first activation of a row that has none) and never
+//! overwritten: a catalog refresh does not move a conversation.
 
 mod read;
 
@@ -66,6 +73,10 @@ pub struct StoredSession {
     pub created_at: String,
     pub updated_at: String,
     pub last_seq: u64,
+    /// The raw `model_resolution` column: `None` for a row that has none
+    /// (created before the column existed). Parsed by the session service,
+    /// so an invalid value fails the resume instead of being dropped here.
+    pub model_resolution: Option<String>,
 }
 
 /// A full session load: the row's metadata, its stored envelopes (in seq
@@ -87,6 +98,16 @@ enum Write {
         workspace: String,
         model: String,
         profile: Option<String>,
+        resolution: Option<String>,
+    },
+    SetResolution {
+        id: Ulid,
+        resolution: String,
+    },
+    FillEndpoint {
+        id: Ulid,
+        expected: String,
+        resolution: String,
     },
     AppendEvent {
         id: Ulid,
@@ -124,6 +145,8 @@ enum WriteError {
     Json(#[from] serde_json::Error),
     #[error("no stored session {0}")]
     UnknownSession(Ulid),
+    #[error("the saved model resolution of session {0} changed while it was being completed")]
+    ResolutionChanged(Ulid),
 }
 
 /// The handle side of the store: clones a sender into the single writer
@@ -210,11 +233,62 @@ impl HistoryStore {
         model: &str,
         profile: Option<&str>,
     ) -> Result<(), String> {
+        self.record_session_resolved(id, workspace, model, profile, None)
+            .await
+    }
+
+    /// [`HistoryStore::record_session`] with the model resolution saved in
+    /// the same insert. An existing row keeps what it has.
+    pub async fn record_session_resolved(
+        &self,
+        id: Ulid,
+        workspace: &str,
+        model: &str,
+        profile: Option<&str>,
+        resolution: Option<&crate::provider::catalog::ModelResolution>,
+    ) -> Result<(), String> {
+        let resolution = resolution
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| format!("serialize model resolution: {e}"))?;
         self.acked(Write::RecordSession {
             id,
             workspace: workspace.to_string(),
             model: model.to_string(),
             profile: profile.map(str::to_string),
+            resolution,
+        })
+        .await
+    }
+
+    /// Saves the model resolution of a row that has none (a conversation
+    /// from before the column). Never overwrites a saved one. Waits for the
+    /// commit.
+    pub async fn set_model_resolution(
+        &self,
+        id: Ulid,
+        resolution: &crate::provider::catalog::ModelResolution,
+    ) -> Result<(), String> {
+        let resolution = serde_json::to_string(resolution)
+            .map_err(|e| format!("serialize model resolution: {e}"))?;
+        self.acked(Write::SetResolution { id, resolution }).await
+    }
+
+    /// Replaces a saved resolution that lacks its endpoint with the same one
+    /// carrying it. Only when the column still holds exactly `expected`, so a
+    /// concurrent change is never overwritten. Waits for the commit.
+    pub async fn fill_resolution_endpoint(
+        &self,
+        id: Ulid,
+        expected: &str,
+        resolution: &crate::provider::catalog::ModelResolution,
+    ) -> Result<(), String> {
+        let resolution = serde_json::to_string(resolution)
+            .map_err(|e| format!("serialize model resolution: {e}"))?;
+        self.acked(Write::FillEndpoint {
+            id,
+            expected: expected.to_string(),
+            resolution,
         })
         .await
     }
@@ -298,14 +372,52 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             workspace,
             model,
             profile,
+            resolution,
         } => {
             let now = now_rfc3339();
             tx.execute(
                 "INSERT OR IGNORE INTO sessions
-                 (id, workspace, model, profile, title, created_at, updated_at, last_seq, transcript)
-                 VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5, -1, NULL)",
-                params![id.to_string(), workspace, model, profile, now],
+                 (id, workspace, model, profile, title, created_at, updated_at, last_seq, transcript,
+                  model_resolution)
+                 VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5, -1, NULL, ?6)",
+                params![id.to_string(), workspace, model, profile, now, resolution],
             )?;
+        }
+        Write::SetResolution { id, resolution } => {
+            let touched = tx.execute(
+                "UPDATE sessions SET model_resolution = ?2
+                 WHERE id = ?1 AND model_resolution IS NULL",
+                params![id.to_string(), resolution],
+            )?;
+            if touched == 0
+                && !tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1)",
+                        params![id.to_string()],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map(|v| v != 0)?
+            {
+                return Err(WriteError::UnknownSession(id));
+            }
+        }
+        Write::FillEndpoint {
+            id,
+            expected,
+            resolution,
+        } => {
+            // Exactly one row: another process that completed the same
+            // legacy resolution first may have recorded a different endpoint,
+            // and this activation must not run against an endpoint that is
+            // not the committed one.
+            let touched = tx.execute(
+                "UPDATE sessions SET model_resolution = ?2
+                 WHERE id = ?1 AND model_resolution = ?3",
+                params![id.to_string(), resolution, expected],
+            )?;
+            if touched != 1 {
+                return Err(WriteError::ResolutionChanged(id));
+            }
         }
         Write::AppendEvent { id, envelope } => {
             let payload = serde_json::to_string(&envelope)?;
@@ -369,7 +481,8 @@ fn migrate(path: &Path) -> Result<(), String> {
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             last_seq INTEGER NOT NULL DEFAULT -1,
-            transcript TEXT
+            transcript TEXT,
+            model_resolution TEXT
         );
         CREATE TABLE IF NOT EXISTS events (
             session_id TEXT NOT NULL,
@@ -380,6 +493,15 @@ fn migrate(path: &Path) -> Result<(), String> {
         );",
     )
     .map_err(|e| format!("migrate: {e}"))?;
+    // A database from before `model_resolution`: add the nullable column.
+    let has_column = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'model_resolution'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| format!("migrate: {e}"))?;
+    if !has_column {
+        conn.execute("ALTER TABLE sessions ADD COLUMN model_resolution TEXT", [])
+            .map_err(|e| format!("migrate: {e}"))?;
+    }
     Ok(())
 }
 
@@ -837,5 +959,93 @@ mod tests {
         // Unclosed block: kept verbatim.
         let unclosed = "hello <editor-context> junk";
         assert_eq!(title_from_message(unclosed), "hello <editor-context> junk");
+    }
+
+    // Given a database written before `model_resolution` existed
+    // When the store opens it
+    // Then the column is added, old rows read with none, and a second open
+    //      is a no-op
+    #[tokio::test]
+    async fn migration_adds_the_resolution_column_to_an_old_database() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sessions.db");
+        let id = Ulid::new();
+        {
+            let conn = Connection::open(&path).expect("open");
+            conn.execute_batch(
+                "CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY, workspace TEXT NOT NULL, model TEXT NOT NULL,
+                    profile TEXT, title TEXT, created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL, last_seq INTEGER NOT NULL DEFAULT -1,
+                    transcript TEXT
+                 );
+                 CREATE TABLE events (
+                    session_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
+                    envelope TEXT NOT NULL, PRIMARY KEY (session_id, seq)
+                 );",
+            )
+            .expect("old schema");
+            conn.execute(
+                "INSERT INTO sessions VALUES (?1, '/w', 'm', NULL, NULL, 't', 't', -1, NULL)",
+                params![id.to_string()],
+            )
+            .expect("old row");
+        }
+        let store = HistoryStore::open(&path).expect("migrates");
+        let meta = store.meta(id).await.expect("meta").expect("present");
+        assert_eq!(meta.model_resolution, None);
+        drop(store);
+        HistoryStore::open(&path).expect("idempotent");
+    }
+
+    // Given a saved resolution
+    // When another is offered for the same row
+    // Then the first stays: a snapshot is written once
+    #[tokio::test]
+    async fn a_saved_resolution_is_never_overwritten() {
+        use crate::provider::catalog::{Bounds, ModelResolution, Provenance, RESOLUTION_VERSION};
+        let make = |window| ModelResolution {
+            version: RESOLUTION_VERSION,
+            provider: "p".into(),
+            model: "m".into(),
+            api: "chat".into(),
+            endpoint: "http://h/v1".into(),
+            bounds: Bounds {
+                context_window: window,
+                max_input_tokens: None,
+                reported_output: None,
+            },
+            history_policy: "preserve".into(),
+            provenance: Provenance {
+                context_window: "models.json".into(),
+                max_input_tokens: "none".into(),
+                reported_output: "none".into(),
+            },
+        };
+        let (_dir, store) = temp_store();
+        let id = Ulid::new();
+        store
+            .record_session(id, "/w", "m", None)
+            .await
+            .expect("record");
+        store
+            .set_model_resolution(id, &make(100))
+            .await
+            .expect("first");
+        store
+            .set_model_resolution(id, &make(200))
+            .await
+            .expect("ignored");
+        store
+            .record_session_resolved(id, "/w", "m", None, Some(&make(300)))
+            .await
+            .expect("existing row keeps its own");
+        let meta = store.meta(id).await.expect("meta").expect("present");
+        let saved = ModelResolution::from_saved(&meta.model_resolution.expect("saved")).unwrap();
+        assert_eq!(saved.bounds.context_window, 100);
+        assert!(store
+            .set_model_resolution(Ulid::new(), &make(1))
+            .await
+            .is_err());
     }
 }

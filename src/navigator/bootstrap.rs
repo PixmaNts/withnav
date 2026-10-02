@@ -16,6 +16,7 @@ use crate::navigator::{
     ServerInfoParams,
 };
 use crate::provider::auth;
+use crate::provider::catalog::{resolve_chat, ModelCatalog};
 use crate::provider::config::ModelsConfig;
 use crate::provider::fim::InceptionFim;
 use crate::provider::openai::ClientCache;
@@ -38,13 +39,53 @@ struct Layers {
     reflex_model: Option<String>,
     instinct_model: Option<String>,
     metacognition_model: Option<String>,
-    metacognition: Option<Arc<LlmCommenter>>,
+    metacognition: Option<Arc<LazyCommenter>>,
     disabled: Vec<String>,
 }
 
 /// Builds every layer from its alias. A missing alias or key disables that
 /// layer with a note; the others keep working.
 fn build_layers(models_path: Option<&Path>, clients: Arc<ClientCache>) -> Layers {
+    let models = match load_models(models_path) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!("models.json unavailable, every model layer disabled: {e}");
+            return Layers::all_disabled(format!("all: models.json ({e})"));
+        }
+    };
+    let config_dir = auth::default_config_dir().unwrap_or_else(|| PathBuf::from("."));
+    let log_path = crate::paths::decision_log().unwrap_or_else(|| PathBuf::from("/dev/null"));
+    build_layers_from(
+        &models,
+        &config_dir,
+        &ModelCatalog::system(),
+        log_path,
+        clients,
+    )
+}
+
+impl Layers {
+    fn all_disabled(note: String) -> Self {
+        Self {
+            fim: None,
+            decision: None,
+            reflex_model: None,
+            instinct_model: None,
+            metacognition_model: None,
+            metacognition: None,
+            disabled: vec![note],
+        }
+    }
+}
+
+/// [`build_layers`] over an already loaded config and explicit directories.
+fn build_layers_from(
+    models: &ModelsConfig,
+    config_dir: &Path,
+    catalog: &ModelCatalog,
+    metacognition_log: PathBuf,
+    clients: Arc<ClientCache>,
+) -> Layers {
     let mut layers = Layers {
         fim: None,
         decision: None,
@@ -54,22 +95,12 @@ fn build_layers(models_path: Option<&Path>, clients: Arc<ClientCache>) -> Layers
         metacognition: None,
         disabled: Vec::new(),
     };
-    let models = match load_models(models_path) {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::error!("models.json unavailable, every model layer disabled: {e}");
-            layers.disabled.push(format!("all: models.json ({e})"));
-            return layers;
-        }
-    };
-    let config_dir = auth::default_config_dir().unwrap_or_else(|| PathBuf::from("."));
-
     // Reflex: Mercury FIM on the `reflex` alias.
     match models.resolve("reflex") {
         Ok(resolved) => {
             let model_id = resolved.model.model.clone();
             match auth::resolve_key(
-                &config_dir,
+                config_dir,
                 &resolved.provider_name,
                 resolved.provider.api_key_env.as_deref(),
             ) {
@@ -95,7 +126,7 @@ fn build_layers(models_path: Option<&Path>, clients: Arc<ClientCache>) -> Layers
 
     // Instinct: System One on the `instinct` alias (the pipeline snapshot
     // names its own alias; the shipped ones all use `instinct`).
-    match SystemOneClient::from_alias(&models, "instinct", &config_dir, clients.clone()) {
+    match SystemOneClient::from_alias(models, "instinct", config_dir, clients.clone()) {
         Ok(client) => {
             layers.instinct_model = Some(client.model().to_string());
             layers.decision = Some(Arc::new(DecisionAdapter(client)));
@@ -107,21 +138,25 @@ fn build_layers(models_path: Option<&Path>, clients: Arc<ClientCache>) -> Layers
     }
 
     // Metacognition: the fast chat commenter on the `metacognition` alias,
-    // logging to the navigator log.
-    let metacognition_log = crate::paths::decision_log();
-    match build_llm_commenter(
-        &models,
+    // logging to the navigator log. Only its config and key are checked
+    // here; the context window is resolved on first use, so startup never
+    // waits for the provider's model list.
+    match LazyCommenter::new(
+        models,
         "metacognition",
-        &config_dir,
+        config_dir,
+        catalog,
         clients.clone(),
-        metacognition_log.unwrap_or_else(|| PathBuf::from("/dev/null")),
+        metacognition_log,
     ) {
         Ok(commenter) => {
             layers.metacognition_model = Some(commenter.model_id().to_string());
             layers.metacognition = Some(Arc::new(commenter));
         }
         Err(e) => {
-            tracing::error!("metacognition disabled: {e}");
+            // Only the remarks go: FIM, instinct, history and the server do
+            // not depend on this alias.
+            tracing::warn!("metacognition remarks disabled: {e}");
             layers.disabled.push(format!("metacognition: {e}"));
         }
     }
@@ -129,24 +164,107 @@ fn build_layers(models_path: Option<&Path>, clients: Arc<ClientCache>) -> Layers
     layers
 }
 
-/// Chat commenter on a named alias (the metacognition).
-fn build_llm_commenter(
-    models: &ModelsConfig,
-    alias: &str,
-    config_dir: &Path,
+/// The metacognition commenter whose context window is resolved on first
+/// use, by the same resolver as a chat session: an alias with no known
+/// window is refused then, with one warning, and only the remarks stop. The
+/// bounds, once obtained, are kept for the life of the process; a failure is
+/// retried on a later use (the catalog backs off between attempts).
+struct LazyCommenter {
+    resolved: crate::provider::config::ResolvedModel,
+    api_key: String,
+    catalog: ModelCatalog,
     clients: Arc<ClientCache>,
     log_path: PathBuf,
-) -> anyhow::Result<LlmCommenter> {
-    let resolved = models
-        .resolve(alias)
-        .map_err(|e| anyhow::anyhow!("cannot resolve alias '{alias}': {e}"))?;
-    let api_key = auth::resolve_key(
-        config_dir,
-        &resolved.provider_name,
-        resolved.provider.api_key_env.as_deref(),
-    )
-    .map_err(|e| anyhow::anyhow!("no API key for provider '{}': {e}", resolved.provider_name))?;
-    Ok(LlmCommenter::new(resolved, api_key, clients).with_log(NavLog::new(log_path)))
+    commenter: tokio::sync::OnceCell<Arc<LlmCommenter>>,
+    warned: std::sync::atomic::AtomicBool,
+}
+
+impl LazyCommenter {
+    fn new(
+        models: &ModelsConfig,
+        alias: &str,
+        config_dir: &Path,
+        catalog: &ModelCatalog,
+        clients: Arc<ClientCache>,
+        log_path: PathBuf,
+    ) -> anyhow::Result<Self> {
+        let resolved = models
+            .resolve(alias)
+            .map_err(|e| anyhow::anyhow!("cannot resolve alias '{alias}': {e}"))?;
+        let api_key = auth::resolve_key(
+            config_dir,
+            &resolved.provider_name,
+            resolved.provider.api_key_env.as_deref(),
+        )
+        .map_err(|e| {
+            anyhow::anyhow!("no API key for provider '{}': {e}", resolved.provider_name)
+        })?;
+        Ok(Self {
+            resolved,
+            api_key,
+            catalog: catalog.clone(),
+            clients,
+            log_path,
+            commenter: tokio::sync::OnceCell::new(),
+            warned: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    /// The model identifier sent on the wire.
+    fn model_id(&self) -> &str {
+        &self.resolved.model.model
+    }
+
+    /// The commenter, resolving its window the first time.
+    async fn get(&self) -> Result<&Arc<LlmCommenter>, ModelError> {
+        self.commenter
+            .get_or_try_init(|| async {
+                let chat = resolve_chat(&self.catalog, &self.resolved, &self.api_key, &self.clients)
+                    .await
+                    .map_err(|e| {
+                        format!(
+                            "alias '{}' (provider '{}', model '{}') has no known context window; set \"context_window\" for it in models.json",
+                            e.alias, e.provider, e.model
+                        )
+                    })?;
+                let mut resolved = self.resolved.clone();
+                resolved.model.context_window = Some(chat.window);
+                resolved.model.max_input_tokens = chat.max_input_tokens;
+                Ok::<_, String>(Arc::new(
+                    LlmCommenter::new(resolved, self.api_key.clone(), self.clients.clone())
+                        .with_log(NavLog::new(self.log_path.clone())),
+                ))
+            })
+            .await
+            .map_err(|reason| {
+                if !self
+                    .warned
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    tracing::warn!("metacognition remarks disabled: {reason}");
+                }
+                ModelError::Unavailable(format!("metacognition: {reason}"))
+            })
+    }
+}
+
+impl Metacognition for LazyCommenter {
+    fn remark<'a>(
+        &'a self,
+        ctx: &'a RemarkContext,
+        cancel: &'a tokio_util::sync::CancellationToken,
+    ) -> futures::future::BoxFuture<'a, Result<Option<Remark>, ModelError>> {
+        Box::pin(async move { self.get().await?.remark(ctx, cancel).await })
+    }
+}
+
+impl crate::navigator::ports::ReflexContextModel for LazyCommenter {
+    fn refresh<'a>(
+        &'a self,
+        request: &'a crate::navigator::ports::ReflexContextRequest,
+    ) -> futures::future::BoxFuture<'a, Result<String, ModelError>> {
+        Box::pin(async move { self.get().await?.refresh(request).await })
+    }
 }
 
 impl Layers {
@@ -267,6 +385,8 @@ async fn spawn_cognition_server(
         allow_non_loopback: false,
         bearer_token: Some(token.clone()),
         history_db,
+        data_dir: crate::paths::data_dir()
+            .ok_or_else(|| anyhow::anyhow!("cannot resolve data dir"))?,
         rules_roots: crate::agent::instructions::RulesRoots::from_user_home(),
     };
     let state = AppState::with_hooks(
@@ -313,5 +433,135 @@ impl Metacognition for FailingCommenter {
     ) -> futures::future::BoxFuture<'a, Result<Option<Remark>, ModelError>> {
         let msg = self.message.clone();
         Box::pin(async move { Err(ModelError::Unavailable(msg)) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A provider nothing listens on, with the three navigator aliases on
+    /// it. `metacognition_window` of `None` leaves that alias without a
+    /// window, so only discovery could supply one.
+    fn config(metacognition_window: Option<u64>) -> ModelsConfig {
+        let mut metacognition = serde_json::json!({
+            "provider": "omni", "model": "m-chat", "supports_tools": true
+        });
+        if let Some(w) = metacognition_window {
+            metacognition["context_window"] = w.into();
+        }
+        ModelsConfig::parse(
+            &serde_json::json!({
+                "providers": { "omni": {
+                    "base_url": "http://127.0.0.1:1/v1",
+                    "connect_timeout_ms": 200, "request_timeout_ms": 500
+                }},
+                "models": {
+                    "metacognition": metacognition,
+                    "reflex": { "provider": "omni", "model": "m-fim", "api": "fim" },
+                    "instinct": { "provider": "omni", "model": "m-s1", "api": "systemone" }
+                }
+            })
+            .to_string(),
+        )
+        .expect("config")
+    }
+
+    fn layers(models: &ModelsConfig) -> (tempfile::TempDir, Layers) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = dir.path().join("cfg");
+        auth::set_key(&cfg, "omni", "test-key").expect("key");
+        let layers = build_layers_from(
+            models,
+            &cfg,
+            &ModelCatalog::new(Some(dir.path().join("data"))),
+            dir.path().join("log.jsonl"),
+            Arc::new(ClientCache::new()),
+        );
+        (dir, layers)
+    }
+
+    fn ctx() -> RemarkContext {
+        RemarkContext::build("file:///a.rs", "rust", "a", "b", Vec::new(), None)
+    }
+
+    // Given a metacognition alias with no window and a provider that cannot
+    //       be reached
+    // When the layers are built, then used
+    // Then building touches nothing; the first remark fails with the reason
+    //      and only the remarks are affected: FIM and the instinct stay up
+    #[tokio::test]
+    async fn an_unresolved_metacognition_disables_only_the_remarks() {
+        let (_dir, layers) = layers(&config(None));
+        assert!(layers.fim.is_some(), "FIM is not touched");
+        assert!(layers.decision.is_some(), "the instinct is not touched");
+        assert!(layers.disabled.is_empty(), "{:?}", layers.disabled);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        for _ in 0..2 {
+            let err = layers
+                .metacognition()
+                .remark(&ctx(), &cancel)
+                .await
+                .expect_err("no window from any source");
+            let text = err.to_string();
+            assert!(
+                text.contains("no known context window") && text.contains("'metacognition'"),
+                "{text}"
+            );
+        }
+    }
+
+    // Given the same alias with its own window
+    // When the layers are built
+    // Then the commenter is there and nothing is disabled
+    #[tokio::test]
+    async fn a_metacognition_with_a_window_is_built() {
+        let (_dir, layers) = layers(&config(Some(128_000)));
+        assert!(layers.metacognition.is_some());
+        assert_eq!(layers.metacognition_model.as_deref(), Some("m-chat"));
+        assert!(layers.fim.is_some() && layers.decision.is_some());
+        assert!(layers.disabled.is_empty(), "{:?}", layers.disabled);
+    }
+
+    // Given a provider whose model list is slower than the deadline
+    // When the layers are built
+    // Then building returns at once without a request; the list is asked for
+    //      on the first remark, and a window it reported is kept
+    #[tokio::test]
+    async fn the_window_is_resolved_on_first_use_and_kept() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"data": [{
+                        "id": "m-chat", "context_length": 64_000
+                    }]}))
+                    .set_delay(std::time::Duration::from_millis(300)),
+            )
+            .mount(&server)
+            .await;
+        let models = ModelsConfig::parse(
+            &serde_json::json!({
+                "providers": { "omni": { "base_url": format!("{}/v1", server.uri()) }},
+                "models": { "metacognition": {
+                    "provider": "omni", "model": "m-chat", "supports_tools": true
+                }}
+            })
+            .to_string(),
+        )
+        .expect("config");
+        let started = std::time::Instant::now();
+        let (_dir, layers) = layers(&models);
+        assert!(started.elapsed() < std::time::Duration::from_millis(250));
+        assert!(server.received_requests().await.unwrap().is_empty());
+
+        let lazy = layers.metacognition.expect("built");
+        assert!(lazy.get().await.is_ok());
+        assert!(lazy.get().await.is_ok());
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 }

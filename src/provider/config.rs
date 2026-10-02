@@ -56,6 +56,8 @@ pub struct ModelConfig {
     #[serde(default)]
     pub context_window: Option<u64>,
     #[serde(default)]
+    pub max_input_tokens: Option<u64>,
+    #[serde(default)]
     pub max_output_tokens: Option<u64>,
     #[serde(default)]
     pub supports_tools: bool,

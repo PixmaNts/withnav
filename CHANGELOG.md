@@ -8,6 +8,34 @@ requests land in `develop`.
 
 ### Added
 
+- **Model catalog**: a chat alias without `context_window` in models.json gets its window from the
+  provider's `GET /models` list (`context_length`, else `max_input_tokens`), cached for a day under the
+  data dir. An explicit `context_window` wins without any network call; if it differs from what the
+  provider reports, the log says so. `GET /v1/models` lists each alias with the resolved window,
+  `enabled`, and `disabled_reason` when there is none.
+- **Model list fetch is bounded**: one request at a time per provider (concurrent sessions share it), a
+  3 s deadline, at most 2 MB and 10 000 entries. A redirect to another origin is not followed, so the API
+  key and headers never leave the provider. The cached list is refreshed after 24 hours; if that fails,
+  the last known values stay in use, marked stale with their age and the error. A limit the provider
+  reports as null or malformed never replaces a good one. A corrupt cache file is ignored and rewritten;
+  a data directory that cannot be written keeps the list in memory with one warning. The cache file holds
+  limits only, never a key or a header.
+- **`GET /v1/models` shows where a window came from**: each alias adds, when known, `window_source`
+  (`models.json` or `discovered.*`), `stale`, `stale_age_secs`, `refresh_error`, `max_input_tokens`,
+  `reported_output`, and `discrepancy` (`configured` and `discovered`) when a `context_window` override
+  differs from what the provider reports. Old fields are unchanged and the TUI still reads older servers.
+- **Metacognition window check**: the editor's remarks model is resolved like a chat session before
+  its first call. If its alias has no known context window, only the remarks are turned off, with one
+  warning and a line in `navigator/status`; completion, the instinct, history and the chat server keep
+  working.
+- **A conversation keeps its model's limits**: a session saves, when it is created, which provider,
+  model and API it runs on and its context window and other limits (`sessions.model_resolution`, with
+  where each value came from and no credentials). A resume uses the saved limits, so it works with the
+  provider down, and a model list refresh never changes a conversation in progress. A conversation
+  from before this change gets them the first time it is resumed. If the alias now points at another
+  provider, model or API, the resume stops with an error naming both, instead of continuing on another
+  model; the server answers `409` with `"reason": "model_identity_changed"`. A saved value that cannot
+  be read stops the resume with a clear error.
 - **Project and user rules**: a session reads, once when it is created or resumed, `~/.agents/AGENTS.md`
   (else `~/.claude/CLAUDE.md`), `~/.agents/rules.md`, then in each directory from the Git worktree
   root down to the workspace `AGENTS.md` (else `CLAUDE.md`) and `rules.md`, and sends them to the
@@ -38,6 +66,9 @@ requests land in `develop`.
 
 ### Changed
 
+- **A chat session needs a known context window.** Creating one for an alias that has none in
+  models.json and none reported by the provider is refused (HTTP 422, `reason: "no_context_window"`;
+  `navai run` prints it as its `error:` line and exits 1). Set `context_window` for the alias.
 - **The project is now called Navai.** The crate and binaries are `navai` and `navai-lsp` (they were
   `rust-agent` and `rust-agent-lsp`). The VS Code extension is `pixmants.navai` "Navai" (the chat
   view is still "Cognition"); its commands are `navai.focusChat`, `navai.markUseful`,

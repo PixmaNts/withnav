@@ -637,11 +637,13 @@ fn catalog() -> Vec<ModelEntry> {
             alias: "a".into(),
             model: "vendor/a".into(),
             context_window: Some(1000),
+            ..Default::default()
         },
         ModelEntry {
             alias: "b".into(),
             model: "vendor/b".into(),
             context_window: None,
+            ..Default::default()
         },
     ]
 }

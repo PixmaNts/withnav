@@ -561,3 +561,31 @@ async fn a_send_that_never_connected_or_was_refused_is_rejected() {
         other => panic!("expected a rejection, got {other:?}"),
     }
 }
+
+// Given a server whose alias has no known context window
+// When the client creates a session
+// Then the error it shows is the status line plus the exact refusal text
+#[tokio::test]
+async fn create_without_a_known_window_shows_the_refusal() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).expect("workspace");
+    let cfg = TestServerConfig::unreachable(tmp.path()).without_window();
+    let (addr, _task) = spawn_server(cfg.state()).await;
+    let client = Client::new(format!("http://{addr}"), None);
+    let error = client
+        .create(CreateSessionRequest {
+            workspace: ws.to_str().expect("utf8 workspace").to_string(),
+            model: None,
+            resume: None,
+        })
+        .await
+        .expect_err("a window-less alias is refused");
+    assert_eq!(
+        error,
+        format!(
+            "HTTP 422 Unprocessable Entity: Chat alias 'default' (provider 'mock', model 'mock-model') has no known context window: the provider's model list did not report one. Set \"context_window\" for it in {}, or make the provider reachable and try again.",
+            cfg.models_path().display()
+        )
+    );
+}

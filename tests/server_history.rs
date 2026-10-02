@@ -252,6 +252,10 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
     let ws2 = root2.join("ws");
     std::fs::create_dir_all(&ws2).expect("ws2");
     let state2 = make_state(&root2, &mock2.url, db.clone());
+    // The two scripted providers listen on different ports, and a resume
+    // refuses another endpoint: the stored row is moved to the second one so
+    // this test stays about what a resume replays.
+    common::server::move_saved_endpoint(&db, &id, &mock2.url);
     // The resume keys on the STORED row (workspace/model/profile are the
     // stored ones); the request's workspace only guides models.json lookup.
     let (resumed_id, resumed) = state2

@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::navigator::document::reanchor_line;
 use crate::navigator::log::{excerpt, DeliveryOutcome, LogRecord, PendingTrigger};
 use crate::navigator::lsp::protocol::{RemarkNotification, RemarkParams};
-use crate::navigator::metacognition::RemarkContext;
+use crate::navigator::metacognition::{RemarkContext, HELP_TOOL_ROUNDS, REMARK_TOOL_ROUNDS};
 use crate::navigator::pipeline::TriggerKind;
 use crate::navigator::ports::ModelError;
 use crate::navigator::WakeOutcome;
@@ -53,6 +53,11 @@ impl Runtime {
             prompt: Some(prompt),
             workspace: self.workspace.lock().await.clone(),
             open_buffers: self.documents.lock().await.open_buffers(),
+            tool_rounds: if ctx.called_for_help {
+                HELP_TOOL_ROUNDS
+            } else {
+                REMARK_TOOL_ROUNDS
+            },
         };
         let started = Instant::now();
         let result = tokio::select! {

@@ -14,8 +14,7 @@ use common::server::{spawn_server, TestServerConfig, PROVIDER};
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lists_chat_models_with_tools_only() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let state = TestServerConfig::mock(tmp.path(), "http://127.0.0.1:9")
-        .navigator_state();
+    let state = TestServerConfig::mock(tmp.path(), "http://127.0.0.1:9").navigator_state();
 
     std::fs::write(
         tmp.path().join("models.json"),

@@ -15,7 +15,7 @@ pub const EXIT_INTERRUPTED: i32 = 130;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "rust-agent",
+    name = "navai",
     version,
     about = "A personal, minimal-but-complete coding agent in Rust",
     propagate_version = true

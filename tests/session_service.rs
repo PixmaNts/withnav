@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
-use rust_agent::bus::ResumeOutcome;
-use rust_agent::session::Service;
+use navai::bus::ResumeOutcome;
+use navai::session::Service;
 
 mod common;
 use common::server::TestServerConfig;
@@ -47,8 +47,8 @@ async fn service_create_without_http_emits_start_zero() {
 //      sequenced; a valid command afterwards is accepted
 #[tokio::test]
 async fn service_send_rejects_invalid_content_without_event() {
-    use rust_agent::bus::command::{Command, ContentBlock, DeliveryMode};
-    use rust_agent::error::ServerError;
+    use navai::bus::command::{Command, ContentBlock, DeliveryMode};
+    use navai::error::ServerError;
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("ws");
@@ -105,7 +105,7 @@ async fn service_send_rejects_invalid_content_without_event() {
 async fn service_replay(
     server: &common::server::TestServer,
     id: ulid::Ulid,
-) -> Vec<rust_agent::bus::event::EventEnvelope> {
+) -> Vec<navai::bus::event::EventEnvelope> {
     let sub = server.state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
         ResumeOutcome::Replay(events) => events,
@@ -119,7 +119,7 @@ async fn http_replay(
     base: &str,
     id: ulid::Ulid,
     count: usize,
-) -> Vec<rust_agent::bus::event::EventEnvelope> {
+) -> Vec<navai::bus::event::EventEnvelope> {
     let read = read_sse(base, &id.to_string(), None, |frames| frames.len() >= count).await;
     assert_ne!(read.end, SseEnd::Timeout, "{:?}", read.frames);
     read.frames
@@ -192,7 +192,7 @@ async fn service_subscription_matches_http_replay() {
     // An unknown id is not found.
     assert!(matches!(
         server.state.subscribe(ulid::Ulid::new(), None).await,
-        Err(rust_agent::error::ServerError::SessionNotFound(_))
+        Err(navai::error::ServerError::SessionNotFound(_))
     ));
 }
 
@@ -202,8 +202,8 @@ async fn service_subscription_matches_http_replay() {
 //      `subscribe` answers not-found
 #[tokio::test]
 async fn service_delete_removes_listing_and_routing() {
-    use rust_agent::bus::command::{Command, ContentBlock, DeliveryMode};
-    use rust_agent::error::ServerError;
+    use navai::bus::command::{Command, ContentBlock, DeliveryMode};
+    use navai::error::ServerError;
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("ws");
@@ -260,7 +260,7 @@ async fn service_delete_removes_listing_and_routing() {
 //      history
 #[tokio::test]
 async fn service_construction_fails_on_an_unopenable_history_db() {
-    use rust_agent::error::ServerError;
+    use navai::error::ServerError;
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let blocker = tmp.path().join("not-a-dir");
@@ -288,7 +288,7 @@ struct IncarnationWatch {
 #[derive(Debug, Clone, Default)]
 struct WatchHooks(std::sync::Arc<IncarnationWatch>);
 
-impl rust_agent::session::SessionHooks for WatchHooks {
+impl navai::session::SessionHooks for WatchHooks {
     fn default_model(&self, _profile: Option<&str>) -> Option<&str> {
         None
     }
@@ -296,15 +296,15 @@ impl rust_agent::session::SessionHooks for WatchHooks {
     fn configure_actor(
         &self,
         _profile: Option<&str>,
-        _actor: &mut rust_agent::agent::actor::AgentActor,
+        _actor: &mut navai::agent::actor::AgentActor,
     ) {
     }
 
     fn started(
         &self,
-        info: rust_agent::session::StartedSession,
-        _sender: rust_agent::session::SessionSender,
-        _subscription: rust_agent::session::Subscription,
+        info: navai::session::StartedSession,
+        _sender: navai::session::SessionSender,
+        _subscription: navai::session::Subscription,
         cancel: tokio_util::sync::CancellationToken,
     ) {
         let mut tokens = self.0.tokens.lock().expect("tokens");
@@ -327,7 +327,7 @@ impl rust_agent::session::SessionHooks for WatchHooks {
 //      whole: live or stopped with a stored row, or gone with none
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_resume_stop_delete_never_creates_two_runtimes() {
-    use rust_agent::error::ServerError;
+    use navai::error::ServerError;
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("ws");

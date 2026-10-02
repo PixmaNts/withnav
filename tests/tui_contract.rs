@@ -1,4 +1,4 @@
-use rust_agent::tui::{
+use navai::tui::{
     protocol::*,
     state::{Activity, State},
 };

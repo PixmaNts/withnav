@@ -12,7 +12,7 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 
-use rust_agent::server::{app, AppState, ServerConfig};
+use navai::server::{app, AppState, ServerConfig};
 
 mod common;
 use common::server::{request_json, text_command, TestServerConfig};
@@ -169,7 +169,7 @@ async fn real_socket_serve_answers_health_create_and_get() {
         .await
         .expect("ephemeral bind");
     let addr: SocketAddr = listener.local_addr().expect("local addr");
-    let bound = rust_agent::server::routes::serve_on(
+    let bound = navai::server::routes::serve_on(
         ServerConfig {
             bearer_token: None,
             bind: addr,
@@ -231,7 +231,7 @@ async fn close_session_removes_the_entry_and_get_answers_from_the_store() {
     std::fs::create_dir_all(&ws).expect("workspace dir");
 
     let created = create_session(&state, ws.to_str().expect("utf8 ws"), None).await;
-    let id: rust_agent::bus::command::SessionId = created["session_id"]
+    let id: navai::bus::command::SessionId = created["session_id"]
         .as_str()
         .expect("id")
         .parse()
@@ -247,7 +247,7 @@ async fn close_session_removes_the_entry_and_get_answers_from_the_store() {
 
     let mut seqs = Vec::new();
     let mut end_kind: Option<String> = None;
-    if let rust_agent::bus::ResumeOutcome::Replay(replay) = &sub.replay {
+    if let navai::bus::ResumeOutcome::Replay(replay) = &sub.replay {
         seqs.extend(replay.iter().map(|e| e.seq));
         end_kind = replay.last().map(|e| e.kind.clone());
     }
@@ -327,7 +327,7 @@ async fn sigterm_drives_graceful_shutdown_sessions_end_and_clean_exit() {
     let addr = listener.local_addr().expect("local addr");
 
     // The REAL graceful-shutdown path, against OUR state.
-    let server_task = tokio::spawn(rust_agent::server::routes::serve_state_on(
+    let server_task = tokio::spawn(navai::server::routes::serve_state_on(
         state.clone(),
         listener,
     ));
@@ -337,7 +337,7 @@ async fn sigterm_drives_graceful_shutdown_sessions_end_and_clean_exit() {
 
     // SIGTERM: the same signal the production shutdown_signal handler
     // selects on (SignalKind::terminate).
-    rust_agent::server::routes::send_test_sigterm();
+    navai::server::routes::send_test_sigterm();
 
     // (ii) serve RETURNS CLEANLY.
     let serve_result = tokio::time::timeout(std::time::Duration::from_secs(15), server_task)
@@ -352,7 +352,7 @@ async fn sigterm_drives_graceful_shutdown_sessions_end_and_clean_exit() {
     // (i) each session emitted session.end as its LAST event, gapless.
     for (id, sub) in subs {
         let mut events = Vec::new();
-        if let rust_agent::bus::ResumeOutcome::Replay(replay) = sub.replay {
+        if let navai::bus::ResumeOutcome::Replay(replay) = sub.replay {
             events.extend(replay);
         }
         if let Some(mut live) = sub.live {
@@ -387,12 +387,12 @@ async fn sigterm_drives_graceful_shutdown_sessions_end_and_clean_exit() {
 
 /// A command to a closed session is refused: the store answers reads, never
 /// commands.
-async fn assert_not_routable(state: &AppState, id: rust_agent::bus::command::SessionId) {
+async fn assert_not_routable(state: &AppState, id: navai::bus::command::SessionId) {
     let command = text_command(id, "anyone there?");
     assert!(
         matches!(
             state.send(command).await,
-            Err(rust_agent::error::ServerError::ResumeRequired)
+            Err(navai::error::ServerError::ResumeRequired)
         ),
         "closed session is not routable"
     );

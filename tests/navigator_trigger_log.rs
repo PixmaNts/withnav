@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use tokio_util::sync::CancellationToken;
 
-use rust_agent::navigator;
+use navai::navigator;
 
 mod common;
 use common::navigator::{
@@ -75,10 +75,10 @@ async fn run_wake_trigger(
     ask_pending_for: Option<ulid::Ulid>,
 ) -> Value {
     if let Some(session_id) = ask_pending_for {
-        feed.observe(&rust_agent::bus::event::EventEnvelope::new(
+        feed.observe(&navai::bus::event::EventEnvelope::new(
             session_id,
             2,
-            rust_agent::bus::event::EventKind::AgentYield,
+            navai::bus::event::EventKind::AgentYield,
             json!({}),
         ))
         .await;

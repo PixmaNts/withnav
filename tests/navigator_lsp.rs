@@ -8,7 +8,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
-use rust_agent::navigator;
+use navai::navigator;
 
 mod common;
 use common::navigator::{
@@ -911,10 +911,10 @@ async fn reflex_context_empty_answers_are_logged_once() {
 
 fn session_event(
     session_id: ulid::Ulid,
-    kind: rust_agent::bus::event::EventKind,
+    kind: navai::bus::event::EventKind,
     payload: Value,
-) -> rust_agent::bus::event::EventEnvelope {
-    rust_agent::bus::event::EventEnvelope::new(session_id, 0, kind, payload)
+) -> navai::bus::event::EventEnvelope {
+    navai::bus::event::EventEnvelope::new(session_id, 0, kind, payload)
 }
 
 /// The first trigger record of the log.
@@ -927,10 +927,10 @@ fn first_trigger(client: &Nav) -> Value {
         .expect("a trigger record")
 }
 
-fn message_event(session_id: ulid::Ulid, source: &str) -> rust_agent::bus::event::EventEnvelope {
+fn message_event(session_id: ulid::Ulid, source: &str) -> navai::bus::event::EventEnvelope {
     session_event(
         session_id,
-        rust_agent::bus::event::EventKind::MessageReceived,
+        navai::bus::event::EventKind::MessageReceived,
         json!({
             "command_id": ulid::Ulid::new().to_string(),
             "source": source,
@@ -941,10 +941,10 @@ fn message_event(session_id: ulid::Ulid, source: &str) -> rust_agent::bus::event
     )
 }
 
-fn turn_end_event(session_id: ulid::Ulid) -> rust_agent::bus::event::EventEnvelope {
+fn turn_end_event(session_id: ulid::Ulid) -> navai::bus::event::EventEnvelope {
     session_event(
         session_id,
-        rust_agent::bus::event::EventKind::TurnEnd,
+        navai::bus::event::EventKind::TurnEnd,
         json!({
             "turn_id": ulid::Ulid::new().to_string(),
             "actor_id": "agent:main",

@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- rust-agent  ~/dev/project                                                 Fix parser · 01JABCDEFGH 
+ navai  ~/dev/project                                                      Fix parser · 01JABCDEFGH 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
  │ YOU                                                                                              
  │  Why is this failing?                                                                            

@@ -13,16 +13,16 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio_util::sync::CancellationToken;
 
-use rust_agent::bus::event::{EventEnvelope, EventKind};
-use rust_agent::error::ProviderError;
-use rust_agent::navigator::conversation::SessionPost;
-use rust_agent::navigator::metacognition::RemarkContext;
-use rust_agent::navigator::ports::{
+use navai::bus::event::{EventEnvelope, EventKind};
+use navai::error::ProviderError;
+use navai::navigator::conversation::SessionPost;
+use navai::navigator::metacognition::RemarkContext;
+use navai::navigator::ports::{
     Answer, Answers, DecisionModel, FimAnswer, FimModel, FimRequest, Metacognition, ModelError,
     Question, Questions, ReflexContextModel, ReflexContextRequest,
 };
-use rust_agent::navigator::{self, NavigatorDeps, Remark};
-use rust_agent::provider::Usage;
+use navai::navigator::{self, NavigatorDeps, Remark};
+use navai::provider::Usage;
 
 // ---------- fixtures ----------
 
@@ -779,7 +779,7 @@ pub fn with_min_changed_lines(
     workspace: &Path,
     lines: usize,
 ) -> NavigatorDeps {
-    use rust_agent::navigator::default_pipeline as built_in;
+    use navai::navigator::default_pipeline as built_in;
     let dir = workspace.join(".navigator");
     std::fs::create_dir_all(dir.join("prompts")).unwrap();
     let toml = built_in::PIPELINE_TOML.replace(

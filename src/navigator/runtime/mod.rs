@@ -499,7 +499,7 @@ mod tests {
     #[test]
     fn navigator_config_uris_match_project_and_user_dirs() {
         let ws = std::path::Path::new("/ws");
-        let user = std::path::Path::new("/home/u/.config/rust-agent/navigator");
+        let user = std::path::Path::new("/home/u/.config/navai/navigator");
         assert!(Runtime::is_navigator_config(
             "file:///ws/.navigator/pipeline.toml",
             Some(ws),
@@ -511,7 +511,7 @@ mod tests {
             Some(user)
         ));
         assert!(Runtime::is_navigator_config(
-            "file:///home/u/.config/rust-agent/navigator/pipeline.toml",
+            "file:///home/u/.config/navai/navigator/pipeline.toml",
             Some(ws),
             Some(user)
         ));

@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use rust_agent::bus::event::EventEnvelope;
+use navai::bus::event::EventEnvelope;
 
 mod common;
 use common::server::{post_create_session, post_message_ok, spawn_server, TestServerConfig};
@@ -40,7 +40,7 @@ async fn spawn_mock(response: Vec<u8>) -> (String, Requests) {
     (format!("http://{addr}/v1"), requests)
 }
 
-fn state(tmp: &Path, url: &str, db: &Path) -> rust_agent::server::AppState {
+fn state(tmp: &Path, url: &str, db: &Path) -> navai::server::AppState {
     TestServerConfig::mock(tmp, url)
         .model_alias("cognition", "mock-opus")
         .history_db(db.to_path_buf())
@@ -48,11 +48,11 @@ fn state(tmp: &Path, url: &str, db: &Path) -> rust_agent::server::AppState {
 }
 
 async fn collect_until(
-    sub: rust_agent::session::Subscription,
+    sub: navai::session::Subscription,
     pred: impl Fn(&EventEnvelope) -> bool,
 ) -> Vec<EventEnvelope> {
     let mut out = Vec::new();
-    if let rust_agent::bus::ResumeOutcome::Replay(replay) = sub.replay {
+    if let navai::bus::ResumeOutcome::Replay(replay) = sub.replay {
         out.extend(replay);
     }
     if let Some(mut live) = sub.live {
@@ -111,7 +111,7 @@ async fn resumed_ask_is_answered_as_a_tool_result() {
     assert!(events.iter().any(|e| e.kind == "agent.yield"), "asked");
 
     // Wait until the turn-end transcript snapshot is stored.
-    let store = rust_agent::session::store::HistoryStore::open(&db).unwrap();
+    let store = navai::session::store::HistoryStore::open(&db).unwrap();
     let mut saved = false;
     for _ in 0..100 {
         let loaded = store.load(id.parse().unwrap()).await.unwrap().unwrap();

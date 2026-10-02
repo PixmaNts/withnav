@@ -5,12 +5,12 @@
 
 use std::collections::BTreeMap;
 
-use rust_agent::error::ProviderError;
-use rust_agent::navigator::models::DecisionAdapter;
-use rust_agent::navigator::TriggerInputs;
-use rust_agent::provider::config::{ApiKind, ModelConfig, ProviderConfig};
-use rust_agent::provider::openai::ClientCache;
-use rust_agent::provider::systemone::{Answer, DecisionRequest, Question, SystemOneClient};
+use navai::error::ProviderError;
+use navai::navigator::models::DecisionAdapter;
+use navai::navigator::TriggerInputs;
+use navai::provider::config::{ApiKind, ModelConfig, ProviderConfig};
+use navai::provider::openai::ClientCache;
+use navai::provider::systemone::{Answer, DecisionRequest, Question, SystemOneClient};
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -56,7 +56,7 @@ fn client_for(
     cache: std::sync::Arc<ClientCache>,
 ) -> (tempfile::TempDir, SystemOneClient) {
     let tmp = tempfile::tempdir().unwrap();
-    rust_agent::provider::auth::set_key(tmp.path(), "omniroute", "test-key").unwrap();
+    navai::provider::auth::set_key(tmp.path(), "omniroute", "test-key").unwrap();
     let client = SystemOneClient::new(
         "omniroute",
         &provider_at(server.uri().to_string() + "/v1"),
@@ -269,9 +269,8 @@ async fn pipeline_over_systemone_end_to_end() {
 
     let (_tmp, client) = client_for(&server, std::sync::Arc::new(ClientCache::new()));
 
-    let pipeline = rust_agent::navigator::Pipeline::new(
-        rust_agent::navigator::PipelineSnapshot::builtin().unwrap(),
-    );
+    let pipeline =
+        navai::navigator::Pipeline::new(navai::navigator::PipelineSnapshot::builtin().unwrap());
     let vars: BTreeMap<String, String> = [("file".to_string(), "a.rs".to_string())]
         .into_iter()
         .collect();
@@ -289,7 +288,7 @@ async fn pipeline_over_systemone_end_to_end() {
     // matches (route != metacognition, drift <= 0.8) -> silent.
     let eval = pipeline
         .evaluate(
-            rust_agent::navigator::TriggerKind::Save,
+            navai::navigator::TriggerKind::Save,
             TriggerInputs {
                 changed_lines: 5,
                 since_last_remark_ms: 60_000,

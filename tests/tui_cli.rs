@@ -1,4 +1,4 @@
-//! Binary-level tests of `rust-agent tui` that need no terminal. Every
+//! Binary-level tests of `navai tui` that need no terminal. Every
 //! spawned binary gets its own XDG dirs so nothing touches the user's data.
 use std::process::{Command, Output, Stdio};
 
@@ -19,7 +19,7 @@ fn tui_with(args: &[&str], env: &[(&str, &str)]) -> Run {
     let config = dirs.path().join("config");
     std::fs::create_dir_all(&data).unwrap();
     std::fs::create_dir_all(&config).unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_rust-agent"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_navai"));
     command
         .arg("tui")
         .args(args)

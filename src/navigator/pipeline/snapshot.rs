@@ -3,7 +3,7 @@
 //! error keeps the previous complete snapshot running.
 //!
 //! Resolution: project `.navigator/pipeline.toml` > user
-//! `~/.config/rust-agent/navigator/pipeline.toml` > built-in default.
+//! `~/.config/navai/navigator/pipeline.toml` > built-in default.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -307,7 +307,7 @@ action = "silent"
         assert_eq!(snap.source(), SnapshotSource::Builtin);
 
         // User only (`user_dir` is the navigator dir itself, e.g.
-        // ~/.config/rust-agent/navigator/).
+        // ~/.config/navai/navigator/).
         std::fs::create_dir_all(user.path().join("prompts")).unwrap();
         std::fs::write(user.path().join("pipeline.toml"), MINIMAL).unwrap();
         std::fs::write(user.path().join("prompts/state.md"), "{{diff}}").unwrap();

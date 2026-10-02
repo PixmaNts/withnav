@@ -71,10 +71,10 @@ mod tests {
         ServerConfig {
             bind: bind.parse().expect("test bind addr"),
             models_path: None,
-            config_dir: PathBuf::from("/tmp/rust-agent-test"),
+            config_dir: PathBuf::from("/tmp/navai-test"),
             allow_non_loopback,
             bearer_token: None,
-            history_db: PathBuf::from("/tmp/rust-agent-test/history.db"),
+            history_db: PathBuf::from("/tmp/navai-test/history.db"),
         }
     }
 
@@ -111,7 +111,7 @@ mod tests {
         let (session, http) = config.split();
         assert_eq!(session.history_db, PathBuf::from("/tmp/h.db"));
         assert_eq!(session.models_path, Some(PathBuf::from("/tmp/m.json")));
-        assert_eq!(session.config_dir, PathBuf::from("/tmp/rust-agent-test"));
+        assert_eq!(session.config_dir, PathBuf::from("/tmp/navai-test"));
         assert_eq!(http.bind, "127.0.0.1:7310".parse().unwrap());
         assert!(http.allow_non_loopback);
         assert_eq!(http.bearer_token.as_deref(), Some("t"));

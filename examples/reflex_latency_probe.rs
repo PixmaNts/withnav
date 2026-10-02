@@ -7,16 +7,16 @@
 //! ```
 //!
 //! The API key resolves from the auth store (`inception` entry of
-//! `~/.config/rust-agent/auth.json`); it is never printed.
+//! `~/.config/navai/auth.json`); it is never printed.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use rust_agent::navigator::reflex::{build_fim_request, MAX_CONTEXT_BYTES};
-use rust_agent::provider::auth;
-use rust_agent::provider::config::ModelsConfig;
-use rust_agent::provider::fim::InceptionFim;
-use rust_agent::provider::openai::ClientCache;
+use navai::navigator::reflex::{build_fim_request, MAX_CONTEXT_BYTES};
+use navai::provider::auth;
+use navai::provider::config::ModelsConfig;
+use navai::provider::fim::InceptionFim;
+use navai::provider::openai::ClientCache;
 
 const CALLS: usize = 10;
 
@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
     // first (it carries the navigator aliases), the user dir second.
     let workspace = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let config_dir = auth::default_config_dir().ok_or_else(|| anyhow::anyhow!("no config dir"))?;
-    let models_path = rust_agent::navigator::resolve_models(None, &workspace)
+    let models_path = navai::navigator::resolve_models(None, &workspace)
         .unwrap_or_else(|| config_dir.join("models.json"));
     let models = ModelsConfig::load(&models_path)?;
     let resolved = models.resolve("reflex")?;

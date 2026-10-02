@@ -84,7 +84,7 @@ pub struct NavigatorDeps {
     /// The workspace root (upgraded from `rootUri` at initialize when the
     /// client sends one).
     pub workspace: Option<PathBuf>,
-    /// The user-level navigator dir (`~/.config/rust-agent/navigator/`).
+    /// The user-level navigator dir (`~/.config/navai/navigator/`).
     pub user_dir: Option<PathBuf>,
     /// The cognition chat server's endpoint: when set, `initialized` sends
     /// `navigator/serverInfo` with the loopback port and bearer token.
@@ -175,7 +175,7 @@ impl NavigatorDeps {
 }
 
 /// The default user-level navigator dir
-/// (`~/.config/rust-agent/navigator/`), when it can be resolved.
+/// (`~/.config/navai/navigator/`), when it can be resolved.
 pub fn default_user_dir() -> Option<PathBuf> {
     crate::provider::auth::default_config_dir().map(|d| d.join("navigator"))
 }

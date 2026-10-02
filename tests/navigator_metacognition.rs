@@ -12,13 +12,13 @@ use serde_json::{json, Value};
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use rust_agent::navigator::log::NavLog;
-use rust_agent::navigator::metacognition::{LlmCommenter, RemarkContext};
-use rust_agent::navigator::ports::Metacognition;
-use rust_agent::provider::config::{
+use navai::navigator::log::NavLog;
+use navai::navigator::metacognition::{LlmCommenter, RemarkContext};
+use navai::navigator::ports::Metacognition;
+use navai::provider::config::{
     ApiKind, ModelConfig, ProviderConfig, ReasoningHistory, ResolvedModel,
 };
-use rust_agent::provider::openai::ClientCache;
+use navai::provider::openai::ClientCache;
 
 mod common;
 use common::navigator::{delta_text, delta_tool_call, sse_data, sse_stream};
@@ -330,7 +330,7 @@ async fn read_of_an_open_buffer_answers_from_the_buffer() {
 // Offset/limit on an open buffer slice exactly like ReadTool slices a file.
 #[tokio::test]
 async fn buffer_read_honours_offset_and_limit() {
-    use rust_agent::navigator::metacognition::slice_buffer as slice;
+    use navai::navigator::metacognition::slice_buffer as slice;
     // Same semantics as ReadTool's slice_lines: `lines()` + join, so the
     // trailing newline is not preserved.
     assert_eq!(slice("l1\nl2\nl3\n", None, None), "l1\nl2\nl3\n");
@@ -374,7 +374,7 @@ async fn the_branch_prompt_reaches_the_models_system_message() {
 //      provider failure.
 #[tokio::test]
 async fn a_prose_answer_is_a_typed_malformed_error() {
-    use rust_agent::navigator::ports::ModelError;
+    use navai::navigator::ports::ModelError;
 
     let tmp = tempfile::tempdir().unwrap();
     let server = MockServer::start().await;
@@ -582,7 +582,7 @@ async fn provider_tool_calls_in_the_final_round_are_asked_again() {
 // Then the result is `Malformed`, after exactly one retry.
 #[tokio::test]
 async fn two_tool_attempts_in_a_row_are_malformed() {
-    use rust_agent::navigator::ports::ModelError;
+    use navai::navigator::ports::ModelError;
 
     let tmp = tempfile::tempdir().unwrap();
     let server = MockServer::start().await;
@@ -627,7 +627,7 @@ async fn prose_without_tool_markup_is_not_retried() {
 // Then the help call gets three rounds with tools, an ordinary remark one.
 #[tokio::test]
 async fn a_help_remark_gets_three_tool_rounds_and_an_ordinary_one_one() {
-    use rust_agent::navigator::metacognition::{HELP_TOOL_ROUNDS, REMARK_TOOL_ROUNDS};
+    use navai::navigator::metacognition::{HELP_TOOL_ROUNDS, REMARK_TOOL_ROUNDS};
 
     assert_eq!((HELP_TOOL_ROUNDS, REMARK_TOOL_ROUNDS), (3, 1));
     for (rounds, expected_requests) in [(HELP_TOOL_ROUNDS, 4), (REMARK_TOOL_ROUNDS, 2)] {

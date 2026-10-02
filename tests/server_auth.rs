@@ -9,7 +9,7 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use rust_agent::server::{app, AppState};
+use navai::server::{app, AppState};
 
 mod common;
 use common::server::TestServerConfig;

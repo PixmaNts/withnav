@@ -15,7 +15,7 @@ pub const EXIT_INTERRUPTED: i32 = 130;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "rust-agent",
+    name = "navai",
     version,
     about = "A personal, minimal-but-complete coding agent in Rust",
     propagate_version = true
@@ -55,7 +55,7 @@ pub struct TuiArgs {
     #[arg(long, conflicts_with = "url")]
     pub models: Option<PathBuf>,
     /// Connect to a running server instead of starting one. If it needs a bearer token, set
-    /// RUST_AGENT_SERVER_TOKEN.
+    /// NAVAI_SERVER_TOKEN.
     #[arg(long, conflicts_with = "models")]
     pub url: Option<String>,
 }
@@ -317,11 +317,9 @@ pub fn terminal_stderr_line(payload: &TurnEnd) -> Option<String> {
     }
 }
 
-/// The shared conversation database, in the navigator's data dir.
+/// The shared conversation database, in Navai's data dir.
 fn history_db_path() -> anyhow::Result<std::path::PathBuf> {
-    crate::paths::migrate_legacy_data();
-    crate::paths::history_db()
-        .ok_or_else(|| anyhow::anyhow!("cannot resolve the navigator data dir"))
+    crate::paths::history_db().ok_or_else(|| anyhow::anyhow!("cannot resolve the Navai data dir"))
 }
 
 async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {

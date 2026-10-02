@@ -6,9 +6,9 @@
 
 use std::collections::BTreeMap;
 
-use rust_agent::navigator::pipeline::{Pipeline, PipelineSnapshot, SnapshotSource};
-use rust_agent::navigator::ports::Answer;
-use rust_agent::navigator::{TriggerInputs, TriggerKind};
+use navai::navigator::pipeline::{Pipeline, PipelineSnapshot, SnapshotSource};
+use navai::navigator::ports::Answer;
+use navai::navigator::{TriggerInputs, TriggerKind};
 use tokio_util::sync::CancellationToken;
 
 mod common;
@@ -61,7 +61,7 @@ fn prompts() -> BTreeMap<String, String> {
     ])
 }
 
-fn snapshot_with(toml: &str) -> Result<PipelineSnapshot, rust_agent::navigator::PipelineError> {
+fn snapshot_with(toml: &str) -> Result<PipelineSnapshot, navai::navigator::PipelineError> {
     PipelineSnapshot::from_parts(toml, prompts(), SnapshotSource::Builtin)
 }
 
@@ -113,7 +113,7 @@ fn valid_pipeline_loads() {
 /// error out.
 #[test]
 fn a_bad_pipeline_is_rejected_at_load() {
-    use rust_agent::navigator::PipelineError;
+    use navai::navigator::PipelineError;
 
     // (case, toml, state prompt override, is a TOML parse error, message fragment)
     let cases: Vec<(&str, String, Option<&str>, bool, &str)> = vec![
@@ -740,7 +740,7 @@ async fn builtin_remark_branch_has_the_remark_cooldown_and_a_wake_ignores_it() {
 /// and reaches the instinct; an unchanged text still does not.
 #[tokio::test]
 async fn builtin_one_line_edits_pass_the_size_prefilter() {
-    use rust_agent::navigator::document::count_changed_lines;
+    use navai::navigator::document::count_changed_lines;
     let base = "a\nb\nc\n";
     let pipeline = Pipeline::new(PipelineSnapshot::builtin().unwrap());
     for (what, new) in [

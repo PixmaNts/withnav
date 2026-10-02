@@ -1,4 +1,4 @@
-//! Binary-level tests of `rust-agent tui` that need no terminal. Every
+//! Binary-level tests of `navai tui` that need no terminal. Every
 //! spawned binary gets its own XDG dirs so nothing touches the user's data.
 use std::process::{Command, Output, Stdio};
 
@@ -19,13 +19,13 @@ fn tui_with(args: &[&str], env: &[(&str, &str)]) -> Run {
     let config = dirs.path().join("config");
     std::fs::create_dir_all(&data).unwrap();
     std::fs::create_dir_all(&config).unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_rust-agent"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_navai"));
     command
         .arg("tui")
         .args(args)
         .env("XDG_DATA_HOME", &data)
         .env("XDG_CONFIG_HOME", &config)
-        .env_remove("RUST_AGENT_SERVER_TOKEN")
+        .env_remove("NAVAI_SERVER_TOKEN")
         .stdin(Stdio::null());
     for (key, value) in env {
         command.env(key, value);
@@ -54,7 +54,7 @@ fn help_lists_every_flag() {
         assert!(help.contains(flag), "{flag} missing from:\n{help}");
     }
     assert!(
-        help.contains("RUST_AGENT_SERVER_TOKEN"),
+        help.contains("NAVAI_SERVER_TOKEN"),
         "the token variable is not documented:\n{help}"
     );
 }
@@ -121,14 +121,8 @@ fn without_a_terminal_the_embedded_client_stops_cleanly_and_logs_to_the_file() {
         stderr(&run)
     );
     assert!(run.out.stdout.is_empty(), "stdout must stay clean");
-    let log = std::fs::read_to_string(
-        run.dirs
-            .path()
-            .join("data")
-            .join("navigator")
-            .join("tui.log"),
-    )
-    .expect("tui.log exists");
+    let log = std::fs::read_to_string(run.dirs.path().join("data").join("navai").join("tui.log"))
+        .expect("tui.log exists");
     assert!(log.contains("terminal client started"), "{log}");
 }
 
@@ -137,10 +131,75 @@ fn the_token_is_never_written_to_the_log() {
     let url = closed_port_url();
     let run = tui_with(
         &["--url", &url, "--workspace", "."],
-        &[("RUST_AGENT_SERVER_TOKEN", "super-secret-token-value")],
+        &[("NAVAI_SERVER_TOKEN", "super-secret-token-value")],
     );
-    let log_dir = run.dirs.path().join("data").join("navigator");
+    let log_dir = run.dirs.path().join("data").join("navai");
     let log = std::fs::read_to_string(log_dir.join("tui.log")).unwrap_or_default();
     assert!(!log.contains("super-secret-token-value"));
     assert!(!stderr(&run).contains("super-secret-token-value"));
+}
+
+#[test]
+fn the_former_token_variable_works_with_one_deprecation_warning() {
+    let url = closed_port_url();
+    let run = tui_with(
+        &["--url", &url, "--workspace", "."],
+        &[("RUST_AGENT_SERVER_TOKEN", "super-secret-token-value")],
+    );
+    let err = stderr(&run);
+    assert_eq!(
+        err.matches("RUST_AGENT_SERVER_TOKEN is deprecated").count(),
+        1,
+        "{err}"
+    );
+    assert!(err.contains("NAVAI_SERVER_TOKEN"), "{err}");
+    assert!(!err.contains("super-secret-token-value"));
+}
+
+#[test]
+fn the_new_token_variable_prints_no_warning() {
+    let url = closed_port_url();
+    let run = tui_with(
+        &["--url", &url, "--workspace", "."],
+        &[("NAVAI_SERVER_TOKEN", "super-secret-token-value")],
+    );
+    assert!(!stderr(&run).contains("deprecated"), "{}", stderr(&run));
+}
+
+#[test]
+fn a_start_moves_the_former_data_and_config_once() {
+    use std::os::unix::fs::PermissionsExt;
+    let dirs = tempfile::tempdir().unwrap();
+    let data = dirs.path().join("data");
+    let config = dirs.path().join("config");
+    std::fs::create_dir_all(data.join("navigator")).unwrap();
+    std::fs::create_dir_all(config.join("rust-agent")).unwrap();
+    std::fs::write(data.join("navigator/navigator.jsonl"), "log").unwrap();
+    let auth = config.join("rust-agent/auth.json");
+    std::fs::write(&auth, "{}").unwrap();
+    std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    for _ in 0..2 {
+        let status = Command::new(env!("CARGO_BIN_EXE_navai"))
+            .args(["tui", "--workspace", "."])
+            .env("XDG_DATA_HOME", &data)
+            .env("XDG_CONFIG_HOME", &config)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+            .status;
+        assert_eq!(status.code(), Some(1));
+    }
+
+    assert_eq!(
+        std::fs::read_to_string(data.join("navai/navai.jsonl")).unwrap(),
+        "log"
+    );
+    assert!(!data.join("navigator/navigator.jsonl").exists());
+    let moved = config.join("navai/auth.json");
+    assert_eq!(
+        std::fs::metadata(&moved).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(!auth.exists());
 }

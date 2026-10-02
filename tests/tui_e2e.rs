@@ -12,13 +12,13 @@ use ratatui::{backend::TestBackend, Terminal};
 use serde_json::json;
 use tokio::time::Instant;
 
-use rust_agent::provider::Usage;
-use rust_agent::tools::ToolStatus;
-use rust_agent::tui::client::Client;
-use rust_agent::tui::protocol::{ClientEvent, Effect};
-use rust_agent::tui::runtime::Runtime;
-use rust_agent::tui::state::{Activity, Block, BlockKind, ConnectionStatus};
-use rust_agent::tui::TuiOptions;
+use navai::provider::Usage;
+use navai::tools::ToolStatus;
+use navai::tui::client::Client;
+use navai::tui::protocol::{ClientEvent, Effect};
+use navai::tui::runtime::Runtime;
+use navai::tui::state::{Activity, Block, BlockKind, ConnectionStatus};
+use navai::tui::TuiOptions;
 
 mod common;
 use common::server::{spawn_server, TestServerConfig};

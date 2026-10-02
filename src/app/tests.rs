@@ -44,7 +44,7 @@ fn cli_lists_its_subcommands() {
 #[test]
 fn tui_flags_parse_and_conflicts_are_enforced() {
     let cli = Cli::try_parse_from([
-        "rust-agent",
+        "navai",
         "tui",
         "--workspace",
         "/tmp",
@@ -55,11 +55,10 @@ fn tui_flags_parse_and_conflicts_are_enforced() {
     ]);
     assert!(cli.is_ok());
     assert!(
-        Cli::try_parse_from(["rust-agent", "tui", "--model", "fast", "--session", "01ABC"])
-            .is_err()
+        Cli::try_parse_from(["navai", "tui", "--model", "fast", "--session", "01ABC"]).is_err()
     );
     assert!(Cli::try_parse_from([
-        "rust-agent",
+        "navai",
         "tui",
         "--models",
         "models.json",
@@ -73,7 +72,7 @@ fn tui_flags_parse_and_conflicts_are_enforced() {
 
 #[test]
 fn bogus_subcommand_is_error() {
-    let result = Cli::try_parse_from(["rust-agent", "bogus-subcommand"]);
+    let result = Cli::try_parse_from(["navai", "bogus-subcommand"]);
     assert!(result.is_err());
 }
 

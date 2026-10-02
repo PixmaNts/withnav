@@ -11,9 +11,9 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use rust_agent::bus::command::{Command, ContentBlock, DeliveryMode};
-use rust_agent::bus::event::EventEnvelope;
-use rust_agent::server::{AppState, ServerConfig};
+use navai::bus::command::{Command, ContentBlock, DeliveryMode};
+use navai::bus::event::EventEnvelope;
+use navai::server::{AppState, ServerConfig};
 
 use super::sse::spawn_mock_provider;
 
@@ -142,7 +142,7 @@ impl TestServerConfig {
                 "providers": {
                     PROVIDER: {
                         "base_url": self.base_url,
-                        "api_key_env": "RUST_AGENT_TEST_KEY",
+                        "api_key_env": "NAVAI_TEST_KEY",
                         "headers": {},
                         "connect_timeout_ms": self.connect_timeout_ms,
                         "request_timeout_ms": self.request_timeout_ms
@@ -182,11 +182,11 @@ impl TestServerConfig {
     /// [`Self::navigator_state`] sharing the navigator's conversation feed.
     pub fn navigator_state_with_conversation(
         &self,
-        conversation: Option<rust_agent::navigator::ConversationFeed>,
+        conversation: Option<navai::navigator::ConversationFeed>,
     ) -> AppState {
         let hooks = match conversation {
-            Some(feed) => rust_agent::navigator::NavigatorHooks::with_feed(feed),
-            None => rust_agent::navigator::NavigatorHooks::new(),
+            Some(feed) => navai::navigator::NavigatorHooks::with_feed(feed),
+            None => navai::navigator::NavigatorHooks::new(),
         };
         AppState::with_hooks(self.config(), std::sync::Arc::new(hooks))
             .expect("state over a temp history database")
@@ -215,7 +215,7 @@ pub async fn spawn_server(state: AppState) -> (SocketAddr, tokio::task::JoinHand
         .expect("ephemeral bind");
     let addr = listener.local_addr().expect("local addr");
     let task = tokio::spawn(async move {
-        let _ = rust_agent::server::routes::serve_state_on(state, listener).await;
+        let _ = navai::server::routes::serve_state_on(state, listener).await;
     });
     wait_until_healthy(addr).await;
     (addr, task)
@@ -336,9 +336,9 @@ pub async fn post_message_ok(base: &str, id: &str, text: &str) {
 /// The command `POST /messages` builds for a plain-text message to the main
 /// agent in session `id`.
 pub fn text_command(id: ulid::Ulid, text: &str) -> Command {
-    rust_agent::server::routes::build_command(
+    navai::server::routes::build_command(
         id,
-        &rust_agent::server::routes::PostMessageRequest {
+        &navai::server::routes::PostMessageRequest {
             target_actor_id: "agent:main".to_string(),
             mode: Some("next-turn".to_string()),
             content: vec![ContentBlock::Text {
@@ -354,7 +354,7 @@ pub async fn send_text(
     state: &AppState,
     id: ulid::Ulid,
     text: &str,
-) -> rust_agent::session::MessageAccepted {
+) -> navai::session::MessageAccepted {
     state.send(text_command(id, text)).await.expect("routed")
 }
 
@@ -390,12 +390,12 @@ pub async fn request_json(
 /// what is ready. Panics, listing the events seen, if nothing matches within
 /// 20 s or the stream closes first.
 pub async fn collect_until(
-    sub: rust_agent::session::Subscription,
+    sub: navai::session::Subscription,
     pred: impl Fn(&EventEnvelope) -> bool,
 ) -> Vec<EventEnvelope> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     let mut out = Vec::new();
-    if let rust_agent::bus::ResumeOutcome::Replay(replay) = sub.replay {
+    if let navai::bus::ResumeOutcome::Replay(replay) = sub.replay {
         out.extend(replay);
     }
     if let Some(mut live) = sub.live {

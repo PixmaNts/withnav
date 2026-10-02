@@ -9,13 +9,13 @@ use serde_json::json;
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use rust_agent::error::ProviderError;
-use rust_agent::provider::auth;
-use rust_agent::provider::config::{
+use navai::error::ProviderError;
+use navai::provider::auth;
+use navai::provider::config::{
     ApiKind, ModelConfig, ModelsConfig, ProviderConfig, ReasoningHistory, ResolvedModel,
 };
-use rust_agent::provider::fim::InceptionFim;
-use rust_agent::provider::openai::ClientCache;
+use navai::provider::fim::InceptionFim;
+use navai::provider::openai::ClientCache;
 
 fn resolved(base_url: String) -> ResolvedModel {
     ResolvedModel {

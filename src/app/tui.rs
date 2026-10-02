@@ -15,7 +15,9 @@ use anyhow::Context as _;
 use super::{TuiArgs, EXIT_DONE};
 
 /// Environment variable holding the bearer token of a server given by `--url`.
-pub const TOKEN_ENV: &str = "RUST_AGENT_SERVER_TOKEN";
+pub const TOKEN_ENV: &str = "NAVAI_SERVER_TOKEN";
+/// The former name of [`TOKEN_ENV`], still read when the new one is unset.
+const LEGACY_TOKEN_ENV: &str = "RUST_AGENT_SERVER_TOKEN";
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -83,8 +85,11 @@ async fn run_remote(args: TuiArgs, workspace: PathBuf, url: String) -> anyhow::R
         url.starts_with("http://") || url.starts_with("https://"),
         "--url must start with http:// or https://, got {url:?}"
     );
+    let (token, deprecated) = server_token(|name| std::env::var(name).ok());
+    if deprecated {
+        eprintln!("warning: {LEGACY_TOKEN_ENV} is deprecated, use {TOKEN_ENV}");
+    }
     check_health(&url).await?;
-    let token = std::env::var(TOKEN_ENV).ok().filter(|t| !t.is_empty());
     crate::tui::run(crate::tui::TuiOptions {
         url,
         token,
@@ -95,6 +100,19 @@ async fn run_remote(args: TuiArgs, workspace: PathBuf, url: String) -> anyhow::R
     })
     .await?;
     Ok(())
+}
+
+/// The bearer token from `lookup` (an environment reader): [`TOKEN_ENV`],
+/// else the legacy name. The flag is true when the legacy name supplied it.
+fn server_token(lookup: impl Fn(&str) -> Option<String>) -> (Option<String>, bool) {
+    let non_empty = |name: &str| lookup(name).filter(|t| !t.is_empty());
+    match non_empty(TOKEN_ENV) {
+        Some(token) => (Some(token), false),
+        None => match non_empty(LEGACY_TOKEN_ENV) {
+            Some(token) => (Some(token), true),
+            None => (None, false),
+        },
+    }
 }
 
 async fn run_embedded(args: TuiArgs, workspace: PathBuf) -> anyhow::Result<()> {
@@ -207,4 +225,51 @@ async fn check_health(base: &str) -> anyhow::Result<()> {
         }
     }
     anyhow::bail!("cannot reach a server at {base}: {last}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value.to_string())
+        }
+    }
+
+    // Given only the former variable name
+    // When the token is read
+    // Then its value is used and the deprecation flag is raised
+    #[test]
+    fn the_legacy_token_variable_still_works_and_is_flagged() {
+        let (token, deprecated) = server_token(env(&[(LEGACY_TOKEN_ENV, "old")]));
+        assert_eq!(token.as_deref(), Some("old"));
+        assert!(deprecated);
+    }
+
+    // Given both names
+    // When the token is read
+    // Then the new one wins and nothing is flagged
+    #[test]
+    fn the_new_token_variable_wins_without_a_warning() {
+        let (token, deprecated) =
+            server_token(env(&[(TOKEN_ENV, "new"), (LEGACY_TOKEN_ENV, "old")]));
+        assert_eq!(token.as_deref(), Some("new"));
+        assert!(!deprecated);
+    }
+
+    // Given neither name, or empty values
+    // When the token is read
+    // Then there is no token
+    #[test]
+    fn no_token_variable_means_no_token() {
+        assert_eq!(server_token(env(&[])), (None, false));
+        assert_eq!(
+            server_token(env(&[(TOKEN_ENV, ""), (LEGACY_TOKEN_ENV, "")])),
+            (None, false)
+        );
+    }
 }

@@ -1,10 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{
-    backend::TestBackend,
-    style::{Color, Modifier},
-    Terminal,
-};
-use rust_agent::{
+use navai::{
     tools::ToolStatus,
     tui::{
         input::{route_key, route_paste, Editor},
@@ -12,6 +7,11 @@ use rust_agent::{
         state::{Activity, Block, BlockKind, ConnectionStatus, State, UiState},
         view::{self, tool, RenderCache},
     },
+};
+use ratatui::{
+    backend::TestBackend,
+    style::{Color, Modifier},
+    Terminal,
 };
 
 fn message(id: &str, source: &str, text: &str) -> Block {
@@ -352,7 +352,7 @@ fn tool_summaries_and_durations() {
 
 #[test]
 fn transcript_keys_select_expand_and_follow() {
-    use rust_agent::tui::state::Focus;
+    use navai::tui::state::Focus;
     let s = done();
     let mut ui = UiState {
         focus: Focus::Transcript,

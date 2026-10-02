@@ -22,14 +22,15 @@ import {
   Verdict,
 } from "./protocol";
 import { registerReflex } from "./reflex";
+import { affectsSettings, readSetting } from "./settings";
 import { CognitionBackend } from "./cognition";
 import { registerChatView } from "./chatView";
 
 const MARKER = "◆ ";
 const MAX_INLINE = 120;
 const DIAGNOSTICS_DEBOUNCE_MS = 500;
-const CLIENT_NAME = "navigator";
-const CONTEXT_REMARK_VISIBLE = "navigator.remarkVisible";
+const CLIENT_NAME = "navai";
+const CONTEXT_REMARK_VISIBLE = "navai.remarkVisible";
 
 interface ActiveRemark {
   id: string;
@@ -64,13 +65,13 @@ export function activate(_context: vscode.ExtensionContext) {
   });
 
   statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusItem.name = "Navigator";
-  statusItem.command = "navigator.setIntent";
+  statusItem.name = "Navai";
+  statusItem.command = "navai.setIntent";
   statusItem.show();
 
   registerCommands();
   _context.subscriptions.push(registerChatView(_context, cognition));
-  _context.subscriptions.push(vscode.commands.registerCommand("navigator.focusChat", () => vscode.commands.executeCommand("workbench.view.extension.navigator")));
+  _context.subscriptions.push(vscode.commands.registerCommand("navai.focusChat", () => vscode.commands.executeCommand("workbench.view.extension.navai")));
 
   vscode.window.onDidChangeVisibleTextEditors((editors) => {
     for (const editor of editors) {
@@ -94,7 +95,7 @@ export function activate(_context: vscode.ExtensionContext) {
   });
 
   vscode.workspace.onDidChangeConfiguration((event) => {
-    if (!event.affectsConfiguration("navigator")) {
+    if (!affectsSettings(event)) {
       return;
     }
     handleConfigurationChange();
@@ -115,25 +116,24 @@ export function deactivate(): Thenable<void> | undefined {
 }
 
 function registerCommands() {
-  vscode.commands.registerCommand("navigator.markUseful", () => sendFeedback("useful"));
-  vscode.commands.registerCommand("navigator.markNoise", () => sendFeedback("noise"));
-  vscode.commands.registerCommand("navigator.dismiss", () => sendFeedback("dismissed"));
-  vscode.commands.registerCommand("navigator.setIntent", promptForIntent);
+  vscode.commands.registerCommand("navai.markUseful", () => sendFeedback("useful"));
+  vscode.commands.registerCommand("navai.markNoise", () => sendFeedback("noise"));
+  vscode.commands.registerCommand("navai.dismiss", () => sendFeedback("dismissed"));
+  vscode.commands.registerCommand("navai.setIntent", promptForIntent);
 }
 
 function readConfig(): NavigatorConfig {
-  const config = vscode.workspace.getConfiguration("navigator");
   return {
-    enabled: config.get<boolean>("enabled", true),
-    idleMs: config.get<number>("idleMs", 3000),
-    minChangedLines: config.get<number>("minChangedLines", 3),
-    cooldownMs: config.get<number>("cooldownMs", 20000),
-    modelAlias: config.get<string>("modelAlias", "metacognition"),
+    enabled: readSetting<boolean>("enabled", true),
+    idleMs: readSetting<number>("idleMs", 3000),
+    minChangedLines: readSetting<number>("minChangedLines", 3),
+    cooldownMs: readSetting<number>("cooldownMs", 20000),
+    modelAlias: readSetting<string>("modelAlias", "metacognition"),
   };
 }
 
 function readServerPath(): string {
-  return vscode.workspace.getConfiguration("navigator").get<string>("serverPath", "rust-agent-lsp");
+  return readSetting<string>("serverPath", "navai-lsp");
 }
 
 async function startClient(): Promise<void> {
@@ -148,9 +148,9 @@ async function startClient(): Promise<void> {
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: "file" }],
     initializationOptions: readConfig(),
-    outputChannelName: "Navigator",
+    outputChannelName: "Navai",
   };
-  const newClient = new LanguageClient(CLIENT_NAME, "Navigator", serverOptions, clientOptions);
+  const newClient = new LanguageClient(CLIENT_NAME, "Navai", serverOptions, clientOptions);
   newClient.onNotification(RemarkNotification.type, handleRemark);
   newClient.onNotification(ClearNotification.type, (params) => removeRemark(params.uri));
   newClient.onNotification(StatusNotification.type, (params) => {
@@ -312,7 +312,7 @@ function currentRemark(): ActiveRemark | undefined {
 function sendFeedback(verdict: Verdict) {
   const remark = currentRemark();
   if (!remark) {
-    void vscode.window.setStatusBarMessage("Navigator: no remark to rate", 3000);
+    void vscode.window.setStatusBarMessage("Navai: no remark to rate", 3000);
     return;
   }
   if (client && client.state === State.Running) {
@@ -361,12 +361,12 @@ function applyDecorations(editor: vscode.TextEditor) {
 function remarkHover(text: string): vscode.MarkdownString {
   const hover = new vscode.MarkdownString(
     `${escapeMarkdown(text)}\n\n` +
-      "[Useful](command:navigator.markUseful) · " +
-      "[Noise](command:navigator.markNoise) · " +
-      "[Dismiss](command:navigator.dismiss)",
+      "[Useful](command:navai.markUseful) · " +
+      "[Noise](command:navai.markNoise) · " +
+      "[Dismiss](command:navai.dismiss)",
   );
   hover.isTrusted = {
-    enabledCommands: ["navigator.markUseful", "navigator.markNoise", "navigator.dismiss"],
+    enabledCommands: ["navai.markUseful", "navai.markNoise", "navai.dismiss"],
   };
   return hover;
 }
@@ -396,17 +396,17 @@ function refreshStatusBar() {
   let text: string;
   let tooltip: string;
   if (state === "error") {
-    text = "$(error) Navigator";
-    tooltip = stateMessage ?? "Navigator error";
+    text = "$(error) Navai";
+    tooltip = stateMessage ?? "Navai error";
   } else if (hasRemark) {
-    text = "$(comment) Navigator";
+    text = "$(comment) Navai";
     tooltip = "Remark available — rate it: useful (Ctrl+Alt+Y), noise (Ctrl+Alt+N), dismiss (Ctrl+Alt+D)";
   } else if (state === "thinking") {
-    text = "$(sync~spin) Navigator";
-    tooltip = "Navigator is thinking…";
+    text = "$(sync~spin) Navai";
+    tooltip = "Navai is thinking…";
   } else {
-    text = "$(eye) Navigator";
-    tooltip = "Navigator idle — click to set your current intent";
+    text = "$(eye) Navai";
+    tooltip = "Navai idle — click to set your current intent";
   }
   statusItem.text = text;
   statusItem.tooltip = tooltip;

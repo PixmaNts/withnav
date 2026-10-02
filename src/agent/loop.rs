@@ -10,7 +10,7 @@ use crate::tools::{ToolResult, ToolStatus};
 pub const DEFAULT_MAX_STEPS: usize = 50;
 
 pub fn max_steps() -> usize {
-    std::env::var("RUST_AGENT_MAX_STEPS")
+    std::env::var("NAVAI_MAX_STEPS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_MAX_STEPS)

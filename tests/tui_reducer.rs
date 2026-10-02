@@ -1,7 +1,7 @@
 //! Reducer tests over JSONL fixtures built from the crate's real event types.
 //! Regenerate the fixtures with
 //! `cargo test --test tui_reducer -- --ignored regenerate_fixtures`.
-use rust_agent::{
+use navai::{
     bus::event::*,
     provider::{AssistantMessage, StreamDelta, ToolCall, Usage},
     tools::ToolStatus,

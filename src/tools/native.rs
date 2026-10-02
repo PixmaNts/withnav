@@ -258,7 +258,7 @@ impl Tool for GrepTool {
 }
 
 fn rg_available() -> bool {
-    if std::env::var("RUST_AGENT_FORCE_BUILTIN_GREP").is_ok() {
+    if std::env::var("NAVAI_FORCE_BUILTIN_GREP").is_ok() {
         return false;
     }
     which_rg().is_some()
@@ -514,7 +514,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cx = ctx(tmp.path());
         std::fs::write(tmp.path().join("a.txt"), "needle here\nother\n").unwrap();
-        std::env::set_var("RUST_AGENT_FORCE_BUILTIN_GREP", "1");
+        std::env::set_var("NAVAI_FORCE_BUILTIN_GREP", "1");
         let res = GrepTool
             .call(
                 json!({"pattern": "needle", "path": tmp.path().to_str().unwrap()}),
@@ -523,7 +523,7 @@ mod tests {
             )
             .await
             .unwrap();
-        std::env::remove_var("RUST_AGENT_FORCE_BUILTIN_GREP");
+        std::env::remove_var("NAVAI_FORCE_BUILTIN_GREP");
         assert!(res.output.contains("needle"));
         assert_eq!(res.metadata["engine"], "builtin");
     }

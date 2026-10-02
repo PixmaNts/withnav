@@ -1,5 +1,5 @@
 [package]
-name = "rust-agent"
+name = "navai"
 version = "0.2.0"
 edition = "2021"
 rust-version = "1.88"
@@ -8,16 +8,16 @@ license = "MIT OR Apache-2.0"
 
 # LIB + BIN split: all behavior lives in the library; the binary is a thin CLI shell.
 [lib]
-name = "rust_agent"
+name = "navai"
 path = "src/lib.rs"
 
 [[bin]]
-name = "rust-agent"
+name = "navai"
 path = "src/main.rs"
 
 [[bin]]
-name = "rust-agent-lsp"
-path = "src/bin/rust-agent-lsp.rs"
+name = "navai-lsp"
+path = "src/bin/navai-lsp.rs"
 
 [dependencies]
 tokio = { version = "1.53", features = [
@@ -47,7 +47,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 ulid = { version = "1", features = ["std", "serde"] }
 clap = { version = "4.6.6", features = ["derive"] }
-nix = { version = "0.31.3", features = ["signal"] }
+nix = { version = "0.31.3", features = ["signal", "fs"] }
 directories = "6.0.0"
 tempfile = "3"
 regex = "1"
@@ -62,7 +62,7 @@ similar = "3.2.0"
 evalexpr = "13.1.0"
 # Conversation history (navigator): one SQLite file per user, bundled SQLite.
 rusqlite = { version = "0.40", features = ["bundled"] }
-# Terminal client (`rust-agent tui`): an HTTP + SSE client of the session server.
+# Terminal client (`navai tui`): an HTTP + SSE client of the session server.
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
 ratatui-textarea = "0.9.2"

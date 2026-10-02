@@ -9,11 +9,11 @@ use std::time::Duration;
 use serde_json::json;
 use ulid::Ulid;
 
-use rust_agent::bus::event::{EventEnvelope, EventKind};
-use rust_agent::bus::ResumeOutcome;
-use rust_agent::server::AppState;
-use rust_agent::session::store::HistoryStore;
-use rust_agent::session::Subscription;
+use navai::bus::event::{EventEnvelope, EventKind};
+use navai::bus::ResumeOutcome;
+use navai::server::AppState;
+use navai::session::store::HistoryStore;
+use navai::session::Subscription;
 
 mod common;
 use common::server::{create_session, post_message_ok, spawn_server, TestServerConfig};

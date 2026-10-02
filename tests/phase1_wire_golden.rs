@@ -9,13 +9,13 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use rust_agent::agent::actor::AgentActor;
-use rust_agent::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
-use rust_agent::provider::config::{ProviderConfig, ReasoningHistory};
-use rust_agent::tools::bash::BashTool;
-use rust_agent::tools::control::AskTool;
-use rust_agent::tools::native::ReadTool;
-use rust_agent::tools::{Registry, ToolContext};
+use navai::agent::actor::AgentActor;
+use navai::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
+use navai::provider::config::{ProviderConfig, ReasoningHistory};
+use navai::tools::bash::BashTool;
+use navai::tools::control::AskTool;
+use navai::tools::native::ReadTool;
+use navai::tools::{Registry, ToolContext};
 use tokio_util::sync::CancellationToken;
 
 mod common;

@@ -10,11 +10,11 @@ use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
-use rust_agent::bus::command::ContentBlock;
-use rust_agent::bus::event::{EventEnvelope, EventKind};
-use rust_agent::tui::client::{Client, SendError};
-use rust_agent::tui::protocol::{ClientEvent, CreateSessionRequest, Generation, SubmitRequest};
-use rust_agent::tui::stream::{subscribe, EventStream};
+use navai::bus::command::ContentBlock;
+use navai::bus::event::{EventEnvelope, EventKind};
+use navai::tui::client::{Client, SendError};
+use navai::tui::protocol::{ClientEvent, CreateSessionRequest, Generation, SubmitRequest};
+use navai::tui::stream::{subscribe, EventStream};
 
 mod common;
 use common::server::{spawn_server, CuttableProxy, TestServer, TestServerConfig};

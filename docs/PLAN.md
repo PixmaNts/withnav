@@ -1,4 +1,4 @@
-# Rust Agent — Layer-0 Meta-Plan (PLAN.md)
+# Navai — Layer-0 Meta-Plan (PLAN.md)
 
 **Status:** Living reference (frozen decisions for the whole build)
 **Schema version of this document:** 1
@@ -423,7 +423,7 @@ by config/data ROOTS — not deployment tiers.
   machine (or a homelab host such as `pixma-main`). It is an ENVIRONMENT, not a tier. **Isolation
   is CONCRETE and pinned:** a `--config <dir>` / `--data <dir>` override (or explicit
   `XDG_CONFIG_HOME` / `XDG_DATA_HOME`) so a staging run **never touches** the prod
-  `~/.config/rust-agent/auth.json`. Config precedence + per-env data dir are pinned so dev
+  `~/.config/navai/auth.json`. Config precedence + per-env data dir are pinned so dev
   experiments never pollute prod.
 - **prod (personal)** — `cargo build --release`; single binary; loopback only (never a
   non-loopback bind without explicit config, SPEC §20.1); `auth.json` 0600, DB file user-only
@@ -446,8 +446,8 @@ by config/data ROOTS — not deployment tiers.
 ### Config & secret precedence (pinned now)
 
 - **`models.json`** location + precedence: workspace `./models.json` wins over
-  `~/.config/rust-agent/models.json`; `--models <path>` overrides both.
-- **`auth.json`**: file (`~/.config/rust-agent/auth.json`) WINS over the env var named by the
+  `~/.config/navai/models.json`; `--models <path>` overrides both.
+- **`auth.json`**: file (`~/.config/navai/auth.json`) WINS over the env var named by the
   provider's `api_key_env` (default `OMNIROUTE_API_KEY`); `auth set` writes the file. Created
   **atomically with mode 0600 at creation** (`O_CREAT|mode`, not create-then-chmod). An existing
   `auth.json` with looser perms **fails closed** with a clear "fix perms" error — a

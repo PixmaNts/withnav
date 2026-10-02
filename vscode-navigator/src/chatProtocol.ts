@@ -3,7 +3,7 @@
 // never does networking). Both sides import these types.
 
 /** View id of the chat panel, contributed in package.json. */
-export const CHAT_VIEW_ID = "navigator.chat";
+export const CHAT_VIEW_ID = "navai.chat";
 
 /** Who wrote a message shown in the chat. */
 export type Author = "driver" | "cognition" | "navigator";

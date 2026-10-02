@@ -8,8 +8,8 @@ requests land in `develop`.
 
 ### Added
 
-- **Terminal client**: `rust-agent tui` starts a private server (or connects to one with `--url`,
-  token in `RUST_AGENT_SERVER_TOKEN`) and opens a chat in the terminal.
+- **Terminal client**: `navai tui` starts a private server (or connects to one with `--url`,
+  token in `NAVAI_SERVER_TOKEN`) and opens a chat in the terminal.
 - Streaming chat with reasoning, tool calls with their duration, and the model with the context
   and session token counts in the status line.
 - A model picker (the choice starts a new conversation), a session list to resume a past
@@ -18,6 +18,24 @@ requests land in `develop`.
 - **VS Code chat**: a model picker for the cognition (it sets the model of a new conversation; an
   open conversation keeps its own) and a gauge of the context used out of the model's window.
 - `duration_ms` in the metadata of `tool.post_call`.
+
+### Changed
+
+- **The project is now called Navai.** The crate and binaries are `navai` and `navai-lsp` (they were
+  `rust-agent` and `rust-agent-lsp`). The VS Code extension is `pixmants.navai` "Navai" (the chat
+  view is still "Cognition"); its commands are `navai.focusChat`, `navai.markUseful`,
+  `navai.markNoise`, `navai.dismiss` and `navai.setIntent`, and `navai.serverPath` defaults to
+  `navai-lsp`. Uninstall the old `rust-agent.navigator` extension and the old binaries by hand.
+- **Data and config moved**: data to `~/.local/share/navai/` (`navai.db`, `navai.jsonl`,
+  `tui.log`), config to `~/.config/navai/` (`auth.json`, `models.json`). The move is automatic on
+  the first start of `navai` or `navai-lsp`, from `~/.local/share/navigator/`,
+  `~/.local/share/rust-agent/` and `~/.config/rust-agent/`. It never overwrites a file, and a
+  database in use by another process stays where it is until a later start.
+- Environment variables are `NAVAI_*`. `RUST_AGENT_SERVER_TOKEN` still works as a fallback for
+  `NAVAI_SERVER_TOKEN`, with a deprecation warning. The other `RUST_AGENT_*` variables (internal
+  tuning and test switches) are renamed without a fallback.
+- Extension settings are `navai.*`; a value still set under the old `navigator.*` key is read as a
+  fallback until a `navai.*` one is set.
 
 ### Fixed
 

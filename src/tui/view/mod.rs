@@ -95,7 +95,7 @@ pub fn draw(
             )
         })
         .unwrap_or_else(|| "new conversation".into());
-    let left = format!(" rust-agent  {}", shorten(path, (area.width / 3) as usize));
+    let left = format!(" navai  {}", shorten(path, (area.width / 3) as usize));
     let right = format!("{title} ");
     let gap = usize::from(area.width).saturating_sub(left.chars().count() + right.chars().count());
     frame.render_widget(

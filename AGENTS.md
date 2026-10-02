@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for AI agents working in this repository.
+Guidance for AI agents working in Navai (formerly `rust-agent`).
 
 ## Read first
 

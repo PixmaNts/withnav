@@ -13,19 +13,19 @@ use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
-use rust_agent::agent::actor::AgentActor;
-use rust_agent::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
-use rust_agent::app::{event_to_ui, exit_code_for};
-use rust_agent::bus::inbox::ActorInbox;
-use rust_agent::bus::runtime;
-use rust_agent::bus::sequencer::Sequencer;
-use rust_agent::bus::{ResumeOutcome, SessionBus};
-use rust_agent::provider::config::{ProviderConfig, ReasoningHistory};
-use rust_agent::provider::StreamDelta;
-use rust_agent::render::UiEvent;
-use rust_agent::tools::bash::BashTool;
-use rust_agent::tools::native::ReadTool;
-use rust_agent::tools::{Registry, ToolContext};
+use navai::agent::actor::AgentActor;
+use navai::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
+use navai::app::{event_to_ui, exit_code_for};
+use navai::bus::inbox::ActorInbox;
+use navai::bus::runtime;
+use navai::bus::sequencer::Sequencer;
+use navai::bus::{ResumeOutcome, SessionBus};
+use navai::provider::config::{ProviderConfig, ReasoningHistory};
+use navai::provider::StreamDelta;
+use navai::render::UiEvent;
+use navai::tools::bash::BashTool;
+use navai::tools::native::ReadTool;
+use navai::tools::{Registry, ToolContext};
 
 mod common;
 use common::sse::{http_sse, spawn_mock_provider, sse_body};
@@ -120,7 +120,7 @@ async fn run_via_bus_renders_identically_to_the_direct_path() {
 /// Drive the bus event stream through `event_to_ui`, collecting rendered
 /// UiEvents until the terminal turn.end, and derive the exit code the same
 /// way `run` does (via the public `exit_code_for`).
-async fn collect_bus_render(sub: rust_agent::bus::SubscribeReply) -> (Vec<Ui>, i32) {
+async fn collect_bus_render(sub: navai::bus::SubscribeReply) -> (Vec<Ui>, i32) {
     let mut out = Vec::new();
     if let ResumeOutcome::Replay(events) = &sub.replay {
         for env in events {
@@ -159,7 +159,7 @@ fn phase1_exit(outcome: &RunOutcome) -> i32 {
 /// client rendering from events sees byte-identical error output.
 #[test]
 fn error_turn_end_reproduces_the_phase1_stderr_line_and_exit_code() {
-    use rust_agent::bus::event::{EventEnvelope, EventKind, TurnEnd, TurnEndOutcome, TurnError};
+    use navai::bus::event::{EventEnvelope, EventKind, TurnEnd, TurnEndOutcome, TurnError};
 
     let message = "provider API error (status 500): boom".to_string();
     // The Phase-1 `finish` stderr for `Err(e)` is `\nerror: {e}`.
@@ -192,8 +192,8 @@ fn error_turn_end_reproduces_the_phase1_stderr_line_and_exit_code() {
     // Assert the ACTUAL string the production path emits — the shared
     // `terminal_stderr_line` that `exit_code_for` prints — equals the Phase-1
     // `finish` line, not an independent reconstruction.
-    let bus_stderr = rust_agent::app::terminal_stderr_line(&payload)
-        .expect("error outcome produces a stderr line");
+    let bus_stderr =
+        navai::app::terminal_stderr_line(&payload).expect("error outcome produces a stderr line");
     assert_eq!(
         bus_stderr, phase1_stderr,
         "bus stderr line != Phase-1 stderr line for the same error"
@@ -201,7 +201,7 @@ fn error_turn_end_reproduces_the_phase1_stderr_line_and_exit_code() {
 }
 
 /// Subprocess capture of the REAL production stderr: run the actual
-/// `rust-agent run` binary against a mock provider that returns HTTP 500, and
+/// `navai run` binary against a mock provider that returns HTTP 500, and
 /// assert the process stderr carries the `error:` line and the process exits
 /// 1. This exercises the `exit_code_for` -> `eprint!(terminal_stderr_line)`
 /// path end-to-end, so deleting the production `eprint!` would FAIL this test
@@ -241,7 +241,7 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
         serde_json::json!({
             "providers": { "mock": {
                 "base_url": format!("http://{addr}/v1"),
-                "api_key_env": "RUST_AGENT_RUN_PARITY_KEY",
+                "api_key_env": "NAVAI_RUN_PARITY_KEY",
                 "headers": {}, "connect_timeout_ms": 2000, "request_timeout_ms": 30000
             }},
             "models": { "default": {
@@ -256,7 +256,7 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
         let models = models.clone();
         let ws = root.join("ws");
         move || {
-            std::process::Command::new(env!("CARGO_BIN_EXE_rust-agent"))
+            std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
                 .args([
                     "run",
                     "--workspace",
@@ -266,7 +266,7 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
                     "--prompt",
                     "go",
                 ])
-                .env("RUST_AGENT_RUN_PARITY_KEY", "test-key")
+                .env("NAVAI_RUN_PARITY_KEY", "test-key")
                 // The binary opens the conversation history in the XDG data
                 // dir and migrates legacy files there. Without these two, a
                 // test run wrote into the driver's real database and moved
@@ -292,8 +292,8 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
     );
 }
 
-fn user_command(session_id: Ulid, text: &str) -> rust_agent::bus::command::Command {
-    use rust_agent::bus::command::{Command, ContentBlock, DeliveryMode};
+fn user_command(session_id: Ulid, text: &str) -> navai::bus::command::Command {
+    use navai::bus::command::{Command, ContentBlock, DeliveryMode};
     Command {
         command_id: Ulid::new(),
         session_id,

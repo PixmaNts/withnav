@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- rust-agent  …/the-last-directory  Fix parser · 01JABCDEFGH 
+ navai  …/the-last-directory       Fix parser · 01JABCDEFGH 
 ────────────────────────────────────────────────────────────
  │ YOU                                                      
  │  你 好  é 👩‍💻  café                                          

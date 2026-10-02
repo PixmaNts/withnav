@@ -17,7 +17,7 @@ use serde_json::Value;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer};
 
-use rust_agent::server::AppState;
+use navai::server::AppState;
 
 mod common;
 use common::server::{collect_until, send_text, wait_for, TestServerConfig};
@@ -30,7 +30,7 @@ fn test_state(tmp: &Path, base_url: &str) -> AppState {
 fn test_state_with_feed(
     tmp: &Path,
     base_url: &str,
-    conversation: Option<rust_agent::navigator::ConversationFeed>,
+    conversation: Option<navai::navigator::ConversationFeed>,
 ) -> AppState {
     TestServerConfig::mock(tmp, base_url)
         .model_alias("cognition", "mock-opus")
@@ -109,7 +109,7 @@ async fn navigator_profile_sends_the_cognition_prompt_as_second_system_message()
     assert_eq!(messages[1]["role"], "system", "cognition prompt second");
     assert_eq!(
         messages[1]["content"],
-        rust_agent::navigator::COGNITION_PROMPT,
+        navai::navigator::COGNITION_PROMPT,
         "the second system message IS the cognition prompt"
     );
     assert_eq!(messages[2]["role"], "user");
@@ -143,7 +143,7 @@ async fn wake_through_the_feed_lands_as_a_navigator_sourced_message_and_turn() {
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
-    let feed = rust_agent::navigator::ConversationFeed::new();
+    let feed = navai::navigator::ConversationFeed::new();
     let state = test_state_with_feed(&root, &server.uri(), Some(feed.clone()));
     let ws = root.join("ws");
     std::fs::create_dir_all(&ws).expect("ws dir");
@@ -157,7 +157,7 @@ async fn wake_through_the_feed_lands_as_a_navigator_sourced_message_and_turn() {
     assert_eq!(feed.active_session(), None);
     assert_eq!(
         feed.post_wake("wake: drift?").await,
-        rust_agent::navigator::WakeOutcome::NoSession
+        navai::navigator::WakeOutcome::NoSession
     );
 
     let sub = state.subscribe(id, None).await.expect("subscribe");
@@ -175,7 +175,7 @@ async fn wake_through_the_feed_lands_as_a_navigator_sourced_message_and_turn() {
         .await;
     assert_eq!(
         outcome,
-        rust_agent::navigator::WakeOutcome::Posted(id),
+        navai::navigator::WakeOutcome::Posted(id),
         "no pending ask: the wake posts immediately"
     );
 
@@ -270,7 +270,7 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
-    let feed = rust_agent::navigator::ConversationFeed::new();
+    let feed = navai::navigator::ConversationFeed::new();
     let state = test_state_with_feed(&root, &server.uri(), Some(feed.clone()));
     let ws = root.join("ws");
     std::fs::create_dir_all(&ws).expect("ws dir");
@@ -303,11 +303,11 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
     // The wake while yielded: queued, coalesced, never the ask answer.
     assert_eq!(
         feed.post_wake("first wake").await,
-        rust_agent::navigator::WakeOutcome::Queued(id)
+        navai::navigator::WakeOutcome::Queued(id)
     );
     assert_eq!(
         feed.post_wake("latest wake").await,
-        rust_agent::navigator::WakeOutcome::Queued(id)
+        navai::navigator::WakeOutcome::Queued(id)
     );
 
     // The driver answers the ask. Their message must become the TOOL
@@ -409,7 +409,7 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
 
 /// A fresh subscription: replay (the whole retained history) then live, in
 /// the same shape `collect_until` drains.
-async fn subscribe(state: &AppState, id: ulid::Ulid) -> rust_agent::session::Subscription {
+async fn subscribe(state: &AppState, id: ulid::Ulid) -> navai::session::Subscription {
     state.subscribe(id, None).await.expect("subscribe")
 }
 
@@ -434,7 +434,7 @@ async fn resumed_feed_rebuilds_without_announcing_old_turns() {
     let state = TestServerConfig::mock(&root, &server.uri())
         .model_alias("cognition", "mock-opus")
         .history_db(root.join("sessions.db"))
-        .navigator_state_with_conversation(Some(rust_agent::navigator::ConversationFeed::new()));
+        .navigator_state_with_conversation(Some(navai::navigator::ConversationFeed::new()));
 
     let id = state
         .create_session(&ws, None, Some("navigator"))
@@ -447,7 +447,7 @@ async fn resumed_feed_rebuilds_without_announcing_old_turns() {
 
     // A second state over the same database: its feed has never seen the
     // conversation.
-    let feed = rust_agent::navigator::ConversationFeed::new();
+    let feed = navai::navigator::ConversationFeed::new();
     let resumed_state = TestServerConfig::mock(&root, &server.uri())
         .model_alias("cognition", "mock-opus")
         .history_db(root.join("sessions.db"))

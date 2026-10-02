@@ -627,7 +627,7 @@ async fn null_or_malformed_fields_keep_the_previous_values() {
     );
     assert_eq!(requests(&server).await, 1);
     assert!(d.stale, "kept values are not freshly confirmed");
-    assert!(d.age_seconds.unwrap() >= TTL + 1, "{:?}", d.age_seconds);
+    assert!(d.age_seconds.unwrap() > TTL, "{:?}", d.age_seconds);
     let saved = read_cache(&cache_path(&catalog, &base)).unwrap();
     assert_eq!(saved.models["m"].context_length, Some(500_000));
     // The same after a restart: no new request, still stale with the old age.
@@ -635,9 +635,9 @@ async fn null_or_malformed_fields_keep_the_previous_values() {
     let again = lookup(&reopened, &base, "m").await;
     assert_eq!(requests(&server).await, 1, "the list itself is current");
     assert!(again.stale);
-    assert!(again.age_seconds.unwrap() >= TTL + 1);
+    assert!(again.age_seconds.unwrap() > TTL);
     let cached = reopened.cached(&resolved(&base, "m", ApiKind::Chat, None));
-    assert!(cached.stale && cached.age_seconds.unwrap() >= TTL + 1);
+    assert!(cached.stale && cached.age_seconds.unwrap() > TTL);
     assert_eq!(cached.limits.unwrap().context_length, Some(500_000));
 }
 

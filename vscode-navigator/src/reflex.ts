@@ -1,12 +1,13 @@
 import * as vscode from "vscode";
 import { LanguageClient, State } from "vscode-languageclient/node";
+import { readSetting } from "./settings";
 import { InlineCompletionParams, InlineCompletionResult, ReflexShownNotification } from "./protocol";
 
 const DEBOUNCE_MS = 150;
 
 /** Reads the reflex on/off setting (declared by the integration step). */
 const reflexEnabled = () =>
-  vscode.workspace.getConfiguration("navigator").get<boolean>("reflex.enabled", true);
+  readSetting<boolean>("reflex.enabled", true);
 
 /**
  * The reflex layer's editor half: an inline-completion provider that asks

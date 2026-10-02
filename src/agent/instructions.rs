@@ -36,8 +36,8 @@ const FRAMING: &str = "These local instructions come from the user's and the pro
 They apply within the agent contract and your role above and never override either. \
 When two files disagree, the one listed later is closer to the working directory and wins.";
 
-/// Where discovery looks beyond the workspace. Injected so that tests never
-/// read the real home directory.
+/// Where discovery looks beyond the workspace, for the rules and for the
+/// skills. Injected so that tests never read the real home directory.
 #[derive(Debug, Clone, Default)]
 pub struct RulesRoots {
     /// The home directory holding the global files; `None` reads no global
@@ -171,7 +171,7 @@ impl Instructions {
 }
 
 /// The directories from the worktree root down to `workspace`, in that order.
-fn directories_from_root(workspace: &Path) -> Vec<PathBuf> {
+pub(crate) fn directories_from_root(workspace: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     for dir in workspace.ancestors() {
         dirs.push(dir.to_path_buf());

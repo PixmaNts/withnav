@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::instructions::Instructions;
+use crate::agent::skills::{SkillTool, Skills};
 use crate::provider::config::{ProviderConfig, ReasoningHistory};
 use crate::provider::openai::ChatMessage;
 use crate::tools::{Registry, ToolContext};
@@ -32,6 +35,9 @@ pub struct AgentActor {
     /// sent as one system message after the role prompt. A snapshot: the
     /// files are not read again.
     pub rules: Instructions,
+    /// The skills found when the session was created or resumed: the catalog
+    /// message follows the rules. A snapshot, like the rules.
+    pub skills: Arc<Skills>,
     pub cancel: CancellationToken,
     pub state: AgentState,
     pub pending_ask_id: Option<String>,
@@ -61,6 +67,7 @@ impl AgentActor {
             max_steps: crate::agent::run_loop::max_steps(),
             system_prompt: None,
             rules: Instructions::default(),
+            skills: Arc::new(Skills::default()),
             cancel,
             state: AgentState::Idle,
             pending_ask_id: None,
@@ -71,6 +78,19 @@ impl AgentActor {
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(prompt.into());
         self
+    }
+
+    /// Installs the skills snapshot: with at least one skill, the `skill` tool
+    /// joins the registry and `read`/`grep` may open the skill roots. Writes
+    /// keep their roots.
+    pub fn set_skills(&mut self, skills: Skills) {
+        let skills = Arc::new(skills);
+        if !skills.is_empty() {
+            self.registry
+                .register(Box::new(SkillTool::new(Arc::clone(&skills))));
+        }
+        self.tool_context.readable_roots = skills.readable_roots().to_vec();
+        self.skills = skills;
     }
 
     /// Re-derives `pending_ask_id` from a restored transcript: the `ask` call

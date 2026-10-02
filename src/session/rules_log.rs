@@ -1,8 +1,9 @@
-//! The one log line per source a session writes when its local instructions
-//! are loaded (at creation and at resume).
+//! The log lines a session writes when its local instructions and its skills
+//! are loaded (at creation and at resume): one per source or file.
 
 use super::service::SessionId;
 use crate::agent::instructions::Instructions;
+use crate::agent::skills::Skills;
 
 pub(super) fn log(id: SessionId, resumed: bool, rules: &Instructions) {
     let when = if resumed { "resume" } else { "create" };
@@ -18,6 +19,24 @@ pub(super) fn log(id: SessionId, resumed: bool, rules: &Instructions) {
             tracing::warn!(session_id = %id, path = %source.path.display(), "instructions: {}", source.status);
         } else {
             tracing::info!(session_id = %id, path = %source.path.display(), "instructions: {}", source.status);
+        }
+    }
+}
+
+pub(super) fn log_skills(id: SessionId, resumed: bool, skills: &Skills) {
+    let when = if resumed { "resume" } else { "create" };
+    tracing::info!(
+        session_id = %id,
+        on = when,
+        skills = skills.len(),
+        diagnostics = skills.diagnostics().len(),
+        "session skills loaded"
+    );
+    for d in skills.diagnostics() {
+        if d.is_problem() {
+            tracing::warn!(session_id = %id, path = %d.path.display(), "skills: {}", d.kind);
+        } else {
+            tracing::info!(session_id = %id, path = %d.path.display(), "skills: {}", d.kind);
         }
     }
 }

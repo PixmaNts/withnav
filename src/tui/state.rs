@@ -59,6 +59,13 @@ pub struct Conversation {
     pub completion_tokens: Option<u64>,
     pub session_tokens: Option<u64>,
     pub missing_usage: bool,
+    pub current_turn: Option<String>,
+    pub current_step: Option<(String, String, String)>,
+    pub step_blocks: HashMap<(String, String, String), String>,
+    pub step_turns: HashMap<(String, String, String), String>,
+    pub counted_steps: std::collections::HashSet<(String, String, String)>,
+    pub pending_tools: HashMap<String, String>,
+    pub pending_tool_fragments: HashMap<String, String>,
 }
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct State {
@@ -77,6 +84,10 @@ pub struct State {
     pub delivery_uncertain: bool,
     pub last_protocol_error: Option<String>,
     pub latest_envelope: Option<EventEnvelope>,
+    pub pending_submit_text: Option<String>,
+    pub pending_model_pick: bool,
+    pub editor_revision: u64,
+    pub notice: Option<String>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Focus {

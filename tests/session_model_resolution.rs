@@ -369,3 +369,69 @@ async fn a_corrupt_column_fails_the_resume() {
         assert_eq!(fx.saved(id).as_deref(), Some(bad.as_str()), "left as found");
     }
 }
+
+// Given a resolution saved before endpoints were recorded, read by this
+//       service, then completed by another process with a different endpoint
+// When this service writes its own completion
+// Then the write touches no row and is an error: the activation never runs on
+//      an endpoint that is not the committed one
+#[tokio::test]
+async fn a_lost_endpoint_completion_is_an_error() {
+    let fx = Fixture::new();
+    let server = serve_models(1_000_000).await;
+    let service = fx.service(&base(&server), "mock-model", "data");
+    let id = create_then_stop(&service, &fx).await;
+    let mut legacy: Value = serde_json::from_str(&fx.saved(id).unwrap()).unwrap();
+    legacy.as_object_mut().unwrap().remove("endpoint");
+    let read_by_this_service = legacy.to_string();
+    let mut theirs = legacy.clone();
+    theirs["endpoint"] = json!("http://elsewhere.invalid/v1");
+    fx.db()
+        .execute(
+            "UPDATE sessions SET model_resolution = ?2 WHERE id = ?1",
+            rusqlite::params![id.to_string(), theirs.to_string()],
+        )
+        .expect("the other process wins");
+
+    let mut ours: navai::provider::catalog::ModelResolution =
+        serde_json::from_value(legacy).expect("resolution");
+    ours.endpoint = base(&server);
+    let err = service
+        .history()
+        .fill_resolution_endpoint(id, &read_by_this_service, &ours)
+        .await
+        .expect_err("a lost compare-and-set is not a success");
+    assert!(err.contains("changed"), "{err}");
+    let kept: Value = serde_json::from_str(&fx.saved(id).unwrap()).unwrap();
+    assert_eq!(kept["endpoint"], "http://elsewhere.invalid/v1");
+}
+
+// Given an alias whose models.json sets `max_input_tokens: 0`
+// When a session is created, closed and resumed
+// Then the zero is treated as unset: the saved resolution holds no zero bound
+//      and the resume succeeds
+#[tokio::test]
+async fn a_zero_configured_input_limit_never_makes_a_session_unresumable() {
+    let fx = Fixture::new();
+    let server = serve_models(1_000_000).await;
+    let cfg = TestServerConfig::mock(fx.tmp.path(), &base(&server))
+        .model_alias("default", "mock-model")
+        .without_window();
+    let (mut session, _) = cfg.config().split();
+    session.data_dir = fx.tmp.path().join("data");
+    let models_path = cfg.models_path();
+    let mut models: Value =
+        serde_json::from_str(&std::fs::read_to_string(&models_path).unwrap()).unwrap();
+    models["models"]["default"]["max_input_tokens"] = json!(0);
+    std::fs::write(&models_path, models.to_string()).unwrap();
+    let service = Service::new(session).expect("service");
+
+    let id = create_then_stop(&service, &fx).await;
+    let saved: Value = serde_json::from_str(&fx.saved(id).unwrap()).unwrap();
+    assert_ne!(saved["bounds"]["max_input_tokens"], json!(0), "{saved}");
+    service
+        .create_or_resume_session(&fx.ws, None, None, Some(id))
+        .await
+        .expect("a session created with a zero setting resumes");
+    service.close_session(id).await.expect("close");
+}

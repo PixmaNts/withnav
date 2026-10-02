@@ -600,7 +600,10 @@ pub async fn resolve_chat(
             configured,
             discovered,
         });
-    let max_input_tokens = resolved.model.max_input_tokens.or(limits.max_input_tokens);
+    // A zero in models.json means "not set": a saved resolution with a zero
+    // bound is refused on resume, so it must never be written.
+    let configured_input = resolved.model.max_input_tokens.filter(|n| *n > 0);
+    let max_input_tokens = configured_input.or(limits.max_input_tokens);
     let snapshot = ModelResolution {
         version: RESOLUTION_VERSION,
         provider: resolved.provider_name.clone(),
@@ -615,7 +618,7 @@ pub async fn resolve_chat(
         history_policy: format!("{:?}", resolved.model.reasoning_history).to_lowercase(),
         provenance: Provenance {
             context_window: source.into(),
-            max_input_tokens: match (resolved.model.max_input_tokens, limits.max_input_tokens) {
+            max_input_tokens: match (configured_input, limits.max_input_tokens) {
                 (Some(_), _) => "models.json",
                 (None, Some(_)) => "discovered.max_input_tokens",
                 (None, None) => "none",

@@ -145,6 +145,8 @@ enum WriteError {
     Json(#[from] serde_json::Error),
     #[error("no stored session {0}")]
     UnknownSession(Ulid),
+    #[error("the saved model resolution of session {0} changed while it was being completed")]
+    ResolutionChanged(Ulid),
 }
 
 /// The handle side of the store: clones a sender into the single writer
@@ -404,11 +406,18 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             expected,
             resolution,
         } => {
-            tx.execute(
+            // Exactly one row: another process that completed the same
+            // legacy resolution first may have recorded a different endpoint,
+            // and this activation must not run against an endpoint that is
+            // not the committed one.
+            let touched = tx.execute(
                 "UPDATE sessions SET model_resolution = ?2
                  WHERE id = ?1 AND model_resolution = ?3",
                 params![id.to_string(), resolution, expected],
             )?;
+            if touched != 1 {
+                return Err(WriteError::ResolutionChanged(id));
+            }
         }
         Write::AppendEvent { id, envelope } => {
             let payload = serde_json::to_string(&envelope)?;

@@ -529,8 +529,8 @@ fn builtin_default_pipeline_loads_and_is_the_spec_shape() {
     let triggers = snap.triggers();
     assert_eq!(triggers.len(), 2);
     assert_eq!(triggers[0].on.len(), 2);
-    assert_eq!(triggers[0].prefilters.min_changed_lines, 3);
-    assert_eq!(triggers[0].prefilters.cooldown_ms, 45_000);
+    assert_eq!(triggers[0].prefilters.min_changed_lines, 1);
+    assert_eq!(triggers[0].prefilters.cooldown_ms, 0);
     assert_eq!(triggers[0].questions.len(), 6);
     assert!(triggers[0].questions.contains_key("unfinished"));
     assert!(triggers[0].questions.contains_key("stuck"));
@@ -692,17 +692,79 @@ async fn builtin_judges_unfinished_edits_not_compile_errors() {
         "the edit is still being typed"
     );
 
-    // The remark branch is gated by the same question.
+    // The remark branch is not gated by it: unfinished code can still
+    // merit a concrete local correction.
     let worth_it = builtin_answers(0.95, "cognition", 0.3);
     assert_eq!(
         builtin_action(worth_it.clone(), with_errors).await,
         "remark"
     );
+    for unfinished in [0.5, 0.9] {
+        assert_eq!(
+            builtin_action(
+                with_noul(worth_it.clone(), "unfinished", unfinished),
+                with_errors
+            )
+            .await,
+            "remark",
+            "unfinished at {unfinished}"
+        );
+    }
+}
+
+/// The remark branch carries the remark rate limit itself (45 s), so the
+/// wake branch never waits on it.
+#[tokio::test]
+async fn builtin_remark_branch_has_the_remark_cooldown_and_a_wake_ignores_it() {
+    let worth_it = builtin_answers(0.95, "cognition", 0.3);
+    let mut recent = inputs(5);
+    recent.since_last_remark_ms = 44_999;
+    assert_eq!(builtin_action(worth_it.clone(), recent).await, "silent");
+    recent.since_last_remark_ms = 45_000;
+    assert_eq!(builtin_action(worth_it, recent).await, "remark");
+
+    // A wake right after a remark is not skipped.
+    let drifting = builtin_answers(0.95, "cognition", 0.95);
+    let mut after_remark = inputs(5);
+    after_remark.since_last_remark_ms = 1_000;
     assert_eq!(
-        builtin_action(with_noul(worth_it, "unfinished", 0.5), with_errors).await,
-        "silent",
-        "unfinished at 0.5 is not below 0.5"
+        builtin_action(drifting.clone(), after_remark).await,
+        "wake_cognition"
     );
+    // ... and still needs the edit to be finished.
+    let typing = with_noul(drifting, "unfinished", 0.9);
+    assert_eq!(builtin_action(typing, after_remark).await, "silent");
+}
+
+/// A one-line addition, replacement or deletion passes the size pre-filter
+/// and reaches the instinct; an unchanged text still does not.
+#[tokio::test]
+async fn builtin_one_line_edits_pass_the_size_prefilter() {
+    use rust_agent::navigator::document::count_changed_lines;
+    let base = "a\nb\nc\n";
+    let pipeline = Pipeline::new(PipelineSnapshot::builtin().unwrap());
+    for (what, new) in [
+        ("addition", "a\nb\nc\nd\n"),
+        ("replacement", "a\nB\nc\n"),
+        ("deletion", "a\nc\n"),
+        ("unchanged", base),
+    ] {
+        let mut i = inputs(count_changed_lines(base, new) as i64);
+        // A remark was just written: the save/idle pre-filter has no cooldown.
+        i.since_last_remark_ms = 1_000;
+        let eval = pipeline
+            .evaluate(
+                TriggerKind::Save,
+                i,
+                &tvars(),
+                &ScriptedDecision::fixed(builtin_answers(0.1, "silent", 0.1)),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let expected = (what == "unchanged").then_some("too_few_changed_lines");
+        assert_eq!(eval.prefilter.skip_reason(), expected, "{what}");
+    }
 }
 
 /// A stuck driver gets the chat whether the code compiles or not, and even
@@ -781,9 +843,8 @@ async fn builtin_wake_has_its_own_cooldown() {
 
 // ---------- built-in pipeline: an explicit call for help ----------
 
-/// A one-line comment that calls on the navigator passes the size limit and
-/// the remark cooldown, and is answered with a remark (never a wake) whatever
-/// the instinct's scores; the same line without the call is skipped.
+/// A comment that calls on the navigator is answered with a remark (never a
+/// wake) whatever the instinct's scores, and past a recent remark.
 #[tokio::test]
 async fn builtin_a_call_for_help_bypasses_the_small_change_filter_and_remarks() {
     let pipeline = Pipeline::new(PipelineSnapshot::builtin().unwrap());
@@ -803,14 +864,18 @@ async fn builtin_a_call_for_help_bypasses_the_small_change_filter_and_remarks() 
         }
     };
 
-    let mut one_line = inputs(1);
-    one_line.since_last_remark_ms = 1_000;
-    let skipped = run(one_line, builtin_answers(0.1, "silent", 0.1)).await;
+    // An unchanged text is skipped without paying for the instinct.
+    let mut unchanged = inputs(0);
+    unchanged.since_last_remark_ms = 1_000;
+    let skipped = run(unchanged, builtin_answers(0.1, "silent", 0.1)).await;
     assert_eq!(
         skipped.prefilter.skip_reason(),
         Some("too_few_changed_lines")
     );
     assert!(skipped.answers.is_none(), "the instinct is not paid for");
+
+    let mut one_line = inputs(1);
+    one_line.since_last_remark_ms = 1_000;
 
     one_line.called_for_help = true;
     // Scores that would be silent, and scores that would wake: both remark.

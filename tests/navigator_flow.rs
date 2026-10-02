@@ -117,3 +117,20 @@ async fn closing_cancels_the_deduplicated_remark() {
         .any(|r| r["delivered"] == "cancelled"));
     assert_eq!(mock.calls(), 1);
 }
+
+/// A one-line replacement reaches the metacognition under the built-in
+/// pipeline, with no size limit to clear.
+#[tokio::test(start_paused = true)]
+async fn a_one_line_replacement_reaches_the_metacognition() {
+    let mock = MockCommenter::new(vec![Answer::Remark(1, "x")]);
+    let mut client = Nav::start(mock.clone()).await;
+    client.open_base().await;
+    client
+        .did_change(URI, "fn main() {\n    println!(\"hi\");\n}", 2)
+        .await;
+    client.did_save(URI).await;
+    let mut seen = Vec::new();
+    let remark = client.expect("navigator/remark", &mut seen).await;
+    assert_eq!(remark["params"]["text"], "x");
+    assert_eq!(mock.calls(), 1);
+}

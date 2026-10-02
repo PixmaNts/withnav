@@ -772,6 +772,36 @@ pub fn with_intent_and_feed(
         .with_dirs(Some(workspace.to_path_buf()), None)
 }
 
+/// A project pipeline under `workspace`: the built-in one with its
+/// `min_changed_lines` replaced, for scenarios about the size pre-filter.
+pub fn with_min_changed_lines(
+    deps: NavigatorDeps,
+    workspace: &Path,
+    lines: usize,
+) -> NavigatorDeps {
+    use rust_agent::navigator::default_pipeline as built_in;
+    let dir = workspace.join(".navigator");
+    std::fs::create_dir_all(dir.join("prompts")).unwrap();
+    let toml = built_in::PIPELINE_TOML.replace(
+        "min_changed_lines = 1",
+        &format!("min_changed_lines = {lines}"),
+    );
+    std::fs::write(dir.join("pipeline.toml"), toml).unwrap();
+    for (name, text) in [
+        ("state.md", built_in::STATE_PROMPT),
+        ("remark.md", built_in::REMARK_PROMPT),
+        ("help_remark.md", built_in::HELP_REMARK_PROMPT),
+        ("conversation_state.md", built_in::CONVERSATION_STATE_PROMPT),
+        (
+            "conversation_remark.md",
+            built_in::CONVERSATION_REMARK_PROMPT,
+        ),
+    ] {
+        std::fs::write(dir.join("prompts").join(name), text).unwrap();
+    }
+    deps.with_dirs(Some(workspace.to_path_buf()), None)
+}
+
 /// A driver message observed by a conversation feed.
 pub fn driver_message(session_id: ulid::Ulid, seq: u64, content: &str) -> EventEnvelope {
     EventEnvelope::new(

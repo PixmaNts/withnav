@@ -12,9 +12,9 @@ use rust_agent::navigator;
 
 mod common;
 use common::navigator::{
-    base_text, big_edit, driver_message, feed_with_session, with_intent_and_feed, LspClient, Nav,
-    RemarkAnswer as Answer, ScriptedCommenter as MockCommenter, ScriptedFim, ScriptedReflexContext,
-    URI,
+    base_text, big_edit, driver_message, feed_with_session, with_intent_and_feed,
+    with_min_changed_lines, LspClient, Nav, RemarkAnswer as Answer,
+    ScriptedCommenter as MockCommenter, ScriptedFim, ScriptedReflexContext, URI,
 };
 
 // ---------- tests ----------
@@ -43,11 +43,15 @@ async fn idle_after_big_edit_emits_remark() {
     assert!(records.contains("\"kind\":\"trigger\""));
 }
 
-/// A 1-line change never triggers (skip: too_few_changed_lines).
+/// A pipeline that asks for 3 changed lines skips a smaller change
+/// (skip: too_few_changed_lines) without calling the metacognition.
 #[tokio::test(start_paused = true)]
-async fn one_line_change_never_triggers() {
+async fn a_change_under_the_pipelines_size_limit_never_triggers() {
     let mock = MockCommenter::new(vec![Answer::Remark(0, "should not happen")]);
-    let mut client = Nav::start(mock.clone()).await;
+    let mut client = Nav::start_with(mock.clone(), json!({}), |d, ws| {
+        with_min_changed_lines(d, ws, 3)
+    })
+    .await;
     client.open_base().await;
     // only one line changed
     client
@@ -63,7 +67,12 @@ async fn one_line_change_never_triggers() {
 /// change logs a light record, without the rendered state.
 #[tokio::test(start_paused = true)]
 async fn skips_logs_light_or_not_at_all() {
-    let mut client = Nav::start(MockCommenter::new(vec![Answer::Silent])).await;
+    let mut client = Nav::start_with(
+        MockCommenter::new(vec![Answer::Silent]),
+        json!({}),
+        |d, ws| with_min_changed_lines(d, ws, 3),
+    )
+    .await;
     client.open_base().await;
     client
         .notify("navigator/diagnostics", json!({"uri": URI, "items": []}))

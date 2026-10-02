@@ -1,14 +1,15 @@
 //! The built-in default pipeline: the six questions (`worth_attention`,
-//! `route`, `drift`, `contradicts_conversation`, `unfinished`, `stuck`), pre-filters min 3
-//! lines / remark cooldown 45 s, then the branches in order:
+//! `route`, `drift`, `contradicts_conversation`, `unfinished`, `stuck`), the
+//! pre-filter (at least one changed line, no cooldown: a replaced line counts
+//! as two, an unchanged text as none), then the branches in order:
 //!
 //! 0. `remark` (prompt `help_remark.md`) when `called_for_help`: the lines
 //!    the driver just added hold a comment addressing the navigator
 //!    ("help", "aide", "navigator", a question). The first trigger's
-//!    `bypass_on_help_call` lets such a change past `min_changed_lines` and
-//!    the remark cooldown (a one-line `// J'ai besoin d'aide` was skipped 92
-//!    times in a real evening), and this branch comes first so no score can
-//!    turn the call away. It stays a remark, never a wake: the driver is at
+//!    `bypass_on_help_call` lets such a change past `min_changed_lines`, and
+//!    this branch comes first, before any rate limit or score, so nothing can
+//!    turn the call away (a one-line `// J'ai besoin d'aide` was skipped 92
+//!    times in a real evening). It stays a remark, never a wake: the driver is at
 //!    the editor, not in the chat.
 //! 1. `wake_cognition` when `stuck > 0.8`: the instinct judges the driver
 //!    stuck (the same errors persist or come back across recent edits,
@@ -24,13 +25,17 @@
 //!    driver is still typing (a half-written statement, a copied body not
 //!    yet adapted). Compile errors alone do not make it unfinished, and
 //!    `has_errors` stays a variable no default branch uses. Wakes have
-//!    their own cooldown, `wake_cooldown_ms` = 120 s, apart from the remark
-//!    cooldown: a wake inside it does not match and the trigger falls to
-//!    the next branch, and a wake never silences the next remark.
-//! 3. `remark` when `unfinished < 0.5 && worth_attention > 0.85 &&
-//!    route != "silent"`. The route `cognition` without a wake (scores under
-//!    the wake thresholds) still gets its remark: the metacognition writes
-//!    it, the cognition is only woken by branches 1 and 2.
+//!    their own cooldown, `wake_cooldown_ms` = 120 s: a wake inside it does
+//!    not match and the trigger falls to the next branch, and a wake never
+//!    silences the next remark.
+//! 3. `remark` when `worth_attention > 0.85 && route != "silent" &&
+//!    since_last_remark_ms >= 45000`. There is no `unfinished` gate: code in
+//!    the middle of being written can still hold a concrete correction, and
+//!    nearly everything a person does while implementing looks unfinished.
+//!    The 45 s rate limit lives in this branch and not in the pre-filter, so
+//!    it never skips a wake. The route `cognition` without a wake (scores
+//!    under the wake thresholds) still gets its remark: the metacognition
+//!    writes it, the cognition is only woken by branches 1 and 2.
 //! 4. silent.
 //!
 //! All questions travel in one instinct call. `stuck` reads the diagnostics
@@ -43,8 +48,7 @@
 //! The stricter values come from a first day of use (2026-09-29): at 0.7
 //! and 20 s, `worth_attention` sat at 0.93-0.95 during a refactoring and the
 //! metacognition remarked on every save. Replaying that log, 0.85 with a
-//! 45 s cooldown halves the remarks (25 -> 13). Rewording the question to
-//! discount mid-edit code silenced every remark, so the wording is kept.
+//! 45 s cooldown halves the remarks (25 -> 13).
 //!
 //! A second trigger listens to `conversation` (a driver turn ended in the
 //! chat): one question, `code_contradicts_conversation`, and a `remark`

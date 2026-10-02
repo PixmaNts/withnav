@@ -31,6 +31,7 @@ Dependencies point down this list. A module never imports one above it.
 
 | Module | Owns | Does not own |
 |---|---|---|
+| `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
 | `provider/` | `models.json` aliases (`config.rs`, `load_models`), keys (`auth.rs`), one `ModelClient` per endpoint (`client.rs`: auth header, deadline, cancellation, status errors), the chat SSE decoder (`sse.rs`, `mod.rs`), the FIM and System One wire clients | anything navigator-specific: no `crate::navigator` import |
 | `tools/` | the tool trait, the registry, path validation (`validate_path`), the six tools; `ToolContext` with the writable roots and the read-only ones (`read`/`grep` accept both, `write`/`edit`/`bash` only the first) | which tools a session gets |
 | `agent/` | `AgentActor` (transcript, pending `ask`, optional role prompt, the rules and skills snapshots), `run_agent` with one `AgentEvent` observer, request building, the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool) | events, persistence |
@@ -80,13 +81,13 @@ imports the serialized bus types and no runtime internals.
 | `runtime/effects.rs` | `Executor`: runs each `Effect` in a task and reports a tagged `ClientEvent`; owns the one live stream |
 | `runtime/tests.rs` | executor and loop tests with no terminal and a dead server |
 | `terminal.rs` | raw mode and the alternate screen, restored on exit and on panic |
-| `theme.rs` | the semantic styles |
+| `theme.rs` | the four themes (`ThemeId`, the `Theme` colour roles), the RGB `blend` for tints, and the semantic styles the views draw with |
 | `view/mod.rs` | `draw`: layout of transcript, editor, status line and overlays |
 | `view/transcript.rs` | block layout and drawing: messages by origin, steps, tools, errors, scroll and selection |
 | `view/tool.rs` | the one-line summary and the expanded output of a tool call |
 | `view/markdown.rs` | markdown to styled lines, cached per block revision |
 | `view/status.rs` | the status line: connection, model, activity, context and session tokens |
-| `view/pickers.rs` | the model, session, command and help overlays |
+| `view/pickers.rs` | the model, session, command, theme and help overlays |
 
 ## Data flows
 

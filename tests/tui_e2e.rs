@@ -85,6 +85,7 @@ impl Env {
             initial_model: None,
             initial_session: None,
             embedded: false,
+            config_dir: None,
         })
     }
 }

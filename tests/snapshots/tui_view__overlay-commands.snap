@@ -13,16 +13,16 @@ expression: snapshot
  │                                                                                                  
  │ ▸ × bash ┌──────────────────────────────── Commands ────────────────────────────────┐            
  │          │ filter:                                                                  │            
- │ ASSISTANT│ /new         new conversation                                            │            
+ │ ASSISTANT│▌/new         new conversation                                            │            
  │  I found │ /sessions    browse conversations                                        │            
  │          │ /model       choose model for a new conversation                         │            
             │ /stop        stop generation                                             │            
             │ /mode        cycle delivery mode (steer and interrupt send as next-turn) │            
+            │ /theme       choose the colour theme                                     │            
             │ /help        show keyboard shortcuts                                     │            
             │ /quit        quit terminal client                                        │            
             │                                                                          │            
             └──────────────────────────────────────────────────────────────────────────┘            
-                                                                                                    
                                                                                                     
                                                                                                     
                                                                                                     

@@ -3,7 +3,7 @@ use crate::{
     tui::{state::BlockKind, theme::Theme},
 };
 use ratatui::{
-    style::Style,
+    style::Modifier,
     text::{Line, Span},
 };
 use serde_json::Value;
@@ -43,7 +43,7 @@ pub fn duration(ms: Option<u64>) -> String {
     }
 }
 
-pub fn header(kind: &BlockKind, tick: u64) -> Line<'static> {
+pub fn header(kind: &BlockKind, tick: u64, theme: &Theme) -> Line<'static> {
     let BlockKind::ToolCall {
         name,
         args,
@@ -55,7 +55,6 @@ pub fn header(kind: &BlockKind, tick: u64) -> Line<'static> {
     else {
         return Line::default();
     };
-    let theme = Theme;
     let (glyph, label, style) = match status {
         Some(ToolStatus::Ok) => ("✓", "ok", theme.success()),
         Some(ToolStatus::Error) => ("×", "error", theme.error()),
@@ -68,22 +67,31 @@ pub fn header(kind: &BlockKind, tick: u64) -> Line<'static> {
             theme.accent(),
         ),
     };
+    // The spinner is a glyph, so it takes the bright accent; the label is text and keeps the
+    // readable accent text colour (the bright accent is too pale on light backgrounds).
+    let glyph_style = if status.is_none() && !args.is_null() {
+        theme.accent_line()
+    } else {
+        style
+    };
     let exit = exit_code
         .filter(|n| *n != 0)
         .map(|n| format!("  exit {n}"))
         .unwrap_or_default();
-    Line::from(vec![
-        Span::styled(format!("{glyph} "), style),
+    let mut spans = vec![
+        Span::styled(format!("{glyph} "), glyph_style),
         Span::styled(name.clone(), theme.strong()),
-        Span::raw(format!(" {}", summary(name, args))),
-        Span::styled(
-            format!("  {label}  {}{exit}", duration(*duration_ms)),
-            style,
-        ),
-    ])
+        Span::styled(format!(" {}", summary(name, args)), theme.code_ref()),
+        Span::styled(format!("  {label}  "), style),
+        Span::styled(duration(*duration_ms), theme.number()),
+    ];
+    if !exit.is_empty() {
+        spans.push(Span::styled(exit, theme.error()));
+    }
+    Line::from(spans)
 }
 
-pub fn output(kind: &BlockKind) -> Vec<Line<'static>> {
+pub fn output(kind: &BlockKind, theme: &Theme) -> Vec<Line<'static>> {
     let BlockKind::ToolCall {
         output, args, name, ..
     } = kind
@@ -100,11 +108,13 @@ pub fn output(kind: &BlockKind) -> Vec<Line<'static>> {
         .take(20)
         .map(|line| {
             let style = if diff && line.starts_with('+') && !line.starts_with("+++") {
-                Theme.success()
+                theme.success()
             } else if diff && line.starts_with('-') && !line.starts_with("---") {
-                Theme.error()
+                theme.error()
+            } else if diff && line.starts_with("@@") {
+                theme.code_ref()
             } else {
-                Style::default()
+                theme.muted()
             };
             Line::from(Span::styled(format!("  {line}"), style))
         })
@@ -112,7 +122,7 @@ pub fn output(kind: &BlockKind) -> Vec<Line<'static>> {
     if lines.len() > 20 {
         preview.push(Line::styled(
             format!("  … {} more lines", lines.len() - 20),
-            Theme.muted(),
+            theme.muted().add_modifier(Modifier::ITALIC),
         ));
     }
     preview

@@ -20,6 +20,7 @@ fn ctx(generation: u64, session: Option<&str>) -> Context {
         generation: Generation(generation),
         session_id: session.map(str::to_string),
         workspace: "/ws".into(),
+        config_dir: None,
     }
 }
 
@@ -238,6 +239,7 @@ fn options(model: Option<&str>) -> TuiOptions {
         initial_model: model.map(str::to_string),
         initial_session: None,
         embedded: false,
+        config_dir: None,
     }
 }
 
@@ -326,5 +328,73 @@ fn an_uncertain_send_is_reported_as_delivery_uncertain() {
         ClientEvent::DeliveryUncertain {
             generation: Generation(5)
         }
+    );
+}
+
+fn options_in(config_dir: &std::path::Path) -> TuiOptions {
+    TuiOptions {
+        config_dir: Some(config_dir.to_path_buf()),
+        ..options(None)
+    }
+}
+
+/// Opens the theme picker, moves down `steps` rows and confirms, through the real key routing.
+fn pick_theme(runtime: &mut Runtime, steps: usize) {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let press = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+    runtime.dispatch(Action::OpenOverlay(crate::tui::protocol::Overlay::Themes));
+    for _ in 0..steps {
+        runtime.handle_terminal_event(press(KeyCode::Down));
+    }
+    runtime.handle_terminal_event(press(KeyCode::Enter));
+}
+
+#[tokio::test]
+async fn a_picked_theme_is_saved_and_restored_at_the_next_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut runtime = Runtime::new(&options_in(dir.path()));
+    assert_eq!(runtime.ui.theme, ThemeId::AyuDark);
+    pick_theme(&mut runtime, 3);
+    assert_eq!(runtime.ui.theme, ThemeId::NordLight);
+    drop(runtime);
+    let restarted = Runtime::new(&options_in(dir.path()));
+    assert_eq!(restarted.ui.theme, ThemeId::NordLight);
+}
+
+#[tokio::test]
+async fn a_failed_save_is_shown_and_picking_again_retries() {
+    let dir = tempfile::tempdir().unwrap();
+    // A directory where the settings file should be: the rename over it fails.
+    std::fs::create_dir(crate::settings::path(dir.path())).unwrap();
+    std::fs::write(crate::settings::path(dir.path()).join("keep"), "").unwrap();
+    let mut runtime = Runtime::new(&options_in(dir.path()));
+    pick_theme(&mut runtime, 1);
+    assert_eq!(
+        runtime.ui.theme,
+        ThemeId::AyuLight,
+        "the theme applies anyway"
+    );
+    let event = tokio::time::timeout(Duration::from_secs(10), runtime.recv())
+        .await
+        .expect("in time")
+        .expect("open");
+    assert!(
+        matches!(event, ClientEvent::SettingsNotSaved { .. }),
+        "{event:?}"
+    );
+    runtime.apply_event(event);
+    let notice = runtime.state.conversation.blocks.last().expect("a notice");
+    assert!(
+        matches!(&notice.kind, crate::tui::state::BlockKind::Notice(text) if text.contains("Ayu Light")),
+        "{notice:?}"
+    );
+
+    // Once the cause is gone, confirming the same theme again saves it.
+    std::fs::remove_dir_all(crate::settings::path(dir.path())).unwrap();
+    pick_theme(&mut runtime, 0);
+    assert_eq!(runtime.ui.theme, ThemeId::AyuLight);
+    assert_eq!(
+        crate::settings::load(dir.path()).unwrap().tui_theme(),
+        Some("ayu-light")
     );
 }

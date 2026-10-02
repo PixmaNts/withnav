@@ -16,7 +16,7 @@ expression: snapshot
  │ ASSISTANT                                                                                        
  │  I found ┌───────────────────── Start a new conversation with… ─────────────────────┐            
  │          │ filter:                                                                  │            
-            │ cognition        cc/claude-opus-5-5  ·  200k ctx                         │            
+            │▌cognition        cc/claude-opus-5-5  ·  200k ctx                         │            
             │ fast             cc/flash  ·  — ctx                                      │            
             │                                                                          │            
             └──────────────────────────────────────────────────────────────────────────┘            

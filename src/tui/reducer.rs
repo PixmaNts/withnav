@@ -484,6 +484,7 @@ pub fn strip_controls(input: &str) -> String {
 
 pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> {
     match a {
+        Action::SubmitAt { text, .. } => handle_action(s, ui, Action::Submit(text)),
         Action::Submit(text) => {
             s.pending_submit_text = Some(text.clone());
             s.editor_revision = s.editor_revision.wrapping_add(1);

@@ -144,6 +144,8 @@ pub enum Action {
     Scroll(i32),
     ToggleBlock(String),
     SetMode(Mode),
+    /// Submit with the editor revision the text was read at; `Submit(t)` is `SubmitAt { t, 0 }`.
+    SubmitAt { text: String, revision: u64 },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
@@ -169,6 +171,12 @@ pub enum Effect {
     Quit,
     /// Clears the editor if it still holds the text sent at `revision`.
     ClearEditor {
+        revision: u64,
+    },
+    /// Send `request`; the runtime echoes `revision` in `ClientEvent::Submitted` so the editor is
+    /// only cleared if it was not edited since. Replaces `Send`, which the reducer no longer emits.
+    SendAt {
+        request: SubmitRequest,
         revision: u64,
     },
 }

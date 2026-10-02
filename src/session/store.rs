@@ -104,6 +104,11 @@ enum Write {
         id: Ulid,
         resolution: String,
     },
+    FillEndpoint {
+        id: Ulid,
+        expected: String,
+        resolution: String,
+    },
     AppendEvent {
         id: Ulid,
         envelope: EventEnvelope,
@@ -267,6 +272,25 @@ impl HistoryStore {
         self.acked(Write::SetResolution { id, resolution }).await
     }
 
+    /// Replaces a saved resolution that lacks its endpoint with the same one
+    /// carrying it. Only when the column still holds exactly `expected`, so a
+    /// concurrent change is never overwritten. Waits for the commit.
+    pub async fn fill_resolution_endpoint(
+        &self,
+        id: Ulid,
+        expected: &str,
+        resolution: &crate::provider::catalog::ModelResolution,
+    ) -> Result<(), String> {
+        let resolution = serde_json::to_string(resolution)
+            .map_err(|e| format!("serialize model resolution: {e}"))?;
+        self.acked(Write::FillEndpoint {
+            id,
+            expected: expected.to_string(),
+            resolution,
+        })
+        .await
+    }
+
     /// Appends one durable envelope (the caller filters `llm.delta`) and
     /// bumps `last_seq` in the same transaction. Fire-and-forget: a failure
     /// surfaces at the next [`HistoryStore::flush`].
@@ -374,6 +398,17 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             {
                 return Err(WriteError::UnknownSession(id));
             }
+        }
+        Write::FillEndpoint {
+            id,
+            expected,
+            resolution,
+        } => {
+            tx.execute(
+                "UPDATE sessions SET model_resolution = ?2
+                 WHERE id = ?1 AND model_resolution = ?3",
+                params![id.to_string(), resolution, expected],
+            )?;
         }
         Write::AppendEvent { id, envelope } => {
             let payload = serde_json::to_string(&envelope)?;

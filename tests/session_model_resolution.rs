@@ -179,6 +179,66 @@ async fn a_retargeted_alias_is_an_identity_error() {
     assert_eq!(fx.saved(id), before);
 }
 
+// Given a saved conversation
+// When only the provider's base URL changes (same provider, model and api)
+// Then the resume is the identity error naming both endpoints, and nothing is
+//      rewritten
+#[tokio::test]
+async fn a_moved_endpoint_is_an_identity_error() {
+    let fx = Fixture::new();
+    let (first, second) = (serve_models(1_000_000).await, serve_models(1_000_000).await);
+    let id = create_then_stop(&fx.service(&base(&first), "mock-model", "data"), &fx).await;
+    let before = fx.saved(id);
+
+    let moved = fx.service(&base(&second), "mock-model", "data");
+    let err = moved
+        .create_or_resume_session(&fx.ws, None, None, Some(id))
+        .await
+        .expect_err("another endpoint never inherits a conversation");
+    assert!(
+        matches!(err, ServerError::ModelIdentityChanged { .. }),
+        "{err:?}"
+    );
+    let text = err.to_string();
+    assert!(
+        text.contains(&format!("endpoint {}", base(&first))),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("endpoint {}", base(&second))),
+        "{text}"
+    );
+    assert_eq!(fx.saved(id), before);
+}
+
+// Given a resolution saved before endpoints were recorded
+// When it is resumed
+// Then it is accepted and the endpoint is filled in, so a later move is refused
+#[tokio::test]
+async fn a_resolution_without_an_endpoint_is_filled_on_resume() {
+    let fx = Fixture::new();
+    let server = serve_models(1_000_000).await;
+    let service = fx.service(&base(&server), "mock-model", "data");
+    let id = create_then_stop(&service, &fx).await;
+    let mut legacy: Value = serde_json::from_str(&fx.saved(id).unwrap()).unwrap();
+    legacy.as_object_mut().unwrap().remove("endpoint");
+    fx.db()
+        .execute(
+            "UPDATE sessions SET model_resolution = ?2 WHERE id = ?1",
+            rusqlite::params![id.to_string(), legacy.to_string()],
+        )
+        .expect("legacy");
+
+    service
+        .create_or_resume_session(&fx.ws, None, None, Some(id))
+        .await
+        .expect("a legacy resolution resumes");
+    service.close_session(id).await.expect("close");
+    service.history().flush().await.expect("flush");
+    let filled: Value = serde_json::from_str(&fx.saved(id).unwrap()).unwrap();
+    assert_eq!(filled["endpoint"], base(&server));
+}
+
 // Given a row from before the column
 // When it is first resumed
 // Then it gets its snapshot then, and keeps it when the provider later

@@ -428,7 +428,10 @@ pub struct ModelResolution {
     pub provider: String,
     pub model: String,
     pub api: String,
-    /// The provider's base URL without credentials, query or fragment.
+    /// The provider's base URL without credentials, query or fragment. Empty
+    /// in a resolution saved before endpoints were recorded: it is accepted
+    /// on resume and filled in then.
+    #[serde(default)]
     pub endpoint: String,
     pub bounds: Bounds,
     pub history_policy: String,
@@ -449,17 +452,29 @@ pub struct Provenance {
     pub reported_output: String,
 }
 impl ModelResolution {
-    /// `provider 'p', model 'm', api chat`: the identity a retargeted alias
-    /// is compared on.
+    /// `provider 'p', model 'm', api chat, endpoint <url>`: the identity a
+    /// retargeted alias is compared on. The endpoint is omitted when unknown.
     pub fn identity(&self) -> String {
-        format!(
+        let base = format!(
             "provider '{}', model '{}', api {}",
             self.provider, self.model, self.api
-        )
+        );
+        if self.endpoint.is_empty() {
+            base
+        } else {
+            format!("{base}, endpoint {}", self.endpoint)
+        }
     }
-    /// Whether `other` is the same provider, model and api.
+    /// Whether `other` is the same provider, model, api and endpoint. A
+    /// resolution saved without an endpoint matches any: that gap is filled
+    /// on resume rather than refused.
     pub fn same_identity(&self, other: &ModelResolution) -> bool {
-        self.provider == other.provider && self.model == other.model && self.api == other.api
+        self.provider == other.provider
+            && self.model == other.model
+            && self.api == other.api
+            && (self.endpoint.is_empty()
+                || other.endpoint.is_empty()
+                || self.endpoint == other.endpoint)
     }
     /// Parses the saved column. A newer version than this build knows is an
     /// error, never a guess.
@@ -486,7 +501,7 @@ pub fn api_name(api: ApiKind) -> String {
 }
 /// A base URL without userinfo, query or fragment, so no credential reaches
 /// the database.
-fn endpoint_without_credentials(base_url: &str) -> String {
+pub(crate) fn endpoint_without_credentials(base_url: &str) -> String {
     let Ok(mut url) = reqwest::Url::parse(base_url.trim_end_matches('/')) else {
         return "(unparseable endpoint)".into();
     };

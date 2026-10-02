@@ -12,15 +12,17 @@ use crate::provider::auth;
 use crate::provider::catalog::ModelResolution;
 use crate::provider::config::{load_models, ResolvedModel};
 
-/// The identity half of a resolution (provider, model, api) of a configured
-/// alias, for comparison with a saved one.
+/// The identity half of a resolution (provider, model, api, endpoint) of a
+/// configured alias, for comparison with a saved one.
 fn identity_of(resolved: &ResolvedModel) -> ModelResolution {
     ModelResolution {
         version: crate::provider::catalog::RESOLUTION_VERSION,
         provider: resolved.provider_name.clone(),
         model: resolved.model.model.clone(),
         api: crate::provider::catalog::api_name(resolved.model.api),
-        endpoint: String::new(),
+        endpoint: crate::provider::catalog::endpoint_without_credentials(
+            &resolved.provider.base_url,
+        ),
         bounds: crate::provider::catalog::Bounds {
             context_window: 0,
             max_input_tokens: None,
@@ -128,6 +130,18 @@ impl Service {
                     });
                 }
                 tracing::debug!(alias = %alias, window = saved.bounds.context_window, "using the saved model resolution");
+                let mut saved = saved;
+                if saved.endpoint.is_empty() {
+                    // Saved before the endpoint was recorded: it is the one
+                    // the alias maps to now, and is kept from here on.
+                    saved.endpoint = current.endpoint;
+                    if let Some(raw) = resumed.and_then(|r| r.meta.model_resolution.as_deref()) {
+                        self.history
+                            .fill_resolution_endpoint(session_id, raw, &saved)
+                            .await
+                            .map_err(ServerError::History)?;
+                    }
+                }
                 (saved, false)
             }
             None => {

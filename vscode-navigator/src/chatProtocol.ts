@@ -34,7 +34,12 @@ export type HostToWebview =
   /** A conversation was opened (resumed or started); a `history` message follows. */
   | { type: "conversationOpened"; id?: string; title: string }
   /** Replace the whole transcript (sent when the view is (re)opened). */
-  | { type: "history"; items: HostToWebview[] };
+  | { type: "history"; items: HostToWebview[] }
+  /** Models the cognition can use; `current` is the open conversation's (or the next new one's).
+   *  `locked`: the conversation exists, its model can no longer change. */
+  | { type: "models"; items: ModelInfo[]; current?: string; locked: boolean }
+  /** Context of the last model call: `used` tokens out of `window` (absent when unknown). */
+  | { type: "usage"; used: number; window?: number };
 
 /** One saved conversation, as listed in the panel. `updatedAt` is an RFC 3339 timestamp. */
 export interface ConversationSummary {
@@ -42,6 +47,13 @@ export interface ConversationSummary {
   title: string;
   updatedAt: string;
   messageCount: number;
+}
+
+/** One model alias from `GET /v1/models`. `contextWindow` is absent when models.json omits it. */
+export interface ModelInfo {
+  alias: string;
+  model: string;
+  contextWindow?: number;
 }
 
 /** Webview -> host messages. */
@@ -61,7 +73,9 @@ export type WebviewToHost =
   /** The driver starts a new conversation; the current one stays saved. */
   | { type: "newConversation" }
   /** The driver deletes a saved conversation. */
-  | { type: "deleteConversation"; id: string };
+  | { type: "deleteConversation"; id: string }
+  /** The driver picks the model for the next new conversation. */
+  | { type: "selectModel"; alias: string };
 
 /** What the chat view needs from the host side; implemented by the cognition bridge. */
 export interface ChatBackend {
@@ -81,4 +95,6 @@ export interface ChatBackend {
   deleteConversation(id: string): Promise<void>;
   /** The open conversation's id, if one exists yet. */
   currentConversationId(): string | undefined;
+  /** Model alias for the next new conversation (ignored while one is open with messages). */
+  selectModel(alias: string): void;
 }

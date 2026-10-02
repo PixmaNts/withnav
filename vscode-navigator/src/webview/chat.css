@@ -148,3 +148,13 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
   .conv-trigger .icon, .context-chip, .note-chevron { transition: none; }
 }
 @media (max-width: 310px) { .hint, .conv-keys { display: none; } }
+.model-row { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px; color: var(--vscode-descriptionForeground); }
+.model-select { min-width: 0; max-width: 50%; height: 22px; padding: 0 4px; border: 1px solid var(--vscode-dropdown-border, var(--vscode-widget-border)); border-radius: 3px; color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); font: inherit; }
+.model-select:disabled { opacity: .7; }
+.model-select:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.usage { display: inline-flex; align-items: center; gap: 6px; min-width: 0; margin-left: auto; white-space: nowrap; }
+.usage-bar { display: inline-block; width: 56px; height: 4px; flex: none; border-radius: 2px; overflow: hidden; background: var(--vscode-progressBar-background, var(--vscode-focusBorder)); background: color-mix(in srgb, var(--vscode-descriptionForeground) 25%, transparent); }
+.usage-fill { display: block; width: 0; height: 100%; background: var(--vscode-progressBar-background, var(--vscode-focusBorder)); transition: width .2s ease; }
+.usage[data-level=mid] .usage-fill { background: var(--vscode-editorWarning-foreground, var(--vscode-progressBar-background)); }
+.usage[data-level=high] .usage-fill { background: var(--vscode-errorForeground); }
+.usage[data-level=high] .usage-label { color: var(--vscode-errorForeground); }

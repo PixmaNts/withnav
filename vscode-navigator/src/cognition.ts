@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { ChatBackend, ConversationSummary, HostToWebview } from "./chatProtocol";
+import { ChatBackend, ConversationSummary, HostToWebview, ModelInfo } from "./chatProtocol";
 import type { ServerInfoParams } from "./protocol";
 
 /** One SSE frame off the event stream: the seq id plus the parsed envelope. */
@@ -41,6 +41,14 @@ export class CognitionBackend implements ChatBackend {
   private streaming = false;
   /** Saved conversations of the workspace, newest first (last listing). */
   private conversations: ConversationSummary[] = [];
+  /** Models from GET /v1/models, and the alias the next new conversation uses
+   *  (or the open conversation's, once it exists). */
+  private models: ModelInfo[] = [];
+  private selectedModel?: string;
+  /** Default alias the server announced, restored by "new conversation". */
+  private defaultModel?: string;
+  /** Tokens of the last model call, re-sent when the model or list changes. */
+  private lastUsed?: number;
   /** A stopped conversation to resume on the next send (Stop keeps it). */
   private resumeId?: string;
   /** Cancels the SSE fetch of the running stream, if any. */
@@ -71,7 +79,10 @@ export class CognitionBackend implements ChatBackend {
       void this.connect();
       return;
     }
-    if (first || restarted) void this.bootstrapConversations();
+    if (first || restarted) {
+      void this.fetchModels();
+      void this.bootstrapConversations();
+    }
   }
 
   history(): HostToWebview[] {
@@ -118,6 +129,7 @@ export class CognitionBackend implements ChatBackend {
     this.emit({ type: "conversationOpened", id: sessionId, title: summary?.title ?? sessionId });
     this.emit({ type: "history", items: [] });
     this.emit({ type: "status", state: "ready" });
+    void this.loadSessionModel(sessionId);
     // No Last-Event-ID: the stored events replay the whole conversation.
     void this.connect();
     void this.listConversations().catch(() => undefined);
@@ -129,10 +141,12 @@ export class CognitionBackend implements ChatBackend {
     this.session = undefined;
     this.resumeId = undefined;
     this.resetTranscript();
+    this.selectedModel = this.defaultModel ?? this.selectedModel;
     this.emit({ type: "conversationOpened", title: "New conversation" });
     this.emit({ type: "history", items: [] });
     this.emit({ type: "status", state: "ready" });
     this.emitConversations();
+    this.emitModels();
   }
 
   async deleteConversation(id: string): Promise<void> {
@@ -209,6 +223,72 @@ export class CognitionBackend implements ChatBackend {
     }
   }
 
+  /** Fetches the models the cognition can use and preselects the default. */
+  private async fetchModels(): Promise<void> {
+    try {
+      const body = await this.request(`/v1/models?${this.workspaceQuery()}`, { method: "GET" });
+      this.models = parseModelList(body);
+      if (typeof body?.default === "string") this.defaultModel = body.default;
+      if (!this.selectedModel) this.selectedModel = this.defaultModel;
+    } catch {
+      // No model list (older server, unreadable models.json): the picker
+      // stays empty and new sessions use the server's default.
+      this.models = [];
+    }
+    this.emitModels();
+  }
+
+  /** A conversation that exists on the server keeps its model (option A). */
+  private modelLocked(): boolean {
+    return this.session !== undefined || this.resumeId !== undefined;
+  }
+
+  private emitModels(): void {
+    this.emit({
+      type: "models",
+      items: [...this.models],
+      current: this.selectedModel,
+      locked: this.modelLocked(),
+    });
+    // The window depends on the model: a replay can report usage before the
+    // list or the conversation's model arrives, so re-send it with both.
+    if (this.lastUsed !== undefined) this.emitUsage();
+  }
+
+  selectModel(alias: string): void {
+    if (this.modelLocked()) return;
+    if (!this.models.some((m) => m.alias === alias)) return;
+    this.selectedModel = alias;
+    this.emitModels();
+  }
+
+  /** Reads the open conversation's model from GET /v1/sessions/{id}. */
+  private async loadSessionModel(id: string): Promise<void> {
+    try {
+      const summary = await this.request(`/v1/sessions/${encodeURIComponent(id)}`, { method: "GET" });
+      if (typeof summary?.model === "string") this.selectedModel = summary.model;
+    } catch {
+      // Keep the current selection: the picker is informative only here.
+    }
+    this.emitModels();
+  }
+
+  /** Records the context used by a model call (prompt + completion tokens). */
+  private recordUsage(usage: any): void {
+    const prompt = typeof usage?.prompt_tokens === "number" ? usage.prompt_tokens : 0;
+    const completion = typeof usage?.completion_tokens === "number" ? usage.completion_tokens : 0;
+    if (prompt + completion <= 0) return;
+    this.lastUsed = prompt + completion;
+    this.emitUsage();
+  }
+
+  /** The last usage against the current model's window (absent when unknown). */
+  private emitUsage(): void {
+    if (this.lastUsed === undefined) return;
+    const window = this.models.find((m) => m.alias === this.selectedModel)?.contextWindow;
+    this.emit({ type: "usage", used: this.lastUsed, window });
+  }
+
   private emitConversations(): void {
     this.emit({
       type: "conversations",
@@ -225,6 +305,7 @@ export class CognitionBackend implements ChatBackend {
     this.currentTurn = undefined;
     this.toolSummaries.clear();
     this.turnTextDelta.clear();
+    this.lastUsed = undefined;
   }
 
   /** Stops the SSE fetch of the running stream, if any. */
@@ -299,7 +380,7 @@ export class CognitionBackend implements ChatBackend {
       body: JSON.stringify(
         resume
           ? { workspace: this.workspacePath(), profile: "navigator", resume }
-          : { workspace: this.workspacePath(), profile: "navigator" },
+          : { workspace: this.workspacePath(), profile: "navigator", model: this.selectedModel },
       ),
     });
     const sessionId = String(created?.session_id ?? "");
@@ -315,6 +396,7 @@ export class CognitionBackend implements ChatBackend {
       this.turnTextDelta.clear();
     }
     this.emit({ type: "status", state: "ready" });
+    this.emitModels();
     void this.connect();
     void this.listConversations().catch(() => undefined);
     return this.session;
@@ -398,6 +480,7 @@ export class CognitionBackend implements ChatBackend {
         // no live text renders its final message as one delta. Live turns
         // (flagged above) must not be duplicated.
         const id = String(payload.turn_id ?? this.currentTurn ?? envelope.seq);
+        this.recordUsage(payload.usage ?? payload.message?.usage);
         const message = payload.message ?? {};
         const text = typeof message.text === "string" ? message.text : "";
         const thinking = typeof message.thinking === "string" ? message.thinking : "";
@@ -464,11 +547,14 @@ export class CognitionBackend implements ChatBackend {
   private toolSummaries = new Map<string, string>();
 
   private emit(message: HostToWebview): void {
-    // Conversation-list metadata is pushed, never replayed as transcript.
+    // Conversation-list, model and usage metadata is pushed, never replayed
+    // as transcript (the view caches the last ones for a reopen).
     const ephemeral =
       message.type === "history" ||
       message.type === "conversations" ||
-      message.type === "conversationOpened";
+      message.type === "conversationOpened" ||
+      message.type === "models" ||
+      message.type === "usage";
     if (!ephemeral) this.transcript.push(message);
     for (const listener of this.listeners) listener(message);
   }
@@ -537,6 +623,18 @@ function parseSessionList(body: any): ConversationSummary[] {
       title: typeof s.title === "string" && s.title ? s.title : "Untitled conversation",
       updatedAt: typeof s.updated_at === "string" ? s.updated_at : "",
       messageCount: typeof s.message_count === "number" ? s.message_count : 0,
+    }));
+}
+
+/** `GET /v1/models` body -> the picker's list; malformed entries are dropped. */
+function parseModelList(body: any): ModelInfo[] {
+  const models = Array.isArray(body?.models) ? body.models : [];
+  return models
+    .filter((m: any) => m && typeof m.alias === "string" && typeof m.model === "string")
+    .map((m: any) => ({
+      alias: m.alias,
+      model: m.model,
+      contextWindow: typeof m.context_window === "number" ? m.context_window : undefined,
     }));
 }
 

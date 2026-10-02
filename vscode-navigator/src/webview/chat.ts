@@ -16,6 +16,13 @@ const send = document.querySelector<HTMLButtonElement>("#send")!;
 const stop = document.querySelector<HTMLButtonElement>("#stop")!;
 const includeContext = document.querySelector<HTMLInputElement>("#include-context")!;
 const contextPreview = document.querySelector<HTMLElement>("#context-preview")!;
+const modelSelect = document.querySelector<HTMLSelectElement>("#model")!;
+const usage = document.querySelector<HTMLElement>("#usage")!;
+const usageFill = document.querySelector<HTMLElement>("#usage-fill")!;
+const usageLabel = document.querySelector<HTMLElement>("#usage-label")!;
+modelSelect.addEventListener("change", () => {
+  if (modelSelect.value) vscode.postMessage({ type: "selectModel", alias: modelSelect.value });
+});
 includeContext.checked = vscode.getState()?.includeContext ?? true;
 const conversations = mountConversations(message => vscode.postMessage(message), () => {
   if (!prompt.disabled) prompt.focus();
@@ -255,6 +262,7 @@ function receive(event: HostToWebview): void {
   if (conversations(event)) return;
   switch (event.type) {
     case "history":
+      if (!event.items.length) usage.hidden = true;
       transcript.replaceChildren(empty);
       empty.hidden = false;
       turns.clear();
@@ -268,6 +276,8 @@ function receive(event: HostToWebview): void {
       break;
     case "status": setStatus(event.state, event.message); break;
     case "message": message(event.author, event.text, event.context); break;
+    case "models": renderModels(event); break;
+    case "usage": renderUsage(event.used, event.window); break;
     case "editorContext":
       contextPreview.textContent = event.label;
       contextPreview.title = `Attached to your next message: ${event.label}`;
@@ -309,6 +319,49 @@ function receive(event: HostToWebview): void {
       follow();
       break;
     }
+  }
+}
+
+/** Rebuilds the model picker; a locked picker shows the open conversation's model. */
+function renderModels(event: Extract<HostToWebview, { type: "models" }>): void {
+  const options = event.items.map(model => {
+    const option = el("option", undefined, model.alias);
+    option.value = model.alias;
+    option.title = model.contextWindow ? `${model.model} · ${tokens(model.contextWindow)} context` : model.model;
+    return option;
+  });
+  if (event.current && !event.items.some(model => model.alias === event.current)) {
+    const option = el("option", undefined, event.current);
+    option.value = event.current;
+    options.push(option);
+  }
+  if (!options.length) options.push(el("option", undefined, "Default model"));
+  modelSelect.replaceChildren(...options);
+  if (event.current) modelSelect.value = event.current;
+  modelSelect.disabled = event.locked || event.items.length === 0;
+  modelSelect.title = event.locked ? "Model of this conversation · start a new conversation to change it" : "Model for the new conversation";
+}
+
+function tokens(count: number): string {
+  return count >= 1000 ? `${Math.round(count / 1000)}k` : String(count);
+}
+
+/** The context gauge: used tokens, and the share of the window when it is known. */
+function renderUsage(used: number, window?: number): void {
+  usage.hidden = false;
+  if (window && window > 0) {
+    const percent = Math.min(100, Math.round((used / window) * 100));
+    usageFill.style.width = `${percent}%`;
+    usage.dataset.level = percent >= 90 ? "high" : percent >= 70 ? "mid" : "low";
+    usageLabel.textContent = `${tokens(used)} / ${tokens(window)} · ${percent}%`;
+    usage.setAttribute("aria-valuenow", String(percent));
+    usage.title = `${used.toLocaleString()} of ${window.toLocaleString()} tokens used · ${(window - used).toLocaleString()} left`;
+    usage.querySelector<HTMLElement>(".usage-bar")!.hidden = false;
+  } else {
+    usageLabel.textContent = `${tokens(used)} tokens`;
+    usage.removeAttribute("aria-valuenow");
+    usage.title = `${used.toLocaleString()} tokens used · context window unknown`;
+    usage.querySelector<HTMLElement>(".usage-bar")!.hidden = true;
   }
 }
 

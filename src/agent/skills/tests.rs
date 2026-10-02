@@ -148,7 +148,7 @@ fn depth_and_skipped_directories_are_respected() {
 }
 
 // Given the walk meets more entries than the bound
-// Then it stops with a diagnostic and keeps what it found
+// Then it stops with a diagnostic and never counts past the bound
 #[test]
 fn the_entry_count_is_bounded() {
     let fx = fixture();
@@ -168,12 +168,51 @@ fn the_entry_count_is_bounded() {
     );
     walk.entries = MAX_ENTRIES - 3;
     walk.run();
+    // The count never passes the bound: the directory was cut before it was
+    // collected, not after.
+    assert_eq!(walk.entries, MAX_ENTRIES);
     let skills = walk.finish();
-    assert_eq!(skills.len(), 1);
+    // A directory cut by the bound is read in directory order, so which of
+    // its entries survive is not fixed: only the bound and the diagnostic are.
+    assert!(skills.len() <= 1);
     assert!(has(&skills, |k| matches!(
         k,
         DiagnosticKind::LimitReached(_)
     )));
+}
+
+// Given a directory larger than the entry bound, and a second root after it
+// When the walk runs
+// Then no more than the bound is enumerated, in all, and the second root is
+//      not read at all
+#[test]
+fn a_directory_over_the_bound_is_cut_while_it_is_read() {
+    let fx = fixture();
+    let first = fx.home.join(".agents/skills");
+    let second = fx.home.join(".claude/skills");
+    fs::create_dir_all(&first).unwrap();
+    for i in 0..MAX_ENTRIES + 50 {
+        fs::create_dir(first.join(format!("d{i:05}"))).unwrap();
+    }
+    add(&second.join("later"), "later", "Never read.");
+    let rank = |source| Rank {
+        user: true,
+        distance: 0,
+        source,
+    };
+    let mut walk = Walk::default();
+    walk.add_root(first, rank(0));
+    walk.add_root(second, rank(1));
+    walk.run();
+    assert_eq!(walk.entries, MAX_ENTRIES);
+    let skills = walk.finish();
+    assert!(skills.is_empty(), "the second root was skipped");
+    let limits = skills
+        .diagnostics()
+        .iter()
+        .filter(|d| matches!(d.kind, DiagnosticKind::LimitReached(_)))
+        .count();
+    assert_eq!(limits, 1);
 }
 
 // Given multi-line descriptions (folded and literal) and unknown fields
@@ -415,6 +454,45 @@ fn a_second_path_to_the_same_skill_counts_once() {
     );
 }
 
+// Given a SKILL.md that is a link to another SKILL.md in the same root
+// When discovered
+// Then it is one skill, not an ambiguous id
+#[test]
+fn a_manifest_linked_to_another_manifest_is_one_skill() {
+    let fx = fixture();
+    let root = fx.home.join(".agents/skills");
+    let real = add(&root.join("b"), "twin", "Twin.");
+    fs::create_dir_all(root.join("a")).unwrap();
+    std::os::unix::fs::symlink(&real, root.join("a/SKILL.md")).unwrap();
+    let skills = load(&fx);
+    assert_eq!(skills.len(), 1);
+    assert_eq!(catalog_lines(&skills), ["twin — Twin."]);
+    assert!(!has(&skills, |k| matches!(
+        k,
+        DiagnosticKind::Ambiguous { .. }
+    )));
+    assert_eq!(path_of(&skills, "twin"), real);
+}
+
+// Given the same manifest reached from a project root and, through a link,
+//       from a user root
+// Then it is one skill at the better rank, shadowing nothing
+#[test]
+fn a_manifest_reached_from_two_roots_is_one_skill() {
+    let fx = fixture();
+    let real = add(&fx.repo.join(".agents/skills/shared"), "shared", "Shared.");
+    fs::create_dir_all(fx.home.join(".agents/skills/u")).unwrap();
+    std::os::unix::fs::symlink(&real, fx.home.join(".agents/skills/u/SKILL.md")).unwrap();
+    let skills = load(&fx);
+    assert_eq!(skills.len(), 1);
+    assert_eq!(path_of(&skills, "shared"), real);
+    assert!(
+        skills.diagnostics().is_empty(),
+        "{:?}",
+        skills.diagnostics()
+    );
+}
+
 // Given a project that is not a Git repository
 // Then only the workspace scope is searched, never its parents
 #[test]
@@ -479,7 +557,10 @@ fn the_catalog_is_bounded_and_counts_what_it_omits() {
     let skills = load(&fx);
     assert_eq!(skills.len(), 200);
     let catalog = skills.catalog().unwrap();
-    assert!(catalog.len() <= MAX_TOKENS * 4, "{} bytes", catalog.len());
+    // The ceiling is asserted on its own number, not through the constant, so
+    // changing the constant breaks this test on purpose.
+    assert_eq!(MAX_TOKENS, 8_192);
+    assert!(catalog.len() <= 8_192 * 4, "{} bytes", catalog.len());
     let last = catalog.lines().last().unwrap();
     let omitted: usize = last
         .strip_suffix(" additional skills omitted")
@@ -641,6 +722,116 @@ async fn a_file_that_vanished_or_broke_is_unreadable() {
     );
 }
 
+// Given a skill found at discovery, then its SKILL.md replaced by a link to a
+//       file outside the skill roots
+// When the tool loads it
+// Then it is unreadable and nothing of the outside file is returned
+#[tokio::test]
+async fn a_manifest_replaced_by_an_escaping_link_is_refused() {
+    let fx = fixture();
+    let manifest = add(&fx.home.join(".agents/skills/swap"), "swap", "Swapped.");
+    let skills = load(&fx);
+    let (_, cx) = context(&fx);
+    let outside = fx.home.join("outside.md");
+    fs::write(
+        &outside,
+        "---\nname: swap\ndescription: d\n---\nOUTSIDE SECRET\n",
+    )
+    .unwrap();
+    fs::remove_file(&manifest).unwrap();
+    std::os::unix::fs::symlink(&outside, &manifest).unwrap();
+    let res = call(&skills, "swap", &cx).await;
+    assert_eq!(res.error.expect("error").code, "skill_unreadable");
+    assert!(!res.output.contains("OUTSIDE SECRET"));
+}
+
+// Given a skill, then its directory (and separately an ancestor) replaced by
+//       a link to a place outside the skill roots
+// When the tool loads it
+// Then it is refused
+#[tokio::test]
+async fn a_directory_or_ancestor_replaced_by_an_escaping_link_is_refused() {
+    let fx = fixture();
+    let root = fx.home.join(".agents/skills");
+    add(&root.join("team/one"), "one", "One.");
+    add(&root.join("two"), "two", "Two.");
+    let skills = load(&fx);
+    let (_, cx) = context(&fx);
+
+    let elsewhere = fx.home.join("elsewhere");
+    add(&elsewhere.join("one"), "one", "Planted.");
+    fs::write(elsewhere.join("one/loot.txt"), "x").unwrap();
+    fs::remove_dir_all(root.join("team")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, root.join("team")).unwrap();
+    let res = call(&skills, "one", &cx).await;
+    assert_eq!(res.error.expect("error").code, "skill_unreadable");
+
+    let planted = fx.home.join("planted");
+    add(&planted, "two", "Planted.");
+    fs::remove_dir_all(root.join("two")).unwrap();
+    std::os::unix::fs::symlink(&planted, root.join("two")).unwrap();
+    let res = call(&skills, "two", &cx).await;
+    assert_eq!(res.error.expect("error").code, "skill_unreadable");
+}
+
+// Given a skill whose directory is replaced by a link to another directory
+//       inside the roots
+// When the tool loads it
+// Then it is refused too: the file is no longer the one that was found
+#[tokio::test]
+async fn a_directory_swapped_for_another_one_in_the_roots_is_refused() {
+    let fx = fixture();
+    let root = fx.home.join(".agents/skills");
+    add(&root.join("a"), "a", "A.");
+    add(&root.join("b"), "b", "B.");
+    let skills = load(&fx);
+    let (_, cx) = context(&fx);
+    fs::remove_dir_all(root.join("a")).unwrap();
+    std::os::unix::fs::symlink(root.join("b"), root.join("a")).unwrap();
+    let res = call(&skills, "a", &cx).await;
+    assert_eq!(res.error.expect("error").code, "skill_unreadable");
+}
+
+// Given a SKILL.md that became a directory
+// Then it is unreadable
+#[tokio::test]
+async fn a_manifest_that_is_no_longer_a_file_is_unreadable() {
+    let fx = fixture();
+    let manifest = add(&fx.home.join(".agents/skills/x"), "x", "X.");
+    let skills = load(&fx);
+    let (_, cx) = context(&fx);
+    fs::remove_file(&manifest).unwrap();
+    fs::create_dir(&manifest).unwrap();
+    let res = call(&skills, "x", &cx).await;
+    assert_eq!(res.error.expect("error").code, "skill_unreadable");
+}
+
+// Given a skill directory with more files than the listing budget
+// When resources are listed with the budget nearly spent
+// Then only the budget left is read and the listing stops
+#[test]
+fn the_resource_listing_enumerates_no_more_than_its_budget() {
+    let fx = fixture();
+    let dir = fx.home.join("res");
+    fs::create_dir_all(dir.join("sub")).unwrap();
+    for i in 0..40 {
+        fs::write(dir.join(format!("f{i:02}.txt")), "x").unwrap();
+        fs::write(dir.join(format!("sub/g{i:02}.txt")), "x").unwrap();
+    }
+    let mut entries = tool::MAX_RESOURCE_ENTRIES - 5;
+    let mut out = Vec::new();
+    tool::list_resources(&dir, "", 0, &mut entries, &mut out);
+    assert_eq!(entries, tool::MAX_RESOURCE_ENTRIES);
+    assert!(out.len() <= 5, "{out:?}");
+
+    // A fresh budget reads everything.
+    let mut entries = 0;
+    let mut all = Vec::new();
+    tool::list_resources(&dir, "", 0, &mut entries, &mut all);
+    assert_eq!(all.len(), 80);
+    assert_eq!(entries, 81);
+}
+
 // ---- readable roots ----
 
 // Given an actor with a skill in the user's library
@@ -799,4 +990,25 @@ fn without_skills_nothing_is_registered() {
     assert!(actor.registry.get("skill").is_none());
     assert!(actor.tool_context.readable_roots.is_empty());
     assert!(actor.skills.catalog().is_none());
+}
+
+// Given a skill whose SKILL.md passed the path check, then swapped for a link
+//       to a file outside the skill roots before it is opened
+// When the manifest is opened for reading
+// Then the opened file itself is checked and refused, so nothing outside is read
+#[test]
+fn a_manifest_swapped_between_check_and_open_is_refused() {
+    let fx = fixture();
+    let root = fx.home.join(".agents/skills");
+    let manifest = add(&root.join("race"), "race", "Race.");
+    let roots = vec![fs::canonicalize(&root).unwrap()];
+    let manifest = fs::canonicalize(&manifest).unwrap();
+    assert!(tool::open_in_place(&manifest, &roots).is_ok());
+
+    let outside = fx.home.join("outside-race.md");
+    fs::write(&outside, "---\nname: race\ndescription: d\n---\nOUTSIDE\n").unwrap();
+    fs::remove_file(&manifest).unwrap();
+    std::os::unix::fs::symlink(&outside, &manifest).unwrap();
+    let err = tool::open_in_place(&manifest, &roots).expect_err("escaping file opened");
+    assert!(err.contains("outside the skill roots"), "{err}");
 }

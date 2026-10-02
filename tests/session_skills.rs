@@ -238,6 +238,75 @@ async fn the_loaded_skill_survives_a_resume() {
     assert!(tool_names(&provider, 2).contains(&"skill".to_string()));
 }
 
+// Given a live session, then a skill added and another one's description
+//       changed on disk
+// When the next message is sent, the conversation closed and resumed in a
+//      fresh service, and a message sent again
+// Then the live catalog did not change (a snapshot), and the resumed one
+//      shows the new skill and the new description, once
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resume_rediscovers_the_skills_a_live_session_does_not() {
+    let env = env();
+    let provider =
+        spawn_capturing_provider(vec![answer("one"), answer("two"), answer("three")]).await;
+    let first = state(&env, &provider, "default", false);
+    let id = first.create_session(&env.ws, None, None).await.unwrap();
+    converse(&first, id, "one").await;
+    let created = messages(&provider, 0)[2].1.clone();
+    assert!(
+        created.contains("ask-matt — Ask Matt about it."),
+        "{created}"
+    );
+    assert!(!created.contains("late-flow"));
+
+    std::fs::create_dir_all(env.ws.join(".agents/skills/late")).unwrap();
+    std::fs::write(
+        env.ws.join(".agents/skills/late/SKILL.md"),
+        "---\nname: late-flow\ndescription: Added while running.\n---\nLate body.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        env.home.join(".agents/skills/matt/ask-matt/SKILL.md"),
+        "---\nname: ask-matt\ndescription: Asks Matt, reworded.\n---\nSTEP ONE.\n",
+    )
+    .unwrap();
+    converse(&first, id, "two").await;
+    assert_eq!(
+        messages(&provider, 1)[2].1,
+        created,
+        "the live catalog is a snapshot"
+    );
+    first.close_session(id).await.expect("close");
+    drop(first);
+
+    let second = state(&env, &provider, "default", false);
+    let (resumed, was_resumed) = second
+        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .await
+        .expect("resume");
+    assert!(was_resumed && resumed == id);
+    converse(&second, id, "three").await;
+
+    let sent = messages(&provider, 2);
+    let catalog = &sent[2].1;
+    assert!(
+        catalog.contains("late-flow — Added while running."),
+        "{catalog}"
+    );
+    assert!(
+        catalog.contains("ask-matt — Asks Matt, reworded."),
+        "{catalog}"
+    );
+    assert!(!catalog.contains("Ask Matt about it."), "{catalog}");
+    assert_eq!(
+        sent.iter()
+            .filter(|(_, c)| c.contains("late-flow —"))
+            .count(),
+        1,
+        "{sent:?}"
+    );
+}
+
 // Given a home and a workspace without any skill
 // Then there is no catalog message and no `skill` tool
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

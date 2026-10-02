@@ -225,7 +225,8 @@ struct Walk {
     /// Canonical roots with their rank, in priority order.
     roots: Vec<(PathBuf, Rank)>,
     entries: usize,
-    limit_noted: bool,
+    /// The entry budget is spent: nothing more is read, in any root.
+    exhausted: bool,
     /// Canonical directories already walked.
     seen_dirs: HashSet<PathBuf>,
     found: Vec<Skill>,
@@ -245,6 +246,9 @@ impl Walk {
 
     fn run(&mut self) {
         for (root, rank) in self.roots.clone() {
+            if self.exhausted {
+                break;
+            }
             let mut stack = Vec::new();
             self.dir(&root, &root, rank, 0, &mut stack);
         }
@@ -263,7 +267,7 @@ impl Walk {
 
     /// Walks `dir` (canonical): a `SKILL.md` ends the descent.
     fn dir(&mut self, dir: &Path, root: &Path, rank: Rank, depth: usize, stack: &mut Vec<PathBuf>) {
-        if !self.seen_dirs.insert(dir.to_path_buf()) {
+        if self.exhausted || !self.seen_dirs.insert(dir.to_path_buf()) {
             return;
         }
         let manifest = dir.join("SKILL.md");
@@ -274,23 +278,27 @@ impl Walk {
         if depth >= MAX_DEPTH {
             return;
         }
+        // Never take more entries from the iterator than the budget left
+        // (plus one, to know the directory was cut): a huge directory is
+        // neither collected nor sorted whole.
+        let remaining = MAX_ENTRIES.saturating_sub(self.entries);
         let mut names = match std::fs::read_dir(dir) {
             Ok(entries) => entries
                 .filter_map(Result::ok)
                 .map(|e| e.file_name())
+                .take(remaining + 1)
                 .collect::<Vec<_>>(),
             Err(e) => return self.note(dir, DiagnosticKind::ReadError(e.to_string())),
         };
+        if names.len() > remaining {
+            names.truncate(remaining);
+            self.exhausted = true;
+            self.note(root, DiagnosticKind::LimitReached("too many entries"));
+        }
+        self.entries += names.len();
         names.sort();
         stack.push(dir.to_path_buf());
         for name in names {
-            self.entries += 1;
-            if self.entries > MAX_ENTRIES {
-                if !std::mem::replace(&mut self.limit_noted, true) {
-                    self.note(root, DiagnosticKind::LimitReached("too many entries"));
-                }
-                break;
-            }
             if name.to_str().is_some_and(|n| SKIPPED_DIRS.contains(&n)) {
                 continue;
             }
@@ -308,6 +316,9 @@ impl Walk {
                 self.note(&path, DiagnosticKind::Cycle { to: canonical });
             } else {
                 self.dir(&canonical, root, rank, depth + 1, stack);
+            }
+            if self.exhausted {
+                break;
             }
         }
         stack.pop();
@@ -345,8 +356,20 @@ impl Walk {
             mut diagnostics,
             ..
         } = self;
-        let mut by_name: BTreeMap<String, Vec<Skill>> = BTreeMap::new();
+        // One manifest reached by several routes (a `SKILL.md` that is a link
+        // to another one, a directory linked twice) is one skill, at the best
+        // rank any route gave it: it must never make its own id ambiguous.
+        let mut by_manifest: BTreeMap<PathBuf, Skill> = BTreeMap::new();
         for skill in found {
+            match by_manifest.get(&skill.path) {
+                Some(kept) if kept.rank <= skill.rank => {}
+                _ => {
+                    by_manifest.insert(skill.path.clone(), skill);
+                }
+            }
+        }
+        let mut by_name: BTreeMap<String, Vec<Skill>> = BTreeMap::new();
+        for skill in by_manifest.into_values() {
             by_name.entry(skill.name.clone()).or_default().push(skill);
         }
         let mut winners = BTreeMap::new();

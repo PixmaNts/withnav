@@ -165,8 +165,9 @@ it is and that run keeps using it.
   never appended to the transcript or to the role prompt. Rules discovery lives in
   `agent/instructions.rs`, skills discovery in `agent/skills.rs`; give both the home through
   `RulesRoots`, never read `~` in a test.
-- A place the model may read but never change (the skill roots) goes in `ToolContext.readable_roots`,
-  not in `writable_roots`. The `skill` tool is registered per session (`AgentActor::set_skills`),
+- A place the model may read, without granting it any write (the skill roots), goes in
+  `ToolContext.readable_roots`, not in `writable_roots`. That only keeps `write` and `edit` out: a
+  project skill inside the workspace is writable like any workspace file, and `bash` is unsandboxed. The `skill` tool is registered per session (`AgentActor::set_skills`),
   never in a direct Phase-1 registry.
 - Keep a production file under ~600 lines. Past that, split by responsibility, not by size.
 - Comments name the domain reason and dated evidence; never a ticket or plan id.

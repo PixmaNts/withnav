@@ -10,6 +10,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::bus::event::now_rfc3339;
+use crate::navigator::help_call::{added_help_comments, without_comments, HelpCalls};
 use crate::navigator::log::excerpt;
 use crate::navigator::lsp::uri::uri_to_path_str;
 use crate::navigator::metacognition::Diag;
@@ -50,6 +51,8 @@ pub struct DocumentState {
     /// running (the remark is delivered if its line survives); a newer
     /// remark or a close cancels it.
     pub remark_cancel: Option<CancellationToken>,
+    /// The calls for help this document's remarks are answering or answered.
+    pub help: HelpCalls,
 }
 
 impl DocumentState {
@@ -64,6 +67,7 @@ impl DocumentState {
             in_flight_version: None,
             in_flight_cancel: None,
             remark_cancel: None,
+            help: HelpCalls::default(),
         }
     }
 
@@ -103,6 +107,7 @@ impl DocumentState {
         if let Some(cancel) = self.remark_cancel.take() {
             cancel.cancel();
         }
+        self.help.end();
     }
 }
 
@@ -142,6 +147,12 @@ pub struct DocumentSnapshot {
     pub live_state: String,
     /// The open documents keyed by absolute path (current editor text).
     pub open_buffers: BTreeMap<PathBuf, String>,
+    /// The calls for help in the lines added since the baseline that no
+    /// remark answered yet (normalized comment text; empty for a
+    /// conversation turn).
+    pub help_calls: Vec<String>,
+    /// A remark is already being written for every one of `help_calls`.
+    pub help_in_flight: bool,
 }
 
 /// The documents the editor has open, keyed by uri string. Diagnostics
@@ -187,6 +198,11 @@ impl Documents {
                     doc.state.last_edit_line = line;
                 }
                 doc.state.apply_change(text, version);
+                let state = &mut doc.state;
+                let gone = state.help.forget_gone(&state.text);
+                if !gone.is_empty() {
+                    state.baseline = without_comments(&state.baseline, &gone);
+                }
             }
             None => {
                 let doc = self.entry(uri);
@@ -257,6 +273,17 @@ impl Documents {
         event: TriggerKind,
         now: Instant,
     ) -> Option<DocumentSnapshot> {
+        let (help_calls, help_in_flight) = match self.open.get_mut(uri) {
+            Some(doc) if event != TriggerKind::Conversation => {
+                let state = &doc.state;
+                let calls = state
+                    .help
+                    .unanswered(added_help_comments(&state.baseline, &state.text));
+                let in_flight = state.help.covers(&calls);
+                (calls, in_flight)
+            }
+            _ => (Vec::new(), false),
+        };
         let doc = self.open.get(uri)?;
         let state = &doc.state;
         let since_last_remark_ms = state
@@ -292,6 +319,8 @@ impl Documents {
             diagnostics: doc.diagnostics.clone(),
             live_state: String::new(),
             open_buffers: self.open_buffers(),
+            help_calls,
+            help_in_flight,
         };
         if let Some(summary) = summary {
             if let Some(doc) = self.open.get_mut(uri) {

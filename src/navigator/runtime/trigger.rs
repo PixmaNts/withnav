@@ -31,6 +31,11 @@ pub(super) struct TriggerContext {
     pub(super) since_last_remark_ms: i64,
     pub(super) since_last_wake_ms: i64,
     pub(super) called_for_help: bool,
+    /// The unanswered calls for help in the added lines (normalized comment
+    /// text): what a remark about this trigger answers.
+    pub(super) help_calls: Vec<String>,
+    /// A remark is already being written for every one of `help_calls`.
+    pub(super) help_in_flight: bool,
     pub(super) has_errors: bool,
     pub(super) has_intent: bool,
     pub(super) has_conversation: bool,
@@ -133,9 +138,9 @@ impl Runtime {
             .map(|f| f.digest())
             .unwrap_or_default();
         let has_conversation = !conversation_text.trim().is_empty();
-        // A conversation turn changed nothing in the file.
-        let called_for_help = event != TriggerKind::Conversation
-            && crate::navigator::help_call::called_for_help(&snapshot.baseline, &snapshot.text);
+        // A conversation turn changed nothing in the file; a call already
+        // answered (or being answered) is not a new one.
+        let called_for_help = !snapshot.help_calls.is_empty();
         let (first_changed_line, _) = first_changed_line(&snapshot.baseline, &snapshot.text);
         Some(TriggerContext {
             uri: uri.to_string(),
@@ -145,6 +150,8 @@ impl Runtime {
             since_last_remark_ms: snapshot.since_last_remark_ms,
             since_last_wake_ms: snapshot.since_last_wake_ms,
             called_for_help,
+            help_calls: snapshot.help_calls,
+            help_in_flight: snapshot.help_in_flight,
             has_errors,
             has_intent,
             has_conversation,
@@ -203,6 +210,21 @@ impl Runtime {
             ctx.event,
             ctx.prefilter_inputs(),
         );
+
+        // The comment that calls for help stays in the file: while a remark
+        // is being written for it, the same call is not a new trigger (it
+        // would cancel the answer it is waiting for).
+        if ctx.help_in_flight {
+            pending.prefilter_outcome = "skip";
+            pending.prefilter_reason = Some("help_in_flight");
+            pending.finish(
+                &self.log,
+                DeliveryOutcome::None {
+                    reason: "help_in_flight",
+                },
+            );
+            return;
+        }
 
         // No instinct wired: the pipeline cannot run.
         let Some(decision) = self.decision.as_ref().map(Arc::clone) else {

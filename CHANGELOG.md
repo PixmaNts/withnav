@@ -19,6 +19,11 @@ requests land in `develop`.
 
 ### Fixed
 
+- A comment that calls on the navigator is answered once: saving or pausing again with the same
+  comment no longer cancels the answer being written, and the same comment does not ask again until
+  it is removed and written anew. Such a call also gets one more round of reading files.
+- A model that tries to call a tool in its final answer is asked again instead of giving you
+  nothing.
 - A remark is no longer thrown away because you kept typing: it arrives when the model answers, on
   the line it was about (moved along with your edits), and is dropped only if that line was
   rewritten or the file closed.

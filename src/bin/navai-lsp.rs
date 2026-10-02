@@ -69,7 +69,9 @@ fn init_tracing_stderr() {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let migration = navai::paths::migrate_legacy();
     init_tracing_stderr();
+    migration.log();
     let cli = Cli::parse();
 
     if let Some(Command::Replay {

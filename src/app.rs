@@ -317,11 +317,9 @@ pub fn terminal_stderr_line(payload: &TurnEnd) -> Option<String> {
     }
 }
 
-/// The shared conversation database, in the navigator's data dir.
+/// The shared conversation database, in Navai's data dir.
 fn history_db_path() -> anyhow::Result<std::path::PathBuf> {
-    crate::paths::migrate_legacy_data();
-    crate::paths::history_db()
-        .ok_or_else(|| anyhow::anyhow!("cannot resolve the navigator data dir"))
+    crate::paths::history_db().ok_or_else(|| anyhow::anyhow!("cannot resolve the Navai data dir"))
 }
 
 async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {

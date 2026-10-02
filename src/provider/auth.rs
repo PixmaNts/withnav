@@ -19,7 +19,8 @@ pub struct AuthStore {
 }
 
 pub fn default_config_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "rust-agent").map(|p| p.config_dir().to_path_buf())
+    directories::ProjectDirs::from("", "", crate::paths::APP_NAME)
+        .map(|p| p.config_dir().to_path_buf())
 }
 
 fn auth_path(config_dir: &Path) -> PathBuf {

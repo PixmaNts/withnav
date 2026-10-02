@@ -165,8 +165,6 @@ impl Layers {
 /// Builds the layers, starts the cognition chat server and serves the
 /// navigator over stdio until the client exits.
 pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
-    // Before anything opens the data files: bring over the former location.
-    crate::paths::migrate_legacy_data();
     let clients = Arc::new(ClientCache::new());
     let mut layers = build_layers(models_path, clients);
 
@@ -259,9 +257,9 @@ async fn spawn_cognition_server(
     let config_dir =
         auth::default_config_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve config dir"))?;
     let token = bearer_token();
-    // Conversation history: one SQLite file in the navigator's data dir.
+    // Conversation history: one SQLite file in Navai's data dir.
     let history_db = crate::paths::history_db()
-        .ok_or_else(|| anyhow::anyhow!("cannot resolve the navigator data dir"))?;
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve the Navai data dir"))?;
     let config = ServerConfig {
         bind: "127.0.0.1:0".parse().expect("loopback bind"),
         models_path,

@@ -480,6 +480,8 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         ServerError::InboxFull => StatusCode::SERVICE_UNAVAILABLE,
         ServerError::NonTextContent | ServerError::MalformedBody(_) => StatusCode::BAD_REQUEST,
         ServerError::NoContextWindow { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+        ServerError::ModelIdentityChanged { .. } => StatusCode::CONFLICT,
+        ServerError::SavedResolutionInvalid { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::History(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::Config(_) | ServerError::Model(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -501,6 +503,13 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         return (
             status,
             Json(json!({ "error": err.to_string(), "reason": "no_context_window" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::ModelIdentityChanged { .. }) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "model_identity_changed" })),
         )
             .into_response();
     }

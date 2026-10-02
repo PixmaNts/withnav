@@ -16,6 +16,7 @@ use crate::navigator::{
     ServerInfoParams,
 };
 use crate::provider::auth;
+use crate::provider::catalog::{resolve_chat, ModelCatalog};
 use crate::provider::config::ModelsConfig;
 use crate::provider::fim::InceptionFim;
 use crate::provider::openai::ClientCache;
@@ -44,7 +45,48 @@ struct Layers {
 
 /// Builds every layer from its alias. A missing alias or key disables that
 /// layer with a note; the others keep working.
-fn build_layers(models_path: Option<&Path>, clients: Arc<ClientCache>) -> Layers {
+async fn build_layers(models_path: Option<&Path>, clients: Arc<ClientCache>) -> Layers {
+    let models = match load_models(models_path) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!("models.json unavailable, every model layer disabled: {e}");
+            return Layers::all_disabled(format!("all: models.json ({e})"));
+        }
+    };
+    let config_dir = auth::default_config_dir().unwrap_or_else(|| PathBuf::from("."));
+    let log_path = crate::paths::decision_log().unwrap_or_else(|| PathBuf::from("/dev/null"));
+    build_layers_from(
+        &models,
+        &config_dir,
+        &ModelCatalog::system(),
+        log_path,
+        clients,
+    )
+    .await
+}
+
+impl Layers {
+    fn all_disabled(note: String) -> Self {
+        Self {
+            fim: None,
+            decision: None,
+            reflex_model: None,
+            instinct_model: None,
+            metacognition_model: None,
+            metacognition: None,
+            disabled: vec![note],
+        }
+    }
+}
+
+/// [`build_layers`] over an already loaded config and explicit directories.
+async fn build_layers_from(
+    models: &ModelsConfig,
+    config_dir: &Path,
+    catalog: &ModelCatalog,
+    metacognition_log: PathBuf,
+    clients: Arc<ClientCache>,
+) -> Layers {
     let mut layers = Layers {
         fim: None,
         decision: None,
@@ -54,22 +96,12 @@ fn build_layers(models_path: Option<&Path>, clients: Arc<ClientCache>) -> Layers
         metacognition: None,
         disabled: Vec::new(),
     };
-    let models = match load_models(models_path) {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::error!("models.json unavailable, every model layer disabled: {e}");
-            layers.disabled.push(format!("all: models.json ({e})"));
-            return layers;
-        }
-    };
-    let config_dir = auth::default_config_dir().unwrap_or_else(|| PathBuf::from("."));
-
     // Reflex: Mercury FIM on the `reflex` alias.
     match models.resolve("reflex") {
         Ok(resolved) => {
             let model_id = resolved.model.model.clone();
             match auth::resolve_key(
-                &config_dir,
+                config_dir,
                 &resolved.provider_name,
                 resolved.provider.api_key_env.as_deref(),
             ) {
@@ -95,7 +127,7 @@ fn build_layers(models_path: Option<&Path>, clients: Arc<ClientCache>) -> Layers
 
     // Instinct: System One on the `instinct` alias (the pipeline snapshot
     // names its own alias; the shipped ones all use `instinct`).
-    match SystemOneClient::from_alias(&models, "instinct", &config_dir, clients.clone()) {
+    match SystemOneClient::from_alias(models, "instinct", config_dir, clients.clone()) {
         Ok(client) => {
             layers.instinct_model = Some(client.model().to_string());
             layers.decision = Some(Arc::new(DecisionAdapter(client)));
@@ -108,20 +140,24 @@ fn build_layers(models_path: Option<&Path>, clients: Arc<ClientCache>) -> Layers
 
     // Metacognition: the fast chat commenter on the `metacognition` alias,
     // logging to the navigator log.
-    let metacognition_log = crate::paths::decision_log();
     match build_llm_commenter(
-        &models,
+        models,
         "metacognition",
-        &config_dir,
+        config_dir,
+        catalog,
         clients.clone(),
-        metacognition_log.unwrap_or_else(|| PathBuf::from("/dev/null")),
-    ) {
+        metacognition_log,
+    )
+    .await
+    {
         Ok(commenter) => {
             layers.metacognition_model = Some(commenter.model_id().to_string());
             layers.metacognition = Some(Arc::new(commenter));
         }
         Err(e) => {
-            tracing::error!("metacognition disabled: {e}");
+            // Only the remarks go: FIM, instinct, history and the server do
+            // not depend on this alias.
+            tracing::warn!("metacognition remarks disabled: {e}");
             layers.disabled.push(format!("metacognition: {e}"));
         }
     }
@@ -130,10 +166,11 @@ fn build_layers(models_path: Option<&Path>, clients: Arc<ClientCache>) -> Layers
 }
 
 /// Chat commenter on a named alias (the metacognition).
-fn build_llm_commenter(
+async fn build_llm_commenter(
     models: &ModelsConfig,
     alias: &str,
     config_dir: &Path,
+    catalog: &ModelCatalog,
     clients: Arc<ClientCache>,
     log_path: PathBuf,
 ) -> anyhow::Result<LlmCommenter> {
@@ -146,6 +183,18 @@ fn build_llm_commenter(
         resolved.provider.api_key_env.as_deref(),
     )
     .map_err(|e| anyhow::anyhow!("no API key for provider '{}': {e}", resolved.provider_name))?;
+    // The same resolver as a chat session, before the first call: an alias
+    // with no known window is refused here, not discovered at remark time.
+    resolve_chat(catalog, &resolved, &api_key, &clients)
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "alias '{}' (provider '{}', model '{}') has no known context window; set \"context_window\" for it in models.json",
+                e.alias,
+                e.provider,
+                e.model
+            )
+        })?;
     Ok(LlmCommenter::new(resolved, api_key, clients).with_log(NavLog::new(log_path)))
 }
 
@@ -166,7 +215,7 @@ impl Layers {
 /// navigator over stdio until the client exits.
 pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
     let clients = Arc::new(ClientCache::new());
-    let mut layers = build_layers(models_path, clients);
+    let mut layers = build_layers(models_path, clients).await;
 
     let log_path = crate::paths::decision_log()
         .ok_or_else(|| anyhow::anyhow!("cannot resolve user data dir"))?;

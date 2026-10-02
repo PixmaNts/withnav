@@ -230,18 +230,79 @@ fn now() -> u64 {
         .as_secs()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The version of the saved [`ModelResolution`] JSON.
+pub const RESOLUTION_VERSION: u32 = 1;
+
+/// What a session resolved its model to, saved in `sessions.model_resolution`
+/// so a resumed conversation keeps its bounds when discovery is down and is
+/// never silently moved to another model. Carries no credentials.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelResolution {
+    pub version: u32,
     pub provider: String,
     pub model: String,
     pub api: String,
+    /// The provider's base URL without credentials, query or fragment.
     pub endpoint: String,
-    pub context_window: u64,
-    pub input_source: String,
-    pub output_source: String,
-    pub reported_output: Option<u64>,
-    pub max_input_tokens: Option<u64>,
+    pub bounds: Bounds,
     pub history_policy: String,
+    pub provenance: Provenance,
+}
+/// The effective bounds of a model, in tokens.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bounds {
+    pub context_window: u64,
+    pub max_input_tokens: Option<u64>,
+    pub reported_output: Option<u64>,
+}
+/// Where each bound came from: `models.json`, a `discovered.*` field, or `none`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Provenance {
+    pub context_window: String,
+    pub max_input_tokens: String,
+    pub reported_output: String,
+}
+impl ModelResolution {
+    /// `provider 'p', model 'm', api chat`: the identity a retargeted alias
+    /// is compared on.
+    pub fn identity(&self) -> String {
+        format!(
+            "provider '{}', model '{}', api {}",
+            self.provider, self.model, self.api
+        )
+    }
+    /// Whether `other` is the same provider, model and api.
+    pub fn same_identity(&self, other: &ModelResolution) -> bool {
+        self.provider == other.provider && self.model == other.model && self.api == other.api
+    }
+    /// Parses the saved column. A newer version than this build knows is an
+    /// error, never a guess.
+    pub fn from_saved(raw: &str) -> Result<Self, String> {
+        let saved: Self = serde_json::from_str(raw).map_err(|e| e.to_string())?;
+        if saved.version != RESOLUTION_VERSION {
+            return Err(format!(
+                "version {} is not supported (this build reads version {RESOLUTION_VERSION})",
+                saved.version
+            ));
+        }
+        Ok(saved)
+    }
+}
+/// The api name saved in a resolution: `chat`, `fim` or `systemone`.
+pub fn api_name(api: ApiKind) -> String {
+    format!("{api:?}").to_lowercase()
+}
+/// A base URL without userinfo, query or fragment, so no credential reaches
+/// the database.
+fn endpoint_without_credentials(base_url: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(base_url.trim_end_matches('/')) else {
+        return "(unparseable endpoint)".into();
+    };
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+    url.as_str().trim_end_matches('/').into()
 }
 /// An explicit `context_window` that differs from what the provider reported.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -324,26 +385,32 @@ pub async fn resolve_chat(
         });
     let max_input_tokens = resolved.model.max_input_tokens.or(limits.max_input_tokens);
     let snapshot = ModelResolution {
+        version: RESOLUTION_VERSION,
         provider: resolved.provider_name.clone(),
         model: resolved.model.model.clone(),
-        api: format!("{:?}", resolved.model.api).to_lowercase(),
-        endpoint: resolved.provider.base_url.trim_end_matches('/').into(),
-        context_window: window,
-        input_source: if resolved.model.max_input_tokens.is_some() {
-            "models.json"
-        } else {
-            "discovered"
-        }
-        .into(),
-        output_source: if resolved.model.max_output_tokens.is_some() {
-            "models.json request setting"
-        } else {
-            "discovered report"
-        }
-        .into(),
-        reported_output: limits.max_output_tokens,
-        max_input_tokens,
+        api: api_name(resolved.model.api),
+        endpoint: endpoint_without_credentials(&resolved.provider.base_url),
+        bounds: Bounds {
+            context_window: window,
+            max_input_tokens,
+            reported_output: limits.max_output_tokens,
+        },
         history_policy: format!("{:?}", resolved.model.reasoning_history).to_lowercase(),
+        provenance: Provenance {
+            context_window: source.into(),
+            max_input_tokens: match (resolved.model.max_input_tokens, limits.max_input_tokens) {
+                (Some(_), _) => "models.json",
+                (None, Some(_)) => "discovered.max_input_tokens",
+                (None, None) => "none",
+            }
+            .into(),
+            reported_output: if limits.max_output_tokens.is_some() {
+                "discovered.max_output_tokens"
+            } else {
+                "none"
+            }
+            .into(),
+        },
     };
     Ok(ResolvedChat {
         window,

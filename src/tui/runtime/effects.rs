@@ -82,6 +82,11 @@ impl Executor {
         }
     }
 
+    /// A sender into the loop's event channel, for tests that inject events.
+    pub fn sender(&self) -> mpsc::Sender<ClientEvent> {
+        self.tx.clone()
+    }
+
     pub fn has_stream(&self) -> bool {
         self.stream.is_some()
     }

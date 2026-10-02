@@ -50,8 +50,10 @@ impl Runtime {
         let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         let client = Client::new(options.url.clone(), options.token.clone());
         let workspace = options.workspace.to_string_lossy().into_owned();
-        let mut state = State::default();
-        state.selected_model_alias = options.initial_model.clone();
+        let state = State {
+            selected_model_alias: options.initial_model.clone(),
+            ..State::default()
+        };
         let ui = UiState {
             follow_bottom: true,
             ..UiState::default()
@@ -60,7 +62,7 @@ impl Runtime {
             state,
             ui,
             editor: Editor::new(),
-            cache: RenderCache::default(),
+            cache: Default::default(),
             exec: Executor::new(client, workspace, tx),
             rx,
             tick: 0,
@@ -81,6 +83,11 @@ impl Runtime {
 
     pub fn executor(&self) -> &Executor {
         &self.exec
+    }
+
+    /// A sender into the loop's event channel.
+    pub fn exec_sender(&self) -> mpsc::Sender<ClientEvent> {
+        self.exec.sender()
     }
 
     pub fn should_quit(&self) -> bool {
@@ -252,3 +259,6 @@ async fn termination_signal() {
         let _ = tokio::signal::ctrl_c().await;
     }
 }
+
+#[cfg(test)]
+mod tests;

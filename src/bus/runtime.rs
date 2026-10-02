@@ -49,6 +49,9 @@ struct TurnPublisher {
     task_id: Ulid,
     step_id: Ulid,
     message_id: Ulid,
+    /// The tool call being dispatched and when it started; native tools run
+    /// one at a time, so one slot is enough.
+    pending_tool: Option<(String, Instant)>,
     error: Option<crate::error::BusError>,
 }
 
@@ -60,6 +63,7 @@ impl TurnPublisher {
             task_id,
             step_id: Ulid::new(),
             message_id: Ulid::new(),
+            pending_tool: None,
             error: None,
         }
     }
@@ -108,6 +112,7 @@ impl TurnPublisher {
                 name,
                 args,
             } => {
+                self.pending_tool = Some((tool_call_id.to_string(), Instant::now()));
                 let payload = to_value(&ToolPreCall {
                     tool_call_id: tool_call_id.to_string(),
                     name: name.to_string(),
@@ -122,16 +127,38 @@ impl TurnPublisher {
                 name,
                 result,
             } => {
+                let duration_ms = match self.pending_tool.take() {
+                    Some((id, started)) if id == tool_call_id => {
+                        Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX))
+                    }
+                    _ => None,
+                };
                 let payload = to_value(&ToolPostCall {
                     tool_call_id: tool_call_id.to_string(),
                     name: name.to_string(),
                     status: result.status,
                     output: result.output.clone(),
-                    metadata: result.metadata.clone(),
+                    metadata: with_duration(result.metadata.clone(), duration_ms),
                 });
                 self.publish(EventKind::ToolPostCall, payload);
             }
         }
+    }
+}
+
+/// Adds `duration_ms` to a tool result's metadata, keeping its other keys.
+/// `Null` becomes an object; any other non-object value is left untouched.
+fn with_duration(metadata: serde_json::Value, duration_ms: Option<u64>) -> serde_json::Value {
+    let Some(ms) = duration_ms else {
+        return metadata;
+    };
+    match metadata {
+        serde_json::Value::Null => serde_json::json!({ "duration_ms": ms }),
+        serde_json::Value::Object(mut map) => {
+            map.insert("duration_ms".to_string(), ms.into());
+            serde_json::Value::Object(map)
+        }
+        other => other,
     }
 }
 
@@ -837,6 +864,46 @@ mod tests {
             "one llm.response per model response: {kinds:?}"
         );
         assert!(kinds.contains(&"turn.end"));
+        h.take_actor().await;
+    }
+
+    #[test]
+    fn with_duration_merges_into_objects_and_leaves_other_shapes() {
+        use serde_json::{json, Value};
+        assert_eq!(
+            with_duration(Value::Null, Some(7)),
+            json!({"duration_ms": 7})
+        );
+        assert_eq!(
+            with_duration(json!({"exit_code": 1}), Some(7)),
+            json!({"exit_code": 1, "duration_ms": 7})
+        );
+        assert_eq!(with_duration(json!("raw"), Some(7)), json!("raw"));
+        assert_eq!(with_duration(json!([1]), Some(7)), json!([1]));
+        assert_eq!(with_duration(Value::Null, None), Value::Null);
+    }
+
+    #[tokio::test]
+    async fn post_call_metadata_carries_duration_ms() {
+        let toolcall = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"bash","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[toolcall])),
+            http_sse(&sse_body(&[done])),
+        ])
+        .await;
+        let mut h = harness(server.url.clone()).await;
+        h.send("echo");
+        let envelopes = drain_until(&mut h.live, |e| kind_of(e) == "turn.end").await;
+        let post = envelopes
+            .iter()
+            .find(|e| kind_of(e) == "tool.post_call")
+            .expect("post_call emitted");
+        assert!(
+            post.payload["metadata"]["duration_ms"].is_u64(),
+            "metadata: {}",
+            post.payload["metadata"]
+        );
         h.take_actor().await;
     }
 

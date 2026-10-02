@@ -25,6 +25,9 @@ requests land in `develop`.
   still wakes the chat on its own schedule.
 - Saving and then pausing on the same text no longer restarts the remark being written; newer
   text still replaces it and closing the file still cancels it.
+- The navigator's view of your recent edits lists each real edit once, with its file and version,
+  instead of repeating the same text for every save and pause, and says that it does not know
+  whether an error lasted across edits.
 - A comment that calls on the navigator is answered once: saving or pausing again with the same
   comment no longer cancels the answer being written, and the same comment does not ask again until
   it is removed and written anew. Such a call also gets one more round of reading files.

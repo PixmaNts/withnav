@@ -21,6 +21,8 @@ fn live_state_renders_edits_newest_first_and_diagnostics() {
     ] {
         ring.push_back(EditSummary {
             ts: ts.to_string(),
+            file: "a.rs".to_string(),
+            version: line as i32,
             changed_lines: 4,
             first_line: line,
             excerpt: "let x = 1;".to_string(),
@@ -45,6 +47,7 @@ fn live_state_renders_edits_newest_first_and_diagnostics() {
     // Newest edit first.
     let first = text.lines().next().unwrap();
     assert!(first.starts_with("2026-10-01T10:01:00.000Z"), "{text}");
+    assert!(first.contains("a.rs v2: changed 4 line(s) at 2"), "{text}");
     // Only errors and warnings make it in.
     assert!(text.contains("[error] cannot find value `y`"), "{text}");
     assert!(!text.contains("unrelated hint"), "{text}");
@@ -109,4 +112,92 @@ fn text_around_changes_all_inserts_keeps_neighborhood() {
         text_around_changes(old, new, 1),
         "   1| a\n   2| b\n   3| c\n   4| d\n   5| z"
     );
+}
+
+fn edited(docs: &mut Documents, uri: &str, text: &str, version: i32) {
+    docs.change(uri, text.to_string(), version);
+}
+
+#[test]
+fn live_state_ignores_repeated_snapshots_of_the_same_version() {
+    let uri = "file:///ws/src/a.rs";
+    let mut docs = Documents::default();
+    docs.open(uri, "rust".to_string(), "a\nb\n".to_string(), 1);
+    edited(&mut docs, uri, "a\nB\nc\n", 2);
+    let now = Instant::now();
+    // A save, an idle and a diagnostics event on the same text: one edit.
+    for event in [
+        TriggerKind::Save,
+        TriggerKind::Idle,
+        TriggerKind::Diagnostics,
+    ] {
+        docs.snapshot(uri, event, now).unwrap();
+    }
+    let live = docs
+        .snapshot(uri, TriggerKind::Idle, now)
+        .unwrap()
+        .live_state;
+    assert_eq!(live.lines().count(), 1, "{live}");
+    assert!(
+        live.contains("a.rs v2: changed 3 line(s) at 2 | B"),
+        "{live}"
+    );
+
+    // A newer version is a new edit.
+    edited(&mut docs, uri, "a\nB\nc\nd\n", 3);
+    let live = docs
+        .snapshot(uri, TriggerKind::Save, now)
+        .unwrap()
+        .live_state;
+    assert_eq!(live.lines().count(), 2, "{live}");
+    assert!(live.lines().any(|l| l.contains("a.rs v3")), "{live}");
+}
+
+#[test]
+fn live_state_skips_zero_change_and_conversation_snapshots() {
+    let uri = "file:///ws/src/a.rs";
+    let mut docs = Documents::default();
+    docs.open(uri, "rust".to_string(), "a\n".to_string(), 1);
+    let now = Instant::now();
+    // Unchanged text (an idle after a rebase) and a conversation turn.
+    docs.snapshot(uri, TriggerKind::Idle, now).unwrap();
+    docs.snapshot(uri, TriggerKind::Conversation, now).unwrap();
+    edited(&mut docs, uri, "a\nb\n", 2);
+    docs.snapshot(uri, TriggerKind::Conversation, now).unwrap();
+    assert_eq!(
+        docs.snapshot(uri, TriggerKind::Diagnostics, now)
+            .unwrap()
+            .live_state
+            .lines()
+            .count(),
+        1
+    );
+    docs.get_mut(uri).unwrap().rebase();
+    docs.snapshot(uri, TriggerKind::Idle, now).unwrap();
+    // The ring kept the one real edit, not a zero-change entry.
+    let live = docs
+        .snapshot(uri, TriggerKind::Idle, now)
+        .unwrap()
+        .live_state;
+    assert_eq!(live.lines().count(), 1, "{live}");
+}
+
+#[test]
+fn the_edit_ring_keeps_five_distinct_edits() {
+    let uri = "file:///ws/src/a.rs";
+    let mut docs = Documents::default();
+    docs.open(uri, "rust".to_string(), String::new(), 1);
+    let now = Instant::now();
+    for v in 2..10 {
+        edited(&mut docs, uri, &"x\n".repeat(v as usize), v);
+        docs.snapshot(uri, TriggerKind::Save, now).unwrap();
+        docs.snapshot(uri, TriggerKind::Idle, now).unwrap();
+    }
+    let live = docs
+        .snapshot(uri, TriggerKind::Idle, now)
+        .unwrap()
+        .live_state;
+    assert_eq!(live.lines().count(), LIVE_STATE_EDITS, "{live}");
+    assert!(live.contains(" v9:"), "{live}");
+    assert!(!live.contains(" v4:"), "{live}");
 }

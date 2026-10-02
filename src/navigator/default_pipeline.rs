@@ -126,5 +126,8 @@ mod tests {
         assert!(STATE_PROMPT.contains("claims, not agreements"));
         assert!(CONVERSATION_STATE_PROMPT.contains("claims, not agreements"));
         assert!(REMARK_PROMPT.contains("Never announce that code is unfinished"));
+        assert!(
+            STATE_PROMPT.contains("whether a diagnostic persisted across edits is not recorded")
+        );
     }
 }

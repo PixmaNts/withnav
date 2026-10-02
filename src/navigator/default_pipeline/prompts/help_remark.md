@@ -15,7 +15,7 @@ Context (numbered lines):
 Diagnostics:
 {{diagnostics}}
 
-Live state:
+Live state (recent distinct edits, then the current diagnostics only; whether a diagnostic persisted across edits is not recorded):
 {{live_state}}
 
 Conversation:

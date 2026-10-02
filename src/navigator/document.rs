@@ -117,10 +117,13 @@ impl DocumentState {
     }
 }
 
-/// One recorded edit of the live state: when a snapshot was taken, how many
-/// lines changed, where the first change sits and what that line says.
+/// One recorded edit of the live state: when it was seen, in which file and
+/// at which document version, how many lines changed, where the first change
+/// sits and what that line says.
 struct EditSummary {
     ts: String,
+    file: String,
+    version: i32,
     changed_lines: i64,
     first_line: usize,
     excerpt: String,
@@ -273,9 +276,9 @@ impl Documents {
     }
 
     /// Gathers everything one trigger needs about `uri` under one short
-    /// lock. Unless the trigger is a conversation turn (not an edit), this
-    /// trigger's edit summary joins the uri's ring before the live state is
-    /// rendered. `None` when the uri is not open.
+    /// lock. When the trigger sees an edit not recorded yet (a changed text
+    /// whose version is not the last one noted), its summary joins the uri's
+    /// ring before the live state is rendered. `None` when the uri is not open.
     pub fn snapshot(
         &mut self,
         uri: &str,
@@ -304,10 +307,21 @@ impl Documents {
             .map(|t| (now.duration_since(t)).as_millis() as i64)
             .unwrap_or(NO_REMARK_MS);
         let changed_lines = state.changed_lines_since_baseline() as i64;
-        let summary = (event != TriggerKind::Conversation).then(|| {
+        // Only a real edit joins the history: a conversation turn changed
+        // nothing, an unchanged text has nothing to say, and a save followed
+        // by an idle on the same version is one edit seen twice.
+        let is_new_edit = event != TriggerKind::Conversation
+            && changed_lines > 0
+            && doc
+                .edits
+                .back()
+                .is_none_or(|last| last.version != state.version);
+        let summary = is_new_edit.then(|| {
             let (first_line, first_line_text) = first_changed_line(&state.baseline, &state.text);
             EditSummary {
                 ts: now_rfc3339(),
+                file: uri.rsplit('/').next().unwrap_or(uri).to_string(),
+                version: state.version,
                 changed_lines,
                 first_line,
                 excerpt: excerpt(&first_line_text, 120),
@@ -359,8 +373,8 @@ impl Documents {
         for e in edits.iter().take(LIVE_STATE_EDITS) {
             let _ = writeln!(
                 out,
-                "{} changed {} line(s) at {} | {}",
-                e.ts, e.changed_lines, e.first_line, e.excerpt
+                "{} {} v{}: changed {} line(s) at {} | {}",
+                e.ts, e.file, e.version, e.changed_lines, e.first_line, e.excerpt
             );
         }
         let open = self.open.iter().map(|(uri, d)| (uri, &d.diagnostics));

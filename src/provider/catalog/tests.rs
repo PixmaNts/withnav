@@ -16,6 +16,7 @@ fn resolved(base_url: &str, model: &str, api: ApiKind, window: Option<u64>) -> R
             headers: Default::default(),
             connect_timeout_ms: 1_000,
             request_timeout_ms: 5_000,
+            catalog_format: None,
         },
         model: ModelConfig {
             provider: "omni".into(),
@@ -27,6 +28,8 @@ fn resolved(base_url: &str, model: &str, api: ApiKind, window: Option<u64>) -> R
             supports_tools: true,
             supports_parallel_tool_calls: None,
             thinking: None,
+            default_variant: None,
+            variants: None,
             reasoning_history: ReasoningHistory::Preserve,
         },
     }
@@ -276,7 +279,7 @@ fn seed(catalog: &ModelCatalog, base: &str, age: u64, id: &str, limits: Limits) 
     let path = cache_path(catalog, base);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let file = CacheFile {
-        version: 1,
+        version: CACHE_VERSION,
         fetched_at: now() - age,
         models: HashMap::from([(id.to_string(), limits)]),
         carried: HashMap::new(),
@@ -289,6 +292,7 @@ fn limits(context: u64) -> Limits {
         context_length: Some(context),
         max_input_tokens: None,
         max_output_tokens: None,
+        effort_tiers: Vec::new(),
     }
 }
 
@@ -503,7 +507,7 @@ async fn a_corrupt_cache_file_is_ignored_and_rewritten() {
     assert_eq!(d.limits.unwrap().context_length, Some(1_000_000));
     assert_eq!(requests(&server).await, 1);
     let rewritten = read_cache(&file).expect("valid file after the refresh");
-    assert_eq!(rewritten.version, 1);
+    assert_eq!(rewritten.version, CACHE_VERSION);
 }
 
 #[tokio::test]
@@ -548,7 +552,7 @@ fn an_unwritable_cache_dir_warns_once() {
     let catalog = ModelCatalog::new(Some(blocker));
     let target = dir.path().join("data").join("model-catalog").join("x.json");
     let file = CacheFile {
-        version: 1,
+        version: CACHE_VERSION,
         fetched_at: now(),
         models: HashMap::new(),
         carried: HashMap::new(),
@@ -614,6 +618,7 @@ async fn null_or_malformed_fields_keep_the_previous_values() {
             context_length: Some(500_000),
             max_input_tokens: Some(400_000),
             max_output_tokens: Some(1_000),
+            effort_tiers: Vec::new(),
         },
     );
     let d = lookup(&catalog, &base, "m").await;

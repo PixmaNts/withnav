@@ -171,6 +171,7 @@ mod tests {
                 headers: BTreeMap::new(),
                 connect_timeout_ms: 100,
                 request_timeout_ms: 100,
+                catalog_format: None,
             },
             "test-key".into(),
             "test-model".into(),

@@ -4,7 +4,7 @@ use crate::{
     paths,
     provider::{
         client::ModelClient,
-        config::{ApiKind, ResolvedModel},
+        config::{effective_variants, ApiKind, ResolvedModel, UnknownVariant, Variant, Variants},
         openai::ClientCache,
     },
 };
@@ -21,6 +21,9 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 const TTL: u64 = 86_400;
+/// Version 2 added the effort tiers; a version 1 file is read as absent and
+/// refetched.
+const CACHE_VERSION: u32 = 2;
 const MAX_ENTRIES: usize = 10_000;
 const FETCH_DEADLINE: Duration = Duration::from_secs(3);
 /// After a failed refresh the endpoint is not asked again for this long, so
@@ -31,6 +34,10 @@ pub struct Limits {
     pub context_length: Option<u64>,
     pub max_input_tokens: Option<u64>,
     pub max_output_tokens: Option<u64>,
+    /// The reasoning-effort tiers the provider advertises (`low`, `high`, ...;
+    /// `none` included when reported). Empty: none reported.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effort_tiers: Vec<String>,
 }
 impl Limits {
     /// Every reported limit is positive.
@@ -200,7 +207,7 @@ impl ModelCatalog {
                     let old = self.current(&ep, path.as_deref());
                     let (models, carried) = merge(old.as_ref(), fetched);
                     let file = CacheFile {
-                        version: 1,
+                        version: CACHE_VERSION,
                         fetched_at: now(),
                         models,
                         carried,
@@ -378,6 +385,7 @@ pub(crate) fn parse_models(bytes: &[u8]) -> Result<HashMap<String, Limits>, Prov
             context_length: positive("context_length"),
             max_input_tokens: positive("max_input_tokens"),
             max_output_tokens: positive("max_output_tokens"),
+            effort_tiers: effort_tiers(e),
         };
         let Some(existing) = models.get_mut(id) else {
             models.insert(id.to_string(), incoming);
@@ -399,15 +407,45 @@ pub(crate) fn parse_models(bytes: &[u8]) -> Result<HashMap<String, Limits>, Prov
         existing.context_length = existing.context_length.or(incoming.context_length);
         existing.max_input_tokens = existing.max_input_tokens.or(incoming.max_input_tokens);
         existing.max_output_tokens = existing.max_output_tokens.or(incoming.max_output_tokens);
+        if existing.effort_tiers.is_empty() {
+            existing.effort_tiers = incoming.effort_tiers;
+        }
     }
     Ok(models)
+}
+
+/// At most this many tiers of one model are kept.
+const MAX_TIERS: usize = 16;
+
+/// `capabilities.effort_tiers` of one model entry: the usable names, in the
+/// order reported, without duplicates. A tier becomes a variant name and a
+/// request value, so anything that is not a short plain word is dropped.
+fn effort_tiers(entry: &serde_json::Value) -> Vec<String> {
+    let mut tiers: Vec<String> = Vec::new();
+    let reported = entry
+        .pointer("/capabilities/effort_tiers")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str());
+    for tier in reported {
+        let plain = !tier.is_empty()
+            && tier.len() <= 32
+            && tier
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if plain && !tiers.iter().any(|t| t == tier) && tiers.len() < MAX_TIERS {
+            tiers.push(tier.to_string());
+        }
+    }
+    tiers
 }
 /// A cache file this build can trust: known version, and no limit of zero
 /// (the parser never writes one, so it means the file was damaged).
 fn read_cache(path: &Path) -> Option<CacheFile> {
     serde_json::from_slice::<CacheFile>(&std::fs::read(path).ok()?)
         .ok()
-        .filter(|c| c.version == 1 && c.models.values().all(Limits::is_sane))
+        .filter(|c| c.version == CACHE_VERSION && c.models.values().all(Limits::is_sane))
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -539,6 +577,31 @@ pub struct ResolvedChat {
     /// Why the last refresh failed (short, no secrets), if it did.
     pub refresh_error: Option<String>,
     pub snapshot: ModelResolution,
+    /// The variants the alias offers: its own, or generated from the
+    /// discovered effort tiers.
+    pub variants: Variants,
+    /// The alias's `default_variant` as configured. It may name a generated
+    /// tier the provider no longer reports: check with [`Self::default_override`].
+    pub default_variant: Option<String>,
+}
+impl ResolvedChat {
+    /// The default variant's name and override object; `None` when the alias
+    /// sets no default, an error when the default names no variant now on offer.
+    pub fn default_override(
+        &self,
+        alias: &str,
+    ) -> Result<Option<(String, Variant)>, UnknownVariant> {
+        let Some(name) = &self.default_variant else {
+            return Ok(None);
+        };
+        self.variants
+            .get(name)
+            .map(|v| Some((name.clone(), v.clone())))
+            .ok_or_else(|| UnknownVariant {
+                alias: alias.to_string(),
+                variant: name.clone(),
+            })
+    }
 }
 /// A chat alias with no window in models.json and none reported by the
 /// provider.
@@ -565,9 +628,12 @@ pub async fn resolve_chat(
 ) -> Result<ResolvedChat, NoContextWindow> {
     let is_chat = resolved.model.api == ApiKind::Chat;
     let explicit = resolved.model.context_window.filter(|n| *n > 0);
+    // Generated variants need the provider's tiers even when the window is
+    // configured.
+    let needs_tiers = resolved.model.variants.is_none() && resolved.provider.catalog_format.is_some();
     let data = if !is_chat {
         None
-    } else if explicit.is_some() {
+    } else if explicit.is_some() && !needs_tiers {
         Some(catalog.cached(resolved))
     } else {
         Some(catalog.lookup(resolved, key, clients).await)
@@ -578,6 +644,8 @@ pub async fn resolve_chat(
     let stale_age_secs = used.filter(|d| d.stale).and_then(|d| d.age_seconds);
     let refresh_error = used.and_then(|d| d.error.clone());
     let limits = data.and_then(|d| d.limits).unwrap_or_default();
+    let variants = effective_variants(resolved, &limits.effort_tiers);
+    let default_variant = resolved.model.default_variant.clone();
     let (window, source) = if let Some(n) = explicit {
         (n, "models.json")
     } else if let Some(n) = limits.context_length {
@@ -642,6 +710,8 @@ pub async fn resolve_chat(
         stale_age_secs,
         refresh_error,
         snapshot,
+        variants,
+        default_variant,
     })
 }
 

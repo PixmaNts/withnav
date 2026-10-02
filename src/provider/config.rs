@@ -2,8 +2,41 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::error::{ConfigError, ProviderError};
+
+/// One variant: a JSON object merged shallowly into the chat request body.
+pub type Variant = serde_json::Map<String, Value>;
+/// The variants of one alias, by name.
+pub type Variants = BTreeMap<String, Variant>;
+
+/// Keys the request itself owns. A variant cannot set them: it never changes
+/// the model, the conversation, the tools or the output limits.
+pub const RESERVED_VARIANT_KEYS: &[&str] = &[
+    "model",
+    "messages",
+    "tools",
+    "tool_choice",
+    "parallel_tool_calls",
+    "functions",
+    "function_call",
+    "stream",
+    "stream_options",
+    "max_tokens",
+    "max_completion_tokens",
+    "n",
+    "temperature",
+];
+
+/// The format of a provider's `GET /models` list, when it is richer than the
+/// plain OpenAI one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CatalogFormat {
+    /// OmniRoute: models carry `capabilities.effort_tiers`.
+    Omniroute,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -24,6 +57,10 @@ pub struct ProviderConfig {
     pub connect_timeout_ms: u64,
     #[serde(default = "default_request_timeout_ms")]
     pub request_timeout_ms: u64,
+    /// `"omniroute"`: the model list reports effort tiers, from which an alias
+    /// that omits `variants` gets one variant per tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_format: Option<CatalogFormat>,
 }
 
 fn default_connect_timeout_ms() -> u64 {
@@ -63,8 +100,16 @@ pub struct ModelConfig {
     pub supports_tools: bool,
     #[serde(default)]
     pub supports_parallel_tool_calls: Option<bool>,
-    #[serde(default)]
+    /// Deprecated and ignored: write `default_variant` instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
+    /// The variant a new conversation on this alias starts with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_variant: Option<String>,
+    /// Named request overrides. Omitted: generated from the model's effort
+    /// tiers when the provider's `catalog_format` is `omniroute`. `{}`: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variants: Option<Variants>,
     #[serde(default)]
     pub reasoning_history: ReasoningHistory,
 }
@@ -86,7 +131,8 @@ pub struct ResolvedModel {
 impl ModelsConfig {
     pub fn parse(s: &str) -> Result<Self, ConfigError> {
         let cfg: ModelsConfig = serde_json::from_str(s)?;
-        cfg.warn_unsupported();
+        cfg.validate_variants()?;
+        cfg.warn_deprecated();
         Ok(cfg)
     }
 
@@ -112,15 +158,134 @@ impl ModelsConfig {
         })
     }
 
-    fn warn_unsupported(&self) {
+    /// Rejects, naming the alias, variant and key: a variant that sets a key
+    /// the request owns, an unusable variant name, and a `default_variant`
+    /// that no variant of the alias can satisfy.
+    fn validate_variants(&self) -> Result<(), ConfigError> {
         for (alias, m) in &self.models {
-            if let Some(t) = &m.thinking {
-                if !matches!(t.as_str(), "low" | "medium" | "high" | "off" | "none") {
-                    tracing::warn!(alias, thinking = %t, "unsupported thinking value in models.json");
+            for (name, variant) in m.variants.iter().flatten() {
+                if name.is_empty() || name.len() > 64 || name.chars().any(char::is_whitespace) {
+                    return Err(ConfigError::Invalid(format!(
+                        "model '{alias}': variant name {name:?} must be 1-64 characters without whitespace"
+                    )));
+                }
+                if let Some(key) = RESERVED_VARIANT_KEYS
+                    .iter()
+                    .find(|k| variant.contains_key(**k))
+                {
+                    return Err(ConfigError::Invalid(format!(
+                        "model '{alias}': variant '{name}' sets '{key}', which the request owns \
+                         (reserved: {})",
+                        RESERVED_VARIANT_KEYS.join(", ")
+                    )));
                 }
             }
+            let Some(default) = m.default_variant.as_deref() else {
+                continue;
+            };
+            let declared = match &m.variants {
+                Some(map) => map.contains_key(default),
+                // Generated from the provider's catalog: checked when the
+                // tiers are known.
+                None => self
+                    .providers
+                    .get(&m.provider)
+                    .is_some_and(|p| p.catalog_format.is_some()),
+            };
+            if !declared {
+                return Err(ConfigError::Invalid(format!(
+                    "model '{alias}': default_variant '{default}' names no variant of this alias"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// One message per deprecated or unsupported setting.
+    pub fn deprecations(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for (alias, m) in &self.models {
+            let Some(t) = &m.thinking else { continue };
+            out.push(match t.as_str() {
+                "off" | "none" => format!(
+                    "model '{alias}': `thinking` is deprecated and ignored; remove it \
+                     (no `default_variant` means no variant)"
+                ),
+                "low" | "medium" | "high" => format!(
+                    "model '{alias}': `thinking` is deprecated and ignored; write \
+                     `\"default_variant\": \"{t}\"` instead"
+                ),
+                _ => format!(
+                    "model '{alias}': `thinking` ({t:?}) is deprecated and ignored; write \
+                     `default_variant` naming one of the alias's variants instead"
+                ),
+            });
+        }
+        out
+    }
+
+    fn warn_deprecated(&self) {
+        for message in self.deprecations() {
+            tracing::warn!("{message}");
         }
     }
+}
+
+/// The variants an alias offers: its own map when it has one (`{}` is none),
+/// else, for a provider with a `catalog_format`, one
+/// `"<tier>": {"reasoning_effort": "<tier>"}` per effort tier the catalog
+/// reports for the model. Generation never picks a default.
+pub fn effective_variants(resolved: &ResolvedModel, effort_tiers: &[String]) -> Variants {
+    if let Some(own) = &resolved.model.variants {
+        return own.clone();
+    }
+    if resolved.provider.catalog_format.is_none() {
+        return Variants::new();
+    }
+    effort_tiers
+        .iter()
+        .map(|tier| {
+            let mut v = Variant::new();
+            v.insert("reasoning_effort".into(), Value::String(tier.clone()));
+            (tier.clone(), v)
+        })
+        .collect()
+}
+
+/// A `default_variant` that the alias's variants do not contain (a generated
+/// tier the catalog no longer reports).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownVariant {
+    pub alias: String,
+    pub variant: String,
+}
+
+impl std::fmt::Display for UnknownVariant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "model '{}' has no variant '{}'",
+            self.alias, self.variant
+        )
+    }
+}
+
+/// The alias's `default_variant` with its override object: `None` when the
+/// alias sets no default.
+pub fn default_variant(
+    resolved: &ResolvedModel,
+    effort_tiers: &[String],
+) -> Result<Option<(String, Variant)>, UnknownVariant> {
+    let Some(name) = resolved.model.default_variant.clone() else {
+        return Ok(None);
+    };
+    effective_variants(resolved, effort_tiers)
+        .remove(&name)
+        .map(|v| Some((name.clone(), v)))
+        .ok_or(UnknownVariant {
+            alias: resolved.alias.clone(),
+            variant: name,
+        })
 }
 
 pub fn resolve_models_path(

@@ -116,6 +116,7 @@ fn build_actor(base_url: String, workspace: PathBuf, cancel: CancellationToken) 
             headers: BTreeMap::new(),
             connect_timeout_ms: 2000,
             request_timeout_ms: 600_000,
+            catalog_format: None,
         },
         "test-key".to_string(),
         "test-model".to_string(),
@@ -207,6 +208,7 @@ async fn live_omniroute_edit_and_test() {
         headers: BTreeMap::new(),
         connect_timeout_ms: 5000,
         request_timeout_ms: 600_000,
+        catalog_format: None,
     };
 
     let mut registry = Registry::new();

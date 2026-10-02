@@ -1,0 +1,24 @@
+---
+source: tests/tui_view.rs
+expression: snapshot
+---
+ rust-agent  ~/dev/project         Fix parser · 01JABCDEFGH 
+────────────────────────────────────────────────────────────
+ │ ERROR                                                    
+ │  Permission denied                                       
+ │                                                          
+ │ QUESTION · awaiting answer                               
+ │  Choose a file                                           
+ │                                                          
+ │ NOTICE                                                   
+ │  Mode downgraded to next-turn                            
+ │                                                          
+                                                            
+                                                            
+                                                            
+────────────────────────────────────────────────────────────
+ cognition   reconnecting   stopped   delivery uncertain; ch
+┌ Message ─────────────────────────────────────────────────┐
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+ enter send  alt+enter newline  esc stop  ctrl+p commands  f

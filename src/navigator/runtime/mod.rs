@@ -11,11 +11,13 @@
 mod delivery;
 mod inline;
 mod trigger;
+mod wake;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use tower_lsp_server::ls_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DidSaveTextDocumentParams,
@@ -255,6 +257,42 @@ impl Runtime {
         match self.intent.lock().await.clone() {
             Some(text) => (text, true),
             None => (String::new(), false),
+        }
+    }
+
+    /// Hands the document's in-flight slot from the instinct evaluation to a
+    /// remark request: the instinct handle is released (a new trigger may
+    /// evaluate while the remark is written), a remark still running for the
+    /// document is superseded, and the new remark's handle is returned.
+    /// `None` when typing already cancelled the instinct stage or the
+    /// document is gone.
+    async fn begin_remark(
+        &self,
+        uri: &str,
+        instinct_cancel: &CancellationToken,
+    ) -> Option<CancellationToken> {
+        let mut state = self.documents.lock().await;
+        let doc = state.get_mut(uri)?;
+        doc.in_flight_cancel = None;
+        doc.in_flight_version = None;
+        if instinct_cancel.is_cancelled() {
+            return None;
+        }
+        if let Some(previous) = doc.remark_cancel.take() {
+            previous.cancel();
+        }
+        let cancel = CancellationToken::new();
+        doc.remark_cancel = Some(cancel.clone());
+        Some(cancel)
+    }
+
+    /// Releases the remark handle, unless a newer remark already replaced it.
+    async fn end_remark(&self, uri: &str, cancel: &CancellationToken) {
+        let mut state = self.documents.lock().await;
+        if let Some(doc) = state.get_mut(uri) {
+            if !cancel.is_cancelled() {
+                doc.remark_cancel = None;
+            }
         }
     }
 

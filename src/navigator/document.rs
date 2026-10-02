@@ -35,13 +35,21 @@ pub struct DocumentState {
     pub baseline: String,
     /// Instant of the last emitted remark, if any.
     pub last_remark: Option<Instant>,
+    /// Instant of the last wake of the cognition about this document. Apart
+    /// from `last_remark`: a wake never silences remarks.
+    pub last_wake: Option<Instant>,
     /// 1-based line of the last edit that inserted text (0: none yet).
     /// The conversation trigger shows the code around it.
     pub last_edit_line: usize,
-    /// Version at which the in-flight request was started, if any.
+    /// Version at which the in-flight instinct evaluation was started, if any.
     pub in_flight_version: Option<i32>,
-    /// Cancel handle for the in-flight commenter call.
+    /// Cancel handle for the in-flight instinct evaluation. Typing cancels
+    /// it: the answer would describe text that is gone.
     pub in_flight_cancel: Option<CancellationToken>,
+    /// Cancel handle for the in-flight remark request. Typing leaves it
+    /// running (the remark is delivered if its line survives); a newer
+    /// remark or a close cancels it.
+    pub remark_cancel: Option<CancellationToken>,
 }
 
 impl DocumentState {
@@ -51,9 +59,11 @@ impl DocumentState {
             version,
             baseline: String::new(),
             last_remark: None,
+            last_wake: None,
             last_edit_line: 0,
             in_flight_version: None,
             in_flight_cancel: None,
+            remark_cancel: None,
         }
     }
 
@@ -73,12 +83,26 @@ impl DocumentState {
         self.baseline = self.text.clone();
     }
 
-    /// Cancels any in-flight evaluation for this document.
-    pub fn cancel_in_flight(&mut self) {
+    /// Rebases the baseline to `text`, the text a remark or silence was
+    /// about. Edits made since stay in the next diff.
+    pub fn rebase_to(&mut self, text: &str) {
+        self.baseline = text.to_string();
+    }
+
+    /// Cancels the in-flight instinct evaluation (not a running remark).
+    pub fn cancel_instinct(&mut self) {
         if let Some(cancel) = self.in_flight_cancel.take() {
             cancel.cancel();
         }
         self.in_flight_version = None;
+    }
+
+    /// Cancels everything in flight for this document, a remark included.
+    pub fn cancel_in_flight(&mut self) {
+        self.cancel_instinct();
+        if let Some(cancel) = self.remark_cancel.take() {
+            cancel.cancel();
+        }
     }
 }
 
@@ -106,6 +130,7 @@ pub struct DocumentSnapshot {
     pub version: i32,
     pub changed_lines: i64,
     pub since_last_remark_ms: i64,
+    pub since_last_wake_ms: i64,
     pub text: String,
     pub baseline: String,
     /// 1-based line of the last edit that inserted text (0: none yet).
@@ -151,12 +176,12 @@ impl Documents {
         doc.state.version
     }
 
-    /// `didChange` (full sync): cancels the in-flight evaluation and notes
-    /// where the edit starts. A change for an unknown uri opens it, rebased.
+    /// `didChange` (full sync): cancels the in-flight instinct evaluation
+    /// (a running remark keeps going) and notes where the edit starts. A change for an unknown uri opens it, rebased.
     pub fn change(&mut self, uri: &str, text: String, version: i32) {
         match self.open.get_mut(uri) {
             Some(doc) => {
-                doc.state.cancel_in_flight();
+                doc.state.cancel_instinct();
                 let (line, _) = first_changed_line(&doc.state.text, &text);
                 if line > 0 {
                     doc.state.last_edit_line = line;
@@ -238,6 +263,10 @@ impl Documents {
             .last_remark
             .map(|t| (now.duration_since(t)).as_millis() as i64)
             .unwrap_or(NO_REMARK_MS);
+        let since_last_wake_ms = state
+            .last_wake
+            .map(|t| (now.duration_since(t)).as_millis() as i64)
+            .unwrap_or(NO_REMARK_MS);
         let changed_lines = state.changed_lines_since_baseline() as i64;
         let summary = (event != TriggerKind::Conversation).then(|| {
             let (first_line, first_line_text) = first_changed_line(&state.baseline, &state.text);
@@ -252,6 +281,7 @@ impl Documents {
             version: state.version,
             changed_lines,
             since_last_remark_ms,
+            since_last_wake_ms,
             text: state.text.clone(),
             baseline: state.baseline.clone(),
             last_edit_line: state.last_edit_line,
@@ -332,6 +362,21 @@ pub fn first_changed_line(old: &str, new: &str) -> (usize, String) {
         }
     }
     (0, String::new())
+}
+
+/// Where the 0-based `line` of `old` sits in `new`: its new index when the
+/// line survived the edit unchanged, `None` when it was changed or removed
+/// (or `old` has no such line). Lets a remark computed on an older text land
+/// on the right line of the current one.
+pub fn reanchor_line(old: &str, new: &str, line: u32) -> Option<u32> {
+    let diff = similar::TextDiff::from_lines(old, new);
+    let anchored = diff
+        .iter_all_changes()
+        .find(|c| c.old_index() == Some(line as usize))
+        .filter(|c| matches!(c.tag(), similar::ChangeTag::Equal))
+        .and_then(|c| c.new_index())
+        .map(|i| i as u32);
+    anchored
 }
 
 /// Counts added + removed lines between two texts using a line diff.

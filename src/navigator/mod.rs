@@ -14,6 +14,7 @@ pub mod config;
 pub mod conversation;
 pub mod default_pipeline;
 pub mod document;
+pub mod help_call;
 pub mod intent;
 pub mod log;
 pub mod lsp;

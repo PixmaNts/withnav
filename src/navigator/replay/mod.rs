@@ -424,6 +424,8 @@ action = "silent"
         let trigger = &log.triggers[0];
         assert_eq!(trigger.inputs.changed_lines, 13);
         assert_eq!(trigger.inputs.since_last_remark_ms, NO_REMARK_MS);
+        // A record from before wakes had their own cooldown replays as never woken.
+        assert_eq!(trigger.inputs.since_last_wake_ms, NO_REMARK_MS);
         assert!(!trigger.inputs.has_intent, "empty intent means none");
         assert!(!trigger.inputs.has_errors, "no diagnostics, no errors");
         assert_eq!(trigger.historical_action, Some(Action::Remark));

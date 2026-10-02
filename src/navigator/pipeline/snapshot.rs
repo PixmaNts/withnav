@@ -161,6 +161,10 @@ impl PipelineSnapshot {
                 crate::navigator::default_pipeline::REMARK_PROMPT.to_string(),
             ),
             (
+                "prompts/help_remark.md".to_string(),
+                crate::navigator::default_pipeline::HELP_REMARK_PROMPT.to_string(),
+            ),
+            (
                 "prompts/conversation_state.md".to_string(),
                 crate::navigator::default_pipeline::CONVERSATION_STATE_PROMPT.to_string(),
             ),

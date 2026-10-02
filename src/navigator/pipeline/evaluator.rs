@@ -154,12 +154,18 @@ impl Pipeline {
 /// The pre-filters over the trigger's inputs. `min_changed_lines` does not
 /// apply to the `conversation` event: the change is in the conversation, not
 /// in the file, so the file's changed-line count says nothing. The cooldown
-/// applies to every event.
+/// applies to every event. A call for help passes both, where the trigger
+/// asks for it (`bypass_on_help_call`).
 pub(crate) fn run_prefilters(
     prefilters: &super::Prefilters,
     event: TriggerKind,
     inputs: TriggerInputs,
 ) -> PrefilterOutcome {
+    // An explicit call for help in a comment is let through, whatever its size
+    // or the time since the last remark.
+    if prefilters.bypass_on_help_call && inputs.called_for_help {
+        return PrefilterOutcome::Pass;
+    }
     if event != TriggerKind::Conversation
         && inputs.changed_lines < prefilters.min_changed_lines as i64
     {
@@ -253,6 +259,13 @@ impl SnapshotTrigger {
         let mut vars = flatten_inputs(inputs);
         flatten_answers_into(answers, &mut vars);
         for (index, branch) in self.branches.iter().enumerate() {
+            // A wake inside its own cooldown does not match: the trigger
+            // falls through to the next branch.
+            if branch.action == Action::WakeCognition
+                && inputs.since_last_wake_ms < self.prefilters.wake_cooldown_ms as i64
+            {
+                continue;
+            }
             if branch
                 .when
                 .eval_boolean(&vars)
@@ -426,6 +439,8 @@ action = "silent"
         TriggerInputs {
             changed_lines: changed,
             since_last_remark_ms: 60_000,
+            since_last_wake_ms: 60_000,
+            called_for_help: false,
             has_errors: false,
             has_intent: true,
             has_conversation: false,

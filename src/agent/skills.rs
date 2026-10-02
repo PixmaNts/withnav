@@ -345,8 +345,20 @@ impl Walk {
             mut diagnostics,
             ..
         } = self;
-        let mut by_name: BTreeMap<String, Vec<Skill>> = BTreeMap::new();
+        // One manifest reached by several routes (a `SKILL.md` that is a link
+        // to another one, a directory linked twice) is one skill, at the best
+        // rank any route gave it: it must never make its own id ambiguous.
+        let mut by_manifest: BTreeMap<PathBuf, Skill> = BTreeMap::new();
         for skill in found {
+            match by_manifest.get(&skill.path) {
+                Some(kept) if kept.rank <= skill.rank => {}
+                _ => {
+                    by_manifest.insert(skill.path.clone(), skill);
+                }
+            }
+        }
+        let mut by_name: BTreeMap<String, Vec<Skill>> = BTreeMap::new();
+        for skill in by_manifest.into_values() {
             by_name.entry(skill.name.clone()).or_default().push(skill);
         }
         let mut winners = BTreeMap::new();

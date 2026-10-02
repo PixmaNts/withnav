@@ -415,6 +415,45 @@ fn a_second_path_to_the_same_skill_counts_once() {
     );
 }
 
+// Given a SKILL.md that is a link to another SKILL.md in the same root
+// When discovered
+// Then it is one skill, not an ambiguous id
+#[test]
+fn a_manifest_linked_to_another_manifest_is_one_skill() {
+    let fx = fixture();
+    let root = fx.home.join(".agents/skills");
+    let real = add(&root.join("b"), "twin", "Twin.");
+    fs::create_dir_all(root.join("a")).unwrap();
+    std::os::unix::fs::symlink(&real, root.join("a/SKILL.md")).unwrap();
+    let skills = load(&fx);
+    assert_eq!(skills.len(), 1);
+    assert_eq!(catalog_lines(&skills), ["twin — Twin."]);
+    assert!(!has(&skills, |k| matches!(
+        k,
+        DiagnosticKind::Ambiguous { .. }
+    )));
+    assert_eq!(path_of(&skills, "twin"), real);
+}
+
+// Given the same manifest reached from a project root and, through a link,
+//       from a user root
+// Then it is one skill at the better rank, shadowing nothing
+#[test]
+fn a_manifest_reached_from_two_roots_is_one_skill() {
+    let fx = fixture();
+    let real = add(&fx.repo.join(".agents/skills/shared"), "shared", "Shared.");
+    fs::create_dir_all(fx.home.join(".agents/skills/u")).unwrap();
+    std::os::unix::fs::symlink(&real, fx.home.join(".agents/skills/u/SKILL.md")).unwrap();
+    let skills = load(&fx);
+    assert_eq!(skills.len(), 1);
+    assert_eq!(path_of(&skills, "shared"), real);
+    assert!(
+        skills.diagnostics().is_empty(),
+        "{:?}",
+        skills.diagnostics()
+    );
+}
+
 // Given a project that is not a Git repository
 // Then only the workspace scope is searched, never its parents
 #[test]

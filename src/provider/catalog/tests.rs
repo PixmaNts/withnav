@@ -627,3 +627,56 @@ async fn null_or_malformed_fields_keep_the_previous_values() {
     let saved = read_cache(&cache_path(&catalog, &base)).unwrap();
     assert_eq!(saved.models["m"].context_length, Some(500_000));
 }
+
+#[tokio::test]
+async fn a_cache_file_with_a_zero_limit_is_ignored_and_refreshed() {
+    let (dir, server) = (tempfile::tempdir().unwrap(), serve(FIXTURE).await);
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let base = format!("{}/v1", server.uri());
+    // Fresh and valid JSON, but with a window of zero.
+    seed(&catalog, &base, 0, OPUS, limits(0));
+    assert!(read_cache(&cache_path(&catalog, &base)).is_none());
+    assert!(catalog
+        .cached(&resolved(&base, OPUS, ApiKind::Chat, None))
+        .limits
+        .is_none());
+    let d = lookup(&catalog, &base, OPUS).await;
+    assert_eq!(d.limits.unwrap().context_length, Some(1_000_000));
+    assert_eq!(requests(&server).await, 1, "the damaged file is refreshed");
+    let rewritten = read_cache(&cache_path(&catalog, &base)).expect("valid after the refresh");
+    assert_eq!(rewritten.models[OPUS].context_length, Some(1_000_000));
+}
+
+#[test]
+fn a_saved_resolution_needs_a_positive_window() {
+    let good = ModelResolution {
+        version: RESOLUTION_VERSION,
+        provider: "p".into(),
+        model: "m".into(),
+        api: "chat".into(),
+        endpoint: "http://h/v1".into(),
+        bounds: Bounds {
+            context_window: 1,
+            max_input_tokens: Some(1),
+            reported_output: None,
+        },
+        history_policy: "preserve".into(),
+        provenance: Provenance {
+            context_window: "models.json".into(),
+            max_input_tokens: "none".into(),
+            reported_output: "none".into(),
+        },
+    };
+    let raw = |r: &ModelResolution| serde_json::to_string(r).unwrap();
+    assert!(ModelResolution::from_saved(&raw(&good)).is_ok());
+    let mut zero_window = good.clone();
+    zero_window.bounds.context_window = 0;
+    assert!(ModelResolution::from_saved(&raw(&zero_window))
+        .unwrap_err()
+        .contains("context_window"));
+    let mut zero_input = good;
+    zero_input.bounds.max_input_tokens = Some(0);
+    assert!(ModelResolution::from_saved(&raw(&zero_input))
+        .unwrap_err()
+        .contains("max_input_tokens"));
+}

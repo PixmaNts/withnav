@@ -32,6 +32,19 @@ pub struct Limits {
     pub max_input_tokens: Option<u64>,
     pub max_output_tokens: Option<u64>,
 }
+impl Limits {
+    /// Every reported limit is positive.
+    fn is_sane(&self) -> bool {
+        [
+            self.context_length,
+            self.max_input_tokens,
+            self.max_output_tokens,
+        ]
+        .into_iter()
+        .flatten()
+        .all(|n| n > 0)
+    }
+}
 /// What is written to `<data_dir>/model-catalog/<endpoint hash>.json`:
 /// limits by model id and when they were fetched. Never a key or a header.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -353,10 +366,12 @@ pub(crate) fn parse_models(bytes: &[u8]) -> Result<HashMap<String, Limits>, Prov
     }
     Ok(models)
 }
+/// A cache file this build can trust: known version, and no limit of zero
+/// (the parser never writes one, so it means the file was damaged).
 fn read_cache(path: &Path) -> Option<CacheFile> {
     serde_json::from_slice::<CacheFile>(&std::fs::read(path).ok()?)
         .ok()
-        .filter(|c| c.version == 1)
+        .filter(|c| c.version == 1 && c.models.values().all(Limits::is_sane))
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -419,6 +434,12 @@ impl ModelResolution {
                 "version {} is not supported (this build reads version {RESOLUTION_VERSION})",
                 saved.version
             ));
+        }
+        if saved.bounds.context_window == 0 {
+            return Err("context_window must be positive".into());
+        }
+        if saved.bounds.max_input_tokens == Some(0) {
+            return Err("max_input_tokens must be positive".into());
         }
         Ok(saved)
     }

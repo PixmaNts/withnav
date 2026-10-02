@@ -286,6 +286,10 @@ async fn a_corrupt_column_fails_the_resume() {
         fx.saved(id)
             .unwrap()
             .replace("\"version\":1", "\"version\":9"),
+        // Valid JSON of the right shape, but a window of zero.
+        fx.saved(id)
+            .unwrap()
+            .replace("\"context_window\":1000000", "\"context_window\":0"),
     ] {
         fx.db()
             .execute(

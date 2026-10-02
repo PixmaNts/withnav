@@ -101,6 +101,7 @@ starts fresh.
   its adapter in `models.rs` and its fake in `tests/common/navigator.rs`.
 - A new trigger record field goes in `PendingTrigger`; nothing else writes trigger records.
 - Behaviour that should be tunable goes in the pipeline (TOML and prompts), not in Rust (ADR 0005).
+- `src/tui/**` is a server client: HTTP + SSE only. It may share serialized bus event types, but never imports session, agent, or bus runtime internals.
 - Tests use `tests/common/`: `server.rs` (configs, servers, sessions, messages), `sse.rs` (scripted
   chat streams), `navigator.rs` (the in-memory LSP client and one scripted fake per model seam). Do
   not copy a harness into a new test file.

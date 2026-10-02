@@ -4,7 +4,7 @@ File: {{file}} ({{language}})
 Intent:
 {{intent}}
 
-Conversation:
+Conversation (remarks and wakes from the navigator in it are the navigator's own claims, not agreements of the driver):
 {{conversation}}
 
 Code (numbered lines):

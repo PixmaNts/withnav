@@ -99,4 +99,32 @@ mod tests {
         assert!(STATE_PROMPT.contains("{{diagnostics}}"));
         assert!(STATE_PROMPT.contains("{{live_state}}"));
     }
+
+    #[test]
+    fn the_questions_keep_their_names_and_judge_decisions_not_missing_code() {
+        let snapshot = crate::navigator::pipeline::PipelineSnapshot::builtin().unwrap();
+        let names: Vec<&str> = snapshot.triggers()[0]
+            .questions
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "contradicts_conversation",
+                "drift",
+                "route",
+                "stuck",
+                "unfinished",
+                "worth_attention"
+            ]
+        );
+        let toml = PIPELINE_TOML;
+        assert!(toml.contains("Incomplete code can still merit help"));
+        assert!(toml.contains("several saves of the same text, is not enough"));
+        assert!(toml.contains("copied scaffolding being adapted"));
+        assert!(STATE_PROMPT.contains("claims, not agreements"));
+        assert!(CONVERSATION_STATE_PROMPT.contains("claims, not agreements"));
+        assert!(REMARK_PROMPT.contains("Never announce that code is unfinished"));
+    }
 }

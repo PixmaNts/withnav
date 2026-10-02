@@ -16,5 +16,5 @@ Diagnostics:
 Live state:
 {{live_state}}
 
-Conversation:
+Conversation (remarks and wakes from the navigator in it are the navigator's own claims, not agreements of the driver):
 {{conversation}}

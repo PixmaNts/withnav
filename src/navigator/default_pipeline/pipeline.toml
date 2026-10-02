@@ -11,7 +11,7 @@ prefilter = { min_changed_lines = 1, cooldown_ms = 0, wake_cooldown_ms = 120000,
 
 [trigger.questions.worth_attention]
 type = "noul"
-instructions = "Does this change deserve a remark from a senior pair programmer?"
+instructions = "Is there a concrete local correction or next step worth saying now? Incomplete code can still merit help. Do not score routine unfinished syntax, or a feature not implemented yet, as a problem by itself."
 
 [trigger.questions.route]
 type = "choice"
@@ -20,11 +20,11 @@ criteria = { silent = "Nothing worth saying", metacognition = "A short local rem
 
 [trigger.questions.drift]
 type = "noul"
-instructions = "Does the code drift away from the stated intent?"
+instructions = "Does an observable decision in the code conflict with the stated intent? Missing implementation, compile errors and copied scaffolding being adapted are not drift."
 
 [trigger.questions.contradicts_conversation]
 type = "noul"
-instructions = "Does this change contradict what the driver and the cognition just agreed in the conversation?"
+instructions = "Does an observable decision in this change conflict with an explicit goal or agreement the driver stated in the conversation? Missing implementation, compile errors, copied scaffolding being adapted, and earlier claims by the navigator are not agreements."
 
 # Whether the code compiles says nothing about whether the driver needs
 # help: the instinct judges "still typing" and "stuck" instead.
@@ -34,7 +34,7 @@ instructions = "Is this an edit the driver is still in the middle of typing (a h
 
 [trigger.questions.stuck]
 type = "noul"
-instructions = "Does the driver look stuck: the same errors persist or come back across recent edits, they undo and retry the same lines, or a comment shows frustration?"
+instructions = "Is there evidence of repeated unsuccessful attempts at the same obstacle, or an explicit request for help? One broken snapshot, or several saves of the same text, is not enough."
 
 # A comment that calls on the navigator ("help", "aide", a question) gets an
 # answer whatever the scores say; the prefilter let it past the size limit.
@@ -70,7 +70,7 @@ prefilter = { cooldown_ms = 30000 }
 
 [trigger.questions.code_contradicts_conversation]
 type = "noul"
-instructions = "Does the code in this file already contradict what the driver and the cognition just agreed?"
+instructions = "Does the code in this file already conflict with an explicit goal or agreement the driver stated in the conversation? Navigator remarks and wakes in the conversation are claims, not agreements."
 
 [[trigger.branch]]
 when = "has_conversation && code_contradicts_conversation > 0.8"

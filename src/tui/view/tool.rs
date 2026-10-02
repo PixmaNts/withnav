@@ -64,15 +64,22 @@ pub fn header(kind: &BlockKind, tick: u64, theme: &Theme) -> Line<'static> {
         None => (
             if tick.is_multiple_of(2) { "◐" } else { "◓" },
             "running",
-            theme.accent_line(),
+            theme.accent(),
         ),
+    };
+    // The spinner is a glyph, so it takes the bright accent; the label is text and keeps the
+    // readable accent text colour (the bright accent is too pale on light backgrounds).
+    let glyph_style = if status.is_none() && !args.is_null() {
+        theme.accent_line()
+    } else {
+        style
     };
     let exit = exit_code
         .filter(|n| *n != 0)
         .map(|n| format!("  exit {n}"))
         .unwrap_or_default();
     let mut spans = vec![
-        Span::styled(format!("{glyph} "), style),
+        Span::styled(format!("{glyph} "), glyph_style),
         Span::styled(name.clone(), theme.strong()),
         Span::styled(format!(" {}", summary(name, args)), theme.code_ref()),
         Span::styled(format!("  {label}  "), style),

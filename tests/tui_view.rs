@@ -701,3 +701,37 @@ fn theme_filter_previews_the_highlighted_row() {
         "enter picks the theme that was previewed"
     );
 }
+
+#[test]
+fn running_tool_label_uses_the_readable_accent() {
+    let mut s = state();
+    let mut block = tool_block(None);
+    if let BlockKind::ToolCall { duration_ms, .. } = &mut block.kind {
+        *duration_ms = None;
+    }
+    s.conversation.blocks = vec![block];
+    let theme = Theme::ayu_light();
+    let ui = UiState {
+        follow_bottom: true,
+        theme: ThemeId::AyuLight,
+        ..UiState::default()
+    };
+    let terminal = cells(&s, &ui, (100, 30));
+    let buffer = terminal.backend().buffer();
+    let (x, y) = (0..30)
+        .find_map(|y| {
+            let row: String = (0..100).map(|x| buffer[(x, y)].symbol()).collect();
+            row.find("running")
+                .map(|byte| (row[..byte].chars().count() as u16, y))
+        })
+        .expect("running label");
+    assert_eq!(buffer[(x, y)].fg, theme.accent_text);
+    let spinner = (0..x)
+        .map(|x| &buffer[(x, y)])
+        .find(|cell| cell.symbol() == "◐" || cell.symbol() == "◓")
+        .expect("spinner");
+    assert_eq!(
+        spinner.fg, theme.accent,
+        "the glyph keeps the bright accent"
+    );
+}

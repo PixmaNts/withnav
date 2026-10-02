@@ -95,4 +95,6 @@ pub struct UiState {
     pub expanded: std::collections::HashSet<String>,
     pub mode: super::protocol::Mode,
     pub quit_confirm: bool,
+    pub tick: u64,
+    pub filter: String,
 }

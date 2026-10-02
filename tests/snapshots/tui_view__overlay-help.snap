@@ -1,0 +1,34 @@
+---
+source: tests/tui_view.rs
+expression: snapshot
+---
+ rust-agent  ~/dev/project                                                 Fix parser · 01JABCDEFGH 
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ │ YOU                                                                                              
+ │  Explain the failure, then fix it.                                                               
+ │                                                                                                  
+ │ ASSISTANT                                                                                        
+ │ ▸ Reasoni┌─────────────────────────── Keyboard shortcuts ───────────────────────────┐            
+ │  The pars│ enter                   send / choose                                    │            
+ │          │ alt+enter / ctrl+j      newline                                          │            
+ │ ▸ × bash │ ctrl+p / /              commands                                         │            
+ │          │ ctrl+n                  new conversation                                 │            
+ │ ASSISTANT│ ctrl+o                  sessions                                         │            
+ │  I found │ f2                      models                                           │            
+ │          │ f1                      help                                             │            
+            │ tab / shift+tab         switch focus                                     │            
+            │ page up / page down     scroll                                           │            
+            │ up / down               select transcript block                          │            
+            │ space / enter           expand selected block                            │            
+            │ ctrl+end                follow newest                                    │            
+            │ esc / ctrl+c            stop / close                                     │            
+            │ ctrl+q                  quit                                             │            
+            │                                                                          │            
+            │                                                                          │            
+            └──────────────────────────────────────────────────────────────────────────┘            
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ cognition · cc/claude-opus-5-5   ctx 12.4k / 200k   session 31.2k tok   ready                      
+┌ Message ─────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+ enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help

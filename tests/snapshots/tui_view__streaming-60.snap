@@ -1,0 +1,24 @@
+---
+source: tests/tui_view.rs
+expression: snapshot
+---
+ rust-agent  ~/dev/project         Fix parser · 01JABCDEFGH 
+────────────────────────────────────────────────────────────
+ │ YOU                                                      
+ │  Why is this failing?                                    
+ │                                                          
+ │ ASSISTANT                                                
+ │ ▸ Reasoning                                              
+ │  Checking the parser as tokens arrive…                   
+ │                                                          
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+────────────────────────────────────────────────────────────
+ cognition · claude-opus-5-5   ctx — / 200k   ◐ running     
+┌ Message ─────────────────────────────────────────────────┐
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+ enter send  alt+enter newline  esc stop  ctrl+p commands  f

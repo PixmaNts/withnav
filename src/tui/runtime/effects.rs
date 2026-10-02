@@ -31,6 +31,8 @@ pub struct Context {
     pub session_id: Option<String>,
     /// `State.workspace`: the single source for model, session-list and resume requests.
     pub workspace: String,
+    /// Where the user settings are saved; `None` saves nothing.
+    pub config_dir: Option<std::path::PathBuf>,
 }
 
 struct ActiveStream {
@@ -148,6 +150,14 @@ impl Executor {
             }
             Effect::ClearEditor { revision } => {
                 editor.clear_if_revision(revision);
+            }
+            Effect::SaveTheme(theme) => {
+                // A few bytes written once per pick: done inline, a failure only costs persistence.
+                if let Some(dir) = &ctx.config_dir {
+                    if let Err(err) = crate::settings::save_tui_theme(dir, theme.id()) {
+                        tracing::warn!("cannot save the theme: {err}");
+                    }
+                }
             }
             Effect::Quit => return Flow::Quit,
         }

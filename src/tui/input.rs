@@ -4,6 +4,7 @@ use super::{
     commands,
     protocol::{Action, Overlay},
     state::{Activity, Focus, State, UiState},
+    theme::ThemeId,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui_textarea::TextArea;
@@ -107,6 +108,14 @@ pub fn route_key(
                 })
                 .map(|x| x.name.to_string())
                 .collect(),
+            Overlay::Themes => ThemeId::ALL
+                .iter()
+                .filter(|x| {
+                    x.id().contains(&ui.filter.to_lowercase())
+                        || x.name().to_lowercase().contains(&ui.filter.to_lowercase())
+                })
+                .map(|x| x.id().to_string())
+                .collect(),
             Overlay::Help => Vec::new(),
         };
         let selected = ui.selection.entry(format!("{overlay:?}")).or_default();
@@ -126,6 +135,7 @@ pub fn route_key(
                     Overlay::Models => Action::PickModel(name.clone()),
                     Overlay::Sessions => Action::ResumeSession(name.clone()),
                     Overlay::Commands => commands::command_action(name, ui.mode)?,
+                    Overlay::Themes => Action::PickTheme(ThemeId::from_id(name)?),
                     Overlay::Help => return None,
                 };
                 ui.overlay = None;
@@ -143,6 +153,13 @@ pub fn route_key(
                 *selected = 0;
             }
             _ => {}
+        }
+        if overlay == Overlay::Themes {
+            // The highlighted theme is drawn at once; enter keeps it, esc puts the old one back.
+            let previewed = names.get(*selected).and_then(|id| ThemeId::from_id(id));
+            if let Some(theme) = previewed.filter(|theme| *theme != ui.theme) {
+                return Some(Action::PreviewTheme(theme));
+            }
         }
         return None;
     }

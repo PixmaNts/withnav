@@ -114,4 +114,8 @@ pub struct UiState {
     pub quit_confirm: bool,
     pub tick: u64,
     pub filter: String,
+    /// The theme the screen is drawn with; while the theme picker is open, the one previewed.
+    pub theme: crate::tui::theme::ThemeId,
+    /// The theme in effect when the theme picker opened; `esc` goes back to it.
+    pub theme_on_open: Option<crate::tui::theme::ThemeId>,
 }

@@ -20,6 +20,7 @@ fn ctx(generation: u64, session: Option<&str>) -> Context {
         generation: Generation(generation),
         session_id: session.map(str::to_string),
         workspace: "/ws".into(),
+        config_dir: None,
     }
 }
 
@@ -238,6 +239,7 @@ fn options(model: Option<&str>) -> TuiOptions {
         initial_model: model.map(str::to_string),
         initial_session: None,
         embedded: false,
+        config_dir: None,
     }
 }
 

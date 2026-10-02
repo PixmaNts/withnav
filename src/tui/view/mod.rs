@@ -11,6 +11,7 @@ use crate::tui::{
 };
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
+    text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
@@ -35,6 +36,27 @@ fn shorten(path: &str, width: usize) -> String {
     }
 }
 
+/// Splits a hint line (`key label  key label`) into keys in text colour and labels in muted.
+fn hint_spans(hint: &str, theme: &Theme) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (index, part) in hint.split("  ").enumerate() {
+        if index > 0 {
+            spans.push(Span::raw("  "));
+        }
+        let lead = part.len() - part.trim_start().len();
+        spans.push(Span::raw(part[..lead].to_string()));
+        let part = &part[lead..];
+        match part.split_once(' ') {
+            Some((key, label)) => {
+                spans.push(Span::styled(key.to_string(), theme.text()));
+                spans.push(Span::styled(format!(" {label}"), theme.muted()));
+            }
+            None => spans.push(Span::styled(part.to_string(), theme.text())),
+        }
+    }
+    spans
+}
+
 pub fn draw(
     frame: &mut Frame<'_>,
     state: &State,
@@ -42,11 +64,14 @@ pub fn draw(
     editor: &Editor,
     cache: &mut RenderCache,
 ) {
+    let theme = ui.theme.palette();
+    cache.markdown.set_theme(theme);
     let area = frame.area();
+    frame.buffer_mut().set_style(area, theme.base());
     if area.width < 24 || area.height < 9 {
         let bottom = area.bottom().saturating_sub(3);
         frame.render_widget(
-            Paragraph::new(" resize terminal to see conversation").style(Theme.warning()),
+            Paragraph::new(" resize terminal to see conversation").style(theme.warning()),
             Rect::new(area.x, area.y, area.width, 1),
         );
         frame.render_widget(
@@ -95,39 +120,59 @@ pub fn draw(
             )
         })
         .unwrap_or_else(|| "new conversation".into());
-    let left = format!(" navai  {}", shorten(path, (area.width / 3) as usize));
-    let right = format!("{title} ");
-    let gap = usize::from(area.width).saturating_sub(left.chars().count() + right.chars().count());
+    let path = shorten(path, (area.width / 3) as usize);
+    let used = " navai  ".chars().count() + path.chars().count() + title.chars().count() + 1;
+    let gap = usize::from(area.width).saturating_sub(used);
+    frame.buffer_mut().set_style(header, theme.panel());
     frame.render_widget(
-        Paragraph::new(format!("{left}{}{right}", " ".repeat(gap))).style(Theme.strong()),
+        Paragraph::new(Line::from(vec![
+            Span::styled(" navai", theme.title()),
+            Span::raw("  "),
+            Span::styled(path, theme.muted()),
+            Span::raw(" ".repeat(gap)),
+            Span::styled(format!("{title} "), theme.strong()),
+        ])),
         header,
     );
     frame.render_widget(
-        Paragraph::new("─".repeat(usize::from(area.width))).style(Theme.border()),
+        Paragraph::new("─".repeat(usize::from(area.width))).style(theme.border()),
         rule,
     );
-    transcript::draw(frame, transcript, state, ui, &mut cache.markdown);
+    transcript::draw(frame, transcript, state, ui, &theme, &mut cache.markdown);
     frame.render_widget(
-        Paragraph::new("─".repeat(usize::from(area.width))).style(Theme.border()),
+        Paragraph::new("─".repeat(usize::from(area.width))).style(theme.border()),
         separator,
     );
-    status::draw(frame, status, state, ui);
+    frame.buffer_mut().set_style(status, theme.panel());
+    status::draw(frame, status, state, ui, &theme);
+    let focused = ui.focus == crate::tui::state::Focus::Editor;
     let border = Block::default()
-        .title(" Message ")
+        .title(Span::styled(
+            " Message ",
+            if focused {
+                theme.accent()
+            } else {
+                theme.muted()
+            },
+        ))
         .borders(Borders::ALL)
-        .border_style(if ui.focus == crate::tui::state::Focus::Editor {
-            Theme.accent()
+        .border_style(if focused {
+            theme.accent_line()
         } else {
-            Theme.border()
+            theme.border()
         });
     let inner = border.inner(input);
     frame.render_widget(border, input);
     frame.render_widget(editor.area(), inner);
-    let hint = if ui.quit_confirm {
-        " ctrl+q again to quit · esc to keep working"
+    frame.buffer_mut().set_style(hints, theme.panel());
+    if ui.quit_confirm {
+        frame.render_widget(
+            Paragraph::new(" ctrl+q again to quit · esc to keep working").style(theme.warning()),
+            hints,
+        );
     } else {
-        " enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help"
-    };
-    frame.render_widget(Paragraph::new(hint).style(Theme.muted()), hints);
-    pickers::draw(frame, area, state, ui);
+        let hint = " enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help";
+        frame.render_widget(Paragraph::new(Line::from(hint_spans(hint, &theme))), hints);
+    }
+    pickers::draw(frame, area, state, ui, &theme);
 }

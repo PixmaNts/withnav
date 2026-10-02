@@ -18,11 +18,10 @@ pub fn number(n: Option<u64>) -> String {
     }
 }
 
-pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState) {
+pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, theme: &Theme) {
     if area.height == 0 {
         return;
     }
-    let theme = Theme;
     let alias = state.selected_model_alias.as_deref().unwrap_or("—");
     let model = state.selected_model_name.as_deref().unwrap_or("—");
     let model = if area.width < 90 {
@@ -53,20 +52,18 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState) {
     } else {
         ""
     };
-    let metrics = format!(
-        "   ctx {} / {}",
+    let (context, window) = (
         number(state.conversation.context_tokens),
-        number(state.context_window)
+        number(state.context_window),
     );
-    let session = format!(
-        "   session {} tok",
-        number(state.conversation.session_tokens)
-    );
+    let metrics = format!("   ctx {context} / {window}");
+    let session_tokens = number(state.conversation.session_tokens);
+    let session = format!("   session {session_tokens} tok");
     let fixed = format!("   {connection}   {activity}{warning}")
         .chars()
         .count();
     let available = usize::from(area.width).saturating_sub(fixed);
-    let mut parts = vec![Span::styled(format!(" {alias}"), theme.accent())];
+    let mut parts = vec![Span::styled(format!(" {alias}"), theme.title())];
     let model_label = format!(" · {model}");
     let remaining = available.saturating_sub(alias.chars().count() + 1);
     if remaining >= 5 {
@@ -86,10 +83,19 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState) {
     let mut used: usize = parts.iter().map(|part| part.content.chars().count()).sum();
     if area.width >= 52 && used + metrics.chars().count() <= available {
         used += metrics.chars().count();
-        parts.push(Span::raw(metrics));
+        parts.extend([
+            Span::styled("   ctx ", theme.muted()),
+            Span::styled(context, theme.number()),
+            Span::styled(" / ", theme.muted()),
+            Span::styled(window, theme.text()),
+        ]);
     }
     if area.width >= 90 && used + session.chars().count() <= available {
-        parts.push(Span::styled(session, theme.muted()));
+        parts.extend([
+            Span::styled("   session ", theme.muted()),
+            Span::styled(session_tokens, theme.number()),
+            Span::styled(" tok", theme.muted()),
+        ]);
     }
     if !connection.is_empty() {
         parts.push(Span::styled(format!("   {connection}"), theme.warning()));
@@ -98,6 +104,10 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState) {
         format!("   {activity}"),
         if state.activity == Activity::Running {
             theme.accent()
+        } else if state.activity == Activity::Idle {
+            theme.success()
+        } else if state.activity == Activity::AwaitingUser {
+            theme.warning()
         } else {
             theme.muted()
         },

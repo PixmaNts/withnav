@@ -12,16 +12,14 @@ const DEAD_URL: &str = "http://127.0.0.1:1";
 
 fn executor() -> (Executor, mpsc::Receiver<ClientEvent>) {
     let (tx, rx) = mpsc::channel(16);
-    (
-        Executor::new(Client::new(DEAD_URL, None), "/ws".into(), tx),
-        rx,
-    )
+    (Executor::new(Client::new(DEAD_URL, None), tx), rx)
 }
 
 fn ctx(generation: u64, session: Option<&str>) -> Context {
     Context {
         generation: Generation(generation),
         session_id: session.map(str::to_string),
+        workspace: "/ws".into(),
     }
 }
 
@@ -116,11 +114,17 @@ async fn effects_use_the_generation_of_the_moment_they_run() {
 }
 
 #[tokio::test]
-async fn a_failed_send_keeps_the_noted_revision_and_the_generation() {
+async fn a_failed_send_keeps_the_action_revision_and_the_generation() {
     let (mut exec, mut rx) = executor();
     let mut editor = Editor::new();
-    exec.note_submit(42);
-    exec.execute(Effect::Send(submit()), &ctx(3, Some("s1")), &mut editor);
+    exec.execute(
+        Effect::SendAt {
+            request: submit(),
+            revision: 42,
+        },
+        &ctx(3, Some("s1")),
+        &mut editor,
+    );
     match next(&mut rx).await {
         ClientEvent::Submitted {
             generation,
@@ -138,7 +142,14 @@ async fn a_failed_send_keeps_the_noted_revision_and_the_generation() {
 async fn send_without_a_conversation_fails_instead_of_vanishing() {
     let (mut exec, mut rx) = executor();
     let mut editor = Editor::new();
-    exec.execute(Effect::Send(submit()), &ctx(1, None), &mut editor);
+    exec.execute(
+        Effect::SendAt {
+            request: submit(),
+            revision: 0,
+        },
+        &ctx(1, None),
+        &mut editor,
+    );
     assert!(matches!(
         next(&mut rx).await,
         ClientEvent::Submitted { result: Err(_), .. }

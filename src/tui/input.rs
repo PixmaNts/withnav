@@ -64,7 +64,7 @@ impl Editor {
 }
 
 /// Routes one key: overlays first, then global keys, then the editor.
-/// Enter on a non-empty editor gives `Action::Submit` and leaves the text in
+/// Enter on a non-empty editor gives `Action::SubmitAt` and leaves the text in
 /// place; the reducer clears it once the server accepted it.
 pub fn route_key(
     key: KeyEvent,
@@ -233,7 +233,10 @@ pub fn route_key(
             }
             return Some(action);
         }
-        return (!text.trim().is_empty()).then_some(Action::Submit(text));
+        return (!text.trim().is_empty()).then(|| Action::SubmitAt {
+            text,
+            revision: editor.revision(),
+        });
     }
     let changed = if (key.code == KeyCode::Enter
         && (alt || key.modifiers.contains(KeyModifiers::SHIFT)))

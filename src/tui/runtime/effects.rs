@@ -27,8 +27,10 @@ pub struct Context {
     /// The state's current generation: results of an older one are dropped
     /// by the reducer.
     pub generation: Generation,
-    /// The conversation `Send` and `Stop` talk to, if one exists.
+    /// The conversation `SendAt` and `Stop` talk to, if one exists.
     pub session_id: Option<String>,
+    /// `State.workspace`: the single source for model, session-list and resume requests.
+    pub workspace: String,
 }
 
 struct ActiveStream {
@@ -39,28 +41,17 @@ struct ActiveStream {
 /// Owns the client, the event channel and the one live event stream.
 pub struct Executor {
     client: Client,
-    workspace: String,
     tx: mpsc::Sender<ClientEvent>,
     stream: Option<ActiveStream>,
-    submit_revision: u64,
 }
 
 impl Executor {
-    pub fn new(client: Client, workspace: String, tx: mpsc::Sender<ClientEvent>) -> Self {
+    pub fn new(client: Client, tx: mpsc::Sender<ClientEvent>) -> Self {
         Self {
             client,
-            workspace,
             tx,
             stream: None,
-            submit_revision: 0,
         }
-    }
-
-    /// Remembers the editor revision of the text being submitted. The
-    /// acknowledgement clears the editor only if it still has this revision,
-    /// whatever was typed while the request was in flight.
-    pub fn note_submit(&mut self, revision: u64) {
-        self.submit_revision = revision;
     }
 
     /// Cancels the live stream if it belongs to another generation than
@@ -95,7 +86,7 @@ impl Executor {
         let generation = ctx.generation.clone();
         match effect {
             Effect::FetchModels => {
-                let (client, workspace) = (self.client.clone(), self.workspace.clone());
+                let (client, workspace) = (self.client.clone(), ctx.workspace.clone());
                 self.spawn_event(async move {
                     ClientEvent::Models {
                         generation,
@@ -104,7 +95,7 @@ impl Executor {
                 });
             }
             Effect::ListSessions => {
-                let (client, workspace) = (self.client.clone(), self.workspace.clone());
+                let (client, workspace) = (self.client.clone(), ctx.workspace.clone());
                 self.spawn_event(async move {
                     ClientEvent::Sessions {
                         generation,
@@ -112,10 +103,7 @@ impl Executor {
                     }
                 });
             }
-            Effect::Create(mut request) => {
-                if request.workspace.is_empty() {
-                    request.workspace = self.workspace.clone();
-                }
+            Effect::Create(request) => {
                 let client = self.client.clone();
                 self.spawn_event(async move {
                     ClientEvent::Created {
@@ -125,7 +113,7 @@ impl Executor {
                 });
             }
             Effect::Resume(id) => {
-                let (client, workspace) = (self.client.clone(), self.workspace.clone());
+                let (client, workspace) = (self.client.clone(), ctx.workspace.clone());
                 self.spawn_event(async move {
                     ClientEvent::Resumed {
                         generation,
@@ -146,7 +134,9 @@ impl Executor {
                 self.subscribe(session_id, cursor, generation);
             }
             Effect::Unsubscribe => self.cancel_stream(),
-            Effect::Send(request) => self.send(request, ctx),
+            // Legacy variant (never emitted by the reducer): no editor revision to echo.
+            Effect::Send(request) => self.send(request, 0, ctx),
+            Effect::SendAt { request, revision } => self.send(request, revision, ctx),
             Effect::Stop(id) => {
                 let client = self.client.clone();
                 self.spawn_event(async move {
@@ -164,9 +154,8 @@ impl Executor {
         Flow::Continue
     }
 
-    fn send(&mut self, request: SubmitRequest, ctx: &Context) {
+    fn send(&mut self, request: SubmitRequest, revision: u64, ctx: &Context) {
         let generation = ctx.generation.clone();
-        let revision = self.submit_revision;
         let Some(id) = ctx.session_id.clone() else {
             let event = submit_event(
                 generation,

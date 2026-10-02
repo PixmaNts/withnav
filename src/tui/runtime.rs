@@ -51,6 +51,7 @@ impl Runtime {
         let client = Client::new(options.url.clone(), options.token.clone());
         let workspace = options.workspace.to_string_lossy().into_owned();
         let state = State {
+            workspace,
             selected_model_alias: options.initial_model.clone(),
             ..State::default()
         };
@@ -63,7 +64,7 @@ impl Runtime {
             ui,
             editor: Editor::new(),
             cache: Default::default(),
-            exec: Executor::new(client, workspace, tx),
+            exec: Executor::new(client, tx),
             rx,
             tick: 0,
             dirty: true,
@@ -155,9 +156,6 @@ impl Runtime {
     }
 
     fn dispatch(&mut self, action: Action) {
-        if matches!(action, Action::Submit(_)) {
-            self.exec.note_submit(self.editor.revision());
-        }
         self.dirty = true;
         let effects = reducer::handle_action(&mut self.state, &mut self.ui, action);
         self.run_effects(effects);
@@ -167,6 +165,7 @@ impl Runtime {
         let ctx = Context {
             generation: self.state.generation.clone(),
             session_id: self.state.session.as_ref().map(|s| s.session_id.clone()),
+            workspace: self.state.workspace.clone(),
         };
         for effect in effects {
             if self.exec.execute(effect, &ctx, &mut self.editor) == Flow::Quit {

@@ -261,7 +261,10 @@ fn editor_routes_submission_and_newline() {
             &mut ui,
             &mut editor
         ),
-        Some(Action::Submit("hello".into()))
+        Some(Action::SubmitAt {
+            text: "hello".into(),
+            revision
+        })
     );
     assert_eq!(editor.text(), "hello");
     assert_eq!(editor.revision(), revision);

@@ -171,14 +171,20 @@ impl Executor {
             let event = submit_event(
                 generation,
                 revision,
-                Err::<SubmitResponse, _>("no conversation to send the message to"),
+                Err(SubmitFailure::Rejected(
+                    "no conversation to send the message to".into(),
+                )),
             );
             self.spawn_event(async move { event });
             return;
         };
         let client = self.client.clone();
         self.spawn_event(async move {
-            submit_event(generation, revision, client.send(&id, request).await)
+            submit_event(
+                generation,
+                revision,
+                client.send(&id, request).await.map_err(classify_send_error),
+            )
         });
     }
 
@@ -226,21 +232,45 @@ impl Drop for Executor {
     }
 }
 
-/// The single place that turns the outcome of a message POST into an event.
+/// Why a message POST failed, as far as the loop cares.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum SubmitFailure {
+    /// The message was not delivered; the draft can be sent again.
+    Rejected(String),
+    /// The request may have reached the server; the draft stays and the user
+    /// must check the conversation before sending again. Nothing builds it
+    /// until `classify_send_error` sees a typed client error.
+    #[allow(dead_code)]
+    Uncertain(String),
+}
+
+/// The one place that adapts the client's send error to `SubmitFailure`.
 ///
-/// The client reports every failure as a string for now, so all of them map
-/// to a plain failed submission and the draft stays. When `Client::send`
-/// returns a typed error, map its "delivery uncertain" variant to
-/// `ClientEvent::DeliveryUncertain { generation }` here and keep the
-/// rejected variant as `Submitted { result: Err(..) }`.
-fn submit_event(
+/// The client in this tree reports every failure as a string, so all of them
+/// count as rejected. Once `Client::send` returns `SendError`, replace this
+/// body with
+/// `match err { SendError::Rejected(m) => Rejected(m), SendError::Uncertain(m) => Uncertain(m) }`
+/// and make `SubmitFailure` an alias of nothing else: no other code changes.
+pub(super) fn classify_send_error(err: String) -> SubmitFailure {
+    SubmitFailure::Rejected(err)
+}
+
+/// Turns the outcome of a message POST into the event the reducer gets:
+/// a rejection is a failed `Submitted`, an uncertain delivery is
+/// `DeliveryUncertain` (the draft is never retried automatically).
+pub(super) fn submit_event(
     generation: Generation,
     revision: u64,
-    result: Result<SubmitResponse, impl std::fmt::Display>,
+    result: Result<SubmitResponse, SubmitFailure>,
 ) -> ClientEvent {
-    ClientEvent::Submitted {
-        generation,
-        revision,
-        result: result.map_err(|e| e.to_string()),
+    match result {
+        Ok(_) | Err(SubmitFailure::Rejected(_)) => ClientEvent::Submitted {
+            generation,
+            revision,
+            result: result.map_err(|e| match e {
+                SubmitFailure::Rejected(m) | SubmitFailure::Uncertain(m) => m,
+            }),
+        },
+        Err(SubmitFailure::Uncertain(_)) => ClientEvent::DeliveryUncertain { generation },
     }
 }

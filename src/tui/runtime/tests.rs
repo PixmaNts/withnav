@@ -285,3 +285,35 @@ async fn a_batch_applies_at_most_the_cap_of_queued_events() {
     );
     assert!(runtime.recv().await.is_some(), "the rest stays queued");
 }
+
+#[test]
+fn a_rejected_send_is_a_failed_submission() {
+    let event = effects::submit_event(
+        Generation(5),
+        9,
+        Err(effects::SubmitFailure::Rejected("HTTP 400".into())),
+    );
+    assert_eq!(
+        event,
+        ClientEvent::Submitted {
+            generation: Generation(5),
+            revision: 9,
+            result: Err("HTTP 400".into()),
+        }
+    );
+}
+
+#[test]
+fn an_uncertain_send_is_reported_as_delivery_uncertain() {
+    let event = effects::submit_event(
+        Generation(5),
+        9,
+        Err(effects::SubmitFailure::Uncertain("timeout".into())),
+    );
+    assert_eq!(
+        event,
+        ClientEvent::DeliveryUncertain {
+            generation: Generation(5)
+        }
+    );
+}

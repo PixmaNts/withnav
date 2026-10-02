@@ -3,11 +3,36 @@ use crate::bus::event::EventEnvelope;
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct Generation(pub u64);
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ModelEntry {
     pub alias: String,
     pub model: String,
     pub context_window: Option<u64>,
+    /// Added by the catalog: absent in a payload from an older server, and
+    /// then not written back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_age_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_output: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discrepancy: Option<Discrepancy>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Discrepancy {
+    pub configured: u64,
+    pub discovered: u64,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelsBody {

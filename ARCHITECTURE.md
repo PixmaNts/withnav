@@ -144,6 +144,9 @@ it is and that run keeps using it.
   back instead of resolving again, so a live or resumed conversation keeps its bounds, and an alias
   retargeted to another provider, model or api is `ServerError::ModelIdentityChanged`, never a silent move.
   The metacognition resolves through the same function in `navigator/bootstrap.rs`.
+  The fetch is single-flight per endpoint, bounded (3 s, 2 MB, 10 000 entries), never follows a
+  cross-origin redirect (`ClientCache::get_same_origin`) and keeps stale values on failure; `GET /v1/models`
+  (`server/routes.rs`) reports the source, staleness and discrepancy of each alias.
 - A helper you need probably exists. Look first in: `provider/client.rs` (any HTTP call to a model),
   `provider/config.rs` (`load_models`), `navigator/log.rs` (`excerpt`, `new_ulid_string`),
   `bus/event.rs` (`now_rfc3339`), `navigator/lsp/uri.rs`, `navigator/document.rs` (diffs and

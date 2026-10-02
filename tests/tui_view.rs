@@ -66,11 +66,13 @@ fn state() -> State {
                 alias: "cognition".into(),
                 model: "cc/claude-opus-5-5".into(),
                 context_window: Some(200_000),
+                ..Default::default()
             },
             ModelEntry {
                 alias: "fast".into(),
                 model: "cc/flash".into(),
                 context_window: None,
+                ..Default::default()
             },
         ],
         sessions: vec![SessionListEntry {

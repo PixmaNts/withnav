@@ -13,6 +13,17 @@ requests land in `develop`.
   data dir. An explicit `context_window` wins without any network call; if it differs from what the
   provider reports, the log says so. `GET /v1/models` lists each alias with the resolved window,
   `enabled`, and `disabled_reason` when there is none.
+- **Model list fetch is bounded**: one request at a time per provider (concurrent sessions share it), a
+  3 s deadline, at most 2 MB and 10 000 entries. A redirect to another origin is not followed, so the API
+  key and headers never leave the provider. The cached list is refreshed after 24 hours; if that fails,
+  the last known values stay in use, marked stale with their age and the error. A limit the provider
+  reports as null or malformed never replaces a good one. A corrupt cache file is ignored and rewritten;
+  a data directory that cannot be written keeps the list in memory with one warning. The cache file holds
+  limits only, never a key or a header.
+- **`GET /v1/models` shows where a window came from**: each alias adds, when known, `window_source`
+  (`models.json` or `discovered.*`), `stale`, `stale_age_secs`, `refresh_error`, `max_input_tokens`,
+  `reported_output`, and `discrepancy` (`configured` and `discovered`) when a `context_window` override
+  differs from what the provider reports. Old fields are unchanged and the TUI still reads older servers.
 - **Metacognition window check**: the editor's remarks model is resolved like a chat session before
   its first call. If its alias has no known context window, only the remarks are turned off, with one
   warning and a line in `navigator/status`; completion, the instinct, history and the chat server keep

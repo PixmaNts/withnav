@@ -238,21 +238,17 @@ pub(super) enum SubmitFailure {
     /// The message was not delivered; the draft can be sent again.
     Rejected(String),
     /// The request may have reached the server; the draft stays and the user
-    /// must check the conversation before sending again. Nothing builds it
-    /// until `classify_send_error` sees a typed client error.
-    #[allow(dead_code)]
+    /// must check the conversation before sending again.
     Uncertain(String),
 }
 
 /// The one place that adapts the client's send error to `SubmitFailure`.
-///
-/// The client in this tree reports every failure as a string, so all of them
-/// count as rejected. Once `Client::send` returns `SendError`, replace this
-/// body with
-/// `match err { SendError::Rejected(m) => Rejected(m), SendError::Uncertain(m) => Uncertain(m) }`
-/// and make `SubmitFailure` an alias of nothing else: no other code changes.
-pub(super) fn classify_send_error(err: String) -> SubmitFailure {
-    SubmitFailure::Rejected(err)
+pub(super) fn classify_send_error(err: crate::tui::client::SendError) -> SubmitFailure {
+    use crate::tui::client::SendError;
+    match err {
+        SendError::Rejected(m) => SubmitFailure::Rejected(m),
+        SendError::Uncertain(m) => SubmitFailure::Uncertain(m),
+    }
 }
 
 /// Turns the outcome of a message POST into the event the reducer gets:

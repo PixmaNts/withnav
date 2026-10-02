@@ -15,6 +15,8 @@ requests land in `develop`.
 - A model picker (the choice starts a new conversation), a session list to resume a past
   conversation, stop, a command palette and a help screen.
 - `GET /v1/models`: the chat models with tools a new session can use, with their context window.
+- **VS Code chat**: a model picker for the cognition (it sets the model of a new conversation; an
+  open conversation keeps its own) and a gauge of the context used out of the model's window.
 - `duration_ms` in the metadata of `tool.post_call`.
 
 ### Fixed

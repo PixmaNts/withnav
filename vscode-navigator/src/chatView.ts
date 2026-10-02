@@ -39,6 +39,7 @@ export function registerChatView(
       <label for="prompt" class="sr-only">Message Navigator</label>
       <textarea id="prompt" rows="2" placeholder="Message Navigator…" disabled></textarea>
       <div class="context-row"><label class="context-toggle"><input type="checkbox" id="include-context" checked><span>Include editor context</span></label><span id="context-preview" class="context-chip" title="Attached to your next message">No editor open</span></div>
+      <div class="model-row"><label for="model" class="sr-only">Model for a new conversation</label><select id="model" class="model-select" disabled><option value="">Default model</option></select><span id="usage" class="usage" role="meter" aria-label="Context used" aria-valuemin="0" aria-valuemax="100" hidden><span class="usage-bar"><span id="usage-fill" class="usage-fill"></span></span><span id="usage-label" class="usage-label"></span></span></div>
       <div class="composer-footer"><span class="hint">Enter to send · Shift+Enter for a line</span><div class="actions"><button type="button" id="stop" class="stop" hidden>Stop</button><button type="submit" id="send" disabled>Send <span aria-hidden="true">↗</span></button></div></div>
     </form>
   </div>
@@ -51,9 +52,15 @@ export function registerChatView(
       // header pushes so `ready` can restore them before the transcript.
       let lastConversationOpened: HostToWebview | undefined;
       let lastConversations: HostToWebview | undefined;
+      let lastModels: HostToWebview | undefined;
+      let lastUsage: HostToWebview | undefined;
       const post = (message: HostToWebview): void => {
-        if (message.type === "conversationOpened") lastConversationOpened = message;
-        else if (message.type === "conversations") lastConversations = message;
+        if (message.type === "conversationOpened") {
+          lastConversationOpened = message;
+          lastUsage = undefined; // a new or reopened conversation re-reports its own
+        } else if (message.type === "conversations") lastConversations = message;
+        else if (message.type === "models") lastModels = message;
+        else if (message.type === "usage") lastUsage = message;
         void webview.postMessage(presentMessage(message));
       };
       const unsubscribe = backend.subscribe(post);
@@ -77,6 +84,8 @@ export function registerChatView(
             if (lastConversations) post(lastConversations);
             if (lastConversationOpened) post(lastConversationOpened);
             post({ type: "history", items: backend.history() });
+            if (lastModels) post(lastModels);
+            if (lastUsage) post(lastUsage);
             pushContext();
             break;
           case "send":
@@ -110,6 +119,9 @@ export function registerChatView(
             if (typeof message.id === "string") {
               void backend.deleteConversation(message.id).catch(showError);
             }
+            break;
+          case "selectModel":
+            if (typeof message.alias === "string") backend.selectModel(message.alias);
             break;
         }
       });

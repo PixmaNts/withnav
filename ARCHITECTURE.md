@@ -32,8 +32,8 @@ Dependencies point down this list. A module never imports one above it.
 | Module | Owns | Does not own |
 |---|---|---|
 | `provider/` | `models.json` aliases (`config.rs`, `load_models`), keys (`auth.rs`), one `ModelClient` per endpoint (`client.rs`: auth header, deadline, cancellation, status errors), the chat SSE decoder (`sse.rs`, `mod.rs`), the FIM and System One wire clients | anything navigator-specific: no `crate::navigator` import |
-| `tools/` | the tool trait, the registry, path validation (`validate_path`), the six tools | which tools a session gets |
-| `agent/` | `AgentActor` (transcript, pending `ask`, optional role prompt, the rules snapshot), `run_agent` with one `AgentEvent` observer, request building, the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics) | events, persistence |
+| `tools/` | the tool trait, the registry, path validation (`validate_path`), the six tools; `ToolContext` with the writable roots and the read-only ones (`read`/`grep` accept both, `write`/`edit`/`bash` only the first) | which tools a session gets |
+| `agent/` | `AgentActor` (transcript, pending `ask`, optional role prompt, the rules and skills snapshots), `run_agent` with one `AgentEvent` observer, request building, the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool) | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events | HTTP, storage |
 | `session/` | the `Service` (registry and router, `service.rs`), teardown and close (`lifecycle.rs`), actor construction (`actor.rs`), subscriptions, the `SessionHooks` seam (`hooks.rs`: default model, actor setup, a `started` callback with a `SessionSender` that can only post) and the SQLite history (`store.rs`) | HTTP, SSE, any profile by name |
 | `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service` | session state, the model layers |
@@ -149,9 +149,13 @@ it is and that run keeps using it.
 - Tests use `tests/common/`: `server.rs` (configs, servers, sessions, messages), `sse.rs` (scripted
   chat streams), `navigator.rs` (the in-memory LSP client and one scripted fake per model seam). Do
   not copy a harness into a new test file.
-- Text that reaches the model besides the history (rules, and later skills) is a separate component
+- Text that reaches the model besides the history (rules, the skills catalog) is a separate component
   built in `agent/prompt.rs` from a snapshot the session service loads at create and resume; it is
   never appended to the transcript or to the role prompt. Rules discovery lives in
-  `agent/instructions.rs`; give it the home through `RulesRoots`, never read `~` in a test.
+  `agent/instructions.rs`, skills discovery in `agent/skills.rs`; give both the home through
+  `RulesRoots`, never read `~` in a test.
+- A place the model may read but never change (the skill roots) goes in `ToolContext.readable_roots`,
+  not in `writable_roots`. The `skill` tool is registered per session (`AgentActor::set_skills`),
+  never in a direct Phase-1 registry.
 - Keep a production file under ~600 lines. Past that, split by responsibility, not by size.
 - Comments name the domain reason and dated evidence; never a ticket or plan id.

@@ -53,9 +53,7 @@ use crate::bus::runtime;
 use crate::bus::sequencer::Sequencer;
 use crate::bus::SessionBus;
 use crate::error::ServerError;
-use crate::provider::auth;
-use crate::provider::catalog::ModelResolution;
-use crate::provider::config::{load_models, ApiKind, ModelConfig, ResolvedModel};
+use crate::provider::config::{load_models, ApiKind, ModelConfig};
 use crate::provider::openai::ChatMessage;
 
 /// A session id on the wire and in the registry.
@@ -141,42 +139,6 @@ pub struct Service {
     /// being stopped or deleted. One client, so one gate for the service.
     gate: Arc<tokio::sync::Mutex<()>>,
     catalog: crate::provider::catalog::ModelCatalog,
-}
-
-/// The identity half of a resolution (provider, model, api) of a configured
-/// alias, for comparison with a saved one.
-fn identity_of(resolved: &ResolvedModel) -> ModelResolution {
-    ModelResolution {
-        version: crate::provider::catalog::RESOLUTION_VERSION,
-        provider: resolved.provider_name.clone(),
-        model: resolved.model.model.clone(),
-        api: crate::provider::catalog::api_name(resolved.model.api),
-        endpoint: String::new(),
-        bounds: crate::provider::catalog::Bounds {
-            context_window: 0,
-            max_input_tokens: None,
-            reported_output: None,
-        },
-        history_policy: String::new(),
-        provenance: crate::provider::catalog::Provenance {
-            context_window: String::new(),
-            max_input_tokens: String::new(),
-            reported_output: String::new(),
-        },
-    }
-}
-
-/// The refusal for a chat alias without a window, naming the file to fix.
-fn no_context_window(
-    e: crate::provider::catalog::NoContextWindow,
-    models_path: &Path,
-) -> ServerError {
-    ServerError::NoContextWindow {
-        alias: e.alias,
-        provider: e.provider,
-        model: e.model,
-        models_path: models_path.display().to_string(),
-    }
 }
 
 impl Service {
@@ -409,40 +371,6 @@ impl Service {
         self.hooks.default_model(profile)
     }
 
-    fn resolve_model(
-        &self,
-        workspace: &Path,
-        alias: &str,
-    ) -> Result<(ResolvedModel, PathBuf), ServerError> {
-        let (config, path) = load_models(
-            self.config.models_path.as_deref(),
-            workspace,
-            &self.config.config_dir,
-        )?;
-        Ok((config.resolve(alias)?, path))
-    }
-
-    pub async fn resolve_model_metadata(
-        &self,
-        workspace: &Path,
-        alias: &str,
-    ) -> Result<crate::provider::catalog::ResolvedChat, ServerError> {
-        let (resolved, models_path) = self.resolve_model(workspace, alias)?;
-        let key = auth::resolve_key(
-            &self.config.config_dir,
-            &resolved.provider_name,
-            resolved.provider.api_key_env.as_deref(),
-        )?;
-        crate::provider::catalog::resolve_chat(
-            &self.catalog,
-            &resolved,
-            &key,
-            &crate::provider::openai::ClientCache::new(),
-        )
-        .await
-        .map_err(|e| no_context_window(e, &models_path))
-    }
-
     /// Reads the session's local instructions once and logs what became of
     /// each source. The snapshot lives on the actor for the whole session.
     async fn load_rules(&self, workspace: &Path, id: SessionId, resumed: bool) -> Instructions {
@@ -500,64 +428,9 @@ impl Service {
                 (workspace.to_path_buf(), alias.to_string(), profile)
             }
         };
-        let (resolved, models_path) = self.resolve_model(resume_workspace, &alias)?;
-        let api_key = auth::resolve_key(
-            &self.config.config_dir,
-            &resolved.provider_name,
-            resolved.provider.api_key_env.as_deref(),
-        )?;
-        // The model's bounds. A conversation that has a saved resolution keeps
-        // it: no discovery, no refresh, and never another identity. A fresh
-        // session, or a legacy row without one, resolves now and saves it.
-        let saved = match &resumed {
-            Some(loaded) => loaded
-                .meta
-                .model_resolution
-                .as_deref()
-                .map(ModelResolution::from_saved)
-                .transpose()
-                .map_err(|reason| ServerError::SavedResolutionInvalid {
-                    session: session_id.to_string(),
-                    reason,
-                })?,
-            None => None,
-        };
-        let (snapshot, save_late) = match saved {
-            Some(saved) => {
-                let current = identity_of(&resolved);
-                if !saved.same_identity(&current) {
-                    return Err(ServerError::ModelIdentityChanged {
-                        session: session_id.to_string(),
-                        alias: alias.clone(),
-                        saved: saved.identity(),
-                        current: current.identity(),
-                        models_path: models_path.display().to_string(),
-                    });
-                }
-                tracing::debug!(alias = %alias, window = saved.bounds.context_window, "using the saved model resolution");
-                (saved, false)
-            }
-            None => {
-                let metadata = crate::provider::catalog::resolve_chat(
-                    &self.catalog,
-                    &resolved,
-                    &api_key,
-                    &crate::provider::openai::ClientCache::new(),
-                )
-                .await
-                .map_err(|e| no_context_window(e, &models_path))?;
-                match &metadata.discrepancy {
-                    Some(d) => tracing::warn!(alias = %alias, window = metadata.window, "{d}"),
-                    None => {
-                        tracing::debug!(alias = %alias, window = metadata.window, source = %metadata.window_source, "resolved chat window")
-                    }
-                }
-                (metadata.snapshot, resumed.is_some())
-            }
-        };
-        let mut resolved = resolved;
-        resolved.model.context_window = Some(snapshot.bounds.context_window);
-        resolved.model.max_input_tokens = snapshot.bounds.max_input_tokens;
+        let (resolved, api_key, snapshot, save_late) = self
+            .resolve_for_spawn(session_id, resume_workspace, &alias, resumed.as_ref())
+            .await?;
         let session_cancel = CancellationToken::new();
         let mut actor = build_actor(
             &workspace,
@@ -606,12 +479,7 @@ impl Service {
             .await
             .map_err(ServerError::History)?;
         if save_late {
-            // First activation of a row from before the column: it gets its
-            // snapshot now, and keeps it from here on.
-            history
-                .set_model_resolution(session_id, &snapshot)
-                .await
-                .map_err(ServerError::History)?;
+            self.save_legacy_snapshot(session_id, &snapshot).await?;
         }
         let sequencer = Sequencer::spawn(
             session_id,
@@ -671,6 +539,8 @@ impl Service {
         Ok(session_id)
     }
 }
+
+mod resolve;
 
 #[cfg(test)]
 pub(crate) mod tests;

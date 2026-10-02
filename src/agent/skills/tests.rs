@@ -991,3 +991,24 @@ fn without_skills_nothing_is_registered() {
     assert!(actor.tool_context.readable_roots.is_empty());
     assert!(actor.skills.catalog().is_none());
 }
+
+// Given a skill whose SKILL.md passed the path check, then swapped for a link
+//       to a file outside the skill roots before it is opened
+// When the manifest is opened for reading
+// Then the opened file itself is checked and refused, so nothing outside is read
+#[test]
+fn a_manifest_swapped_between_check_and_open_is_refused() {
+    let fx = fixture();
+    let root = fx.home.join(".agents/skills");
+    let manifest = add(&root.join("race"), "race", "Race.");
+    let roots = vec![fs::canonicalize(&root).unwrap()];
+    let manifest = fs::canonicalize(&manifest).unwrap();
+    assert!(tool::open_in_place(&manifest, &roots).is_ok());
+
+    let outside = fx.home.join("outside-race.md");
+    fs::write(&outside, "---\nname: race\ndescription: d\n---\nOUTSIDE\n").unwrap();
+    fs::remove_file(&manifest).unwrap();
+    std::os::unix::fs::symlink(&outside, &manifest).unwrap();
+    let err = tool::open_in_place(&manifest, &roots).expect_err("escaping file opened");
+    assert!(err.contains("outside the skill roots"), "{err}");
+}

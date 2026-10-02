@@ -56,6 +56,7 @@ pub struct TestServerConfig {
     bearer_token: Option<String>,
     history_db: Option<PathBuf>,
     chat_tools: Option<u64>,
+    extra_aliases: Vec<(String, String)>,
 }
 
 impl TestServerConfig {
@@ -80,6 +81,7 @@ impl TestServerConfig {
             bearer_token: None,
             history_db: None,
             chat_tools: None,
+            extra_aliases: Vec::new(),
         }
     }
 
@@ -94,6 +96,14 @@ impl TestServerConfig {
     pub fn model_alias(mut self, alias: &str, model: &str) -> Self {
         self.alias = alias.to_string();
         self.model = model.to_string();
+        self
+    }
+
+    /// Adds a second alias on the same provider, with the same chat/tools
+    /// settings as the first.
+    pub fn extra_alias(mut self, alias: &str, model: &str) -> Self {
+        self.extra_aliases
+            .push((alias.to_string(), model.to_string()));
         self
     }
 
@@ -119,6 +129,13 @@ impl TestServerConfig {
             alias_entry["supports_tools"] = json!(true);
             alias_entry["context_window"] = json!(window);
         }
+        let mut models = serde_json::Map::new();
+        models.insert(self.alias.clone(), alias_entry.clone());
+        for (alias, model) in &self.extra_aliases {
+            let mut entry = alias_entry.clone();
+            entry["model"] = json!(model);
+            models.insert(alias.clone(), entry);
+        }
         std::fs::write(
             &models_path,
             json!({
@@ -131,9 +148,7 @@ impl TestServerConfig {
                         "request_timeout_ms": self.request_timeout_ms
                     }
                 },
-                "models": {
-                    self.alias.as_str(): alias_entry
-                }
+                "models": models
             })
             .to_string(),
         )

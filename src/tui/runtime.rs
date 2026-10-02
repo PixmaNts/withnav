@@ -161,7 +161,9 @@ impl Runtime {
         self.run_effects(effects);
     }
 
-    fn run_effects(&mut self, effects: Vec<Effect>) {
+    /// Executes `effects` the way the loop does after the reducer returned them, tagged with the
+    /// current generation; tests use it to inject effects such as a re-subscription.
+    pub fn run_effects(&mut self, effects: Vec<Effect>) {
         let ctx = Context {
             generation: self.state.generation.clone(),
             session_id: self.state.session.as_ref().map(|s| s.session_id.clone()),

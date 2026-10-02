@@ -25,7 +25,7 @@ pub const MAX_BODY_BYTES: usize = 32 * 1024;
 /// The most resource paths listed.
 pub const MAX_RESOURCES: usize = 64;
 /// The most directory entries looked at to list resources.
-const MAX_RESOURCE_ENTRIES: usize = 5_000;
+pub(super) const MAX_RESOURCE_ENTRIES: usize = 5_000;
 
 pub struct SkillTool {
     skills: Arc<Skills>,
@@ -198,23 +198,27 @@ fn load(skill: &Skill, roots: &[PathBuf]) -> ToolResult {
 
 /// The files below `dir`, relative and sorted, without `SKILL.md`, links,
 /// nor the directories no skill walk enters. Stops at the entry bound.
-fn list_resources(
+pub(super) fn list_resources(
     dir: &Path,
     prefix: &str,
     depth: usize,
     entries: &mut usize,
     out: &mut Vec<String>,
 ) {
+    if *entries >= MAX_RESOURCE_ENTRIES {
+        return;
+    }
     let Ok(read) = std::fs::read_dir(dir) else {
         return;
     };
-    let mut names: Vec<_> = read.filter_map(Result::ok).collect();
+    // At most the budget left is taken from the iterator, so a huge
+    // directory is neither collected nor sorted whole; the budget is shared
+    // by the whole listing, which stops once it is spent.
+    let remaining = MAX_RESOURCE_ENTRIES - *entries;
+    let mut names: Vec<_> = read.filter_map(Result::ok).take(remaining).collect();
+    *entries += names.len();
     names.sort_by_key(|e| e.file_name());
     for entry in names {
-        *entries += 1;
-        if *entries > MAX_RESOURCE_ENTRIES {
-            return;
-        }
         let name = entry.file_name().to_string_lossy().into_owned();
         let Ok(kind) = entry.file_type() else {
             continue;

@@ -148,7 +148,7 @@ fn depth_and_skipped_directories_are_respected() {
 }
 
 // Given the walk meets more entries than the bound
-// Then it stops with a diagnostic and keeps what it found
+// Then it stops with a diagnostic and never counts past the bound
 #[test]
 fn the_entry_count_is_bounded() {
     let fx = fixture();
@@ -168,12 +168,51 @@ fn the_entry_count_is_bounded() {
     );
     walk.entries = MAX_ENTRIES - 3;
     walk.run();
+    // The count never passes the bound: the directory was cut before it was
+    // collected, not after.
+    assert_eq!(walk.entries, MAX_ENTRIES);
     let skills = walk.finish();
-    assert_eq!(skills.len(), 1);
+    // A directory cut by the bound is read in directory order, so which of
+    // its entries survive is not fixed: only the bound and the diagnostic are.
+    assert!(skills.len() <= 1);
     assert!(has(&skills, |k| matches!(
         k,
         DiagnosticKind::LimitReached(_)
     )));
+}
+
+// Given a directory larger than the entry bound, and a second root after it
+// When the walk runs
+// Then no more than the bound is enumerated, in all, and the second root is
+//      not read at all
+#[test]
+fn a_directory_over_the_bound_is_cut_while_it_is_read() {
+    let fx = fixture();
+    let first = fx.home.join(".agents/skills");
+    let second = fx.home.join(".claude/skills");
+    fs::create_dir_all(&first).unwrap();
+    for i in 0..MAX_ENTRIES + 50 {
+        fs::create_dir(first.join(format!("d{i:05}"))).unwrap();
+    }
+    add(&second.join("later"), "later", "Never read.");
+    let rank = |source| Rank {
+        user: true,
+        distance: 0,
+        source,
+    };
+    let mut walk = Walk::default();
+    walk.add_root(first, rank(0));
+    walk.add_root(second, rank(1));
+    walk.run();
+    assert_eq!(walk.entries, MAX_ENTRIES);
+    let skills = walk.finish();
+    assert!(skills.is_empty(), "the second root was skipped");
+    let limits = skills
+        .diagnostics()
+        .iter()
+        .filter(|d| matches!(d.kind, DiagnosticKind::LimitReached(_)))
+        .count();
+    assert_eq!(limits, 1);
 }
 
 // Given multi-line descriptions (folded and literal) and unknown fields
@@ -762,6 +801,32 @@ async fn a_manifest_that_is_no_longer_a_file_is_unreadable() {
     fs::create_dir(&manifest).unwrap();
     let res = call(&skills, "x", &cx).await;
     assert_eq!(res.error.expect("error").code, "skill_unreadable");
+}
+
+// Given a skill directory with more files than the listing budget
+// When resources are listed with the budget nearly spent
+// Then only the budget left is read and the listing stops
+#[test]
+fn the_resource_listing_enumerates_no_more_than_its_budget() {
+    let fx = fixture();
+    let dir = fx.home.join("res");
+    fs::create_dir_all(dir.join("sub")).unwrap();
+    for i in 0..40 {
+        fs::write(dir.join(format!("f{i:02}.txt")), "x").unwrap();
+        fs::write(dir.join(format!("sub/g{i:02}.txt")), "x").unwrap();
+    }
+    let mut entries = tool::MAX_RESOURCE_ENTRIES - 5;
+    let mut out = Vec::new();
+    tool::list_resources(&dir, "", 0, &mut entries, &mut out);
+    assert_eq!(entries, tool::MAX_RESOURCE_ENTRIES);
+    assert!(out.len() <= 5, "{out:?}");
+
+    // A fresh budget reads everything.
+    let mut entries = 0;
+    let mut all = Vec::new();
+    tool::list_resources(&dir, "", 0, &mut entries, &mut all);
+    assert_eq!(all.len(), 80);
+    assert_eq!(entries, 81);
 }
 
 // ---- readable roots ----

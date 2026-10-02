@@ -485,4 +485,177 @@ mod tests {
             other => panic!("expected a NotFound read error, got {other:?}"),
         }
     }
+
+    fn config_with(provider_extra: &str, model_extra: &str) -> String {
+        format!(
+            r#"{{"providers": {{"p": {{"base_url": "http://x/v1"{provider_extra}}}}},
+               "models": {{"m": {{"provider": "p", "model": "mm"{model_extra}}}}}}}"#
+        )
+    }
+
+    fn tiers(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn variants_and_default_parse() {
+        let raw = config_with(
+            "",
+            r#", "default_variant": "high",
+                 "variants": {"high": {"reasoning_effort": "high"},
+                              "think": {"thinking": {"type": "enabled", "budget_tokens": 8000}}}"#,
+        );
+        let cfg = ModelsConfig::parse(&raw).unwrap();
+        let m = &cfg.models["m"];
+        assert_eq!(m.default_variant.as_deref(), Some("high"));
+        let variants = m.variants.as_ref().unwrap();
+        assert_eq!(variants["high"]["reasoning_effort"], "high");
+        assert_eq!(variants["think"]["thinking"]["budget_tokens"], 8000);
+    }
+
+    #[test]
+    fn a_variant_may_not_set_a_key_the_request_owns() {
+        for key in RESERVED_VARIANT_KEYS {
+            let raw = config_with("", &format!(r#", "variants": {{"v": {{"{key}": 1}}}}"#));
+            let err = ModelsConfig::parse(&raw).unwrap_err().to_string();
+            assert!(
+                err.contains("'m'") && err.contains("'v'") && err.contains(&format!("'{key}'")),
+                "{key}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_default_variant_naming_no_variant_is_a_config_error() {
+        let raw = config_with(
+            "",
+            r#", "default_variant": "max", "variants": {"high": {"reasoning_effort": "high"}}"#,
+        );
+        let err = ModelsConfig::parse(&raw).unwrap_err().to_string();
+        assert!(err.contains("'m'") && err.contains("'max'"), "{err}");
+        // `{}` offers nothing to default to; with no catalog_format nothing is generated.
+        let raw = config_with("", r#", "default_variant": "high", "variants": {}"#);
+        assert!(ModelsConfig::parse(&raw).is_err());
+        let raw = config_with("", r#", "default_variant": "high""#);
+        assert!(ModelsConfig::parse(&raw).is_err());
+    }
+
+    #[test]
+    fn a_default_variant_may_name_a_generated_tier() {
+        let raw = config_with(
+            r#", "catalog_format": "omniroute""#,
+            r#", "default_variant": "high""#,
+        );
+        assert!(ModelsConfig::parse(&raw).is_ok());
+    }
+
+    #[test]
+    fn an_unusable_variant_name_is_rejected() {
+        for name in ["", "two words"] {
+            let raw = config_with("", &format!(r#", "variants": {{"{name}": {{}}}}"#));
+            assert!(ModelsConfig::parse(&raw).is_err(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_catalog_format_is_rejected() {
+        assert!(ModelsConfig::parse(&config_with(r#", "catalog_format": "x""#, "")).is_err());
+    }
+
+    fn resolve_in(provider_extra: &str, model_extra: &str) -> ResolvedModel {
+        ModelsConfig::parse(&config_with(provider_extra, model_extra))
+            .unwrap()
+            .resolve("m")
+            .unwrap()
+    }
+
+    #[test]
+    fn opus_tiers_generate_one_variant_each() {
+        let r = resolve_in(r#", "catalog_format": "omniroute""#, "");
+        let v = effective_variants(&r, &tiers(&["low", "medium", "high", "xhigh", "max"]));
+        assert_eq!(
+            v.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["high", "low", "max", "medium", "xhigh"]
+        );
+        assert_eq!(v["xhigh"]["reasoning_effort"], "xhigh");
+        assert_eq!(v["xhigh"].len(), 1);
+    }
+
+    #[test]
+    fn deepseek_tiers_include_none() {
+        let r = resolve_in(r#", "catalog_format": "omniroute""#, "");
+        let v = effective_variants(&r, &tiers(&["none", "low", "high", "max"]));
+        assert_eq!(v.len(), 4);
+        assert_eq!(v["none"]["reasoning_effort"], "none");
+    }
+
+    #[test]
+    fn an_explicit_map_wins_over_the_catalog() {
+        let r = resolve_in(
+            r#", "catalog_format": "omniroute""#,
+            r#", "variants": {"deep": {"reasoning_effort": "max"}}"#,
+        );
+        let v = effective_variants(&r, &tiers(&["low", "high"]));
+        assert_eq!(v.keys().collect::<Vec<_>>(), ["deep"]);
+    }
+
+    #[test]
+    fn an_empty_map_means_no_variants() {
+        let r = resolve_in(r#", "catalog_format": "omniroute""#, r#", "variants": {}"#);
+        assert!(effective_variants(&r, &tiers(&["low", "high"])).is_empty());
+    }
+
+    #[test]
+    fn without_a_catalog_format_nothing_is_generated() {
+        let r = resolve_in("", "");
+        assert!(effective_variants(&r, &tiers(&["low", "high"])).is_empty());
+    }
+
+    #[test]
+    fn generation_never_picks_a_default() {
+        let r = resolve_in(r#", "catalog_format": "omniroute""#, "");
+        assert_eq!(default_variant(&r, &tiers(&["low", "high"])), Ok(None));
+    }
+
+    #[test]
+    fn a_generated_default_that_the_catalog_dropped_is_reported() {
+        let r = resolve_in(
+            r#", "catalog_format": "omniroute""#,
+            r#", "default_variant": "max""#,
+        );
+        let (name, v) = default_variant(&r, &tiers(&["low", "max"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(name, "max");
+        assert_eq!(v["reasoning_effort"], "max");
+        let e = default_variant(&r, &tiers(&["low"])).unwrap_err();
+        assert_eq!(e.variant, "max");
+    }
+
+    #[test]
+    fn thinking_is_inert_and_names_the_variant_to_write() {
+        let cfg = ModelsConfig::parse(&config_with("", r#", "thinking": "high""#)).unwrap();
+        let m = &cfg.models["m"];
+        assert_eq!(m.default_variant, None);
+        assert_eq!(m.variants, None);
+        let notes = cfg.deprecations();
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].contains("deprecated")
+                && notes[0].contains(r#""default_variant": "high""#)
+                && notes[0].contains("'m'"),
+            "{}",
+            notes[0]
+        );
+        let off = ModelsConfig::parse(&config_with("", r#", "thinking": "off""#)).unwrap();
+        assert!(off.deprecations()[0].contains("remove it"));
+        let none = ModelsConfig::parse(&config_with("", "")).unwrap();
+        assert!(none.deprecations().is_empty());
+    }
+
+    #[test]
+    fn repo_models_json_has_no_deprecated_setting() {
+        let cfg = ModelsConfig::parse(include_str!("../../models.json")).unwrap();
+        assert!(cfg.deprecations().is_empty(), "{:?}", cfg.deprecations());
+    }
 }

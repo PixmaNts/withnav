@@ -122,6 +122,11 @@ pub enum ClientEvent {
         generation: Generation,
         message: String,
     },
+    /// Saving the user settings failed; the change still applies until the client quits.
+    SettingsNotSaved {
+        generation: Generation,
+        message: String,
+    },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {

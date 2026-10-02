@@ -152,10 +152,21 @@ impl Executor {
                 editor.clear_if_revision(revision);
             }
             Effect::SaveTheme(theme) => {
-                // A few bytes written once per pick: done inline, a failure only costs persistence.
+                // A few bytes written once per pick: done inline. A failure is shown, not fatal:
+                // the theme stays in effect and picking it again retries the save.
                 if let Some(dir) = &ctx.config_dir {
                     if let Err(err) = crate::settings::save_tui_theme(dir, theme.id()) {
                         tracing::warn!("cannot save the theme: {err}");
+                        let message = format!(
+                            "theme {} is not saved and lasts until you quit: {err}",
+                            theme.name()
+                        );
+                        self.spawn_event(async move {
+                            ClientEvent::SettingsNotSaved {
+                                generation,
+                                message,
+                            }
+                        });
                     }
                 }
             }

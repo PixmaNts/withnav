@@ -633,10 +633,10 @@ fn theme_picker_opens_on_the_current_theme_and_the_palette_lists_it() {
     let mut s = state();
     navai::tui::reducer::handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Themes));
     assert_eq!(ui.selection.get("Themes"), Some(&2));
-    // Picking the theme already in effect writes nothing.
+    // Confirming the theme already in effect saves it again, so a failed save can be retried.
     assert_eq!(
         navai::tui::reducer::handle_action(&mut s, &mut ui, Action::PickTheme(ThemeId::NordDark)),
-        vec![]
+        vec![navai::tui::protocol::Effect::SaveTheme(ThemeId::NordDark)]
     );
     assert_eq!(
         navai::tui::commands::command_action("/theme", Default::default()),

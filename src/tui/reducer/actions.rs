@@ -95,10 +95,10 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
         Action::PickTheme(theme) => {
             ui.overlay = None;
             ui.theme = theme;
-            match ui.theme_on_open.take() {
-                Some(previous) if previous == theme => vec![],
-                _ => vec![Effect::SaveTheme(theme)],
-            }
+            ui.theme_on_open = None;
+            // Saved on every confirmation, even of the theme in effect, so a failed save can be
+            // retried by picking the same theme again.
+            vec![Effect::SaveTheme(theme)]
         }
         Action::Select(_) => vec![],
         Action::Scroll(n) => {

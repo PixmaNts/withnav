@@ -643,3 +643,61 @@ fn theme_picker_opens_on_the_current_theme_and_the_palette_lists_it() {
         Some(Action::OpenOverlay(Overlay::Themes))
     );
 }
+
+/// Sends `code` to the open theme picker and applies the action it returns, like the runtime.
+fn theme_key(ui: &mut UiState, code: KeyCode) -> Option<Action> {
+    let s = state();
+    let action = route_key(key(code, KeyModifiers::NONE), &s, ui, &mut Editor::new());
+    if let Some(action) = action.clone() {
+        navai::tui::reducer::handle_action(&mut state(), ui, action);
+    }
+    action
+}
+
+/// The theme the picker highlights, as drawn: the row carrying the `▌` mark.
+fn highlighted_theme(ui: &UiState) -> Option<ThemeId> {
+    let terminal = cells(&state(), ui, (100, 30));
+    let buffer = terminal.backend().buffer();
+    (0..30).find_map(|y| {
+        let row: String = (0..100).map(|x| buffer[(x, y)].symbol()).collect();
+        row.contains('▌')
+            .then(|| ThemeId::ALL.into_iter().find(|t| row.contains(t.id())))
+            .flatten()
+    })
+}
+
+#[test]
+fn theme_filter_previews_the_highlighted_row() {
+    let mut ui = UiState::default();
+    navai::tui::reducer::handle_action(&mut state(), &mut ui, Action::OpenOverlay(Overlay::Themes));
+    // Typing `n` from Ayu Dark: the first match is Nord Dark, and that is what is drawn.
+    assert_eq!(
+        theme_key(&mut ui, KeyCode::Char('n')),
+        Some(Action::PreviewTheme(ThemeId::NordDark))
+    );
+    assert_eq!(ui.theme, ThemeId::NordDark);
+    assert_eq!(highlighted_theme(&ui), Some(ui.theme));
+    theme_key(&mut ui, KeyCode::Char('o'));
+    theme_key(&mut ui, KeyCode::Char('r'));
+    theme_key(&mut ui, KeyCode::Char('d'));
+    theme_key(&mut ui, KeyCode::Char('-'));
+    theme_key(&mut ui, KeyCode::Char('l'));
+    assert_eq!(ui.theme, ThemeId::NordLight);
+    assert_eq!(highlighted_theme(&ui), Some(ThemeId::NordLight));
+    // No match: nothing is highlighted and the theme on screen stays.
+    assert_eq!(theme_key(&mut ui, KeyCode::Char('x')), None);
+    assert_eq!(ui.theme, ThemeId::NordLight);
+    assert_eq!(highlighted_theme(&ui), None);
+    assert_eq!(theme_key(&mut ui, KeyCode::Enter), None, "no row to pick");
+    // Backspace back to `nord-l`, then to `nord-`: the first match is highlighted again.
+    theme_key(&mut ui, KeyCode::Backspace);
+    assert_eq!(ui.theme, ThemeId::NordLight);
+    theme_key(&mut ui, KeyCode::Backspace);
+    assert_eq!(ui.theme, ThemeId::NordDark);
+    assert_eq!(highlighted_theme(&ui), Some(ThemeId::NordDark));
+    assert_eq!(
+        theme_key(&mut ui, KeyCode::Enter),
+        Some(Action::PickTheme(ThemeId::NordDark)),
+        "enter picks the theme that was previewed"
+    );
+}

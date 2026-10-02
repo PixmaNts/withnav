@@ -14,6 +14,7 @@ pub struct SessionConfig {
     pub config_dir: PathBuf,
     /// Conversation-history database; every conversation is written there.
     pub history_db: PathBuf,
+    pub data_dir: PathBuf,
     /// Where the local instructions of a session are looked for beyond its
     /// workspace.
     pub rules_roots: RulesRoots,

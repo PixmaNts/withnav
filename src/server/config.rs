@@ -27,6 +27,7 @@ pub struct ServerConfig {
     /// Conversation-history database; the binaries default it to
     /// [`crate::paths::history_db`], tests give each server its own.
     pub history_db: PathBuf,
+    pub data_dir: PathBuf,
     /// Where session instructions are read from besides the workspace; the
     /// binaries use the user's home, tests an empty or temporary one.
     pub rules_roots: RulesRoots,
@@ -57,6 +58,7 @@ impl ServerConfig {
                 models_path: self.models_path,
                 config_dir: self.config_dir,
                 history_db: self.history_db,
+                data_dir: self.data_dir,
                 rules_roots: self.rules_roots,
             },
             HttpConfig {
@@ -80,6 +82,7 @@ mod tests {
             allow_non_loopback,
             bearer_token: None,
             history_db: PathBuf::from("/tmp/navai-test/history.db"),
+            data_dir: PathBuf::from("/tmp/navai-test/data"),
             rules_roots: RulesRoots::default(),
         }
     }

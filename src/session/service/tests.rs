@@ -8,6 +8,7 @@ pub(crate) fn test_service() -> (tempfile::TempDir, Service) {
         models_path: None,
         config_dir: dir.path().join("cfg"),
         history_db: dir.path().join("history.db"),
+        data_dir: dir.path().join("data"),
         rules_roots: Default::default(),
     };
     let service = Service::new(config).expect("service over a temp database");

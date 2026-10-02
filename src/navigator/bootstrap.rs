@@ -267,6 +267,8 @@ async fn spawn_cognition_server(
         allow_non_loopback: false,
         bearer_token: Some(token.clone()),
         history_db,
+        data_dir: crate::paths::data_dir()
+            .ok_or_else(|| anyhow::anyhow!("cannot resolve data dir"))?,
         rules_roots: crate::agent::instructions::RulesRoots::from_user_home(),
     };
     let state = AppState::with_hooks(

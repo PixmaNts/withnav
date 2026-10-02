@@ -59,6 +59,7 @@ async fn live_server_edit_and_test_through_the_bus() {
         allow_non_loopback: false,
         bearer_token: None,
         history_db: root.join("history.db"),
+        data_dir: root.join("data"),
         rules_roots: Default::default(),
     };
     let state = AppState::new(config).expect("state");

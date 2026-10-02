@@ -397,3 +397,32 @@ async fn assert_not_routable(state: &AppState, id: navai::bus::command::SessionI
         "closed session is not routable"
     );
 }
+
+// Given an alias with no context_window whose provider cannot list models
+// When POST /v1/sessions
+// Then 422 {reason:"no_context_window"} with the exact text naming the
+//      resolved models.json; no session is created
+#[tokio::test]
+async fn create_session_without_a_known_window_is_422_no_context_window() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).expect("workspace");
+    let cfg = TestServerConfig::unreachable(tmp.path()).without_window();
+    let state = cfg.state();
+    let (status, body) = request_json(
+        &app(state),
+        "POST",
+        "/v1/sessions",
+        Some(&json!({ "workspace": ws.to_str().expect("utf8 ws") })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["reason"], "no_context_window");
+    assert_eq!(
+        body["error"],
+        format!(
+            "Chat alias 'default' (provider 'mock', model 'mock-model') has no known context window: the provider's model list did not report one. Set \"context_window\" for it in {}, or make the provider reachable and try again.",
+            cfg.models_path().display()
+        )
+    );
+}

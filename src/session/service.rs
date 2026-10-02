@@ -139,6 +139,20 @@ pub struct Service {
     /// session id never has two runtimes and is never resumed while it is
     /// being stopped or deleted. One client, so one gate for the service.
     gate: Arc<tokio::sync::Mutex<()>>,
+    catalog: crate::provider::catalog::ModelCatalog,
+}
+
+/// The refusal for a chat alias without a window, naming the file to fix.
+fn no_context_window(
+    e: crate::provider::catalog::NoContextWindow,
+    models_path: &Path,
+) -> ServerError {
+    ServerError::NoContextWindow {
+        alias: e.alias,
+        provider: e.provider,
+        model: e.model,
+        models_path: models_path.display().to_string(),
+    }
 }
 
 impl Service {
@@ -157,12 +171,14 @@ impl Service {
         // No fallback: a conversation that cannot be saved is not served.
         let history =
             super::store::HistoryStore::open(&config.history_db).map_err(ServerError::History)?;
+        let catalog = crate::provider::catalog::ModelCatalog::new(Some(config.data_dir.clone()));
         Ok(Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             config: Arc::new(config),
             history: Arc::new(history),
             hooks,
             gate: Arc::new(tokio::sync::Mutex::new(())),
+            catalog,
         })
     }
 
@@ -228,8 +244,10 @@ impl Service {
         accept(&handle, command).await
     }
 
-    /// Creates a session: resolves models.json + the key (NO live provider
-    /// call — the actor is built but not run until a message arrives),
+    /// Creates a session: resolves models.json + the key and the context
+    /// window (no chat call: the actor is built but not run until a message
+    /// arrives; the provider's model list is read only when the alias has no
+    /// window of its own),
     /// mints tokens, spawns the sequencer FIRST, publishes `session.start`
     /// (seq 0), THEN spawns the runtime task, and registers the handle.
     pub async fn create_session(
@@ -367,13 +385,38 @@ impl Service {
         self.hooks.default_model(profile)
     }
 
-    fn resolve_model(&self, workspace: &Path, alias: &str) -> Result<ResolvedModel, ServerError> {
-        let (config, _) = load_models(
+    fn resolve_model(
+        &self,
+        workspace: &Path,
+        alias: &str,
+    ) -> Result<(ResolvedModel, PathBuf), ServerError> {
+        let (config, path) = load_models(
             self.config.models_path.as_deref(),
             workspace,
             &self.config.config_dir,
         )?;
-        Ok(config.resolve(alias)?)
+        Ok((config.resolve(alias)?, path))
+    }
+
+    pub async fn resolve_model_metadata(
+        &self,
+        workspace: &Path,
+        alias: &str,
+    ) -> Result<crate::provider::catalog::ResolvedChat, ServerError> {
+        let (resolved, models_path) = self.resolve_model(workspace, alias)?;
+        let key = auth::resolve_key(
+            &self.config.config_dir,
+            &resolved.provider_name,
+            resolved.provider.api_key_env.as_deref(),
+        )?;
+        crate::provider::catalog::resolve_chat(
+            &self.catalog,
+            &resolved,
+            &key,
+            &crate::provider::openai::ClientCache::new(),
+        )
+        .await
+        .map_err(|e| no_context_window(e, &models_path))
     }
 
     /// Reads the session's local instructions once and logs what became of
@@ -433,12 +476,29 @@ impl Service {
                 (workspace.to_path_buf(), alias.to_string(), profile)
             }
         };
-        let resolved = self.resolve_model(resume_workspace, &alias)?;
+        let (resolved, models_path) = self.resolve_model(resume_workspace, &alias)?;
         let api_key = auth::resolve_key(
             &self.config.config_dir,
             &resolved.provider_name,
             resolved.provider.api_key_env.as_deref(),
         )?;
+        let metadata = crate::provider::catalog::resolve_chat(
+            &self.catalog,
+            &resolved,
+            &api_key,
+            &crate::provider::openai::ClientCache::new(),
+        )
+        .await
+        .map_err(|e| no_context_window(e, &models_path))?;
+        let mut resolved = resolved;
+        resolved.model.context_window = Some(metadata.window);
+        resolved.model.max_input_tokens = metadata.max_input_tokens;
+        match &metadata.discrepancy {
+            Some(d) => tracing::warn!(alias = %alias, window = metadata.window, "{d}"),
+            None => {
+                tracing::debug!(alias = %alias, window = metadata.window, source = %metadata.window_source, "resolved chat window")
+            }
+        }
         let session_cancel = CancellationToken::new();
         let mut actor = build_actor(
             &workspace,

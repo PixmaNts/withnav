@@ -5,6 +5,7 @@
 //! - `GET  /v1/health`        -> `{status:"ok"}`
 //! - `GET  /v1/models?workspace=` -> `{models:[{alias, model, context_window?}], default?}`
 //! - `POST /v1/sessions`      -> `{session_id, root_actor_id:"agent:main", actor_state:"idle"}`
+//!   (422 `{"error", "reason":"no_context_window"}` for a chat alias with no known window)
 //! - `GET  /v1/sessions/:id`  -> `{session_id, actor_state, workspace, model, current_seq}`
 //! - `POST /v1/sessions/:id/messages` -> `{command_id, accepted:true, actor_state, notice?}`
 //!   (frozen error bodies: 404 unknown id / 409 stopping / 503 `{"accepted":false,"reason":"inbox_full"}`
@@ -457,6 +458,7 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         ServerError::NonLoopbackBind(_) | ServerError::Bind(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::InboxFull => StatusCode::SERVICE_UNAVAILABLE,
         ServerError::NonTextContent | ServerError::MalformedBody(_) => StatusCode::BAD_REQUEST,
+        ServerError::NoContextWindow { .. } => StatusCode::UNPROCESSABLE_ENTITY,
         ServerError::History(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::Config(_) | ServerError::Model(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -471,6 +473,13 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         return (
             status,
             Json(json!({ "error": err.to_string(), "reason": "resume_required" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::NoContextWindow { .. }) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "no_context_window" })),
         )
             .into_response();
     }
@@ -506,6 +515,7 @@ mod tests {
             allow_non_loopback: false,
             bearer_token: None,
             history_db: dir.path().join("history.db"),
+            data_dir: dir.path().join("data"),
             rules_roots: Default::default(),
         })
         .expect("state over a temp database");

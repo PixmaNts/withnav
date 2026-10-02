@@ -37,6 +37,9 @@ requests land in `develop`.
 
 ### Changed
 
+- **A chat session needs a known context window.** Creating one for an alias that has none in
+  models.json and none reported by the provider is refused (HTTP 422, `reason: "no_context_window"`;
+  `navai run` prints it as its `error:` line and exits 1). Set `context_window` for the alias.
 - **The project is now called Navai.** The crate and binaries are `navai` and `navai-lsp` (they were
   `rust-agent` and `rust-agent-lsp`). The VS Code extension is `pixmants.navai` "Navai" (the chat
   view is still "Cognition"); its commands are `navai.focusChat`, `navai.markUseful`,

@@ -191,11 +191,22 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
         allow_non_loopback: false,
         bearer_token: None,
         history_db: history_db_path()?,
+        data_dir: crate::paths::data_dir()
+            .ok_or_else(|| anyhow::anyhow!("cannot resolve data dir"))?,
         rules_roots: RulesRoots::from_user_home(),
     })?;
-    let session_id = state
+    // A session that cannot start (no window, unknown alias, no key) ends the
+    // run the way a failed turn does: the `error:` line, exit 1.
+    let session_id = match state
         .create_session(&workspace, args.model.as_deref(), None)
-        .await?;
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("\nerror: {e}");
+            return Ok(EXIT_ERROR);
+        }
+    };
     let handle = state
         .handle(session_id)
         .ok_or_else(|| anyhow::anyhow!("session vanished immediately after creation"))?;
@@ -339,6 +350,8 @@ async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
         allow_non_loopback: args.allow_non_loopback,
         bearer_token: None,
         history_db: history_db_path()?,
+        data_dir: crate::paths::data_dir()
+            .ok_or_else(|| anyhow::anyhow!("cannot resolve data dir"))?,
         rules_roots: RulesRoots::from_user_home(),
     };
     crate::server::routes::serve(

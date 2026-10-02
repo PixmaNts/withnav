@@ -52,7 +52,7 @@ use crate::bus::sequencer::Sequencer;
 use crate::bus::SessionBus;
 use crate::error::ServerError;
 use crate::provider::auth;
-use crate::provider::config::{load_models, ResolvedModel};
+use crate::provider::config::{load_models, ApiKind, ModelConfig, ResolvedModel};
 use crate::provider::openai::ChatMessage;
 
 /// A session id on the wire and in the registry.
@@ -344,6 +344,25 @@ impl Service {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         }
+    }
+
+    /// The aliases a cognition session can use: chat models with tools,
+    /// from the same models.json a new session would load.
+    pub fn list_models(&self, workspace: &Path) -> Result<Vec<(String, ModelConfig)>, ServerError> {
+        let (config, _) = load_models(
+            self.config.models_path.as_deref(),
+            workspace,
+            &self.config.config_dir,
+        )?;
+        Ok(config
+            .models
+            .into_iter()
+            .filter(|(_, m)| m.api == ApiKind::Chat && m.supports_tools)
+            .collect())
+    }
+
+    pub fn default_model(&self, profile: Option<&str>) -> Option<&str> {
+        self.hooks.default_model(profile)
     }
 
     fn resolve_model(&self, workspace: &Path, alias: &str) -> Result<ResolvedModel, ServerError> {

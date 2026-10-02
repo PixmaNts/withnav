@@ -3,6 +3,7 @@
 //!
 //! Response bodies are FROZEN:
 //! - `GET  /v1/health`        -> `{status:"ok"}`
+//! - `GET  /v1/models?workspace=` -> `{models:[{alias, model, context_window?}], default?}`
 //! - `POST /v1/sessions`      -> `{session_id, root_actor_id:"agent:main", actor_state:"idle"}`
 //! - `GET  /v1/sessions/:id`  -> `{session_id, actor_state, workspace, model, current_seq}`
 //! - `POST /v1/sessions/:id/messages` -> `{command_id, accepted:true, actor_state, notice?}`
@@ -89,6 +90,7 @@ pub fn app(state: AppState) -> Router {
     let token = state.http.bearer_token.clone();
     Router::new()
         .route("/v1/health", get(health))
+        .route("/v1/models", get(list_models))
         .route("/v1/sessions", get(list_sessions).post(create_session))
         .route("/v1/sessions/{id}", get(get_session).delete(delete_session))
         .route("/v1/sessions/{id}/messages", post(post_message))
@@ -319,6 +321,46 @@ async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -
     };
     match state.delete(parsed).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => error_response(err),
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModelEntry {
+    pub alias: String,
+    pub model: String,
+    pub context_window: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModelsBody {
+    pub models: Vec<ModelEntry>,
+    pub default: Option<String>,
+}
+
+/// `GET /v1/models?workspace=<abs path>`: chat models with tools.
+async fn list_models(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let Some(workspace) = params.get("workspace") else {
+        return error_response(ServerError::MalformedBody(
+            "missing query parameter: workspace".to_string(),
+        ));
+    };
+    match state.list_models(std::path::Path::new(workspace)) {
+        Ok(entries) => {
+            let models = entries
+                .into_iter()
+                .map(|(alias, m)| ModelEntry {
+                    alias,
+                    model: m.model,
+                    context_window: m.context_window,
+                })
+                .collect();
+            let default = state.default_model(Some("navigator")).map(str::to_string);
+            (StatusCode::OK, Json(ModelsBody { models, default })).into_response()
+        }
         Err(err) => error_response(err),
     }
 }

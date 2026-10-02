@@ -23,7 +23,7 @@ Version 0.1 SHALL provide:
 3. Five native development tools: `read`, `write`, `edit`, `bash`, and `grep`.
 4. Explicit `Continue`, `Done`, and `Yield` loop outcomes.
 5. An asynchronous event bus with per-actor inboxes.
-6. A local SSE and WebSocket API implemented with Axum.
+6. A local HTTP and SSE API implemented with Axum.
 7. External-process plugins over JSON-RPC stdio.
 8. MCP tool integration through `rmcp`.
 9. Non-blocking subagents using the same loop as the main agent.
@@ -161,7 +161,7 @@ flowchart LR
     end
 
     subgraph Core["rust-agent core process"]
-        API[Axum SSE / WebSocket API]
+        API[Axum HTTP / SSE API]
         ROUTER[Inbox router]
         BUS[Session event bus and sequencer]
         MAIN[Main-agent actor]
@@ -180,8 +180,8 @@ flowchart LR
     end
 
     USER --> TUI
-    TUI <-->|WebSocket| API
-    CLI -->|HTTP / WebSocket| API
+    TUI <-->|HTTP + SSE| API
+    CLI -->|HTTP + SSE| API
     WEB -. future .-> API
 
     API --> ROUTER
@@ -219,7 +219,7 @@ rust-agent run
 ```
 
 - `serve` starts the authoritative core, event bus, agent actors, plugin supervisor, SQLite subscriber, and Axum API.
-- `tui` is a client. It connects through WebSocket and MUST NOT reach directly into agent-loop state.
+- `tui` is a client. It connects through HTTP (commands) and SSE (events) and MUST NOT reach directly into agent-loop state.
 - `run` starts a local core for a single terminal invocation. It MAY use an in-process client, but that client MUST still communicate through the same command and event interfaces.
 
 The binary remains mono-binary even though user-selected plugins run as external processes. Plugin language runtimes are not bundled or embedded.
@@ -2036,12 +2036,14 @@ rust-agent/
 │   ├── server/
 │   │   ├── mod.rs
 │   │   ├── routes.rs
-│   │   ├── sse.rs
-│   │   └── websocket.rs
+│   │   └── sse.rs
 │   └── tui/
 │       ├── mod.rs
 │       ├── client.rs
-│       └── view.rs
+│       ├── stream.rs
+│       ├── reducer/
+│       ├── runtime/
+│       └── view/
 └── tests/
     ├── agent_loop.rs
     ├── delivery_modes.rs
@@ -2095,7 +2097,7 @@ The roadmap is a sequence of vertical slices. Each phase ends with a usable or d
 1. Add event envelopes, session sequencing, and bounded subscribers.
 2. Add per-actor inboxes and command routing.
 3. Move stdout rendering behind an event subscriber.
-4. Add Axum session, message, SSE, WebSocket, and health endpoints.
+4. Add Axum session, message, SSE, and health endpoints.
 5. Verify two clients can observe the same session.
 
 #### Plugins and MCP
@@ -2162,7 +2164,7 @@ The roadmap is a sequence of vertical slices. Each phase ends with a usable or d
 
 #### Ratatui Client
 
-1. Build the Ratatui WebSocket client.
+1. Build the Ratatui HTTP + SSE client.
 2. Show actor state, streaming text, tool activity, yields, and subagent completion.
 3. Support user selection of `next-turn`, `steer`, and `interrupt`.
 4. Show prompt and tool mutations with plugin attribution.

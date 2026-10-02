@@ -1,0 +1,24 @@
+---
+source: tests/tui_view.rs
+expression: snapshot
+---
+ rust-agent  ~/dev/project         Fix parser · 01JABCDEFGH 
+────────────────────────────────────────────────────────────
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+────────────────────────────────────────────────────────────
+ cognition · claude-opus-5-5   ctx — / 200k   ready         
+┌ Message ─────────────────────────────────────────────────┐
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+ enter send  alt+enter newline  esc stop  ctrl+p commands  f

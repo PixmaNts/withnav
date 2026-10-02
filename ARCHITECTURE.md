@@ -22,7 +22,8 @@ rust-agent-lsp   (one process, two channels: ADR 0006)
 ```
 
 A second binary, `rust-agent` (`src/main.rs`, `src/app.rs`), is a thin CLI over the same library:
-`run` (one task in a terminal), `serve` (the session server alone), `auth`.
+`run` (one task in a terminal), `serve` (the session server alone), `auth`, and `tui` (the terminal
+chat client, below).
 
 ## Modules
 
@@ -57,7 +58,47 @@ Dependencies point down this list. A module never imports one above it.
 | `bootstrap.rs` | process wiring: builds each layer from its alias, starts the in-process session server |
 | `default_pipeline/` | the built-in pipeline TOML and prompts; a project's `.navigator/` overrides them |
 
+### Inside `tui/`
+
+The terminal client of the session server: HTTP for commands, SSE for events, nothing else. It
+imports the serialized bus types and no runtime internals.
+
+| File | Responsibility |
+|---|---|
+| `mod.rs` | `TuiOptions`, `TuiError`, `run` |
+| `protocol.rs` | the wire bodies the client sends and receives, and the three message types of the loop: `Action` (what the user asked), `Effect` (I/O the reducer wants), `ClientEvent` (what came back, tagged with a `Generation`) |
+| `state.rs` | `State` (the conversation projection, session, catalog, activity) and `UiState` (overlay, scroll, selection); data only |
+| `client.rs` | the HTTP client: models, sessions, create/resume, send, stop, open the event stream; send failures split into rejected and uncertain |
+| `stream.rs` | one SSE subscription: decoding, reconnect with backoff, resume after the last seq, cancellation |
+| `reducer/mod.rs` | `update`: `ClientEvent` to `State` changes and new `Effect`s; generation filtering |
+| `reducer/envelope.rs` | `EventEnvelope` to blocks: steps, tools (planned, running, settled), usage, errors; live and replay give the same blocks |
+| `reducer/actions.rs` | `handle_action`: `Action` to `UiState`/`State` changes and `Effect`s |
+| `reducer/text.rs` | `strip_controls`, applied to every piece of model and tool text |
+| `input.rs` | the `Editor` and `route_key`/`route_paste`: keys to editor edits or `Action`s |
+| `commands.rs` | the command catalog, the key help and the key to `Action` map |
+| `runtime.rs` | `Runtime`: owns state, editor, client and stream; the event loop with its frame tick |
+| `runtime/effects.rs` | `Executor`: runs each `Effect` in a task and reports a tagged `ClientEvent`; owns the one live stream |
+| `runtime/tests.rs` | executor and loop tests with no terminal and a dead server |
+| `terminal.rs` | raw mode and the alternate screen, restored on exit and on panic |
+| `theme.rs` | the semantic styles |
+| `view/mod.rs` | `draw`: layout of transcript, editor, status line and overlays |
+| `view/transcript.rs` | block layout and drawing: messages by origin, steps, tools, errors, scroll and selection |
+| `view/tool.rs` | the one-line summary and the expanded output of a tool call |
+| `view/markdown.rs` | markdown to styled lines, cached per block revision |
+| `view/status.rs` | the status line: connection, model, activity, context and session tokens |
+| `view/pickers.rs` | the model, session, command and help overlays |
+
 ## Data flows
+
+**Key to screen (terminal client).** A key reaches `runtime.rs`, which calls `input::route_key`: it
+edits the editor or returns an `Action`. `reducer::handle_action` changes the state and returns
+`Effect`s. The `Executor` runs each effect: an HTTP call through `client.rs`, or a subscription
+through `stream.rs`. Each result comes back on one channel as a `ClientEvent` stamped with the
+generation it was started in; `reducer::update` drops events of an older generation, folds the rest
+into `State` (envelopes become blocks) and may return more effects. After each batch the loop calls
+`view::draw`, which only reads the state. Picking a model or starting a conversation bumps the
+generation, so late results of the old conversation are ignored. A conversation is created on the
+first message, not before.
 
 **Keystroke to suggestion (reflex).** The extension asks `navigator/inlineCompletion` after 150 ms
 of pause. `runtime/inline.rs` reads the document and the reflex context, `reflex.rs` builds the FIM
@@ -101,6 +142,7 @@ starts fresh.
   its adapter in `models.rs` and its fake in `tests/common/navigator.rs`.
 - A new trigger record field goes in `PendingTrigger`; nothing else writes trigger records.
 - Behaviour that should be tunable goes in the pipeline (TOML and prompts), not in Rust (ADR 0005).
+- `src/tui/**` is a server client: HTTP + SSE only. It may share serialized bus event types, but never imports session, agent, or bus runtime internals.
 - Tests use `tests/common/`: `server.rs` (configs, servers, sessions, messages), `sse.rs` (scripted
   chat streams), `navigator.rs` (the in-memory LSP client and one scripted fake per model seam). Do
   not copy a harness into a new test file.

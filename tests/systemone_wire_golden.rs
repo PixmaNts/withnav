@@ -33,6 +33,7 @@ fn model_config() -> ModelConfig {
         model: "typesafe/jev-1.13".to_string(),
         api: ApiKind::SystemOne,
         context_window: Some(64_000),
+        max_input_tokens: None,
         max_output_tokens: Some(2048),
         supports_tools: false,
         supports_parallel_tool_calls: None,

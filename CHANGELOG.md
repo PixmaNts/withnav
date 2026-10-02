@@ -8,6 +8,10 @@ requests land in `develop`.
 
 ### Added
 
+- **Model catalog**: a chat alias without `context_window` in models.json gets its window from the
+  provider's `GET /models` list (`context_length`, else `max_input_tokens`), cached for a day under the
+  data dir. An explicit `context_window` wins without any network call; if it differs from what the
+  provider reports, the log says so.
 - **Project and user rules**: a session reads, once when it is created or resumed, `~/.agents/AGENTS.md`
   (else `~/.claude/CLAUDE.md`), `~/.agents/rules.md`, then in each directory from the Git worktree
   root down to the workspace `AGENTS.md` (else `CLAUDE.md`) and `rules.md`, and sends them to the

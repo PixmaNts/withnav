@@ -165,6 +165,7 @@ mod tests {
                 model: "mercury-edit-2".to_string(),
                 api: ApiKind::Fim,
                 context_window: None,
+                max_input_tokens: None,
                 max_output_tokens: None,
                 supports_tools: false,
                 supports_parallel_tool_calls: None,

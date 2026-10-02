@@ -10,6 +10,7 @@ use crate::provider::openai::ChatChunk;
 use crate::provider::sse::SseEventStream;
 
 pub mod auth;
+pub mod catalog;
 pub mod client;
 pub mod config;
 pub mod fim;

@@ -137,6 +137,9 @@ it is and that run keeps using it.
 
 ## Where new code goes
 
+- A chat alias's context window (models.json, else the provider's model list, cached in
+  `<data dir>/model-catalog/`): `provider/catalog.rs` (`resolve_chat`); the session service calls it
+  before building an actor and refuses an alias with no window.
 - A helper you need probably exists. Look first in: `provider/client.rs` (any HTTP call to a model),
   `provider/config.rs` (`load_models`), `navigator/log.rs` (`excerpt`, `new_ulid_string`),
   `bus/event.rs` (`now_rfc3339`), `navigator/lsp/uri.rs`, `navigator/document.rs` (diffs and

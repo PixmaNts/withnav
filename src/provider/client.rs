@@ -63,6 +63,49 @@ impl ModelClient {
         req
     }
 
+    /// Fetch model metadata with this provider's pooled, authenticated client.
+    pub async fn get_json(
+        &self,
+        endpoint: &str,
+        budget: Duration,
+        cancel: &CancellationToken,
+    ) -> Result<bytes::Bytes, ProviderError> {
+        let url = format!("{}/{}", self.base_url, endpoint);
+        let mut req = self.http.get(url).bearer_auth(&self.api_key);
+        for (k, v) in &self.headers {
+            req = req.header(k, v);
+        }
+        let call = async {
+            let response = cancellable(cancel, req.send()).await??;
+            if !response.status().is_success() {
+                return Err(ProviderError::Api {
+                    status: response.status().as_u16(),
+                    message: "model catalog request failed".into(),
+                    partial: None,
+                });
+            }
+            if response.content_length().is_some_and(|n| n > 2_000_000) {
+                return Err(ProviderError::MalformedResponse(
+                    "model catalog response exceeds 2 MB".into(),
+                ));
+            }
+            let bytes = cancellable(cancel, response.bytes()).await??;
+            if bytes.len() > 2_000_000 {
+                return Err(ProviderError::MalformedResponse(
+                    "model catalog response exceeds 2 MB".into(),
+                ));
+            }
+            Ok(bytes)
+        };
+        tokio::time::timeout(budget, call)
+            .await
+            .map_err(|_| ProviderError::Api {
+                status: 0,
+                message: "model catalog deadline exceeded".into(),
+                partial: None,
+            })?
+    }
+
     /// POSTs `body` as JSON to `{base_url}/{endpoint}` and returns the raw
     /// success body; the caller parses it. A non-2xx status becomes
     /// [`ProviderError::Api`] carrying the API's error message when the body

@@ -39,6 +39,7 @@ fn resolved(base_url: String) -> ResolvedModel {
             model: "mock-fast".to_string(),
             api: ApiKind::Chat,
             context_window: None,
+            max_input_tokens: None,
             max_output_tokens: None,
             supports_tools: true,
             supports_parallel_tool_calls: None,

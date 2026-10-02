@@ -1051,3 +1051,146 @@ async fn conversation_trigger_targets_the_last_focused_document() {
     assert_eq!(records.len(), 1, "{records:?}");
     assert_eq!(records[0]["uri"], URI, "the document changed last");
 }
+
+// ---------- a call for help is answered once ----------
+
+const HELP_COMMENT: &str = "    // need help here :)";
+
+/// [`base_text`] with the call for help on a line of its own, plus `extra`
+/// lines after it.
+fn with_help(extra: &[&str]) -> String {
+    let mut lines = vec![
+        "fn main() {".to_string(),
+        HELP_COMMENT.to_string(),
+        "    println!(\"hello\");".to_string(),
+    ];
+    lines.extend(extra.iter().map(|l| l.to_string()));
+    lines.push("}".to_string());
+    lines.join("\n")
+}
+
+fn delivered(client: &Nav) -> Vec<(String, Option<String>)> {
+    client
+        .log_text()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|v| v["kind"] == "trigger")
+        .map(|v| {
+            (
+                v["delivered"].as_str().unwrap().to_string(),
+                v["reason"].as_str().map(str::to_string),
+            )
+        })
+        .collect()
+}
+
+/// The same comment, triggered again while its remark is being written,
+/// leaves that remark alone: it is skipped, not superseded.
+#[tokio::test(start_paused = true)]
+async fn the_same_call_for_help_does_not_cancel_its_own_remark() {
+    let gate = Arc::new(CancellationToken::new());
+    let mock = MockCommenter::gated(vec![Answer::Remark(1, "the cache")], gate.clone());
+    let mut client = Nav::start(mock.clone()).await;
+    client.open_base().await;
+    client.did_change(URI, &with_help(&[]), 2).await;
+    client.did_save(URI).await;
+    client.expect_status("thinking").await;
+
+    // The comment moves down a line and the driver saves again.
+    client
+        .did_change(URI, &with_help(&["    // tail"]), 3)
+        .await;
+    client.did_save(URI).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(mock.calls(), 1, "no second request for the same comment");
+
+    gate.cancel();
+    let mut seen = Vec::new();
+    let remark = client.expect("navigator/remark", &mut seen).await;
+    assert_eq!(remark["params"]["text"], "the cache");
+    let outcomes = delivered(&client);
+    assert!(
+        outcomes.contains(&("none".to_string(), Some("help_in_flight".to_string()))),
+        "{outcomes:?}"
+    );
+    assert!(
+        !outcomes.iter().any(|(d, _)| d == "cancelled"),
+        "{outcomes:?}"
+    );
+}
+
+/// After the remark, the comment does not fire again unless it was removed
+/// and written anew.
+#[tokio::test(start_paused = true)]
+async fn an_answered_call_for_help_fires_again_only_once_rewritten() {
+    let mock = MockCommenter::new(vec![
+        Answer::Remark(1, "first answer"),
+        Answer::Remark(1, "second answer"),
+    ]);
+    let mut client = Nav::start(mock.clone()).await;
+    client.open_base().await;
+    client.did_change(URI, &with_help(&[]), 2).await;
+    client.did_save(URI).await;
+    let mut seen = Vec::new();
+    let first = client.expect("navigator/remark", &mut seen).await;
+    assert_eq!(first["params"]["text"], "first answer");
+    client.expect_status("idle").await;
+
+    // The same comment written a second time elsewhere is the same call.
+    let copied = with_help(&["    // Need  help here :)"]);
+    client.did_change(URI, &copied, 3).await;
+    client.did_save(URI).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(mock.calls(), 1, "an answered call is not asked again");
+
+    // Removing every copy forgets it; writing it again asks again.
+    client.did_change(URI, &base_text(), 4).await;
+    client.did_change(URI, &with_help(&[]), 5).await;
+    client.did_save(URI).await;
+    let second = client.expect("navigator/remark", &mut seen).await;
+    assert_eq!(second["params"]["text"], "second answer");
+    assert_eq!(mock.calls(), 2);
+}
+
+/// A trigger that is not a call for help still supersedes the remark in
+/// flight, and help remarks get three tool rounds, ordinary ones two.
+#[tokio::test(start_paused = true)]
+async fn an_ordinary_trigger_still_supersedes_a_help_remark_and_tool_rounds_differ() {
+    let gate = Arc::new(CancellationToken::new());
+    let mock = MockCommenter::gated(
+        vec![Answer::Remark(1, "help"), Answer::Remark(0, "ordinary")],
+        gate.clone(),
+    );
+    let mut client = Nav::start(mock.clone()).await;
+    client.open_base().await;
+    client.did_change(URI, &with_help(&[]), 2).await;
+    client.did_save(URI).await;
+    client.expect_status("thinking").await;
+
+    // The comment is rewritten away and plain lines are added: not a call
+    // for help, so it supersedes the help remark.
+    let plain = [
+        "fn main() {",
+        "    let x = 1;",
+        "    let y = 2;",
+        "    println!(\"{x}-{y}\");",
+        "}",
+    ]
+    .join("\n");
+    client.did_change(URI, &plain, 3).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(mock.calls(), 2, "the ordinary trigger asked for its own");
+    assert_eq!(mock.tool_rounds(), vec![3, 2]);
+
+    gate.cancel();
+    let mut seen = Vec::new();
+    let remark = client.expect("navigator/remark", &mut seen).await;
+    assert_eq!(remark["params"]["text"], "ordinary");
+    assert!(delivered(&client).iter().any(|(d, _)| d == "cancelled"));
+}

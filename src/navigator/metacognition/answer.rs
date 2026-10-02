@@ -52,6 +52,21 @@ pub fn parse_answer(raw: &str) -> ParsedAnswer {
     }
 }
 
+/// Spellings of a tool call written as plain text: DeepSeek's markup, the
+/// common XML wrappers and the OpenAI JSON key.
+const TOOL_MARKUP: [&str; 4] = ["DSML", "<tool_call>", "<function_calls>", "\"tool_calls\""];
+
+/// True when a round that offered no tools ended with a tool call where the
+/// answer belongs: the provider returned tool calls anyway (and no text), or
+/// the text is not a valid answer and holds tool-call markup.
+pub fn tool_attempt_instead_of_answer(msg: &crate::provider::AssistantMessage) -> bool {
+    if !msg.tool_calls.is_empty() && msg.text.trim().is_empty() {
+        return true;
+    }
+    let attempted = !msg.tool_calls.is_empty() || TOOL_MARKUP.iter().any(|m| msg.text.contains(m));
+    attempted && matches!(parse_answer(&msg.text), ParsedAnswer::Malformed)
+}
+
 /// Extracts the innermost balanced JSON object from prose / code fences.
 fn extract_json(raw: &str) -> Option<&str> {
     let trimmed = raw.trim();

@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::navigator::document::reanchor_line;
 use crate::navigator::log::{excerpt, DeliveryOutcome, LogRecord, PendingTrigger};
 use crate::navigator::lsp::protocol::{RemarkNotification, RemarkParams};
-use crate::navigator::metacognition::RemarkContext;
+use crate::navigator::metacognition::{RemarkContext, HELP_TOOL_ROUNDS, REMARK_TOOL_ROUNDS};
 use crate::navigator::pipeline::TriggerKind;
 use crate::navigator::ports::ModelError;
 use crate::navigator::WakeOutcome;
@@ -35,7 +35,10 @@ impl Runtime {
         // answer was about text that is gone); from here typing no longer
         // cancels: the remark request runs on its own handle, which only a
         // newer remark for the document or a close cancels.
-        let Some(cancel) = self.begin_remark(&uri, &instinct_cancel).await else {
+        let Some(cancel) = self
+            .begin_remark(&uri, &instinct_cancel, &ctx.help_calls)
+            .await
+        else {
             pending.finish(&self.log, DeliveryOutcome::Cancelled { reason: None });
             return;
         };
@@ -53,6 +56,11 @@ impl Runtime {
             prompt: Some(prompt),
             workspace: self.workspace.lock().await.clone(),
             open_buffers: self.documents.lock().await.open_buffers(),
+            tool_rounds: if ctx.called_for_help {
+                HELP_TOOL_ROUNDS
+            } else {
+                REMARK_TOOL_ROUNDS
+            },
         };
         let started = Instant::now();
         let result = tokio::select! {
@@ -87,6 +95,7 @@ impl Runtime {
                             reanchor_line(&ctx.text, &doc.text, remark.line)
                         }?;
                         doc.last_remark = Some(Instant::now());
+                        doc.help.answer(&ctx.help_calls);
                         // A conversation remark considered no diff.
                         if ctx.event != TriggerKind::Conversation.as_str() {
                             doc.rebase_to(&ctx.text);
@@ -158,6 +167,11 @@ impl Runtime {
                     if let Some(doc) = state.get_mut(&uri) {
                         doc.rebase_to(&ctx.text);
                     }
+                }
+                // The model judged the call and had nothing to say: asking
+                // again about the same comment would get the same silence.
+                if let Some(doc) = self.documents.lock().await.get_mut(&uri) {
+                    doc.help.answer(&ctx.help_calls);
                 }
                 pending.finish(&self.log, DeliveryOutcome::Silent { reason: None });
                 self.set_status("idle", None).await;

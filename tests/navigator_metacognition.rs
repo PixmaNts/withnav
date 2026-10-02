@@ -421,3 +421,236 @@ async fn the_remark_request_is_capped_at_1024_tokens() {
         );
     }
 }
+
+/// Mounts one scripted chat answer per request, in order.
+async fn script_texts(server: &MockServer, texts: &[&str]) {
+    for text in texts {
+        let body = sse_stream(vec![sse_data(&delta_text(text))]);
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+            .up_to_n_times(1)
+            .mount(server)
+            .await;
+    }
+}
+
+fn user_messages(body: &Value) -> Vec<String> {
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "user")
+        .map(|m| m["content"].as_str().unwrap().to_string())
+        .collect()
+}
+
+const DSML_CALL: &str =
+    "<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name=\"read\">path=src/a.rs</｜｜DSML｜｜ invoke>";
+
+// Given a model that keeps calling tools
+// When the final round is reached
+// Then that request, and only that one, ends with the instruction to answer
+//      now in the JSON form.
+#[tokio::test]
+async fn the_final_round_tells_the_model_to_answer_now() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().to_path_buf();
+    std::fs::write(ws.join("a.rs"), "a\n").unwrap();
+    let server = MockServer::start().await;
+    let tool_round = sse_stream(vec![sse_data(&delta_tool_call(
+        "c",
+        "read",
+        &json!({"path": "a.rs"}),
+    ))]);
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(body_partial_json(json!({"tools": [{"type": "function"}]})))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(tool_round, "text/event-stream"))
+        .mount(&server)
+        .await;
+    script_texts(&server, &[r#"{"silent": true}"#]).await;
+
+    let c = commenter(server.uri(), None);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    c.remark(&remark_ctx(&ws, vec![]), &cancel).await.unwrap();
+
+    let bodies = received_bodies(&server).await;
+    assert_eq!(bodies.len(), 3);
+    for body in &bodies[..2] {
+        assert!(
+            !user_messages(body)
+                .iter()
+                .any(|m| m.contains("No more tools")),
+            "tools were still offered: {body}"
+        );
+    }
+    let last = bodies[2]["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(last["role"], "user");
+    let notice = last["content"].as_str().unwrap();
+    assert!(notice.contains("No more tools are available"), "{notice}");
+    assert!(notice.contains("JSON only"), "{notice}");
+    assert!(notice.contains("\"silent\": true"), "{notice}");
+}
+
+// Given a model that writes tool-call markup as its final answer
+// When the metacognition remarks
+// Then it is asked once more, and the valid second answer is the remark.
+#[tokio::test]
+async fn a_tool_attempt_in_the_final_answer_is_asked_again_once() {
+    for leaked in [
+        DSML_CALL,
+        "<tool_call>{\"name\": \"read\"}</tool_call>",
+        "<function_calls><invoke name=\"read\"/></function_calls>",
+        "{\"tool_calls\": [{\"name\": \"read\"}]}",
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = MockServer::start().await;
+        script_texts(&server, &[leaked, r#"{"line": 2, "text": "fine now"}"#]).await;
+
+        let c = commenter(server.uri(), None);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut ctx = remark_ctx(tmp.path(), vec![]);
+        ctx.tool_rounds = 0;
+        let remark = c.remark(&ctx, &cancel).await.unwrap().expect("a remark");
+        assert_eq!(remark.text, "fine now", "{leaked}");
+
+        let bodies = received_bodies(&server).await;
+        assert_eq!(bodies.len(), 2, "{leaked}");
+        for body in &bodies {
+            assert!(body.get("tools").is_none(), "the retry offers no tools");
+        }
+        let retry = user_messages(&bodies[1]);
+        assert_eq!(
+            retry
+                .iter()
+                .filter(|m| m.contains("No more tools are available"))
+                .count(),
+            2,
+            "the instruction is repeated: {retry:?}"
+        );
+    }
+}
+
+// Given a provider that returns tool calls although none were offered
+// When that is the final answer
+// Then it is asked again, and the leaked call is never run.
+#[tokio::test]
+async fn provider_tool_calls_in_the_final_round_are_asked_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().to_path_buf();
+    let server = MockServer::start().await;
+    let leaked = sse_stream(vec![sse_data(&delta_tool_call(
+        "c",
+        "read",
+        &json!({"path": "a.rs"}),
+    ))]);
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(leaked, "text/event-stream"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    script_texts(&server, &[r#"{"silent": true}"#]).await;
+
+    let log_path = ws.join("nav.jsonl");
+    let c = commenter(server.uri(), Some(log_path.clone()));
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let mut ctx = remark_ctx(&ws, vec![]);
+    ctx.tool_rounds = 0;
+    assert!(c.remark(&ctx, &cancel).await.unwrap().is_none());
+    assert_eq!(received_bodies(&server).await.len(), 2);
+    let tools_run = NavLog::new(&log_path)
+        .read_all()
+        .iter()
+        .filter(|r| r["layer"] == "metacognition_tool")
+        .count();
+    assert_eq!(tools_run, 0, "a leaked call is not executed");
+}
+
+// Given a model that tries a tool in both final answers
+// When the metacognition remarks
+// Then the result is `Malformed`, after exactly one retry.
+#[tokio::test]
+async fn two_tool_attempts_in_a_row_are_malformed() {
+    use rust_agent::navigator::ports::ModelError;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    script_texts(&server, &[DSML_CALL, DSML_CALL, r#"{"silent": true}"#]).await;
+
+    let c = commenter(server.uri(), None);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let mut ctx = remark_ctx(tmp.path(), vec![]);
+    ctx.tool_rounds = 0;
+    match c.remark(&ctx, &cancel).await {
+        Err(ModelError::Malformed(raw)) => assert!(raw.contains("DSML"), "{raw}"),
+        other => panic!("expected Malformed, got {other:?}"),
+    }
+    assert_eq!(
+        received_bodies(&server).await.len(),
+        2,
+        "one retry, not more"
+    );
+}
+
+// Given plain prose with no tool markup as the final answer
+// When the metacognition remarks
+// Then it is malformed at once, without a retry.
+#[tokio::test]
+async fn prose_without_tool_markup_is_not_retried() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    script_texts(&server, &["just prose", r#"{"silent": true}"#]).await;
+
+    let c = commenter(server.uri(), None);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    assert!(c
+        .remark(&remark_ctx(tmp.path(), vec![]), &cancel)
+        .await
+        .is_err());
+    assert_eq!(received_bodies(&server).await.len(), 1);
+}
+
+// Given a model that keeps calling tools
+// When the context allows the help-call number of tool rounds, or the
+//      ordinary one
+// Then the help call gets three rounds with tools, an ordinary remark two.
+#[tokio::test]
+async fn a_help_remark_gets_three_tool_rounds_and_an_ordinary_one_two() {
+    use rust_agent::navigator::metacognition::{HELP_TOOL_ROUNDS, REMARK_TOOL_ROUNDS};
+
+    assert_eq!((HELP_TOOL_ROUNDS, REMARK_TOOL_ROUNDS), (3, 2));
+    for (rounds, expected_requests) in [(HELP_TOOL_ROUNDS, 4), (REMARK_TOOL_ROUNDS, 3)] {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().to_path_buf();
+        std::fs::write(ws.join("a.rs"), "a\n").unwrap();
+        let server = MockServer::start().await;
+        let tool_round = sse_stream(vec![sse_data(&delta_tool_call(
+            "c",
+            "read",
+            &json!({"path": "a.rs"}),
+        ))]);
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_partial_json(json!({"tools": [{"type": "function"}]})))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(tool_round, "text/event-stream"))
+            .mount(&server)
+            .await;
+        script_texts(&server, &[r#"{"silent": true}"#]).await;
+
+        let c = commenter(server.uri(), None);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut ctx = remark_ctx(&ws, vec![]);
+        ctx.tool_rounds = rounds;
+        c.remark(&ctx, &cancel).await.unwrap();
+        let bodies = received_bodies(&server).await;
+        assert_eq!(bodies.len(), expected_requests, "rounds {rounds}");
+        assert!(bodies.last().unwrap().get("tools").is_none());
+    }
+}

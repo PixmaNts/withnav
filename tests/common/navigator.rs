@@ -81,6 +81,7 @@ pub enum RemarkAnswer {
 pub struct ScriptedCommenter {
     answers: Arc<Mutex<Vec<RemarkAnswer>>>,
     calls: Arc<Mutex<usize>>,
+    tool_rounds: Arc<Mutex<Vec<usize>>>,
     gate: Option<Arc<CancellationToken>>,
 }
 
@@ -103,12 +104,17 @@ impl ScriptedCommenter {
     pub fn calls(&self) -> usize {
         *self.calls.lock().unwrap()
     }
+
+    /// The tool rounds each call was allowed, in call order.
+    pub fn tool_rounds(&self) -> Vec<usize> {
+        self.tool_rounds.lock().unwrap().clone()
+    }
 }
 
 impl Metacognition for ScriptedCommenter {
     fn remark<'a>(
         &'a self,
-        _ctx: &'a RemarkContext,
+        ctx: &'a RemarkContext,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<Option<Remark>, ModelError>> {
         Box::pin(async move {
@@ -116,6 +122,7 @@ impl Metacognition for ScriptedCommenter {
             // still consumes its answer (it is discarded), like a real LLM
             // request whose tokens are thrown away.
             *self.calls.lock().unwrap() += 1;
+            self.tool_rounds.lock().unwrap().push(ctx.tool_rounds);
             let answer = {
                 let mut answers = self.answers.lock().unwrap();
                 if answers.is_empty() {

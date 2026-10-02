@@ -528,3 +528,24 @@ impl Drop for CuttableProxy {
         self.accept.abort();
     }
 }
+
+/// Points the model resolution saved on session `id` at `endpoint`, so a
+/// resume against another scripted provider is not refused as a moved
+/// endpoint.
+pub fn move_saved_endpoint(db: &Path, id: &str, endpoint: &str) {
+    let conn = rusqlite::Connection::open(db).expect("open history db");
+    let raw: String = conn
+        .query_row(
+            "SELECT model_resolution FROM sessions WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .expect("saved resolution");
+    let mut saved: serde_json::Value = serde_json::from_str(&raw).expect("resolution json");
+    saved["endpoint"] = json!(endpoint);
+    conn.execute(
+        "UPDATE sessions SET model_resolution = ?2 WHERE id = ?1",
+        rusqlite::params![id, saved.to_string()],
+    )
+    .expect("move the saved endpoint");
+}

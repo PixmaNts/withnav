@@ -255,23 +255,7 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
     // The two scripted providers listen on different ports, and a resume
     // refuses another endpoint: the stored row is moved to the second one so
     // this test stays about what a resume replays.
-    {
-        let conn = rusqlite::Connection::open(&db).expect("open history db");
-        let raw: String = conn
-            .query_row(
-                "SELECT model_resolution FROM sessions WHERE id = ?1",
-                [&id],
-                |r| r.get(0),
-            )
-            .expect("saved resolution");
-        let mut saved: Value = serde_json::from_str(&raw).expect("resolution json");
-        saved["endpoint"] = json!(mock2.url);
-        conn.execute(
-            "UPDATE sessions SET model_resolution = ?2 WHERE id = ?1",
-            rusqlite::params![id, saved.to_string()],
-        )
-        .expect("move the saved endpoint");
-    }
+    common::server::move_saved_endpoint(&db, &id, &mock2.url);
     // The resume keys on the STORED row (workspace/model/profile are the
     // stored ones); the request's workspace only guides models.json lookup.
     let (resumed_id, resumed) = state2

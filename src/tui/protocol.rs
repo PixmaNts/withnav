@@ -167,6 +167,10 @@ pub enum Effect {
     Send(SubmitRequest),
     Stop(String),
     Quit,
+    /// Clears the editor if it still holds the text sent at `revision`.
+    ClearEditor {
+        revision: u64,
+    },
 }
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("protocol error: {0}")]

@@ -153,7 +153,35 @@ pub struct ApiErrorBody {
 }
 
 pub fn build_client(provider: &ProviderConfig) -> Result<reqwest::Client, ProviderError> {
+    build_client_with(provider, reqwest::redirect::Policy::default())
+}
+
+/// A client that follows only same-origin redirects (same scheme, host and
+/// port, at most three), so credentials and custom headers never reach
+/// another origin.
+fn build_same_origin_client(provider: &ProviderConfig) -> Result<reqwest::Client, ProviderError> {
+    build_client_with(
+        provider,
+        reqwest::redirect::Policy::custom(|attempt| {
+            let same = attempt
+                .previous()
+                .last()
+                .is_some_and(|p| p.origin() == attempt.url().origin());
+            if same && attempt.previous().len() <= 3 {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }),
+    )
+}
+
+fn build_client_with(
+    provider: &ProviderConfig,
+    redirect: reqwest::redirect::Policy,
+) -> Result<reqwest::Client, ProviderError> {
     reqwest::Client::builder()
+        .redirect(redirect)
         .connect_timeout(Duration::from_millis(provider.connect_timeout_ms))
         // Total deadline covering send and body: the configured
         // request_timeout_ms must actually be applied to the client.
@@ -191,6 +219,7 @@ pub fn build_request(
 #[derive(Default)]
 pub struct ClientCache {
     clients: std::sync::Mutex<std::collections::HashMap<(String, u64, u64), reqwest::Client>>,
+    same_origin: std::sync::Mutex<std::collections::HashMap<(String, u64, u64), reqwest::Client>>,
 }
 
 impl ClientCache {
@@ -217,6 +246,27 @@ impl ClientCache {
             return Ok(c.clone());
         }
         let built = build_client(provider)?;
+        clients.insert(key, built.clone());
+        Ok(built)
+    }
+
+    /// [`Self::get`] for a client that never follows a redirect to another
+    /// origin (see [`build_same_origin_client`]).
+    pub fn get_same_origin(
+        &self,
+        provider_name: &str,
+        provider: &ProviderConfig,
+    ) -> Result<reqwest::Client, ProviderError> {
+        let key = (
+            provider_name.to_string(),
+            provider.connect_timeout_ms,
+            provider.request_timeout_ms,
+        );
+        let mut clients = self.same_origin.lock().expect("client cache poisoned");
+        if let Some(c) = clients.get(&key) {
+            return Ok(c.clone());
+        }
+        let built = build_same_origin_client(provider)?;
         clients.insert(key, built.clone());
         Ok(built)
     }

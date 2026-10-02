@@ -1,5 +1,6 @@
 use super::*;
 use crate::provider::config::{ModelConfig, ProviderConfig, ReasoningHistory};
+use std::time::Instant;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -260,4 +261,369 @@ async fn the_list_is_fetched_once_and_then_served_from_the_cache() {
             .unwrap();
     }
     assert_eq!(requests(&server).await, 1);
+}
+
+// ---- fetch hardening ----
+
+const OPUS: &str = "cc/claude-opus-5-5";
+
+fn cache_path(catalog: &ModelCatalog, base: &str) -> PathBuf {
+    catalog.file(&endpoint_key(base)).expect("data dir")
+}
+
+/// Writes a cache file for `base` fetched `age` seconds ago.
+fn seed(catalog: &ModelCatalog, base: &str, age: u64, id: &str, limits: Limits) {
+    let path = cache_path(catalog, base);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let file = CacheFile {
+        version: 1,
+        fetched_at: now() - age,
+        models: HashMap::from([(id.to_string(), limits)]),
+    };
+    std::fs::write(path, serde_json::to_vec(&file).unwrap()).unwrap();
+}
+
+fn limits(context: u64) -> Limits {
+    Limits {
+        context_length: Some(context),
+        max_input_tokens: None,
+        max_output_tokens: None,
+    }
+}
+
+async fn lookup(catalog: &ModelCatalog, base: &str, model: &str) -> CatalogData {
+    let r = resolved(base, model, ApiKind::Chat, None);
+    catalog.lookup(&r, "key", &ClientCache::new()).await
+}
+
+#[tokio::test]
+async fn concurrent_resolutions_make_one_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(FIXTURE.to_string(), "application/json")
+                .set_delay(Duration::from_millis(300)),
+        )
+        .mount(&server)
+        .await;
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let base = format!("{}/v1", server.uri());
+    let calls = (0..8).map(|_| lookup(&catalog, &base, OPUS));
+    let all = futures_util::future::join_all(calls).await;
+    assert!(all
+        .iter()
+        .all(|d| d.limits.as_ref().and_then(|l| l.context_length) == Some(1_000_000)));
+    assert_eq!(requests(&server).await, 1);
+}
+
+#[tokio::test]
+async fn concurrent_resolutions_share_one_failed_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(500).set_delay(Duration::from_millis(200)))
+        .mount(&server)
+        .await;
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let base = format!("{}/v1", server.uri());
+    let calls = (0..5).map(|_| lookup(&catalog, &base, OPUS));
+    let all = futures_util::future::join_all(calls).await;
+    assert!(all.iter().all(|d| d.limits.is_none() && d.error.is_some()));
+    assert_eq!(requests(&server).await, 1);
+}
+
+#[tokio::test]
+async fn a_cache_past_the_ttl_is_refreshed() {
+    let (dir, server) = (tempfile::tempdir().unwrap(), serve(FIXTURE).await);
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let base = format!("{}/v1", server.uri());
+    seed(&catalog, &base, TTL + 10, OPUS, limits(200_000));
+    let d = lookup(&catalog, &base, OPUS).await;
+    assert_eq!(d.limits.unwrap().context_length, Some(1_000_000));
+    assert!(!d.stale);
+    assert_eq!(requests(&server).await, 1);
+    // The refreshed file is fresh: no second request.
+    lookup(&catalog, &base, OPUS).await;
+    assert_eq!(requests(&server).await, 1);
+}
+
+#[tokio::test]
+async fn a_cache_inside_the_ttl_is_not_refreshed() {
+    let (dir, server) = (tempfile::tempdir().unwrap(), serve(FIXTURE).await);
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let base = format!("{}/v1", server.uri());
+    seed(&catalog, &base, TTL - 100, OPUS, limits(200_000));
+    let d = lookup(&catalog, &base, OPUS).await;
+    assert_eq!(d.limits.unwrap().context_length, Some(200_000));
+    assert_eq!(requests(&server).await, 0);
+}
+
+#[tokio::test]
+async fn failure_after_expiry_keeps_the_values_stale_with_age_and_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let base = format!("{}/v1", server.uri());
+    seed(&catalog, &base, TTL + 600, OPUS, limits(400_000));
+    let r = resolved(&base, OPUS, ApiKind::Chat, None);
+    let chat = resolve_chat(&catalog, &r, "key", &ClientCache::new())
+        .await
+        .unwrap();
+    assert_eq!(chat.window, 400_000);
+    assert!(chat.stale);
+    assert!(chat.stale_age_secs.unwrap() >= TTL + 600);
+    let error = chat.refresh_error.unwrap();
+    assert!(error.contains("503"), "{error}");
+    // The old file is kept as it was.
+    assert!(read_cache(&cache_path(&catalog, &base)).is_some());
+}
+
+#[tokio::test]
+async fn a_failure_with_nothing_cached_has_no_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let d = lookup(&catalog, &format!("{}/v1", server.uri()), OPUS).await;
+    assert!(d.limits.is_none() && !d.stale && d.error.is_some());
+}
+
+#[tokio::test]
+async fn an_oversized_body_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let padding = "x".repeat(2_100_000);
+    let body = format!(r#"{{"data":[{{"id":"{OPUS}","context_length":5,"note":"{padding}"}}]}}"#);
+    let server = serve(&body).await;
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let d = lookup(&catalog, &format!("{}/v1", server.uri()), OPUS).await;
+    assert!(d.limits.is_none());
+    assert!(d.error.unwrap().contains("exceeds 2 MB"));
+}
+
+#[tokio::test]
+async fn a_list_with_too_many_entries_is_rejected() {
+    let entries = (0..=MAX_ENTRIES)
+        .map(|i| format!(r#"{{"id":"m{i}"}}"#))
+        .collect::<Vec<_>>()
+        .join(",");
+    assert!(parse_models(format!(r#"{{"data":[{entries}]}}"#).as_bytes()).is_err());
+}
+
+#[tokio::test]
+async fn a_slow_endpoint_hits_the_deadline_and_keeps_stale_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
+        .mount(&server)
+        .await;
+    let mut catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    catalog.deadline = Duration::from_millis(200);
+    let base = format!("{}/v1", server.uri());
+    seed(&catalog, &base, TTL + 1, OPUS, limits(300_000));
+    let started = Instant::now();
+    let d = lookup(&catalog, &base, OPUS).await;
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(d.stale);
+    assert_eq!(d.limits.unwrap().context_length, Some(300_000));
+    assert!(d.error.unwrap().contains("deadline"));
+}
+
+#[tokio::test]
+async fn a_cross_origin_redirect_is_not_followed_with_the_bearer() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = serve(FIXTURE).await;
+    let origin = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("location", format!("{}/v1/models", target.uri()).as_str()),
+        )
+        .mount(&origin)
+        .await;
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let base = format!("{}/v1", origin.uri());
+    let d = lookup(&catalog, &base, OPUS).await;
+    assert!(d.limits.is_none());
+    assert!(d.error.unwrap().contains("another origin"));
+    assert_eq!(
+        requests(&origin).await,
+        1,
+        "the origin was asked, with the key"
+    );
+    assert_eq!(
+        requests(&target).await,
+        0,
+        "the redirect target was never contacted"
+    );
+}
+
+#[tokio::test]
+async fn a_same_origin_redirect_is_followed() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "/v1/list"))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/list"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(FIXTURE.to_string(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let d = lookup(&catalog, &format!("{}/v1", server.uri()), OPUS).await;
+    assert_eq!(d.limits.unwrap().context_length, Some(1_000_000));
+}
+
+#[tokio::test]
+async fn a_corrupt_cache_file_is_ignored_and_rewritten() {
+    let (dir, server) = (tempfile::tempdir().unwrap(), serve(FIXTURE).await);
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let base = format!("{}/v1", server.uri());
+    let file = cache_path(&catalog, &base);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, b"{ not json").unwrap();
+    let d = lookup(&catalog, &base, OPUS).await;
+    assert_eq!(d.limits.unwrap().context_length, Some(1_000_000));
+    assert_eq!(requests(&server).await, 1);
+    let rewritten = read_cache(&file).expect("valid file after the refresh");
+    assert_eq!(rewritten.version, 1);
+}
+
+#[tokio::test]
+async fn an_unwritable_cache_dir_degrades_to_memory_with_one_warning() {
+    let (dir, server) = (tempfile::tempdir().unwrap(), serve(FIXTURE).await);
+    // The data dir is a regular file: no directory can be created in it.
+    let blocker = dir.path().join("data");
+    std::fs::write(&blocker, b"x").unwrap();
+    let catalog = ModelCatalog::new(Some(blocker));
+    let base = format!("{}/v1", server.uri());
+    let first = lookup(&catalog, &base, OPUS).await;
+    assert_eq!(first.limits.unwrap().context_length, Some(1_000_000));
+    // Served from memory: no second request.
+    let second = lookup(&catalog, &base, "typesafe/jev-1.13").await;
+    assert_eq!(second.limits.unwrap().max_input_tokens, Some(64_000));
+    assert_eq!(requests(&server).await, 1);
+}
+
+#[derive(Clone, Default)]
+struct Captured(Arc<Mutex<Vec<u8>>>);
+impl std::io::Write for Captured {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+    type Writer = Captured;
+    fn make_writer(&'a self) -> Captured {
+        self.clone()
+    }
+}
+
+#[test]
+fn an_unwritable_cache_dir_warns_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("data");
+    std::fs::write(&blocker, b"x").unwrap();
+    let catalog = ModelCatalog::new(Some(blocker));
+    let target = dir.path().join("data").join("model-catalog").join("x.json");
+    let file = CacheFile {
+        version: 1,
+        fetched_at: now(),
+        models: HashMap::new(),
+    };
+    let log = Captured::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(log.clone())
+        .with_ansi(false)
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        for _ in 0..3 {
+            catalog.persist(&target, &file);
+        }
+    });
+    let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+    assert_eq!(
+        text.matches("cannot write the model catalog cache").count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn the_cache_file_holds_no_key_or_header() {
+    let (dir, server) = (tempfile::tempdir().unwrap(), serve(FIXTURE).await);
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let base = format!("{}/v1", server.uri());
+    let mut r = resolved(&base, OPUS, ApiKind::Chat, None);
+    r.provider
+        .headers
+        .insert("x-private".into(), "header-secret-value".into());
+    catalog
+        .lookup(&r, "sk-secret-key-123", &ClientCache::new())
+        .await;
+    let sent = &server.received_requests().await.unwrap()[0];
+    assert_eq!(
+        sent.headers.get("authorization").unwrap().to_str().unwrap(),
+        "Bearer sk-secret-key-123",
+        "the key is sent..."
+    );
+    let raw = std::fs::read_to_string(cache_path(&catalog, &base)).unwrap();
+    assert!(!raw.contains("sk-secret-key-123"), "...but never stored");
+    assert!(!raw.contains("header-secret-value"));
+    assert!(!raw.to_lowercase().contains("authorization"));
+    let names = std::fs::read_dir(cache_path(&catalog, &base).parent().unwrap())
+        .unwrap()
+        .count();
+    assert_eq!(names, 1, "no temporary file is left behind");
+}
+
+#[tokio::test]
+async fn null_or_malformed_fields_keep_the_previous_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let body = r#"{"data":[{"id":"m","context_length":null,"max_input_tokens":"lots","max_output_tokens":4096}]}"#;
+    let server = serve(body).await;
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let base = format!("{}/v1", server.uri());
+    seed(
+        &catalog,
+        &base,
+        TTL + 1,
+        "m",
+        Limits {
+            context_length: Some(500_000),
+            max_input_tokens: Some(400_000),
+            max_output_tokens: Some(1_000),
+        },
+    );
+    let d = lookup(&catalog, &base, "m").await;
+    let l = d.limits.unwrap();
+    assert_eq!(l.context_length, Some(500_000), "null keeps the old value");
+    assert_eq!(l.max_input_tokens, Some(400_000), "malformed keeps it too");
+    assert_eq!(
+        l.max_output_tokens,
+        Some(4_096),
+        "a valid new value replaces"
+    );
+    assert_eq!(requests(&server).await, 1);
+    let saved = read_cache(&cache_path(&catalog, &base)).unwrap();
+    assert_eq!(saved.models["m"].context_length, Some(500_000));
 }

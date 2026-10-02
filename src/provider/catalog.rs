@@ -12,19 +12,28 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio_util::sync::CancellationToken;
 
 const TTL: u64 = 86_400;
 const MAX_ENTRIES: usize = 10_000;
+const FETCH_DEADLINE: Duration = Duration::from_secs(3);
+/// After a failed refresh the endpoint is not asked again for this long, so
+/// callers queued behind the failure do not each repeat it.
+const FAILURE_BACKOFF: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Limits {
     pub context_length: Option<u64>,
     pub max_input_tokens: Option<u64>,
     pub max_output_tokens: Option<u64>,
 }
+/// What is written to `<data_dir>/model-catalog/<endpoint hash>.json`:
+/// limits by model id and when they were fetched. Never a key or a header.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CacheFile {
     version: u32,
@@ -34,24 +43,66 @@ struct CacheFile {
 #[derive(Debug, Clone)]
 pub struct CatalogData {
     pub limits: Option<Limits>,
+    /// The values are past the 24 h TTL (a refresh failed or has not run).
     pub stale: bool,
     pub age_seconds: Option<u64>,
+    /// Why the last refresh failed: short, no secrets.
     pub error: Option<String>,
 }
-#[derive(Clone, Default, Debug)]
+/// One endpoint: the lock that makes its refresh single-flight, and what
+/// this process knows beyond the file (it is all there is when the cache
+/// directory cannot be written).
+#[derive(Debug, Default)]
+struct Endpoint {
+    flight: tokio::sync::Mutex<()>,
+    mem: Mutex<Mem>,
+}
+impl Endpoint {
+    fn error(&self) -> Option<String> {
+        self.mem
+            .lock()
+            .expect("catalog state poisoned")
+            .error
+            .clone()
+    }
+}
+#[derive(Debug, Default)]
+struct Mem {
+    cache: Option<CacheFile>,
+    error: Option<String>,
+    failed_at: Option<Instant>,
+}
+#[derive(Clone, Debug)]
 pub struct ModelCatalog {
-    locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    endpoints: Arc<Mutex<HashMap<String, Arc<Endpoint>>>>,
     data_dir: Option<PathBuf>,
+    deadline: Duration,
+    write_failures: Arc<AtomicUsize>,
+}
+impl Default for ModelCatalog {
+    fn default() -> Self {
+        Self::new(None)
+    }
 }
 impl ModelCatalog {
     pub fn new(data_dir: Option<PathBuf>) -> Self {
         Self {
-            locks: Arc::default(),
+            endpoints: Arc::default(),
             data_dir,
+            deadline: FETCH_DEADLINE,
+            write_failures: Arc::default(),
         }
     }
     pub fn system() -> Self {
         Self::new(paths::data_dir())
+    }
+    fn endpoint(&self, key: &str) -> Arc<Endpoint> {
+        self.endpoints
+            .lock()
+            .expect("catalog endpoints poisoned")
+            .entry(key.to_string())
+            .or_default()
+            .clone()
     }
     fn file(&self, endpoint: &str) -> Option<PathBuf> {
         let key = format!(
@@ -65,104 +116,186 @@ impl ModelCatalog {
             .as_ref()
             .map(|d| d.join("model-catalog").join(format!("{key}.json")))
     }
-    /// What the cache file holds for this model, whatever its age; never
-    /// touches the network. `stale` says the entry is past the TTL.
+    /// The newest of the file and this process's copy. A corrupt or
+    /// unknown-version file counts as absent.
+    fn current(&self, ep: &Endpoint, path: Option<&Path>) -> Option<CacheFile> {
+        let file = path.and_then(read_cache);
+        let mem = ep.mem.lock().expect("catalog state poisoned").cache.clone();
+        match (file, mem) {
+            (Some(f), Some(m)) => Some(if m.fetched_at > f.fetched_at { m } else { f }),
+            (f, m) => f.or(m),
+        }
+    }
+    /// What is known for this model, whatever its age; never touches the
+    /// network. `stale` says the entry is past the TTL.
     pub fn cached(&self, resolved: &ResolvedModel) -> CatalogData {
-        let endpoint = resolved.provider.base_url.trim_end_matches('/');
-        let old = self.file(endpoint).as_deref().and_then(read_cache);
+        let endpoint = endpoint_key(&resolved.provider.base_url);
+        let ep = self.endpoint(&endpoint);
+        let old = self.current(&ep, self.file(&endpoint).as_deref());
         let age = old.as_ref().map(|c| now().saturating_sub(c.fetched_at));
+        let error = ep.error();
         CatalogData {
             limits: old
                 .as_ref()
                 .and_then(|c| c.models.get(&resolved.model.model).cloned()),
             stale: age.is_some_and(|a| a >= TTL),
             age_seconds: age,
-            error: None,
+            error,
         }
     }
+    /// The model's limits, refreshing the endpoint's list when the cache is
+    /// missing or past the TTL. Concurrent callers share one request; a
+    /// failed refresh returns the last known values marked stale.
     pub async fn lookup(
         &self,
         resolved: &ResolvedModel,
         key: &str,
         clients: &ClientCache,
     ) -> CatalogData {
-        let endpoint = resolved.provider.base_url.trim_end_matches('/').to_string();
+        let endpoint = endpoint_key(&resolved.provider.base_url);
+        let ep = self.endpoint(&endpoint);
         let path = self.file(&endpoint);
-        let old = path.as_deref().and_then(read_cache);
-        let timestamp = now();
-        if let Some(c) = old
-            .as_ref()
-            .filter(|c| c.version == 1 && timestamp.saturating_sub(c.fetched_at) < TTL)
-        {
-            return CatalogData {
-                limits: c.models.get(&resolved.model.model).cloned(),
-                stale: false,
-                age_seconds: Some(timestamp.saturating_sub(c.fetched_at)),
-                error: None,
-            };
+        let model = &resolved.model.model;
+        if let Some(d) = self.fresh(&ep, path.as_deref(), model) {
+            return d;
         }
-        let lock = {
-            let mut m = self.locks.lock().unwrap();
-            m.entry(endpoint.clone()).or_default().clone()
-        };
-        let _guard = lock.lock().await;
-        let old = path.as_deref().and_then(read_cache);
-        let timestamp = now();
-        if let Some(c) = old
-            .as_ref()
-            .filter(|c| c.version == 1 && timestamp.saturating_sub(c.fetched_at) < TTL)
-        {
-            return CatalogData {
-                limits: c.models.get(&resolved.model.model).cloned(),
-                stale: false,
-                age_seconds: Some(timestamp.saturating_sub(c.fetched_at)),
-                error: None,
-            };
+        let _flight = ep.flight.lock().await;
+        if let Some(d) = self.fresh(&ep, path.as_deref(), model) {
+            return d;
         }
-        let result = async {
-            let client = ModelClient::new(
-                &resolved.provider_name,
-                &resolved.provider,
-                key.into(),
-                clients,
-            )?;
-            let bytes = client
-                .get_json("models", Duration::from_secs(3), &CancellationToken::new())
-                .await?;
-            let models = parse_models(&bytes)?;
-            Ok::<_, ProviderError>(CacheFile {
-                version: 1,
-                fetched_at: timestamp,
-                models,
-            })
-        }
-        .await;
-        match result {
-            Ok(c) => {
-                if let Some(p) = path {
-                    if let Some(parent) = p.parent() {
-                        let _ = std::fs::create_dir_all(parent);
+        let backing_off = ep
+            .mem
+            .lock()
+            .expect("catalog state poisoned")
+            .failed_at
+            .is_some_and(|t| t.elapsed() < FAILURE_BACKOFF);
+        if !backing_off {
+            match self.fetch(resolved, key, clients).await {
+                Ok(fetched) => {
+                    let old = self.current(&ep, path.as_deref());
+                    let file = CacheFile {
+                        version: 1,
+                        fetched_at: now(),
+                        models: merge(old.as_ref(), fetched),
+                    };
+                    // The file is the source of truth; the process keeps its
+                    // own copy only when there is no file to keep it in.
+                    let saved = path.as_ref().is_some_and(|p| self.persist(p, &file));
+                    {
+                        let mut mem = ep.mem.lock().expect("catalog state poisoned");
+                        mem.cache = (!saved).then(|| file.clone());
+                        mem.error = None;
+                        mem.failed_at = None;
                     }
-                    if let Ok(raw) = serde_json::to_vec(&c) {
-                        let _ = std::fs::write(p, raw);
-                    }
+                    return CatalogData {
+                        limits: file.models.get(model).cloned(),
+                        stale: false,
+                        age_seconds: Some(0),
+                        error: None,
+                    };
                 }
-                CatalogData {
-                    limits: c.models.get(&resolved.model.model).cloned(),
-                    stale: false,
-                    age_seconds: Some(0),
-                    error: None,
+                Err(e) => {
+                    let mut mem = ep.mem.lock().expect("catalog state poisoned");
+                    mem.error = Some(short(&e));
+                    mem.failed_at = Some(Instant::now());
                 }
             }
-            Err(e) => CatalogData {
-                limits: old
-                    .as_ref()
-                    .and_then(|c| c.models.get(&resolved.model.model).cloned()),
-                stale: old.is_some(),
-                age_seconds: old.as_ref().map(|c| timestamp.saturating_sub(c.fetched_at)),
-                error: Some(e.to_string()),
-            },
         }
+        let old = self.current(&ep, path.as_deref());
+        let error = ep.error();
+        CatalogData {
+            limits: old.as_ref().and_then(|c| c.models.get(model).cloned()),
+            stale: old.is_some(),
+            age_seconds: old.as_ref().map(|c| now().saturating_sub(c.fetched_at)),
+            error,
+        }
+    }
+    fn fresh(&self, ep: &Endpoint, path: Option<&Path>, model: &str) -> Option<CatalogData> {
+        let c = self.current(ep, path)?;
+        let age = now().saturating_sub(c.fetched_at);
+        (age < TTL).then(|| CatalogData {
+            limits: c.models.get(model).cloned(),
+            stale: false,
+            age_seconds: Some(age),
+            error: None,
+        })
+    }
+    async fn fetch(
+        &self,
+        resolved: &ResolvedModel,
+        key: &str,
+        clients: &ClientCache,
+    ) -> Result<HashMap<String, Limits>, ProviderError> {
+        let client = ModelClient::for_catalog(
+            &resolved.provider_name,
+            &resolved.provider,
+            key.into(),
+            clients,
+        )?;
+        let bytes = client
+            .get_json("models", self.deadline, &CancellationToken::new())
+            .await?;
+        parse_models(&bytes)
+    }
+    /// Writes the cache file atomically. A directory that cannot be written
+    /// leaves the process on its memory copy, with one warning per catalog.
+    /// Returns whether the file was written.
+    fn persist(&self, path: &Path, file: &CacheFile) -> bool {
+        let write = || -> std::io::Result<()> {
+            let raw = serde_json::to_vec(file).map_err(std::io::Error::other)?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+            std::fs::write(&tmp, raw)
+                .and_then(|()| std::fs::rename(&tmp, path))
+                .inspect_err(|_| {
+                    let _ = std::fs::remove_file(&tmp);
+                })
+        };
+        let Err(e) = write() else { return true };
+        if self.write_failures.fetch_add(1, Ordering::SeqCst) == 0 {
+            tracing::warn!(error = %e, "cannot write the model catalog cache; keeping it in memory only");
+        }
+        false
+    }
+}
+/// The endpoint as it is keyed and hashed: no userinfo, query or fragment.
+fn endpoint_key(base_url: &str) -> String {
+    endpoint_without_credentials(base_url)
+}
+/// New values over the previous ones: a limit the provider now reports as
+/// null, zero or malformed keeps the value already known for that model.
+fn merge(old: Option<&CacheFile>, fetched: HashMap<String, Limits>) -> HashMap<String, Limits> {
+    let Some(old) = old else { return fetched };
+    fetched
+        .into_iter()
+        .map(|(id, mut l)| {
+            if let Some(p) = old.models.get(&id) {
+                l.context_length = l.context_length.or(p.context_length);
+                l.max_input_tokens = l.max_input_tokens.or(p.max_input_tokens);
+                l.max_output_tokens = l.max_output_tokens.or(p.max_output_tokens);
+            }
+            (id, l)
+        })
+        .collect()
+}
+/// A short, secret-free reason for a failed refresh. Never the response
+/// body, a URL or a header.
+fn short(e: &ProviderError) -> String {
+    match e {
+        ProviderError::Api {
+            status: 0, message, ..
+        } => message.clone(),
+        ProviderError::Api {
+            status, message, ..
+        } => format!("{message} (HTTP {status})"),
+        ProviderError::MalformedResponse(m) => m.clone(),
+        ProviderError::Http(e) if e.is_timeout() => "request timed out".into(),
+        ProviderError::Http(e) if e.is_connect() => "connection failed".into(),
+        ProviderError::Http(_) => "request failed".into(),
+        ProviderError::Canceled { .. } => "canceled".into(),
+        _ => "refresh failed".into(),
     }
 }
 /// Parses an OpenAI-style `/models` body into limits by id. Zero, null and
@@ -221,7 +354,9 @@ pub(crate) fn parse_models(bytes: &[u8]) -> Result<HashMap<String, Limits>, Prov
     Ok(models)
 }
 fn read_cache(path: &Path) -> Option<CacheFile> {
-    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+    serde_json::from_slice::<CacheFile>(&std::fs::read(path).ok()?)
+        .ok()
+        .filter(|c| c.version == 1)
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -326,6 +461,11 @@ pub struct ResolvedChat {
     pub max_input_tokens: Option<u64>,
     pub reported_output: Option<u64>,
     pub discrepancy: Option<Discrepancy>,
+    /// The discovered values used are past the TTL: the refresh failed.
+    pub stale: bool,
+    pub stale_age_secs: Option<u64>,
+    /// Why the last refresh failed (short, no secrets), if it did.
+    pub refresh_error: Option<String>,
     pub snapshot: ModelResolution,
 }
 /// A chat alias with no window in models.json and none reported by the
@@ -353,14 +493,19 @@ pub async fn resolve_chat(
 ) -> Result<ResolvedChat, NoContextWindow> {
     let is_chat = resolved.model.api == ApiKind::Chat;
     let explicit = resolved.model.context_window.filter(|n| *n > 0);
-    let found = if !is_chat {
+    let data = if !is_chat {
         None
     } else if explicit.is_some() {
-        catalog.cached(resolved).limits
+        Some(catalog.cached(resolved))
     } else {
-        catalog.lookup(resolved, key, clients).await.limits
+        Some(catalog.lookup(resolved, key, clients).await)
     };
-    let limits = found.unwrap_or_default();
+    // Freshness only describes values that came from the provider's list.
+    let used = data.as_ref().filter(|d| d.limits.is_some());
+    let stale = used.is_some_and(|d| d.stale);
+    let stale_age_secs = used.filter(|d| d.stale).and_then(|d| d.age_seconds);
+    let refresh_error = used.and_then(|d| d.error.clone());
+    let limits = data.and_then(|d| d.limits).unwrap_or_default();
     let (window, source) = if let Some(n) = explicit {
         (n, "models.json")
     } else if let Some(n) = limits.context_length {
@@ -418,6 +563,9 @@ pub async fn resolve_chat(
         max_input_tokens,
         reported_output: limits.max_output_tokens,
         discrepancy,
+        stale,
+        stale_age_secs,
+        refresh_error,
         snapshot,
     })
 }

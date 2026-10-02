@@ -197,4 +197,12 @@ mod tests {
         assert!(incarnations.end(id, new), "the current one cleans up");
         assert!(!incarnations.end(id, new), "and only once");
     }
+
+    #[test]
+    fn the_cognition_prompt_keeps_guidance_narrow_and_wakes_as_hypotheses() {
+        assert!(COGNITION_PROMPT.contains("answer the immediate next step"));
+        assert!(COGNITION_PROMPT.contains("Do not run project-wide checks"));
+        assert!(COGNITION_PROMPT.contains("or that the driver looks stuck"));
+        assert!(COGNITION_PROMPT.contains("a hypothesis to check, never an order"));
+    }
 }

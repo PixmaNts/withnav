@@ -30,6 +30,9 @@ requests land in `develop`.
   whether an error lasted across edits.
 - A navigator remark is written faster: it reads at most one extra file before answering (a
   request for help still gets three), and the code it is about is sent once instead of twice.
+- The chat assistant answers a guidance question from the relevant code only, without running
+  project-wide checks or reopening unrelated work, and treats every navigator wake, including
+  "you look stuck", as something to check rather than an order to implement.
 - A comment that calls on the navigator is answered once: saving or pausing again with the same
   comment no longer cancels the answer being written, and the same comment does not ask again until
   it is removed and written anew. Such a call also gets one more round of reading files.

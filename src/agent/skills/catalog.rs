@@ -4,7 +4,7 @@
 use super::Skill;
 
 /// The most estimated tokens (bytes / 4) the message may take.
-pub const MAX_TOKENS: usize = 4096;
+pub const MAX_TOKENS: usize = 8192;
 /// The longest description, in characters.
 pub const MAX_DESCRIPTION_CHARS: usize = 256;
 

@@ -53,6 +53,10 @@ fn help_lists_every_flag() {
     for flag in ["--workspace", "--model", "--session", "--models", "--url"] {
         assert!(help.contains(flag), "{flag} missing from:\n{help}");
     }
+    assert!(
+        help.contains("RUST_AGENT_SERVER_TOKEN"),
+        "the token variable is not documented:\n{help}"
+    );
 }
 
 #[test]

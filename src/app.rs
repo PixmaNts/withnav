@@ -42,14 +42,20 @@ pub fn init_tui_logging() {
 
 #[derive(Args, Debug)]
 pub struct TuiArgs {
+    /// Workspace directory the conversation works in.
     #[arg(long, default_value_os_t = std::env::current_dir().unwrap_or_default())]
     pub workspace: PathBuf,
+    /// Model alias for a new conversation.
     #[arg(long, conflicts_with = "session")]
     pub model: Option<String>,
+    /// Id of a past conversation to resume.
     #[arg(long, conflicts_with = "model")]
     pub session: Option<String>,
+    /// Path of the models file for the embedded server.
     #[arg(long, conflicts_with = "url")]
     pub models: Option<PathBuf>,
+    /// Connect to a running server instead of starting one. If it needs a bearer token, set
+    /// RUST_AGENT_SERVER_TOKEN.
     #[arg(long, conflicts_with = "models")]
     pub url: Option<String>,
 }

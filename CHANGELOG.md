@@ -6,6 +6,17 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- **Terminal client**: `rust-agent tui` starts a private server (or connects to one with `--url`,
+  token in `RUST_AGENT_SERVER_TOKEN`) and opens a chat in the terminal.
+- Streaming chat with reasoning, tool calls with their duration, and the model with the context
+  and session token counts in the status line.
+- A model picker (the choice starts a new conversation), a session list to resume a past
+  conversation, stop, a command palette and a help screen.
+- `GET /v1/models`: the chat models with tools a new session can use, with their context window.
+- `duration_ms` in the metadata of `tool.post_call`.
+
 ## [0.2.0] - 2026-10-01
 
 First usable release: the navigator, a pair-programming assistant in VS Code. The driver keeps the

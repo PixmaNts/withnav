@@ -9,7 +9,7 @@
 
 use std::future::Future;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -91,20 +91,57 @@ impl Tool for SkillTool {
                     ));
                 }
             };
-            Ok(tokio::task::spawn_blocking(move || load(&skill))
+            let roots = self.skills.readable_roots().to_vec();
+            Ok(tokio::task::spawn_blocking(move || load(&skill, &roots))
                 .await
                 .unwrap_or_else(|e| ToolResult::error("skill_unreadable", e.to_string())))
         })
     }
 }
 
-fn load(skill: &Skill) -> ToolResult {
+/// Whether `path` still resolves, right now, to `expected` inside one of the
+/// skill `roots` the snapshot was taken from, and has the wanted kind. The
+/// paths cached at discovery are not trusted: a file, a directory or any
+/// ancestor may have been replaced by a link since.
+fn still_in_place(
+    path: &Path,
+    expected: &Path,
+    roots: &[PathBuf],
+    dir: bool,
+) -> Result<(), String> {
+    let now = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
+    if !roots.iter().any(|root| now.starts_with(root)) {
+        return Err(format!(
+            "it now resolves outside the skill roots, to {}",
+            now.display()
+        ));
+    }
+    if now != expected {
+        return Err(format!("it now resolves to {}", now.display()));
+    }
+    let meta = std::fs::metadata(&now).map_err(|e| e.to_string())?;
+    let right_kind = if dir { meta.is_dir() } else { meta.is_file() };
+    if !right_kind {
+        return Err(if dir {
+            "not a directory"
+        } else {
+            "not a regular file"
+        }
+        .to_string());
+    }
+    Ok(())
+}
+
+fn load(skill: &Skill, roots: &[PathBuf]) -> ToolResult {
     let unreadable = |why: String| {
         ToolResult::error(
             "skill_unreadable",
             format!("cannot read {}: {why}", skill.path.display()),
         )
     };
+    if let Err(why) = still_in_place(&skill.path, &skill.path, roots, false) {
+        return unreadable(why);
+    }
     let limit = frontmatter::MAX_HEADER_BYTES + MAX_BODY_BYTES;
     let mut bytes = Vec::new();
     let read = std::fs::File::open(&skill.path)
@@ -125,6 +162,9 @@ fn load(skill: &Skill) -> ToolResult {
                 skill.path.display()
             ),
         );
+    }
+    if let Err(why) = still_in_place(&skill.base_dir, &skill.base_dir, roots, true) {
+        return unreadable(why);
     }
     let mut resources = Vec::new();
     let mut entries = 0;

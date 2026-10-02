@@ -641,6 +641,90 @@ async fn a_file_that_vanished_or_broke_is_unreadable() {
     );
 }
 
+// Given a skill found at discovery, then its SKILL.md replaced by a link to a
+//       file outside the skill roots
+// When the tool loads it
+// Then it is unreadable and nothing of the outside file is returned
+#[tokio::test]
+async fn a_manifest_replaced_by_an_escaping_link_is_refused() {
+    let fx = fixture();
+    let manifest = add(&fx.home.join(".agents/skills/swap"), "swap", "Swapped.");
+    let skills = load(&fx);
+    let (_, cx) = context(&fx);
+    let outside = fx.home.join("outside.md");
+    fs::write(
+        &outside,
+        "---\nname: swap\ndescription: d\n---\nOUTSIDE SECRET\n",
+    )
+    .unwrap();
+    fs::remove_file(&manifest).unwrap();
+    std::os::unix::fs::symlink(&outside, &manifest).unwrap();
+    let res = call(&skills, "swap", &cx).await;
+    assert_eq!(res.error.expect("error").code, "skill_unreadable");
+    assert!(!res.output.contains("OUTSIDE SECRET"));
+}
+
+// Given a skill, then its directory (and separately an ancestor) replaced by
+//       a link to a place outside the skill roots
+// When the tool loads it
+// Then it is refused
+#[tokio::test]
+async fn a_directory_or_ancestor_replaced_by_an_escaping_link_is_refused() {
+    let fx = fixture();
+    let root = fx.home.join(".agents/skills");
+    add(&root.join("team/one"), "one", "One.");
+    add(&root.join("two"), "two", "Two.");
+    let skills = load(&fx);
+    let (_, cx) = context(&fx);
+
+    let elsewhere = fx.home.join("elsewhere");
+    add(&elsewhere.join("one"), "one", "Planted.");
+    fs::write(elsewhere.join("one/loot.txt"), "x").unwrap();
+    fs::remove_dir_all(root.join("team")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, root.join("team")).unwrap();
+    let res = call(&skills, "one", &cx).await;
+    assert_eq!(res.error.expect("error").code, "skill_unreadable");
+
+    let planted = fx.home.join("planted");
+    add(&planted, "two", "Planted.");
+    fs::remove_dir_all(root.join("two")).unwrap();
+    std::os::unix::fs::symlink(&planted, root.join("two")).unwrap();
+    let res = call(&skills, "two", &cx).await;
+    assert_eq!(res.error.expect("error").code, "skill_unreadable");
+}
+
+// Given a skill whose directory is replaced by a link to another directory
+//       inside the roots
+// When the tool loads it
+// Then it is refused too: the file is no longer the one that was found
+#[tokio::test]
+async fn a_directory_swapped_for_another_one_in_the_roots_is_refused() {
+    let fx = fixture();
+    let root = fx.home.join(".agents/skills");
+    add(&root.join("a"), "a", "A.");
+    add(&root.join("b"), "b", "B.");
+    let skills = load(&fx);
+    let (_, cx) = context(&fx);
+    fs::remove_dir_all(root.join("a")).unwrap();
+    std::os::unix::fs::symlink(root.join("b"), root.join("a")).unwrap();
+    let res = call(&skills, "a", &cx).await;
+    assert_eq!(res.error.expect("error").code, "skill_unreadable");
+}
+
+// Given a SKILL.md that became a directory
+// Then it is unreadable
+#[tokio::test]
+async fn a_manifest_that_is_no_longer_a_file_is_unreadable() {
+    let fx = fixture();
+    let manifest = add(&fx.home.join(".agents/skills/x"), "x", "X.");
+    let skills = load(&fx);
+    let (_, cx) = context(&fx);
+    fs::remove_file(&manifest).unwrap();
+    fs::create_dir(&manifest).unwrap();
+    let res = call(&skills, "x", &cx).await;
+    assert_eq!(res.error.expect("error").code, "skill_unreadable");
+}
+
 // ---- readable roots ----
 
 // Given an actor with a skill in the user's library

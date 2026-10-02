@@ -3,7 +3,7 @@
 //!
 //! Response bodies are FROZEN:
 //! - `GET  /v1/health`        -> `{status:"ok"}`
-//! - `GET  /v1/models?workspace=` -> `{models:[{alias, model, context_window?}], default?}`
+//! - `GET  /v1/models?workspace=` -> `{models:[{alias, model, context_window?, enabled?, disabled_reason?}], default?}`
 //! - `POST /v1/sessions`      -> `{session_id, root_actor_id:"agent:main", actor_state:"idle"}`
 //!   (422 `{"error", "reason":"no_context_window"}` for a chat alias with no known window)
 //! - `GET  /v1/sessions/:id`  -> `{session_id, actor_state, workspace, model, current_seq}`
@@ -331,6 +331,10 @@ pub struct ModelEntry {
     pub alias: String,
     pub model: String,
     pub context_window: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -351,14 +355,31 @@ async fn list_models(
     };
     match state.list_models(std::path::Path::new(workspace)) {
         Ok(entries) => {
-            let models = entries
+            let mut models = entries
                 .into_iter()
                 .map(|(alias, m)| ModelEntry {
                     alias,
                     model: m.model,
                     context_window: m.context_window,
+                    enabled: None,
+                    disabled_reason: None,
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            for entry in &mut models {
+                match state
+                    .resolve_model_metadata(std::path::Path::new(workspace), &entry.alias)
+                    .await
+                {
+                    Ok(resolution) => {
+                        entry.context_window = Some(resolution.window);
+                        entry.enabled = Some(true);
+                    }
+                    Err(error) => {
+                        entry.enabled = Some(false);
+                        entry.disabled_reason = Some(error.to_string());
+                    }
+                }
+            }
             let default = state.default_model(Some("navigator")).map(str::to_string);
             (StatusCode::OK, Json(ModelsBody { models, default })).into_response()
         }

@@ -52,7 +52,7 @@ async fn lists_chat_models_with_tools_only() {
     let body: Value = ok.json().await.expect("models json");
     assert_eq!(
         body["models"],
-        json!([{ "alias": "cognition", "model": "mock-opus", "context_window": 200000 }])
+        json!([{ "alias": "cognition", "model": "mock-opus", "context_window": 200000, "enabled": true }])
     );
     assert_eq!(body["default"], "cognition");
 

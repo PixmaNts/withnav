@@ -308,9 +308,19 @@ fn grep_builtin(pattern: &str, root: &Path) -> Result<ToolResult, ToolError> {
             Err(_) => continue,
         };
         for entry in entries.flatten() {
+            // The kind of the entry itself: a link is neither searched nor
+            // followed, so a link out of a readable root or back to an
+            // ancestor cannot widen or loop the search (as `rg` does by
+            // default). Only the root, already validated, may be a link.
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
             let p = entry.path();
-            if p.is_dir() {
+            if kind.is_dir() {
                 stack.push(p);
+                continue;
+            }
+            if !kind.is_file() {
                 continue;
             }
             let Ok(content) = std::fs::read_to_string(&p) else {
@@ -527,6 +537,84 @@ mod tests {
         std::env::remove_var("NAVAI_FORCE_BUILTIN_GREP");
         assert!(res.output.contains("needle"));
         assert_eq!(res.metadata["engine"], "builtin");
+    }
+
+    // Given a readable root holding a link to a file and a directory outside
+    //       it, and a link back to an ancestor
+    // When the built-in search runs
+    // Then only the real files are searched and the search ends
+    #[test]
+    fn grep_builtin_does_not_follow_links() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::create_dir_all(outside.join("dir")).unwrap();
+        std::fs::write(root.join("sub/real.txt"), "needle real\n").unwrap();
+        std::fs::write(outside.join("secret.txt"), "needle secret\n").unwrap();
+        std::fs::write(outside.join("dir/deep.txt"), "needle deep\n").unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.txt"), root.join("file-link")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("dir-link")).unwrap();
+        std::os::unix::fs::symlink(&root, root.join("sub/back")).unwrap();
+
+        let res = grep_builtin("needle", &root).unwrap();
+        assert!(res.output.contains("needle real"), "{}", res.output);
+        assert!(!res.output.contains("secret"), "{}", res.output);
+        assert!(!res.output.contains("deep"), "{}", res.output);
+        assert_eq!(res.output.lines().count(), 1, "{}", res.output);
+    }
+
+    // Given the tool with the built-in engine forced, a readable root with an
+    //       escaping link, and a link cycle
+    // When it searches the root
+    // Then it ends without reading what the links lead to
+    #[tokio::test]
+    async fn grep_tool_with_the_builtin_engine_ignores_links() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join("a.txt"), "needle inside\n").unwrap();
+        std::fs::write(outside.join("b.txt"), "needle outside\n").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("out")).unwrap();
+        std::os::unix::fs::symlink(&root, root.join("loop")).unwrap();
+        let cx = ToolContext {
+            workspace: root.clone(),
+            writable_roots: Vec::new(),
+            readable_roots: vec![root.clone()],
+        };
+        std::env::set_var("NAVAI_FORCE_BUILTIN_GREP", "1");
+        let res = GrepTool
+            .call(
+                json!({"pattern": "needle", "path": root.to_str().unwrap()}),
+                CancellationToken::new(),
+                &cx,
+            )
+            .await
+            .unwrap();
+        std::env::remove_var("NAVAI_FORCE_BUILTIN_GREP");
+        assert!(res.output.contains("needle inside"), "{}", res.output);
+        assert!(!res.output.contains("outside"), "{}", res.output);
+    }
+
+    // Given a search root that is itself a link to a directory
+    // When the built-in search runs on the validated, canonical root
+    // Then its files are searched
+    #[tokio::test]
+    async fn grep_builtin_searches_a_linked_root_through_validation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("a.txt"), "needle\n").unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let cx = ctx(tmp.path());
+        let resolved = validate_path(&cx.read_roots(), &link).unwrap();
+        assert!(grep_builtin("needle", &resolved)
+            .unwrap()
+            .output
+            .contains("needle"));
     }
 
     #[tokio::test]

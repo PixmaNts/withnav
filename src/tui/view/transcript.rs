@@ -8,6 +8,7 @@ use crate::tui::{
 };
 use ratatui::{
     layout::Rect,
+    style::Modifier,
     text::{Line, Span, Text},
     widgets::{Paragraph, Wrap},
     Frame,
@@ -49,19 +50,24 @@ impl Origin {
     }
 }
 
-fn block_text(block: &Block, ui: &UiState, cache: &mut MarkdownCache, width: u16) -> Text<'static> {
-    let theme = Theme;
+fn block_text(
+    block: &Block,
+    ui: &UiState,
+    theme: &Theme,
+    cache: &mut MarkdownCache,
+    width: u16,
+) -> Text<'static> {
     let expanded = ui.expanded.contains(&block.id);
     let mut lines: Vec<Line<'static>> = Vec::new();
     match &block.kind {
         BlockKind::Message { source, text } => {
             let (name, style) = match Origin::of(source) {
-                Origin::User => ("YOU".to_string(), theme.accent()),
-                Origin::Navigator => ("NAVIGATOR".to_string(), theme.muted()),
-                Origin::Assistant => ("ASSISTANT".to_string(), theme.muted()),
-                Origin::Other => (clean(source), theme.muted()),
+                Origin::User => ("YOU".to_string(), theme.muted()),
+                Origin::Navigator => ("NAVIGATOR".to_string(), theme.error()),
+                Origin::Assistant => ("ASSISTANT".to_string(), theme.accent()),
+                Origin::Other => (clean(source), theme.subagent()),
             };
-            lines.push(Line::styled(name, style));
+            lines.push(Line::styled(name, style.add_modifier(Modifier::BOLD)));
             if Origin::of(source) == Origin::Assistant {
                 let parsed = cache.get(&block.id, 0, width.saturating_sub(2), text);
                 lines.extend(parsed.lines.iter().cloned().map(|line| {
@@ -88,8 +94,9 @@ fn block_text(block: &Block, ui: &UiState, cache: &mut MarkdownCache, width: u16
             if text.is_empty() && thinking.is_empty() {
                 return Text::default();
             }
-            lines.push(Line::styled("ASSISTANT", theme.accent()));
+            lines.push(Line::styled("ASSISTANT", theme.title()));
             if !thinking.is_empty() {
+                let reasoning = theme.muted().add_modifier(Modifier::ITALIC);
                 lines.push(Line::styled(
                     if expanded {
                         "▾ Reasoning"
@@ -102,7 +109,7 @@ fn block_text(block: &Block, ui: &UiState, cache: &mut MarkdownCache, width: u16
                     lines.extend(
                         clean(thinking)
                             .lines()
-                            .map(|line| Line::styled(format!("  {line}"), theme.muted())),
+                            .map(|line| Line::styled(format!("  {line}"), reasoning)),
                     );
                 }
             }
@@ -119,22 +126,28 @@ fn block_text(block: &Block, ui: &UiState, cache: &mut MarkdownCache, width: u16
             }
         }
         BlockKind::ToolCall { .. } => {
-            let mut header = tool::header(&block.kind, ui.tick);
+            let mut header = tool::header(&block.kind, ui.tick, theme);
             header.spans.insert(
                 0,
                 Span::styled(if expanded { "▾ " } else { "▸ " }, theme.muted()),
             );
             lines.push(header);
             if expanded {
-                lines.extend(tool::output(&block.kind));
+                lines.extend(tool::output(&block.kind, theme));
             }
         }
         BlockKind::YieldQuestion(question) => {
-            lines.push(Line::styled("QUESTION · awaiting answer", theme.warning()));
+            lines.push(Line::styled(
+                "QUESTION · awaiting answer",
+                theme.warning().add_modifier(Modifier::BOLD),
+            ));
             lines.extend(clean(question).lines().map(|s| Line::raw(format!(" {s}"))));
         }
         BlockKind::Error(error) => {
-            lines.push(Line::styled("ERROR", theme.error()));
+            lines.push(Line::styled(
+                "ERROR",
+                theme.error().add_modifier(Modifier::BOLD),
+            ));
             lines.extend(
                 clean(error)
                     .lines()
@@ -142,8 +155,15 @@ fn block_text(block: &Block, ui: &UiState, cache: &mut MarkdownCache, width: u16
             );
         }
         BlockKind::Notice(notice) => {
-            lines.push(Line::styled("NOTICE", theme.muted()));
-            lines.extend(clean(notice).lines().map(|s| Line::raw(format!(" {s}"))));
+            lines.push(Line::styled(
+                "NOTICE",
+                theme.muted().add_modifier(Modifier::BOLD),
+            ));
+            lines.extend(
+                clean(notice)
+                    .lines()
+                    .map(|s| Line::styled(format!(" {s}"), theme.muted())),
+            );
         }
     }
     if lines.is_empty() {
@@ -157,6 +177,7 @@ pub fn draw(
     area: Rect,
     state: &State,
     ui: &UiState,
+    theme: &Theme,
     cache: &mut MarkdownCache,
 ) {
     if area.width < 4 || area.height == 0 {
@@ -274,28 +295,40 @@ pub fn draw(
         if height == 0 {
             continue;
         }
-        let text = block_text(block, ui, cache, width);
+        let text = block_text(block, ui, theme, cache, width);
         let skipped = start.saturating_sub(from);
         let top = from.saturating_sub(start);
         let visible = height.saturating_sub(skipped).min(viewport - top);
         let row = area.y + top as u16;
         let selected = ui.selected_block.as_deref() == Some(&block.id);
-        let accent = match block.kind {
-            BlockKind::Error(_) => Theme.error(),
-            BlockKind::YieldQuestion(_) => Theme.warning(),
-            _ => Theme.accent(),
+        let gutter = match &block.kind {
+            BlockKind::Error(_) => theme.error(),
+            BlockKind::YieldQuestion(_) => theme.warning(),
+            BlockKind::Message { source, .. } => match Origin::of(source) {
+                Origin::User => theme.muted(),
+                Origin::Navigator => theme.error(),
+                Origin::Assistant => theme.accent_line(),
+                Origin::Other => theme.subagent(),
+            },
+            BlockKind::Notice(_) | BlockKind::ToolCall { .. } => theme.border(),
+            BlockKind::AssistantStep { .. } => theme.accent_line(),
         };
         if selected {
-            for y in row..row + visible as u16 {
-                for x in area.x..area.right() {
-                    frame.buffer_mut()[(x, y)].set_style(Theme.selected());
-                }
-            }
+            frame.buffer_mut().set_style(
+                Rect::new(area.x, row, area.width, visible as u16),
+                theme.selected(),
+            );
         }
+        // The selected block gets a heavier bar in the accent, whatever its kind.
+        let (bar, gutter) = if selected {
+            ("┃", theme.accent_line())
+        } else {
+            ("│", gutter)
+        };
         for y in row..row + visible as u16 {
             frame.buffer_mut()[(area.x + 1, y)]
-                .set_symbol("│")
-                .set_style(accent);
+                .set_symbol(bar)
+                .set_style(gutter);
         }
         let rect = Rect::new(area.x + 3, row, width, visible as u16);
         frame.render_widget(

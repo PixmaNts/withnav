@@ -5,14 +5,11 @@ use navai::{
         input::{route_key, route_paste, Editor},
         protocol::{Action, ModelEntry, Overlay, SessionListEntry, SessionMetadata},
         state::{Activity, Block, BlockKind, ConnectionStatus, State, UiState},
+        theme::{Theme, ThemeId},
         view::{self, tool, RenderCache},
     },
 };
-use ratatui::{
-    backend::TestBackend,
-    style::{Color, Modifier},
-    Terminal,
-};
+use ratatui::{backend::TestBackend, Terminal};
 
 fn message(id: &str, source: &str, text: &str) -> Block {
     Block {
@@ -168,7 +165,7 @@ fn done_tools_and_reasoning() {
         .buffer()
         .content()
         .iter()
-        .any(|cell| cell.style().add_modifier.contains(Modifier::REVERSED)));
+        .any(|cell| cell.bg == Theme::ayu_dark().selection_bg()));
 }
 #[test]
 fn errors_yield_and_connection() {
@@ -203,7 +200,7 @@ fn errors_yield_and_connection() {
         .buffer()
         .content()
         .iter()
-        .any(|cell| cell.fg == Color::Red));
+        .any(|cell| cell.fg == Theme::ayu_dark().red));
     s.connection = ConnectionStatus::Reconnecting;
     s.activity = Activity::Stopped;
     s.delivery_uncertain = true;
@@ -218,6 +215,7 @@ fn overlays() {
         (Overlay::Sessions, "overlay-sessions"),
         (Overlay::Commands, "overlay-commands"),
         (Overlay::Help, "overlay-help"),
+        (Overlay::Themes, "overlay-themes"),
     ] {
         let ui = UiState {
             overlay: Some(overlay),
@@ -485,4 +483,298 @@ fn tool_only_step_renders_no_assistant_label() {
     let text = buffer_text(&s);
     assert!(!text.contains("ASSISTANT"), "{text}");
     assert!(text.contains("bash"), "{text}");
+}
+
+fn cells(s: &State, ui: &UiState, size: (u16, u16)) -> Terminal<TestBackend> {
+    let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
+    terminal
+        .draw(|f| view::draw(f, s, ui, &Editor::new(), &mut RenderCache::default()))
+        .unwrap();
+    terminal
+}
+
+#[test]
+fn every_theme_paints_its_backgrounds() {
+    let s = done();
+    for id in ThemeId::ALL {
+        let theme = id.palette();
+        let ui = UiState {
+            follow_bottom: true,
+            theme: id,
+            ..UiState::default()
+        };
+        let terminal = cells(&s, &ui, (100, 30));
+        let buffer = terminal.backend().buffer();
+        // Header row on the panel colour, transcript on the main background.
+        assert_eq!(buffer[(50, 0)].bg, theme.panel, "{id:?} header");
+        assert_eq!(buffer[(50, 5)].bg, theme.bg, "{id:?} transcript");
+        assert_eq!(buffer[(50, 29)].bg, theme.panel, "{id:?} key hints");
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .all(|cell| cell.bg != ratatui::style::Color::Reset),
+            "{id:?}: every cell has a theme background"
+        );
+        // The tool summary is a code reference and its duration a number.
+        let row = (0..30)
+            .find(|y| {
+                (0..100)
+                    .map(|x| buffer[(x, *y)].symbol())
+                    .collect::<String>()
+                    .contains("cargo test parser")
+            })
+            .expect("tool row");
+        let line: Vec<_> = (0..100).map(|x| &buffer[(x, row)]).collect();
+        let at = |needle: &str| {
+            let text: String = line.iter().map(|c| c.symbol()).collect();
+            let byte = text.find(needle).unwrap();
+            text[..byte].chars().count()
+        };
+        assert_eq!(line[at("cargo")].fg, theme.blue, "{id:?} code ref");
+        assert_eq!(line[at("1.42")].fg, theme.orange, "{id:?} number");
+    }
+}
+
+#[test]
+fn overlays_sit_on_the_surface_with_an_accent_border() {
+    let s = done();
+    let ui = UiState {
+        overlay: Some(Overlay::Themes),
+        follow_bottom: true,
+        theme: ThemeId::NordLight,
+        ..UiState::default()
+    };
+    let terminal = cells(&s, &ui, (100, 30));
+    let buffer = terminal.backend().buffer();
+    let theme = Theme::nord_light();
+    let corner = buffer
+        .content()
+        .iter()
+        .find(|cell| cell.symbol() == "╭" || cell.symbol() == "┌")
+        .expect("popup corner");
+    assert_eq!(corner.fg, theme.accent);
+    assert!(buffer.content().iter().any(|cell| cell.bg == theme.surface));
+    assert!(buffer
+        .content()
+        .iter()
+        .any(|cell| cell.bg == theme.selection_bg_on_surface()));
+}
+
+#[test]
+fn theme_picker_previews_and_esc_restores() {
+    let s = state();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    let apply = |ui: &mut UiState, action: Option<Action>| {
+        if let Some(action) = action {
+            navai::tui::reducer::handle_action(&mut state(), ui, action)
+        } else {
+            vec![]
+        }
+    };
+    let open = Some(Action::OpenOverlay(Overlay::Themes));
+    apply(&mut ui, open.clone());
+    assert_eq!(ui.selection.get("Themes"), Some(&0));
+    let down = route_key(
+        key(KeyCode::Down, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(down, Some(Action::PreviewTheme(ThemeId::AyuLight)));
+    apply(&mut ui, down);
+    assert_eq!(
+        ui.theme,
+        ThemeId::AyuLight,
+        "the highlighted theme is drawn"
+    );
+    let esc = route_key(
+        key(KeyCode::Esc, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(apply(&mut ui, esc), vec![]);
+    assert_eq!(ui.theme, ThemeId::AyuDark, "esc puts the old theme back");
+    assert_eq!(ui.overlay, None);
+
+    apply(&mut ui, open);
+    for _ in 0..3 {
+        let action = route_key(
+            key(KeyCode::Down, KeyModifiers::NONE),
+            &s,
+            &mut ui,
+            &mut editor,
+        );
+        apply(&mut ui, action);
+    }
+    assert_eq!(ui.theme, ThemeId::NordLight);
+    let enter = route_key(
+        key(KeyCode::Enter, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(enter, Some(Action::PickTheme(ThemeId::NordLight)));
+    assert_eq!(
+        apply(&mut ui, enter),
+        vec![navai::tui::protocol::Effect::SaveTheme(ThemeId::NordLight)]
+    );
+    assert_eq!(ui.theme, ThemeId::NordLight);
+    assert_eq!(ui.overlay, None);
+    assert_eq!(ui.theme_on_open, None);
+}
+
+#[test]
+fn theme_picker_opens_on_the_current_theme_and_the_palette_lists_it() {
+    let mut ui = UiState {
+        theme: ThemeId::NordDark,
+        ..UiState::default()
+    };
+    let mut s = state();
+    navai::tui::reducer::handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Themes));
+    assert_eq!(ui.selection.get("Themes"), Some(&2));
+    // Confirming the theme already in effect saves it again, so a failed save can be retried.
+    assert_eq!(
+        navai::tui::reducer::handle_action(&mut s, &mut ui, Action::PickTheme(ThemeId::NordDark)),
+        vec![navai::tui::protocol::Effect::SaveTheme(ThemeId::NordDark)]
+    );
+    assert_eq!(
+        navai::tui::commands::command_action("/theme", Default::default()),
+        Some(Action::OpenOverlay(Overlay::Themes))
+    );
+}
+
+/// Sends `code` to the open theme picker and applies the action it returns, like the runtime.
+fn theme_key(ui: &mut UiState, code: KeyCode) -> Option<Action> {
+    let s = state();
+    let action = route_key(key(code, KeyModifiers::NONE), &s, ui, &mut Editor::new());
+    if let Some(action) = action.clone() {
+        navai::tui::reducer::handle_action(&mut state(), ui, action);
+    }
+    action
+}
+
+/// The theme the picker highlights, as drawn: the row carrying the `▌` mark.
+fn highlighted_theme(ui: &UiState) -> Option<ThemeId> {
+    let terminal = cells(&state(), ui, (100, 30));
+    let buffer = terminal.backend().buffer();
+    (0..30).find_map(|y| {
+        let row: String = (0..100).map(|x| buffer[(x, y)].symbol()).collect();
+        row.contains('▌')
+            .then(|| ThemeId::ALL.into_iter().find(|t| row.contains(t.id())))
+            .flatten()
+    })
+}
+
+#[test]
+fn theme_filter_previews_the_highlighted_row() {
+    let mut ui = UiState::default();
+    navai::tui::reducer::handle_action(&mut state(), &mut ui, Action::OpenOverlay(Overlay::Themes));
+    // Typing `n` from Ayu Dark: the first match is Nord Dark, and that is what is drawn.
+    assert_eq!(
+        theme_key(&mut ui, KeyCode::Char('n')),
+        Some(Action::PreviewTheme(ThemeId::NordDark))
+    );
+    assert_eq!(ui.theme, ThemeId::NordDark);
+    assert_eq!(highlighted_theme(&ui), Some(ui.theme));
+    theme_key(&mut ui, KeyCode::Char('o'));
+    theme_key(&mut ui, KeyCode::Char('r'));
+    theme_key(&mut ui, KeyCode::Char('d'));
+    theme_key(&mut ui, KeyCode::Char('-'));
+    theme_key(&mut ui, KeyCode::Char('l'));
+    assert_eq!(ui.theme, ThemeId::NordLight);
+    assert_eq!(highlighted_theme(&ui), Some(ThemeId::NordLight));
+    // No match: nothing is highlighted and the theme on screen stays.
+    assert_eq!(theme_key(&mut ui, KeyCode::Char('x')), None);
+    assert_eq!(ui.theme, ThemeId::NordLight);
+    assert_eq!(highlighted_theme(&ui), None);
+    assert_eq!(theme_key(&mut ui, KeyCode::Enter), None, "no row to pick");
+    // Backspace back to `nord-l`, then to `nord-`: the first match is highlighted again.
+    theme_key(&mut ui, KeyCode::Backspace);
+    assert_eq!(ui.theme, ThemeId::NordLight);
+    theme_key(&mut ui, KeyCode::Backspace);
+    assert_eq!(ui.theme, ThemeId::NordDark);
+    assert_eq!(highlighted_theme(&ui), Some(ThemeId::NordDark));
+    assert_eq!(
+        theme_key(&mut ui, KeyCode::Enter),
+        Some(Action::PickTheme(ThemeId::NordDark)),
+        "enter picks the theme that was previewed"
+    );
+}
+
+#[test]
+fn running_tool_label_uses_the_readable_accent() {
+    let mut s = state();
+    let mut block = tool_block(None);
+    if let BlockKind::ToolCall { duration_ms, .. } = &mut block.kind {
+        *duration_ms = None;
+    }
+    s.conversation.blocks = vec![block];
+    let theme = Theme::ayu_light();
+    let ui = UiState {
+        follow_bottom: true,
+        theme: ThemeId::AyuLight,
+        ..UiState::default()
+    };
+    let terminal = cells(&s, &ui, (100, 30));
+    let buffer = terminal.backend().buffer();
+    let (x, y) = (0..30)
+        .find_map(|y| {
+            let row: String = (0..100).map(|x| buffer[(x, y)].symbol()).collect();
+            row.find("running")
+                .map(|byte| (row[..byte].chars().count() as u16, y))
+        })
+        .expect("running label");
+    assert_eq!(buffer[(x, y)].fg, theme.accent_text);
+    let spinner = (0..x)
+        .map(|x| &buffer[(x, y)])
+        .find(|cell| cell.symbol() == "◐" || cell.symbol() == "◓")
+        .expect("spinner");
+    assert_eq!(
+        spinner.fg, theme.accent,
+        "the glyph keeps the bright accent"
+    );
+}
+
+#[test]
+fn markdown_repaints_when_the_theme_changes_and_back() {
+    let mut s = state();
+    s.conversation.blocks = vec![message(
+        "md",
+        "assistant",
+        "## Heading\n\n```rust\nfn main() {}\n```",
+    )];
+    let editor = Editor::new();
+    let mut cache = RenderCache::default();
+    let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+    let mut draw = |id: ThemeId| {
+        let ui = UiState {
+            follow_bottom: true,
+            theme: id,
+            ..UiState::default()
+        };
+        terminal
+            .draw(|f| view::draw(f, &s, &ui, &editor, &mut cache))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let find = |needle: &str| {
+            (0..20)
+                .find_map(|y| {
+                    let row: String = (0..60).map(|x| buffer[(x, y)].symbol()).collect();
+                    row.find(needle)
+                        .map(|byte| buffer[(row[..byte].chars().count() as u16, y)].clone())
+                })
+                .expect(needle)
+        };
+        (find("Heading").fg, find("main").fg, find("main").bg)
+    };
+    let dark = draw(ThemeId::AyuDark);
+    let light = draw(ThemeId::AyuLight);
+    let back = draw(ThemeId::AyuDark);
+    assert_eq!(dark.0, Theme::ayu_dark().accent_text);
+    assert_eq!(light.0, Theme::ayu_light().accent_text);
+    assert_ne!(dark.1, light.1, "code is highlighted with the light scheme");
+    assert_eq!(back, dark, "going back repaints exactly as before");
 }

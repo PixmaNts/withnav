@@ -97,6 +97,7 @@ async fn run_remote(args: TuiArgs, workspace: PathBuf, url: String) -> anyhow::R
         initial_model: args.model,
         initial_session: args.session,
         embedded: false,
+        config_dir: crate::provider::auth::default_config_dir(),
     })
     .await?;
     Ok(())
@@ -124,6 +125,7 @@ async fn run_embedded(args: TuiArgs, workspace: PathBuf) -> anyhow::Result<()> {
         initial_model: args.model,
         initial_session: args.session,
         embedded: true,
+        config_dir: crate::provider::auth::default_config_dir(),
     })
     .await;
     server.stop().await;

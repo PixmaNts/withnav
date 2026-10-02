@@ -19,6 +19,8 @@ pub struct TuiOptions {
     pub initial_model: Option<String>,
     pub initial_session: Option<String>,
     pub embedded: bool,
+    /// Where `config.json` lives; `None` reads and saves no settings.
+    pub config_dir: Option<PathBuf>,
 }
 #[derive(Debug, thiserror::Error)]
 pub enum TuiError {

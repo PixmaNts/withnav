@@ -36,7 +36,8 @@ fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::Submitted { generation, .. }
         | ClientEvent::Stopped { generation, .. }
         | ClientEvent::DeliveryUncertain { generation }
-        | ClientEvent::ProtocolError { generation, .. } => generation,
+        | ClientEvent::ProtocolError { generation, .. }
+        | ClientEvent::SettingsNotSaved { generation, .. } => generation,
     }
 }
 
@@ -197,6 +198,7 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
             );
         }
         ClientEvent::Stopped { .. } => s.activity = Activity::Stopped,
+        ClientEvent::SettingsNotSaved { message, .. } => push_local(s, BlockKind::Notice(message)),
     }
     Ok(effects)
 }

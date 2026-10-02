@@ -35,8 +35,9 @@ pub enum Commands {
 
 pub mod tui;
 
+/// Logging for `tui`: a file in the data dir, never the terminal.
 pub fn init_tui_logging() {
-    // Lane D installs a file-backed subscriber here. The TUI must never log to the terminal.
+    tui::init_logging();
 }
 
 #[derive(Args, Debug)]

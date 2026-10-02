@@ -55,6 +55,7 @@ pub struct TestServerConfig {
     request_timeout_ms: u64,
     bearer_token: Option<String>,
     history_db: Option<PathBuf>,
+    chat_tools: Option<u64>,
 }
 
 impl TestServerConfig {
@@ -78,7 +79,15 @@ impl TestServerConfig {
             request_timeout_ms: 600_000,
             bearer_token: None,
             history_db: None,
+            chat_tools: None,
         }
+    }
+
+    /// Marks the alias as a chat model with tools and a context window of
+    /// `context_window` tokens, so `GET /v1/models` lists it.
+    pub fn chat_tools(mut self, context_window: u64) -> Self {
+        self.chat_tools = Some(context_window);
+        self
     }
 
     /// Names the single model alias the `models.json` defines.
@@ -101,6 +110,15 @@ impl TestServerConfig {
     /// Writes the models and auth files and returns the config.
     pub fn config(&self) -> ServerConfig {
         let models_path = self.root.join("models.json");
+        let mut alias_entry = json!({
+            "provider": PROVIDER,
+            "model": self.model,
+            "reasoning_history": "preserve"
+        });
+        if let Some(window) = self.chat_tools {
+            alias_entry["supports_tools"] = json!(true);
+            alias_entry["context_window"] = json!(window);
+        }
         std::fs::write(
             &models_path,
             json!({
@@ -114,11 +132,7 @@ impl TestServerConfig {
                     }
                 },
                 "models": {
-                    self.alias.as_str(): {
-                        "provider": PROVIDER,
-                        "model": self.model,
-                        "reasoning_history": "preserve"
-                    }
+                    self.alias.as_str(): alias_entry
                 }
             })
             .to_string(),
@@ -213,9 +227,24 @@ impl TestServer {
     /// Starts a server whose provider lives at `provider_url`, for a test
     /// that owns its mock connection directly.
     pub async fn start_with_provider_url(provider_url: &str) -> Self {
+        Self::start_inner(provider_url, None).await
+    }
+
+    /// Like [`Self::start`], but every route except `/v1/health` demands
+    /// `Authorization: Bearer <token>`.
+    pub async fn start_with_token(mock_responses: Vec<Vec<u8>>, token: &str) -> Self {
+        let mock = spawn_mock_provider(mock_responses).await;
+        Self::start_inner(&mock.url, Some(token)).await
+    }
+
+    async fn start_inner(provider_url: &str, token: Option<&str>) -> Self {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().to_path_buf();
-        let state = TestServerConfig::mock(&root, provider_url).state();
+        let mut config = TestServerConfig::mock(&root, provider_url);
+        if let Some(token) = token {
+            config = config.bearer_token(token);
+        }
+        let state = config.state();
         let (addr, task) = spawn_server(state.clone()).await;
         let ws = root.join("ws");
         std::fs::create_dir_all(&ws).expect("workspace dir");
@@ -390,5 +419,63 @@ pub async fn wait_for(what: &str, cond: impl Fn() -> bool) {
             "timed out waiting for {what}"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// A TCP forwarder in front of a server that can drop every open connection
+/// on demand, to provoke a lost event stream. New connections still work.
+pub struct CuttableProxy {
+    pub base: String,
+    connections: std::sync::Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    accept: tokio::task::JoinHandle<()>,
+}
+
+impl CuttableProxy {
+    /// Forwards `127.0.0.1:<ephemeral>` to the server at `target` (a base URL
+    /// such as `http://127.0.0.1:4000`).
+    pub async fn start(target: &str) -> Self {
+        let target = target.trim_start_matches("http://").to_string();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("proxy bind");
+        let addr = listener.local_addr().expect("proxy addr");
+        let connections: std::sync::Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>> =
+            Default::default();
+        let tracked = connections.clone();
+        let accept = tokio::spawn(async move {
+            while let Ok((mut inbound, _)) = listener.accept().await {
+                let target = target.clone();
+                let task = tokio::spawn(async move {
+                    if let Ok(mut outbound) = tokio::net::TcpStream::connect(&target).await {
+                        let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                    }
+                });
+                tracked.lock().expect("proxy connections").push(task);
+            }
+        });
+        Self {
+            base: format!("http://{addr}"),
+            connections,
+            accept,
+        }
+    }
+
+    /// Drops every connection that is open right now.
+    pub fn cut(&self) {
+        for task in self
+            .connections
+            .lock()
+            .expect("proxy connections")
+            .drain(..)
+        {
+            task.abort();
+        }
+    }
+}
+
+impl Drop for CuttableProxy {
+    fn drop(&mut self) {
+        self.cut();
+        self.accept.abort();
     }
 }

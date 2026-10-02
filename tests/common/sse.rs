@@ -21,6 +21,22 @@ pub fn sse_body(events: &[&str]) -> String {
     b
 }
 
+/// A streamed assistant turn that calls tool `name` with the JSON `args`.
+pub fn tool_call_chunk(id: &str, name: &str, args: &Value) -> String {
+    serde_json::json!({"choices": [{"index": 0, "finish_reason": "tool_calls", "delta": {
+        "tool_calls": [{"index": 0, "id": id, "function": {
+            "name": name, "arguments": args.to_string(),
+        }}],
+    }}]})
+    .to_string()
+}
+
+/// A streamed assistant turn that answers with `text` and stops.
+pub fn text_chunk(text: &str) -> String {
+    serde_json::json!({"choices": [{"index": 0, "finish_reason": "stop", "delta": {"content": text}}]})
+        .to_string()
+}
+
 /// The raw HTTP/1.1 response a scripted TCP provider writes for `body`.
 pub fn http_sse(body: &str) -> Vec<u8> {
     format!(

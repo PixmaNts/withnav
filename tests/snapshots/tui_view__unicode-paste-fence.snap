@@ -1,0 +1,24 @@
+---
+source: tests/tui_view.rs
+expression: snapshot
+---
+ rust-agent  …/the-last-directory  Fix parser · 01JABCDEFGH 
+────────────────────────────────────────────────────────────
+ │ YOU                                                      
+ │  你 好  é 👩‍💻  café                                          
+ │                                                          
+ │ ASSISTANT                                                
+ │  ```rust                                                 
+ │  fn main() { println!("hi"); }                           
+ │  ```                                                     
+ │                                                          
+                                                            
+                                                            
+                                                            
+────────────────────────────────────────────────────────────
+ cognition · claude-opus-5-5   ctx — / 200k   ready         
+┌ Message ─────────────────────────────────────────────────┐
+│line one                                                  │
+│line two                                                  │
+└──────────────────────────────────────────────────────────┘
+ enter send  alt+enter newline  esc stop  ctrl+p commands  f

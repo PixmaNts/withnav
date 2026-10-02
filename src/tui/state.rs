@@ -66,6 +66,8 @@ pub struct Conversation {
     pub counted_steps: std::collections::HashSet<(String, String, String)>,
     pub pending_tools: HashMap<String, String>,
     pub pending_tool_fragments: HashMap<String, String>,
+    /// Key of the last `llm.response` seen (the turn-end usage fallback).
+    pub last_response_step: Option<(String, String, String)>,
 }
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct State {
@@ -88,6 +90,10 @@ pub struct State {
     pub pending_model_pick: bool,
     pub editor_revision: u64,
     pub notice: Option<String>,
+    /// Workspace path sent in create requests; filled by the runtime at startup.
+    pub workspace: String,
+    /// Counter for ids of local blocks (`local:<n>`); never reset.
+    pub local_block_seq: u64,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Focus {

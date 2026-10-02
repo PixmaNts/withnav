@@ -145,7 +145,10 @@ pub enum Action {
     ToggleBlock(String),
     SetMode(Mode),
     /// Submit with the editor revision the text was read at; `Submit(t)` is `SubmitAt { t, 0 }`.
-    SubmitAt { text: String, revision: u64 },
+    SubmitAt {
+        text: String,
+        revision: u64,
+    },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {

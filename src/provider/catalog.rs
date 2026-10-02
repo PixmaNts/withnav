@@ -354,3 +354,6 @@ pub async fn resolve_chat(
         snapshot,
     })
 }
+
+#[cfg(test)]
+mod tests;

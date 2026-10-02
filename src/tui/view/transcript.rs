@@ -25,28 +25,44 @@ fn clean(text: &str) -> String {
         .collect()
 }
 
+/// Who a message came from, classified from the actor id in `message.received.source`
+/// (`user:<client>`, `navigator[:<id>]`).
+#[derive(PartialEq)]
+enum Origin {
+    User,
+    Navigator,
+    Assistant,
+    Other,
+}
+
+impl Origin {
+    fn of(source: &str) -> Self {
+        if source == "user" || source.starts_with("user:") {
+            Self::User
+        } else if source == "navigator" || source.starts_with("navigator:") {
+            Self::Navigator
+        } else if source == "assistant" {
+            Self::Assistant
+        } else {
+            Self::Other
+        }
+    }
+}
+
 fn block_text(block: &Block, ui: &UiState, cache: &mut MarkdownCache, width: u16) -> Text<'static> {
     let theme = Theme;
     let expanded = ui.expanded.contains(&block.id);
     let mut lines: Vec<Line<'static>> = Vec::new();
     match &block.kind {
         BlockKind::Message { source, text } => {
-            let name = if source == "user" {
-                "YOU"
-            } else if source == "assistant" {
-                "ASSISTANT"
-            } else {
-                "NAVIGATOR"
+            let (name, style) = match Origin::of(source) {
+                Origin::User => ("YOU".to_string(), theme.accent()),
+                Origin::Navigator => ("NAVIGATOR".to_string(), theme.muted()),
+                Origin::Assistant => ("ASSISTANT".to_string(), theme.muted()),
+                Origin::Other => (clean(source), theme.muted()),
             };
-            lines.push(Line::styled(
-                name,
-                if source == "user" {
-                    theme.accent()
-                } else {
-                    theme.muted()
-                },
-            ));
-            if source == "assistant" {
+            lines.push(Line::styled(name, style));
+            if Origin::of(source) == Origin::Assistant {
                 let parsed = cache.get(&block.id, 0, width.saturating_sub(2), text);
                 lines.extend(parsed.lines.iter().cloned().map(|line| {
                     Line::from(
@@ -69,6 +85,9 @@ fn block_text(block: &Block, ui: &UiState, cache: &mut MarkdownCache, width: u16
             thinking,
             revision,
         } => {
+            if text.is_empty() && thinking.is_empty() {
+                return Text::default();
+            }
             lines.push(Line::styled("ASSISTANT", theme.accent()));
             if !thinking.is_empty() {
                 lines.push(Line::styled(
@@ -158,6 +177,9 @@ pub fn draw(
                     thinking,
                     revision,
                 } => {
+                    if text.is_empty() && thinking.is_empty() {
+                        return (b, 0);
+                    }
                     let body = if text.is_empty() {
                         0
                     } else {
@@ -247,6 +269,9 @@ pub fn draw(
         let from = cursor;
         cursor += height;
         if cursor <= start || from >= start + viewport {
+            continue;
+        }
+        if height == 0 {
             continue;
         }
         let text = block_text(block, ui, cache, width);

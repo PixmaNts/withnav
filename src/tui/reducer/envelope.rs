@@ -215,6 +215,19 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 _ => s.activity,
             };
             let turn = v["turn_id"].as_str().map(str::to_string);
+            if let Some(error) = v.get("error").filter(|x| x.is_object()) {
+                let code = error["code"].as_str().unwrap_or("error");
+                let message = error["message"].as_str().unwrap_or("");
+                s.conversation.blocks.push(block(
+                    format!("error:{}", e.seq),
+                    BlockKind::Error(error_text(code, message)),
+                ));
+            } else if outcome == "interrupted" {
+                s.conversation.blocks.push(block(
+                    format!("notice:{}", e.seq),
+                    BlockKind::Notice("turn interrupted".into()),
+                ));
+            }
             if let Some(u) = v
                 .get("usage")
                 .and_then(|x| serde_json::from_value::<Usage>(x.clone()).ok())
@@ -249,6 +262,19 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         _ => {}
     }
     Ok(())
+}
+
+/// `code: message` with terminal controls removed, whitespace collapsed and the length capped.
+fn error_text(code: &str, message: &str) -> String {
+    const MAX_CHARS: usize = 300;
+    let clean = strip_controls(&format!("{code}: {message}"));
+    let flat = clean.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= MAX_CHARS {
+        return flat;
+    }
+    let mut cut: String = flat.chars().take(MAX_CHARS).collect();
+    cut.push('…');
+    cut
 }
 
 fn step_block_id(s: &mut State, key: &StepKey, step_id: &str) -> String {

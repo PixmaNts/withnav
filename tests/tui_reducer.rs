@@ -63,7 +63,7 @@ impl Script {
             EventKind::MessageReceived,
             &MessageReceived {
                 command_id: Ulid(7),
-                source: "user".into(),
+                source: "user:http".into(),
                 target: ROOT_ACTOR_ID.into(),
                 mode: "next-turn".into(),
                 content: text.into(),
@@ -451,6 +451,28 @@ fn resumed() -> Vec<EventEnvelope> {
     s.out
 }
 
+const QUOTA_MESSAGE: &str = "provider API error (status 429): Quota preflight blocked";
+
+fn error_live() -> Vec<EventEnvelope> {
+    let mut s = Script::new();
+    s.start().user("hello").turn_start(100);
+    s.push(
+        EventKind::TurnEnd,
+        &TurnEnd {
+            turn_id: Ulid(100),
+            actor_id: ROOT_ACTOR_ID.into(),
+            outcome: TurnEndOutcome::Error,
+            usage: None,
+            duration_ms: 5,
+            error: Some(TurnError {
+                code: "provider".into(),
+                message: format!("{QUOTA_MESSAGE}\n{}", "x".repeat(400)),
+            }),
+        },
+    );
+    s.out
+}
+
 fn scenarios() -> Vec<(&'static str, Vec<EventEnvelope>)> {
     let (t, l) = (turn_live(), tools_live());
     vec![
@@ -458,6 +480,8 @@ fn scenarios() -> Vec<(&'static str, Vec<EventEnvelope>)> {
         ("turn_live", t),
         ("tools_replay", without_deltas(&l)),
         ("tools_live", l),
+        ("error_replay", without_deltas(&error_live())),
+        ("error_live", error_live()),
         ("tool_statuses", tool_statuses()),
         ("interrupted_turn", interrupted_turn()),
         ("yield_ask", yield_ask()),
@@ -1307,4 +1331,53 @@ fn bug10_tool_fragments_are_keyed_by_index_and_never_rendered() {
         .filter(|i| i.starts_with("tool:"))
         .collect();
     assert_eq!(tools, vec!["tool:c1", "tool:c2"]);
+}
+
+#[test]
+fn failed_turn_shows_an_error_block_identically_live_and_on_replay() {
+    let (live, replay) = (run("error_live"), run("error_replay"));
+    assert_eq!(live.conversation.blocks, replay.conversation.blocks);
+    assert_eq!(live.activity, Activity::Idle);
+    let Some(Block {
+        kind: BlockKind::Error(text),
+        ..
+    }) = live.conversation.blocks.last()
+    else {
+        panic!("no error block: {:?}", live.conversation.blocks);
+    };
+    assert!(
+        text.starts_with(&format!("provider: {QUOTA_MESSAGE}")),
+        "{text}"
+    );
+    assert!(!text.contains('\n'));
+    assert!(text.chars().count() <= 301, "{}", text.chars().count());
+}
+
+#[test]
+fn interrupted_turn_pushes_a_short_notice_identically_live_and_on_replay() {
+    let envs = load("interrupted_turn");
+    let live = {
+        let mut s = st();
+        feed(&mut s, &envs);
+        s
+    };
+    let replay = {
+        let mut s = st();
+        feed(&mut s, &without_deltas(&envs));
+        s
+    };
+    assert_eq!(live.conversation.blocks, replay.conversation.blocks);
+    assert_eq!(
+        live.conversation.blocks.last().map(|b| b.kind.clone()),
+        Some(BlockKind::Notice("turn interrupted".into()))
+    );
+}
+
+#[test]
+fn message_source_is_kept_as_the_actor_id() {
+    let s = run("turn_live");
+    assert!(matches!(
+        &s.conversation.blocks[0].kind,
+        BlockKind::Message { source, .. } if source == "user:http"
+    ));
 }

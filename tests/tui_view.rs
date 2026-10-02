@@ -87,7 +87,7 @@ fn state() -> State {
 fn done() -> State {
     let mut s = state();
     s.conversation.blocks = vec![
-        message("user", "user", "Explain the failure, then fix it."),
+        message("user", "user:http", "Explain the failure, then fix it."),
         step(
             "The parser treats an empty argument as a missing value.",
             "I should check the parser tests first.",
@@ -133,7 +133,7 @@ fn empty_and_streaming() {
     let mut s = state();
     s.activity = Activity::Running;
     s.conversation.blocks = vec![
-        message("u", "user", "Why is this failing?"),
+        message("u", "user:http", "Why is this failing?"),
         step(
             "Checking **the parser** as tokens arrive…",
             "First inspect the call site.",
@@ -231,7 +231,7 @@ fn unicode_paste_paths_and_unclosed_fence() {
     s.session.as_mut().unwrap().workspace =
         "/a/very/long/path/with/segments/and/日本語/projects/the-last-directory".into();
     s.conversation.blocks = vec![
-        message("u", "user", "你好 e\u{301} 👩‍💻 café"),
+        message("u", "user:http", "你好 e\u{301} 👩‍💻 café"),
         step("```rust\nfn main() { println!(\"hi\"); }", ""),
     ];
     let ui = UiState {
@@ -435,4 +435,52 @@ fn pickers_filter_and_keep_draft() {
         Some(Action::CloseOverlay)
     );
     assert_eq!(editor.text(), "draft");
+}
+
+fn buffer_text(s: &State) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    terminal
+        .draw(|f| view::draw(f, s, &ui, &Editor::new(), &mut RenderCache::default()))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    (0..20)
+        .map(|y| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn message_labels_follow_the_source_actor_id() {
+    for (source, label) in [
+        ("user:http", "YOU"),
+        ("user", "YOU"),
+        ("navigator", "NAVIGATOR"),
+        ("navigator:main", "NAVIGATOR"),
+        ("cron:nightly", "cron:nightly"),
+    ] {
+        let mut s = state();
+        s.conversation.blocks = vec![message("m", source, "hi")];
+        let text = buffer_text(&s);
+        assert!(text.contains(label), "{source}: {text}");
+        if label != "NAVIGATOR" {
+            assert!(!text.contains("NAVIGATOR"), "{source}: {text}");
+        }
+    }
+}
+
+#[test]
+fn tool_only_step_renders_no_assistant_label() {
+    let mut s = state();
+    s.conversation.blocks = vec![
+        message("u", "user:http", "go"),
+        step("", ""),
+        tool_block(Some(ToolStatus::Ok)),
+    ];
+    let text = buffer_text(&s);
+    assert!(!text.contains("ASSISTANT"), "{text}");
+    assert!(text.contains("bash"), "{text}");
 }

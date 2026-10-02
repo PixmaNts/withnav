@@ -735,3 +735,44 @@ fn running_tool_label_uses_the_readable_accent() {
         "the glyph keeps the bright accent"
     );
 }
+
+#[test]
+fn markdown_repaints_when_the_theme_changes_and_back() {
+    let mut s = state();
+    s.conversation.blocks = vec![message(
+        "md",
+        "assistant",
+        "## Heading\n\n```rust\nfn main() {}\n```",
+    )];
+    let editor = Editor::new();
+    let mut cache = RenderCache::default();
+    let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+    let mut draw = |id: ThemeId| {
+        let ui = UiState {
+            follow_bottom: true,
+            theme: id,
+            ..UiState::default()
+        };
+        terminal
+            .draw(|f| view::draw(f, &s, &ui, &editor, &mut cache))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let find = |needle: &str| {
+            (0..20)
+                .find_map(|y| {
+                    let row: String = (0..60).map(|x| buffer[(x, y)].symbol()).collect();
+                    row.find(needle)
+                        .map(|byte| buffer[(row[..byte].chars().count() as u16, y)].clone())
+                })
+                .expect(needle)
+        };
+        (find("Heading").fg, find("main").fg, find("main").bg)
+    };
+    let dark = draw(ThemeId::AyuDark);
+    let light = draw(ThemeId::AyuLight);
+    let back = draw(ThemeId::AyuDark);
+    assert_eq!(dark.0, Theme::ayu_dark().accent_text);
+    assert_eq!(light.0, Theme::ayu_light().accent_text);
+    assert_ne!(dark.1, light.1, "code is highlighted with the light scheme");
+    assert_eq!(back, dark, "going back repaints exactly as before");
+}

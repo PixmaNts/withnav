@@ -279,6 +279,7 @@ fn seed(catalog: &ModelCatalog, base: &str, age: u64, id: &str, limits: Limits) 
         version: 1,
         fetched_at: now() - age,
         models: HashMap::from([(id.to_string(), limits)]),
+        carried: HashMap::new(),
     };
     std::fs::write(path, serde_json::to_vec(&file).unwrap()).unwrap();
 }
@@ -550,6 +551,7 @@ fn an_unwritable_cache_dir_warns_once() {
         version: 1,
         fetched_at: now(),
         models: HashMap::new(),
+        carried: HashMap::new(),
     };
     let log = Captured::default();
     let subscriber = tracing_subscriber::fmt()
@@ -624,8 +626,19 @@ async fn null_or_malformed_fields_keep_the_previous_values() {
         "a valid new value replaces"
     );
     assert_eq!(requests(&server).await, 1);
+    assert!(d.stale, "kept values are not freshly confirmed");
+    assert!(d.age_seconds.unwrap() >= TTL + 1, "{:?}", d.age_seconds);
     let saved = read_cache(&cache_path(&catalog, &base)).unwrap();
     assert_eq!(saved.models["m"].context_length, Some(500_000));
+    // The same after a restart: no new request, still stale with the old age.
+    let reopened = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let again = lookup(&reopened, &base, "m").await;
+    assert_eq!(requests(&server).await, 1, "the list itself is current");
+    assert!(again.stale);
+    assert!(again.age_seconds.unwrap() >= TTL + 1);
+    let cached = reopened.cached(&resolved(&base, "m", ApiKind::Chat, None));
+    assert!(cached.stale && cached.age_seconds.unwrap() >= TTL + 1);
+    assert_eq!(cached.limits.unwrap().context_length, Some(500_000));
 }
 
 #[tokio::test]

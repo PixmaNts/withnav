@@ -52,6 +52,18 @@ struct CacheFile {
     version: u32,
     fetched_at: u64,
     models: HashMap<String, Limits>,
+    /// For a model whose latest refresh could not renew every limit and kept
+    /// an earlier value: when the oldest kept value was fetched. Absent means
+    /// everything was renewed at `fetched_at`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    carried: HashMap<String, u64>,
+}
+impl CacheFile {
+    /// Seconds since the values of `model` were last confirmed by the provider.
+    fn age_of(&self, model: &str) -> u64 {
+        let since = self.carried.get(model).copied().unwrap_or(self.fetched_at);
+        now().saturating_sub(since.min(self.fetched_at))
+    }
 }
 #[derive(Debug, Clone)]
 pub struct CatalogData {
@@ -145,7 +157,7 @@ impl ModelCatalog {
         let endpoint = endpoint_key(&resolved.provider.base_url);
         let ep = self.endpoint(&endpoint);
         let old = self.current(&ep, self.file(&endpoint).as_deref());
-        let age = old.as_ref().map(|c| now().saturating_sub(c.fetched_at));
+        let age = old.as_ref().map(|c| c.age_of(&resolved.model.model));
         let error = ep.error();
         CatalogData {
             limits: old
@@ -186,10 +198,12 @@ impl ModelCatalog {
             match self.fetch(resolved, key, clients).await {
                 Ok(fetched) => {
                     let old = self.current(&ep, path.as_deref());
+                    let (models, carried) = merge(old.as_ref(), fetched);
                     let file = CacheFile {
                         version: 1,
                         fetched_at: now(),
-                        models: merge(old.as_ref(), fetched),
+                        models,
+                        carried,
                     };
                     // The file is the source of truth; the process keeps its
                     // own copy only when there is no file to keep it in.
@@ -200,10 +214,11 @@ impl ModelCatalog {
                         mem.error = None;
                         mem.failed_at = None;
                     }
+                    let age = file.age_of(model);
                     return CatalogData {
                         limits: file.models.get(model).cloned(),
-                        stale: false,
-                        age_seconds: Some(0),
+                        stale: age >= TTL,
+                        age_seconds: Some(age),
                         error: None,
                     };
                 }
@@ -219,18 +234,22 @@ impl ModelCatalog {
         CatalogData {
             limits: old.as_ref().and_then(|c| c.models.get(model).cloned()),
             stale: old.is_some(),
-            age_seconds: old.as_ref().map(|c| now().saturating_sub(c.fetched_at)),
+            age_seconds: old.as_ref().map(|c| c.age_of(model)),
             error,
         }
     }
     fn fresh(&self, ep: &Endpoint, path: Option<&Path>, model: &str) -> Option<CatalogData> {
         let c = self.current(ep, path)?;
-        let age = now().saturating_sub(c.fetched_at);
-        (age < TTL).then(|| CatalogData {
-            limits: c.models.get(model).cloned(),
-            stale: false,
-            age_seconds: Some(age),
-            error: None,
+        // The list is current, so it is not asked again; a model whose kept
+        // values are older than the TTL still reports itself as stale.
+        (now().saturating_sub(c.fetched_at) < TTL).then(|| {
+            let age = c.age_of(model);
+            CatalogData {
+                limits: c.models.get(model).cloned(),
+                stale: age >= TTL,
+                age_seconds: Some(age),
+                error: None,
+            }
         })
     }
     async fn fetch(
@@ -278,20 +297,37 @@ fn endpoint_key(base_url: &str) -> String {
     endpoint_without_credentials(base_url)
 }
 /// New values over the previous ones: a limit the provider now reports as
-/// null, zero or malformed keeps the value already known for that model.
-fn merge(old: Option<&CacheFile>, fetched: HashMap<String, Limits>) -> HashMap<String, Limits> {
-    let Some(old) = old else { return fetched };
-    fetched
+/// null, zero or malformed keeps the value already known for that model. The
+/// second map dates the oldest value kept for each such model, so a kept
+/// number does not pass for a freshly confirmed one.
+#[allow(clippy::type_complexity)]
+fn merge(
+    old: Option<&CacheFile>,
+    fetched: HashMap<String, Limits>,
+) -> (HashMap<String, Limits>, HashMap<String, u64>) {
+    let Some(old) = old else {
+        return (fetched, HashMap::new());
+    };
+    let mut carried = HashMap::new();
+    let models = fetched
         .into_iter()
         .map(|(id, mut l)| {
             if let Some(p) = old.models.get(&id) {
+                let kept = (l.context_length.is_none() && p.context_length.is_some())
+                    || (l.max_input_tokens.is_none() && p.max_input_tokens.is_some())
+                    || (l.max_output_tokens.is_none() && p.max_output_tokens.is_some());
+                if kept {
+                    let since = old.carried.get(&id).copied().unwrap_or(old.fetched_at);
+                    carried.insert(id.clone(), since.min(old.fetched_at));
+                }
                 l.context_length = l.context_length.or(p.context_length);
                 l.max_input_tokens = l.max_input_tokens.or(p.max_input_tokens);
                 l.max_output_tokens = l.max_output_tokens.or(p.max_output_tokens);
             }
             (id, l)
         })
-        .collect()
+        .collect();
+    (models, carried)
 }
 /// A short, secret-free reason for a failed refresh. Never the response
 /// body, a URL or a header.

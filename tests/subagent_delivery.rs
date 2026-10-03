@@ -6,6 +6,70 @@ use navai::server::AppState;
 use serde_json::{json, Value};
 
 mod common;
+
+#[tokio::test]
+async fn recovery_leaves_live_instance_children_and_recovers_stale_owner() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = TestServerConfig::unreachable(tmp.path())
+        .chat_tools(128_000)
+        .config();
+    let first = AppState::new(config.clone()).unwrap();
+    let parent = ulid::Ulid::new();
+    let child = ulid::Ulid::new();
+    first
+        .history()
+        .record_session(parent, "/ws", "default", None)
+        .await
+        .unwrap();
+    first
+        .history()
+        .record_session(child, "/ws", "default", None)
+        .await
+        .unwrap();
+    first
+        .history()
+        .create_child_link(
+            child,
+            "explore".into(),
+            "goal".into(),
+            "{}".into(),
+            4,
+            navai::bus::event::EventEnvelope::new(
+                parent,
+                0,
+                navai::bus::event::EventKind::SubagentSpawned,
+                json!({}),
+            ),
+        )
+        .await
+        .unwrap();
+    let second = AppState::new(config.clone()).unwrap();
+    assert_eq!(
+        second.child_metadata(child).await.unwrap().unwrap().status,
+        "running"
+    );
+    assert!(second
+        .history()
+        .pending_completions(parent)
+        .await
+        .unwrap()
+        .is_empty());
+    drop(first);
+    let third = AppState::new(config).unwrap();
+    let link = third.child_metadata(child).await.unwrap().unwrap();
+    assert_eq!(link.status, "stopped");
+    assert_eq!(link.terminal_reason.as_deref(), Some("restart"));
+    assert_eq!(
+        third
+            .history()
+            .pending_completions(parent)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(third.reserved_child_count(parent), 0);
+}
 use common::server::TestServerConfig;
 use common::sse::{spawn_streaming_provider, text_chunk, tool_call_chunk};
 

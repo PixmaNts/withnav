@@ -286,6 +286,7 @@ fn is_promptable(value: &bool) -> bool {
 /// clone (all fields are `Arc`).
 #[derive(Clone, Debug)]
 pub struct Service {
+    _instance: Arc<super::instance::Instance>,
     /// The live sessions of this process; a closed session is removed.
     pub(super) sessions: Arc<Mutex<HashMap<SessionId, SessionHandle>>>,
     pub(super) config: Arc<SessionConfig>,
@@ -424,14 +425,21 @@ impl Service {
         hooks: Arc<dyn SessionHooks>,
     ) -> Result<Self, ServerError> {
         // No fallback: a conversation that cannot be saved is not served.
-        let history =
+        let instance = Arc::new(
+            super::instance::Instance::acquire(&config.data_dir).map_err(ServerError::History)?,
+        );
+        let mut history =
             super::store::HistoryStore::open(&config.history_db).map_err(ServerError::History)?;
-        history.recover_children().map_err(ServerError::History)?;
+        history.set_owner(instance.id);
+        history
+            .recover_children(&instance.directory)
+            .map_err(ServerError::History)?;
         let seeded_slots = history
             .active_child_counts()
             .map_err(ServerError::History)?;
         let catalog = crate::provider::catalog::ModelCatalog::new(Some(config.data_dir.clone()));
         Ok(Self {
+            _instance: instance,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             config: Arc::new(config),
             history: Arc::new(history),

@@ -235,6 +235,7 @@ enum WriteError {
 /// thread plus the shared path for blocking reads. Cheap to clone.
 #[derive(Clone)]
 pub struct HistoryStore {
+    owner: Option<Ulid>,
     tx: mpsc::Sender<Msg>,
     path: Arc<PathBuf>,
 }
@@ -271,6 +272,7 @@ impl HistoryStore {
             .spawn(move || writer_loop(conn, rx))
             .map_err(|e| format!("history writer thread: {e}"))?;
         Ok(Self {
+            owner: None,
             tx,
             path: Arc::new(path),
         })
@@ -316,18 +318,19 @@ impl HistoryStore {
         envelope: EventEnvelope,
     ) -> Result<(), String> {
         let path = self.path.clone();
+        let owner = self.owner.map(|id| id.to_string());
         tokio::task::spawn_blocking(move || {
             let parent_id = envelope.session_id;
             let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
             let tx = conn.transaction().map_err(|e| e.to_string())?;
             let inserted = tx.execute(
-                "INSERT INTO child_links (parent_id, child_id, agent, goal, policy_snapshot, status, created_at)
-                 SELECT ?1, ?2, ?3, ?4, ?5, 'running', ?6
+                "INSERT INTO child_links (parent_id, child_id, agent, goal, policy_snapshot, status, created_at, owner_instance)
+                 SELECT ?1, ?2, ?3, ?4, ?5, 'running', ?6, ?8
                  WHERE (SELECT COUNT(*) FROM child_links WHERE parent_id=?1 AND status IN ('starting','running')) < ?7
                    AND EXISTS(SELECT 1 FROM sessions WHERE id=?1)
                    AND EXISTS(SELECT 1 FROM sessions WHERE id=?2)",
                 params![parent_id.to_string(), child_id.to_string(), agent, goal,
-                    policy_snapshot, now_rfc3339(), capacity as i64],
+                    policy_snapshot, now_rfc3339(), capacity as i64, owner],
             ).map_err(|e| e.to_string())?;
             if inserted == 0 { return Err("subagent capacity reached or parent/child session is missing".into()); }
             insert_committed_event(&tx, &envelope)?;
@@ -390,19 +393,37 @@ impl HistoryStore {
         .map_err(|e| e.to_string())?
     }
 
-    pub fn recover_children(&self) -> Result<(), String> {
+    pub(super) fn set_owner(&mut self, owner: Ulid) {
+        self.owner = Some(owner);
+    }
+
+    pub(super) fn recover_children(&self, instances: &Path) -> Result<(), String> {
         let conn = Connection::open(&*self.path).map_err(|e| e.to_string())?;
         let mut stmt = conn
-            .prepare("SELECT child_id FROM child_links WHERE status IN ('starting','running')")
+            .prepare("SELECT child_id, owner_instance FROM child_links WHERE status IN ('starting','running')")
             .map_err(|e| e.to_string())?;
         let ids = stmt
-            .query_map([], |row| row.get::<_, String>(0))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
         drop(stmt);
         drop(conn);
-        for id in ids {
+        let mut locks = std::collections::HashMap::new();
+        for (id, owner) in ids {
+            let owner = owner
+                .map(|id| id.parse::<Ulid>().map_err(|e| e.to_string()))
+                .transpose()?;
+            if let Some(owner) = owner {
+                if !locks.contains_key(&owner) {
+                    let Some(lock) = super::instance::stale_lock(instances, owner)? else {
+                        continue;
+                    };
+                    locks.insert(owner, lock);
+                }
+            }
             finish_child_link_sync(
                 &self.path,
                 id.parse().map_err(|e| format!("child id: {e}"))?,
@@ -410,6 +431,10 @@ impl HistoryStore {
                 Some("restart".into()),
                 String::new(),
             )?;
+        }
+        for (owner, _lock) in locks {
+            std::fs::remove_file(instances.join(format!("{owner}.lock")))
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -1084,6 +1109,14 @@ fn migrate(path: &Path) -> Result<(), String> {
         );",
     )
     .map_err(|e| format!("migrate: {e}"))?;
+    let has_owner = conn
+        .prepare("SELECT 1 FROM pragma_table_info('child_links') WHERE name='owner_instance'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| e.to_string())?;
+    if !has_owner {
+        conn.execute("ALTER TABLE child_links ADD COLUMN owner_instance TEXT", [])
+            .map_err(|e| e.to_string())?;
+    }
     let has_consumption = conn
         .prepare("SELECT 1 FROM pragma_table_info('completion_outbox') WHERE name='consumed'")
         .and_then(|mut stmt| stmt.exists([]))

@@ -94,8 +94,9 @@ _Avoid_: thinking level, mode, profile
 
 **Session command**:
 A `/name` the server runs on a conversation: `/help`, `/model`, `/new`, `/stop`, `/context`,
-`/variant`, `/compact`, `/agent`. A command has a result, shown in the conversation, and none runs
-while the agent waits for an answer or a permission. `//text` sends the literal text `/text`. The
+`/variant`, `/compact`, `/agent`. A command has a result, shown in the conversation. While a permission request is pending, `/stop`
+runs (and cancels the request) and every other command is refused. While an `ask` is pending, every
+command is refused, `/stop` included; the stop endpoint (`POST /v1/sessions/{id}/stop`) still works. `//text` sends the literal text `/text`. The
 terminal client also has its own commands (`/sessions`, `/theme`, `/quit`), and it opens a new tab
 for `/model <alias>` and `/new <alias>` instead of running them on the open conversation.
 _Avoid_: tool, action (an action is what a pipeline branch decides)
@@ -126,9 +127,10 @@ _Avoid_: filter, sandbox, policy
 
 **Pending interaction**:
 What a yielded actor waits for: the answer to an `ask`, or the decision on a permission request (with
-the held call and the calls behind it). While one is pending, session commands are refused, with one
-exception: `/stop` always runs, and it cancels a pending permission request. A pending `ask` blocks
-every other command until it is answered.
+the held call and the calls behind it). While a permission request is pending, session commands are
+refused, except `/stop`, which runs and cancels the request. While an `ask` is pending, all session
+commands are refused, `/stop` included, until it is answered. The stop endpoint
+(`POST /v1/sessions/{id}/stop`) works in both cases.
 
 ## Shared context
 

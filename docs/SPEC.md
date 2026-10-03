@@ -1428,7 +1428,10 @@ Not built: the `workspaces`, `actors`, `messages`, `inbox_messages` and `plugin_
 2. The persisting emitter queues every durable envelope to the writer thread, in `seq` order, inside the sequencer task. The queueing is a channel send; it does not wait for the disk.
 3. The event is then broadcast to subscribers.
 
-Queueing is not an acknowledgement: a crash can lose events still in the channel, so a live client can have seen an event that was never stored. The exceptions are the acknowledged paths (`publish_acked`, used for command results, waits for the event to be sequenced and emitted; `commit_acked`, used only by the model switch, writes first and emits only after the store acknowledged).
+Queueing is not an acknowledgement: a crash can lose events still in the channel, so a live client can have seen an event that was never stored. Keep two things apart:
+
+- **State persistence.** Some state changes are written and acknowledged before the event that reports them. The compaction checkpoint is saved with the transcript before `context.compacted` is published. The primary agent is stored before `session.agent_changed` is published. The event is then an ordinary queued event; the state it reports is already durable.
+- **Event durability.** `publish_acked` (command results, `session.agent_changed`) waits until the event is sequenced and on the stream. It does not wait for the disk. Only `commit_acked`, used by the model switch, commits the event row itself (with the new model state, in one transaction) and emits the event only after the store acknowledged.
 
 `llm.delta` and `context.updated` are never stored. `session.end` is stored like any other durable event. Tool outputs are bounded to 64 KiB before they reach the transcript, but messages and tool payloads are stored as they are, with no redaction: a secret that a tool read or the driver typed is in the database.
 
@@ -1910,7 +1913,7 @@ Real OS sandboxing may be added later through Bubblewrap, containers, or platfor
 ### 25.3 Backpressure
 
 - Every subscriber gets a bounded channel.
-- Persistence is a queued writer, not a barrier: events are handed to it before they are broadcast (section 17.2). Only the model switch waits for the store before it emits.
+- Persistence is a queued writer, not a barrier: events are handed to it before they are broadcast (section 17.2). `publish_acked` waits for the stream, not the disk. Compaction and agent changes await their state write before they publish their event; only the model switch commits its event before emitting it.
 - UI and observational subscribers may lag or disconnect.
 - Hook plugins are bounded by timeout rather than channel capacity.
 - `llm.delta` may be dropped for lagging observational subscribers.
@@ -1930,7 +1933,7 @@ These questions do not block the architecture, but implementation must make thei
 | Multiple modifying hooks | Sequential priority order, validate after each patch | Plugin order can change behavior and must remain visible |
 | Hook timeouts | Per-subscription timeout; enrichment fails open | Slow hooks may add latency at every model step |
 | Context compaction | No silent built-in semantic compaction | Long sessions eventually yield instead of continuing automatically |
-| Event durability | Events are queued to the writer before broadcast; only the model switch commits before it emits | A crash can lose queued events a live client already saw |
+| Event durability | Events are queued to the writer before broadcast. State writes (checkpoint, primary agent) are awaited before their event is published. Only the model switch commits its event before emitting it | A crash can lose queued events a live client already saw |
 | Delta persistence | Non-durable by default | Exact partial stream reconstruction is unavailable after a crash |
 | In-flight resume | Mark interrupted, never replay side effects | The user or model must decide whether a tool is safe to retry |
 | OpenAI compatibility | Support the tested OmniRoute subset | Some providers use subtly incompatible SSE or tool-call formats |

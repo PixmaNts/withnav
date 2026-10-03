@@ -36,8 +36,10 @@ owned coding-agent core with a terminal client and a local server.
   not set it. A model can offer variants (for example reasoning effort), chosen with `/variant`.
 - **Context.** An estimate of the next request and how full the window is. `/compact` summarizes
   the older part of a long conversation.
-- **Session commands.** `/help`, `/model`, `/new`, `/stop`, `/context`, `/variant`, `/compact`,
-  `/agent`.
+- **Session commands.** `/help`, `/model [alias]` (switches the model of the conversation between
+  turns, refused if the history does not fit the new window), `/new [alias]`, `/stop`, `/context`,
+  `/variant`, `/compact`, `/agent`. In the terminal client, `/model <alias>` and `/new <alias>` open a
+  new tab on that model; the model picker does the same.
 
 **The navigator** (`navai-lsp` and the VS Code extension in `vscode-navigator/`): a Language
 Server that watches your edits. A reflex layer offers ghost-text suggestions, an instinct layer
@@ -94,8 +96,7 @@ The first design ([`docs/SPEC.md`](docs/SPEC.md)) aimed higher: one event bus an
 everything, with external-process plugins over JSON-RPC, MCP tools, non-blocking subagents, a
 meta-loop co-agent, hot reload and a memory integration. **None of that is built.** The bus, the
 server and the clients are. Subagents are the next large piece; `explore` and `review` are defined
-but cannot be started yet. Automatic compaction and switching the model inside a conversation are
-also not on `develop`. `docs/SPEC.md` says, section by section, what is built.
+but cannot be started yet. Automatic compaction is also not built: `/compact` is manual. `docs/SPEC.md` says, section by section, what is built.
 
 ## Contributing
 

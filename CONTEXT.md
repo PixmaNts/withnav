@@ -81,7 +81,8 @@ _Avoid_: worker, child agent
 **Model alias**:
 A name in `models.json` (`cognition`, `fast`, your own) that stands for one provider, model, API and
 set of limits. Sessions, agents and the navigator layers refer to aliases, never to raw model ids. A
-conversation saves what its alias resolved to when it started and keeps it.
+conversation saves what its alias resolved to and keeps it, until `/model <alias>` moves it to
+another alias between turns (the history goes with it, and the switch is announced by `model.changed`).
 _Avoid_: model name, preset
 
 **Variant**:
@@ -95,7 +96,8 @@ _Avoid_: thinking level, mode, profile
 A `/name` the server runs on a conversation: `/help`, `/model`, `/new`, `/stop`, `/context`,
 `/variant`, `/compact`, `/agent`. A command has a result, shown in the conversation, and none runs
 while the agent waits for an answer or a permission. `//text` sends the literal text `/text`. The
-terminal client also has its own commands (`/sessions`, `/theme`, `/quit`).
+terminal client also has its own commands (`/sessions`, `/theme`, `/quit`), and it opens a new tab
+for `/model <alias>` and `/new <alias>` instead of running them on the open conversation.
 _Avoid_: tool, action (an action is what a pipeline branch decides)
 
 ## Permissions

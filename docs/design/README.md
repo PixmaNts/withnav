@@ -20,6 +20,8 @@
 > - **Key bar** lists the keys that apply now (`tab build/plan`, `ctrl+p palette`, `alt+1…9 tabs`,
 >   `esc stop`, `alt+r panel`, `f1 help`) and the permission keys while a prompt waits. There is no
 >   `ctrl+l` pipeline or `ctrl+t` subagents key.
+> - **Model switching** is `/model <alias>` on the open conversation (server side). The terminal
+>   client's picker and `/model <alias>` still open a new tab on the chosen model.
 > - **Subagent view, pipeline editor, MCP, plugins, `@file` and `!shell`:** not built.
 > - **Agent files** are read from `~/.config/navai/agents/` and the project's `.navai/agents/` (and
 >   read-only from `~/.config/opencode/agents/`), not from `.navigator/agents/`.

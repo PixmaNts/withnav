@@ -672,7 +672,7 @@ A hook mutates the candidate payload before the finalized event is published. It
 
 ### 10.3 Event Catalog
 
-> **Status: built, without hooks.** The code emits 18 kinds (`src/bus/event.rs`, `EVENT_KIND_COUNT`). Every event is observe-only: no hook can modify or deny one. All kinds are stored and replayed except `llm.delta` and `context.updated`, which are live-only. The envelope is unchanged since version 1; its `actor_id` is always `agent:main`.
+> **Status: built, without hooks.** The code emits 19 kinds (`src/bus/event.rs`, `EVENT_KIND_COUNT`). Every event is observe-only: no hook can modify or deny one. All kinds are stored and replayed except `llm.delta` and `context.updated`, which are live-only. The envelope is unchanged since version 1; its `actor_id` is always `agent:main`.
 
 | Event | Fired when | Payload shape |
 |---|---|---|
@@ -692,6 +692,7 @@ A hook mutates the candidate payload before the finalized event is published. It
 | `session.agent_changed` | The session's primary agent was changed (`/agent`) | `{agent, previous}` |
 | `permission.requested` | A gated tool call (`write`, `edit`, `bash`, `fetch`) waits for a decision; it has not run | `{request_id, tool_call_id, tool, arguments, scope{kind, value}, agent, reason}`; `arguments` is JSON text cut to 4 KiB |
 | `permission.resolved` | A permission request ended | `{request_id, tool_call_id, resolution, message?}`; `resolution` is `allow_once`, `allow_folder`, `deny` (with `message`), `cancelled` (stop, or a message sent meanwhile) or `expired` (restart) |
+| `model.changed` | The model selection of the session was committed: its first selection at start, then each `/model <alias>` switch, variant change, or resume refresh of the variant | `{operation_id?, revision, reason, previous?{alias, provider, model}, new{alias, provider, model}, variant, window, input_budget, from_message}`; `reason` is `initial`, `switch`, `variant` or `resume-refresh`; `from_message` is the transcript index where the new selection starts |
 | `context.updated` | The estimated size of the next request changed (after a provider response, after a step's tool results, at turn start and end) | The context snapshot: `{alias, variant?, window, window_source, estimate_total, breakdown{system, rules, skills_catalog, tools, messages}, output_reserve, margin, input_budget, percent, estimated, skills{listed, omitted}, rule_files, last_usage?{alias, prompt_tokens, completion_tokens, step}, incarnation, revision}`. `revision` counts within one runtime `incarnation` (a stopped and resumed session starts a new one). Incarnation ids carry no order, so a client retires the incarnation it moves past and ignores later snapshots of it. Live-only (not stored or replayed); also readable from `GET /v1/sessions/{id}/context`. |
 | `context.compacted` | A compaction was saved (`/compact`): a summary now stands for the start of the conversation | `{generation, through_message, pruned, estimate_before, estimate_after}`; explanatory only (the stored checkpoint is what a resume restores) |
 
@@ -1404,7 +1405,8 @@ sessions(
     variant TEXT,               -- the variant in use; NULL for none
     variant_override TEXT,      -- the override object saved with the variant
     checkpoint TEXT,            -- the compaction checkpoint, versioned JSON
-    primary_agent TEXT          -- NULL means build
+    primary_agent TEXT,         -- NULL means build
+    reasoning_floor INTEGER     -- transcript index below which earlier reasoning is left out after a model switch; NULL for none
 )
 
 events(
@@ -1621,7 +1623,7 @@ Other bodies:
 - `GET /v1/sessions/{id}` gives `{session_id, actor_state, workspace, model, agent, variant, current_seq}`.
 - `POST /v1/sessions/{id}/stop` gives `{accepted: true, actor_state: "stopped"}`.
 - `GET /v1/models` lists the chat aliases with their resolved window, `enabled`, `disabled_reason` and, when known, where the window came from, its staleness, and the variants on offer.
-- `GET /v1/commands` lists the session commands; `POST .../commands` with `{name, arguments?}` runs one and answers `{operation_id, ok, data?, error?}`. The commands are `/help`, `/model`, `/new`, `/stop`, `/context`, `/variant`, `/compact` and `/agent`. A command that cannot run is 200 with `ok: false`. The outcome is also published as a `command.result` event.
+- `GET /v1/commands` lists the session commands; `POST .../commands` with `{name, arguments?}` runs one and answers `{operation_id, ok, data?, error?}`. The commands are `/help`, `/model [alias]`, `/new [alias]`, `/stop`, `/context`, `/variant [name|off]`, `/compact [focus]` and `/agent [id]`. A command that cannot run is 200 with `ok: false`. The outcome is also published as a `command.result` event.
 - `POST .../permissions/{request_id}` takes `{decision: "allow_once" | "allow_folder" | "deny", message?}` and answers `{accepted: true}`; 409 `permission_stale` when the request is not waiting.
 - `GET .../context` returns the context snapshot (section 10.3, `context.updated`).
 
@@ -1738,7 +1740,7 @@ Rules:
 
 - Keys live in `~/.config/navai/auth.json` (mode 0600, written by `navai auth set <provider>`), with the `api_key_env` variable as a fallback.
 - Unknown model aliases fail before any request.
-- A conversation saves its provider, model, api and limits when it is created (`sessions.model_resolution`). A resume uses them, and refuses an alias that now points elsewhere (409 `model_identity_changed`).
+- A conversation saves its provider, model, api and limits when it is created (`sessions.model_resolution`). A resume uses them, and refuses an alias that now points elsewhere (409 `model_identity_changed`). `/model <alias>` switches the conversation to another alias between turns; the switch is saved in one step and announced by `model.changed`. The new model gets the whole history, and the earlier reasoning is only replayed to the same provider and model. A switch is refused when the conversation does not fit the new model's input budget (`/compact` first).
 - `scripts/import-opencode-models` can generate this file from an OpenCode config (see the README).
 
 ### 21.3 Streaming Parser

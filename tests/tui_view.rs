@@ -10,6 +10,7 @@ use navai::{
     },
 };
 use ratatui::{backend::TestBackend, Terminal};
+use serde_json::json;
 
 fn message(id: &str, source: &str, text: &str) -> Block {
     Block {
@@ -1741,4 +1742,233 @@ fn a_paste_after_a_typed_slash_edits_the_line_the_palette_follows() {
     );
     route_paste("context".into(), &s, &mut ui, &mut editor);
     assert_eq!(editor.text(), "");
+}
+
+// ---------------------------------------------------------------- permission prompt
+
+fn prompt(tool: &str, arguments: serde_json::Value, scope: (&str, &str)) -> Block {
+    Block {
+        id: "permission:R1".into(),
+        kind: BlockKind::Permission(navai::tui::state::PermissionPrompt {
+            request_id: "R1".into(),
+            tool_call_id: "c1".into(),
+            tool: tool.into(),
+            arguments: arguments.to_string(),
+            scope_kind: scope.0.into(),
+            scope: scope.1.into(),
+            agent: "build".into(),
+            reason: "it changes files".into(),
+            resolution: None,
+            message: None,
+        }),
+    }
+}
+
+/// `done()` with an open request for `block` at the end.
+fn asking(block: Block) -> State {
+    let mut s = done();
+    s.activity = Activity::AwaitingUser;
+    s.conversation.open_permissions = vec![block.id.clone()];
+    s.conversation.blocks.push(block);
+    s
+}
+
+fn screen_text(s: &State, ui: &UiState, size: (u16, u16)) -> String {
+    let t = cells(s, ui, size);
+    (0..size.1)
+        .map(|y| row_text(&t, y, size.0))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn a_write_prompt_shows_the_path_the_first_lines_and_the_keys() {
+    let content = (1..=9)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let s = asking(prompt(
+        "write",
+        json!({"path": "/home/pixma/dev/project/src/a.rs", "content": content}),
+        ("folder", "/home/pixma/dev/project/src"),
+    ));
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    let shown = render("permission-write", (100, 36), &s, &ui, &Editor::new());
+    for want in [
+        "PERMISSION · build wants to run write in /home/pixma/dev/project/src",
+        "/home/pixma/dev/project/src/a.rs",
+        "+ line 1",
+        "+ line 6",
+        "… 3 more lines",
+        "y allow once   a always for this folder   n deny",
+    ] {
+        assert!(shown.contains(want), "{want}: {shown}");
+    }
+    assert!(!shown.contains("+ line 7"), "{shown}");
+    // the open prompt has the accent rule
+    let t = cells(&s, &ui, (100, 36));
+    let theme = Theme::ayu_dark();
+    let row = (0..36)
+        .find(|y| row_text(&t, *y, 100).contains("PERMISSION"))
+        .unwrap();
+    assert_eq!(t.backend().buffer()[(23, row)].symbol(), "│");
+    assert_eq!(t.backend().buffer()[(23, row)].fg, theme.accent);
+    let x = row_text(&t, row, 100).find("PERMISSION").unwrap();
+    let x = row_text(&t, row, 100)[..x].chars().count() as u16;
+    assert_eq!(t.backend().buffer()[(x, row)].fg, theme.accent_text);
+}
+
+#[test]
+fn bash_edit_and_fetch_prompts_show_what_they_would_do() {
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    let s = asking(prompt(
+        "bash",
+        json!({"command": "cargo test -p navai"}),
+        ("folder", "/ws"),
+    ));
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(shown.contains("wants to run bash in /ws"), "{shown}");
+    assert!(shown.contains("$ cargo test -p navai"), "{shown}");
+    let s = asking(prompt(
+        "edit",
+        json!({"path": "/ws/a.rs", "old_string": "let x = 1;", "new_string": "let x = 2;"}),
+        ("folder", "/ws"),
+    ));
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(
+        shown.contains("- let x = 1;") && shown.contains("+ let x = 2;"),
+        "{shown}"
+    );
+    let s = asking(prompt(
+        "fetch",
+        json!({"url": "https://docs.rs/ratatui"}),
+        ("origin", "https://docs.rs"),
+    ));
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(
+        shown.contains("wants to run fetch to https://docs.rs"),
+        "{shown}"
+    );
+    assert!(shown.contains("https://docs.rs/ratatui"), "{shown}");
+    assert!(shown.contains("a always for this site"), "{shown}");
+}
+
+#[test]
+fn n_asks_for_a_message_then_enter_denies_with_it() {
+    let s = asking(prompt(
+        "bash",
+        json!({"command": "rm -rf target"}),
+        ("folder", "/ws"),
+    ));
+    let mut ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    let mut editor = Editor::new();
+    let answer = |decision: &str, message: Option<&str>| Action::AnswerPermission {
+        request_id: "R1".into(),
+        answer: navai::tui::protocol::PermissionAnswer {
+            decision: decision.into(),
+            message: message.map(str::to_string),
+        },
+    };
+    assert_eq!(
+        keys("y", &s, &mut ui, &mut editor),
+        [answer("allow_once", None)]
+    );
+    assert_eq!(
+        keys("a", &s, &mut ui, &mut editor),
+        [answer("allow_folder", None)]
+    );
+    assert!(keys("n", &s, &mut ui, &mut editor).is_empty());
+    assert_eq!(ui.deny_message.as_deref(), Some(""));
+    keys("use cargo clean", &s, &mut ui, &mut editor);
+    assert_eq!(
+        editor.text(),
+        "",
+        "the message is not typed into the editor"
+    );
+    render("permission-deny-message", (100, 30), &s, &ui, &editor);
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(
+        shown.contains("deny with a message: use cargo clean"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("enter send · esc deny without a message"),
+        "{shown}"
+    );
+    assert_eq!(
+        keys("⏎", &s, &mut ui, &mut editor),
+        [answer("deny", Some("use cargo clean"))]
+    );
+    assert_eq!(ui.deny_message, None);
+    // esc denies without one
+    keys("n", &s, &mut ui, &mut editor);
+    let esc = route_key(
+        key(KeyCode::Esc, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(esc, Some(answer("deny", None)));
+}
+
+#[test]
+fn prompt_keys_type_normally_when_the_message_has_text_or_nothing_is_open() {
+    let s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    editor.set_text("why ");
+    assert!(keys("yan", &s, &mut ui, &mut editor).is_empty());
+    assert_eq!(editor.text(), "yanwhy ", "typed at the cursor");
+    // a resolved request takes no keys
+    let mut s = s;
+    if let BlockKind::Permission(p) = &mut s.conversation.blocks.last_mut().unwrap().kind {
+        p.resolution = Some("allow_once".into());
+    }
+    s.conversation.open_permissions.clear();
+    let mut editor = Editor::new();
+    assert!(keys("y", &s, &mut ui, &mut editor).is_empty());
+    assert_eq!(editor.text(), "y");
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(shown.contains("allowed once"), "{shown}");
+    assert!(!shown.contains("y allow once"), "{shown}");
+}
+
+#[test]
+fn the_prompt_reads_on_a_light_theme() {
+    let s = asking(prompt(
+        "write",
+        json!({"path": "/ws/a.txt", "content": "hello"}),
+        ("folder", "/ws"),
+    ));
+    let ui = UiState {
+        follow_bottom: true,
+        theme: ThemeId::AyuLight,
+        ..UiState::default()
+    };
+    render("permission-light", (100, 30), &s, &ui, &Editor::new());
+    let t = cells(&s, &ui, (100, 30));
+    let theme = Theme::ayu_light();
+    let row = (0..30)
+        .find(|y| row_text(&t, *y, 100).contains("PERMISSION"))
+        .unwrap();
+    let line = row_text(&t, row, 100);
+    let x = line[..line.find("PERMISSION").unwrap()].chars().count() as u16;
+    let cell = &t.backend().buffer()[(x, row)];
+    assert_eq!(cell.fg, theme.accent_text, "the readable accent on light");
+    assert_eq!(cell.bg, theme.bg);
+    let keys_row = (0..30)
+        .find(|y| row_text(&t, *y, 100).contains("y allow once"))
+        .unwrap();
+    let line = row_text(&t, keys_row, 100);
+    let x = line[..line.find("y allow").unwrap()].chars().count() as u16;
+    assert_eq!(t.backend().buffer()[(x, keys_row)].fg, theme.text);
 }

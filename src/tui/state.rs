@@ -169,6 +169,8 @@ pub struct Tab {
     /// The variant chosen in the model picker for a conversation not created yet: `None` leaves
     /// the alias's default, `Some(None)` asks for none.
     pub start_variant: Option<Option<String>>,
+    /// The request an answer was sent for and not yet acknowledged: its keys are ignored meanwhile.
+    pub answering_permission: Option<String>,
     /// Something arrived while another tab was shown.
     pub unread: bool,
     /// The editor text while another tab is shown, and the editor revision it was saved at.

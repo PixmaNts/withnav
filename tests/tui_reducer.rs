@@ -3086,3 +3086,61 @@ fn a_background_tab_with_an_open_request_waits_and_is_unread() {
     assert_eq!(navai::tui::view::sidebar::tab_state(background), "waiting");
     assert!(s.open_permission().is_none(), "the tab on screen has none");
 }
+
+#[test]
+fn answering_posts_once_and_a_stale_answer_drops_the_prompt_with_a_notice() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    feed(&mut s, &permission_script(3).out);
+    let request_id = Ulid(3).to_string();
+    let answer = || Action::AnswerPermission {
+        request_id: request_id.clone(),
+        answer: PermissionAnswer {
+            decision: "allow_once".into(),
+            message: None,
+        },
+    };
+    let fx = handle_action(&mut s, &mut ui, answer());
+    assert_eq!(
+        fx,
+        vec![Effect::AnswerPermission {
+            session_id: "S1".into(),
+            request_id: request_id.clone(),
+            answer: PermissionAnswer {
+                decision: "allow_once".into(),
+                message: None,
+            },
+        }]
+    );
+    assert!(
+        handle_action(&mut s, &mut ui, answer()).is_empty(),
+        "one answer in flight at a time"
+    );
+    // accepted: the prompt stays until permission.resolved arrives
+    let ok = ClientEvent::PermissionAnswered {
+        generation: s.generation.clone(),
+        request_id: request_id.clone(),
+        result: Ok(()),
+    };
+    update(&mut s, ok).unwrap();
+    assert!(s.open_permission().is_some());
+    assert!(s.answering_permission.is_none());
+    // stale: dropped with a short notice
+    handle_action(&mut s, &mut ui, answer());
+    let stale = ClientEvent::PermissionAnswered {
+        generation: s.generation.clone(),
+        request_id: request_id.clone(),
+        result: Err(AnswerError::Stale),
+    };
+    update(&mut s, stale).unwrap();
+    assert!(s.open_permission().is_none());
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Notice(n) if n.contains("no longer waiting")
+    ));
+    // an answer for another request than the open one sends nothing
+    let mut other = st();
+    created_now(&mut other, "S2").unwrap();
+    feed(&mut other, &permission_script(4).out);
+    assert!(handle_action(&mut other, &mut ui, answer()).is_empty());
+}

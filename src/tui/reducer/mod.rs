@@ -26,7 +26,9 @@ pub use command::{outcome_text, tokens};
 pub use text::strip_controls;
 
 use super::{
-    protocol::{ClientEvent, Effect, Generation, ProtocolError, SessionMetadata, SubmitRequest},
+    protocol::{
+        AnswerError, ClientEvent, Effect, Generation, ProtocolError, SessionMetadata, SubmitRequest,
+    },
     state::{Activity, Block, BlockKind, ConnectionStatus, State},
 };
 
@@ -46,6 +48,7 @@ pub fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::Context { generation, .. }
         | ClientEvent::Submitted { generation, .. }
         | ClientEvent::Commands { generation, .. }
+        | ClientEvent::PermissionAnswered { generation, .. }
         | ClientEvent::CommandRan { generation, .. }
         | ClientEvent::Stopped { generation, .. }
         | ClientEvent::DeliveryUncertain { generation }
@@ -225,6 +228,32 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     }
                     refresh_tab_model(catalog, tab);
                 }
+            }
+        }
+        ClientEvent::PermissionAnswered {
+            request_id, result, ..
+        } => {
+            s.answering_permission = None;
+            match result {
+                // The prompt clears when `permission.resolved` arrives on the stream.
+                Ok(()) => {}
+                Err(AnswerError::Stale) => {
+                    let id = format!("permission:{request_id}");
+                    s.conversation.open_permissions.retain(|open| open != &id);
+                    push_local(
+                        s,
+                        BlockKind::Notice(
+                            "that permission request was no longer waiting; nothing was changed"
+                                .into(),
+                        ),
+                    );
+                }
+                Err(AnswerError::Other(error)) => push_local(
+                    s,
+                    BlockKind::Notice(format!(
+                        "the answer to the permission request did not reach the server: {error}"
+                    )),
+                ),
             }
         }
         ClientEvent::Commands { result, .. } => {

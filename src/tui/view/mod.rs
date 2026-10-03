@@ -191,7 +191,13 @@ pub fn draw(
             hints,
         );
     } else {
-        let hint = " enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help";
+        let hint = match (state.open_permission(), &ui.deny_message) {
+            (Some(_), Some(_)) => " enter deny with this message  esc deny without one",
+            (Some(_), None) if editor.text().is_empty() => {
+                " y allow once  a always  n deny  esc stop  ctrl+p commands"
+            }
+            _ => " enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help",
+        };
         frame.render_widget(Paragraph::new(Line::from(hint_spans(hint, &theme))), hints);
     }
     pickers::draw(frame, full, state, ui, &theme);

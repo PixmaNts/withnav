@@ -251,6 +251,18 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 settle_turn_tools(s, &actor, t, outcome);
             }
         }
+        Some(EventKind::ContextCompacted) => {
+            let v = e.payload;
+            let tokens = |key: &str| crate::agent::context::tokens_k(v[key].as_u64().unwrap_or(0));
+            s.conversation.blocks.push(block(
+                format!("notice:{}", e.seq),
+                BlockKind::Notice(format!(
+                    "context compacted: ~{} -> ~{}",
+                    tokens("estimate_before"),
+                    tokens("estimate_after")
+                )),
+            ));
+        }
         Some(EventKind::ContextUpdated) => {
             let snapshot = serde_json::from_value(e.payload).map_err(|_| bad())?;
             keep_newer_context(s, snapshot);

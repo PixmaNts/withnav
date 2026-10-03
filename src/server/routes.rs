@@ -336,6 +336,9 @@ pub struct SessionListEntry {
     pub agent: String,
     /// True when a live, active session with this id exists in this process.
     pub live: bool,
+    pub parent_session_id: Option<String>,
+    pub child_status: Option<String>,
+    pub promptable: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -366,6 +369,9 @@ async fn list_sessions(
                     message_count: row.message_count,
                     agent: row.agent,
                     live: row.live,
+                    parent_session_id: row.parent_session_id,
+                    child_status: row.child_status,
+                    promptable: row.promptable,
                 })
                 .collect();
             (StatusCode::OK, Json(SessionListBody { sessions })).into_response()

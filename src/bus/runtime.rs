@@ -46,6 +46,7 @@ use crate::error::AgentError;
 /// The turn-end transcript hook: called with the actor's transcript after
 /// each turn's terminal events (the history store's snapshot seam).
 pub type TurnEndHook = Box<dyn Fn(&[crate::provider::openai::ChatMessage]) + Send>;
+pub type CompletionHook = Box<dyn Fn(crate::provider::AssistantMessage, bool) + Send>;
 
 /// Cancel reason recorded on `session.end` when the session token fires.
 const CANCEL_REASON: &str = "cancel";
@@ -544,6 +545,28 @@ pub fn spawn_with_status(
     on_turn_end: Option<TurnEndHook>,
     status: Arc<RuntimeStatus>,
 ) -> tokio::task::JoinHandle<AgentActor> {
+    spawn_with_completion(
+        session_id,
+        actor,
+        inbox,
+        sequencer,
+        session_cancel,
+        on_turn_end,
+        status,
+        None,
+    )
+}
+
+pub fn spawn_with_completion(
+    session_id: Ulid,
+    actor: AgentActor,
+    inbox: ActorInbox,
+    sequencer: Sequencer,
+    session_cancel: CancellationToken,
+    on_turn_end: Option<TurnEndHook>,
+    status: Arc<RuntimeStatus>,
+    completion: Option<CompletionHook>,
+) -> tokio::task::JoinHandle<AgentActor> {
     status.init_ask(&actor);
     tokio::spawn(runtime_loop(
         session_id,
@@ -553,6 +576,7 @@ pub fn spawn_with_status(
         session_cancel,
         on_turn_end.unwrap_or_else(|| Box::new(|_| {})),
         status,
+        completion,
     ))
 }
 
@@ -564,6 +588,7 @@ async fn runtime_loop(
     session_cancel: CancellationToken,
     on_turn_end: TurnEndHook,
     status: Arc<RuntimeStatus>,
+    completion: Option<CompletionHook>,
 ) -> AgentActor {
     let on_turn_end: SharedHook = Arc::new(Mutex::new(on_turn_end));
     let mut active_task_id: Option<Ulid> = None;
@@ -790,6 +815,9 @@ async fn runtime_loop(
 
         match outcome {
             Ok(RunOutcome::Done(message)) => {
+                if let Some(done) = &completion {
+                    done(message.clone(), true);
+                }
                 emit_turn_end(
                     &mut turn,
                     turn_id,
@@ -882,6 +910,15 @@ async fn runtime_loop(
                 emit_agent_state(&mut turn, "yielded");
             }
             Err(err) => {
+                if let Some(done) = &completion {
+                    done(
+                        crate::provider::AssistantMessage {
+                            text: err.to_string(),
+                            ..Default::default()
+                        },
+                        false,
+                    );
+                }
                 // Err sets Idle FIRST, then the events observe it.
                 actor.state = AgentState::Idle;
                 emit_turn_end(

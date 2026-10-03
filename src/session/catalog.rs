@@ -18,6 +18,9 @@ pub struct SessionListing {
     /// The primary agent the session runs as.
     pub agent: String,
     pub live: bool,
+    pub parent_session_id: Option<String>,
+    pub child_status: Option<String>,
+    pub promptable: bool,
 }
 
 impl Service {
@@ -28,13 +31,21 @@ impl Service {
             .list(workspace)
             .await
             .map_err(ServerError::History)?;
-        Ok(rows
-            .into_iter()
-            .map(|row| SessionListing {
+        let mut listings = Vec::new();
+        for row in rows {
+            let link = self
+                .history()
+                .child_link(row.meta.id)
+                .await
+                .map_err(ServerError::History)?;
+            listings.push(SessionListing {
                 live: matches!(
                     self.handle(row.meta.id),
                     Some(handle) if handle.lifecycle == Lifecycle::Active
                 ),
+                parent_session_id: link.as_ref().map(|child| child.parent_id.to_string()),
+                child_status: link.as_ref().map(|child| child.status.clone()),
+                promptable: link.is_none(),
                 id: row.meta.id,
                 title: row.meta.title,
                 created_at: row.meta.created_at,
@@ -44,8 +55,9 @@ impl Service {
                     .meta
                     .primary_agent
                     .unwrap_or_else(|| crate::agent::definitions::BUILD.to_string()),
-            })
-            .collect())
+            });
+        }
+        Ok(listings)
     }
 
     /// Stops the session if live, removes it from memory and from the

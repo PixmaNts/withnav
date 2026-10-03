@@ -25,7 +25,47 @@ impl Service {
     /// already closed (or only stored) is a no-op; unknown is a 404.
     pub async fn close_session(&self, id: SessionId) -> Result<(), ServerError> {
         let _gate = self.lifecycle_gate().await;
-        self.close_session_gated(id).await
+        let parent = self.handle(id).and_then(|h| h.parent_session_id);
+        self.close_session_gated(id).await?;
+        if let Some(parent) = parent {
+            if let Some(link) = self
+                .history()
+                .finish_child_link(
+                    id,
+                    "stopped".into(),
+                    Some("stopped_by_owner".into()),
+                    String::new(),
+                )
+                .await
+                .map_err(ServerError::History)?
+            {
+                if let Some(parent_handle) = self.handle(parent) {
+                    let event = crate::bus::event::SubagentDone {
+                        parent_session_id: parent,
+                        child_session_id: id,
+                        agent: link.agent,
+                        outcome: crate::bus::event::SubagentOutcome::Stopped,
+                        reason: link.terminal_reason,
+                        notification_id: ulid::Ulid::new(),
+                    };
+                    let _ = parent_handle
+                        .sequencer
+                        .publish(crate::bus::sequencer::Candidate::new(
+                            crate::bus::event::EventKind::SubagentDone,
+                            serde_json::to_value(event).unwrap_or(serde_json::Value::Null),
+                        ));
+                }
+            }
+            if let Some(slots) = self
+                .subagent_slots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_mut(&parent)
+            {
+                *slots = slots.saturating_sub(1);
+            }
+        }
+        Ok(())
     }
 
     /// [`Service::close_session`] for a caller that already holds the

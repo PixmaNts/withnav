@@ -209,7 +209,7 @@ pub struct Service {
     /// session id never has two runtimes and is never resumed while it is
     /// being stopped or deleted. One client, so one gate for the service.
     gate: Arc<tokio::sync::Mutex<()>>,
-    subagent_slots: Arc<Mutex<HashMap<SessionId, usize>>>,
+    pub(super) subagent_slots: Arc<Mutex<HashMap<SessionId, usize>>>,
     catalog: crate::provider::catalog::ModelCatalog,
     /// Test seam: parks a command run between its work and the publication
     /// of its result, to interleave lifecycle changes deterministically.
@@ -359,6 +359,7 @@ impl Service {
                     definition.access == crate::agent::definitions::AgentAccess::ReadOnly
                         || parent_policy.access == crate::agent::definitions::AgentAccess::ReadOnly,
                 )),
+                Some(parent),
             )
             .await;
         let child = match child {
@@ -895,6 +896,7 @@ impl Service {
             resume_workspace,
             variant,
             None,
+            None,
         )
         .await
     }
@@ -910,6 +912,7 @@ impl Service {
         resume_workspace: &Path,
         variant: &VariantChoice,
         child_policy: Option<(BTreeMap<String, bool>, bool)>,
+        child_parent: Option<SessionId>,
     ) -> Result<SessionId, ServerError> {
         // Resume keeps the stored model/profile/workspace (the stored row is
         // the authority); a fresh session honors the request's.
@@ -938,7 +941,24 @@ impl Service {
         let agents = self
             .load_agents(&workspace, session_id, resumed.is_some())
             .await;
-        let role = Self::pick_agent(&agents, session_id, agent, resumed.as_ref())?;
+        let role = if child_parent.is_some() {
+            let wanted = agent.unwrap_or_default();
+            agents
+                .get(wanted)
+                .filter(|definition| definition.mode.is_subagent())
+                .cloned()
+                .ok_or_else(|| ServerError::UnknownAgent {
+                    agent: wanted.to_string(),
+                    available: agents
+                        .all()
+                        .filter(|definition| definition.mode.is_subagent())
+                        .map(|definition| definition.id.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                })?
+        } else {
+            Self::pick_agent(&agents, session_id, agent, resumed.as_ref())?
+        };
         let (resolved, api_key, snapshot, save_late, models_file) = self
             .resolve_for_spawn(session_id, resume_workspace, &alias, resumed.as_ref())
             .await?;
@@ -1115,6 +1135,58 @@ impl Service {
             Some(Box::new(move |transcript: &[ChatMessage]| {
                 history.save_transcript(session_id, transcript.to_vec());
             }));
+        let completion: Option<crate::bus::runtime::CompletionHook> = if let Some(parent) =
+            child_parent
+        {
+            let history = self.history.clone();
+            let service = self.clone();
+            Some(Box::new(move |message, success| {
+                let history = history.clone();
+                let service = service.clone();
+                tokio::spawn(async move {
+                    let result = message.text.clone();
+                    let (text, _) = crate::tools::bound_output(&result, 16 * 1024);
+                    if let Ok(Some(link)) = history
+                        .finish_child_link(
+                            session_id,
+                            if success { "done" } else { "failed" }.into(),
+                            (!success).then(|| result.clone()),
+                            text.clone(),
+                        )
+                        .await
+                    {
+                        if let Some(owner) = service.handle(parent) {
+                            let payload = serde_json::to_value(crate::bus::event::SubagentDone {
+                                parent_session_id: parent,
+                                child_session_id: session_id,
+                                agent: link.agent,
+                                outcome: if success {
+                                    crate::bus::event::SubagentOutcome::Done
+                                } else {
+                                    crate::bus::event::SubagentOutcome::Failed
+                                },
+                                reason: link.terminal_reason,
+                                notification_id: Ulid::new(),
+                            })
+                            .unwrap_or(serde_json::Value::Null);
+                            let _ = owner
+                                .sequencer
+                                .publish(Candidate::new(EventKind::SubagentDone, payload));
+                        }
+                        if let Some(count) = service
+                            .subagent_slots
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .get_mut(&parent)
+                        {
+                            *count = count.saturating_sub(1);
+                        }
+                    }
+                });
+            }))
+        } else {
+            None
+        };
         let status = Arc::new(runtime::RuntimeStatus::with_selection(AgentSelection::new(
             agents, role,
         )));
@@ -1161,7 +1233,7 @@ impl Service {
             ContextTracker::new(limits, actor.context_breakdown()),
             actor.system_prompt.clone(),
         );
-        let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn_with_status(
+        let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn_with_completion(
             session_id,
             actor,
             inbox,
@@ -1169,6 +1241,7 @@ impl Service {
             session_cancel.clone(),
             on_turn_end,
             status.clone(),
+            completion,
         ))));
 
         let handle = SessionHandle {

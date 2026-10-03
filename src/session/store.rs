@@ -119,6 +119,7 @@ enum Write {
         resolution: Option<String>,
         variant: Option<String>,
         variant_override: Option<String>,
+        primary_agent: Option<String>,
     },
     SetVariant {
         id: Ulid,
@@ -262,12 +263,14 @@ impl HistoryStore {
         model: &str,
         profile: Option<&str>,
     ) -> Result<(), String> {
-        self.record_session_resolved(id, workspace, model, profile, None, None)
+        self.record_session_resolved(id, workspace, model, profile, None, None, None)
             .await
     }
 
     /// [`HistoryStore::record_session`] with the model resolution saved in
-    /// the same insert. An existing row keeps what it has.
+    /// the same insert, and the primary agent when it is not `build`. An
+    /// existing row keeps what it has.
+    #[allow(clippy::too_many_arguments)]
     pub async fn record_session_resolved(
         &self,
         id: Ulid,
@@ -276,6 +279,7 @@ impl HistoryStore {
         profile: Option<&str>,
         resolution: Option<&crate::provider::catalog::ModelResolution>,
         variant: Option<&(String, crate::provider::config::Variant)>,
+        primary_agent: Option<&str>,
     ) -> Result<(), String> {
         let (variant, variant_override) = split_variant(variant)?;
         let resolution = resolution
@@ -290,6 +294,7 @@ impl HistoryStore {
             resolution,
             variant,
             variant_override,
+            primary_agent: primary_agent.map(str::to_string),
         })
         .await
     }
@@ -446,13 +451,14 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             resolution,
             variant,
             variant_override,
+            primary_agent,
         } => {
             let now = now_rfc3339();
             tx.execute(
                 "INSERT OR IGNORE INTO sessions
                  (id, workspace, model, profile, title, created_at, updated_at, last_seq, transcript,
-                  model_resolution, variant, variant_override)
-                 VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5, -1, NULL, ?6, ?7, ?8)",
+                  model_resolution, variant, variant_override, primary_agent)
+                 VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5, -1, NULL, ?6, ?7, ?8, ?9)",
                 params![
                     id.to_string(),
                     workspace,
@@ -461,7 +467,8 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                     now,
                     resolution,
                     variant,
-                    variant_override
+                    variant_override,
+                    primary_agent
                 ],
             )?;
         }
@@ -1148,7 +1155,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let id = Ulid::new();
         store
-            .record_session_resolved(id, "/w", "m", None, None, Some(&pick("high")))
+            .record_session_resolved(id, "/w", "m", None, None, Some(&pick("high")), None)
             .await
             .expect("record");
         let read = |store: &HistoryStore| {
@@ -1216,7 +1223,7 @@ mod tests {
             .await
             .expect("ignored");
         store
-            .record_session_resolved(id, "/w", "m", None, Some(&make(300)), None)
+            .record_session_resolved(id, "/w", "m", None, Some(&make(300)), None, None)
             .await
             .expect("existing row keeps its own");
         let meta = store.meta(id).await.expect("meta").expect("present");

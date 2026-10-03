@@ -705,17 +705,13 @@ impl Service {
                 profile,
                 Some(&snapshot),
                 selected.as_ref(),
+                // Written with the row: a resumed row already has its agent.
+                (!is_resume && !role.id.is_build()).then(|| role.id.as_str()),
             )
             .await
             .map_err(ServerError::History)?;
         if save_late {
             self.save_legacy_snapshot(session_id, &snapshot).await?;
-        }
-        if !is_resume && !role.id.is_build() {
-            history
-                .set_primary_agent(session_id, Some(role.id.as_str()))
-                .await
-                .map_err(ServerError::History)?;
         }
         let sequencer = Sequencer::spawn(
             session_id,

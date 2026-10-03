@@ -577,3 +577,18 @@ async fn switching_agents_moves_the_gauge_without_a_turn() {
         "context.updated carries the plan estimate"
     );
 }
+
+// Given a session created as plan
+// Then its row holds plan as soon as creation returns: no flush, no turn
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_row_holds_the_agent_as_soon_as_creation_returns() {
+    let env = env();
+    let provider = provider(1).await;
+    let state = state(&env, &provider);
+    let id = state
+        .create_session_as(&env.ws, None, None, Some("plan"))
+        .await
+        .unwrap();
+    let row = state.history().meta(id).await.unwrap().expect("row");
+    assert_eq!(row.primary_agent.as_deref(), Some("plan"));
+}

@@ -16,6 +16,7 @@ pub mod progress;
 mod steering;
 mod watchdog;
 pub use delivery::Delivery;
+pub use watchdog::TerminalOwner;
 mod model;
 
 use std::sync::{Arc, Mutex};

@@ -103,6 +103,174 @@ async fn watchdog_stop_owns_child_until_concurrent_child_delete_can_finish() {
 async fn watchdog_stop_owns_child_until_concurrent_parent_delete_can_finish() {
     watchdog_teardown_blocks_delete(true).await;
 }
+
+#[derive(Debug, Default)]
+struct HeldTool {
+    entered: tokio::sync::Notify,
+    cancelled: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    ended: std::sync::atomic::AtomicBool,
+}
+struct HeldToolAdapter(Arc<HeldTool>);
+impl std::ops::Deref for HeldToolAdapter {
+    type Target = HeldTool;
+    fn deref(&self) -> &HeldTool {
+        &self.0
+    }
+}
+impl navai::tools::Tool for HeldToolAdapter {
+    fn name(&self) -> &str {
+        "glob"
+    }
+    fn schema(&self) -> Value {
+        json!({"parameters":{"type":"object"}})
+    }
+    fn call<'a>(
+        &'a self,
+        _: Value,
+        cancel: CancellationToken,
+        _: &'a navai::tools::ToolContext,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<navai::tools::ToolResult, navai::error::ToolError>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            self.entered.notify_one();
+            cancel.cancelled().await;
+            self.cancelled.notify_one();
+            self.release.notified().await;
+            self.ended.store(true, std::sync::atomic::Ordering::Release);
+            Err(navai::error::ToolError::Canceled)
+        })
+    }
+}
+#[derive(Debug)]
+struct HeldToolHooks(Arc<HeldTool>);
+impl navai::session::SessionHooks for HeldToolHooks {
+    fn default_model(&self, _: Option<&str>) -> Option<&str> {
+        None
+    }
+    fn configure_actor(&self, _: Option<&str>, actor: &mut navai::agent::actor::AgentActor) {
+        actor
+            .registry
+            .register(Box::new(HeldToolAdapter(self.0.clone())));
+    }
+}
+
+#[tokio::test]
+async fn running_tool_keeps_capacity_and_completion_until_it_has_ended() {
+    let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let tool = Arc::new(HeldTool::default());
+    let service = navai::server::AppState::with_hooks(
+        TestServerConfig::mock(tmp.path(), &provider.url)
+            .chat_tools(128000)
+            .config(),
+        Arc::new(HeldToolHooks(tool.clone())),
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("cfg/config.json"),
+        r#"{"subagents":{"max_concurrent":1}}"#,
+    )
+    .unwrap();
+    let (tx, mut sleeps) = mpsc::unbounded_channel();
+    let clock = Arc::new(FakeClock {
+        now: Mutex::new(Instant::now()),
+        sleeps: tx,
+    });
+    let (checked, _rx) = mpsc::unbounded_channel();
+    service.install_watchdog_test(
+        clock.clone(),
+        Arc::new(FakeJudge {
+            answers: Mutex::new(vec![Ok(Verdict::Stuck)].into()),
+            checked,
+        }),
+    );
+    let parent = service
+        .create_session(&ws, None, None)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let child = service
+        .create_child_session(parent, "explore", "inspect")
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (_, stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    stream
+        .send(tool_call_chunk("held", "glob", &json!({"pattern":"*"})))
+        .unwrap();
+    drop(stream);
+    tool.entered.notified().bounded(file!(), line!()).await;
+    let tick = sleeps.recv().bounded(file!(), line!()).await.unwrap();
+    *clock.now.lock().unwrap() += Duration::from_secs(300);
+    tick.send(()).unwrap();
+    tool.cancelled.notified().bounded(file!(), line!()).await;
+    assert!(!tool.ended.load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(
+        service
+            .child_metadata(child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "running"
+    );
+    assert!(service
+        .create_child_session(parent, "explore", "replacement")
+        .bounded(file!(), line!())
+        .await
+        .is_err());
+    service
+        .history()
+        .flush()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(!service
+        .history()
+        .replay(parent, None, u64::MAX)
+        .bounded(file!(), line!())
+        .await
+        .unwrap()
+        .iter()
+        .any(|e| e.kind == "subagent.done"));
+    assert!(provider.requests.try_recv().is_err());
+    tool.release.notify_one();
+    let (_, parent_stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(tool.ended.load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(
+        service
+            .child_metadata(child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .unwrap()
+            .terminal_reason
+            .as_deref(),
+        Some("watchdog")
+    );
+    drop(parent_stream);
+    service.close_all().bounded(file!(), line!()).await;
+}
 impl Fixture {
     async fn new(answers: Vec<Result<Verdict, JudgeError>>) -> Self {
         let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;

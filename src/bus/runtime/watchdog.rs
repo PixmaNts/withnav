@@ -1,17 +1,39 @@
 //! A progress doubt holds the next provider boundary, not a human interaction.
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Default)]
 pub struct WatchdogPark {
+    terminal_owner: Mutex<Option<TerminalOwner>>,
     pub supervisor_cancel: CancellationToken,
     pub stopped: AtomicBool,
     doubt: AtomicBool,
     resumed: Notify,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalOwner {
+    Natural,
+    Watchdog,
+}
+
 impl WatchdogPark {
+    pub fn claim_terminal(&self, owner: TerminalOwner) -> bool {
+        let mut claimed = self
+            .terminal_owner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if claimed.is_some() {
+            return false;
+        }
+        *claimed = Some(owner);
+        if owner == TerminalOwner::Watchdog {
+            self.stopped.store(true, Ordering::Release);
+        }
+        true
+    }
     pub fn is_doubt(&self) -> bool {
         self.doubt.load(Ordering::Acquire)
     }

@@ -1930,11 +1930,10 @@ impl Service {
                         if let Some(handle) = service.handle(session_id) {
                             handle.status.watchdog.supervisor_cancel.cancel();
                         }
-                        if service.handle(session_id).is_some_and(|h| {
+                        if !service.handle(session_id).is_some_and(|h| {
                             h.status
                                 .watchdog
-                                .stopped
-                                .load(std::sync::atomic::Ordering::Acquire)
+                                .claim_terminal(crate::bus::runtime::TerminalOwner::Natural)
                         }) {
                             return;
                         }

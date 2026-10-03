@@ -76,6 +76,13 @@ impl Service {
         self.wait_child_operation(child).await;
         let (_operation, target) = {
             let _admission = self.admission_gate.lock().await;
+            if !handle
+                .status
+                .watchdog
+                .claim_terminal(crate::bus::runtime::TerminalOwner::Watchdog)
+            {
+                return Ok(());
+            }
             let Some(target) = self.mark_stopping(child) else {
                 return Ok(());
             };
@@ -94,25 +101,6 @@ impl Service {
             .unwrap_or_else(|e| e.into_inner())
             .partial_output
             .clone();
-        // Commit the outcome before cancelling so the natural interruption callback cannot win the CAS.
-        if let Err(error) = self
-            .finish_child(
-                parent,
-                child,
-                "stopped",
-                Some("watchdog".into()),
-                format!("stopped by watchdog\n{partial}"),
-            )
-            .await
-        {
-            handle
-                .status
-                .watchdog
-                .stopped
-                .store(false, Ordering::Release);
-            handle.status.watchdog.resume();
-            return Err(error);
-        }
         target.session_cancel.cancel();
         #[cfg(debug_assertions)]
         {
@@ -127,6 +115,14 @@ impl Service {
             }
         }
         self.fence_and_remove(child, target, "watchdog").await;
+        self.finish_child(
+            parent,
+            child,
+            "stopped",
+            Some("watchdog".into()),
+            format!("stopped by watchdog\n{partial}"),
+        )
+        .await?;
         Ok(())
     }
 }

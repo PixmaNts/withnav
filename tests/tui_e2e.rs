@@ -445,3 +445,87 @@ async fn a_rate_limited_provider_shows_an_error_block() {
     assert!(shown.contains("ERROR"), "{shown}");
     assert!(shown.contains("Quota preflight blocked"), "{shown}");
 }
+
+fn final_text_of(tab: &navai::tui::state::Tab, text: &str) -> bool {
+    tab.activity == Activity::Idle
+        && tab
+            .conversation
+            .blocks
+            .iter()
+            .any(|b| matches!(&b.kind, BlockKind::AssistantStep { text: t, .. } if t == text))
+}
+
+// Given a provider that answers each conversation with its own text
+// When a message is sent in one tab, ctrl+n opens a second tab and a message is sent there before
+//      the first answer arrived
+// Then both conversations stream at once, each into its own tab, one stream per tab, and the tab
+//      in the background is marked unread
+// And closing a tab stops its stream and leaves its conversation on the server
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_tabs_stream_their_own_conversations_at_once() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let provider = spawn_responding_provider(8, |_, request| {
+        if request.contains("first question") {
+            final_answer("Answer to the first.", usage(10, 2))
+        } else {
+            final_answer("Answer to the second.", usage(20, 3))
+        }
+    })
+    .await;
+    let env = Env::start(root, &provider.url).await;
+    let mut rt = started(&env).await;
+    pick_model(&mut rt, 0);
+
+    type_and_send(&mut rt, "first question");
+    rt.handle_terminal_event(Event::Key(KeyEvent::new(
+        KeyCode::Char('n'),
+        KeyModifiers::CONTROL,
+    )));
+    assert_eq!((rt.state.tabs.len(), rt.state.active), (2, 1));
+    assert!(
+        rt.editor.text().is_empty(),
+        "the new tab starts with an empty editor"
+    );
+    type_and_send(&mut rt, "second question");
+
+    until("both answers", &mut rt, |_, rt| {
+        final_text_of(&rt.state.tabs[0], "Answer to the first.")
+            && final_text_of(&rt.state.tabs[1], "Answer to the second.")
+    })
+    .await;
+    let (first, second) = (&rt.state.tabs[0], &rt.state.tabs[1]);
+    let first_id = first
+        .session
+        .as_ref()
+        .expect("first session")
+        .session_id
+        .clone();
+    let second_id = second
+        .session
+        .as_ref()
+        .expect("second session")
+        .session_id
+        .clone();
+    assert_ne!(first_id, second_id);
+    assert!(!final_text_of(first, "Answer to the second."));
+    assert!(!final_text_of(second, "Answer to the first."));
+    assert!(first.unread, "the background tab got news");
+    assert!(!second.unread, "the tab on screen is read");
+    assert_eq!(rt.executor().stream_count(), 2);
+    assert_unique_ids(&first.conversation.blocks);
+    assert_unique_ids(&second.conversation.blocks);
+    let shown = screen(&mut rt);
+    assert!(shown.contains("Answer to the second."), "{shown}");
+    assert!(!shown.contains("Answer to the first."), "{shown}");
+
+    // Closing the second tab stops its stream only; the server keeps the conversation.
+    rt.dispatch(navai::tui::protocol::Action::CloseTab);
+    assert_eq!(rt.state.tabs.len(), 1);
+    assert_eq!(rt.executor().stream_count(), 1);
+    assert_eq!(session_id(&rt), first_id);
+    let listed = Client::new(env.base.clone(), None)
+        .sessions(&env.ws.to_string_lossy())
+        .await
+        .expect("session list");
+    assert!(listed.sessions.iter().any(|s| s.id == second_id));
+}

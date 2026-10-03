@@ -1,6 +1,6 @@
 //! Owns the UI event loop; effect execution lives in `effects`, drawing in
 //! view. The runtime is the only owner of `State`, `UiState`, the editor, the
-//! render cache, the client and the event stream.
+//! render cache, the client and the event streams (one per open tab).
 mod effects;
 
 use std::time::Duration;
@@ -107,7 +107,12 @@ impl Runtime {
     /// here. Marks the screen dirty while something on it moves.
     pub fn on_tick(&mut self) -> u64 {
         self.tick = self.tick.wrapping_add(1);
-        let animating = self.state.activity == Activity::Running
+        // A background tab changes only its sidebar row; that row animates too.
+        let animating = self
+            .state
+            .tabs
+            .iter()
+            .any(|t| t.activity == Activity::Running)
             || self.state.pending_submit.is_some()
             || matches!(
                 self.state.connection,
@@ -168,7 +173,8 @@ impl Runtime {
         }
     }
 
-    fn dispatch(&mut self, action: Action) {
+    /// Applies `action` as if a key had produced it.
+    pub fn dispatch(&mut self, action: Action) {
         self.dirty = true;
         // The reducer keeps the draft of a tab that goes to the background.
         self.state.draft = self.editor.text();
@@ -200,7 +206,13 @@ impl Runtime {
                 self.quit = true;
             }
         }
-        self.exec.retire_stale_stream(&ctx.generation);
+        let live: Vec<_> = self
+            .state
+            .tabs
+            .iter()
+            .map(|t| t.generation.clone())
+            .collect();
+        self.exec.retire_streams(&live);
     }
 
     pub fn render(&mut self, frame: &mut ratatui::Frame<'_>) {
@@ -245,7 +257,7 @@ pub async fn run(options: TuiOptions) -> Result<(), TuiError> {
     let mut runtime = Runtime::new(&options);
     runtime.start(options.initial_session.clone());
     let result = event_loop(&mut runtime, &mut guard).await;
-    runtime.exec.cancel_stream();
+    runtime.exec.cancel_streams();
     drop(guard);
     result
 }

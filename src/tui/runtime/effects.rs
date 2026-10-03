@@ -40,11 +40,11 @@ struct ActiveStream {
     generation: Generation,
 }
 
-/// Owns the client, the event channel and the one live event stream.
+/// Owns the client, the event channel and the live event streams, one per open tab.
 pub struct Executor {
     client: Client,
     tx: mpsc::Sender<ClientEvent>,
-    stream: Option<ActiveStream>,
+    streams: Vec<ActiveStream>,
 }
 
 impl Executor {
@@ -52,27 +52,40 @@ impl Executor {
         Self {
             client,
             tx,
-            stream: None,
+            streams: Vec::new(),
         }
     }
 
-    /// Cancels the live stream if it belongs to another generation than
-    /// `generation`.
-    pub fn retire_stale_stream(&mut self, generation: &Generation) {
-        if self
-            .stream
-            .as_ref()
-            .is_some_and(|s| &s.generation != generation)
-        {
-            self.cancel_stream();
-        }
+    /// Cancels every stream whose generation is not in `live`: a closed tab, or a tab that moved
+    /// to another conversation.
+    pub fn retire_streams(&mut self, live: &[Generation]) {
+        self.streams.retain(|s| {
+            let keep = live.contains(&s.generation);
+            if !keep {
+                s.cancel.cancel();
+            }
+            keep
+        });
     }
 
-    /// Stops the live stream, if any.
-    pub fn cancel_stream(&mut self) {
-        if let Some(active) = self.stream.take() {
-            active.cancel.cancel();
-        }
+    /// Stops the stream of `generation`, if any.
+    pub fn cancel_stream(&mut self, generation: &Generation) {
+        self.retire_streams_where(|g| g == generation);
+    }
+
+    /// Stops every stream.
+    pub fn cancel_streams(&mut self) {
+        self.retire_streams_where(|_| true);
+    }
+
+    fn retire_streams_where(&mut self, stop: impl Fn(&Generation) -> bool) {
+        self.streams.retain(|s| {
+            let gone = stop(&s.generation);
+            if gone {
+                s.cancel.cancel();
+            }
+            !gone
+        });
     }
 
     /// A sender into the loop's event channel, for tests that inject events.
@@ -81,7 +94,12 @@ impl Executor {
     }
 
     pub fn has_stream(&self) -> bool {
-        self.stream.is_some()
+        !self.streams.is_empty()
+    }
+
+    /// How many streams are live: at most one per open tab.
+    pub fn stream_count(&self) -> usize {
+        self.streams.len()
     }
 
     pub fn execute(&mut self, effect: Effect, ctx: &Context, editor: &mut Editor) -> Flow {
@@ -135,7 +153,7 @@ impl Executor {
             Effect::Subscribe { session_id, cursor } => {
                 self.subscribe(session_id, cursor, generation);
             }
-            Effect::Unsubscribe => self.cancel_stream(),
+            Effect::Unsubscribe => self.cancel_stream(&generation),
             // Legacy variant (never emitted by the reducer): no editor revision to echo.
             Effect::Send(request) => self.send(request, 0, ctx),
             Effect::SendAt { request, revision } => self.send(request, revision, ctx),
@@ -199,8 +217,9 @@ impl Executor {
         });
     }
 
+    /// Starts the stream of the tab tagged `generation`, replacing the one it had.
     fn subscribe(&mut self, session_id: String, cursor: Option<u64>, generation: Generation) {
-        self.cancel_stream();
+        self.cancel_stream(&generation);
         let cancel = CancellationToken::new();
         let mut events = stream::subscribe(
             self.client.clone(),
@@ -226,7 +245,7 @@ impl Executor {
                 }
             }
         });
-        self.stream = Some(ActiveStream { cancel, generation });
+        self.streams.push(ActiveStream { cancel, generation });
     }
 
     fn spawn_event(&self, work: impl Future<Output = ClientEvent> + Send + 'static) {
@@ -239,7 +258,7 @@ impl Executor {
 
 impl Drop for Executor {
     fn drop(&mut self) {
-        self.cancel_stream();
+        self.cancel_streams();
     }
 }
 

@@ -190,44 +190,33 @@ async fn quit_ends_the_loop() {
 }
 
 #[tokio::test]
-async fn subscribe_replaces_the_previous_stream_and_unsubscribe_cancels_it() {
+async fn each_generation_has_its_own_stream_and_unsubscribe_cancels_only_its_own() {
     let (mut exec, _rx) = executor();
     let mut editor = Editor::new();
+    let subscribe = |id: &str| Effect::Subscribe {
+        session_id: id.into(),
+        cursor: None,
+    };
     assert!(!exec.has_stream());
-    exec.execute(
-        Effect::Subscribe {
-            session_id: "a".into(),
-            cursor: None,
-        },
-        &ctx(1, Some("a")),
-        &mut editor,
+    exec.execute(subscribe("a"), &ctx(1, Some("a")), &mut editor);
+    exec.execute(subscribe("b"), &ctx(2, Some("b")), &mut editor);
+    assert_eq!(exec.stream_count(), 2, "two tabs stream at once");
+    exec.execute(subscribe("b"), &ctx(2, Some("b")), &mut editor);
+    assert_eq!(
+        exec.stream_count(),
+        2,
+        "a tab's new stream replaces its old one"
     );
-    assert!(exec.has_stream());
-    exec.execute(
-        Effect::Subscribe {
-            session_id: "b".into(),
-            cursor: Some(4),
-        },
-        &ctx(2, Some("b")),
-        &mut editor,
+    exec.retire_streams(&[Generation(2), Generation(3)]);
+    assert_eq!(
+        exec.stream_count(),
+        1,
+        "a generation no tab holds is retired"
     );
-    assert!(exec.has_stream());
-    exec.retire_stale_stream(&Generation(3));
-    assert!(
-        !exec.has_stream(),
-        "a stream of an older generation is retired"
-    );
-    exec.execute(
-        Effect::Subscribe {
-            session_id: "c".into(),
-            cursor: None,
-        },
-        &ctx(3, Some("c")),
-        &mut editor,
-    );
-    exec.retire_stale_stream(&Generation(3));
-    assert!(exec.has_stream(), "the current generation's stream stays");
-    exec.execute(Effect::Unsubscribe, &ctx(3, Some("c")), &mut editor);
+    exec.execute(subscribe("c"), &ctx(3, Some("c")), &mut editor);
+    exec.execute(Effect::Unsubscribe, &ctx(2, Some("b")), &mut editor);
+    assert_eq!(exec.stream_count(), 1);
+    exec.cancel_streams();
     assert!(!exec.has_stream());
 }
 

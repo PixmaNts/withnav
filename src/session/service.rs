@@ -209,6 +209,7 @@ pub struct Service {
     /// session id never has two runtimes and is never resumed while it is
     /// being stopped or deleted. One client, so one gate for the service.
     gate: Arc<tokio::sync::Mutex<()>>,
+    subagent_slots: Arc<Mutex<HashMap<SessionId, usize>>>,
     catalog: crate::provider::catalog::ModelCatalog,
     /// Test seam: parks a command run between its work and the publication
     /// of its result, to interleave lifecycle changes deterministically.
@@ -243,6 +244,7 @@ impl Service {
             history: Arc::new(history),
             hooks,
             gate: Arc::new(tokio::sync::Mutex::new(())),
+            subagent_slots: Arc::default(),
             catalog,
             #[cfg(test)]
             install_barrier: Arc::default(),
@@ -284,6 +286,23 @@ impl Service {
             return Err(ServerError::ChildReadOnly);
         }
         let parent_role = parent_handle.status.selection.current();
+        let cap = crate::settings::load(&self.config.config_dir)
+            .map_err(|e| ServerError::MalformedBody(e.to_string()))?
+            .subagents_max_concurrent()
+            .map_err(ServerError::MalformedBody)?;
+        {
+            let mut slots = self
+                .subagent_slots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let current = slots.entry(parent).or_default();
+            if *current >= cap {
+                return Err(ServerError::MalformedBody(format!(
+                    "subagent capacity reached ({cap} concurrent children)"
+                )));
+            }
+            *current += 1;
+        }
         let agents = self
             .load_agents(&parent_handle.workspace, parent, false)
             .await;
@@ -335,7 +354,20 @@ impl Service {
                     definition.access == crate::agent::definitions::AgentAccess::ReadOnly,
                 )),
             )
-            .await?;
+            .await;
+        let child = match child {
+            Ok(id) => id,
+            Err(error) => {
+                let mut slots = self
+                    .subagent_slots
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if let Some(count) = slots.get_mut(&parent) {
+                    *count = count.saturating_sub(1);
+                }
+                return Err(error);
+            }
+        };
         let frozen = serde_json::to_string(&policy).unwrap_or_else(|_| "{}".into());
         if let Err(error) = self
             .history
@@ -949,6 +981,7 @@ impl Service {
             reason: e.to_string(),
         })?;
         let session_cancel = CancellationToken::new();
+        let root_tools_enabled = child_policy.is_none() && profile.is_none();
         let mut actor = match child_policy {
             Some((allowed, read_only)) => build_child_actor(
                 &workspace,
@@ -967,6 +1000,14 @@ impl Service {
                 session_cancel.child_token(),
             ),
         };
+        if root_tools_enabled {
+            actor
+                .registry
+                .register(Box::new(crate::tools::task::TaskTool::new(
+                    self.clone(),
+                    session_id,
+                )));
+        }
         if let Some(loaded) = &resumed {
             actor.transcript = loaded.transcript.clone();
             actor.compaction = loaded.compaction.clone();

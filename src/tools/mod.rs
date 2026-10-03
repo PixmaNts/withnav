@@ -16,6 +16,7 @@ pub mod fetch;
 pub mod glob;
 pub mod native;
 pub mod nofollow;
+pub mod task;
 
 /// The argument the agent loop adds to a `write` or `edit` whose destination
 /// was reviewed: `path` is then that canonical file, and the tool opens it

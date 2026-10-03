@@ -160,6 +160,61 @@ pub struct CommandOutcome {
     pub error: Option<String>,
 }
 
+impl CommandOutcome {
+    /// The plain text a terminal shows for this outcome: the command's data
+    /// for a success, its error for a failure.
+    pub fn render_text(&self) -> String {
+        if !self.ok {
+            return self.error.clone().unwrap_or_default();
+        }
+        let Some(data) = &self.data else {
+            return String::new();
+        };
+        match self.name.as_str() {
+            "help" => data["commands"]
+                .as_array()
+                .map(|list| {
+                    list.iter()
+                        .map(|c| {
+                            let usage = format!(
+                                "/{} {}",
+                                c["name"].as_str().unwrap_or_default(),
+                                c["args_hint"].as_str().unwrap_or_default()
+                            );
+                            format!(
+                                "{:<20} {}",
+                                usage.trim_end(),
+                                c["description"].as_str().unwrap_or_default()
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default(),
+            "new" => format!(
+                "new session {}",
+                data["session_id"].as_str().unwrap_or_default()
+            ),
+            "model" => {
+                let text = |key: &str| match &data[key] {
+                    Value::String(s) => s.clone(),
+                    Value::Null => "unknown".to_string(),
+                    other => other.to_string(),
+                };
+                format!(
+                    "alias {} (model {}, window {} tokens, from {})",
+                    text("alias"),
+                    text("model"),
+                    text("window"),
+                    text("window_source")
+                )
+            }
+            "stop" => "stopped".to_string(),
+            _ => data.to_string(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

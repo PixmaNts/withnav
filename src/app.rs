@@ -224,6 +224,30 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
         .await
         .map_err(|e| anyhow::anyhow!("subscribe failed: {e}"))?;
 
+    // A leading `/name` runs a session command and prints its result; `//text`
+    // sends the literal message `/text`.
+    let prompt = match crate::session::route_line(&prompt) {
+        crate::session::Routed::Command { name, arguments } => {
+            let exit = match state.run_command(session_id, &name, &arguments).await {
+                Ok(outcome) if outcome.ok => {
+                    println!("{}", outcome.render_text());
+                    EXIT_DONE
+                }
+                Ok(outcome) => {
+                    eprintln!("error: {}", outcome.render_text());
+                    EXIT_ERROR
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    EXIT_ERROR
+                }
+            };
+            let _ = state.close_session(session_id).await;
+            return Ok(exit);
+        }
+        crate::session::Routed::Message(text) => text,
+    };
+
     post_prompt(&state, session_id, &prompt).await?;
 
     let mut renderer = Renderer::new(args.show_thinking);

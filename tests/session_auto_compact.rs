@@ -561,3 +561,119 @@ async fn a_switched_session_with_large_old_reasoning_compacts_and_continues() {
         assert!(!body.contains("think think think"), "reasoning was sent");
     }
 }
+
+/// A conversation over the budget whose next request is held by an automatic
+/// summary, parked at its provider call. Returns the state, the session, the
+/// provider and the two gates.
+async fn parked_summary() -> (
+    Env,
+    AppState,
+    ulid::Ulid,
+    CapturingProvider,
+    std::sync::Arc<tokio::sync::Notify>,
+) {
+    let env = env();
+    let reached = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let provider = common::sse::spawn_holding_provider(
+        6,
+        0,
+        reached.clone(),
+        release.clone(),
+        |_, request| {
+            if is_summary(request) {
+                answer(SUMMARY)
+            } else {
+                answer("done")
+            }
+        },
+    )
+    .await;
+    let state = state(&env, &provider, WINDOW);
+    let id = seeded(&state, &env.ws, 7).await;
+    send_text(&state, id, "go").await;
+    reached.notified().await;
+    assert!(is_summary(&provider.bodies()[0]), "parked in the summary");
+    (env, state, id, provider, release)
+}
+
+// Given an automatic summary in flight
+// When the session is stopped
+// Then nothing is committed (no checkpoint, no context.compacted), the
+//      compacting mark is cleared, and the stop completes
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_during_an_automatic_summary_commits_nothing_and_clears_the_mark() {
+    let (_env, state, id, _provider, release) = parked_summary().await;
+    // The mark is up while the summary runs: an agent switch says so.
+    let marked = state.run_command(id, "agent", "plan").await.unwrap();
+    assert!(!marked.ok);
+    assert!(marked.error.unwrap().contains("a compaction is running"));
+
+    let stopping = {
+        let state = state.clone();
+        tokio::spawn(async move { state.close_session(id).await })
+    };
+    // The summary answer arrives after the stop was asked.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    release.notify_one();
+    stopping.await.unwrap().expect("the stop completes");
+
+    assert!(stored(&state, id, "context.compacted").await.is_empty());
+    assert!(stored(&state, id, "model.changed").await.is_empty());
+    let (_, _, checkpoint) = state.history().load_for_resume(id).await.unwrap().unwrap();
+    assert!(checkpoint.is_none(), "nothing was committed");
+}
+
+// Given an automatic summary in flight (the turn is running)
+// When /agent, /variant and /model are run, and then /compact
+// Then the first three are refused (a compaction is running) and change
+//      nothing; /compact is accepted for after the turn and runs then, as a
+//      manual compaction under its own operation id; the mark is cleared when
+//      it is over, so the refused commands go through
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn controls_during_an_automatic_summary_are_refused_or_wait_their_turn() {
+    let (_env, state, id, provider, release) = parked_summary().await;
+
+    for (command, arguments) in [("agent", "plan"), ("variant", "off"), ("model", "default")] {
+        let refused = state.run_command(id, command, arguments).await.unwrap();
+        assert!(!refused.ok, "{command}: {refused:?}");
+        assert!(
+            refused.error.unwrap().contains("a compaction is running"),
+            "{command}"
+        );
+    }
+    let compact = state.run_command(id, "compact", "").await.unwrap();
+    assert!(compact.ok, "{compact:?}");
+    assert_eq!(compact.data.as_ref().unwrap()["applies"], "after_turn");
+
+    let sub = state.subscribe(id, None).await.unwrap();
+    release.notify_one();
+    // The turn, then the manual compaction (a second summary).
+    collect_until(sub, |e| {
+        e.kind == "command.result"
+            && e.payload["operation_id"] == compact.operation_id.to_string()
+            && e.payload["data"]["applies"] == "after_turn"
+            && e.payload["data"]["generation"].is_number()
+    })
+    .await;
+
+    let results: Vec<_> = stored(&state, id, "command.result")
+        .await
+        .into_iter()
+        .filter(|e| e.payload["operation_id"] == compact.operation_id.to_string())
+        .collect();
+    assert_eq!(results.len(), 2, "accepted, then done: {results:?}");
+    assert!(results.iter().all(|e| e.payload["ok"] == true));
+    let reasons: Vec<String> = stored(&state, id, "context.compacted")
+        .await
+        .iter()
+        .map(|e| e.payload["reason"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(reasons, ["automatic", "manual"]);
+    assert_eq!(provider.bodies().len(), 3, "summary, turn, manual summary");
+    assert!(stored(&state, id, "model.changed").await.is_empty());
+
+    // The mark is gone: the refused commands go through.
+    let again = state.run_command(id, "agent", "plan").await.unwrap();
+    assert!(again.ok, "{again:?}");
+}

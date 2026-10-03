@@ -24,6 +24,7 @@ fn provider_at(base: String) -> ProviderConfig {
         connect_timeout_ms: 5000,
         // Generous configured timeout; the per-layer ~2 s deadline must win.
         request_timeout_ms: 600_000,
+        catalog_format: None,
     }
 }
 
@@ -38,6 +39,8 @@ fn model_config() -> ModelConfig {
         supports_tools: false,
         supports_parallel_tool_calls: None,
         thinking: None,
+        default_variant: None,
+        variants: None,
         reasoning_history: Default::default(),
     }
 }

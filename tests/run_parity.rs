@@ -331,6 +331,7 @@ fn make_actor(base_url: String) -> AgentActor {
             headers: BTreeMap::new(),
             connect_timeout_ms: 2000,
             request_timeout_ms: 600_000,
+            catalog_format: None,
         },
         "test-key".to_string(),
         "test-model".to_string(),

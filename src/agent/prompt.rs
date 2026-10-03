@@ -62,6 +62,7 @@ pub fn build_request(
         }),
         max_tokens,
         temperature: None,
+        extra: Default::default(),
     }
 }
 

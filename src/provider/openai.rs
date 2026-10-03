@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::ProviderError;
-use crate::provider::config::ProviderConfig;
+use crate::provider::config::{ProviderConfig, Variant, RESERVED_VARIANT_KEYS};
 use crate::provider::Usage;
 
 #[derive(Debug, Clone, Serialize)]
@@ -20,6 +20,22 @@ pub struct ChatRequest {
     pub max_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
+    /// The selected variant's override object, merged shallowly into the
+    /// body. Empty (the default) adds nothing to the wire bytes.
+    #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, Value>,
+}
+
+impl ChatRequest {
+    /// Merges `variant` into the body. A key the request owns is skipped, so
+    /// no key is ever written twice (config loading rejects such variants).
+    pub fn apply_variant(&mut self, variant: &Variant) {
+        for (k, v) in variant {
+            if !RESERVED_VARIANT_KEYS.contains(&k.as_str()) {
+                self.extra.insert(k.clone(), v.clone());
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -342,6 +358,7 @@ mod tests {
             headers: Default::default(),
             connect_timeout_ms: 100,
             request_timeout_ms: 250,
+            catalog_format: None,
         };
         let cache = ClientCache::new();
         let _ = cache.get("p", &provider).unwrap();
@@ -381,6 +398,7 @@ mod tests {
             headers: Default::default(),
             connect_timeout_ms: 1_000,
             request_timeout_ms,
+            catalog_format: None,
         }
     }
 

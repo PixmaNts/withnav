@@ -16,6 +16,7 @@ fn resolved(base_url: &str, model: &str, api: ApiKind, window: Option<u64>) -> R
             headers: Default::default(),
             connect_timeout_ms: 1_000,
             request_timeout_ms: 5_000,
+            catalog_format: None,
         },
         model: ModelConfig {
             provider: "omni".into(),
@@ -27,6 +28,8 @@ fn resolved(base_url: &str, model: &str, api: ApiKind, window: Option<u64>) -> R
             supports_tools: true,
             supports_parallel_tool_calls: None,
             thinking: None,
+            default_variant: None,
+            variants: None,
             reasoning_history: ReasoningHistory::Preserve,
         },
     }
@@ -276,7 +279,7 @@ fn seed(catalog: &ModelCatalog, base: &str, age: u64, id: &str, limits: Limits) 
     let path = cache_path(catalog, base);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let file = CacheFile {
-        version: 1,
+        version: CACHE_VERSION,
         fetched_at: now() - age,
         models: HashMap::from([(id.to_string(), limits)]),
         carried: HashMap::new(),
@@ -289,6 +292,7 @@ fn limits(context: u64) -> Limits {
         context_length: Some(context),
         max_input_tokens: None,
         max_output_tokens: None,
+        effort_tiers: None,
     }
 }
 
@@ -384,6 +388,39 @@ async fn failure_after_expiry_keeps_the_values_stale_with_age_and_error() {
     assert!(error.contains("503"), "{error}");
     // The old file is kept as it was.
     assert!(read_cache(&cache_path(&catalog, &base)).is_some());
+}
+
+#[tokio::test]
+async fn a_version_1_cache_stays_usable_while_the_refresh_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let base = format!("{}/v1", server.uri());
+    // A young file written before the tiers were kept.
+    let path = cache_path(&catalog, &base);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let v1 = format!(
+        r#"{{"version":1,"fetched_at":{},"models":{{"{OPUS}":{{"context_length":400000,"max_input_tokens":null,"max_output_tokens":null}}}}}}"#,
+        now() - 60
+    );
+    std::fs::write(&path, v1).unwrap();
+    let r = resolved(&base, OPUS, ApiKind::Chat, None);
+    let chat = resolve_chat(&catalog, &r, "key", &ClientCache::new())
+        .await
+        .unwrap();
+    assert_eq!(chat.window, 400_000, "the known window is kept");
+    assert!(chat.stale, "a file whose refresh failed is stale");
+    assert!(chat.refresh_error.unwrap().contains("503"));
+    assert_eq!(
+        requests(&server).await,
+        1,
+        "the tiers are asked for at once"
+    );
+    assert!(read_cache(&path).is_some(), "the old file is not discarded");
 }
 
 #[tokio::test]
@@ -503,7 +540,7 @@ async fn a_corrupt_cache_file_is_ignored_and_rewritten() {
     assert_eq!(d.limits.unwrap().context_length, Some(1_000_000));
     assert_eq!(requests(&server).await, 1);
     let rewritten = read_cache(&file).expect("valid file after the refresh");
-    assert_eq!(rewritten.version, 1);
+    assert_eq!(rewritten.version, CACHE_VERSION);
 }
 
 #[tokio::test]
@@ -548,7 +585,7 @@ fn an_unwritable_cache_dir_warns_once() {
     let catalog = ModelCatalog::new(Some(blocker));
     let target = dir.path().join("data").join("model-catalog").join("x.json");
     let file = CacheFile {
-        version: 1,
+        version: CACHE_VERSION,
         fetched_at: now(),
         models: HashMap::new(),
         carried: HashMap::new(),
@@ -614,6 +651,7 @@ async fn null_or_malformed_fields_keep_the_previous_values() {
             context_length: Some(500_000),
             max_input_tokens: Some(400_000),
             max_output_tokens: Some(1_000),
+            effort_tiers: None,
         },
     );
     let d = lookup(&catalog, &base, "m").await;
@@ -639,6 +677,93 @@ async fn null_or_malformed_fields_keep_the_previous_values() {
     let cached = reopened.cached(&resolved(&base, "m", ApiKind::Chat, None));
     assert!(cached.stale && cached.age_seconds.unwrap() > TTL);
     assert_eq!(cached.limits.unwrap().context_length, Some(500_000));
+}
+
+fn tiers_of(d: &CatalogData) -> Option<Vec<String>> {
+    d.limits.as_ref().and_then(|l| l.effort_tiers.clone())
+}
+
+/// Seeds an expired entry with tiers `low`, `high`, refreshes it against
+/// `body`, then reads it again after a restart.
+async fn refreshed_tiers(body: &str) -> (CatalogData, CatalogData) {
+    let dir = tempfile::tempdir().unwrap();
+    let server = serve(body).await;
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let base = format!("{}/v1", server.uri());
+    let mut seeded = limits(500_000);
+    seeded.effort_tiers = Some(vec!["low".into(), "high".into()]);
+    seed(&catalog, &base, TTL + 1, "m", seeded);
+    let first = lookup(&catalog, &base, "m").await;
+    assert_eq!(requests(&server).await, 1);
+    let reopened = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let again = lookup(&reopened, &base, "m").await;
+    assert_eq!(requests(&server).await, 1, "the list itself is current");
+    (first, again)
+}
+
+#[tokio::test]
+async fn tiers_the_provider_did_not_validly_report_are_kept() {
+    for capabilities in [
+        r#""capabilities":{}"#,
+        r#""capabilities":{"effort_tiers":null}"#,
+        r#""capabilities":{"effort_tiers":"high"}"#,
+        r#""capabilities":null"#,
+        r#""capabilities":{"effort_tiers":[null,42]}"#,
+        r#""capabilities":{"effort_tiers":["","not a tier"]}"#,
+    ] {
+        let body = format!(r#"{{"data":[{{"id":"m","context_length":500000,{capabilities}}}]}}"#);
+        let (first, again) = refreshed_tiers(&body).await;
+        for d in [first, again] {
+            assert_eq!(
+                tiers_of(&d),
+                Some(vec!["low".to_string(), "high".to_string()]),
+                "{capabilities}"
+            );
+            assert!(
+                d.stale,
+                "kept tiers are not freshly confirmed: {capabilities}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_explicit_empty_tier_list_removes_the_tiers() {
+    let body =
+        r#"{"data":[{"id":"m","context_length":500000,"capabilities":{"effort_tiers":[]}}]}"#;
+    let (first, again) = refreshed_tiers(body).await;
+    for d in [first, again] {
+        assert_eq!(tiers_of(&d), Some(Vec::new()));
+        assert!(!d.stale);
+    }
+}
+
+#[tokio::test]
+async fn a_generated_default_is_resolved_and_one_the_catalog_dropped_is_reported() {
+    let tiers = |t: &str| {
+        format!(
+            r#"{{"data":[{{"id":"m","context_length":8000,"capabilities":{{"effort_tiers":{t}}}}}]}}"#
+        )
+    };
+    let mut r = resolved("", "m", ApiKind::Chat, None);
+    r.provider.catalog_format = Some(crate::provider::config::CatalogFormat::Omniroute);
+    r.model.default_variant = Some("max".into());
+    for (reported, expected) in [(r#"["low","max"]"#, true), (r#"["low"]"#, false)] {
+        let (dir, server) = (tempfile::tempdir().unwrap(), serve(&tiers(reported)).await);
+        r.provider.base_url = format!("{}/v1", server.uri());
+        let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+        let chat = resolve_chat(&catalog, &r, "key", &ClientCache::new())
+            .await
+            .unwrap();
+        let chosen = chat.default_override("alias");
+        if expected {
+            let (name, v) = chosen.unwrap().unwrap();
+            assert_eq!(name, "max");
+            assert_eq!(v["reasoning_effort"], "max");
+        } else {
+            assert_eq!(chosen.unwrap_err().variant, "max");
+        }
+    }
 }
 
 #[tokio::test]

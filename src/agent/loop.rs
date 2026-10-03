@@ -81,7 +81,7 @@ pub async fn run_agent(
         );
 
         let message = match client
-            .chat(&request, &actor.cancel, &mut |delta| {
+            .chat(request, None, &actor.cancel, &mut |delta| {
                 observe(AgentEvent::Delta(delta))
             })
             .await
@@ -259,6 +259,7 @@ mod tests {
                 headers: BTreeMap::new(),
                 connect_timeout_ms: 2000,
                 request_timeout_ms: 600_000,
+                catalog_format: None,
             },
             "test-key".to_string(),
             "test-model".to_string(),

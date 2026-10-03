@@ -54,6 +54,7 @@ impl crate::navigator::ports::ReflexContextModel for LlmCommenter {
                     .min(Some(REFLEX_CONTEXT_MAX_TOKENS))
                     .or(Some(REFLEX_CONTEXT_MAX_TOKENS)),
                 temperature: Some(0.2),
+                extra: self.variant.clone().unwrap_or_default(),
             };
             let client = self
                 .clients

@@ -126,7 +126,9 @@ _Avoid_: filter, sandbox, policy
 
 **Pending interaction**:
 What a yielded actor waits for: the answer to an `ask`, or the decision on a permission request (with
-the held call and the calls behind it).
+the held call and the calls behind it). While one is pending, session commands are refused, with one
+exception: `/stop` always runs, and it cancels a pending permission request. A pending `ask` blocks
+every other command until it is answered.
 
 ## Shared context
 

@@ -25,9 +25,9 @@ owned coding-agent core with a terminal client and a local server.
 - **Agents.** `build` (the default: implement, verify, report) and `plan` (research, write markdown
   plans). The driver switches between turns. Agents can also be defined in Markdown files.
 - **Permissions.** `write`, `edit`, `bash` and `fetch` ask first: allow once, allow the folder, or
-  deny with a message. For `plan`, a second model (Jev) checks every call that is not a markdown
-  write, and what it does not clear is asked to the driver. This is a guard against drift, not a
-  sandbox.
+  deny with a message. For `plan`, a second model (Jev) checks each gated call (`write`, `edit`, `bash`,
+  `fetch`) except a plain `.md` write, and what it does not clear is asked to the driver. This is a
+  guard against drift, not a sandbox.
 - **Tools.** `read`, `write`, `edit`, `bash`, `grep`, `glob`, `fetch`, `ask`, and `skill` when
   skills are found.
 - **Rules and skills.** `AGENTS.md`, `CLAUDE.md` and `rules.md` files, and `SKILL.md` skills, are

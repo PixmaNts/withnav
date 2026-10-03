@@ -626,13 +626,13 @@ The `plan` agent keeps every tool. Its prompt says it researches and writes mark
 
 ```rust
 struct EventEnvelope {
-    schema_version: u16,
+    schema_version: u32,
     event_id: Ulid,
     seq: u64,
-    session_id: SessionId,
-    actor_id: ActorId,
+    session_id: Ulid,
+    actor_id: String,
     kind: String,
-    occurred_at: DateTime<Utc>,
+    occurred_at: String,              // RFC 3339, UTC, millisecond precision
     causation_id: Option<Ulid>,
     correlation_id: Option<Ulid>,
     payload: serde_json::Value,
@@ -1428,7 +1428,9 @@ Not built: the `workspaces`, `actors`, `messages`, `inbox_messages` and `plugin_
 2. The persisting emitter queues every durable envelope to the writer thread, in `seq` order, inside the sequencer task. The queueing is a channel send; it does not wait for the disk.
 3. The event is then broadcast to subscribers.
 
-`llm.delta` and `context.updated` are never stored. `session.end` is stored like any other durable event. Tool outputs are bounded before they are persisted.
+Queueing is not an acknowledgement: a crash can lose events still in the channel, so a live client can have seen an event that was never stored. The exceptions are the acknowledged paths (`publish_acked`, used for command results, waits for the event to be sequenced and emitted; `commit_acked`, used only by the model switch, writes first and emits only after the store acknowledged).
+
+`llm.delta` and `context.updated` are never stored. `session.end` is stored like any other durable event. Tool outputs are bounded to 64 KiB before they reach the transcript, but messages and tool payloads are stored as they are, with no redaction: a secret that a tool read or the driver typed is in the database.
 
 ### 17.3 Replay and Resume
 
@@ -1444,7 +1446,7 @@ Not built: the `workspaces`, `actors`, `messages`, `inbox_messages` and `plugin_
 
 - WAL mode and one writer: built.
 - The file is created by SQLite with the process umask; Navai does not set user-only permissions on it. Encryption at rest is out of scope.
-- Secrets are kept out of event payloads and out of `model_resolution`. API keys live in `auth.json` (mode 0600).
+- `model_resolution` holds no credentials, and API keys live in `auth.json` (mode 0600). There is no general redaction: transcript messages and event payloads are stored as they are.
 
 ## 18. Standard File Loading
 
@@ -1486,7 +1488,7 @@ access: read-only
 You are a focused Rust reviewer. ...
 ```
 
-Header fields, all optional: `description`; `mode` (`primary`, `subagent` or `all`; `all` when absent); `model` (an alias); `tools` (a map of tool name to boolean; `false` removes a tool); `access` (`read-only` or `full`; `full` when absent). Any other key is kept and has no effect. A malformed header rejects that file, reports it, and the others still load. At most 200 files per directory, 64 KiB each.
+Header fields, all optional: `description`; `mode` (`primary`, `subagent` or `all`; `all` when absent); `model` (an alias); `tools` (a map of tool name to boolean; `false` removes a tool); `access` (`read-only` or `full`; `full` when absent). **`model`, `tools` and `access` are loaded and validated but not applied today:** they do not change which tools a session can call, and they do not change the session's model. A session uses the model it was created with, and the permission gate (section 9.4) is what limits `write`, `edit`, `bash` and `fetch`. Only the role prompt (the body) and `mode` take effect. Any other key is kept and has no effect. A malformed header rejects that file, reports it, and the others still load. At most 200 files per directory, 64 KiB each.
 
 An agent definition says what the agent is for. It does not say what it may execute: permissions are separate (section 9.4, ADR 0008). `/agent` lists and switches the primary agent between turns. Only primary agents can be selected; subagents cannot be started yet (section 14).
 
@@ -1589,14 +1591,24 @@ Create session (`workspace` is required; the rest is optional):
   "workspace": "/home/pixma/dev/project",
   "model": "default",
   "agent": "build",
-  "variant": "high",
+  "variant": "high"
+}
+```
+
+Resume a stored conversation (the same id comes back):
+
+```json
+{
+  "workspace": "/home/pixma/dev/project",
   "resume": "01J..."
 }
 ```
 
+`resume` and `variant` together are refused with 400: a resumed session keeps its saved variant, and `/variant` changes it.
+
 - `model` is a `models.json` alias; a profile may supply a default.
 - `agent` is the primary agent (`build` when absent). A resumed session keeps the agent it was stored with.
-- `variant` is the exact name of a variant the alias offers; `null` means no variant; leaving it out takes the alias's `default_variant`.
+- `variant` (new sessions only) is the exact name of a variant the alias offers; `null` means no variant; leaving it out takes the alias's `default_variant`.
 - `resume` is the id of a stored conversation to continue.
 - Response: `{session_id, root_actor_id: "agent:main", actor_state}`.
 - A chat alias with no known context window is refused with 422 `{"error", "reason": "no_context_window"}`. A window that leaves no input budget is 422 `impossible_context_budget`.
@@ -1728,7 +1740,7 @@ Model fields:
 
 - `provider`, `model`: required.
 - `api`: `chat` (default), `fim` or `systemone`.
-- `context_window`: optional. When it is absent, the window comes from the provider's `GET /models` list (`context_length`, else `max_input_tokens`), cached for a day under `<data dir>/model-catalog/`. An explicit value wins without any network call. A chat alias with no window from either source is refused at session creation: HTTP 422 `no_context_window` (`navai run` prints it and exits 1).
+- `context_window`: optional. When it is absent, the window comes from the provider's `GET /models` list (`context_length`, else `max_input_tokens`), cached for a day under `<data dir>/model-catalog/`. An explicit value wins over a discovered one. It does not always avoid the network: an alias on a provider with `catalog_format` and no `variants` of its own still fetches the model list, to generate its variants from the effort tiers. A chat alias with no window from either source is refused at session creation: HTTP 422 `no_context_window` (`navai run` prints it and exits 1).
 - `max_input_tokens`, `max_output_tokens`: optional limits. They feed the context budget (section 24).
 - `supports_tools`, `supports_parallel_tool_calls`: capability flags. Tool calls are executed serially.
 - `default_variant`: the variant a new conversation starts with.
@@ -1862,7 +1874,7 @@ When a request is over the input budget the status shows it; the driver compacts
 
 ## 25. Security and Reliability Boundaries
 
-> **Status: partly built.** Local bind, bounded sizes, path normalization, process-group cancellation and the permission gate are built (sections 9 and 20). Plugin environment rules apply to plugins, which are not built.
+> **Status: partly built.** Local bind, bounded sizes, path normalization, process-group cancellation and the permission gate are built (sections 9 and 20). Plugin environment rules apply to plugins, which are not built. Persistence is queued, and nothing is redacted before it is stored (section 17).
 
 ### 25.1 Trusted Personal Agent
 
@@ -1898,7 +1910,7 @@ Real OS sandboxing may be added later through Bubblewrap, containers, or platfor
 ### 25.3 Backpressure
 
 - Every subscriber gets a bounded channel.
-- Persistence is durable and participates in the publication barrier.
+- Persistence is a queued writer, not a barrier: events are handed to it before they are broadcast (section 17.2). Only the model switch waits for the store before it emits.
 - UI and observational subscribers may lag or disconnect.
 - Hook plugins are bounded by timeout rather than channel capacity.
 - `llm.delta` may be dropped for lagging observational subscribers.
@@ -1918,7 +1930,7 @@ These questions do not block the architecture, but implementation must make thei
 | Multiple modifying hooks | Sequential priority order, validate after each patch | Plugin order can change behavior and must remain visible |
 | Hook timeouts | Per-subscription timeout; enrichment fails open | Slow hooks may add latency at every model step |
 | Context compaction | No silent built-in semantic compaction | Long sessions eventually yield instead of continuing automatically |
-| Event durability | Commit final events before live publication | SQLite latency becomes part of state-transition latency |
+| Event durability | Events are queued to the writer before broadcast; only the model switch commits before it emits | A crash can lose queued events a live client already saw |
 | Delta persistence | Non-durable by default | Exact partial stream reconstruction is unavailable after a crash |
 | In-flight resume | Mark interrupted, never replay side effects | The user or model must decide whether a tool is safe to retry |
 | OpenAI compatibility | Support the tested OmniRoute subset | Some providers use subtly incompatible SSE or tool-call formats |

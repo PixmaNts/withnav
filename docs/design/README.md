@@ -8,8 +8,8 @@
 >
 > Where the code differs from this design today:
 >
-> - **The plan agent keeps all its tools.** It is not read-only and it does not write to the intent
->   record. It writes markdown files freely; every other write, edit, `bash` and `fetch` is checked
+> - **The plan agent keeps all its tools.** It is not read-only. With the navigator profile it keeps
+>   the `intent` tool too, so it can update the intent record, and it writes markdown files freely; every other write, edit, `bash` and `fetch` is checked
 >   by Jev (the role guard) and, if not cleared, asked to the driver as **allow once or deny** (no
 >   "always"). The build agent asks for every write, edit, `bash` and `fetch`.
 > - **Header** reads `◆ navai`, not `◆ navigator`.

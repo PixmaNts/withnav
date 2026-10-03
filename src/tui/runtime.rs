@@ -45,6 +45,9 @@ pub struct Runtime {
     needs_clear: bool,
     quit: bool,
     config_dir: Option<std::path::PathBuf>,
+    /// The editors of the tabs in the background, by tab id: cursor, selection and undo history
+    /// survive a switch.
+    parked: std::collections::HashMap<u64, Editor>,
 }
 
 impl Runtime {
@@ -78,6 +81,7 @@ impl Runtime {
             needs_clear: false,
             quit: false,
             config_dir: options.config_dir.clone(),
+            parked: Default::default(),
         }
     }
 
@@ -179,8 +183,26 @@ impl Runtime {
         // The reducer keeps the draft of a tab that goes to the background.
         self.state.draft = self.editor.text();
         self.state.draft_revision = self.editor.revision();
+        let before = self.state.id;
         let effects = reducer::handle_action(&mut self.state, &mut self.ui, action);
+        if self.state.id == before {
+            self.run_effects(effects);
+            return;
+        }
+        // Another tab came forward: its `SetEditor` fills a fresh editor, then its parked one
+        // takes over if it still holds that draft (a send accepted meanwhile cleared it).
+        let left = std::mem::take(&mut self.editor);
         self.run_effects(effects);
+        if self.state.tabs.iter().any(|t| t.id == before) {
+            self.parked.insert(before, left);
+        }
+        if let Some(editor) = self.parked.remove(&self.state.id) {
+            if editor.text() == self.state.draft && editor.revision() == self.state.draft_revision {
+                self.editor = editor;
+            }
+        }
+        let open: Vec<u64> = self.state.tabs.iter().map(|t| t.id).collect();
+        self.parked.retain(|id, _| open.contains(id));
     }
 
     /// Executes `effects` the way the loop does after the reducer returned them, tagged with the

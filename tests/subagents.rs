@@ -8,6 +8,130 @@ use navai::tools::Tool;
 use serde_json::{json, Value};
 
 mod common;
+#[tokio::test]
+async fn child_delete_waits_for_registration_before_removing_owner() {
+    child_lifecycle_during_publication(true, false).await;
+}
+
+#[tokio::test]
+async fn child_stop_waits_for_registration_and_runtime_exit() {
+    child_lifecycle_during_publication(false, false).await;
+}
+
+#[tokio::test]
+async fn child_delete_waits_for_failed_start_cleanup() {
+    child_lifecycle_during_publication(true, true).await;
+}
+
+async fn child_lifecycle_during_publication(delete: bool, cleanup: bool) {
+    let mut provider = common::sse::spawn_streaming_provider().await;
+    let fx = fixture_at(&provider.url);
+    install_agents(&fx.root, &fx.ws);
+    let parent = fx
+        .state
+        .create_session(&fx.ws, Some("default"), None)
+        .await
+        .unwrap();
+    let barrier = navai::session::ChildPreparationBarrier::default();
+    if cleanup {
+        fx.state.fail_child_start(false);
+        fx.state.pause_child_cleanup(barrier.clone());
+    } else {
+        fx.state.pause_child_registration(barrier.clone());
+    }
+    let service = fx.state.service();
+    let spawn = tokio::spawn(async move {
+        service
+            .create_child_session(parent, "explore", "inspect")
+            .await
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        barrier.reached.notified(),
+    )
+    .await
+    .unwrap();
+    let replay = events(&fx, parent).await;
+    let child = replay
+        .iter()
+        .find(|e| e.kind == "subagent.spawned")
+        .unwrap()
+        .payload["child_session_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(fx.state.history().exists(child).await.unwrap());
+    assert_eq!(fx.state.session_has_runtime(child), cleanup);
+    let service = fx.state.service();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let lifecycle = tokio::spawn(async move {
+        entered_tx.send(()).unwrap();
+        if delete {
+            service.delete(child).await
+        } else {
+            service.close_session(child).await
+        }
+    });
+    entered_rx.await.unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), async {
+            while !lifecycle.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_err(),
+        "child lifecycle must wait for its owned operation"
+    );
+    assert!(fx.state.history().exists(child).await.unwrap());
+    barrier.release.notify_one();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), spawn)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.is_err(), cleanup);
+    tokio::time::timeout(std::time::Duration::from_secs(2), lifecycle)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(!fx.state.session_has_runtime(child));
+    assert_eq!(fx.state.reserved_child_count(parent), 0);
+    if delete {
+        assert!(!fx.state.history().exists(child).await.unwrap());
+        assert!(fx.state.child_metadata(child).await.unwrap().is_none());
+    } else {
+        assert_eq!(
+            fx.state
+                .child_metadata(child)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "stopped"
+        );
+    }
+    let notices = events(&fx, parent)
+        .await
+        .into_iter()
+        .filter(|e| e.kind == "subagent.done" && e.payload["child_session_id"] == child.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(notices.len(), 1);
+    assert_eq!(
+        notices[0].payload["outcome"],
+        if cleanup { "failed" } else { "stopped" }
+    );
+    assert!(fx
+        .state
+        .history()
+        .pending_completions(parent)
+        .await
+        .unwrap()
+        .is_empty());
+    fx.state.close_all().await;
+    provider.requests.close();
+}
 use common::server::TestServerConfig;
 use common::sse::{
     http_sse, spawn_capturing_provider, spawn_gated_provider, spawn_holding_provider, sse_body,

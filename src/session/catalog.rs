@@ -74,6 +74,7 @@ impl Service {
     /// in memory nor on disk.
     pub async fn delete(&self, id: SessionId) -> Result<(), ServerError> {
         let _gate = self.lifecycle_gate().await;
+        self.wait_child_operation(id).await;
         // A live session is closed; a stored one is a no-op; an id the store
         // does not know is a 404.
         let parent = self.handle(id).and_then(|handle| handle.parent_session_id);

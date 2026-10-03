@@ -25,6 +25,7 @@ impl Service {
     /// already closed (or only stored) is a no-op; unknown is a 404.
     pub async fn close_session(&self, id: SessionId) -> Result<(), ServerError> {
         let _gate = self.lifecycle_gate().await;
+        self.wait_child_operation(id).await;
         let parent = self.handle(id).and_then(|h| h.parent_session_id);
         self.close_session_gated(id).await?;
         if let Some(parent) = parent {
@@ -43,6 +44,7 @@ impl Service {
     /// [`Service::close_session`] for a caller that already holds the
     /// lifecycle gate.
     pub(super) async fn close_session_gated(&self, id: SessionId) -> Result<(), ServerError> {
+        self.wait_child_operation(id).await;
         let target = {
             let _admission = self.admission_gate.lock().await;
             let target = self.mark_stopping(id);

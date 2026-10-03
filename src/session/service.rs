@@ -210,6 +210,23 @@ impl Drop for Publication {
         self.0.cancel();
     }
 }
+// Child ids become visible before runtime registration. Publication owns
+// teardown until this guard completes, so lifecycle callers cannot delete
+// durable ownership underneath registration or failed-start cleanup.
+struct ChildOperation {
+    child: SessionId,
+    operations: Arc<Mutex<HashMap<SessionId, CancellationToken>>>,
+    done: CancellationToken,
+}
+impl Drop for ChildOperation {
+    fn drop(&mut self) {
+        self.done.cancel();
+        self.operations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.child);
+    }
+}
 impl Drop for ChildReservation {
     fn drop(&mut self) {
         if !self.committed {
@@ -283,6 +300,11 @@ pub struct Service {
     pub(super) admission_gate: Arc<tokio::sync::Mutex<()>>,
     pub(super) subagent_slots: Arc<Mutex<HashMap<SessionId, usize>>>,
     pub(super) unpublished_children: Arc<Mutex<std::collections::HashSet<SessionId>>>,
+    child_operations: Arc<Mutex<HashMap<SessionId, CancellationToken>>>,
+    #[cfg(debug_assertions)]
+    child_registration_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
+    child_cleanup_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     catalog: crate::provider::catalog::ModelCatalog,
     #[cfg(debug_assertions)]
     child_preparation_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
@@ -303,6 +325,42 @@ pub struct Service {
 }
 
 impl Service {
+    pub(super) async fn wait_child_operation(&self, id: SessionId) {
+        let pending = {
+            let _admission = self.admission_gate.lock().await;
+            self.child_operations
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&id)
+                .cloned()
+        };
+        // The publication worker never needs the lifecycle gate, and this
+        // wait must not hold admission while the worker finishes its I/O.
+        if let Some(pending) = pending {
+            pending.cancelled().await;
+        }
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_child_registration(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .child_registration_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_child_cleanup(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .child_cleanup_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn session_has_runtime(&self, id: SessionId) -> bool {
+        self.handle(id).is_some()
+    }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn fail_child_start(&self, publication: bool) {
@@ -381,6 +439,11 @@ impl Service {
             admission_gate: Arc::new(tokio::sync::Mutex::new(())),
             subagent_slots: Arc::new(Mutex::new(seeded_slots)),
             unpublished_children: Arc::default(),
+            child_operations: Arc::default(),
+            #[cfg(debug_assertions)]
+            child_registration_barrier: Arc::default(),
+            #[cfg(debug_assertions)]
+            child_cleanup_barrier: Arc::default(),
             catalog,
             #[cfg(debug_assertions)]
             child_preparation_barrier: Arc::default(),
@@ -563,6 +626,17 @@ impl Service {
             pending.push(publication.clone());
         }
         let _publication = Publication(publication);
+        let child = prepared.session_id;
+        let done = CancellationToken::new();
+        self.child_operations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(child, done.clone());
+        let _child_operation = ChildOperation {
+            child,
+            operations: self.child_operations.clone(),
+            done,
+        };
         drop(_admission);
         #[cfg(debug_assertions)]
         {
@@ -633,6 +707,18 @@ impl Service {
         }
         let mut reservation = reservation;
         reservation.committed = true;
+        #[cfg(debug_assertions)]
+        {
+            let barrier = self
+                .child_registration_barrier
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(barrier) = barrier {
+                barrier.reached.notify_one();
+                barrier.release.notified().await;
+            }
+        }
         let start = async {
             #[cfg(debug_assertions)]
             if self
@@ -679,6 +765,18 @@ impl Service {
         .await;
         if let Err(error) = start {
             if let Some(handle) = self.mark_stopping(child) {
+                #[cfg(debug_assertions)]
+                {
+                    let barrier = self
+                        .child_cleanup_barrier
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take();
+                    if let Some(barrier) = barrier {
+                        barrier.reached.notify_one();
+                        barrier.release.notified().await;
+                    }
+                }
                 self.fence_and_remove(child, handle, "child start failed")
                     .await;
             }

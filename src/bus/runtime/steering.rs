@@ -37,6 +37,30 @@ mod tests {
             assert!(steering.replacement(id, transcript).is_none());
         }
     }
+
+    #[test]
+    fn replacements_claim_both_interrupts_in_order_and_obsolete_ids_have_no_effect() {
+        let steering = Steering::default();
+        let a = Ulid::new();
+        let b = Ulid::new();
+        for (id, text) in [(a, "first"), (b, "second")] {
+            assert!(steering.admit(Operation {
+                id,
+                content: text.into(),
+                interrupt: true
+            }));
+        }
+        assert!(steering.apply(vec![]).is_empty());
+        let (messages, claimed) = steering.claim_replacements(vec![]);
+        assert!(claimed);
+        assert!(matches!(&messages[0],ChatMessage::User {content,..} if content=="first"));
+        assert!(matches!(&messages[1],ChatMessage::User {content,..} if content=="second"));
+        assert!(!steering.has_interrupt(a));
+        assert!(!steering.has_interrupt(b));
+        let (again, claimed) = steering.claim_replacements(messages);
+        assert!(!claimed);
+        assert_eq!(again.len(), 2);
+    }
 }
 
 #[derive(Debug)]
@@ -47,6 +71,31 @@ pub(super) struct Operation {
 }
 
 impl Steering {
+    pub fn has_interrupt(&self, id: Ulid) -> bool {
+        self.queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|op| op.id == id && op.interrupt)
+    }
+    pub fn claim_replacements(&self, mut transcript: Vec<ChatMessage>) -> (Vec<ChatMessage>, bool) {
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut kept = VecDeque::new();
+        let mut claimed = false;
+        while let Some(op) = queue.pop_front() {
+            if op.interrupt {
+                claimed = true;
+                transcript.push(ChatMessage::User {
+                    content: op.content,
+                    provenance: UserProvenance::Parent,
+                });
+            } else {
+                kept.push_back(op);
+            }
+        }
+        *queue = kept;
+        (transcript, claimed)
+    }
     pub fn admit(&self, operation: Operation) -> bool {
         let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         if self.terminal.load(std::sync::atomic::Ordering::Acquire) {
@@ -81,6 +130,7 @@ impl Steering {
         transcript
     }
 
+    #[cfg(test)]
     pub fn replacement(
         &self,
         id: Ulid,

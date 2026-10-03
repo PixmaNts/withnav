@@ -683,6 +683,8 @@ async fn runtime_loop(
     let mut active_task_id: Option<Ulid> = None;
     let mut control = status.controls.take_receiver();
     let mut delivery_waiting = false;
+    let mut replacement_waiting = false;
+    let mut restart_waiting = false;
     inbox.track_driver(status.queued_driver.clone());
     let boundary_status = status.clone();
     actor.safe_boundary = Some(Arc::new(move |transcript| {
@@ -721,6 +723,24 @@ async fn runtime_loop(
                 actor.cancel.cancel();
                 break;
             }
+            _ = std::future::ready(()), if replacement_waiting || restart_waiting => {
+                let restart=std::mem::take(&mut restart_waiting);
+                replacement_waiting=false;
+                let previous_len=actor.transcript.len();
+                let (transcript,claimed)=status.steering.claim_replacements(actor.transcript.clone());
+                if !claimed && !restart { continue; }
+                if claimed {
+                    if let Some(request)=actor.pending_permission().cloned() {
+                        actor.interrupt_pending_permission();
+                        publish_resolved(&sequencer,active_task_id,&request,PermissionResolution::Cancelled);
+                    } else if actor.has_pending() { actor.pending=None; actor.settle_unanswered_calls(); }
+                    // Preserve settled interaction results before appended input.
+                    let extra=transcript[previous_len..].to_vec();
+                    actor.transcript.extend(extra);
+                }
+                actor.cancel=session_cancel.child_token();
+                Some(Inbound::Continue)
+            }
             Some(control) = recv_control(&mut control) => {
                 // Between turns: run it now, publish its result, then answer.
                 match control {
@@ -730,21 +750,12 @@ async fn runtime_loop(
                         actor.transcript = status.steering.apply(actor.transcript.clone());
                         Some(Inbound::Continue)
                     }
-                    Control::Interrupt(id) | Control::Replace(id) => {
-                        if let Some(request) = actor.pending_permission().cloned() {
-                            actor.interrupt_pending_permission();
-                            publish_resolved(&sequencer, active_task_id, &request, PermissionResolution::Cancelled);
-                        } else if actor.has_pending() {
-                            actor.pending = None;
-                            actor.settle_unanswered_calls();
-                        }
-                        actor.cancel = session_cancel.child_token();
-                        let Some(transcript) = status.steering.replacement(id,actor.transcript.clone()) else { continue; };
-                        actor.transcript = status.steering.apply(transcript);
-                        Some(Inbound::Continue)
+                    Control::Interrupt(id) => {
+                        if !status.steering.has_interrupt(id) { continue; }
+                        replacement_waiting=true;
+                        continue;
                     }
                     Control::Continue => Some(Inbound::Continue),
-                    Control::Restart => { actor.cancel=session_cancel.child_token(); Some(Inbound::Continue) }
                     Control::Delivery => { delivery_waiting = true; continue; }
                     Control::DeliverySteer => { delivery_waiting=true; continue; }
                     Control::DeliveryInterrupt(id) => { if status.notice_pending(id).await { delivery_waiting=true; } continue; }
@@ -935,13 +946,12 @@ async fn runtime_loop(
                         match control {
                             Control::Steer => {}
                             Control::Interrupt(id) => {
+                                if !status.steering.has_interrupt(id) { continue; }
                                 replacement = Some(id);
                                 interrupted_for_input = true;
                                 actor_cancel.cancel();
                                 break (&mut turn_fut).await;
                             }
-                            Control::Replace(_) => {}
-                            Control::Restart => {}
                             Control::Continue => {}
                             Control::Delivery => { delivery_waiting = true; }
                             Control::DeliverySteer => { delivery_waiting=true; }
@@ -1199,9 +1209,9 @@ async fn runtime_loop(
         if interrupted_for_input && !session_cancel.is_cancelled() {
             actor.cancel = session_cancel.child_token();
             if let Some(id) = replacement {
-                let _ = status.controls.tx.send(Control::Replace(id));
+                replacement_waiting = status.steering.has_interrupt(id);
             } else if !delivery_waiting {
-                let _ = status.controls.tx.send(Control::Restart);
+                restart_waiting = true;
             }
         } else if !actor.has_pending()
             && !status

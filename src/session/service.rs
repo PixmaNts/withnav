@@ -311,7 +311,12 @@ impl Service {
             .map_err(|e| ServerError::SubagentSettings(e.to_string()))?
             .subagents_max_concurrent()
             .map_err(ServerError::SubagentSettings)?;
-        let _spawn_lock = self.gate.clone().lock_owned().await;
+        let _spawn_lock = tokio::select! {
+            biased;
+            _ = parent_handle.session_cancel.cancelled() => return Err(ServerError::SessionStopping),
+            guard = self.gate.clone().lock_owned() => guard,
+        };
+        let parent_handle = self.routable_handle(parent).await?;
         let persisted_active = self
             .history
             .active_child_count(parent)

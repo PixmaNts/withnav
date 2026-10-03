@@ -29,7 +29,7 @@ impl Tool for TaskTool {
     fn call<'a>(
         &'a self,
         args: Value,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
         _cx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + 'a>> {
         Box::pin(async move {
@@ -47,17 +47,49 @@ impl Tool for TaskTool {
                         code: "invalid_args".into(),
                         message: "prompt must be a string".into(),
                     })?;
-            let id = self
-                .service
-                .create_child_session(self.parent, agent, prompt)
-                .await
-                .map_err(|e| ToolError::Denied {
-                    code: "subagent_error".into(),
-                    message: e.to_string(),
-                })?;
+            let id = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(ToolError::Canceled),
+                result = self.service.create_child_session(self.parent, agent, prompt) => result,
+            }
+            .map_err(|e| ToolError::Denied {
+                code: "subagent_error".into(),
+                message: e.to_string(),
+            })?;
             Ok(ToolResult::ok(
                 json!({"child_id":id.to_string(),"agent":agent,"status":"running"}).to_string(),
             ))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancelled_task_never_waits_for_admission() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = Service::new(crate::session::SessionConfig {
+            models_path: None,
+            config_dir: dir.path().join("cfg"),
+            history_db: dir.path().join("history.db"),
+            data_dir: dir.path().join("data"),
+            rules_roots: Default::default(),
+        })
+        .unwrap();
+        let task = TaskTool::new(service, ulid::Ulid::new());
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let cx = ToolContext {
+            workspace: std::env::temp_dir(),
+            writable_roots: vec![],
+            readable_roots: vec![],
+        };
+        assert!(matches!(
+            task.call(json!({"agent":"explore","prompt":"inspect"}), cancel, &cx)
+                .await,
+            Err(ToolError::Canceled)
+        ));
     }
 }

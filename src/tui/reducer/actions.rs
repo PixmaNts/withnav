@@ -111,6 +111,19 @@ fn blank_tab(s: &mut State, ui: &mut UiState) -> Option<Vec<Effect>> {
 /// Closes the active tab. The conversation is not stopped: the server keeps it, and a running turn
 /// goes on there. The last tab is replaced by a blank one.
 fn close_tab(s: &mut State, ui: &mut UiState) -> Vec<Effect> {
+    // A message sent while the conversation is still being created or resumed is held in the tab
+    // until the server answers; closing now would drop it with no way to get it back.
+    if s.pending_submit_text.is_some() {
+        push_local(
+            s,
+            BlockKind::Notice(
+                "this tab is waiting for the server to open its conversation before sending your \
+                 message; close it once the message is sent"
+                    .to_string(),
+            ),
+        );
+        return vec![];
+    }
     let closed = s.tabs.remove(s.active);
     let notice = closed.session.as_ref().map(|m| {
         let name = s

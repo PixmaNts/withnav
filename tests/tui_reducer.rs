@@ -2205,3 +2205,39 @@ fn a_catalog_answer_reaches_every_tab() {
     .unwrap();
     assert_eq!(s.tabs[1].context_window, Some(2000));
 }
+
+// Given a tab whose conversation is still being resumed, holding a message the driver sent
+// When the driver closes the tab, then the server's late answer arrives
+// Then the close is refused with a notice and the tab stays, so the held message is sent
+//      to the resumed conversation instead of being lost
+#[test]
+fn a_tab_holding_a_message_for_a_pending_resume_cannot_be_closed() {
+    let (mut s, mut ui) = (st(), ui());
+    let generation = resuming(&mut s, &mut ui, "S1");
+    handle_action(&mut s, &mut ui, Action::Submit("keep me".into()));
+    let tabs = s.tabs.len();
+    assert!(handle_action(&mut s, &mut ui, Action::CloseTab).is_empty());
+    assert_eq!(s.tabs.len(), tabs, "the tab is not closed");
+    assert_eq!(s.pending_submit_text.as_deref(), Some("keep me"));
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Notice(n) if n.contains("waiting for the server")
+    ));
+    let fx = update(
+        &mut s,
+        ClientEvent::Resumed {
+            generation,
+            result: Ok(CreateSessionResponse {
+                session_id: "S1".into(),
+                root_actor_id: "agent:main".into(),
+                actor_state: "idle".into(),
+            }),
+        },
+    )
+    .unwrap();
+    assert!(fx.iter().any(|e| matches!(
+        e,
+        Effect::SendAt { request, .. }
+            if matches!(&request.content[..], [navai::bus::command::ContentBlock::Text { text }] if text == "keep me")
+    )));
+}

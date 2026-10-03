@@ -472,10 +472,7 @@ enum GuardStep {
 async fn guard_step(actor: &AgentActor, call: &ToolCall, needed: Needed) -> GuardStep {
     let role = actor.role.as_deref();
     let role_id = role.map(|r| r.id.as_str()).unwrap_or("plan");
-    let task = actor.transcript.iter().rev().find_map(|m| match m {
-        ChatMessage::User { content } => Some(content.as_str()),
-        _ => None,
-    });
+    let task = actor.driver_task.as_deref();
     let input = GuardInput::describe(&CallFacts {
         role_id,
         role_prompt: role.map(|r| r.prompt.as_str()).unwrap_or(""),
@@ -1596,6 +1593,8 @@ mod tests {
     struct FakeJev {
         answer: Result<Verdict, GuardError>,
         asked: std::sync::atomic::AtomicUsize,
+        /// The description of every call it was asked about.
+        seen: std::sync::Mutex<Vec<String>>,
     }
 
     impl FakeJev {
@@ -1603,6 +1602,7 @@ mod tests {
             Arc::new(Self {
                 answer,
                 asked: std::sync::atomic::AtomicUsize::new(0),
+                seen: std::sync::Mutex::new(Vec::new()),
             })
         }
 
@@ -1614,10 +1614,11 @@ mod tests {
     impl RoleGuard for FakeJev {
         fn judge<'a>(
             &'a self,
-            _input: &'a GuardInput,
+            input: &'a GuardInput,
             _cancel: &'a CancellationToken,
         ) -> futures::future::BoxFuture<'a, Result<Verdict, GuardError>> {
             self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.seen.lock().unwrap().push(input.state.clone());
             let answer = self.answer.clone();
             Box::pin(async move { answer })
         }
@@ -1658,6 +1659,7 @@ mod tests {
 
     async fn run_plan(actor: &mut AgentActor, notes: &mut Notes) -> Result<RunOutcome, AgentError> {
         actor.push_user("plan it");
+        actor.driver_task = Some("plan it".to_string());
         let mut observe = |event: AgentEvent| {
             if let AgentEvent::PostCall { result, .. } = event {
                 notes.0.push(result.metadata["guard"].clone());
@@ -2011,5 +2013,25 @@ mod tests {
         assert_eq!(jev.asked.load(std::sync::atomic::Ordering::SeqCst), 2);
         assert_eq!(std::fs::read_to_string(&secret).unwrap(), "keep");
         assert_eq!(std::fs::read_to_string(&stub).unwrap(), "keep");
+    }
+
+    #[tokio::test]
+    async fn the_guard_reads_the_drivers_task_not_a_navigator_wake() {
+        let jev = FakeJev::new(Ok(Verdict::Conforms));
+        let mut actor = plan_actor(Some(jev.clone()), "http://127.0.0.1:1/v1");
+        let target = actor.tool_context.workspace.join("main.rs");
+        let server = spawn_mock(write_script(&target)).await;
+        actor.provider.base_url = server.url.clone();
+        actor.push_user("write the stub");
+        actor.driver_task = Some("write the stub".to_string());
+        // A wake arrives after the driver's request: a user message in the
+        // transcript, but not the driver's task.
+        actor.push_user("drift: look at the lexer");
+        let mut noop = |_e: AgentEvent| {};
+        run_agent(&mut actor, &mut noop).await.unwrap();
+        let seen = jev.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].contains("write the stub"), "{}", seen[0]);
+        assert!(!seen[0].contains("look at the lexer"), "{}", seen[0]);
     }
 }

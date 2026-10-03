@@ -84,6 +84,12 @@ pub struct AgentActor {
     pub pending: Option<PendingInteraction>,
     /// The folder and origin approvals given in this session; memory only.
     pub grants: Grants,
+    /// What the driver last asked for: the text of their latest message, or
+    /// their answer to an `ask`. Set only from a command whose source is the
+    /// driver (`user:*`), never from a navigator wake. The role guard judges
+    /// calls against it. Memory only: a resumed session has none until the
+    /// driver speaks.
+    pub driver_task: Option<String>,
     /// The second opinion a guarded agent's exceptions go through before the
     /// driver. `None` when the session has no guard: every exception then goes
     /// to the driver.
@@ -122,6 +128,7 @@ impl AgentActor {
             state: AgentState::Idle,
             pending: None,
             grants: Grants::default(),
+            driver_task: None,
             guard: None,
         }
     }

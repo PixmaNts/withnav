@@ -61,6 +61,10 @@ pub struct CreateSessionRequest {
     pub model: Option<String>,
     #[serde(default)]
     pub profile: Option<String>,
+    /// The primary agent a new session runs as (`build` when absent). A
+    /// resumed session keeps the agent it was stored with.
+    #[serde(default)]
+    pub agent: Option<String>,
     /// The model variant to start on: a string is the exact name of a
     /// variant the alias offers, `null` means no variant, and an omitted
     /// field means the alias's default variant.
@@ -271,7 +275,7 @@ async fn create_session(
                 .await
         }
         None => state
-            .create_session_with_variant(
+            .create_session_with(
                 std::path::Path::new(&request.workspace),
                 request.model.as_deref(),
                 request.profile.as_deref(),
@@ -280,6 +284,7 @@ async fn create_session(
                     Some(None) => crate::session::VariantChoice::Clear,
                     Some(Some(name)) => crate::session::VariantChoice::Exact(name),
                 },
+                request.agent.as_deref(),
             )
             .await
             .map(|id| (id, false)),
@@ -319,6 +324,8 @@ pub struct SessionListEntry {
     pub updated_at: String,
     /// Number of driver messages (`message.received` events).
     pub message_count: u64,
+    /// The primary agent the session runs as.
+    pub agent: String,
     /// True when a live, active session with this id exists in this process.
     pub live: bool,
 }
@@ -349,6 +356,7 @@ async fn list_sessions(
                     created_at: row.created_at,
                     updated_at: row.updated_at,
                     message_count: row.message_count,
+                    agent: row.agent,
                     live: row.live,
                 })
                 .collect();
@@ -645,6 +653,8 @@ pub(crate) fn error_response(err: ServerError) -> Response {
             StatusCode::CONFLICT
         }
         ServerError::UnknownVariant { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+        ServerError::UnknownAgent { .. } => StatusCode::BAD_REQUEST,
+        ServerError::SavedAgentUnavailable { .. } => StatusCode::CONFLICT,
         ServerError::DefaultVariantUnavailable { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::VariantOfferUnknown { .. } => StatusCode::SERVICE_UNAVAILABLE,
         ServerError::SavedResolutionInvalid { .. } => StatusCode::INTERNAL_SERVER_ERROR,
@@ -669,6 +679,13 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         return (
             status,
             Json(json!({ "error": err.to_string(), "reason": "no_context_window" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::SavedAgentUnavailable { .. }) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "saved_agent_unavailable" })),
         )
             .into_response();
     }

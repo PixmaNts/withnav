@@ -2,33 +2,33 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- navai  ~/dev/project                                                      Fix parser · 01JABCDEFGH 
-────────────────────────────────────────────────────────────────────────────────────────────────────
- │ YOU                                                                                              
- │  Explain the failure, then fix it.                                                               
- │                                                                                                  
- │ ASSISTANT                                                                                        
- │ ▸ Reasoning                                                                                      
- │  The parser treats an empty argument as a missing value.                                         
- │                                                                                                  
- │ ▸ × bash cargo test parser  error  1.42 s  exit 101                                              
- │                                                                                                  
- │ ASSISTANT                                                                                        
- │  I found ┌───────────────────────────── Conversations ──────────────────────────────┐            
- │          │ filter:                                                                  │            
+ Conversations       │ navai  ~/dev/project                                Fix parser · 01JABCDEFGH 
+▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
+▌  build · idle      │ │ YOU                                                                        
+                     │ │  Explain the failure, then fix it.                                         
+                     │ │                                                                            
+                     │ │ ASSISTANT                                                                  
+                     │ │ ▸ Reasoning                                                                
+                     │ │  The parser treats an empty argument as a missing value.                   
+                     │ │                                                                            
+                     │ │ ▸ × bash cargo test parser  error  1.42 s  exit 101                        
+                     │ │                                                                            
+                     │ │ ASSISTANT                                                                  
+            ┌───────────────────────────── Conversations ──────────────────────────────┐            
+            │ filter:                                                                  │            
             │▌Fix parser  ·  2026-10-02  ·  01JABCDEFGH                                │            
             │                                                                          │            
             └──────────────────────────────────────────────────────────────────────────┘            
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-────────────────────────────────────────────────────────────────────────────────────────────────────
- cognition · cc/claude-opus-5-5   ctx 12.4k / 200k   session 31.2k tok   ready                      
-┌ Message ─────────────────────────────────────────────────────────────────────────────────────────┐
-│                                                                                                  │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
- enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │──────────────────────────────────────────────────────────────────────────────
+                     │ cognition · claude-opus-5-5   ctx 12.4k / 200k   ready                       
+                     │┌ Message ───────────────────────────────────────────────────────────────────┐
+ alt+1…9 switch      ││                                                                            │
+ alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
+ alt+b hide bar      │ enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help

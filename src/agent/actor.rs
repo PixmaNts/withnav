@@ -5,6 +5,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::compaction::{
     effective_history, validate as validate_compaction, Compaction, Components,
 };
+use crate::agent::definitions::AgentDefinition;
 use crate::agent::instructions::Instructions;
 use crate::agent::skills::{SkillTool, Skills};
 use crate::provider::config::{ProviderConfig, ReasoningHistory};
@@ -42,6 +43,11 @@ pub struct AgentActor {
     /// An optional role prompt, sent as a second system message right after
     /// the system contract on every request. It is not part of the transcript.
     pub system_prompt: Option<String>,
+    /// The primary agent this turn runs as: a snapshot installed when the
+    /// turn starts, so a role change never reaches a turn in flight. `None`
+    /// for an actor built outside a session. Its prompt is sent together with
+    /// `system_prompt`; it is not part of the transcript.
+    pub role: Option<Arc<AgentDefinition>>,
     /// The local instructions read when the session was created or resumed,
     /// sent as one system message after the role prompt. A snapshot: the
     /// files are not read again.
@@ -79,6 +85,7 @@ impl AgentActor {
             variant: None,
             max_steps: crate::agent::run_loop::max_steps(),
             system_prompt: None,
+            role: None,
             rules: Instructions::default(),
             skills: Arc::new(Skills::default()),
             cancel,
@@ -91,6 +98,17 @@ impl AgentActor {
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(prompt.into());
         self
+    }
+
+    /// The text of the role system message: the selected agent's prompt, then
+    /// the profile's instructions (the profile has the last word). `None`
+    /// when both are empty, which is the case for the default `build` agent
+    /// on a session without a profile.
+    pub fn role_message(&self) -> Option<String> {
+        compose_role_message(
+            self.role.as_ref().map(|role| role.prompt.as_str()),
+            self.system_prompt.as_deref(),
+        )
     }
 
     /// Installs the skills snapshot: with at least one skill, the `skill` tool
@@ -129,8 +147,11 @@ impl AgentActor {
     /// The estimated size of the request this actor would send now, by
     /// category (see [`crate::agent::context`]): the effective prompt.
     pub fn context_breakdown(&self) -> crate::agent::context::Breakdown {
+        // The same role message `build_request` sends: the selected agent's
+        // prompt composed with the profile's.
+        let role = self.role_message();
         crate::agent::context::estimate(
-            self.system_prompt.as_deref(),
+            role.as_deref(),
             self.rules.message(),
             self.skills.catalog(),
             &self.effective_history(),
@@ -196,5 +217,18 @@ impl AgentActor {
         } else {
             self.transcript.push(ChatMessage::User { content: text });
         }
+    }
+}
+
+/// Composes the role system message from the agent's prompt and the
+/// profile's instructions (the profile has the last word); `None` when both
+/// are empty.
+pub fn compose_role_message(agent: Option<&str>, profile: Option<&str>) -> Option<String> {
+    let agent = agent.map(str::trim).filter(|prompt| !prompt.is_empty());
+    let profile = profile.filter(|prompt| !prompt.trim().is_empty());
+    match (agent, profile) {
+        (Some(agent), Some(profile)) => Some(format!("{agent}\n\n{profile}")),
+        (Some(only), None) | (None, Some(only)) => Some(only.to_string()),
+        (None, None) => None,
     }
 }

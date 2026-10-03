@@ -199,6 +199,10 @@ impl Theme {
     pub fn selection_bg(&self) -> Color {
         blend(self.accent, self.bg, SELECTION_TINT)
     }
+    /// The same tint, laid over a panel (the tab sidebar).
+    pub fn selection_bg_on_panel(&self) -> Color {
+        blend(self.accent, self.panel, SELECTION_TINT)
+    }
     /// The same tint, laid over a popup.
     pub fn selection_bg_on_surface(&self) -> Color {
         blend(self.accent, self.surface, SELECTION_TINT)

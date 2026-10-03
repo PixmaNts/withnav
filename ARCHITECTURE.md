@@ -34,9 +34,9 @@ Dependencies point down this list. A module never imports one above it.
 | `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
 | `provider/` | `models.json` aliases (`config.rs`, `load_models`), keys (`auth.rs`), one `ModelClient` per endpoint (`client.rs`: auth header, deadline, cancellation, status errors), the chat SSE decoder (`sse.rs`, `mod.rs`), the FIM and System One wire clients | anything navigator-specific: no `crate::navigator` import |
 | `tools/` | the tool trait, the registry, path validation (`validate_path`), the eight tools (`glob.rs`: bounded, link-free file search; `fetch.rs`: HTTP(S) GET with its own credential-free client, same-origin redirects, a 5 MiB streamed cap; HTML is converted by a memory- and CPU-limited child, `navai internal-html-convert`, killed on cancel or timeout); `ToolContext` with the writable roots and the read-only ones (`read`/`grep`/`glob` accept both, `write`/`edit`/`bash` only the first) | which tools a session gets |
-| `agent/` | `AgentActor` (transcript, pending `ask`, optional role prompt, the rules and skills snapshots), `run_agent` with one `AgentEvent` observer, request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool) | events, persistence |
+| `agent/` | `AgentActor` (transcript, pending `ask`, optional role prompt, the rules and skills snapshots), `run_agent` with one `AgentEvent` observer, request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`explore`/`review` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events | HTTP, storage |
-| `session/` | the `Service` (registry and router, `service.rs`), teardown and close (`lifecycle.rs`), actor construction (`actor.rs`), subscriptions, the `SessionHooks` seam (`hooks.rs`: default model, actor setup, a `started` callback with a `SessionSender` that can only post) the SQLite history (`store.rs`), and the session commands (`commands.rs`: the registry and line routing; `run_command.rs`: `Service::list_commands` / `run_command`, each run publishing a `command.result`; `Service::context`), and the session variant (saved in `sessions.variant`, chosen in `service/resolve.rs`, held by the runtime's `RuntimeStatus` and applied at each turn start) | HTTP, SSE, any profile by name |
+| `session/` | the `Service` (registry and router, `service.rs`), teardown and close (`lifecycle.rs`), actor construction (`actor.rs`), subscriptions, the `SessionHooks` seam (`hooks.rs`: default model, actor setup, a `started` callback with a `SessionSender` that can only post) the SQLite history (`store.rs`), the primary agent of each session (`sessions.primary_agent`, `/agent`) and the session commands (`commands.rs`: the registry and line routing; `run_command.rs`: `Service::list_commands` / `run_command`, each run publishing a `command.result`; `Service::context`), and the session variant (saved in `sessions.variant`, chosen in `service/resolve.rs`, held by the runtime's `RuntimeStatus` and applied at each turn start) | HTTP, SSE, any profile by name |
 | `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service` | session state, the model layers |
 | `navigator/` | everything the driver perceives as the navigator, below | session internals |
 
@@ -62,31 +62,33 @@ Dependencies point down this list. A module never imports one above it.
 ### Inside `tui/`
 
 The terminal client of the session server: HTTP for commands, SSE for events, nothing else. It
-imports the serialized bus types and no runtime internals.
+imports the serialized bus types and no runtime internals. Several conversations are open at once,
+one per tab; each tab streams its own session in the background.
 
 | File | Responsibility |
 |---|---|
 | `mod.rs` | `TuiOptions`, `TuiError`, `run` |
 | `protocol.rs` | the wire bodies the client sends and receives, and the three message types of the loop: `Action` (what the user asked), `Effect` (I/O the reducer wants), `ClientEvent` (what came back, tagged with a `Generation`) |
-| `state.rs` | `State` (the conversation projection, session, catalog, activity) and `UiState` (overlay, scroll, selection); data only |
+| `state.rs` | `State`: the open `Tab`s (each with its conversation projection, session, model, activity, generation, draft, transcript position and unread mark) and what they share (catalog, session list, workspace); it derefs to the active tab. `UiState` (overlay, scroll, selection, sidebar shown); data only |
 | `client.rs` | the HTTP client: models, sessions, create/resume, send, stop, open the event stream; send failures split into rejected and uncertain |
 | `stream.rs` | one SSE subscription: decoding, reconnect with backoff, resume after the last seq, cancellation |
-| `reducer/mod.rs` | `update`: `ClientEvent` to `State` changes and new `Effect`s; generation filtering |
+| `reducer/mod.rs` | `update`: `ClientEvent` to `State` changes and new `Effect`s; routes each event to the tab holding its generation, marks a background tab unread, drops events no tab holds |
 | `reducer/envelope.rs` | `EventEnvelope` to blocks: steps, tools (planned, running, settled), usage, errors; live and replay give the same blocks |
-| `reducer/actions.rs` | `handle_action`: `Action` to `UiState`/`State` changes and `Effect`s |
+| `reducer/actions.rs` | `handle_action`: `Action` to `UiState`/`State` changes and `Effect`s; opening (at most nine), switching and closing tabs |
 | `reducer/text.rs` | `strip_controls`, applied to every piece of model and tool text |
 | `input.rs` | the `Editor` and `route_key`/`route_paste`: keys to editor edits or `Action`s |
 | `commands.rs` | the command catalog, the key help and the key to `Action` map |
-| `runtime.rs` | `Runtime`: owns state, editor, client and stream; the event loop with its frame tick |
-| `runtime/effects.rs` | `Executor`: runs each `Effect` in a task and reports a tagged `ClientEvent`; owns the one live stream |
+| `runtime.rs` | `Runtime`: owns state, editor, client and streams; runs an event's effects for the tab it reached; the event loop with its frame tick |
+| `runtime/effects.rs` | `Executor`: runs each `Effect` in a task and reports a tagged `ClientEvent`; owns one live stream per tab generation and stops those no tab holds |
 | `runtime/tests.rs` | executor and loop tests with no terminal and a dead server |
 | `terminal.rs` | raw mode and the alternate screen, restored on exit and on panic |
 | `theme.rs` | the four themes (`ThemeId`, the `Theme` colour roles), the RGB `blend` for tints, and the semantic styles the views draw with |
-| `view/mod.rs` | `draw`: layout of transcript, editor, status line and overlays |
+| `view/mod.rs` | `draw`: layout of sidebar, transcript, editor, status line and overlays |
+| `view/sidebar.rs` | the tab sidebar: number, title, `build · <state>`, unread mark, active tint, tab keys; hidden under 80 columns |
 | `view/transcript.rs` | block layout and drawing: messages by origin, steps, tools, errors, scroll and selection |
 | `view/tool.rs` | the one-line summary and the expanded output of a tool call |
 | `view/markdown.rs` | markdown to styled lines, cached per block revision |
-| `view/status.rs` | the status line: connection, model, activity, context (the server's estimate, else the last prompt count) and session tokens |
+| `view/status.rs` | the status line of the active tab: connection, model, activity, context (the server's estimate, else the last prompt count) and session tokens |
 | `view/pickers.rs` | the model, session, command, theme and help overlays |
 
 ## Data flows
@@ -100,6 +102,17 @@ into `State` (envelopes become blocks) and may return more effects. After each b
 `view::draw`, which only reads the state. Picking a model or starting a conversation bumps the
 generation, so late results of the old conversation are ignored. A conversation is created on the
 first message, not before.
+
+**Tabs (terminal client).** Every tab has its own generation, never shared, and the executor keeps one
+SSE stream per generation. An event is applied to the tab that holds its generation, whether it is on
+screen or not (a background tab is then marked unread), and the effects it returns run with that tab's
+session. Opening a conversation (`/new`, ctrl+n, `/sessions`, a model pick) adds a tab; closing one
+drops its generation, so the runtime cancels its stream and its late results are ignored; nothing is
+sent to the server. Before each action the runtime copies the editor into the active tab's draft; the
+reducer puts the next tab's draft back with `Effect::SetEditor`. The context gauge is per tab too: each
+conversation keeps its snapshot, its epoch and its retired incarnations, a `context.updated` or a
+`FetchContext` answer lands on the tab whose generation it carries (without marking it unread), and the
+status line shows the active tab's.
 
 **Keystroke to suggestion (reflex).** The extension asks `navigator/inlineCompletion` after 150 ms
 of pause. `runtime/inline.rs` reads the document and the reflex context, `reflex.rs` builds the FIM
@@ -179,5 +192,9 @@ it is and that run keeps using it.
   `ToolContext.readable_roots`, not in `writable_roots`. That only keeps `write` and `edit` out: a
   project skill inside the workspace is writable like any workspace file, and `bash` is unsandboxed. The `skill` tool is registered per session (`AgentActor::set_skills`),
   never in a direct Phase-1 registry.
+- The role prompt of the primary agent reaches the model through `AgentActor::role_message`, composed
+  with the profile's instructions; the turn reads a snapshot of the selected agent when it starts
+  (`RuntimeStatus.selection`), so a tool dispatch can read the agent of its turn from `actor.role`.
+  Agent files are discovered with `AgentRoots` (give it the home, never read `~` in a test).
 - Keep a production file under ~600 lines. Past that, split by responsibility, not by size.
 - Comments name the domain reason and dated evidence; never a ticket or plan id.

@@ -75,9 +75,10 @@ pub async fn run_agent(
 
         observe(AgentEvent::StepStarted);
 
+        let role_message = actor.role_message();
         let request = build_request(
             &actor.model,
-            actor.system_prompt.as_deref(),
+            role_message.as_deref(),
             actor.rules.message(),
             actor.skills.catalog(),
             actor.effective_history(),

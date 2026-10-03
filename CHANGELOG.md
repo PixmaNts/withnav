@@ -8,6 +8,16 @@ requests land in `develop`.
 
 ### Added
 
+- **Several conversations at once in the terminal client**: each conversation opens in its own tab
+  and keeps streaming while you look at another one. `/new` and ctrl+n open a new tab; picking a
+  conversation in `/sessions` opens it in a tab, or brings its tab forward if it is already open; up
+  to nine tabs. alt+1 … alt+9 switch, alt+w closes a tab and alt+b hides or shows the tab bar. Closing
+  a tab stops nothing: the conversation stays on the server, a turn in progress finishes there, and
+  `/sessions` reopens it. Each tab keeps its own draft, scroll position and model.
+- **Tab bar** on the left of the terminal client: every open conversation with its number, its title
+  (or the start of its id), what it is doing (`build · idle`, `running`, `waiting` or `error`) and a
+  dot when something new arrived while you were elsewhere. It hides itself when the terminal is
+  narrower than 80 columns.
 - **Context budget**: every session keeps an estimate of its next request (UTF-8 bytes / 4 plus a
   fixed framing per message), split into system, rules, skills catalog, tools and messages, against
   its model's window. The input budget is `min(W − R, input limit or W) − M`: R is the alias's
@@ -20,10 +30,24 @@ requests land in `develop`.
   step, a runtime incarnation and a revision that counts within it; the TUI drops a fetch answered after a resume or reconnect and never shows a retired incarnation again), `/context` renders it (`~42k / 1,000k · 4% · input
   budget 942k` and the breakdown), and a new `context.updated` event carries it after each provider
   response, each step's tool results and at turn start and end. The event is live-only: it is not
-  stored or replayed, so the TUI reads the snapshot back after every stream connection; the catalog has 14 kinds; the envelope version, the other kinds and the
+  stored or replayed, so the TUI reads the snapshot back after every stream connection; the catalog has 15 kinds with `session.agent_changed`; the envelope version, the other kinds and the
   stored history are unchanged. The TUI status line shows the estimate (`ctx ~42k / 1M · 4%`)
   instead of the last prompt count, and keeps the old display against a server that has no endpoint.
 
+- **Primary agents**: a session runs as `build` (the default: implement, verify, report) or `plan`
+  (research, markdown plans, delegation; its prompt forbids changing code), or as a custom agent from a
+  markdown file with a YAML header (`description`, `mode`, `model`, `tools`, `access`) and the role prompt
+  as its body. Files are read from `~/.config/opencode/agents/` (read only), `~/.config/navai/agents/`
+  and the project's `.navai/agents/`, later ones replacing earlier ones; `build` and `plan` cannot be
+  replaced, and a bad file is reported and skipped. `explore` and `review` are built-in read-only
+  subagents. The role prompt joins the profile's instructions and is never written into the transcript.
+  `POST /v1/sessions` takes `agent`, `GET /v1/sessions/{id}` and the session list show it, and
+  `navai run --agent plan` picks it. The choice is stored in a new nullable `sessions.primary_agent`
+  column (empty means `build`, so older conversations resume as before); a resume whose stored agent no
+  longer exists fails with an explicit error. `/agent` lists the choices, `/agent <id>` switches between
+  turns (refused while the agent works or waits for an answer) and publishes a durable
+  `session.agent_changed` `{agent, previous}`, so the event catalog has 15 kinds with `context.updated`. Both agents keep every
+  tool; the permission gate comes next.
 - **Session commands**: `GET /v1/commands` lists them; `POST /v1/sessions/{id}/commands` with
   `{name, arguments}` runs one and answers `{operation_id, ok, data?, error?}`. Built in: `/help`,
   `/model` (alias, window and where the window comes from), `/new [alias]` (a fresh session; the old one

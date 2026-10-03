@@ -2,6 +2,7 @@
 //! are loaded (at creation and at resume): one per source or file.
 
 use super::service::SessionId;
+use crate::agent::definitions::Agents;
 use crate::agent::instructions::Instructions;
 use crate::agent::skills::Skills;
 
@@ -38,5 +39,19 @@ pub(super) fn log_skills(id: SessionId, resumed: bool, skills: &Skills) {
         } else {
             tracing::info!(session_id = %id, path = %d.path.display(), "skills: {}", d.kind);
         }
+    }
+}
+
+pub(super) fn log_agents(id: SessionId, resumed: bool, agents: &Agents) {
+    let when = if resumed { "resume" } else { "create" };
+    tracing::info!(
+        session_id = %id,
+        on = when,
+        agents = agents.all().count(),
+        diagnostics = agents.diagnostics().len(),
+        "session agents loaded"
+    );
+    for d in agents.diagnostics() {
+        tracing::warn!(session_id = %id, path = %d.path.display(), "agents: {}", d.message);
     }
 }

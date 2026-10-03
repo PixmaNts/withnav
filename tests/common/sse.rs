@@ -176,6 +176,52 @@ pub async fn spawn_gated_provider(
     }
 }
 
+/// A provider whose answers the test writes piece by piece: every request it accepts comes out
+/// of `requests` as its body and a sender; each string sent is written as one SSE `data:` frame,
+/// and dropping the sender ends the answer with `[DONE]`.
+pub struct StreamingProvider {
+    pub url: String,
+    pub requests: tokio::sync::mpsc::Receiver<(String, tokio::sync::mpsc::UnboundedSender<String>)>,
+}
+
+pub async fn spawn_streaming_provider() -> StreamingProvider {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock bind");
+    let addr = listener.local_addr().expect("mock addr");
+    let (tx, requests) = tokio::sync::mpsc::channel(16);
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let request = read_http_request(&mut sock).await;
+                let (chunks, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                if tx.send((request, chunks)).await.is_err() {
+                    return;
+                }
+                let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+                if sock.write_all(head.as_bytes()).await.is_err() {
+                    return;
+                }
+                while let Some(chunk) = rx.recv().await {
+                    let frame = format!("data: {chunk}\n\n");
+                    if sock.write_all(frame.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    let _ = sock.flush().await;
+                }
+                let _ = sock.write_all(b"data: [DONE]\n\n").await;
+                let _ = sock.flush().await;
+                let _ = sock.shutdown().await;
+            });
+        }
+    });
+    StreamingProvider {
+        url: format!("http://{addr}/v1"),
+        requests,
+    }
+}
+
 /// Reads one HTTP request: until the head is complete and `Content-Length`
 /// body bytes followed it, or the peer closed.
 async fn read_http_request(sock: &mut tokio::net::TcpStream) -> String {

@@ -30,7 +30,7 @@
 //! Schema:
 //! - `sessions(id TEXT PRIMARY KEY, workspace TEXT, model TEXT, profile TEXT,
 //!   title TEXT, created_at TEXT, updated_at TEXT, last_seq INTEGER, transcript TEXT,
-//!   model_resolution TEXT, variant TEXT, variant_override TEXT)`
+//!   model_resolution TEXT, variant TEXT, variant_override TEXT, primary_agent TEXT)`
 //! - `events(session_id TEXT, seq INTEGER, kind TEXT, envelope TEXT,
 //!   PRIMARY KEY(session_id, seq))`
 //!
@@ -61,6 +61,11 @@
 //! full history; both are written together by
 //! [`HistoryStore::save_checkpoint`]. A resume validates the indices against
 //! the transcript, and a non-null value that does not validate fails it.
+//!
+//! `primary_agent` is NULL (the `build` agent, also for every row written
+//! before the column existed) or the id of the primary agent the session runs
+//! as. It changes with `/agent`, and the change is committed before it is
+//! reported.
 
 mod read;
 
@@ -99,6 +104,8 @@ pub struct StoredSession {
     /// The raw JSON of the saved variant's override object; `None` for a row
     /// saved before it was kept, or with no variant.
     pub variant_override: Option<String>,
+    /// The raw `primary_agent` column: `None` is the `build` agent.
+    pub primary_agent: Option<String>,
 }
 
 /// A full session load: the row's metadata, its stored envelopes (in seq
@@ -125,6 +132,7 @@ enum Write {
         resolution: Option<String>,
         variant: Option<String>,
         variant_override: Option<String>,
+        primary_agent: Option<String>,
     },
     SetVariant {
         id: Ulid,
@@ -139,6 +147,10 @@ enum Write {
         id: Ulid,
         expected: String,
         resolution: String,
+    },
+    SetPrimaryAgent {
+        id: Ulid,
+        agent: Option<String>,
     },
     AppendEvent {
         id: Ulid,
@@ -269,12 +281,14 @@ impl HistoryStore {
         model: &str,
         profile: Option<&str>,
     ) -> Result<(), String> {
-        self.record_session_resolved(id, workspace, model, profile, None, None)
+        self.record_session_resolved(id, workspace, model, profile, None, None, None)
             .await
     }
 
     /// [`HistoryStore::record_session`] with the model resolution saved in
-    /// the same insert. An existing row keeps what it has.
+    /// the same insert, and the primary agent when it is not `build`. An
+    /// existing row keeps what it has.
+    #[allow(clippy::too_many_arguments)]
     pub async fn record_session_resolved(
         &self,
         id: Ulid,
@@ -283,6 +297,7 @@ impl HistoryStore {
         profile: Option<&str>,
         resolution: Option<&crate::provider::catalog::ModelResolution>,
         variant: Option<&(String, crate::provider::config::Variant)>,
+        primary_agent: Option<&str>,
     ) -> Result<(), String> {
         let (variant, variant_override) = split_variant(variant)?;
         let resolution = resolution
@@ -297,6 +312,7 @@ impl HistoryStore {
             resolution,
             variant,
             variant_override,
+            primary_agent: primary_agent.map(str::to_string),
         })
         .await
     }
@@ -345,6 +361,16 @@ impl HistoryStore {
             id,
             expected: expected.to_string(),
             resolution,
+        })
+        .await
+    }
+
+    /// Sets the primary agent of a session (`None` is `build`) and waits for
+    /// the commit.
+    pub async fn set_primary_agent(&self, id: Ulid, agent: Option<&str>) -> Result<(), String> {
+        self.acked(Write::SetPrimaryAgent {
+            id,
+            agent: agent.map(str::to_string),
         })
         .await
     }
@@ -460,13 +486,14 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             resolution,
             variant,
             variant_override,
+            primary_agent,
         } => {
             let now = now_rfc3339();
             tx.execute(
                 "INSERT OR IGNORE INTO sessions
                  (id, workspace, model, profile, title, created_at, updated_at, last_seq, transcript,
-                  model_resolution, variant, variant_override)
-                 VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5, -1, NULL, ?6, ?7, ?8)",
+                  model_resolution, variant, variant_override, primary_agent)
+                 VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5, -1, NULL, ?6, ?7, ?8, ?9)",
                 params![
                     id.to_string(),
                     workspace,
@@ -475,7 +502,8 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                     now,
                     resolution,
                     variant,
-                    variant_override
+                    variant_override,
+                    primary_agent
                 ],
             )?;
         }
@@ -526,6 +554,15 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             )?;
             if touched != 1 {
                 return Err(WriteError::ResolutionChanged(id));
+            }
+        }
+        Write::SetPrimaryAgent { id, agent } => {
+            let touched = tx.execute(
+                "UPDATE sessions SET primary_agent = ?2 WHERE id = ?1",
+                params![id.to_string(), agent],
+            )?;
+            if touched == 0 {
+                return Err(WriteError::UnknownSession(id));
             }
         }
         Write::AppendEvent { id, envelope } => {
@@ -609,7 +646,8 @@ fn migrate(path: &Path) -> Result<(), String> {
             model_resolution TEXT,
             variant TEXT,
             variant_override TEXT,
-            checkpoint TEXT
+            checkpoint TEXT,
+            primary_agent TEXT
         );
         CREATE TABLE IF NOT EXISTS events (
             session_id TEXT NOT NULL,
@@ -629,7 +667,7 @@ fn migrate(path: &Path) -> Result<(), String> {
         conn.execute("ALTER TABLE sessions ADD COLUMN model_resolution TEXT", [])
             .map_err(|e| format!("migrate: {e}"))?;
     }
-    // A database from before `variant`: add the nullable column (NULL = none).
+    // A database from before `variant`: add the nullable column.
     let has_variant = conn
         .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'variant'")
         .and_then(|mut stmt| stmt.exists([]))
@@ -638,11 +676,12 @@ fn migrate(path: &Path) -> Result<(), String> {
         conn.execute("ALTER TABLE sessions ADD COLUMN variant TEXT", [])
             .map_err(|e| format!("migrate: {e}"))?;
     }
-    let has_override = conn
+    // A database from before `variant_override`: add the nullable column.
+    let has_variant_override = conn
         .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'variant_override'")
         .and_then(|mut stmt| stmt.exists([]))
         .map_err(|e| format!("migrate: {e}"))?;
-    if !has_override {
+    if !has_variant_override {
         conn.execute("ALTER TABLE sessions ADD COLUMN variant_override TEXT", [])
             .map_err(|e| format!("migrate: {e}"))?;
     }
@@ -653,6 +692,15 @@ fn migrate(path: &Path) -> Result<(), String> {
         .map_err(|e| format!("migrate: {e}"))?;
     if !has_checkpoint {
         conn.execute("ALTER TABLE sessions ADD COLUMN checkpoint TEXT", [])
+            .map_err(|e| format!("migrate: {e}"))?;
+    }
+    // A database from before `primary_agent`: add the nullable column.
+    let has_primary_agent = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'primary_agent'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| format!("migrate: {e}"))?;
+    if !has_primary_agent {
+        conn.execute("ALTER TABLE sessions ADD COLUMN primary_agent TEXT", [])
             .map_err(|e| format!("migrate: {e}"))?;
     }
     Ok(())
@@ -1168,7 +1216,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let id = Ulid::new();
         store
-            .record_session_resolved(id, "/w", "m", None, None, Some(&pick("high")))
+            .record_session_resolved(id, "/w", "m", None, None, Some(&pick("high")), None)
             .await
             .expect("record");
         let read = |store: &HistoryStore| {
@@ -1236,7 +1284,7 @@ mod tests {
             .await
             .expect("ignored");
         store
-            .record_session_resolved(id, "/w", "m", None, Some(&make(300)), None)
+            .record_session_resolved(id, "/w", "m", None, Some(&make(300)), None, None)
             .await
             .expect("existing row keeps its own");
         let meta = store.meta(id).await.expect("meta").expect("present");

@@ -1,6 +1,7 @@
 //! Draws the terminal UI without mutating the conversation projection.
 mod markdown;
 mod pickers;
+pub mod sidebar;
 mod status;
 pub mod tool;
 mod transcript;
@@ -16,9 +17,11 @@ use ratatui::{
     Frame,
 };
 
+/// Parsed markdown, one cache per tab conversation: block ids are only unique within a session, so
+/// two tabs never share an entry.
 #[derive(Debug, Default)]
 pub struct RenderCache {
-    markdown: markdown::MarkdownCache,
+    markdown: std::collections::HashMap<u64, markdown::MarkdownCache>,
 }
 
 fn shorten(path: &str, width: usize) -> String {
@@ -65,7 +68,12 @@ pub fn draw(
     cache: &mut RenderCache,
 ) {
     let theme = ui.theme.palette();
-    cache.markdown.set_theme(theme);
+    // A tab closed or moved to another conversation drops its cache.
+    cache
+        .markdown
+        .retain(|generation, _| state.tabs.iter().any(|t| t.generation.0 == *generation));
+    let markdown = cache.markdown.entry(state.generation.0).or_default();
+    markdown.set_theme(theme);
     let area = frame.area();
     frame.buffer_mut().set_style(area, theme.base());
     if area.width < 24 || area.height < 9 {
@@ -85,6 +93,17 @@ pub fn draw(
         );
         return;
     }
+    let full = area;
+    let area = if sidebar::shown(ui, area.width) {
+        let [bar, rest] = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(sidebar::WIDTH), Constraint::Min(1)])
+            .areas(area);
+        sidebar::draw(frame, bar, state, &theme);
+        rest
+    } else {
+        area
+    };
     let editor_height = (editor.text().lines().count().max(1) as u16 + 2).min(7);
     let [header, rule, transcript, separator, status, input, hints] = Layout::default()
         .direction(Direction::Vertical)
@@ -138,7 +157,7 @@ pub fn draw(
         Paragraph::new("─".repeat(usize::from(area.width))).style(theme.border()),
         rule,
     );
-    transcript::draw(frame, transcript, state, ui, &theme, &mut cache.markdown);
+    transcript::draw(frame, transcript, state, ui, &theme, markdown);
     frame.render_widget(
         Paragraph::new("─".repeat(usize::from(area.width))).style(theme.border()),
         separator,
@@ -174,5 +193,5 @@ pub fn draw(
         let hint = " enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help";
         frame.render_widget(Paragraph::new(Line::from(hint_spans(hint, &theme))), hints);
     }
-    pickers::draw(frame, area, state, ui, &theme);
+    pickers::draw(frame, full, state, ui, &theme);
 }

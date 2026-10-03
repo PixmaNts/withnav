@@ -16,7 +16,7 @@ use ratatui::{
 pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, theme: &Theme) {
     let Some(overlay) = ui.overlay else { return };
     let title = match overlay {
-        Overlay::Models if state.session.is_some() => " Start a new conversation with… ",
+        Overlay::Models if crate::tui::reducer::occupied(state) => " Switch this conversation to… ",
         Overlay::Models => " Choose a model ",
         Overlay::Sessions => " Conversations ",
         Overlay::Commands => " Commands ",
@@ -253,21 +253,39 @@ fn dim(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     }
 }
 
-/// A line under the filter: why the variant list is empty, or that a change waits for the turn.
+/// A line under the filter: what picking does to the live conversation (switched after the
+/// running turn, refused while the agent waits for the driver, ctrl+n for a new tab), or why the
+/// variant list is empty.
 fn note(overlay: Overlay, state: &State, ui: &UiState, empty: bool) -> Option<&'static str> {
-    if overlay != Overlay::Variants {
-        return None;
-    }
-    if empty && ui.filter.is_empty() {
-        return Some(match ui.variant_pick {
-            Some(VariantPick::NewConversation(_)) => {
-                "this model has no variants · enter starts without one"
+    let live = crate::tui::reducer::occupied(state);
+    let blocked = crate::tui::reducer::switch_blocked(state);
+    match overlay {
+        Overlay::Models if live => Some(match blocked {
+            Some(why) => why,
+            None if state.activity == Activity::Running => {
+                "the model only, after this turn; /variant after the switch · ctrl+n new tab"
             }
-            _ => "this model has no variants",
-        });
+            None => "switches the model only; /variant after the switch · ctrl+n new tab",
+        }),
+        Overlay::Variants => {
+            if empty && ui.filter.is_empty() {
+                return Some(match ui.variant_pick {
+                    Some(VariantPick::NewConversation(_)) => {
+                        "this model has no variants · enter starts without one"
+                    }
+                    _ => "this model has no variants",
+                });
+            }
+            if state.activity != Activity::Running {
+                return None;
+            }
+            match ui.variant_pick {
+                Some(VariantPick::Current) | None => Some("applies next turn"),
+                Some(VariantPick::NewConversation(_)) => None,
+            }
+        }
+        _ => None,
     }
-    let current = matches!(ui.variant_pick, Some(VariantPick::Current) | None);
-    (current && state.activity == Activity::Running).then_some("applies next turn")
 }
 
 /// One model in the picker: alias, model, context window and variant names, cut to `width`.

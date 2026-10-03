@@ -239,6 +239,65 @@ fn pick_model(
     Some(effects)
 }
 
+/// Why the active conversation cannot switch model now: the server refuses while the agent
+/// waits for an answer or a decision. `None` when it can (a running turn only defers it).
+pub fn switch_blocked(tab: &Tab) -> Option<&'static str> {
+    if tab.open_permission().is_some() {
+        Some("a tool call is waiting for approval: answer it first, then switch model")
+    } else if tab.activity == Activity::AwaitingUser {
+        Some("the agent is waiting for your answer: reply first, then switch model")
+    } else {
+        None
+    }
+}
+
+/// Whether the active tab holds a conversation (live, starting or being resumed): the model
+/// picker then switches it rather than choosing the model a new one starts on.
+pub fn occupied(tab: &Tab) -> bool {
+    tab.session.is_some() || tab.resuming.is_some() || tab.pending_submit_text.is_some()
+}
+
+/// Moves the active conversation to `alias` through `/model`: the model only, the server applies
+/// the alias's default variant (`/variant` changes it after). A tab with no conversation yet
+/// starts on it instead.
+fn switch_model(s: &mut State, ui: &mut UiState, alias: String) -> Vec<Effect> {
+    if !occupied(s) {
+        return pick_model(s, ui, alias, None).unwrap_or_default();
+    }
+    if let Some(why) = switch_blocked(s) {
+        push_local(
+            s,
+            BlockKind::Command {
+                name: "model".into(),
+                ok: false,
+                text: why.into(),
+            },
+        );
+        return vec![];
+    }
+    // The model in use: nothing to switch (a switch waiting for the turn is left as it is).
+    if s.selected_model_alias.as_deref() == Some(alias.as_str()) && s.pending_model().is_none() {
+        push_local(
+            s,
+            BlockKind::Notice(format!(
+                "already on {alias}; use /variant to change the variant"
+            )),
+        );
+        return vec![];
+    }
+    let effects = run_command(s, "model".into(), alias.clone(), None);
+    // A new switch replaces the one shown, whatever became of it.
+    if !effects.is_empty() {
+        s.model_switch = Some(crate::tui::state::ModelSwitch {
+            alias,
+            token: s.command_token,
+            operation_id: None,
+            deferred: false,
+        });
+    }
+    effects
+}
+
 /// Opens the `/variant` list on `current` (the variant in use, `None` for none), unless another
 /// overlay took the screen.
 pub fn show_variants(s: &State, ui: &mut UiState, current: Option<&str>) {
@@ -303,10 +362,12 @@ fn run_command(
         );
         return vec![];
     };
+    s.command_token += 1;
     vec![Effect::RunCommand {
         session_id,
         request: CommandRequest { name, arguments },
         revision,
+        token: s.command_token,
     }]
 }
 
@@ -317,6 +378,7 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
         Action::NewConversation => blank_tab(s, ui).unwrap_or_default(),
         Action::ResumeSession(id) => resume(s, ui, id),
         Action::PickModel(alias) => pick_model(s, ui, alias, None).unwrap_or_default(),
+        Action::SwitchModel(alias) => switch_model(s, ui, alias),
         Action::PickVariant(name) => {
             let pick = ui.variant_pick.take();
             ui.overlay = None;

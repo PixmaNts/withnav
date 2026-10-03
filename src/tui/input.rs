@@ -3,6 +3,7 @@
 use super::{
     commands,
     protocol::{Action, Overlay, PermissionAnswer},
+    reducer,
     state::{Activity, DenyDraft, Focus, State, UiState, VariantPick},
     theme::ThemeId,
 };
@@ -121,18 +122,28 @@ pub fn route_key(
                     _ => Action::CloseOverlay,
                 });
             }
+            // ctrl+n in the model list: that model in a new tab, whatever this tab holds.
+            KeyCode::Char('n')
+                if overlay == Overlay::Models && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                let name = names.get(*selected)?.clone();
+                variant_step(state, ui, VariantPick::NewConversation(name));
+                return None;
+            }
             KeyCode::Enter => {
                 let name = names.get(*selected)?;
                 let action = match overlay {
+                    // A live conversation switches to it, the model only (the server applies its
+                    // default variant), refused with the reason while the agent waits for the
+                    // driver. An empty tab goes on to choose the variant it starts on.
+                    Overlay::Models if reducer::occupied(state) => {
+                        if let Some(why) = reducer::switch_blocked(state) {
+                            return Some(Action::ShowNotice(why.into()));
+                        }
+                        Action::SwitchModel(name.clone())
+                    }
                     Overlay::Models => {
-                        // The second step: which variant to start on (a note when there is none).
-                        let pick = VariantPick::NewConversation(name.clone());
-                        let (_, start) = commands::variant_choices(state, &pick);
-                        ui.overlay = Some(Overlay::Variants);
-                        ui.variant_pick = Some(pick);
-                        ui.filter.clear();
-                        ui.selection
-                            .insert(format!("{:?}", Overlay::Variants), start);
+                        variant_step(state, ui, VariantPick::NewConversation(name.clone()));
                         return None;
                     }
                     Overlay::Variants => Action::PickVariant(name.clone()),
@@ -393,6 +404,17 @@ fn typed_palette_key(
         editor.bump();
     }
     follow_typed_line(state, ui, editor)
+}
+
+/// The model picker's second step: which variant to start on or switch to (a note when the model
+/// has none).
+fn variant_step(state: &State, ui: &mut UiState, pick: VariantPick) {
+    let (_, start) = commands::variant_choices(state, &pick);
+    ui.overlay = Some(Overlay::Variants);
+    ui.variant_pick = Some(pick);
+    ui.filter.clear();
+    ui.selection
+        .insert(format!("{:?}", Overlay::Variants), start);
 }
 
 /// Keys for the open permission request of the tab on screen. `y`, `a` and `n` answer it while the

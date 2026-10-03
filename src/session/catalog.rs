@@ -75,14 +75,7 @@ impl Service {
             .await
             .map_err(ServerError::History)?;
         if let Some(parent) = parent {
-            if let Some(count) = self
-                .subagent_slots
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get_mut(&parent)
-            {
-                *count = count.saturating_sub(1);
-            }
+            let _ = self.reset_child_slots_for_delete(parent).await;
         }
         Ok(())
     }

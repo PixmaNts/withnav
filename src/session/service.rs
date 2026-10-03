@@ -280,7 +280,7 @@ impl Service {
     /// Builds and registers a fresh background session owned by `parent`.
     /// It shares discovery inputs and workspace, but not transcript or root
     /// tools; the caller commits its child link before starting a turn.
-    pub(crate) async fn create_child_session(
+    pub async fn create_child_session(
         &self,
         parent: SessionId,
         agent: &str,
@@ -340,10 +340,11 @@ impl Service {
             policy.insert(tool.into(), true);
         }
         let mut allowed = BTreeMap::new();
-        // A plan-owned child inherits plan's conservative role policy even
-        // when its definition is full-access: no write/edit/bash is exposed.
-        // The role guard is advisory and remains parent-session scoped; child
-        // write-like capabilities are therefore stripped at construction.
+        // A plan-owned child inherits plan's no-write capability ceiling even
+        // when its definition is full-access. We use the stricter capability
+        // ceiling rather than duplicating the advisory parent role guard: the
+        // child has no write/edit/bash dispatch path, so it cannot launder
+        // writes past the plan parent's restriction.
         for tool in [
             "read", "write", "edit", "bash", "grep", "glob", "fetch", "skill", "ask", "task",
         ] {
@@ -371,7 +372,7 @@ impl Service {
         let child = match child {
             Ok(id) => id,
             Err(error) => {
-                self.reset_child_slots(parent).await?;
+                self.reset_child_slots_for_delete(parent).await?;
                 return Err(error);
             }
         };
@@ -390,7 +391,7 @@ impl Service {
             {
                 *count = count.saturating_sub(1);
             }
-            self.reset_child_slots(parent).await?;
+            self.reset_child_slots_for_delete(parent).await?;
             return Err(ServerError::History(error));
         }
         drop(_spawn_lock);
@@ -476,11 +477,14 @@ impl Service {
                 .sequencer
                 .publish(Candidate::new(EventKind::SubagentDone, payload));
         }
-        self.reset_child_slots(parent).await?;
+        self.reset_child_slots_for_delete(parent).await?;
         Ok(())
     }
 
-    async fn reset_child_slots(&self, parent: SessionId) -> Result<(), ServerError> {
+    pub(super) async fn reset_child_slots_for_delete(
+        &self,
+        parent: SessionId,
+    ) -> Result<(), ServerError> {
         let active = self
             .history
             .active_child_count(parent)

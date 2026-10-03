@@ -841,6 +841,15 @@ async fn runtime_loop(
                 active_task_id = None;
             }
             Ok(RunOutcome::Yielded(request)) => {
+                if let Some(done) = &completion {
+                    done(
+                        crate::provider::AssistantMessage {
+                            text: request.question.clone(),
+                            ..Default::default()
+                        },
+                        false,
+                    );
+                }
                 turn.publish(
                     EventKind::AgentYield,
                     to_value(&AgentYield {
@@ -862,6 +871,15 @@ async fn runtime_loop(
                 emit_agent_state(&mut turn, "yielded");
             }
             Ok(RunOutcome::PermissionRequired(request)) => {
+                if let Some(done) = &completion {
+                    done(
+                        crate::provider::AssistantMessage {
+                            text: request.reason.clone(),
+                            ..Default::default()
+                        },
+                        false,
+                    );
+                }
                 turn.publish(
                     EventKind::PermissionRequested,
                     permission_requested(&request),
@@ -877,6 +895,15 @@ async fn runtime_loop(
                 emit_agent_state(&mut turn, "yielded");
             }
             Ok(RunOutcome::Interrupted) => {
+                if let Some(done) = &completion {
+                    done(
+                        crate::provider::AssistantMessage {
+                            text: "stopped".into(),
+                            ..Default::default()
+                        },
+                        false,
+                    );
+                }
                 emit_turn_end(
                     &mut turn,
                     turn_id,
@@ -889,6 +916,15 @@ async fn runtime_loop(
             }
             // `compact_when_full` consumes it before the run ends.
             Ok(RunOutcome::NeedsCompaction { .. }) | Ok(RunOutcome::StepBudgetExhausted) => {
+                if let Some(done) = &completion {
+                    done(
+                        crate::provider::AssistantMessage {
+                            text: "step budget exhausted".into(),
+                            ..Default::default()
+                        },
+                        false,
+                    );
+                }
                 // The internal variant NEVER leaks: the wire sees a yield of
                 // kind "budget" and the actor stays Yielded.
                 turn.publish(

@@ -35,6 +35,7 @@ use super::{
 /// The generation an event is tagged with: the tab it belongs to.
 pub fn generation(e: &ClientEvent) -> &Generation {
     match e {
+        ClientEvent::ChildEnvelope { generation, .. } => generation,
         ClientEvent::Envelope { generation, .. }
         | ClientEvent::Resync { generation }
         | ClientEvent::StreamConnected { generation }
@@ -51,6 +52,7 @@ pub fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::PermissionAnswered { generation, .. }
         | ClientEvent::CommandRan { generation, .. }
         | ClientEvent::Stopped { generation, .. }
+        | ClientEvent::ChildControlled { generation, .. }
         | ClientEvent::DeliveryUncertain { generation }
         | ClientEvent::ProtocolError { generation, .. }
         | ClientEvent::Git { generation, .. }
@@ -139,6 +141,7 @@ pub(crate) fn push_local(s: &mut State, kind: BlockKind) {
 /// Clears the conversation projection and the cursor; the replay re-derives everything.
 fn reset_projection(s: &mut State) {
     s.conversation = Default::default();
+    s.children.clear();
     s.last_applied_seq = None;
     s.latest_envelope = None;
     s.activity = Activity::Idle;
@@ -151,6 +154,8 @@ pub(crate) fn start_conversation(s: &mut State) {
     reset_projection(s);
     s.session = None;
     s.resuming = None;
+    s.inspecting = false;
+    s.parent_session_id = None;
     s.agent_seq = None;
     s.variant_seq = None;
     s.model_seq = None;
@@ -247,10 +252,76 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
 fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>, ProtocolError> {
     let mut effects = vec![];
     match e {
+        ClientEvent::ChildEnvelope {
+            child_session_id,
+            envelope,
+            ..
+        } => {
+            project_child(s, &child_session_id, &envelope);
+        }
         ClientEvent::Envelope { envelope, .. } => {
+            let spawned = (envelope.kind == "subagent.spawned"
+                && envelope.payload["parent_session_id"].as_str()
+                    == s.session
+                        .as_ref()
+                        .map(|m| m.session_id.as_str())
+                        .or(s.resuming.as_deref()))
+            .then(|| {
+                envelope.payload["child_session_id"]
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .flatten();
             // A turn may have changed files: the branch and the changes are read again.
             let turn_end = envelope.kind == crate::bus::event::EventKind::TurnEnd.as_str();
+            if s.read_only() && s.last_applied_seq.is_none_or(|seq| envelope.seq > seq) {
+                if let Some(id) = s
+                    .session
+                    .as_ref()
+                    .map(|m| m.session_id.clone())
+                    .or(s.resuming.clone())
+                {
+                    if super::state::ChildStatus::terminal_event(&envelope).is_some()
+                        || (envelope.kind == "turn.end"
+                            && matches!(
+                                envelope.payload["outcome"].as_str(),
+                                Some("done" | "error")
+                            ))
+                    {
+                        effects.push(Effect::FetchChildTerminalMetadata(id.clone()));
+                    }
+                    project_child(s, &id, &envelope);
+                }
+            }
             envelope::apply_envelope(s, envelope)?;
+            let terminal = s
+                .children
+                .iter()
+                .filter(|c| c.status.terminal())
+                .map(|c| (c.session_id.clone(), c.status))
+                .collect::<Vec<_>>();
+            for (id, status) in terminal {
+                for tab in &mut s.tabs {
+                    if tab
+                        .session
+                        .as_ref()
+                        .map(|m| m.session_id.as_str())
+                        .or(tab.resuming.as_deref())
+                        == Some(id.as_str())
+                    {
+                        tab.child_status = status;
+                    }
+                }
+            }
+            effects.extend(
+                s.children
+                    .iter()
+                    .filter(|c| c.status.terminal())
+                    .map(|c| Effect::UnwatchChild(c.session_id.clone())),
+            );
+            if let Some(child) = spawned {
+                effects.push(watch_child(s, child));
+            }
             if turn_end {
                 effects.extend(read_git(s));
             }
@@ -267,7 +338,9 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             // The gauge is server state, not derived from the replay (`context.updated` is
             // live-only), so it stays; the reconnect that follows refreshes it.
             let context = envelope::take_context(s);
+            let children = std::mem::take(&mut s.children);
             reset_projection(s);
+            s.children = children;
             // The replay says again whether the switch still waits: hidden until its acceptance
             // comes back and nothing settles it.
             if let Some(m) = s.model_switch.as_mut() {
@@ -425,8 +498,20 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             }
         },
         ClientEvent::Sessions { result, .. } => {
-            if let Ok(b) = result {
-                s.sessions = b.sessions
+            if let Ok(mut b) = result {
+                for entry in &mut b.sessions {
+                    entry.id = strip_controls(&entry.id);
+                    entry.title = entry.title.as_deref().map(strip_controls);
+                    entry.agent = entry.agent.as_deref().map(strip_controls);
+                    entry.created_at = strip_controls(&entry.created_at);
+                    entry.updated_at = strip_controls(&entry.updated_at);
+                    entry.parent_session_id =
+                        entry.parent_session_id.as_deref().map(strip_controls);
+                    entry.child_status = entry.child_status.as_deref().map(strip_controls);
+                }
+                s.sessions = b.sessions;
+                seed_children(s);
+                effects.extend(child_watches(s));
             }
         }
         ClientEvent::Created { result, .. } | ClientEvent::Resumed { result, .. } => match result {
@@ -443,6 +528,9 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     model: s.selected_model_alias.clone().unwrap_or_default(),
                     agent: s.agent.clone(),
                     variant: None,
+                    parent_session_id: None,
+                    promptable: true,
+                    child_status: None,
                     current_seq: s.last_applied_seq.unwrap_or(0),
                 });
                 if s.activity == Activity::Stopped {
@@ -468,7 +556,50 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             }
         },
         ClientEvent::Metadata { result, .. } => {
-            if let Ok(m) = result {
+            if let Ok(mut m) = result {
+                m.session_id = strip_controls(&m.session_id);
+                m.actor_state = strip_controls(&m.actor_state);
+                m.workspace = strip_controls(&m.workspace);
+                m.model = strip_controls(&m.model);
+                m.agent = m.agent.as_deref().map(strip_controls);
+                m.variant = m.variant.as_deref().map(strip_controls);
+                m.parent_session_id = m.parent_session_id.as_deref().map(strip_controls);
+                m.child_status = m.child_status.as_deref().map(strip_controls);
+                if std::mem::take(&mut s.inspecting) {
+                    if m.parent_session_id.is_some() || !m.promptable {
+                        s.parent_session_id = m.parent_session_id.clone();
+                        s.child_status = super::state::ChildStatus::from_wire(
+                            m.child_status.as_deref().unwrap_or(""),
+                        );
+                        s.resuming = None;
+                        s.pending_submit_text = None;
+                        s.pending_submit = None;
+                        effects.push(Effect::Subscribe {
+                            session_id: m.session_id.clone(),
+                            cursor: None,
+                        });
+                    } else {
+                        effects.push(Effect::Resume(m.session_id.clone()));
+                    }
+                }
+                if s.read_only() {
+                    s.resuming = None;
+                    let status = super::state::ChildStatus::from_wire(
+                        m.child_status.as_deref().unwrap_or(""),
+                    );
+                    if status.terminal() {
+                        s.child_status = status;
+                        for tab in &mut s.tabs {
+                            if let Some(child) = tab
+                                .children
+                                .iter_mut()
+                                .find(|c| c.session_id == m.session_id)
+                            {
+                                child.status = status;
+                            }
+                        }
+                    }
+                }
                 // Only reached for the current generation, so `m` describes this conversation.
                 // A summary read before a change the stream already confirmed is older than it.
                 let newer = |seq: Option<u64>| seq.is_none_or(|seq| m.current_seq >= seq);
@@ -482,7 +613,17 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     s.selected_model_alias = Some(m.model.clone());
                     refresh_model(s);
                 }
-                s.session = Some(m)
+                s.session = Some(m);
+                seed_children(s);
+                effects.extend(child_watches(s));
+            } else {
+                s.inspecting = false;
+                s.resuming = None;
+                s.pending_submit_text = None;
+                s.pending_submit = None;
+                if let Err(error) = result {
+                    push_local(s, BlockKind::Error(error));
+                }
             }
         }
         // An older server has no endpoint: the gauge stays on the provider's count.
@@ -518,11 +659,152 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 ),
             );
         }
-        ClientEvent::Stopped { .. } => {
-            s.activity = Activity::Stopped;
-            s.model_switch = None;
-        }
+        ClientEvent::ChildControlled {
+            child_session_id,
+            control,
+            result,
+            ..
+        } => match result {
+            Ok(()) => {
+                let text = match control {
+                    super::protocol::ChildControl::Stop => {
+                        "stop accepted; waiting for the subagent to finish"
+                    }
+                    super::protocol::ChildControl::Continue => {
+                        "continue accepted; waiting for the subagent"
+                    }
+                };
+                push_local(s, BlockKind::Notice(text.into()));
+            }
+            Err(error) => push_local(
+                s,
+                BlockKind::Error(format!(
+                    "subagent {child_session_id}: {}",
+                    strip_controls(&error)
+                )),
+            ),
+        },
+        ClientEvent::Stopped { result, .. } => match result {
+            Ok(response) if response.accepted => {
+                s.activity = Activity::Stopped;
+                s.model_switch = None;
+            }
+            Ok(response) => push_local(
+                s,
+                BlockKind::Error(format!(
+                    "stop was refused: {}",
+                    strip_controls(&response.actor_state)
+                )),
+            ),
+            Err(error) => push_local(s, BlockKind::Error(strip_controls(&error))),
+        },
         ClientEvent::SettingsNotSaved { message, .. } => push_local(s, BlockKind::Notice(message)),
     }
     Ok(effects)
+}
+
+fn project_child(s: &mut State, id: &str, envelope: &crate::bus::event::EventEnvelope) {
+    for tab in &mut s.tabs {
+        if let Some(child) = tab.children.iter_mut().find(|c| c.session_id == id) {
+            super::state::ChildStatus::project(&mut child.status, &mut child.child_seq, envelope);
+        }
+        if tab.read_only()
+            && tab
+                .session
+                .as_ref()
+                .map(|m| m.session_id.as_str())
+                .or(tab.resuming.as_deref())
+                == Some(id)
+        {
+            super::state::ChildStatus::project(
+                &mut tab.child_status,
+                &mut tab.child_status_seq,
+                envelope,
+            );
+        }
+    }
+}
+
+fn watch_child(tab: &super::state::Tab, child_session_id: String) -> Effect {
+    Effect::WatchChild {
+        parent_session_id: tab
+            .session
+            .as_ref()
+            .map(|m| m.session_id.clone())
+            .or(tab.resuming.clone())
+            .unwrap_or_default(),
+        tab_id: tab.id,
+        generation: tab.generation.clone(),
+        child_session_id,
+    }
+}
+
+fn child_watches(s: &State) -> Vec<Effect> {
+    s.tabs
+        .iter()
+        .flat_map(|tab| {
+            tab.children.iter().map(|child| {
+                if child.status.terminal() {
+                    Effect::UnwatchChild(child.session_id.clone())
+                } else {
+                    watch_child(tab, child.session_id.clone())
+                }
+            })
+        })
+        .collect()
+}
+
+fn seed_children(s: &mut State) {
+    for tab in &mut s.tabs {
+        if let Some(entry) = s.sessions.iter().find(|e| {
+            tab.session
+                .as_ref()
+                .map(|m| m.session_id.as_str())
+                .or(tab.resuming.as_deref())
+                == Some(e.id.as_str())
+        }) {
+            let status =
+                super::state::ChildStatus::from_wire(entry.child_status.as_deref().unwrap_or(""));
+            if status.terminal() {
+                tab.child_status = status;
+            }
+        }
+        let Some(parent) = tab
+            .session
+            .as_ref()
+            .map(|m| &m.session_id)
+            .or(tab.resuming.as_ref())
+        else {
+            continue;
+        };
+        for entry in s
+            .sessions
+            .iter()
+            .filter(|e| e.parent_session_id.as_ref() == Some(parent))
+        {
+            if let Some(child) = tab.children.iter_mut().find(|c| c.session_id == entry.id) {
+                if (child.event_seq.is_none()
+                    && child.child_seq.is_none()
+                    && !child.status.terminal())
+                    || super::state::ChildStatus::from_wire(
+                        entry.child_status.as_deref().unwrap_or(""),
+                    )
+                    .terminal()
+                {
+                    child.status = super::state::ChildStatus::from_wire(
+                        entry.child_status.as_deref().unwrap_or(""),
+                    );
+                }
+            } else {
+                tab.children.push(super::state::ChildAgent {
+                    session_id: entry.id.clone(),
+                    name: entry.agent.clone().unwrap_or_default(),
+                    status: super::state::ChildStatus::from_wire(
+                        entry.child_status.as_deref().unwrap_or(""),
+                    ),
+                    ..Default::default()
+                });
+            }
+        }
+    }
 }

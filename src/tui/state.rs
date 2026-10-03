@@ -56,6 +56,7 @@ pub enum BlockKind {
 /// What a permission request asks and, once it ended, how.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PermissionPrompt {
+    pub child_session_id: Option<String>,
     pub request_id: String,
     pub tool_call_id: String,
     pub tool: String,
@@ -146,6 +147,8 @@ pub struct Tab {
     /// The conversation this tab asked the server to resume, until the answer arrives: the tab
     /// already belongs to it.
     pub resuming: Option<String>,
+    /// Metadata must establish whether this session accepts prompts before a resume is sent.
+    pub inspecting: bool,
     pub selected_model_alias: Option<String>,
     pub selected_model_name: Option<String>,
     pub context_window: Option<u64>,
@@ -199,6 +202,10 @@ pub struct Tab {
     pub view: TabView,
     /// Agents started by this conversation, shown under it; empty until the server reports them.
     pub children: Vec<ChildAgent>,
+    /// Read-only transcript opened from a parent's reported child link.
+    pub parent_session_id: Option<String>,
+    pub child_status: ChildStatus,
+    pub child_status_seq: Option<u64>,
     /// The workspace's branch and changes at the last read; `None` until read, or when the
     /// workspace is not a git repository.
     pub git: Option<super::git::GitStatus>,
@@ -213,6 +220,10 @@ pub const DEFAULT_AGENT: &str = "build";
 pub const PLAN_AGENT: &str = "plan";
 
 impl Tab {
+    pub fn read_only(&self) -> bool {
+        self.parent_session_id.is_some() || self.session.as_ref().is_some_and(|m| !m.promptable)
+    }
+
     /// The oldest permission request still open, if any.
     pub fn open_permission(&self) -> Option<&PermissionPrompt> {
         self.conversation.open_permissions.iter().find_map(|id| {
@@ -262,8 +273,84 @@ impl Tab {
 /// An agent working for a tab's conversation, drawn nested under it.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ChildAgent {
+    pub session_id: String,
     pub name: String,
-    pub activity: Activity,
+    pub goal: String,
+    pub status: ChildStatus,
+    pub delivery: Option<String>,
+    pub reason: Option<String>,
+    /// A sequenced parent event takes precedence over a session-list snapshot.
+    pub event_seq: Option<u64>,
+    pub child_seq: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChildStatus {
+    #[default]
+    Unknown,
+    Running,
+    Permission,
+    OutOfSteps,
+    Doubt,
+    Done,
+    Failed,
+    Stopped,
+}
+
+impl ChildStatus {
+    pub fn terminal_event(event: &EventEnvelope) -> Option<Self> {
+        match event.kind.as_str() {
+            "session.end" => Some(Self::Stopped),
+            _ => None,
+        }
+    }
+
+    pub fn project(status: &mut Self, seq: &mut Option<u64>, event: &EventEnvelope) {
+        if status.terminal() || seq.is_some_and(|held| event.seq <= held) {
+            return;
+        }
+        *seq = Some(event.seq);
+        if let Some(terminal) = Self::terminal_event(event) {
+            *status = terminal;
+            return;
+        }
+        *status = match event.kind.as_str() {
+            "turn.start" => Self::Running,
+            "agent.yield" if event.payload["kind"] == "budget" => Self::OutOfSteps,
+            "permission.requested" => Self::Permission,
+            "permission.resolved" => Self::Running,
+            _ => *status,
+        };
+    }
+    pub fn from_wire(status: &str) -> Self {
+        match status {
+            "running" | "active" => Self::Running,
+            "waiting_for_permission" | "permission" => Self::Permission,
+            "out_of_steps" | "step_budget_exhausted" | "parked" => Self::OutOfSteps,
+            "doubt" => Self::Doubt,
+            "done" => Self::Done,
+            "failed" => Self::Failed,
+            "stopped" => Self::Stopped,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "—",
+            Self::Running => "running",
+            Self::Permission => "waiting for permission",
+            Self::OutOfSteps => "out of steps",
+            Self::Doubt => "in doubt",
+            Self::Done => "done",
+            Self::Failed => "failed",
+            Self::Stopped => "stopped",
+        }
+    }
+
+    pub fn terminal(self) -> bool {
+        matches!(self, Self::Done | Self::Failed | Self::Stopped)
+    }
 }
 
 /// The open tabs and what they share (catalog, session list, workspace). `State` reads and writes
@@ -305,6 +392,39 @@ impl Default for State {
 }
 
 impl State {
+    pub fn active_child_status(&self) -> ChildStatus {
+        self.parent_session_id
+            .as_deref()
+            .and_then(|id| self.tab_of_session(id))
+            .and_then(|i| {
+                self.tabs[i].children.iter().find(|c| {
+                    self.session
+                        .as_ref()
+                        .map(|m| m.session_id.as_str())
+                        .or(self.resuming.as_deref())
+                        == Some(c.session_id.as_str())
+                })
+            })
+            .map(|c| c.status)
+            .unwrap_or(self.child_status)
+    }
+    pub fn child_rows(&self, filter: &str) -> Vec<&ChildAgent> {
+        let parent = self.parent_session_id.as_deref();
+        let tab = parent
+            .and_then(|id| self.tab_of_session(id))
+            .map(|i| &self.tabs[i])
+            .unwrap_or(self);
+        let filter = filter.to_lowercase();
+        tab.children
+            .iter()
+            .filter(|c| {
+                format!("{} {} {}", c.name, c.goal, c.session_id)
+                    .to_lowercase()
+                    .contains(&filter)
+            })
+            .collect()
+    }
+
     /// A number never handed out before, for a generation or a tab id.
     pub fn issue(&mut self) -> u64 {
         self.issued += 1;
@@ -376,6 +496,7 @@ pub enum Focus {
 }
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UiState {
+    pub child_confirm: Option<(String, String, super::protocol::ChildControl)>,
     pub focus: Focus,
     pub overlay: Option<super::protocol::Overlay>,
     pub selection: HashMap<String, usize>,

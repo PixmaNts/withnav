@@ -188,6 +188,20 @@ impl Client {
         self.json(request).await
     }
 
+    pub async fn continue_child(&self, parent: &str, child: &str) -> Result<(), String> {
+        let path = format!(
+            "/v1/sessions/{}/children/{}/continue",
+            encode_segment(parent),
+            encode_segment(child)
+        );
+        let response: serde_json::Value = self.json(self.post(&path)).await?;
+        if response["accepted"].as_bool() == Some(true) {
+            Ok(())
+        } else {
+            Err("the server did not accept continuing this subagent".into())
+        }
+    }
+
     /// Opens `GET /v1/sessions/{id}/events`, resuming after `cursor` when set.
     /// A 2xx answer is returned with its body unread.
     pub async fn open_events(

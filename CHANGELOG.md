@@ -12,11 +12,13 @@ requests land in `develop`.
   sidebar lists conversations and unread activity; the right panel shows agent, context, skills and
   changed files on terminals at least 140 columns wide (`alt+r` toggles it). The sidebar is hidden
   below 80 columns. `alt+1`–`alt+9` switch tabs, `alt+w` closes one, `ctrl+n` starts a conversation,
-  `ctrl+o` opens the session list, `f2` picks a model, `tab` on an empty message switches build/plan,
+  `ctrl+o` opens the session list, `alt+b` hides or shows the sidebar, `f2` picks a model, `tab` on
+  an empty message switches build/plan,
   `shift+tab` changes focus, and `ctrl+q` quits.
 - **Session commands**: `/help`, `/model [alias]`, `/new [alias]`, `/stop`, `/context`,
   `/variant [name|off]`, `/compact [focus]` and `/agent [id]`. The TUI command palette combines
-  these with local commands. A line beginning `//` sends a literal slash, so `//help` sends `/help`.
+  these with local commands. The event catalog has 19 kinds. A line beginning `//` sends a literal
+  slash, so `//help` sends `/help`.
 - **Model switching and variants**: `/model <alias>` switches the current conversation; `/new <alias>`
   starts another. A switch uses the target model's default variant and waits until the current turn
   ends. Model lists and `f2` switch the live conversation; `ctrl+n` in the model picker starts a new

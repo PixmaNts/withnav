@@ -161,18 +161,16 @@ impl Service {
         let _gate = self.lifecycle_gate().await;
         loop {
             let admission = self.admission_gate.lock().await;
+            let owned = self
+                .child_operations
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
             let targets: Vec<(SessionId, SessionHandle)> = {
                 let mut guard = self.lock_sessions();
                 guard
                     .iter_mut()
-                    .filter(|(_, handle)| handle.lifecycle == Lifecycle::Active)
-                    .filter(|(id, _)| {
-                        !self
-                            .child_operations
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .contains_key(id)
-                    })
+                    .filter(|(id, _)| !owned.contains_key(id))
                     .map(|(id, handle)| {
                         handle.lifecycle = Lifecycle::Stopping;
                         handle.session_cancel.cancel();
@@ -181,17 +179,32 @@ impl Service {
                     .collect()
             };
             drop(admission);
-            let owned = self
-                .child_operations
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .values()
-                .cloned()
-                .collect::<Vec<_>>();
-            if targets.is_empty() && owned.is_empty() {
-                break;
+            #[cfg(debug_assertions)]
+            {
+                let barrier = self
+                    .shutdown_snapshot_barrier
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                if let Some(barrier) = barrier {
+                    barrier.reached.notify_one();
+                    barrier.release.notified().await;
+                }
             }
-            for operation in owned {
+            if targets.is_empty() && owned.is_empty() {
+                let _admission = self.admission_gate.lock().await;
+                if self.lock_sessions().is_empty()
+                    && self
+                        .child_operations
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .is_empty()
+                {
+                    break;
+                }
+                continue;
+            }
+            for operation in owned.into_values() {
                 operation.cancelled().await;
             }
             for (id, handle) in targets {

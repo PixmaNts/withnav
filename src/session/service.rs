@@ -287,6 +287,8 @@ fn is_promptable(value: &bool) -> bool {
 #[derive(Clone, Debug)]
 pub struct Service {
     #[cfg(debug_assertions)]
+    pub(crate) shutdown_snapshot_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
     pub(crate) watchdog_claim_write_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
     pub(crate) watchdog_ownership_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
@@ -338,6 +340,14 @@ pub struct Service {
 }
 
 impl Service {
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_shutdown_snapshot(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .shutdown_snapshot_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub async fn watchdog_natural_retained(&self, child: SessionId) {
@@ -527,6 +537,8 @@ impl Service {
             .map_err(ServerError::History)?;
         let catalog = crate::provider::catalog::ModelCatalog::new(Some(config.data_dir.clone()));
         Ok(Self {
+            #[cfg(debug_assertions)]
+            shutdown_snapshot_barrier: Arc::default(),
             #[cfg(debug_assertions)]
             watchdog_claim_write_barrier: Arc::default(),
             #[cfg(debug_assertions)]

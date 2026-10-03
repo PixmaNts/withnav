@@ -911,6 +911,67 @@ async fn shutdown_reclaims_the_child_after_a_provisional_watchdog_stop_rolls_bac
 }
 
 #[tokio::test]
+async fn shutdown_snapshot_retains_ownership_when_stop_rolls_back_before_waiting() {
+    let mut f = Fixture::new(vec![Ok(Verdict::Stuck)]).await;
+    let claim = navai::session::ChildPreparationBarrier::default();
+    let snapshot = navai::session::ChildPreparationBarrier::default();
+    f.service.pause_watchdog_claim_write(claim.clone());
+    f.service.fail_watchdog_stop_write();
+    f.tick(300).await;
+    claim.reached.notified().bounded(file!(), line!()).await;
+    f.service.pause_shutdown_snapshot(snapshot.clone());
+    let service = f.service.clone();
+    let shutdown = tokio::spawn(async move { service.close_all().await });
+    snapshot.reached.notified().bounded(file!(), line!()).await;
+    // Complete rollback while shutdown holds its already-captured snapshot.
+    claim.release.notify_one();
+    let _next = f.sleeps.recv().bounded(file!(), line!()).await.unwrap();
+    assert_eq!(
+        f.service
+            .child_metadata(f.child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "running"
+    );
+    assert_eq!(f.service.reserved_child_count(f.parent), 1);
+    snapshot.release.notify_one();
+    shutdown.bounded(file!(), line!()).await.unwrap();
+    assert_eq!(f.service.session_count(), 0);
+    assert_eq!(f.service.reserved_child_count(f.parent), 0);
+    assert_eq!(
+        f.service
+            .child_metadata(f.child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "stopped"
+    );
+    f.service
+        .history()
+        .flush()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert_eq!(
+        f.service
+            .history()
+            .replay(f.child, None, u64::MAX)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .iter()
+            .filter(|e| e.kind == "session.end")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn running_tool_keeps_capacity_and_completion_until_it_has_ended() {
     let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
     let tmp = tempfile::tempdir().unwrap();

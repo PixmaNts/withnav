@@ -13,6 +13,10 @@
 //!   A stopped conversation (stopped, or stored only) answers 409
 //!   `{"error", "reason":"resume_required"}`: resume it first.
 //! - `POST /v1/sessions/:id/stop` -> `{accepted:true, actor_state:"stopped"}`
+//! - `GET  /v1/commands`      -> `{commands:[{name, description, args_hint}]}`
+//! - `POST /v1/sessions/:id/commands` `{name, arguments?}` -> `{operation_id, ok, data?, error?}`
+//!   (a command that cannot run is 200 with `ok:false` and an `error`; the same
+//!   statuses as `/messages` for a session that cannot take commands)
 
 use std::net::SocketAddr;
 use std::time::SystemTime;
@@ -96,6 +100,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/sessions/{id}", get(get_session).delete(delete_session))
         .route("/v1/sessions/{id}/messages", post(post_message))
         .route("/v1/sessions/{id}/stop", post(stop_session))
+        .route("/v1/commands", get(list_commands))
+        .route("/v1/sessions/{id}/commands", post(post_command))
         .route(
             "/v1/sessions/{id}/events",
             get(crate::server::sse::get_events),
@@ -425,6 +431,45 @@ async fn list_models(
             let default = state.default_model(Some("navigator")).map(str::to_string);
             (StatusCode::OK, Json(ModelsBody { models, default })).into_response()
         }
+        Err(err) => error_response(err),
+    }
+}
+
+/// `GET /v1/commands`: the registered session commands.
+async fn list_commands(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(json!({ "commands": state.list_commands() }))
+}
+
+/// `POST /v1/sessions/:id/commands` request.
+#[derive(Debug, Deserialize)]
+pub struct PostCommandRequest {
+    pub name: String,
+    #[serde(default)]
+    pub arguments: String,
+}
+
+/// Runs one session command; the outcome is also published as a durable
+/// `command.result` on the session stream.
+async fn post_command(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Result<Json<PostCommandRequest>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let parsed: Ulid = match id.parse() {
+        Ok(parsed) => parsed,
+        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+    };
+    let Json(request) = match body {
+        Ok(parsed) => parsed,
+        Err(rejection) => {
+            return error_response(ServerError::MalformedBody(rejection.body_text()));
+        }
+    };
+    match state
+        .run_command(parsed, &request.name, &request.arguments)
+        .await
+    {
+        Ok(outcome) => Json(outcome).into_response(),
         Err(err) => error_response(err),
     }
 }

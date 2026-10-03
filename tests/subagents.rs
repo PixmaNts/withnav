@@ -585,6 +585,8 @@ async fn child_stop_http_is_allowed_but_chat_command_and_resume_are_forbidden() 
         .await
         .unwrap();
     assert_eq!(command.status(), 403);
+    let direct = fx.state.run_command(child, "help", "").await.unwrap_err();
+    assert!(matches!(direct, navai::error::ServerError::ChildReadOnly));
     let resume = app
         .clone()
         .oneshot(

@@ -135,6 +135,7 @@ fn input<'a>(
             tools: &[],
         },
         destination_budget: 100_000,
+        aim: Aim::Fit,
         source_budget: 100_000,
         focus: None,
     }
@@ -199,7 +200,7 @@ async fn an_oversized_source_cuts_the_biggest_outputs_of_the_part_to_summarize()
     let provider = provider("http://127.0.0.1:1/v1".into());
     let mut i = input(&provider, &t, None);
     i.destination_budget = crate::agent::compaction::summary_reserve_tokens() + 330;
-    let planned = plan(&t, None, &i.components, i.destination_budget).unwrap();
+    let planned = plan(&t, None, &i.components, i.destination_budget, Aim::Fit).unwrap();
     assert!(planned.through_message > 2);
     i.source_budget = 2_000;
     let req = build_summary_request(&i, &planned).unwrap();
@@ -279,7 +280,7 @@ fn a_focus_is_added_to_the_summary_prompt() {
     let t = five_turns(100);
     let provider = provider("http://127.0.0.1:1/v1".into());
     let mut i = input(&provider, &t, None);
-    let planned = plan(&t, None, &i.components, i.destination_budget).unwrap();
+    let planned = plan(&t, None, &i.components, i.destination_budget, Aim::Fit).unwrap();
     let text = |i: &PrepareInput<'_>| match &build_summary_request(i, &planned).unwrap().messages[0]
     {
         ChatMessage::System { content } => content.clone(),

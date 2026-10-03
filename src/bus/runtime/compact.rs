@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::RuntimeStatus;
 use crate::agent::actor::AgentActor;
-use crate::agent::compaction::{self, Compaction, PrepareInput};
+use crate::agent::compaction::{self, Aim, Compaction, PrepareInput};
 use crate::bus::event::{ContextCompacted, EventKind};
 use crate::bus::sequencer::{Candidate, Sequencer};
 use crate::provider::openai::ChatMessage;
@@ -162,6 +162,7 @@ pub(super) async fn run(
             current: actor.compaction.as_ref(),
             components: actor.components(role.as_deref(), &tools),
             destination_budget: budget,
+            aim: Aim::Shrink,
             source_budget: budget,
             focus,
         },

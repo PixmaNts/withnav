@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    estimate_effective, loaded_skill_calls, plan, validate, Checkpoint, Compaction,
+    estimate_effective, loaded_skill_calls, plan, validate, Aim, Checkpoint, Compaction,
     CompactionError, Components, Plan, SUMMARY_MAX_BYTES,
 };
 use crate::agent::context::message_tokens;
@@ -51,6 +51,8 @@ pub struct PrepareInput<'a> {
     /// The input budget the prompt must fit afterwards: the session's own for
     /// `/compact`, the target model's for a switch.
     pub destination_budget: u64,
+    /// How much to summarize.
+    pub aim: Aim,
     /// The input budget of the session's own model: the summary request must
     /// fit it.
     pub source_budget: u64,
@@ -78,6 +80,7 @@ pub async fn prepare(
         input.current,
         &input.components,
         input.destination_budget,
+        input.aim,
     )?;
     let estimated_before =
         estimate_effective(&input.components, input.transcript, input.current).total();

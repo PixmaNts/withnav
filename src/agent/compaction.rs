@@ -253,7 +253,18 @@ pub fn summary_reserve_tokens() -> u64 {
     message_tokens(&summary_message(&"x".repeat(SUMMARY_MAX_BYTES)))
 }
 
-/// Plans a compaction of `transcript` that makes the prompt fit `budget`.
+/// How much a plan summarizes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Aim {
+    /// As little as makes the prompt fit the budget: what a request that is
+    /// over budget, or a model switch, needs.
+    Fit,
+    /// Everything the protected recent turns allow: what the user asks for
+    /// with `/compact`, whether or not the prompt already fits.
+    Shrink,
+}
+
+/// Plans a compaction of `transcript` for a prompt that must fit `budget`.
 ///
 /// Whole tool outputs outside the protected recent turns are replaced by
 /// markers, biggest first (the oldest of equals), until the earliest possible
@@ -265,6 +276,7 @@ pub fn plan(
     current: Option<&Compaction>,
     components: &Components<'_>,
     budget: u64,
+    aim: Aim,
 ) -> Result<Plan, CompactionError> {
     let floor = current.map_or(0, |c| c.checkpoint.through_message + 1);
     let tail_start = protected_start(transcript);
@@ -321,11 +333,14 @@ pub fn plan(
         pruned.insert(next);
     }
     // The latest cut always fits (checked above).
-    let boundary = cuts
-        .iter()
-        .copied()
-        .find(|&c| suffix(&cost, c) <= budget)
-        .unwrap_or(latest_cut);
+    let boundary = match aim {
+        Aim::Shrink => latest_cut,
+        Aim::Fit => cuts
+            .iter()
+            .copied()
+            .find(|&c| suffix(&cost, c) <= budget)
+            .unwrap_or(latest_cut),
+    };
 
     let prefix_elidable = order.iter().copied().filter(|i| *i < boundary).collect();
     Ok(Plan {

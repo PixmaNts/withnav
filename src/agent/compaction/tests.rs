@@ -87,7 +87,7 @@ fn an_unfinished_turn_adds_to_the_protected_ones() {
 #[test]
 fn a_roomy_budget_summarizes_the_earliest_exchange_after_nothing_is_pruned() {
     let t = five_turns(400);
-    let p = plan(&t, None, &components(), 1_000_000).unwrap();
+    let p = plan(&t, None, &components(), 1_000_000, Aim::Fit).unwrap();
     assert!(p.pruned.is_empty());
     // The earliest cut: the first assistant step.
     assert_eq!(p.through_message, 0);
@@ -101,7 +101,7 @@ fn a_tight_budget_prunes_the_biggest_oldest_outputs_before_moving_the_boundary()
     let c = components();
     let full = size(&c, &t, None);
     let budget = full + summary_reserve_tokens() - 200;
-    let p = plan(&t, None, &c, budget).unwrap();
+    let p = plan(&t, None, &c, budget, Aim::Fit).unwrap();
     assert!(p.estimated_after <= budget);
     assert!(p.pruned.contains(&6), "the biggest output goes first");
     for &i in &p.pruned {
@@ -115,7 +115,7 @@ fn the_boundary_never_cuts_a_tool_exchange() {
     let t = five_turns(400);
     let c = components();
     for budget in [3000u64, 4000, 5000, 6000] {
-        let Ok(p) = plan(&t, None, &c, budget) else {
+        let Ok(p) = plan(&t, None, &c, budget, Aim::Fit) else {
             continue;
         };
         let next = &t[p.through_message + 1];
@@ -135,7 +135,14 @@ fn the_protected_tail_is_never_pruned_or_summarized() {
     let t = five_turns(2000);
     let c = components();
     let tail = protected_start(&t);
-    let p = plan(&t, None, &c, 1000 + summary_reserve_tokens() + 700).unwrap();
+    let p = plan(
+        &t,
+        None,
+        &c,
+        1000 + summary_reserve_tokens() + 700,
+        Aim::Fit,
+    )
+    .unwrap();
     assert!(p.through_message < tail);
     assert!(p.pruned.iter().all(|i| *i < tail));
 }
@@ -143,7 +150,7 @@ fn the_protected_tail_is_never_pruned_or_summarized() {
 #[test]
 fn a_tail_that_cannot_fit_is_a_capacity_error() {
     let t = five_turns(4000);
-    let err = plan(&t, None, &components(), 500).unwrap_err();
+    let err = plan(&t, None, &components(), 500, Aim::Fit).unwrap_err();
     assert!(matches!(err, CompactionError::Capacity { budget: 500, .. }));
     assert!(err.to_string().contains("larger context window"));
 }
@@ -162,7 +169,7 @@ fn skill_bodies_and_ask_answers_are_never_pruned() {
     t.push(answer("ok"));
     t.extend(five_turns(10));
     let c = components();
-    let p = plan(&t, None, &c, 2800 + summary_reserve_tokens()).unwrap();
+    let p = plan(&t, None, &c, 2800 + summary_reserve_tokens(), Aim::Fit).unwrap();
     assert!(!p.pruned.contains(&2));
     assert!(!p.pruned.contains(&4));
     assert!(!p.prefix_elidable.contains(&2));
@@ -172,7 +179,7 @@ fn skill_bodies_and_ask_answers_are_never_pruned() {
 fn nothing_to_compact_when_everything_is_protected() {
     let t = five_turns(10)[..8].to_vec();
     assert_eq!(
-        plan(&t, None, &components(), 100_000).unwrap_err(),
+        plan(&t, None, &components(), 100_000, Aim::Fit).unwrap_err(),
         CompactionError::NothingToCompact
     );
 }
@@ -180,7 +187,7 @@ fn nothing_to_compact_when_everything_is_protected() {
 #[test]
 fn a_second_compaction_starts_after_the_first_boundary() {
     let t = five_turns(300);
-    let first = plan(&t, None, &components(), 100_000).unwrap();
+    let first = plan(&t, None, &components(), 100_000, Aim::Fit).unwrap();
     let k = Compaction {
         checkpoint: Checkpoint {
             through_message: first.through_message,
@@ -190,7 +197,7 @@ fn a_second_compaction_starts_after_the_first_boundary() {
         pruned_message_indices: first.kept_pruned(),
     };
     validate(&k, &t).unwrap();
-    let second = plan(&t, Some(&k), &components(), 100_000).unwrap();
+    let second = plan(&t, Some(&k), &components(), 100_000, Aim::Fit).unwrap();
     assert!(second.through_message > first.through_message);
 }
 
@@ -239,4 +246,15 @@ fn validate_rejects_bad_indices() {
     assert!(validate(&ok(3, vec![99]), &t).is_err());
     assert!(validate(&ok(3, vec![5]), &t).is_err(), "not a tool output");
     assert!(validate(&ok(3, vec![10, 6]), &t).is_err(), "unordered");
+}
+
+#[test]
+fn shrink_summarizes_up_to_the_protected_tail_even_when_everything_fits() {
+    let t = five_turns(6000);
+    let fit = plan(&t, None, &components(), 1_000_000, Aim::Fit).unwrap();
+    let shrink = plan(&t, None, &components(), 1_000_000, Aim::Shrink).unwrap();
+    assert!(shrink.through_message > fit.through_message);
+    // The last two completed turns (messages 12..) stay verbatim.
+    assert_eq!(shrink.through_message + 1, protected_start(&t));
+    assert!(shrink.estimated_after < size(&components(), &t, None));
 }

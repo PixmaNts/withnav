@@ -116,7 +116,7 @@ impl std::fmt::Display for BudgetError {
         }
         write!(
             f,
-            "; set a larger \"context_window\" or a smaller \"max_output_tokens\" for the alias in models.json"
+            "; choose a model with a larger context window. Correct \"context_window\" in models.json only if the configured value is wrong, and lower \"max_output_tokens\" if it is what takes the room"
         )
     }
 }

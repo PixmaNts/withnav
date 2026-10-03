@@ -660,7 +660,14 @@ pub async fn resolve_chat(
     let used = data.as_ref().filter(|d| d.limits.is_some());
     let stale = used.is_some_and(|d| d.stale);
     let stale_age_secs = used.filter(|d| d.stale).and_then(|d| d.age_seconds);
-    let refresh_error = used.and_then(|d| d.error.clone());
+    // A lookup that failed is reported even when nothing is cached for the
+    // model: a pinned window then still tells why no variants are on offer.
+    // Without a lookup the error is only that of values actually used.
+    let refresh_error = if needs_tiers && is_chat {
+        data.as_ref().and_then(|d| d.error.clone())
+    } else {
+        used.and_then(|d| d.error.clone())
+    };
     let limits = data.and_then(|d| d.limits).unwrap_or_default();
     let variants = effective_variants(resolved, limits.effort_tiers.as_deref().unwrap_or(&[]));
     let default_variant = resolved.model.default_variant.clone();

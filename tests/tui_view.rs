@@ -87,6 +87,9 @@ fn state() -> State {
             message_count: 3,
             agent: None,
             live: true,
+            parent_session_id: None,
+            child_status: None,
+            promptable: true,
         }],
         ..State::default()
     }

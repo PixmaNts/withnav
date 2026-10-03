@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""Build Navai's models.json and auth.json from the OpenCode config.
+
+Reads ~/.config/opencode/opencode.jsonc (or --opencode PATH), takes every
+model of every openai-compatible provider, and writes one Navai alias per
+model id (same id), plus the role aliases Navai's layers use. The provider
+key goes to auth.json (0600), never to models.json.
+
+The omniroute provider gets "catalog_format": "omniroute", so Navai reads
+each model's context window and variants from the provider's model list.
+Imported chat aliases therefore carry no context_window, unless you pass
+--with-windows to copy the limits from the OpenCode config. The reflex and
+instinct aliases keep their fixed windows: they speak their own APIs.
+
+Usage: import-opencode-models [--config-dir DIR] [--opencode FILE]
+                              [--with-windows] [--dry-run]
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+# Role aliases: the layer -> (provider, model id, extra settings). Instinct
+# and reflex speak their own APIs and stay on their dedicated endpoints.
+ROLES = {
+    "cognition": ("cc/claude-opus-5-5", {}),
+    "default": ("combo/deepseek-v4-flash", {}),
+    "fast": ("combo/deepseek-v4-flash", {}),
+    "metacognition": ("combo/deepseek-v4-flash", {"supports_parallel_tool_calls": False}),
+}
+FIXED = {
+    "reflex": {
+        "provider": "inception",
+        "model": "mercury-edit-2",
+        "context_window": 128000,
+        "max_output_tokens": 512,
+        "supports_tools": False,
+        "supports_parallel_tool_calls": False,
+        "api": "fim",
+    },
+    "instinct": {
+        "provider": "omniroute",
+        "model": "typesafe/jev-1.13",
+        "context_window": 64000,
+        "max_output_tokens": 2048,
+        "supports_tools": False,
+        "supports_parallel_tool_calls": False,
+        "api": "systemone",
+    },
+}
+EXTRA_PROVIDERS = {
+    "inception": {
+        "base_url": "https://api.inceptionlabs.ai/v1",
+        "api_key_env": "INCEPTION_API_KEY",
+    },
+}
+
+
+def strip_jsonc(text: str) -> str:
+    """Drop // line comments outside strings, and trailing commas."""
+    out, i, in_str = [], 0, False
+    while i < len(text):
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == "\\":
+                out.append(text[i + 1])
+                i += 1
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+            out.append(c)
+        elif text.startswith("//", i):
+            while i < len(text) and text[i] != "\n":
+                i += 1
+            continue
+        elif text.startswith("/*", i):
+            i = text.index("*/", i) + 2
+            continue
+        else:
+            out.append(c)
+        i += 1
+    return re.sub(r",(\s*[}\]])", r"\1", "".join(out))
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config-dir", default=os.path.expanduser("~/.config/navai"))
+    ap.add_argument("--opencode", default=os.path.expanduser("~/.config/opencode/opencode.jsonc"))
+    ap.add_argument("--with-windows", action="store_true",
+                    help="copy context_window from the OpenCode config instead of letting "
+                         "Navai discover it")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="print a summary and write nothing")
+    args = ap.parse_args()
+
+    oc = json.loads(strip_jsonc(Path(args.opencode).read_text()))
+    providers, models, keys = {}, {}, {}
+    for pname, p in oc.get("provider", {}).items():
+        opts = p.get("options", {})
+        base = opts.get("baseURL")
+        if not base:
+            continue
+        providers[pname] = {"base_url": base.rstrip("/"),
+                            "api_key_env": f"{pname.upper()}_API_KEY"}
+        if opts.get("apiKey"):
+            keys[pname] = opts["apiKey"]
+        for mid, m in p.get("models", {}).items():
+            lim = m.get("limit", {})
+            entry = {"provider": pname, "model": mid, "supports_tools": True,
+                     "supports_parallel_tool_calls": True}
+            if args.with_windows and lim.get("context"):
+                entry["context_window"] = int(lim["context"])
+            models[mid] = entry
+    if "omniroute" not in providers:
+        print("no omniroute provider in the OpenCode config", file=sys.stderr)
+        return 1
+    for alias, (mid, extra) in ROLES.items():
+        base = dict(models.get(mid, {"provider": "omniroute", "model": mid,
+                                     "supports_tools": True}))
+        base.update(extra)
+        models[alias] = base
+    models.update(FIXED)
+    for k, v in EXTRA_PROVIDERS.items():
+        providers.setdefault(k, v)
+    providers["omniroute"]["catalog_format"] = "omniroute"
+
+    cfg = {"providers": providers, "models": dict(sorted(models.items()))}
+    if args.dry_run:
+        print(f"{len(models)} aliases, providers {sorted(providers)}, keys {sorted(keys)}")
+        return 0
+    d = Path(args.config_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "models.json").write_text(json.dumps(cfg, indent=2) + "\n")
+    auth_path = d / "auth.json"
+    auth = json.loads(auth_path.read_text()) if auth_path.exists() else {}
+    for k, v in keys.items():
+        auth[k] = {"api_key": v}
+    fd = os.open(auth_path.with_suffix(".json.tmp"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(auth, f, indent=2)
+    os.chmod(auth_path.with_suffix(".json.tmp"), 0o600)
+    os.replace(auth_path.with_suffix(".json.tmp"), auth_path)
+    print(f"wrote {d/'models.json'} ({len(models)} aliases) and {auth_path} ({sorted(keys)})")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

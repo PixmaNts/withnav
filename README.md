@@ -77,6 +77,12 @@ code --install-extension vscode-navigator/navai-0.2.0.vsix
 | `~/.agents/AGENTS.md`, `~/.agents/rules.md`, `~/.agents/skills/` | user rules and skills (`~/.claude/` is read too); projects add `AGENTS.md`, `rules.md` and `.agents/skills` (also `.claude/` and `.opencode/`) |
 | `~/.local/share/navai/` | conversation history `navai.db`, decision log `navai.jsonl`, `tui.log`, `model-catalog/` |
 
+To build `models.json` and `auth.json` from an OpenCode config, run
+`scripts/import-opencode-models [--dry-run] [--config-dir DIR] [--opencode FILE] [--with-windows]`.
+It writes one alias per OpenCode model, the role aliases, and `"catalog_format": "omniroute"` on the
+omniroute provider. Context windows are left out so Navai reads them from the provider; add
+`--with-windows` to copy them from OpenCode instead. The key goes to `auth.json` (mode 0600).
+
 Coming from `rust-agent`? The first start of `navai` or `navai-lsp` moves your data and config from
 `~/.local/share/navigator/`, `~/.local/share/rust-agent/` and `~/.config/rust-agent/` to the new
 dirs; nothing is overwritten. Remove the old `rust-agent` binaries and the old `Navigator`

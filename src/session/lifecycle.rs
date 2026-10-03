@@ -201,6 +201,8 @@ mod tests {
             actor_state: "idle".to_string(),
             workspace: PathBuf::from("/w"),
             model: "fast".to_string(),
+            status: Arc::default(),
+            resolution: None,
         }
     }
 

@@ -61,6 +61,13 @@ pub enum Ingress {
         command: PendingCommand,
         reply: oneshot::Sender<Result<AcceptReceipt, BusError>>,
     },
+    /// Sequence + emit `candidate`, then ack with its seq. A candidate queued
+    /// behind a close fence is dropped with the mailbox: the reply channel
+    /// closes and the caller sees `SessionNotFound`.
+    PublishAcked {
+        candidate: Candidate,
+        reply: oneshot::Sender<u64>,
+    },
     /// Atomic subscribe-then-replay: resolve the cursor against the
     /// ring and register a live queue in ONE synchronous mailbox step.
     SubscribeSince {
@@ -165,6 +172,22 @@ impl Sequencer {
     /// only failure is a closed session.
     pub fn publish(&self, candidate: Candidate) -> Result<(), BusError> {
         ingress_send(&self.ingress_tx, Ingress::Candidate(candidate))
+    }
+
+    /// [`Sequencer::publish`] that waits until the event is sequenced and
+    /// emitted, and returns its seq. Fails when the session is closed, or
+    /// closes before the event is reached: an `Ok` is proof the event is on
+    /// the stream, never discarded behind the close fence.
+    pub async fn publish_acked(&self, candidate: Candidate) -> Result<u64, BusError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        ingress_send(
+            &self.ingress_tx,
+            Ingress::PublishAcked {
+                candidate,
+                reply: reply_tx,
+            },
+        )?;
+        reply_rx.await.map_err(|_| BusError::SequencerClosed)
     }
 
     /// Event-before-action acceptance. The handler's order is: seq-assign
@@ -301,6 +324,13 @@ async fn run(
                     break;
                 };
                 emitter.emit(stamp(session_id, seq, candidate));
+            }
+            Ingress::PublishAcked { candidate, reply } => {
+                let Some(seq) = take_seq(&mut next_seq) else {
+                    break;
+                };
+                emitter.emit(stamp(session_id, seq, candidate));
+                let _ = reply.send(seq);
             }
             Ingress::AcceptCommand {
                 commit,

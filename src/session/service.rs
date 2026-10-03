@@ -92,6 +92,11 @@ pub struct SessionHandle {
     pub workspace: PathBuf,
     /// The alias the session was created with.
     pub model: String,
+    /// The runtime's view of its actor: pending `ask`, running turn.
+    pub status: Arc<runtime::RuntimeStatus>,
+    /// The saved model resolution (identity, window, where the window came
+    /// from) the session runs on.
+    pub resolution: Option<Arc<crate::provider::catalog::ModelResolution>>,
 }
 
 impl std::fmt::Debug for SessionHandle {
@@ -139,6 +144,10 @@ pub struct Service {
     /// being stopped or deleted. One client, so one gate for the service.
     gate: Arc<tokio::sync::Mutex<()>>,
     catalog: crate::provider::catalog::ModelCatalog,
+    /// Test seam: parks a command run between its work and the publication
+    /// of its result, to interleave lifecycle changes deterministically.
+    #[cfg(test)]
+    pub(super) publish_barrier: Arc<Mutex<Option<Arc<super::run_command::Barrier>>>>,
 }
 
 impl Service {
@@ -165,6 +174,8 @@ impl Service {
             hooks,
             gate: Arc::new(tokio::sync::Mutex::new(())),
             catalog,
+            #[cfg(test)]
+            publish_barrier: Arc::default(),
         })
     }
 
@@ -498,13 +509,15 @@ impl Service {
             Some(Box::new(move |transcript: &[ChatMessage]| {
                 history.save_transcript(session_id, transcript.to_vec());
             }));
-        let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn(
+        let status = Arc::new(runtime::RuntimeStatus::default());
+        let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn_with_status(
             session_id,
             actor,
             inbox,
             sequencer.clone(),
             session_cancel.clone(),
             on_turn_end,
+            status.clone(),
         ))));
 
         let handle = SessionHandle {
@@ -517,6 +530,8 @@ impl Service {
             actor_state: "idle".to_string(),
             workspace: workspace.clone(),
             model: alias,
+            status,
+            resolution: Some(Arc::new(snapshot)),
         };
         let sender = SessionSender::new(session_id, handle.clone());
         let cancel = handle.session_cancel.clone();

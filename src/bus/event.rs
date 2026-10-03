@@ -1,5 +1,5 @@
-//! Frozen `EventEnvelope` shape and the 12-kind `EventKind`
-//! catalog.
+//! Frozen `EventEnvelope` shape and the 13-kind `EventKind`
+//! catalog (the twelve original kinds plus `command.result`).
 //!
 //! Reserved-but-deferred kind names (NOT in the enum, never emitted this slice):
 //! `prompt.pre_llm`, `tool.progress`, `context.pre_compact` (Phase 3),
@@ -21,9 +21,11 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// The single root actor id for this slice (all events are published by it).
 pub const ROOT_ACTOR_ID: &str = "agent:main";
 
-/// The catalog emits EXACTLY 12 kinds: 2 session +
-/// message + 2 turn + 2 llm + 2 tool + 2 agent + task = 12, never 13.
-pub const EVENT_KIND_COUNT: usize = 12;
+/// The catalog emits EXACTLY 13 kinds: 2 session +
+/// message + 2 turn + 2 llm + 2 tool + 2 agent + task + command result = 13.
+/// The first twelve are frozen; `command.result` was added without changing
+/// the envelope version.
+pub const EVENT_KIND_COUNT: usize = 13;
 
 /// Durable kinds are retained in the reconnect ring; only `llm.delta` is
 /// live-only. Kept with the catalog it guards.
@@ -33,9 +35,9 @@ const fn is_durable(kind: EventKind) -> bool {
 
 /// DRIFT GUARD (compile-authoritative): `ALL` is DERIVED from
 /// [`EventKind::all_variants`], an exhaustive match whose single or-pattern
-/// arms name EVERY variant with no `_` wildcard — so adding a 13th variant
+/// arms name EVERY variant with no `_` wildcard — so adding a 14th variant
 /// without editing that match is error[E0004] (non-exhaustive patterns) and
-/// the crate does not compile. The array's type `[EventKind; 12]` plus the
+/// the crate does not compile. The array's type `[EventKind; 13]` plus the
 /// `const _` assert below additionally pin the frozen catalog size, so the
 /// list itself cannot silently grow or shrink either. A runtime name/order
 /// test still guards the wire spellings, but completeness is enforced HERE,
@@ -54,7 +56,8 @@ impl EventKind {
             | Self::ToolPostCall
             | Self::AgentState
             | Self::AgentYield
-            | Self::TaskDone => [
+            | Self::TaskDone
+            | Self::CommandResult => [
                 Self::SessionStart,
                 Self::SessionEnd,
                 Self::MessageReceived,
@@ -67,18 +70,19 @@ impl EventKind {
                 Self::AgentState,
                 Self::AgentYield,
                 Self::TaskDone,
+                Self::CommandResult,
             ],
         }
     }
 
-    /// The 12 emitted kinds, in catalog order. The bus iterates this to seed
+    /// The 13 emitted kinds, in catalog order. The bus iterates this to seed
     /// the ring/fan-out.
     pub const ALL: [EventKind; EVENT_KIND_COUNT] = Self::all_variants();
 }
 
 const _: () = assert!(EventKind::ALL.len() == EVENT_KIND_COUNT);
 
-/// Typed catalog of the 12 emitted event kinds; the wire name is the dotted
+/// Typed catalog of the 13 emitted event kinds; the wire name is the dotted
 /// string (serialized verbatim, e.g. `"llm.delta"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventKind {
@@ -106,6 +110,8 @@ pub enum EventKind {
     AgentYield,
     #[serde(rename = "task.done")]
     TaskDone,
+    #[serde(rename = "command.result")]
+    CommandResult,
 }
 
 impl EventKind {
@@ -124,6 +130,7 @@ impl EventKind {
             EventKind::AgentState => "agent.state",
             EventKind::AgentYield => "agent.yield",
             EventKind::TaskDone => "task.done",
+            EventKind::CommandResult => "command.result",
         }
     }
 
@@ -142,6 +149,7 @@ impl EventKind {
             "agent.state" => Some(EventKind::AgentState),
             "agent.yield" => Some(EventKind::AgentYield),
             "task.done" => Some(EventKind::TaskDone),
+            "command.result" => Some(EventKind::CommandResult),
             _ => None,
         }
     }
@@ -345,6 +353,35 @@ pub struct TaskDone {
     pub status: TaskStatus,
 }
 
+/// Largest serialized `data` a `command.result` carries.
+pub const COMMAND_RESULT_DATA_MAX_BYTES: usize = 16 * 1024;
+
+/// The outcome of one session command, published durably on the session
+/// stream. `data` is bounded: see [`CommandResult::bound_data`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommandResult {
+    pub operation_id: Ulid,
+    pub name: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl CommandResult {
+    /// Keeps `data` when its JSON form fits [`COMMAND_RESULT_DATA_MAX_BYTES`];
+    /// otherwise replaces it with a marker naming the dropped size.
+    pub fn bound_data(data: Value) -> Value {
+        let size = serde_json::to_vec(&data).map(|v| v.len()).unwrap_or(0);
+        if size <= COMMAND_RESULT_DATA_MAX_BYTES {
+            data
+        } else {
+            serde_json::json!({ "truncated": true, "bytes": size })
+        }
+    }
+}
+
 // --- RFC 3339 timestamp (no chrono dependency; UTC only) ---
 
 /// Current UTC time as RFC 3339 with millisecond precision (`...Z`).
@@ -390,7 +427,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const FROZEN_KIND_NAMES: [&str; 12] = [
+    const KIND_NAMES: [&str; 13] = [
         "session.start",
         "session.end",
         "message.received",
@@ -403,17 +440,19 @@ mod tests {
         "agent.state",
         "agent.yield",
         "task.done",
+        "command.result",
     ];
 
     #[test]
-    fn event_kind_catalog_is_exactly_the_frozen_twelve() {
+    fn event_kind_catalog_is_exactly_the_thirteen() {
         let kinds = EventKind::ALL;
-        assert_eq!(EVENT_KIND_COUNT, 12);
-        assert_eq!(kinds.len(), 12);
+        assert_eq!(EVENT_KIND_COUNT, 13);
+        assert_eq!(kinds.len(), 13);
+        assert_eq!(SCHEMA_VERSION, 1);
         let names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
-        assert_eq!(names, FROZEN_KIND_NAMES);
+        assert_eq!(names, KIND_NAMES);
         // Wire names are unique and parse back.
-        for (kind, name) in kinds.iter().zip(FROZEN_KIND_NAMES) {
+        for (kind, name) in kinds.iter().zip(KIND_NAMES) {
             assert_eq!(EventKind::from_wire(name), Some(*kind));
             assert_eq!(serde_json::to_string(kind).unwrap(), format!("\"{name}\""));
         }
@@ -606,6 +645,17 @@ mod tests {
                 })
                 .unwrap(),
             ),
+            (
+                "command.result",
+                serde_json::to_value(&CommandResult {
+                    operation_id: Ulid::new(),
+                    name: "help".into(),
+                    ok: true,
+                    data: Some(json!({"commands": []})),
+                    error: None,
+                })
+                .unwrap(),
+            ),
         ];
         assert_eq!(cases.len(), EVENT_KIND_COUNT);
 
@@ -614,6 +664,39 @@ mod tests {
             let back: Value = serde_json::from_str(&wire).unwrap();
             assert_eq!(back, payload, "payload roundtrip failed for {kind}");
         }
+    }
+
+    #[test]
+    fn command_result_wire_shape_and_bounded_data() {
+        let id = Ulid::new();
+        let ok = CommandResult {
+            operation_id: id,
+            name: "model".into(),
+            ok: true,
+            data: Some(json!({"alias": "a"})),
+            error: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&ok).unwrap(),
+            json!({"operation_id": id.to_string(), "name": "model", "ok": true, "data": {"alias": "a"}})
+        );
+        let failed = CommandResult {
+            operation_id: id,
+            name: "x".into(),
+            ok: false,
+            data: None,
+            error: Some("nope".into()),
+        };
+        let v = serde_json::to_value(&failed).unwrap();
+        assert_eq!(v["error"], "nope");
+        assert!(v.get("data").is_none());
+
+        let small = json!({"k": "v"});
+        assert_eq!(CommandResult::bound_data(small.clone()), small);
+        let big = json!({"k": "x".repeat(COMMAND_RESULT_DATA_MAX_BYTES + 1)});
+        let bounded = CommandResult::bound_data(big);
+        assert_eq!(bounded["truncated"], true);
+        assert!(serde_json::to_vec(&bounded).unwrap().len() < 100);
     }
 
     #[test]

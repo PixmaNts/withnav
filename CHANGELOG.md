@@ -8,6 +8,16 @@ requests land in `develop`.
 
 ### Added
 
+- **Session commands**: `GET /v1/commands` lists them; `POST /v1/sessions/{id}/commands` with
+  `{name, arguments}` runs one and answers `{operation_id, ok, data?, error?}`. Built in: `/help`,
+  `/model` (alias, window and where the window comes from), `/new [alias]` (a fresh session; the old one
+  stays) and `/stop`; `/context`, `/variant` and `/compact` are listed and answer "not available yet".
+  An unknown name is an error that lists the close names, and a command sent while the agent waits for
+  an answer to its `ask` is refused, never queued. Each run publishes a durable `command.result` event
+  (`operation_id`, `name`, `ok`, `data` of at most 16 KiB, `error`), so the event catalog has 13 kinds;
+  the envelope version and the other kinds are unchanged. `/messages` is unchanged.
+- **`navai run --prompt "/help"`** runs the command and prints its result; `//text` sends the literal
+  message `/text`.
 - **`glob` tool**: finds files by a relative pattern (`**/*.rs`) under the workspace or a readable
   `path`, as sorted relative paths. Links are not followed; hidden entries, `node_modules` and `target`
   are skipped unless the pattern names them. At most 200 paths by default (1,000 max), 100,000 entries

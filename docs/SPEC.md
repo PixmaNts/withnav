@@ -659,6 +659,7 @@ Hook policy legend:
 | `subagent.done` | A child finishes, yields terminally, is cancelled, or fails | `{agent_id, parent_id, status, result, error, usage}` | Observe |
 | `turn.end` | A turn reaches `done`, `yielded`, `interrupted`, or `error` | `{turn_id, actor_id, outcome, usage, duration_ms}` | Observe |
 | `task.done` | An actor produces a final response for the initiating task | `{task_id, actor_id, result_message_id, status}` | Observe |
+| `command.result` | A session command (`/help`, `/model`, `/new`, ...) has run | `{operation_id, name, ok, data?, error?}`; `data` bounded to 16 KiB | Observe |
 | `hook.decision` | A hook returns, times out, crashes, or is bypassed | `{plugin_id, event, decision, paths, reason, duration_ms}` | No |
 | `plugin.error` | A plugin has a protocol, process, or timeout failure | `{plugin_id, phase, code, message, failure_mode}` | No |
 

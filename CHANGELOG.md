@@ -20,7 +20,15 @@ requests land in `develop`.
   permissions appear on the parent's stream and are answered through the parent's permission API,
   without occupying the parent actor's pending interaction. Grants remain child-local. Stopping a
   parent stops its children, deleting it removes the tree, and startup terminalizes unfinished
-  children as stopped without replaying tools. No steer, interrupt, watchdog or nested TUI yet.
+  children as stopped without replaying tools. Root cognition sessions also get
+  `steer_subagent(child_id, message, mode)`: `steer` (default) injects parent guidance before the
+  child's next provider request, after its complete tool batch; `interrupt` cancels only the
+  current turn and starts a fresh one, keeping the child session. Pending permissions are
+  cancelled and mirrored on interrupt; steer waits rather than answering a pending interaction.
+  `task` accepts `delivery: "next_turn" | "steer" | "interrupt"` for result delivery to the parent.
+  Result interrupts fall back to next-turn delivery while the parent waits for a human, and queued
+  driver messages precede automatic wakes. No watchdog or nested TUI yet; the event catalog stays
+  at 21 kinds.
   A driver can renew a budget-parked child's step budget once through
   `POST /v1/sessions/{parent}/children/{child}/continue`; foreign owners are refused and a child
   that is not budget-parked returns 409. This is distinct from permission answers and is not a

@@ -90,6 +90,26 @@ These are separate recovery boundaries. Several notices are consumed in order an
 navigator's latest-wins inbox. Deleting the parent removes its notices.
 _Avoid_: tool result (the `task` tool already returned the child id), wake message
 
+**Safe boundary**:
+The point before an agent's next provider request, after every call in the previous tool batch has
+its result and with no pending ask or permission. Injected guidance and eligible results enter
+here, before budget estimation and automatic compaction. Never between a tool call and its result.
+_Avoid_: step event (observation is not an injection boundary)
+
+**Steer**:
+Parent guidance injected into a running child's transcript at its next safe boundary, without
+restarting the turn. A parked interaction keeps it queued. `Parent` provenance prevents guidance
+from replacing the driver's instruction for compaction or the plan guard. A child result whose
+delivery mode is `steer` uses the same boundary on the parent, with untrusted subagent provenance.
+_Avoid_: driver message, permission answer
+
+**Interrupt**:
+Cancel only the current turn, settle its outstanding tool results, record interrupted `turn.end`,
+renew the turn cancellation token and start fresh with the new input. The session and child link
+stay live. An explicit parent instruction may cancel a child's pending interaction; a delivered
+child result never cancels the parent's human interaction, instead waiting for the next turn.
+_Avoid_: stop (stop tears down the session)
+
 ## Models and commands
 
 **Model alias**:

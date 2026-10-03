@@ -560,7 +560,7 @@ mod tests {
 
         let saved = std::sync::Mutex::new(None);
         actor
-            .commit_compaction(compaction_through(7, vec![10]), |transcript, k| {
+            .commit_compaction(compaction_through(3, vec![6]), |transcript, k| {
                 *saved.lock().unwrap() = Some((transcript.len(), k));
                 async { Ok(()) }
             })

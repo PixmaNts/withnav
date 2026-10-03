@@ -12,7 +12,7 @@
 //! always sits where one exchange ends and the next begins, so a tool call
 //! and its results are never split.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -214,44 +214,83 @@ fn elided(message: &ChatMessage) -> ChatMessage {
     }
 }
 
-/// Checks a saved compaction against the transcript it belongs to.
+/// Checks a compaction against the transcript it belongs to, whether it is
+/// about to be saved or was read back: the boundary leaves something and
+/// sits between complete exchanges, the summary is usable and within its
+/// cap, and only outputs a plan could have cut are pruned.
 pub fn validate(
     compaction: &Compaction,
     transcript: &[ChatMessage],
 ) -> Result<(), CompactionError> {
+    let invalid = |why: String| Err(CompactionError::Invalid(why));
     let through = compaction.checkpoint.through_message;
-    if through + 1 >= transcript.len() {
-        return Err(CompactionError::Invalid(format!(
+    // Written to not overflow, whatever a saved row holds.
+    let Some(next) = through.checked_add(1).filter(|n| *n < transcript.len()) else {
+        return invalid(format!(
             "the boundary {through} leaves nothing of a transcript of {} messages",
             transcript.len()
-        )));
+        ));
+    };
+    if !is_cut(transcript, next) {
+        return invalid(format!(
+            "the boundary {through} splits a turn or a tool exchange"
+        ));
     }
     if compaction.checkpoint.generation == 0 {
-        return Err(CompactionError::Invalid("generation 0".into()));
+        return invalid("generation 0".into());
     }
-    if compaction.checkpoint.summary.trim().is_empty() {
-        return Err(CompactionError::Invalid("the summary is empty".into()));
+    let summary = &compaction.checkpoint.summary;
+    if summary.trim().is_empty() {
+        return invalid("the summary is empty".into());
     }
+    if !summary_within_cap(summary) {
+        return invalid(format!(
+            "the summary is over the {SUMMARY_MAX_BYTES} byte cap"
+        ));
+    }
+    let protected = protected_start(transcript);
+    let kept = never_elided(transcript);
     let mut last = None;
     for &i in &compaction.pruned_message_indices {
         if i <= through || i >= transcript.len() {
-            return Err(CompactionError::Invalid(format!(
+            return invalid(format!(
                 "pruned index {i} is outside the messages after the boundary"
-            )));
+            ));
         }
-        if !matches!(transcript[i], ChatMessage::Tool { .. }) {
-            return Err(CompactionError::Invalid(format!(
-                "pruned index {i} is not a tool output"
-            )));
+        let ChatMessage::Tool { tool_call_id, .. } = &transcript[i] else {
+            return invalid(format!("pruned index {i} is not a tool output"));
+        };
+        if i >= protected {
+            return invalid(format!(
+                "pruned index {i} is in the recent turns that stay verbatim"
+            ));
+        }
+        if kept.contains(tool_call_id.as_str()) {
+            return invalid(format!(
+                "pruned index {i} is the answer to an ask or a loaded skill"
+            ));
         }
         if last.is_some_and(|prev| prev >= i) {
-            return Err(CompactionError::Invalid(
-                "pruned indices are not strictly increasing".into(),
-            ));
+            return invalid("pruned indices are not strictly increasing".into());
         }
         last = Some(i);
     }
     Ok(())
+}
+
+/// The ids of the tool calls whose output is never cut down: the human's
+/// answers to `ask` and loaded skill bodies.
+fn never_elided(transcript: &[ChatMessage]) -> HashSet<&str> {
+    transcript
+        .iter()
+        .filter_map(|m| match m {
+            ChatMessage::Assistant { tool_calls, .. } => Some(tool_calls),
+            _ => None,
+        })
+        .flatten()
+        .filter(|c| matches!(c.function.name.as_str(), "skill" | "ask"))
+        .map(|c| c.id.as_str())
+        .collect()
 }
 
 /// What [`plan`] decided.
@@ -457,22 +496,14 @@ fn elision_order(
     range: std::ops::Range<usize>,
     already: &BTreeSet<usize>,
 ) -> Vec<usize> {
-    let names: HashMap<&str, &str> = transcript
-        .iter()
-        .filter_map(|m| match m {
-            ChatMessage::Assistant { tool_calls, .. } => Some(tool_calls),
-            _ => None,
-        })
-        .flatten()
-        .map(|c| (c.id.as_str(), c.function.name.as_str()))
-        .collect();
+    let kept = never_elided(transcript);
     let mut found: Vec<(usize, usize)> = range
         .filter(|i| !already.contains(i))
         .filter_map(|i| match &transcript[i] {
             ChatMessage::Tool {
                 tool_call_id,
                 content,
-            } if !matches!(names.get(tool_call_id.as_str()), Some(&"skill" | &"ask"))
+            } if !kept.contains(tool_call_id.as_str())
                 && message_tokens(&elided(&transcript[i])) < message_tokens(&transcript[i]) =>
             {
                 Some((content.len(), i))

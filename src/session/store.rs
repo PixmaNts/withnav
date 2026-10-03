@@ -1345,7 +1345,7 @@ mod tests {
         let (dir, store) = temp_store();
         let id = Ulid::new();
         store.record_session(id, "/w", "m", None).await.unwrap();
-        let transcript: Vec<ChatMessage> = (0..3).flat_map(exchange).collect();
+        let transcript: Vec<ChatMessage> = (0..4).flat_map(exchange).collect();
         let k = compaction(3, vec![6]);
         store
             .save_checkpoint(id, transcript.clone(), &k)

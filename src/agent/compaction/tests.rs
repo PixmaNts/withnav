@@ -359,3 +359,134 @@ fn a_summary_cannot_close_its_wrapper_or_pass_for_a_message() {
         .sum();
     assert!(worst <= summary_reserve_tokens());
 }
+
+fn k(through: usize, summary: &str, pruned: Vec<usize>) -> Compaction {
+    Compaction {
+        checkpoint: Checkpoint {
+            through_message: through,
+            summary: summary.into(),
+            generation: 1,
+        },
+        pruned_message_indices: pruned,
+    }
+}
+
+fn invalid(c: &Compaction, t: &[ChatMessage]) -> String {
+    match validate(c, t) {
+        Err(CompactionError::Invalid(why)) => why,
+        other => panic!("expected Invalid, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_boundary_that_would_overflow_is_refused_not_wrapped() {
+    let t = five_turns(10);
+    assert!(invalid(&k(usize::MAX, "s", vec![]), &t).contains("leaves nothing"));
+}
+
+#[test]
+fn a_boundary_right_after_a_tool_call_is_refused() {
+    let t = five_turns(10);
+    // Message 1 is a tool call: cutting after it orphans its result.
+    assert!(invalid(&k(1, "s", vec![]), &t).contains("splits"));
+    // Cutting between a user message and its answer splits the turn.
+    assert!(invalid(&k(0, "s", vec![]), &t).contains("splits"));
+    // After a complete exchange it is fine.
+    assert!(validate(&k(2, "s", vec![]), &t).is_ok());
+}
+
+#[test]
+fn a_boundary_inside_a_batch_of_user_messages_is_refused() {
+    let t = vec![user("a"), user("b"), answer("x"), user("c"), answer("y")];
+    assert!(invalid(&k(0, "s", vec![]), &t).contains("splits"));
+    assert!(validate(&k(2, "s", vec![]), &t).is_ok());
+}
+
+#[test]
+fn an_empty_or_zero_generation_checkpoint_is_refused() {
+    let t = five_turns(10);
+    assert!(invalid(&k(3, "  ", vec![]), &t).contains("empty"));
+    let mut zero = k(3, "s", vec![]);
+    zero.checkpoint.generation = 0;
+    assert!(invalid(&zero, &t).contains("generation"));
+}
+
+#[test]
+fn an_oversized_summary_is_refused_on_restore() {
+    let t = five_turns(10);
+    assert!(validate(&k(3, &"a".repeat(SUMMARY_MAX_BYTES), vec![]), &t).is_ok());
+    assert!(invalid(&k(3, &"a".repeat(SUMMARY_MAX_BYTES + 1), vec![]), &t).contains("cap"));
+    // Counted as the prompt carries it: brackets grow to three bytes.
+    assert!(invalid(&k(3, &"<".repeat(SUMMARY_MAX_BYTES / 3 + 1), vec![]), &t).contains("cap"));
+}
+
+#[test]
+fn pruning_a_skill_body_or_an_ask_answer_is_refused() {
+    let mut t = vec![
+        user("a"),
+        call("s1", "skill", "{\"name\":\"x\"}"),
+        result("s1", 900),
+        call("a1", "ask", "{}"),
+        result("a1", 900),
+        call("r1", "read", "{}"),
+        result("r1", 900),
+        answer("ok"),
+    ];
+    t.extend(five_turns(10));
+    // Boundary after the skill/ask/read exchange (before the final answer).
+    assert!(validate(&k(6, "s", vec![]), &t).is_ok());
+    // A read output past a boundary before it may be pruned...
+    assert!(
+        validate(&k(0, "s", vec![6]), &t).is_err(),
+        "0 splits the turn"
+    );
+    let t2 = [vec![user("p"), answer("q")], t.clone()].concat();
+    assert!(validate(&k(1, "s", vec![8]), &t2).is_ok());
+    // ...a skill body or an ask answer never.
+    assert!(invalid(&k(1, "s", vec![4]), &t2).contains("ask or a loaded skill"));
+    assert!(invalid(&k(1, "s", vec![6]), &t2).contains("ask or a loaded skill"));
+}
+
+#[test]
+fn pruning_inside_the_protected_recent_turns_is_refused() {
+    let t = five_turns(10);
+    // Messages 12.. are the last two turns; message 14 is a tool output there.
+    assert!(invalid(&k(3, "s", vec![14]), &t).contains("stay verbatim"));
+    assert!(validate(&k(3, "s", vec![6]), &t).is_ok());
+}
+
+#[test]
+fn a_plan_always_validates() {
+    let mut t = five_turns(400);
+    t[6] = result("c1", 4000);
+    let c = components();
+    for aim in [Aim::Fit, Aim::Shrink] {
+        let p = plan(&t, None, &c, 1_000_000, aim).unwrap();
+        let k = Compaction {
+            checkpoint: Checkpoint {
+                through_message: p.through_message,
+                summary: "s".into(),
+                generation: 1,
+            },
+            pruned_message_indices: p.kept_pruned(),
+        };
+        validate(&k, &t).unwrap();
+    }
+    let p = plan(
+        &t,
+        None,
+        &c,
+        size(&c, &t, None) + summary_reserve_tokens() - 300,
+        Aim::Fit,
+    )
+    .unwrap();
+    let k = Compaction {
+        checkpoint: Checkpoint {
+            through_message: p.through_message,
+            summary: "s".into(),
+            generation: 1,
+        },
+        pruned_message_indices: p.kept_pruned(),
+    };
+    validate(&k, &t).unwrap();
+}

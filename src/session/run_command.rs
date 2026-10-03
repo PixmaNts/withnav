@@ -35,7 +35,9 @@ impl Service {
     /// durable `command.result` is published on the session stream, with the
     /// operation id returned. A command never becomes a message and is never
     /// queued: during a pending `ask` every command is refused (`/stop`
-    /// included: the stop endpoint still ends the session).
+    /// included: the stop endpoint still ends the session); during a pending
+    /// permission request every command but `/stop` is, and `/stop` cancels
+    /// the request.
     ///
     /// The run holds the lifecycle gate from the session check to the
     /// acknowledged publication of its result, so a stop or delete of the
@@ -117,12 +119,15 @@ impl Service {
         spec: &'static CommandSpec,
         arguments: &str,
     ) -> Result<Done, CommandFailure> {
+        // A waiting permission request also reads as a waiting actor; `/stop`
+        // goes through it and cancels the request.
         if handle.status.pending_permission().is_some() {
-            return Err(CommandFailure::Refused(
-                commands::PERMISSION_PENDING_ERROR.to_string(),
-            ));
-        }
-        if handle.status.pending_ask() {
+            if spec.name != "stop" {
+                return Err(CommandFailure::Refused(
+                    commands::PERMISSION_PENDING_ERROR.to_string(),
+                ));
+            }
+        } else if handle.status.pending_ask() {
             return Err(CommandFailure::Refused(
                 commands::ASK_PENDING_ERROR.to_string(),
             ));

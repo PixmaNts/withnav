@@ -573,3 +573,38 @@ async fn a_second_answer_is_refused_at_once_while_the_resumed_turn_runs() {
     wait_events(&state, id, "task.done", 1).await;
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
 }
+
+// Given a pending request
+// When `/stop` is sent as a command
+// Then it is accepted, the request ends as cancelled and nothing runs
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_stop_command_is_accepted_while_a_request_is_pending() {
+    let env = env();
+    let target = env.ws.join("a.txt");
+    let provider = provider(vec![one_write("w1", &target)]).await;
+    let state = config(&env, &provider).state();
+    let router = app(state.clone());
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+
+    say(&state, id, "write it").await;
+    let requested = wait_events(&state, id, "permission.requested", 1).await;
+    wait_events(&state, id, "turn.end", 1).await;
+
+    let (_, stop) = request_json(
+        &router,
+        "POST",
+        &format!("/v1/sessions/{id}/commands"),
+        Some(&json!({"name": "stop", "arguments": ""})),
+    )
+    .await;
+    assert_eq!(stop["ok"], true, "{stop}");
+
+    assert!(!target.exists());
+    let resolved = events(&state, id, "permission.resolved").await;
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].payload["resolution"], "cancelled");
+    assert_eq!(
+        resolved[0].payload["request_id"],
+        requested[0].payload["request_id"]
+    );
+}

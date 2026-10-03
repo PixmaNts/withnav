@@ -19,6 +19,7 @@ expression: snapshot
                      │ │ ▸ ◐ write /ws/big.txt  running  —                                          
                      │ │                                                                            
                      │ │ PERMISSION · build wants to run write in /ws                               
+                     │ │  it changes files                                                          
                      │ │  /ws/big.txt                                                               
                      │ │  + line 0000 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx                      
                      │ │  + line 0001 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx                      
@@ -29,7 +30,6 @@ expression: snapshot
                      │ │    … 2094 more lines                                                       
                      │ │  y allow once   a always for this folder   n deny                          
                      │ │                                                                            
-                     │                                                                              
                      │                                                                              
                      │                                                                              
                      │──────────────────────────────────────────────────────────────────────────────

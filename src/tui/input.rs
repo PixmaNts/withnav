@@ -467,6 +467,10 @@ fn permission_key(
     }
     match key.code {
         KeyCode::Char('y') => Some(Some(answer("allow_once", None))),
+        // The plan agent's exceptions are allowed once or denied (the prompt shows no `a`).
+        KeyCode::Char('a') if open.agent == "plan" => Some(Some(Action::ShowNotice(
+            "this request can be allowed once or denied, not always".into(),
+        ))),
         KeyCode::Char('a') => Some(Some(answer("allow_folder", None))),
         KeyCode::Char('n') => {
             ui.deny_message = Some(DenyDraft {

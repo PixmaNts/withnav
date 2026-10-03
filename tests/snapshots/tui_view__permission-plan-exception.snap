@@ -1,0 +1,34 @@
+---
+source: tests/tui_view.rs
+expression: snapshot
+---
+ Conversations       │ navai  ~/dev/project                                Fix parser · 01JABCDEFGH 
+▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
+▌  build · waiting   │ │ YOU                                                                        
+                     │ │  Explain the failure, then fix it.                                         
+                     │ │                                                                            
+                     │ │ ASSISTANT                                                                  
+                     │ │ ▸ Reasoning                                                                
+                     │ │  The parser treats an empty argument as a missing value.                   
+                     │ │                                                                            
+                     │ │ ▸ × bash cargo test parser  error  1.42 s  exit 101                        
+                     │ │                                                                            
+                     │ │ ASSISTANT                                                                  
+                     │ │  I found the failing test. The empty argument is discarded.                
+                     │ │                                                                            
+                     │ │ PERMISSION · plan wants to run write in /ws/src                            
+                     │ │  Jev judged this outside the plan role. `write` acts in /ws/src (approve…  
+                     │ │  /ws/src/main.rs                                                           
+                     │ │  + fn main() {}                                                            
+                     │ │  y allow once · n deny                                                     
+                     │ │                                                                            
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │──────────────────────────────────────────────────────────────────────────────
+                     │▌build  cognition · claude-opus-5-5 · 12.4k / 200k   permission needed        
+                     │┌ Message ───────────────────────────────────────────────────────────────────┐
+ alt+1…9 switch      ││                                                                            │
+ alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
+ alt+b hide bar      │ y allow once  n deny  esc stop  ctrl+p commands

@@ -117,6 +117,45 @@ impl HistoryStore {
         .await
     }
 
+    /// The text of the driver's latest message in one session: the newest
+    /// stored `message.received` whose source is a driver (`user:*`), which
+    /// also covers an answer to an `ask`. A navigator wake is not it. `None`
+    /// when the driver never spoke.
+    pub async fn latest_driver_message(&self, id: Ulid) -> Result<Option<String>, String> {
+        let path = Arc::clone(&self.path);
+        blocking(move || {
+            with_read_tx(&path, |tx| {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT seq, envelope FROM events
+                         WHERE session_id = ?1 AND kind = 'message.received'
+                         ORDER BY seq DESC",
+                    )
+                    .map_err(|e| format!("prepare: {e}"))?;
+                let rows = stmt
+                    .query_map(params![id.to_string()], |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(|e| format!("query: {e}"))?;
+                for row in rows {
+                    let (seq, raw) = row.map_err(|e| format!("row: {e}"))?;
+                    let envelope = serde_json::from_str::<EventEnvelope>(&raw)
+                        .map_err(|e| format!("event seq {seq} does not decode: {e}"))?;
+                    let source = envelope.payload.get("source").and_then(|v| v.as_str());
+                    if source.is_some_and(|source| source.starts_with("user:")) {
+                        return Ok(envelope
+                            .payload
+                            .get("content")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string));
+                    }
+                }
+                Ok(None)
+            })
+        })
+        .await
+    }
+
     /// What a resume needs: the metadata and the last transcript snapshot,
     /// without the envelopes (see [`HistoryStore::replay`]).
     pub async fn load_for_resume(&self, id: Ulid) -> Result<Option<Resumed>, String> {

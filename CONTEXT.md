@@ -85,6 +85,15 @@ A grant on the workspace never covers the config directory. For `bash` the folde
 driver approved, not a confinement.
 _Avoid_: whitelist, permission rule
 
+**Role guard**:
+The check the `plan` agent's exceptions go through before the driver: a `write` or `edit` of a file
+that is not a regular `.md` file, and every `bash` and `fetch`. Jev (the instinct model) is asked one
+typed question, "does this call conform to the role?", with the exact call; only a valid "conforms"
+runs it, recorded on the call's result. "Violates", "uncertain", a bad answer, no answer or a call too
+large to send become a permission request that says why, answerable once or by denial only. Advisory,
+never a sandbox.
+_Avoid_: filter, sandbox, policy
+
 **Pending interaction**:
 What a yielded actor waits for: the answer to an `ask`, or the decision on a permission request (with
 the held call and the calls behind it).

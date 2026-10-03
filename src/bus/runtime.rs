@@ -649,14 +649,16 @@ async fn runtime_loop(
                         .send(Err(crate::agent::permissions::PermissionError::Stale));
                     continue;
                 };
+                let decision =
+                    crate::agent::permissions::offered_decision(&request.agent, answer.decision);
                 publish_resolved(
                     &sequencer,
                     active_task_id,
                     &request,
-                    PermissionResolution::from(&answer.decision),
+                    PermissionResolution::from(&decision),
                 );
                 let _ = answer.reply.send(Ok(()));
-                Some((answer.request_id, answer.decision))
+                Some((answer.request_id, decision))
             }
         };
         // The turn runs as the agent and the variant selected now; a later

@@ -1961,6 +1961,104 @@ fn a_long_command_and_control_characters_are_shown_safely() {
     assert!(!shown.contains('\u{1b}'), "{shown}");
 }
 
+/// An open request of the `plan` agent, as a guarded exception reaches the driver.
+fn plan_exception() -> State {
+    let mut block = prompt(
+        "write",
+        json!({"path": "/ws/src/main.rs", "content": "fn main() {}"}),
+        ("folder", "/ws/src"),
+    );
+    if let BlockKind::Permission(p) = &mut block.kind {
+        p.agent = "plan".into();
+        p.reason =
+            "Jev judged this outside the plan role. `write` acts in /ws/src (approve this call once, or deny)"
+                .into();
+    }
+    asking(block)
+}
+
+#[test]
+fn a_prompt_shows_why_it_asks_and_a_plan_exception_offers_only_once_or_deny() {
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    // Any request: the reason sits under the header, muted, on one line.
+    let build = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
+    let shown = render(
+        "permission-reason-build",
+        (100, 30),
+        &build,
+        &ui,
+        &Editor::new(),
+    );
+    assert!(shown.contains("it changes files"), "{shown}");
+    assert!(shown.contains("a always for this folder"), "{shown}");
+
+    let plan = plan_exception();
+    let shown = render(
+        "permission-plan-exception",
+        (100, 30),
+        &plan,
+        &ui,
+        &Editor::new(),
+    );
+    for want in [
+        "PERMISSION · plan wants to run write in /ws/src",
+        "Jev judged this outside the plan role.",
+        "y allow once · n deny",
+    ] {
+        assert!(shown.contains(want), "{want}: {shown}");
+    }
+    assert!(!shown.contains("always"), "{shown}");
+    let t = cells(&plan, &ui, (100, 30));
+    let theme = Theme::ayu_dark();
+    let row = (0..30)
+        .find(|y| row_text(&t, *y, 100).contains("Jev judged"))
+        .unwrap();
+    let x = row_text(&t, row, 100).find("Jev").unwrap();
+    let x = row_text(&t, row, 100)[..x].chars().count() as u16;
+    assert_eq!(t.backend().buffer()[(x, row)].fg, theme.muted().fg.unwrap());
+    // One row, even for a narrow screen: cut with an ellipsis, never wrapped.
+    let narrow = screen_text(&plan, &ui, (60, 30));
+    let reason_rows = narrow.lines().filter(|l| l.contains("Jev judged")).count();
+    assert_eq!(reason_rows, 1, "{narrow}");
+}
+
+#[test]
+fn a_does_nothing_for_a_plan_exception_but_says_why() {
+    let s = plan_exception();
+    let mut ui = UiState {
+        follow_bottom: true,
+        prompt_shown: Some("R1".into()),
+        ..UiState::default()
+    };
+    let mut editor = Editor::new();
+    let a = keys("a", &s, &mut ui, &mut editor);
+    assert_eq!(
+        a,
+        [Action::ShowNotice(
+            "this request can be allowed once or denied, not always".into()
+        )],
+        "no answer is sent"
+    );
+    assert!(
+        a.iter()
+            .all(|action| !matches!(action, Action::AnswerPermission { .. })),
+        "{a:?}"
+    );
+    assert_eq!(
+        keys("y", &s, &mut ui, &mut editor),
+        [Action::AnswerPermission {
+            request_id: "R1".into(),
+            answer: navai::tui::protocol::PermissionAnswer {
+                decision: "allow_once".into(),
+                message: None,
+            },
+        }]
+    );
+}
+
 #[test]
 fn n_asks_for_a_message_then_enter_denies_with_it() {
     let s = asking(prompt(

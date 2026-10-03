@@ -8,6 +8,7 @@ mod actor;
 mod catalog;
 mod commands;
 mod config;
+mod guard;
 mod hooks;
 mod lifecycle;
 mod message;

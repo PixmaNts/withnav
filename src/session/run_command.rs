@@ -203,6 +203,9 @@ impl Service {
             })
             .await
             .map_err(|err| match err {
+                SwitchError::AskPending => {
+                    CommandFailure::Refused(commands::ASK_PENDING_ERROR.to_string())
+                }
                 SwitchError::Busy => CommandFailure::Refused(
                     "the agent is working: wait for the turn to end or stop it, then switch"
                         .to_string(),

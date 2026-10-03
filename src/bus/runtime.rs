@@ -9,7 +9,6 @@
 //! inbox wait; `session.end` is sequenced ONLY at teardown via
 //! [`Sequencer::close_session`] — never on a natural turn end.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -56,7 +55,6 @@ struct VariantSlot {
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
-    pending_ask: AtomicBool,
     variant: Mutex<VariantSlot>,
     /// The session's context gauge: written by the runtime at each boundary,
     /// read on demand by the service.
@@ -77,7 +75,7 @@ impl RuntimeStatus {
 
     /// The agent asked the human something and waits for the answer.
     pub fn pending_ask(&self) -> bool {
-        self.pending_ask.load(Ordering::SeqCst)
+        self.selection.ask_pending()
     }
 
     fn slot(&self) -> std::sync::MutexGuard<'_, VariantSlot> {
@@ -134,8 +132,8 @@ impl RuntimeStatus {
     }
 
     /// The turn is over: an agent or variant change may apply.
-    fn end_turn(&self) {
-        self.selection.end_turn();
+    fn end_turn(&self, actor: &AgentActor) {
+        self.selection.end_turn(actor.pending_ask_id.is_some());
         self.slot().running = false;
     }
 
@@ -178,9 +176,10 @@ impl RuntimeStatus {
             .and_then(|t| t.update(breakdown).cloned())
     }
 
-    fn sync_ask(&self, actor: &AgentActor) {
-        self.pending_ask
-            .store(actor.pending_ask_id.is_some(), Ordering::SeqCst);
+    /// Records that the session starts with `actor`'s unanswered `ask`, if any.
+    pub fn init_ask(&self, actor: &AgentActor) {
+        self.selection
+            .set_ask_pending(actor.pending_ask_id.is_some());
     }
 }
 
@@ -364,7 +363,7 @@ pub fn spawn_with_status(
     on_turn_end: Option<TurnEndHook>,
     status: Arc<RuntimeStatus>,
 ) -> tokio::task::JoinHandle<AgentActor> {
-    status.sync_ask(&actor);
+    status.init_ask(&actor);
     tokio::spawn(runtime_loop(
         session_id,
         actor,
@@ -407,7 +406,6 @@ async fn runtime_loop(
         }
 
         inbox.apply_batch_to_actor(&mut actor);
-        status.sync_ask(&actor);
         // The turn runs as the agent and the variant selected now; a later
         // change waits for the turn to end.
         let (role, variant) = status.begin_turn().await;
@@ -457,8 +455,7 @@ async fn runtime_loop(
         // The turn's last word on the gauge: it also covers a cancelled turn
         // and the usage of a final response.
         turn.publish_context(actor.context_breakdown());
-        status.sync_ask(&actor);
-        status.end_turn();
+        status.end_turn(&actor);
 
         // A collapsed session surfaces its first publish failure as the turn
         // error (checked BEFORE translating the natural outcome).

@@ -3,7 +3,9 @@
 //!
 //! A turn runs as the agent selected when it began: [`AgentSelection::begin_turn`]
 //! copies the selection, so a switch never reaches a turn in flight. A switch
-//! is refused while a turn runs, and the choice is stored (through the
+//! is refused while a turn runs and while the agent waits for the answer to
+//! an `ask`: both facts live in the same state, so a turn that ends by
+//! asking cannot slip past a switch that is being decided. The choice is stored (through the
 //! `persist` future the caller supplies) before it takes effect. The two
 //! operations exclude each other through one async gate, so a turn cannot
 //! start between the store write and the change.
@@ -16,6 +18,9 @@ use super::definitions::{AgentDefinition, Agents};
 struct State {
     current: Arc<AgentDefinition>,
     running: bool,
+    /// The last turn ended asking the human something that is not answered
+    /// yet.
+    ask_pending: bool,
 }
 
 /// Why a switch did not happen.
@@ -23,6 +28,8 @@ struct State {
 pub enum SwitchError {
     /// A turn is in flight.
     Busy,
+    /// The agent waits for the answer to an `ask`.
+    AskPending,
     /// The choice could not be stored.
     Persist(String),
 }
@@ -60,6 +67,7 @@ impl AgentSelection {
             state: Mutex::new(State {
                 current,
                 running: false,
+                ask_pending: false,
             }),
             send_role: true,
         }
@@ -75,34 +83,59 @@ impl AgentSelection {
         self.state().current.clone()
     }
 
+    /// Whether the agent waits for the answer to an `ask`.
+    pub fn ask_pending(&self) -> bool {
+        self.state().ask_pending
+    }
+
+    /// Records whether an `ask` waits for its answer, for a session that
+    /// starts with one (a resumed conversation).
+    pub fn set_ask_pending(&self, pending: bool) {
+        self.state().ask_pending = pending;
+    }
+
     /// Marks a turn as started and returns the role it runs with: the agent
-    /// selected now, or `None` when this selection sends no role.
+    /// selected now, or `None` when this selection sends no role. The turn
+    /// carries the answer to a waiting `ask`, so none waits any more.
     pub async fn begin_turn(&self) -> Option<Arc<AgentDefinition>> {
         let _gate = self.gate.lock().await;
         let mut state = self.state();
         state.running = true;
+        state.ask_pending = false;
         self.send_role.then(|| state.current.clone())
     }
 
-    /// Marks the turn as over.
-    pub fn end_turn(&self) {
-        self.state().running = false;
+    /// Marks the turn as over; `ask_pending` is whether it ended asking the
+    /// human something. Both change in one step.
+    pub fn end_turn(&self, ask_pending: bool) {
+        let mut state = self.state();
+        state.running = false;
+        state.ask_pending = ask_pending;
     }
 
     /// Switches to `target` once `persist` has stored it, and returns the
-    /// agent it replaces. Refused while a turn runs.
+    /// agent it replaces. Refused while a turn runs or an `ask` waits.
     pub async fn switch(
         &self,
         target: Arc<AgentDefinition>,
         persist: impl std::future::Future<Output = Result<(), String>>,
     ) -> Result<Arc<AgentDefinition>, SwitchError> {
         let _gate = self.gate.lock().await;
-        if self.state().running {
-            return Err(SwitchError::Busy);
-        }
+        self.check_idle()?;
         persist.await.map_err(SwitchError::Persist)?;
         let mut state = self.state();
         Ok(std::mem::replace(&mut state.current, target))
+    }
+
+    fn check_idle(&self) -> Result<(), SwitchError> {
+        let state = self.state();
+        if state.running {
+            Err(SwitchError::Busy)
+        } else if state.ask_pending {
+            Err(SwitchError::AskPending)
+        } else {
+            Ok(())
+        }
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -137,7 +170,7 @@ mod tests {
         assert_eq!(refused.unwrap_err(), SwitchError::Busy);
         assert_eq!(selection.current().id.as_str(), "build");
 
-        selection.end_turn();
+        selection.end_turn(false);
         let previous = selection.switch(plan(), async { Ok(()) }).await.unwrap();
         assert_eq!(previous.id.as_str(), "build");
         assert_eq!(selection.current().id.as_str(), "plan");
@@ -164,7 +197,7 @@ mod tests {
             Agents::builtin().get("build").cloned().unwrap(),
         );
         let turn_role = selection.begin_turn().await.unwrap();
-        selection.end_turn();
+        selection.end_turn(false);
         selection.switch(plan(), async { Ok(()) }).await.unwrap();
         assert_eq!(turn_role.id.as_str(), "build");
         assert_eq!(selection.begin_turn().await.unwrap().id.as_str(), "plan");

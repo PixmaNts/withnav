@@ -173,7 +173,9 @@ pub(crate) fn set_variant_offer(s: &mut State, data: &serde_json::Value) {
     }
 }
 
-/// Refreshes the display name and context window from the catalog for the selected alias.
+/// Refreshes the display name and context window from the catalog for the selected alias, for a
+/// tab whose conversation has not reported its selection yet. Once a `model.changed` committed it,
+/// the server's identity and window stay: the catalog only fills the picker.
 pub(crate) fn refresh_model(s: &mut State) {
     let State {
         tabs,
@@ -185,6 +187,9 @@ pub(crate) fn refresh_model(s: &mut State) {
 }
 
 fn refresh_tab_model(catalog: &[super::protocol::ModelEntry], tab: &mut super::state::Tab) {
+    if tab.model_seq.is_some() {
+        return;
+    }
     let Some(alias) = tab.selected_model_alias.clone() else {
         return;
     };

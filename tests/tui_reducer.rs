@@ -3892,3 +3892,37 @@ fn picking_the_model_in_use_sends_nothing_and_says_so() {
         vec![model_command("a")]
     );
 }
+
+#[test]
+fn a_catalog_refresh_leaves_the_committed_model_and_window_alone() {
+    let mut script = Script::new();
+    script.start();
+    model_changed_op(&mut script, None, None, "luna", Some("high"), 872_000);
+    let mut s = st();
+    feed(&mut s, &script.out);
+    assert_eq!(
+        (s.selected_model_name.as_deref(), s.context_window),
+        (Some("vendor/luna"), Some(872_000))
+    );
+    // the catalog (F2) now says luna maps to another model with another window
+    let ev = ClientEvent::Models {
+        generation: s.generation.clone(),
+        result: Ok(ModelsBody {
+            models: vec![ModelEntry {
+                alias: "luna".into(),
+                model: "elsewhere/other-model".into(),
+                context_window: Some(32_000),
+                ..Default::default()
+            }],
+            default: Some("luna".into()),
+        }),
+    };
+    update(&mut s, ev).unwrap();
+    assert_eq!(s.catalog.len(), 1, "the picker gets the new list");
+    assert_eq!(s.selected_model_alias.as_deref(), Some("luna"));
+    assert_eq!(
+        (s.selected_model_name.as_deref(), s.context_window),
+        (Some("vendor/luna"), Some(872_000)),
+        "the header keeps what the server committed"
+    );
+}

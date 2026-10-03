@@ -2951,3 +2951,32 @@ fn enter_in_the_model_list_switches_a_live_tab_and_ctrl_n_opens_a_new_one() {
     );
     assert_eq!(ui.variant_pick, None);
 }
+
+#[test]
+fn the_header_keeps_the_committed_model_when_the_catalog_says_otherwise() {
+    let mut s = done();
+    // committed by model.changed
+    s.selected_model_alias = Some("luna".into());
+    s.selected_model_name = Some("gpt-5.6-luna".into());
+    s.context_window = Some(872_000);
+    s.model_seq = Some(10);
+    s.conversation.context_tokens = Some(1_000);
+    let ev = navai::tui::protocol::ClientEvent::Models {
+        generation: s.generation.clone(),
+        result: Ok(navai::tui::protocol::ModelsBody {
+            models: vec![ModelEntry {
+                alias: "luna".into(),
+                model: "elsewhere/other".into(),
+                context_window: Some(32_000),
+                ..Default::default()
+            }],
+            default: None,
+        }),
+    };
+    navai::tui::reducer::update(&mut s, ev).unwrap();
+    let header = row_text(&cells(&s, &UiState::default(), (140, 20)), 0, 140);
+    assert!(
+        header.contains("luna · gpt-5.6-luna · 1k / 872k"),
+        "{header}"
+    );
+}

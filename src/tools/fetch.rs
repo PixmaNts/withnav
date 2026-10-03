@@ -512,6 +512,27 @@ impl ConvertFormat {
     }
 }
 
+/// Runs the converter when the process was started as a conversion child
+/// (`<binary> internal-html-convert --format <f>`), and returns its exit
+/// code; `None` for any other invocation. Both binaries call this first,
+/// before building their async runtime: the child runs under the parent's
+/// memory limit, and a multi-threaded runtime (one worker per core) would
+/// spend that budget before the page is even read.
+pub fn conversion_child(args: &[String]) -> Option<i32> {
+    if args.get(1).map(String::as_str) != Some(CONVERT_SUBCOMMAND) {
+        return None;
+    }
+    let format = match (
+        args.get(2).map(String::as_str),
+        args.get(3).map(String::as_str),
+    ) {
+        (Some("--format"), Some("markdown")) => ConvertFormat::Markdown,
+        (Some("--format"), Some("text")) => ConvertFormat::Text,
+        _ => return Some(2),
+    };
+    Some(convert_stdio(format))
+}
+
 /// The converter itself, as the `internal-html-convert` child runs it: HTML
 /// on stdin, converted text on stdout. It builds a DOM, so it only ever runs
 /// in a child whose memory, CPU and time are limited by the parent.

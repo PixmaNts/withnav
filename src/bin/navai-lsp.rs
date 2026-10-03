@@ -67,8 +67,21 @@ fn init_tracing_stderr() {
         .try_init();
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    // The editor host runs the agent too, and its `fetch` converts pages in
+    // a child started from this same executable: handle that invocation
+    // before the async runtime exists (see `conversion_child`).
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(code) = navai::tools::fetch::conversion_child(&args) {
+        std::process::exit(code);
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+async fn run() -> anyhow::Result<()> {
     let migration = navai::paths::migrate_legacy();
     init_tracing_stderr();
     migration.log();

@@ -170,3 +170,45 @@ async fn cancellation_kills_the_converter() {
     }
     panic!("the converter {pid} is still running");
 }
+
+// Given either executable the agent runs in (the CLI/server and the editor
+// host), started the way `fetch` starts its converter child, under the same
+// memory limit
+// When it receives a small page on stdin
+// Then it converts it itself: the default converter is the running
+//      executable, so both must answer, and neither may spend the limit on an
+//      async runtime before reading the page
+#[test]
+fn both_binaries_convert_under_the_child_memory_limit() {
+    use std::io::Write;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    for exe in [env!("CARGO_BIN_EXE_navai"), env!("CARGO_BIN_EXE_navai-lsp")] {
+        let mut cmd = Command::new(exe);
+        cmd.args(["internal-html-convert", "--format", "markdown"])
+            .env_clear()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        // SAFETY: setrlimit is async-signal-safe and allocates nothing.
+        unsafe {
+            cmd.pre_exec(|| {
+                let limit = 512 * 1024 * 1024;
+                nix::sys::resource::setrlimit(nix::sys::resource::Resource::RLIMIT_AS, limit, limit)
+                    .map_err(std::io::Error::from)
+            });
+        }
+        let mut child = cmd.spawn().expect("spawn");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"<h1>Hello</h1><p>a <a href=\"https://x.test/\">link</a></p>")
+            .unwrap();
+        let out = child.wait_with_output().expect("wait");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{exe}: {:?}", out.status);
+        assert!(text.contains("# Hello"), "{exe}: {text}");
+        assert!(text.contains("[link](https://x.test/)"), "{exe}: {text}");
+    }
+}

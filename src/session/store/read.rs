@@ -53,6 +53,38 @@ impl HistoryStore {
         blocking(move || with_read_tx(&path, |tx| replay_tx(tx, id, after, through))).await
     }
 
+    /// The `permission.requested` and `permission.resolved` envelopes of one
+    /// session, in seq order.
+    pub async fn permission_events(&self, id: Ulid) -> Result<Vec<EventEnvelope>, String> {
+        let path = Arc::clone(&self.path);
+        blocking(move || {
+            with_read_tx(&path, |tx| {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT seq, envelope FROM events
+                         WHERE session_id = ?1 AND kind IN ('permission.requested', 'permission.resolved')
+                         ORDER BY seq ASC",
+                    )
+                    .map_err(|e| format!("prepare: {e}"))?;
+                let rows = stmt
+                    .query_map(params![id.to_string()], |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(|e| format!("query: {e}"))?;
+                let mut out = Vec::new();
+                for row in rows {
+                    let (seq, raw) = row.map_err(|e| format!("row: {e}"))?;
+                    out.push(
+                        serde_json::from_str::<EventEnvelope>(&raw)
+                            .map_err(|e| format!("event seq {seq} does not decode: {e}"))?,
+                    );
+                }
+                Ok(out)
+            })
+        })
+        .await
+    }
+
     /// What a resume needs: the metadata and the last transcript snapshot,
     /// without the envelopes (see [`HistoryStore::replay`]).
     pub async fn load_for_resume(

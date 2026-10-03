@@ -200,6 +200,45 @@ impl AgentActor {
     /// pending permission: that one is settled as interrupted (neither run
     /// nor approved) so the transcript stays well formed, and the text
     /// follows as an ordinary message.
+    /// For a restored transcript: settles, as interrupted, every call of the
+    /// last assistant message that has no result and is not the pending
+    /// `ask`. Such a call was held by a permission request, or running, when
+    /// the process ended; it is never run again. Returns how many were
+    /// settled.
+    pub fn settle_unanswered_calls(&mut self) -> usize {
+        let Some(last) = self
+            .transcript
+            .iter()
+            .rposition(|m| matches!(m, ChatMessage::Assistant { .. }))
+        else {
+            return 0;
+        };
+        let ChatMessage::Assistant { tool_calls, .. } = &self.transcript[last] else {
+            return 0;
+        };
+        let asking = match &self.pending {
+            Some(PendingInteraction::Ask { tool_call_id }) => Some(tool_call_id.as_str()),
+            _ => None,
+        };
+        let unanswered: Vec<String> = tool_calls
+            .iter()
+            .filter(|tc| Some(tc.id.as_str()) != asking)
+            .filter(|tc| {
+                !self.transcript[last + 1..].iter().any(
+                    |m| matches!(m, ChatMessage::Tool { tool_call_id, .. } if *tool_call_id == tc.id),
+                )
+            })
+            .map(|tc| tc.id.clone())
+            .collect();
+        for id in &unanswered {
+            self.transcript.push(ChatMessage::Tool {
+                tool_call_id: id.clone(),
+                content: String::new(),
+            });
+        }
+        unanswered.len()
+    }
+
     pub fn push_user(&mut self, text: impl Into<String>) {
         let text = text.into();
         match self.pending.take() {

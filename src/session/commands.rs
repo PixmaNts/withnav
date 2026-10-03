@@ -74,6 +74,10 @@ pub fn not_available_error(name: &str) -> String {
 pub const ASK_PENDING_ERROR: &str =
     "the agent is waiting for an answer: reply to its question first, then run the command";
 
+/// The error text of a command sent while a tool call waits for approval.
+pub const PERMISSION_PENDING_ERROR: &str =
+    "a tool call is waiting for approval: answer the permission request (or stop the session) first, then run the command";
+
 /// The name as typed, without surrounding whitespace and without ONE leading
 /// `/`: the single normalisation every lookup, error and result goes through.
 pub fn normalize_name(name: &str) -> &str {

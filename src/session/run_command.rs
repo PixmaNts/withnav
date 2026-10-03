@@ -117,6 +117,11 @@ impl Service {
         spec: &'static CommandSpec,
         arguments: &str,
     ) -> Result<Done, CommandFailure> {
+        if handle.status.pending_permission().is_some() {
+            return Err(CommandFailure::Refused(
+                commands::PERMISSION_PENDING_ERROR.to_string(),
+            ));
+        }
         if handle.status.pending_ask() {
             return Err(CommandFailure::Refused(
                 commands::ASK_PENDING_ERROR.to_string(),

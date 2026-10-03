@@ -2632,3 +2632,79 @@ fn picking_a_model_in_a_conversation_still_opens_a_new_tab() {
     assert_eq!(s.selected_model_alias.as_deref(), Some("opus"));
     assert_eq!(s.tabs[0].selected_model_alias.as_deref(), Some("flash"));
 }
+
+#[test]
+fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use navai::tui::input::{route_key, Editor};
+    let (mut s, mut ui) = (with_variants(), ui());
+    s.selected_model_alias = Some("opus".into());
+    created_now(&mut s, "S1").unwrap();
+    s.variant = Some("high".into());
+    let mut editor = Editor::new();
+    let mut press = |code, s: &mut State, ui: &mut UiState, editor: &mut Editor| {
+        route_key(KeyEvent::new(code, KeyModifiers::NONE), s, ui, editor)
+            .map(|a| handle_action(s, ui, a))
+    };
+    // from the palette: ctrl+p, type "variant", enter
+    let fx = handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Commands));
+    assert!(fx.is_empty());
+    for c in "variant".chars() {
+        press(KeyCode::Char(c), &mut s, &mut ui, &mut editor);
+    }
+    press(KeyCode::Enter, &mut s, &mut ui, &mut editor);
+    assert_eq!(ui.overlay, Some(Overlay::Variants));
+    assert_eq!(ui.variant_pick, Some(VariantPick::Current));
+    let (rows, start) = navai::tui::commands::variant_choices(&s, &VariantPick::Current);
+    assert_eq!(rows, ["low", "high", "off"]);
+    assert_eq!(rows[start], "high", "starts on the variant in use");
+    press(KeyCode::Down, &mut s, &mut ui, &mut editor);
+    let fx = press(KeyCode::Enter, &mut s, &mut ui, &mut editor).unwrap();
+    assert_eq!(
+        fx,
+        vec![Effect::RunCommand {
+            session_id: "S1".into(),
+            request: CommandRequest {
+                name: "variant".into(),
+                arguments: "off".into(),
+            },
+            revision: None,
+        }]
+    );
+    assert_eq!(ui.overlay, None);
+    // the server's answer sets what the status line shows
+    let mut script = Script::new();
+    script.seq = 100;
+    script.raw(
+        "command.result",
+        json!({"operation_id": Ulid(4).to_string(), "name": "variant", "ok": true,
+               "data": {"variant": null, "offered": ["low", "high"]}}),
+    );
+    script.raw(
+        "command.result",
+        json!({"operation_id": Ulid(5).to_string(), "name": "variant", "ok": true,
+               "data": {"variant": "low", "offered": ["low", "high"], "applies": "next_turn"}}),
+    );
+    let ev = envelope(&s, &script.out[0]);
+    update(&mut s, ev).unwrap();
+    assert_eq!(s.variant, None);
+    let ev = envelope(&s, &script.out[1]);
+    update(&mut s, ev).unwrap();
+    assert_eq!(s.variant.as_deref(), Some("low"));
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Command { text, .. } if text.contains("applies next turn")
+    ));
+}
+
+#[test]
+fn slash_variant_without_a_conversation_asks_the_server_nothing() {
+    let (mut s, mut ui) = (with_variants(), ui());
+    let fx = handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Variants));
+    assert!(fx.is_empty());
+    assert_eq!(ui.overlay, None);
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Command { ok: false, text, .. } if text.contains("send a message first")
+    ));
+}

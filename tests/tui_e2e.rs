@@ -60,12 +60,21 @@ struct Env {
 
 impl Env {
     async fn start(root: tempfile::TempDir, provider_url: &str) -> Self {
+        Self::start_with(root, provider_url, |config| config).await
+    }
+
+    /// Like [`Env::start`], with the server config adjusted by `adjust` first.
+    async fn start_with(
+        root: tempfile::TempDir,
+        provider_url: &str,
+        adjust: impl FnOnce(TestServerConfig) -> TestServerConfig,
+    ) -> Self {
         isolate_xdg();
-        let state = TestServerConfig::mock(root.path(), provider_url)
+        let config = TestServerConfig::mock(root.path(), provider_url)
             .model_alias("alpha", "mock-alpha")
             .extra_alias("beta", "mock-beta")
-            .chat_tools(100_000)
-            .state();
+            .chat_tools(100_000);
+        let state = adjust(config).state();
         let (addr, task) = spawn_server(state).await;
         let ws = workspace_of(&root);
         std::fs::create_dir_all(&ws).expect("workspace dir");
@@ -716,4 +725,79 @@ async fn tab_switches_build_and_plan_through_the_server() {
         rt.state.agent_name() == "build"
     })
     .await;
+}
+
+// Given an alias `alpha` offering `low` and `high`, `high` its default
+// When `alpha` is picked with `low` in the variant step and a message is sent
+// Then the conversation starts on `low` (the status line and the provider request say so)
+// And `/variant` from the palette, moved to `high`, switches it through the server: the status
+//      line follows the answer
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn variant_step_and_slash_variant_drive_the_server() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let provider = spawn_capturing_provider(vec![
+        final_answer("On low.", usage(10, 2)),
+        final_answer("On high.", usage(10, 2)),
+    ])
+    .await;
+    let variants = json!({
+        "low": {"reasoning_effort": "low"},
+        "high": {"reasoning_effort": "high"},
+    });
+    let env = Env::start_with(root, &provider.url, |c| c.variants(variants, Some("high"))).await;
+    let mut rt = started(&env).await;
+    let alpha = rt
+        .state
+        .catalog
+        .iter()
+        .find(|m| m.alias == "alpha")
+        .expect("alpha")
+        .clone();
+    assert_eq!(alpha.variants, ["high", "low"]);
+    assert_eq!(alpha.default_variant.as_deref(), Some("high"));
+
+    // F2, alpha, then the variant step (high, low, off): the default is preselected; down is `low`.
+    press(&mut rt, KeyCode::F(2));
+    press(&mut rt, KeyCode::Enter);
+    press(&mut rt, KeyCode::Down);
+    press(&mut rt, KeyCode::Enter);
+    assert_eq!(rt.state.variant.as_deref(), Some("low"));
+    type_and_send(&mut rt, "hello");
+    until("the first answer", &mut rt, |_, rt| {
+        has_final(rt, "On low.")
+    })
+    .await;
+    let body: serde_json::Value = serde_json::from_str(&provider.bodies()[0]).expect("body");
+    assert_eq!(body["reasoning_effort"], "low", "{body}");
+    until("the summary's variant", &mut rt, |_, rt| {
+        rt.state.session.as_ref().and_then(|m| m.variant.as_deref()) == Some("low")
+    })
+    .await;
+    assert!(screen(&mut rt).contains("· low ·"));
+
+    // /variant from the palette: the list starts on `low`; up is `high`.
+    rt.handle_terminal_event(Event::Key(KeyEvent::new(
+        KeyCode::Char('p'),
+        KeyModifiers::CONTROL,
+    )));
+    for c in "variant".chars() {
+        press(&mut rt, KeyCode::Char(c));
+    }
+    press(&mut rt, KeyCode::Enter);
+    press(&mut rt, KeyCode::Up);
+    press(&mut rt, KeyCode::Enter);
+    until("the switch to high", &mut rt, |_, rt| {
+        rt.state.variant.as_deref() == Some("high")
+    })
+    .await;
+    let shown = screen(&mut rt);
+    assert!(shown.contains("/variant · ok"), "{shown}");
+    assert!(shown.contains("· high ·"), "{shown}");
+    type_and_send(&mut rt, "again");
+    until("the second answer", &mut rt, |_, rt| {
+        has_final(rt, "On high.")
+    })
+    .await;
+    let body: serde_json::Value = serde_json::from_str(&provider.bodies()[1]).expect("body");
+    assert_eq!(body["reasoning_effort"], "high", "{body}");
 }

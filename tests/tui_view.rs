@@ -1376,3 +1376,81 @@ fn a_model_without_variants_shows_a_note_and_starts_without_one() {
     );
     assert_eq!(ui.overlay, None);
 }
+
+#[test]
+fn the_variant_list_of_a_running_conversation_says_it_applies_next_turn() {
+    let mut s = big_catalog();
+    s.selected_model_alias = Some("opus".into());
+    s.variant = Some("high".into());
+    s.activity = Activity::Running;
+    let mut ui = UiState {
+        overlay: Some(Overlay::Variants),
+        variant_pick: Some(navai::tui::state::VariantPick::Current),
+        ..UiState::default()
+    };
+    // opened as `/variant` opens it: on the variant in use
+    let (_, start) =
+        navai::tui::commands::variant_choices(&s, &navai::tui::state::VariantPick::Current);
+    ui.selection.insert("Variants".into(), start);
+    render(
+        "variant-current-running",
+        (100, 30),
+        &s,
+        &ui,
+        &Editor::new(),
+    );
+    let t = cells(&s, &ui, (100, 30));
+    let rows: Vec<String> = (0..30).map(|y| row_text(&t, y, 100)).collect();
+    assert!(rows.iter().any(|r| r.contains(" Variant ")));
+    assert!(
+        rows.iter().any(|r| r.contains("applies next turn")),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.iter().any(|r| r.contains("● high")),
+        "the one in use is marked"
+    );
+    s.activity = Activity::Idle;
+    let t = cells(&s, &ui, (100, 30));
+    assert!(!(0..30).any(|y| row_text(&t, y, 100).contains("applies next turn")));
+}
+
+#[test]
+fn the_status_line_reads_model_variant_and_gauge() {
+    let mut s = done();
+    s.variant = Some("high".into());
+    s.conversation.context = Some(navai::bus::event::ContextSnapshot {
+        alias: "cognition".into(),
+        variant: Some("high".into()),
+        window: 1_000_000,
+        window_source: "models.json".into(),
+        estimated: true,
+        estimate_total: 42_000,
+        breakdown: Default::default(),
+        output_reserve: 8192,
+        margin: 50_000,
+        input_budget: 941_808,
+        percent: 4,
+        last_usage: None,
+        skills: Default::default(),
+        rule_files: 0,
+        incarnation: ulid::Ulid::new(),
+        revision: 1,
+    });
+    let t = cells(&s, &UiState::default(), (120, 30));
+    let line = (0..30)
+        .map(|y| row_text(&t, y, 120))
+        .find(|r| r.contains("▌build"))
+        .unwrap();
+    assert!(
+        line.contains("cognition · cc/claude-opus-5-5 · high · ~42k / 1M · 4%"),
+        "{line}"
+    );
+    // on a narrow screen the model name is cut before the variant or the gauge
+    let t = cells(&s, &UiState::default(), (70, 20));
+    let line = (0..20)
+        .map(|y| row_text(&t, y, 70))
+        .find(|r| r.contains("▌build"))
+        .unwrap();
+    assert!(line.contains("· high · ~42k / 1M · 4%"), "{line}");
+}

@@ -401,8 +401,8 @@ impl HistoryStore {
                 child_session_id: child_id, agent: row.2.clone(), outcome,
                 reason: reason.clone(), notification_id: Ulid::new(),
             }).map_err(|e| e.to_string())?;
-            tx.execute("INSERT INTO completion_outbox (child_id, parent_id, outcome, result_ref, payload) VALUES (?1, ?2, ?3, ?1, ?4)",
-                params![child_id.to_string(), row.0, status, payload]).map_err(|e| e.to_string())?;
+            tx.execute("INSERT INTO completion_outbox (child_id, parent_id, outcome, result_ref, payload, result_text) VALUES (?1, ?2, ?3, ?1, ?4, ?5)",
+                params![child_id.to_string(), row.0, status, payload, result]).map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
             Ok(Some(ChildLink {
                 parent_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
@@ -462,6 +462,43 @@ impl HistoryStore {
             let changed = tx.execute("UPDATE completion_outbox SET delivered=1 WHERE child_id=?1 AND parent_id=?2 AND delivered=0", params![child.to_string(), envelope.session_id.to_string()]).map_err(|e| e.to_string())?;
             if changed == 0 { return Err("completion already delivered".into()); }
             insert_committed_event(&tx, &envelope)?;
+            tx.commit().map_err(|e| e.to_string())
+        }).await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn unconsumed_completions(
+        &self,
+        parent: Ulid,
+    ) -> Result<Vec<(Ulid, serde_json::Value, String)>, String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare("SELECT child_id, payload, result_text FROM completion_outbox WHERE parent_id=?1 AND consumed=0 ORDER BY rowid").map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([parent.to_string()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))).map_err(|e| e.to_string())?;
+            rows.map(|row| {
+                let (child, payload, result) = row.map_err(|e| e.to_string())?;
+                Ok((child.parse().map_err(|e| format!("child id: {e}"))?, serde_json::from_str(&payload).map_err(|e| e.to_string())?, result))
+            }).collect()
+        }).await.map_err(|e| e.to_string())?
+    }
+
+    /// Installs the transcript and consumes precisely its appended notices.
+    pub async fn consume_completions(
+        &self,
+        parent: Ulid,
+        children: Vec<Ulid>,
+        transcript: Vec<ChatMessage>,
+    ) -> Result<(), String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            for child in children {
+                let changed = tx.execute("UPDATE completion_outbox SET consumed=1 WHERE child_id=?1 AND parent_id=?2 AND consumed=0", params![child.to_string(), parent.to_string()]).map_err(|e| e.to_string())?;
+                if changed != 1 { return Err("completion already consumed or missing".into()); }
+            }
+            let changed = tx.execute("UPDATE sessions SET transcript=?2, updated_at=?3 WHERE id=?1", params![parent.to_string(), serde_json::to_string(&transcript).map_err(|e| e.to_string())?, now_rfc3339()]).map_err(|e| e.to_string())?;
+            if changed != 1 { return Err("completion parent is missing".into()); }
             tx.commit().map_err(|e| e.to_string())
         }).await.map_err(|e| e.to_string())?
     }
@@ -978,6 +1015,24 @@ fn migrate(path: &Path) -> Result<(), String> {
         );",
     )
     .map_err(|e| format!("migrate: {e}"))?;
+    let has_consumption = conn
+        .prepare("SELECT 1 FROM pragma_table_info('completion_outbox') WHERE name='consumed'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| e.to_string())?;
+    if !has_consumption {
+        conn.execute_batch("BEGIN;
+            ALTER TABLE completion_outbox RENAME TO completion_outbox_legacy;
+            CREATE TABLE completion_outbox (
+                child_id TEXT PRIMARY KEY,
+                parent_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                outcome TEXT NOT NULL, result_ref TEXT NOT NULL, payload TEXT NOT NULL,
+                result_text TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0,
+                consumed INTEGER NOT NULL DEFAULT 0);
+            INSERT INTO completion_outbox (child_id,parent_id,outcome,result_ref,payload,result_text,delivered)
+                SELECT o.child_id,o.parent_id,o.outcome,o.result_ref,o.payload,COALESCE(c.result_text,''),o.delivered
+                FROM completion_outbox_legacy o LEFT JOIN child_links c ON c.child_id=o.child_id;
+            DROP TABLE completion_outbox_legacy; COMMIT;").map_err(|e| e.to_string())?;
+    }
     // A database from before `model_resolution`: add the nullable column.
     let has_column = conn
         .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'model_resolution'")
@@ -1468,6 +1523,23 @@ mod tests {
         assert!(store.deliver_completion(child, event).await.is_err());
         assert!(store.pending_completions(parent).await.unwrap().is_empty());
         assert_eq!(store.replay(parent, None, 1).await.unwrap().len(), 2);
+        store.delete(child).await.unwrap();
+        let pending = store.unconsumed_completions(parent).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].2, "answer");
+        store
+            .consume_completions(parent, vec![child], vec![])
+            .await
+            .unwrap();
+        assert!(store
+            .consume_completions(parent, vec![child], vec![])
+            .await
+            .is_err());
+        assert!(store
+            .unconsumed_completions(parent)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     // Given a store whose events table has been destroyed underneath it

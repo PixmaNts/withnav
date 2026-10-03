@@ -21,7 +21,12 @@ requests land in `develop`.
   prompt shows the reason under its header and offers only `y` and `n` for `plan`). A file that moves
   between the check and the write (a link put in its place) is checked again, never written on the
   old verdict; the guard judges against your own latest words, not a navigator wake, and is told that
-  the task, target and arguments it reads are untrusted evidence. `build` is
+  the task, target and arguments it reads are untrusted evidence. A `write` or `edit` of a destination that was checked or approved
+  now opens that file without following any link (`openat2` with `RESOLVE_NO_SYMLINKS` on Linux,
+  falling back to a component-by-component `O_NOFOLLOW` walk), so a link put in its place after the
+  last check cannot redirect it: nothing is written and the call is checked again, for `build`
+  approvals as well as `plan`. After a resume the guard still judges against your latest stored
+  message. `build` is
   unchanged, and its folder grants never reach `plan`. The guard is advisory, not a sandbox.
 - **Permission prompts in the terminal client**: when the agent asks before running `write`,
   `edit`, `bash` or `fetch`, the conversation shows what it would do (the file and its first lines,

@@ -626,6 +626,18 @@ impl HistoryStore {
         children: Vec<Ulid>,
         transcript: Vec<ChatMessage>,
     ) -> Result<(), String> {
+        self.consume_completions_committed(parent, children, transcript, None)
+            .await
+    }
+
+    /// Transcript, consumption markers and the sequenced message commit together.
+    pub async fn consume_completions_committed(
+        &self,
+        parent: Ulid,
+        children: Vec<Ulid>,
+        transcript: Vec<ChatMessage>,
+        envelope: Option<EventEnvelope>,
+    ) -> Result<(), String> {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
             let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
@@ -637,6 +649,7 @@ impl HistoryStore {
             }
             let changed = tx.execute("UPDATE sessions SET transcript=?2, updated_at=?3 WHERE id=?1", params![parent.to_string(), serde_json::to_string(&transcript).map_err(|e| e.to_string())?, now_rfc3339()]).map_err(|e| e.to_string())?;
             if changed != 1 { return Err("completion parent is missing".into()); }
+            if let Some(envelope) = envelope { insert_committed_event(&tx, &envelope)?; }
             tx.commit().map_err(|e| e.to_string())
         }).await.map_err(|e| e.to_string())?
     }
@@ -1437,7 +1450,7 @@ impl Emitter for PersistingEmitter {
         if EventKind::from_wire(kind).is_none_or(EventKind::is_durable) {
             // The first driver message becomes the title (the store guards:
             // only when the title is still NULL).
-            if kind == "message.received" {
+            if kind == "message.received" && envelope.payload["source"] != "subagent" {
                 if let Some(content) = envelope.payload["content"].as_str() {
                     self.store
                         .set_title(self.session_id, title_from_message(content));

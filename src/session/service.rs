@@ -2065,15 +2065,17 @@ impl Service {
                 })
             }));
             let history = self.history.clone();
+            let delivery_sequencer = sequencer.clone();
             status.install_delivery(Arc::new(move |mut transcript, mid_turn| {
                 let history = history.clone();
+                let sequencer = delivery_sequencer.clone();
                 Box::pin(async move {
                     history.flush().await?;
                     let notices = history.unconsumed_completions(session_id).await?;
                     if notices.is_empty() {
                         return Ok(None);
                     }
-                    let mut children = Vec::new();
+                    let mut consumed = false;
                     for (child, payload, result) in notices {
                         if mid_turn && payload["delivery"] != "steer" { continue; }
                         let mut result = crate::tools::bound_output(&result, 15 * 1024).0;
@@ -2093,13 +2095,16 @@ impl Service {
                                 "agent":payload["agent"],"outcome":payload["outcome"],"result":result,
                                 "reason":payload.get("reason")}).to_string();
                         }
+                        let event = super::subagents::live_result::candidate(child, &payload, &text);
                         transcript.push(ChatMessage::User { provenance: crate::provider::openai::UserProvenance::Subagent, content: text });
-                        children.push(child);
+                        let committed_transcript = transcript.clone();
+                        let committed_history = history.clone();
+                        sequencer.commit_acked(event, Box::new(move |envelope| Box::pin(async move {
+                            committed_history.consume_completions_committed(session_id, vec![child], committed_transcript, Some(envelope)).await
+                        }))).await?;
+                        consumed = true;
                     }
-                    if children.is_empty() { return Ok(None); }
-                    history
-                        .consume_completions(session_id, children, transcript.clone())
-                        .await?;
+                    if !consumed { return Ok(None); }
                     Ok(Some(transcript))
                 })
             }));

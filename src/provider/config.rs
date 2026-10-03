@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn repo_models_json_is_strict_and_resolves_both_aliases() {
-        let repo_models = include_str!("../../models.json");
+        let repo_models = include_str!("../../models.example.json");
         let cfg = ModelsConfig::parse(repo_models).expect("repo models.json must be strict JSON");
         let fast = cfg.resolve("fast").unwrap();
         let default = cfg.resolve("default").unwrap();
@@ -632,7 +632,7 @@ mod tests {
 
     #[test]
     fn repo_models_json_has_no_deprecated_setting() {
-        let cfg = ModelsConfig::parse(include_str!("../../models.json")).unwrap();
+        let cfg = ModelsConfig::parse(include_str!("../../models.example.json")).unwrap();
         assert!(cfg.deprecations().is_empty(), "{:?}", cfg.deprecations());
     }
 }

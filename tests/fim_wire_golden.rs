@@ -202,7 +202,7 @@ async fn cancelled_call_stops_waiting() {
 /// engine expects (inception provider, mercury-edit-2, fim api kind).
 #[test]
 fn repo_models_json_resolves_the_reflex_alias() {
-    let cfg = ModelsConfig::parse(include_str!("../models.json")).unwrap();
+    let cfg = ModelsConfig::parse(include_str!("../models.example.json")).unwrap();
     let r = cfg.resolve("reflex").unwrap();
     assert_eq!(r.provider_name, "inception");
     assert_eq!(r.model.model, "mercury-edit-2");

@@ -119,6 +119,10 @@ pub enum BusError {
 pub enum ServerError {
     #[error("child sessions are read-only to clients")]
     ChildReadOnly,
+    #[error("subagent capacity reached: {capacity} children are running; wait for one to finish")]
+    SubagentCapacity { capacity: usize },
+    #[error("subagent settings unavailable: {0}")]
+    SubagentSettings(String),
     #[error("server bind error: {0}")]
     Bind(#[from] std::io::Error),
     #[error("session not found: {0}")]

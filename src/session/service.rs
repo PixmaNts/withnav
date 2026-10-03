@@ -309,9 +309,9 @@ impl Service {
                     .join(", "),
             })?;
         let cap = crate::settings::load(&self.config.config_dir)
-            .map_err(|e| ServerError::MalformedBody(e.to_string()))?
+            .map_err(|e| ServerError::SubagentSettings(e.to_string()))?
             .subagents_max_concurrent()
-            .map_err(ServerError::MalformedBody)?;
+            .map_err(ServerError::SubagentSettings)?;
         let _spawn_lock = self.gate.clone().lock_owned().await;
         let persisted_active = self
             .history
@@ -326,9 +326,7 @@ impl Service {
             let current = slots.entry(parent).or_default();
             *current = (*current).max(persisted_active);
             if *current >= cap {
-                return Err(ServerError::MalformedBody(format!(
-                    "subagent capacity reached ({cap} concurrent children)"
-                )));
+                return Err(ServerError::SubagentCapacity { capacity: cap });
             }
             *current += 1;
         }

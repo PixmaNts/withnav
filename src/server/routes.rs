@@ -722,6 +722,8 @@ async fn stop_session(State(state): State<AppState>, Path(id): Path<String>) -> 
 pub(crate) fn error_response(err: ServerError) -> Response {
     let status = match &err {
         ServerError::ChildReadOnly => StatusCode::FORBIDDEN,
+        ServerError::SubagentCapacity { .. } => StatusCode::TOO_MANY_REQUESTS,
+        ServerError::SubagentSettings(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::SessionNotFound(_) => StatusCode::NOT_FOUND,
         ServerError::SessionStopping
         | ServerError::ResumeRequired
@@ -762,6 +764,13 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         return (
             status,
             Json(json!({ "error": err.to_string(), "reason": "child_read_only" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::SubagentCapacity { .. }) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "subagent_capacity" })),
         )
             .into_response();
     }

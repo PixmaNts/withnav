@@ -705,9 +705,12 @@ async fn tab_switches_build_and_plan_through_the_server() {
     let (_, answer) = next_request(&mut rt, &mut provider).await;
 
     // a turn is running: the server refuses the switch
-    until("the turn to run", &mut rt, |_, rt| {
-        rt.state.activity == Activity::Running
-    })
+    // tab switches the agent only on an empty message: the sent one must be cleared first
+    until(
+        "the turn to run and the editor to clear",
+        &mut rt,
+        |_, rt| rt.state.activity == Activity::Running && rt.editor.text().is_empty(),
+    )
     .await;
     press_tab(&mut rt);
     until("the refusal", &mut rt, |_, rt| {

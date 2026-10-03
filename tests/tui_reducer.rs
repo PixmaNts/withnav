@@ -2885,3 +2885,37 @@ fn slash_variant_always_offers_off_even_with_an_empty_catalog() {
     assert!(update(&mut s, failed).unwrap().is_empty());
     assert!(!s.variant_list_wanted);
 }
+
+#[test]
+fn picking_a_model_while_a_conversation_is_being_created_opens_another_tab() {
+    let (mut s, mut ui) = (with_variants(), ui());
+    handle_action(&mut s, &mut ui, Action::PickModel("flash".into()));
+    let fx = handle_action(&mut s, &mut ui, Action::Submit("hi".into()));
+    assert!(matches!(&fx[0], Effect::Create(r) if r.model.as_deref() == Some("flash")));
+    let creating = s.generation.clone();
+    // before the server answers, another model is picked
+    handle_action(&mut s, &mut ui, Action::PickModel("opus".into()));
+    assert_eq!((s.tabs.len(), s.active), (2, 1));
+    assert_eq!(s.selected_model_alias.as_deref(), Some("opus"));
+    assert_eq!(s.tabs[0].selected_model_alias.as_deref(), Some("flash"));
+    // the creation lands on its own tab, with its own model
+    update(
+        &mut s,
+        ClientEvent::Created {
+            generation: creating,
+            result: Ok(CreateSessionResponse {
+                session_id: "S1".into(),
+                root_actor_id: "agent:main".into(),
+                actor_state: "idle".into(),
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.tabs[0].session.as_ref().unwrap().model, "flash");
+    // the same while a resume is in flight
+    let (mut s, mut ui) = (with_variants(), self::ui());
+    handle_action(&mut s, &mut ui, Action::ResumeSession("S9".into()));
+    handle_action(&mut s, &mut ui, Action::PickModel("opus".into()));
+    assert_eq!((s.tabs.len(), s.active), (2, 1));
+    assert_eq!(s.tabs[0].resuming.as_deref(), Some("S9"));
+}

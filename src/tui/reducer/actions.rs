@@ -221,11 +221,9 @@ fn pick_model(
     alias: String,
     variant: Option<Option<String>>,
 ) -> Option<Vec<Effect>> {
-    let effects = if s.session.is_some() || s.resuming.is_some() {
-        open_tab(s, ui)?
-    } else {
-        vec![]
-    };
+    // A tab with a conversation, or one being created or resumed, keeps its model.
+    let occupied = s.session.is_some() || s.resuming.is_some() || s.pending_submit_text.is_some();
+    let effects = if occupied { open_tab(s, ui)? } else { vec![] };
     s.selected_model_alias = Some(alias);
     refresh_model(s);
     let default = s

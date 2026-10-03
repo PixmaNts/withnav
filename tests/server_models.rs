@@ -85,8 +85,16 @@ fn write_models(root: &std::path::Path, base_url: &str) {
 /// Serves a fresh state over `root` (building it writes a default
 /// models.json, so ours goes in after) and asks for the models.
 async fn get_models(root: &std::path::Path, base_url: &str) -> Value {
+    get_models_from(root, base_url, write_models).await
+}
+
+async fn get_models_from(
+    root: &std::path::Path,
+    base_url: &str,
+    write: fn(&std::path::Path, &str),
+) -> Value {
     let state = TestServerConfig::mock(root, base_url).navigator_state();
-    write_models(root, base_url);
+    write(root, base_url);
     let (addr, task) = spawn_server(state).await;
     let body = reqwest::Client::new()
         .get(format!("http://{addr}/v1/models"))
@@ -199,4 +207,89 @@ async fn a_failed_refresh_shows_stale_values_with_age_and_error() {
         error.contains("503") && !error.contains("127.0.0.1"),
         "{error}"
     );
+}
+
+/// Two OmniRoute aliases on one model: `pinned` with an explicit window and
+/// a default variant, `plain` with neither.
+fn write_variant_models(root: &std::path::Path, base_url: &str) {
+    std::fs::write(
+        root.join("models.json"),
+        json!({
+            "providers": { PROVIDER: { "base_url": base_url, "api_key_env": "NAVAI_TEST_KEY",
+                                       "headers": {}, "catalog_format": "omniroute" } },
+            "models": {
+                "pinned": { "provider": PROVIDER, "model": "m-tiers", "supports_tools": true,
+                            "context_window": 200000, "default_variant": "high" },
+                "plain": { "provider": PROVIDER, "model": "m-tiers", "supports_tools": true }
+            }
+        })
+        .to_string(),
+    )
+    .expect("write models.json");
+}
+
+// Given an OmniRoute provider reporting effort tiers for the model
+// When GET /v1/models runs
+// Then the generated variants are listed by name and the default is named,
+//      without any override object
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lists_variant_names_and_the_default_only() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let provider = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::path("/v1/models"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(json!({"data": [{
+                "id": "m-tiers", "context_length": 1_000_000,
+                "capabilities": {"effort_tiers": ["low", "high"]}
+            }]})),
+        )
+        .mount(&provider)
+        .await;
+    let body = get_models_from(
+        tmp.path(),
+        &format!("{}/v1", provider.uri()),
+        write_variant_models,
+    )
+    .await;
+
+    let pinned = by_alias(&body, "pinned");
+    assert_eq!(pinned["variants"], json!(["high", "low"]));
+    assert_eq!(pinned["default_variant"], "high");
+    assert!(pinned.get("default_variant_unavailable").is_none());
+    assert_eq!(by_alias(&body, "plain")["variants"], json!(["high", "low"]));
+    assert!(by_alias(&body, "plain").get("default_variant").is_none());
+    assert!(
+        !body.to_string().contains("reasoning_effort"),
+        "no override object is exposed: {body}"
+    );
+}
+
+// Given an alias with a pinned window, no variants and a default variant,
+//      and a provider that is down with nothing cached
+// When GET /v1/models runs
+// Then the alias is enabled on its window, the lookup error is shown, no
+//      variants are listed and the default is reported unavailable instead of
+//      being advertised
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pinned_alias_with_the_provider_down_reports_its_default_unavailable() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let provider = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::path("/v1/models"))
+        .respond_with(wiremock::ResponseTemplate::new(503))
+        .mount(&provider)
+        .await;
+    let body = get_models_from(
+        tmp.path(),
+        &format!("{}/v1", provider.uri()),
+        write_variant_models,
+    )
+    .await;
+
+    let pinned = by_alias(&body, "pinned");
+    assert_eq!(pinned["enabled"], true);
+    assert_eq!(pinned["context_window"], 200_000);
+    assert!(pinned["refresh_error"].as_str().unwrap().contains("503"));
+    assert!(pinned.get("variants").is_none());
+    assert!(pinned.get("default_variant").is_none(), "{pinned}");
+    assert_eq!(pinned["default_variant_unavailable"], "high");
 }

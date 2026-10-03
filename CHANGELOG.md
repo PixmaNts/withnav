@@ -18,6 +18,17 @@ requests land in `develop`.
   the envelope version and the other kinds are unchanged. `/messages` is unchanged.
 - **`navai run --prompt "/help"`** runs the command and prints its result; `//text` sends the literal
   message `/text`.
+- **`glob` tool**: finds files by a relative pattern (`**/*.rs`) under the workspace or a readable
+  `path`, as sorted relative paths. Links are not followed; hidden entries, `node_modules` and `target`
+  are skipped unless the pattern names them. At most 200 paths by default (1,000 max), 100,000 entries
+  visited and 5 s; the result says when it stopped early. Absolute patterns and `..` are refused.
+- **`fetch` tool**: an HTTP(S) GET returned as markdown (default), plain text or raw HTML. Own client with
+  a `navai/<version>` User-Agent and no provider credentials; URLs with credentials are refused. Only
+  same-origin redirects are followed (at most 10): a redirect to another origin comes back as the target
+  URL for a new call. The body is streamed and capped at 5 MiB after decompression, text types only
+  (images and binaries are refused), decoded by its charset, output bounded to 64 KiB. HTML is converted in a child process limited to 512 MiB of memory, 10 s of CPU and the call's time budget; if it fails the page comes back as plain text with a note. Errors carry a
+  code: `invalid_url`, `timeout`, `http_status`, `unsupported_content`, `too_large`, `network`. Any
+  address is reachable, localhost and private networks included.
 - **Model catalog**: a chat alias without `context_window` in models.json gets its window from the
   provider's `GET /models` list (`context_length`, else `max_input_tokens`), cached for a day under the
   data dir. An explicit `context_window` wins without any network call; if it differs from what the

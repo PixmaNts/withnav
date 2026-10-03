@@ -28,6 +28,7 @@ fn resolved(base_url: String) -> ResolvedModel {
             connect_timeout_ms: 1_000,
             // Long on purpose: the reflex engine must clamp it.
             request_timeout_ms: 600_000,
+            catalog_format: None,
         },
         model: ModelConfig {
             provider: "inception".to_string(),
@@ -39,6 +40,8 @@ fn resolved(base_url: String) -> ResolvedModel {
             supports_tools: false,
             supports_parallel_tool_calls: None,
             thinking: None,
+            default_variant: None,
+            variants: None,
             reasoning_history: ReasoningHistory::Preserve,
         },
     }

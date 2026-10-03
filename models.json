@@ -3,6 +3,7 @@
     "omniroute": {
       "base_url": "http://localhost:20128/v1",
       "api_key_env": "OMNIROUTE_API_KEY",
+      "catalog_format": "omniroute",
       "headers": {},
       "connect_timeout_ms": 5000,
       "request_timeout_ms": 600000
@@ -23,7 +24,7 @@
       "max_output_tokens": 16000,
       "supports_tools": true,
       "supports_parallel_tool_calls": true,
-      "thinking": "low",
+      "default_variant": "low",
       "reasoning_history": "preserve"
     },
     "fast": {
@@ -33,7 +34,7 @@
       "max_output_tokens": 16000,
       "supports_tools": true,
       "supports_parallel_tool_calls": true,
-      "thinking": "low",
+      "default_variant": "low",
       "reasoning_history": "preserve"
     },
     "cognition": {
@@ -43,7 +44,7 @@
       "max_output_tokens": 32000,
       "supports_tools": true,
       "supports_parallel_tool_calls": true,
-      "thinking": "high",
+      "default_variant": "high",
       "reasoning_history": "preserve",
       "api": "chat"
     },
@@ -54,7 +55,6 @@
       "max_output_tokens": 8000,
       "supports_tools": true,
       "supports_parallel_tool_calls": false,
-      "thinking": "off",
       "reasoning_history": "preserve",
       "api": "chat"
     },

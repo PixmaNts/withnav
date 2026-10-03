@@ -159,6 +159,7 @@ mod tests {
                 headers: Default::default(),
                 connect_timeout_ms: 1_000,
                 request_timeout_ms,
+                catalog_format: None,
             },
             model: ModelConfig {
                 provider: "inception".to_string(),
@@ -170,6 +171,8 @@ mod tests {
                 supports_tools: false,
                 supports_parallel_tool_calls: None,
                 thinking: None,
+                default_variant: None,
+                variants: None,
                 reasoning_history: ReasoningHistory::Preserve,
             },
         }

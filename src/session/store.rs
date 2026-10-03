@@ -30,7 +30,7 @@
 //! Schema:
 //! - `sessions(id TEXT PRIMARY KEY, workspace TEXT, model TEXT, profile TEXT,
 //!   title TEXT, created_at TEXT, updated_at TEXT, last_seq INTEGER, transcript TEXT,
-//!   model_resolution TEXT)`
+//!   model_resolution TEXT, primary_agent TEXT)`
 //! - `events(session_id TEXT, seq INTEGER, kind TEXT, envelope TEXT,
 //!   PRIMARY KEY(session_id, seq))`
 //!
@@ -47,6 +47,11 @@
 //! identity and bounds the conversation runs on. It is written once (at
 //! creation, or at the first activation of a row that has none) and never
 //! overwritten: a catalog refresh does not move a conversation.
+//!
+//! `primary_agent` is NULL (the `build` agent, also for every row written
+//! before the column existed) or the id of the primary agent the session runs
+//! as. It changes with `/agent`, and the change is committed before it is
+//! reported.
 
 mod read;
 
@@ -77,6 +82,8 @@ pub struct StoredSession {
     /// (created before the column existed). Parsed by the session service,
     /// so an invalid value fails the resume instead of being dropped here.
     pub model_resolution: Option<String>,
+    /// The raw `primary_agent` column: `None` is the `build` agent.
+    pub primary_agent: Option<String>,
 }
 
 /// A full session load: the row's metadata, its stored envelopes (in seq
@@ -108,6 +115,10 @@ enum Write {
         id: Ulid,
         expected: String,
         resolution: String,
+    },
+    SetPrimaryAgent {
+        id: Ulid,
+        agent: Option<String>,
     },
     AppendEvent {
         id: Ulid,
@@ -293,6 +304,16 @@ impl HistoryStore {
         .await
     }
 
+    /// Sets the primary agent of a session (`None` is `build`) and waits for
+    /// the commit.
+    pub async fn set_primary_agent(&self, id: Ulid, agent: Option<&str>) -> Result<(), String> {
+        self.acked(Write::SetPrimaryAgent {
+            id,
+            agent: agent.map(str::to_string),
+        })
+        .await
+    }
+
     /// Appends one durable envelope (the caller filters `llm.delta`) and
     /// bumps `last_seq` in the same transaction. Fire-and-forget: a failure
     /// surfaces at the next [`HistoryStore::flush`].
@@ -419,6 +440,15 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                 return Err(WriteError::ResolutionChanged(id));
             }
         }
+        Write::SetPrimaryAgent { id, agent } => {
+            let touched = tx.execute(
+                "UPDATE sessions SET primary_agent = ?2 WHERE id = ?1",
+                params![id.to_string(), agent],
+            )?;
+            if touched == 0 {
+                return Err(WriteError::UnknownSession(id));
+            }
+        }
         Write::AppendEvent { id, envelope } => {
             let payload = serde_json::to_string(&envelope)?;
             tx.execute(
@@ -482,7 +512,8 @@ fn migrate(path: &Path) -> Result<(), String> {
             updated_at TEXT NOT NULL,
             last_seq INTEGER NOT NULL DEFAULT -1,
             transcript TEXT,
-            model_resolution TEXT
+            model_resolution TEXT,
+            primary_agent TEXT
         );
         CREATE TABLE IF NOT EXISTS events (
             session_id TEXT NOT NULL,
@@ -500,6 +531,15 @@ fn migrate(path: &Path) -> Result<(), String> {
         .map_err(|e| format!("migrate: {e}"))?;
     if !has_column {
         conn.execute("ALTER TABLE sessions ADD COLUMN model_resolution TEXT", [])
+            .map_err(|e| format!("migrate: {e}"))?;
+    }
+    // A database from before `primary_agent`: add the nullable column.
+    let has_agent = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'primary_agent'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| format!("migrate: {e}"))?;
+    if !has_agent {
+        conn.execute("ALTER TABLE sessions ADD COLUMN primary_agent TEXT", [])
             .map_err(|e| format!("migrate: {e}"))?;
     }
     Ok(())

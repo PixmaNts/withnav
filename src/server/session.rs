@@ -19,6 +19,9 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub fn service(&self) -> Service {
+        self.service.clone()
+    }
     /// A state without any profile behaviour. Fails when the history
     /// database cannot be opened.
     pub fn new(config: ServerConfig) -> Result<Self, ServerError> {

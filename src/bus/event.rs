@@ -1,11 +1,12 @@
-//! Frozen `EventEnvelope` shape and the 19-kind `EventKind`
+//! Frozen `EventEnvelope` shape and the 21-kind `EventKind`
 //! catalog (the twelve original kinds plus `command.result`,
 //! `context.updated`, `session.agent_changed`, `context.compacted`,
-//! `permission.requested`, `permission.resolved` and `model.changed`).
+//! `permission.requested`, `permission.resolved`, `model.changed`,
+//! `subagent.spawned` and `subagent.done`).
 //!
 //! Reserved-but-deferred kind names (NOT in the enum, never emitted this slice):
 //! `prompt.pre_llm`, `tool.progress`, `context.pre_compact` (Phase 3),
-//! `subagent.spawned`, `subagent.done` (Phase 3), `hook.decision`, `plugin.error`
+//! `subagent.watchdog` (Phase 3), `hook.decision`, `plugin.error`
 //! (Phase-2b plugins). Emitting them is impossible: no enum variant exists.
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -23,14 +24,15 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// The single root actor id for this slice (all events are published by it).
 pub const ROOT_ACTOR_ID: &str = "agent:main";
 
-/// The catalog emits EXACTLY 19 kinds: 2 session +
+/// The catalog emits EXACTLY 21 kinds: 2 session +
 /// message + 2 turn + 2 llm + 2 tool + 2 agent + task + command result +
 /// context update + agent change + context compacted + 2 permission + model
-/// change = 19. The first twelve are frozen; `command.result`,
+/// change + 2 subagent = 21. The first twelve are frozen; `command.result`,
 /// `context.updated`, `session.agent_changed`, `context.compacted`,
-/// `permission.requested`, `permission.resolved` and `model.changed` were
-/// added without changing the envelope version.
-pub const EVENT_KIND_COUNT: usize = 19;
+/// `permission.requested`, `permission.resolved`, `model.changed`,
+/// `subagent.spawned` and `subagent.done` were added without changing the
+/// envelope version.
+pub const EVENT_KIND_COUNT: usize = 21;
 
 /// Durable kinds are retained in the reconnect ring and the history store;
 /// `llm.delta` and `context.updated` are live-only (the latter is a
@@ -70,7 +72,9 @@ impl EventKind {
             | Self::ContextCompacted
             | Self::PermissionRequested
             | Self::PermissionResolved
-            | Self::ModelChanged => [
+            | Self::ModelChanged
+            | Self::SubagentSpawned
+            | Self::SubagentDone => [
                 Self::SessionStart,
                 Self::SessionEnd,
                 Self::MessageReceived,
@@ -90,18 +94,20 @@ impl EventKind {
                 Self::PermissionRequested,
                 Self::PermissionResolved,
                 Self::ModelChanged,
+                Self::SubagentSpawned,
+                Self::SubagentDone,
             ],
         }
     }
 
-    /// The 19 emitted kinds, in catalog order. The bus iterates this to seed
+    /// The 21 emitted kinds, in catalog order. The bus iterates this to seed
     /// the ring/fan-out.
     pub const ALL: [EventKind; EVENT_KIND_COUNT] = Self::all_variants();
 }
 
 const _: () = assert!(EventKind::ALL.len() == EVENT_KIND_COUNT);
 
-/// Typed catalog of the 19 emitted event kinds; the wire name is the dotted
+/// Typed catalog of the 21 emitted event kinds; the wire name is the dotted
 /// string (serialized verbatim, e.g. `"llm.delta"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventKind {
@@ -143,6 +149,10 @@ pub enum EventKind {
     PermissionResolved,
     #[serde(rename = "model.changed")]
     ModelChanged,
+    #[serde(rename = "subagent.spawned")]
+    SubagentSpawned,
+    #[serde(rename = "subagent.done")]
+    SubagentDone,
 }
 
 impl EventKind {
@@ -168,6 +178,8 @@ impl EventKind {
             EventKind::PermissionRequested => "permission.requested",
             EventKind::PermissionResolved => "permission.resolved",
             EventKind::ModelChanged => "model.changed",
+            EventKind::SubagentSpawned => "subagent.spawned",
+            EventKind::SubagentDone => "subagent.done",
         }
     }
 
@@ -193,6 +205,8 @@ impl EventKind {
             "permission.requested" => Some(EventKind::PermissionRequested),
             "permission.resolved" => Some(EventKind::PermissionResolved),
             "model.changed" => Some(EventKind::ModelChanged),
+            "subagent.spawned" => Some(EventKind::SubagentSpawned),
+            "subagent.done" => Some(EventKind::SubagentDone),
             _ => None,
         }
     }
@@ -461,6 +475,51 @@ pub struct ModelChanged {
     pub from_message: u64,
 }
 
+/// A parent session started a child session: a background agent that works
+/// on one delegated prompt. Published on the PARENT's stream, durable, after
+/// the child and its link are committed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentSpawned {
+    pub parent_session_id: Ulid,
+    pub child_session_id: Ulid,
+    /// The agent definition the child runs as.
+    pub agent: String,
+    /// The delegated prompt, cut to 1 KiB for the stream (the child's own
+    /// stream holds it whole).
+    pub goal: String,
+    /// The `task` tool call that spawned it.
+    pub tool_call_id: String,
+}
+
+/// How a child ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentOutcome {
+    /// It finished its work.
+    Done,
+    /// It failed (a provider or runtime error).
+    Failed,
+    /// It was stopped: by its owner, by a stop of the parent, or because the
+    /// server restarted.
+    Stopped,
+}
+
+/// A child reached its terminal state. Published on the PARENT's stream,
+/// durable, once per child (the terminal transition is a compare-and-set).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentDone {
+    pub parent_session_id: Ulid,
+    pub child_session_id: Ulid,
+    pub agent: String,
+    pub outcome: SubagentOutcome,
+    /// Why it ended, for `failed` and `stopped`: `stopped_by_owner`,
+    /// `parent_stopped`, `server_restart`, or the error text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The notice that carries the result to the parent, by its id.
+    pub notification_id: Ulid,
+}
+
 /// What asked for a compaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -708,7 +767,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const KIND_NAMES: [&str; 19] = [
+    const KIND_NAMES: [&str; 21] = [
         "session.start",
         "session.end",
         "message.received",
@@ -728,13 +787,15 @@ mod tests {
         "permission.requested",
         "permission.resolved",
         "model.changed",
+        "subagent.spawned",
+        "subagent.done",
     ];
 
     #[test]
-    fn event_kind_catalog_is_exactly_the_nineteen() {
+    fn event_kind_catalog_is_exactly_the_twenty_one() {
         let kinds = EventKind::ALL;
-        assert_eq!(EVENT_KIND_COUNT, 19);
-        assert_eq!(kinds.len(), 19);
+        assert_eq!(EVENT_KIND_COUNT, 21);
+        assert_eq!(kinds.len(), 21);
         assert_eq!(SCHEMA_VERSION, 1);
         let names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
         assert_eq!(names, KIND_NAMES);
@@ -1028,6 +1089,29 @@ mod tests {
                     window: 200_000,
                     input_budget: 181_808,
                     from_message: 7,
+                })
+                .unwrap(),
+            ),
+            (
+                "subagent.spawned",
+                serde_json::to_value(&SubagentSpawned {
+                    parent_session_id: Ulid::new(),
+                    child_session_id: Ulid::new(),
+                    agent: "explore".into(),
+                    goal: "map the parser".into(),
+                    tool_call_id: "call_1".into(),
+                })
+                .unwrap(),
+            ),
+            (
+                "subagent.done",
+                serde_json::to_value(&SubagentDone {
+                    parent_session_id: Ulid::new(),
+                    child_session_id: Ulid::new(),
+                    agent: "explore".into(),
+                    outcome: SubagentOutcome::Stopped,
+                    reason: Some("server_restart".into()),
+                    notification_id: Ulid::new(),
                 })
                 .unwrap(),
             ),

@@ -25,13 +25,35 @@ impl Service {
     /// already closed (or only stored) is a no-op; unknown is a 404.
     pub async fn close_session(&self, id: SessionId) -> Result<(), ServerError> {
         let _gate = self.lifecycle_gate().await;
-        self.close_session_gated(id).await
+        self.wait_child_operation(id).await;
+        let parent = self.handle(id).and_then(|h| h.parent_session_id);
+        self.close_session_gated(id).await?;
+        if let Some(parent) = parent {
+            self.finish_child(
+                parent,
+                id,
+                "stopped",
+                Some("stopped_by_owner".into()),
+                String::new(),
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     /// [`Service::close_session`] for a caller that already holds the
     /// lifecycle gate.
     pub(super) async fn close_session_gated(&self, id: SessionId) -> Result<(), ServerError> {
-        if let Some(handle) = self.mark_stopping(id) {
+        self.wait_child_operation(id).await;
+        let target = {
+            let _admission = self.admission_gate.lock().await;
+            let target = self.mark_stopping(id);
+            if let Some(handle) = &target {
+                handle.session_cancel.cancel();
+            }
+            target
+        };
+        if let Some(handle) = target {
             self.fence_and_remove(id, handle, "stop requested").await;
             return Ok(());
         }
@@ -51,6 +73,7 @@ impl Service {
     /// its `session.end`), then return so axum finishes draining.
     pub async fn close_all(&self) {
         let _gate = self.lifecycle_gate().await;
+        let admission = self.admission_gate.lock().await;
         let targets: Vec<(SessionId, SessionHandle)> = {
             let mut guard = self.lock_sessions();
             guard
@@ -58,10 +81,12 @@ impl Service {
                 .filter(|(_, handle)| handle.lifecycle == Lifecycle::Active)
                 .map(|(id, handle)| {
                     handle.lifecycle = Lifecycle::Stopping;
+                    handle.session_cancel.cancel();
                     (*id, handle.clone())
                 })
                 .collect()
         };
+        drop(admission);
         for (id, handle) in targets {
             self.fence_and_remove(id, handle, "shutdown").await;
         }
@@ -78,8 +103,21 @@ impl Service {
     /// `session.end` has been emitted and queued to the store writer, (4)
     /// flushes the store, and (5) removes the registry entry. No lock is held
     /// across any await.
-    async fn fence_and_remove(&self, id: SessionId, handle: SessionHandle, reason: &str) {
+    pub(super) async fn fence_and_remove(
+        &self,
+        id: SessionId,
+        handle: SessionHandle,
+        reason: &str,
+    ) {
         handle.session_cancel.cancel();
+        let pending = handle
+            .publications
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        for publication in pending {
+            publication.cancelled().await;
+        }
         drop(handle.inbox_tx);
 
         if let Some(mut task) = handle
@@ -118,7 +156,7 @@ impl Service {
     /// returns its handle; `None` for anything else. The entry stays in the
     /// map until the close finishes, so a concurrent request sees `Stopping`
     /// rather than a hole.
-    fn mark_stopping(&self, id: SessionId) -> Option<SessionHandle> {
+    pub(super) fn mark_stopping(&self, id: SessionId) -> Option<SessionHandle> {
         let mut guard = self.lock_sessions();
         let handle = guard.get_mut(&id)?;
         if handle.lifecycle != Lifecycle::Active {
@@ -188,6 +226,8 @@ mod tests {
     /// exists for.
     fn wedged_runtime_handle() -> SessionHandle {
         SessionHandle {
+            publications: Arc::default(),
+            incarnation: Ulid::new(),
             inbox_tx: mpsc::channel(1).0,
             permissions: mpsc::channel(1).0,
             sequencer: Sequencer::spawn(Ulid::new(), SessionBus::default(), 0),
@@ -203,6 +243,7 @@ mod tests {
             workspace: PathBuf::from("/w"),
             selected: Arc::new(std::sync::Mutex::new(
                 crate::session::service::SelectedModel {
+                    execution: None,
                     alias: "fast".to_string(),
                     resolution: None,
                     revision: 1,
@@ -211,6 +252,7 @@ mod tests {
                 },
             )),
             status: Arc::default(),
+            parent_session_id: None,
         }
     }
 

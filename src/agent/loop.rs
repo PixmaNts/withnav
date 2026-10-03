@@ -6,7 +6,7 @@ use crate::agent::permissions::{
     PermissionDecision, PermissionError, PermissionRequest,
 };
 use crate::agent::prompt::{assistant_history_message, build_request};
-use crate::agent::response::{classify, HumanRequest, StepOutcome};
+use crate::agent::response::{HumanRequest, StepOutcome};
 use crate::error::{AgentError, ProviderError, ToolError};
 use crate::provider::client::ModelClient;
 use crate::provider::openai::{ChatMessage, ClientCache};
@@ -164,7 +164,13 @@ async fn run_steps(
 
         let sibling_ids: Vec<String> = message.tool_calls.iter().map(|tc| tc.id.clone()).collect();
 
-        match classify(message) {
+        match crate::agent::response::classify_with_ask(
+            message,
+            actor
+                .registry
+                .get(crate::agent::response::ASK_TOOL)
+                .is_some(),
+        ) {
             StepOutcome::Done { response } => {
                 actor.state = AgentState::Idle;
                 return Ok(RunOutcome::Done(response));
@@ -389,6 +395,12 @@ enum Gated {
 }
 
 fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
+    if actor.registry.get(&call.name).is_none() {
+        return Gated::Rejected(format!(
+            "tool '{}' is disabled by this session's policy",
+            call.name
+        ));
+    }
     let Some(role) = actor.role.as_deref() else {
         return Gated::Run(None);
     };

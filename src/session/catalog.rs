@@ -18,6 +18,9 @@ pub struct SessionListing {
     /// The primary agent the session runs as.
     pub agent: String,
     pub live: bool,
+    pub parent_session_id: Option<String>,
+    pub child_status: Option<String>,
+    pub promptable: bool,
 }
 
 impl Service {
@@ -28,13 +31,30 @@ impl Service {
             .list(workspace)
             .await
             .map_err(ServerError::History)?;
-        Ok(rows
-            .into_iter()
-            .map(|row| SessionListing {
+        let mut listings = Vec::new();
+        for row in rows {
+            let link = self
+                .history()
+                .child_link(row.meta.id)
+                .await
+                .map_err(ServerError::History)?;
+            if link.is_none()
+                && self
+                    .unpublished_children
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains(&row.meta.id)
+            {
+                continue;
+            }
+            listings.push(SessionListing {
                 live: matches!(
                     self.handle(row.meta.id),
                     Some(handle) if handle.lifecycle == Lifecycle::Active
                 ),
+                parent_session_id: link.as_ref().map(|child| child.parent_id.to_string()),
+                child_status: link.as_ref().map(|child| child.status.clone()),
+                promptable: link.is_none(),
                 id: row.meta.id,
                 title: row.meta.title,
                 created_at: row.meta.created_at,
@@ -44,8 +64,9 @@ impl Service {
                     .meta
                     .primary_agent
                     .unwrap_or_else(|| crate::agent::definitions::BUILD.to_string()),
-            })
-            .collect())
+            });
+        }
+        Ok(listings)
     }
 
     /// Stops the session if live, removes it from memory and from the
@@ -53,9 +74,21 @@ impl Service {
     /// in memory nor on disk.
     pub async fn delete(&self, id: SessionId) -> Result<(), ServerError> {
         let _gate = self.lifecycle_gate().await;
+        self.wait_child_operation(id).await;
         // A live session is closed; a stored one is a no-op; an id the store
         // does not know is a 404.
+        let parent = self.handle(id).and_then(|handle| handle.parent_session_id);
         self.close_session_gated(id).await?;
+        if let Some(parent) = parent {
+            self.finish_child(
+                parent,
+                id,
+                "stopped",
+                Some("deleted_by_owner".into()),
+                String::new(),
+            )
+            .await?;
+        }
         self.discard(id);
         self.history()
             .delete(id)

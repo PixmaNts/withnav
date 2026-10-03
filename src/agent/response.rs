@@ -20,10 +20,16 @@ pub enum StepOutcome {
 }
 
 pub fn classify(msg: AssistantMessage) -> StepOutcome {
-    if let Some(ask) = msg.tool_calls.iter().find(|tc| tc.name == ASK_TOOL) {
-        return StepOutcome::Yield {
-            request: human_request_from(ask),
-        };
+    classify_with_ask(msg, true)
+}
+
+pub fn classify_with_ask(msg: AssistantMessage, allow_ask: bool) -> StepOutcome {
+    if allow_ask {
+        if let Some(ask) = msg.tool_calls.iter().find(|tc| tc.name == ASK_TOOL) {
+            return StepOutcome::Yield {
+                request: human_request_from(ask),
+            };
+        }
     }
     if !msg.tool_calls.is_empty() {
         return StepOutcome::Continue {

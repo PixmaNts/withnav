@@ -42,6 +42,37 @@ fn done_body() -> Vec<u8> {
     http_sse(&sse_body(&[done]))
 }
 
+#[tokio::test]
+async fn child_inherits_parent_variant_and_saved_resolution() {
+    let (tmp, ws) = tmp_ws();
+    let state = config(tmp.path(), "http://127.0.0.1:1/v1", Some("high")).state();
+    let parent = state
+        .create_session_with_variant(
+            &ws,
+            Some("default"),
+            None,
+            VariantChoice::Exact("low".into()),
+        )
+        .await
+        .unwrap();
+    let before = state.history().meta(parent).await.unwrap().unwrap();
+    let path = tmp.path().join("models.json");
+    let mut models: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    models["models"]["default"]["context_window"] = json!(256_000);
+    models["models"]["default"]["variants"]["low"] = json!({"reasoning_effort":"high"});
+    std::fs::write(path, models.to_string()).unwrap();
+    let child = state
+        .create_child_session(parent, "explore", "inspect")
+        .await
+        .unwrap();
+    let after = state.history().meta(child).await.unwrap().unwrap();
+    assert_eq!(after.model, before.model);
+    assert_eq!(after.variant.as_deref(), Some("low"));
+    assert_eq!(after.variant_override, before.variant_override);
+    assert_eq!(after.model_resolution, before.model_resolution);
+    state.close_all().await;
+}
+
 // Given an alias with variants and a default
 // When sessions are created without a variant, with one, with `none`, and with an unknown one
 // Then the default, the named one, none and an error are the outcomes, each saved

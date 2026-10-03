@@ -29,7 +29,7 @@
 //! `mpsc::Sender` and [`Sequencer`] are `Clone`), release the lock, THEN
 //! await. clippy's `await_holding_lock` lint enforces this.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -38,7 +38,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
-use super::actor::{build_actor, start_candidate};
+use super::actor::{build_actor, build_child_actor, start_candidate};
 use super::config::SessionConfig;
 use super::hooks::{NoHooks, SessionHooks, StartedSession};
 use super::message::{accept, MessageAccepted};
@@ -64,6 +64,15 @@ use crate::provider::openai::ChatMessage;
 /// A session id on the wire and in the registry.
 pub type SessionId = Ulid;
 
+/// Debug-build seam for deterministic child admission integration tests.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+#[derive(Clone, Debug, Default)]
+pub struct ChildPreparationBarrier {
+    pub reached: Arc<tokio::sync::Notify>,
+    pub release: Arc<tokio::sync::Notify>,
+}
+
 /// Synchronously-readable lifecycle state of a LIVE registry entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lifecycle {
@@ -78,6 +87,8 @@ pub enum Lifecycle {
 /// so no lock is ever held across an await.
 #[derive(Clone)]
 pub struct SessionHandle {
+    pub(crate) publications: Arc<Mutex<Vec<CancellationToken>>>,
+    pub incarnation: Ulid,
     /// Bounded per-actor command transport (message routes post here).
     pub inbox_tx: mpsc::Sender<Command>,
     /// The session's ONE authoritative event sequencer.
@@ -102,6 +113,8 @@ pub struct SessionHandle {
     pub permissions: mpsc::Sender<crate::bus::inbox::PermissionAnswer>,
     /// The runtime's view of its actor: pending `ask`, running turn.
     pub status: Arc<runtime::RuntimeStatus>,
+    /// Owner of this session when it is a background child.
+    pub parent_session_id: Option<SessionId>,
 }
 
 /// The model selection of a live session, as the service sees it: the alias,
@@ -110,6 +123,7 @@ pub struct SessionHandle {
 /// variant of another. A model switch installs all of it under one lock.
 #[derive(Debug, Clone)]
 pub struct SelectedModel {
+    pub(crate) execution: Option<Arc<EffectiveExecution>>,
     pub alias: String,
     /// The saved resolution (identity, window, where the window came from)
     /// the session runs on.
@@ -122,6 +136,17 @@ pub struct SelectedModel {
     /// What the alias offers as variants; replaced when an offer that was
     /// unknown at the start becomes known.
     pub(crate) offer: Arc<resolve::Offer>,
+}
+
+#[derive(Clone)]
+pub(crate) struct EffectiveExecution {
+    pub(crate) resolved: crate::provider::config::ResolvedModel,
+    pub(crate) api_key: String,
+}
+impl std::fmt::Debug for EffectiveExecution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EffectiveExecution { .. }")
+    }
 }
 
 impl SelectedModel {
@@ -156,6 +181,7 @@ impl SessionHandle {
 impl std::fmt::Debug for SessionHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SessionHandle")
+            .field("incarnation", &self.incarnation)
             .field("actor_id", &self.actor_id)
             .field("lifecycle", &self.lifecycle)
             .field("actor_state", &self.actor_state)
@@ -173,6 +199,65 @@ struct ResumedSession {
     compaction: Option<crate::agent::compaction::Compaction>,
 }
 
+struct ChildReservation {
+    slots: Arc<Mutex<HashMap<SessionId, usize>>>,
+    parent: SessionId,
+    committed: bool,
+}
+struct Publication(CancellationToken);
+impl Drop for Publication {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+// Child ids become visible before runtime registration. Publication owns
+// teardown until this guard completes, so lifecycle callers cannot delete
+// durable ownership underneath registration or failed-start cleanup.
+struct ChildOperation {
+    child: SessionId,
+    operations: Arc<Mutex<HashMap<SessionId, CancellationToken>>>,
+    done: CancellationToken,
+}
+impl Drop for ChildOperation {
+    fn drop(&mut self) {
+        self.done.cancel();
+        self.operations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.child);
+    }
+}
+impl Drop for ChildReservation {
+    fn drop(&mut self) {
+        if !self.committed {
+            let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(count) = slots.get_mut(&self.parent) {
+                *count = count.saturating_sub(1);
+            }
+        }
+    }
+}
+
+struct PreparedSession {
+    execution: Arc<EffectiveExecution>,
+    session_id: SessionId,
+    workspace: PathBuf,
+    alias: String,
+    profile: Option<String>,
+    resumed: Option<ResumedSession>,
+    actor: AgentActor,
+    agents: Arc<Agents>,
+    role: Arc<AgentDefinition>,
+    snapshot: crate::provider::catalog::ModelResolution,
+    selected: runtime::SelectedVariant,
+    offered: resolve::Offer,
+    limits: ContextLimits,
+    session_cancel: CancellationToken,
+    expired: Vec<(Ulid, String)>,
+    save_late: bool,
+    child_parent: Option<SessionId>,
+}
+
 /// Frozen `GET /v1/sessions/:id` body.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionSummary {
@@ -185,6 +270,16 @@ pub struct SessionSummary {
     /// The model variant in use; `null` for none.
     pub variant: Option<String>,
     pub current_seq: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_status: Option<String>,
+    #[serde(skip_serializing_if = "is_promptable")]
+    pub promptable: bool,
+}
+
+fn is_promptable(value: &bool) -> bool {
+    *value
 }
 
 /// The session service: the registry plus the immutable config. Cheap to
@@ -202,7 +297,23 @@ pub struct Service {
     /// session id never has two runtimes and is never resumed while it is
     /// being stopped or deleted. One client, so one gate for the service.
     gate: Arc<tokio::sync::Mutex<()>>,
+    pub(super) admission_gate: Arc<tokio::sync::Mutex<()>>,
+    pub(super) subagent_slots: Arc<Mutex<HashMap<SessionId, usize>>>,
+    pub(super) unpublished_children: Arc<Mutex<std::collections::HashSet<SessionId>>>,
+    child_operations: Arc<Mutex<HashMap<SessionId, CancellationToken>>>,
+    #[cfg(debug_assertions)]
+    child_registration_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
+    child_cleanup_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     catalog: crate::provider::catalog::ModelCatalog,
+    #[cfg(debug_assertions)]
+    child_preparation_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
+    child_publication_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
+    resume_registration_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
+    child_start_failure: Arc<Mutex<Option<bool>>>,
     /// Test seam: parks a command run between its work and the publication
     /// of its result, to interleave lifecycle changes deterministically.
     /// Test seam: parks a model switch after its store write and before its
@@ -214,6 +325,92 @@ pub struct Service {
 }
 
 impl Service {
+    pub(super) async fn wait_child_operation(&self, id: SessionId) {
+        let pending = {
+            let _admission = self.admission_gate.lock().await;
+            self.child_operations
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&id)
+                .cloned()
+        };
+        // The publication worker never needs the lifecycle gate, and this
+        // wait must not hold admission while the worker finishes its I/O.
+        if let Some(pending) = pending {
+            pending.cancelled().await;
+        }
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_child_registration(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .child_registration_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_child_cleanup(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .child_cleanup_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn session_has_runtime(&self, id: SessionId) -> bool {
+        self.handle(id).is_some()
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn fail_child_start(&self, publication: bool) {
+        *self
+            .child_start_failure
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(publication);
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_child_preparation(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .child_preparation_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_child_publication(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .child_publication_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn session_is_cancelled(&self, id: SessionId) -> bool {
+        self.handle(id)
+            .is_some_and(|h| h.session_cancel.is_cancelled())
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_resume_registration(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .resume_registration_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn reserved_child_count(&self, parent: SessionId) -> usize {
+        self.subagent_slots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&parent)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// A service without any profile behaviour ([`NoHooks`]). Fails when
     /// the history database cannot be opened.
     pub fn new(config: SessionConfig) -> Result<Self, ServerError> {
@@ -229,6 +426,9 @@ impl Service {
         // No fallback: a conversation that cannot be saved is not served.
         let history =
             super::store::HistoryStore::open(&config.history_db).map_err(ServerError::History)?;
+        let seeded_slots = history
+            .active_child_counts()
+            .map_err(ServerError::History)?;
         let catalog = crate::provider::catalog::ModelCatalog::new(Some(config.data_dir.clone()));
         Ok(Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -236,7 +436,23 @@ impl Service {
             history: Arc::new(history),
             hooks,
             gate: Arc::new(tokio::sync::Mutex::new(())),
+            admission_gate: Arc::new(tokio::sync::Mutex::new(())),
+            subagent_slots: Arc::new(Mutex::new(seeded_slots)),
+            unpublished_children: Arc::default(),
+            child_operations: Arc::default(),
+            #[cfg(debug_assertions)]
+            child_registration_barrier: Arc::default(),
+            #[cfg(debug_assertions)]
+            child_cleanup_barrier: Arc::default(),
             catalog,
+            #[cfg(debug_assertions)]
+            child_preparation_barrier: Arc::default(),
+            #[cfg(debug_assertions)]
+            child_publication_barrier: Arc::default(),
+            #[cfg(debug_assertions)]
+            resume_registration_barrier: Arc::default(),
+            #[cfg(debug_assertions)]
+            child_start_failure: Arc::default(),
             #[cfg(test)]
             install_barrier: Arc::default(),
             #[cfg(test)]
@@ -261,6 +477,400 @@ impl Service {
     /// loop cannot grow it.
     pub fn session_count(&self) -> usize {
         self.lock_sessions().len()
+    }
+
+    /// Builds and registers a fresh background session owned by `parent`.
+    /// It shares discovery inputs and workspace, but not transcript or root
+    /// tools; the caller commits its child link before starting a turn.
+    pub async fn create_child_session(
+        &self,
+        parent: SessionId,
+        agent: &str,
+        prompt: &str,
+    ) -> Result<SessionId, ServerError> {
+        let service = self.clone();
+        let (agent, prompt) = (agent.to_string(), prompt.to_string());
+        tokio::spawn(async move { service.admit_child(parent, &agent, &prompt).await })
+            .await
+            .map_err(|e| ServerError::History(e.to_string()))?
+    }
+
+    async fn child_admission<'a>(
+        &'a self,
+        cancel: &CancellationToken,
+    ) -> Result<tokio::sync::MutexGuard<'a, ()>, ServerError> {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(ServerError::SessionStopping),
+            guard = self.admission_gate.lock() => Ok(guard),
+        }
+    }
+
+    async fn admit_child(
+        &self,
+        parent: SessionId,
+        agent: &str,
+        prompt: &str,
+    ) -> Result<SessionId, ServerError> {
+        let parent_handle = self.routable_handle(parent).await?;
+        if parent_handle.parent_session_id.is_some() {
+            return Err(ServerError::ChildReadOnly);
+        }
+        let parent_role = parent_handle.status.selection.current();
+        let agents = self
+            .load_agents(&parent_handle.workspace, parent, false)
+            .await;
+        let definition = agents
+            .get(agent)
+            .filter(|d| d.mode.is_subagent())
+            .cloned()
+            .ok_or_else(|| ServerError::UnknownAgent {
+                agent: agent.to_string(),
+                available: agents
+                    .all()
+                    .filter(|d| d.mode.is_subagent())
+                    .map(|d| d.id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            })?;
+        let cap = crate::settings::load(&self.config.config_dir)
+            .map_err(|e| ServerError::SubagentSettings(e.to_string()))?
+            .subagents_max_concurrent()
+            .map_err(ServerError::SubagentSettings)?;
+        let _spawn_lock = self.child_admission(&parent_handle.session_cancel).await?;
+        let parent_handle = self.routable_handle(parent).await?;
+        {
+            let mut slots = self
+                .subagent_slots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let current = slots.get(&parent).copied().unwrap_or(0);
+            if current >= cap {
+                return Err(ServerError::SubagentCapacity { capacity: cap });
+            }
+            slots.insert(parent, current + 1);
+        }
+        // Concurrent calls in this process reserve capacity atomically; the
+        // persistent active count includes children from other processes.
+        let inherited = parent_handle.selected();
+        let parent_alias = inherited.alias.clone();
+        let alias = definition.model.as_deref().unwrap_or(&parent_alias);
+        let mut policy = BTreeMap::new();
+        policy.insert("read".into(), true);
+        for tool in ["grep", "glob", "fetch", "skill"] {
+            policy.insert(tool.into(), true);
+        }
+        let mut allowed = BTreeMap::new();
+        // A plan-owned child inherits plan's no-write capability ceiling even
+        // when its definition is full-access. We use the stricter capability
+        // ceiling rather than duplicating the advisory parent role guard: the
+        // child has no write/edit/bash dispatch path, so it cannot launder
+        // writes past the plan parent's restriction.
+        for tool in [
+            "read", "write", "edit", "bash", "grep", "glob", "fetch", "skill", "ask", "task",
+        ] {
+            let enabled = child_tool_allowed(tool, &definition, &parent_role);
+            policy.insert(tool.to_string(), enabled);
+            allowed.insert(tool.to_string(), enabled);
+        }
+        let incarnation = parent_handle.incarnation;
+        drop(_spawn_lock);
+        let reservation = ChildReservation {
+            slots: self.subagent_slots.clone(),
+            parent,
+            committed: false,
+        };
+        let prepared = self
+            .prepare_session_kind(
+                &parent_handle.workspace,
+                Some(alias),
+                None,
+                Some(agent),
+                None,
+                &parent_handle.workspace,
+                &VariantChoice::Default,
+                Some((
+                    allowed,
+                    definition.access == crate::agent::definitions::AgentAccess::ReadOnly
+                        || parent_role.access == crate::agent::definitions::AgentAccess::ReadOnly,
+                )),
+                Some(parent),
+                definition.model.is_none().then_some(inherited),
+            )
+            .await;
+        let prepared = prepared?;
+        #[cfg(debug_assertions)]
+        {
+            let barrier = self
+                .child_preparation_barrier
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(barrier) = barrier {
+                barrier.reached.notify_one();
+                barrier.release.notified().await;
+            }
+        }
+        let _admission = self.child_admission(&parent_handle.session_cancel).await?;
+        let current = self.routable_handle(parent).await?;
+        if current.incarnation != incarnation || current.session_cancel.is_cancelled() {
+            return Err(ServerError::SessionStopping);
+        }
+        let publication = CancellationToken::new();
+        {
+            let mut pending = current
+                .publications
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            pending.retain(|token| !token.is_cancelled());
+            pending.push(publication.clone());
+        }
+        let _publication = Publication(publication);
+        let child = prepared.session_id;
+        let done = CancellationToken::new();
+        self.child_operations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(child, done.clone());
+        let _child_operation = ChildOperation {
+            child,
+            operations: self.child_operations.clone(),
+            done,
+        };
+        drop(_admission);
+        #[cfg(debug_assertions)]
+        {
+            let barrier = self
+                .child_publication_barrier
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(barrier) = barrier {
+                barrier.reached.notify_one();
+                barrier.release.notified().await;
+            }
+        }
+        if parent_handle.session_cancel.is_cancelled() {
+            return Err(ServerError::SessionStopping);
+        }
+        let child = prepared.session_id;
+        self.unpublished_children
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(child);
+        if let Err(error) = self.store_prepared(&prepared).await {
+            self.unpublished_children
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&child);
+            return Err(error);
+        }
+        let frozen = serde_json::to_string(&policy).unwrap_or_else(|_| "{}".into());
+        let spawned_payload = serde_json::to_value(crate::bus::event::SubagentSpawned {
+            parent_session_id: parent,
+            child_session_id: child,
+            agent: agent.to_string(),
+            goal: crate::tools::bound_output(prompt, 1024).0,
+            tool_call_id: "server".into(),
+        })
+        .map_err(|e| ServerError::History(e.to_string()))?;
+        let history = self.history.clone();
+        let agent = agent.to_string();
+        let goal = prompt.to_string();
+        let cancel = parent_handle.session_cancel.clone();
+        if let Err(error) = parent_handle
+            .sequencer
+            .commit_acked(
+                Candidate::new(EventKind::SubagentSpawned, spawned_payload.clone()),
+                Box::new(move |envelope| {
+                    Box::pin(async move {
+                        if cancel.is_cancelled() {
+                            return Err("parent cancelled before child commit".into());
+                        }
+                        history
+                            .create_child_link(child, agent, goal, frozen, cap, envelope)
+                            .await
+                    })
+                }),
+            )
+            .await
+        {
+            self.history
+                .delete(child)
+                .await
+                .map_err(ServerError::History)?;
+            self.unpublished_children
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&child);
+            return Err(ServerError::History(error));
+        }
+        let mut reservation = reservation;
+        reservation.committed = true;
+        #[cfg(debug_assertions)]
+        {
+            let barrier = self
+                .child_registration_barrier
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(barrier) = barrier {
+                barrier.reached.notify_one();
+                barrier.release.notified().await;
+            }
+        }
+        let start = async {
+            #[cfg(debug_assertions)]
+            if self
+                .child_start_failure
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                == Some(&true)
+            {
+                self.child_start_failure
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                return Err(ServerError::History(
+                    "injected child publication failure".into(),
+                ));
+            }
+            self.publish_session(prepared).await?;
+            if parent_handle.session_cancel.is_cancelled() {
+                return Err(ServerError::SessionStopping);
+            }
+            if let Some(handle) = self.handle(child) {
+                handle
+                    .sequencer
+                    .publish_acked(Candidate::new(EventKind::SubagentSpawned, spawned_payload))
+                    .await
+                    .map_err(|e| ServerError::History(e.to_string()))?;
+                #[cfg(debug_assertions)]
+                if self
+                    .child_start_failure
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                    == Some(false)
+                {
+                    return Err(ServerError::History("injected child start failure".into()));
+                }
+                accept(&handle, Command::child_prompt(child, prompt.to_string())).await?;
+            } else {
+                return Err(ServerError::SessionStopping);
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(error) = start {
+            if let Some(handle) = self.mark_stopping(child) {
+                #[cfg(debug_assertions)]
+                {
+                    let barrier = self
+                        .child_cleanup_barrier
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take();
+                    if let Some(barrier) = barrier {
+                        barrier.reached.notify_one();
+                        barrier.release.notified().await;
+                    }
+                }
+                self.fence_and_remove(child, handle, "child start failed")
+                    .await;
+            }
+            self.finish_child(
+                parent,
+                child,
+                "failed",
+                Some(error.to_string()),
+                String::new(),
+            )
+            .await?;
+            self.unpublished_children
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&child);
+            return Err(error);
+        }
+        self.unpublished_children
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&child);
+        Ok(child)
+    }
+
+    pub async fn child_metadata(
+        &self,
+        id: SessionId,
+    ) -> Result<Option<super::store::ChildLink>, ServerError> {
+        self.history
+            .child_link(id)
+            .await
+            .map_err(ServerError::History)
+    }
+
+    pub(super) async fn finish_child(
+        &self,
+        parent: SessionId,
+        child: SessionId,
+        status: &str,
+        reason: Option<String>,
+        result: String,
+    ) -> Result<(), ServerError> {
+        if self
+            .history
+            .finish_child_link(child, status.to_string(), reason, result)
+            .await
+            .map_err(ServerError::History)?
+            .is_some()
+        {
+            self.release_child_slot(parent);
+        }
+        self.drain_completions(parent).await;
+        Ok(())
+    }
+
+    async fn drain_completions(&self, parent: SessionId) {
+        let Some(owner) = self.handle(parent) else {
+            return;
+        };
+        let pending = match self.history.pending_completions(parent).await {
+            Ok(pending) => pending,
+            Err(error) => {
+                tracing::error!(%error, "completion outbox read failed");
+                return;
+            }
+        };
+        for (child, payload) in pending {
+            let history = self.history.clone();
+            if let Err(error) = owner
+                .sequencer
+                .commit_acked(
+                    Candidate::new(EventKind::SubagentDone, payload),
+                    Box::new(move |envelope| {
+                        Box::pin(async move { history.deliver_completion(child, envelope).await })
+                    }),
+                )
+                .await
+            {
+                if error != "completion already delivered" {
+                    tracing::debug!(%error, "completion retained for parent resume");
+                    break;
+                }
+            }
+        }
+    }
+
+    fn release_child_slot(&self, parent: SessionId) {
+        let mut slots = self
+            .subagent_slots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(count) = slots.get_mut(&parent) {
+            *count = count.saturating_sub(1);
+        }
     }
 
     /// A clone of the session's handle, for routing without holding the
@@ -303,6 +913,9 @@ impl Service {
     /// the command reaches the inbox, and only for an accepted command.
     pub async fn send(&self, command: Command) -> Result<MessageAccepted, ServerError> {
         let handle = self.routable_handle(command.session_id).await?;
+        if handle.parent_session_id.is_some() {
+            return Err(ServerError::ChildReadOnly);
+        }
         accept(&handle, command).await
     }
 
@@ -346,6 +959,9 @@ impl Service {
         decision: crate::agent::permissions::PermissionDecision,
     ) -> Result<(), ServerError> {
         let handle = self.routable_handle(session_id).await?;
+        if handle.parent_session_id.is_some() {
+            return Err(ServerError::ChildReadOnly);
+        }
         // Claimed at admission: a second answer for the same request is
         // refused at once, not after the resumed turn.
         if !handle.status.claim_permission(request_id) {
@@ -466,6 +1082,15 @@ impl Service {
         resume: Option<SessionId>,
     ) -> Result<(SessionId, bool), ServerError> {
         if let Some(id) = resume {
+            if self
+                .history
+                .child_link(id)
+                .await
+                .map_err(ServerError::History)?
+                .is_some()
+            {
+                return Err(ServerError::ChildReadOnly);
+            }
             // A resume waits for any stop or delete of this id to finish,
             // and holds the gate until the new runtime is registered.
             let _gate = self.lifecycle_gate().await;
@@ -534,7 +1159,18 @@ impl Service {
         // Clone out of the guard; the head query below is a plain sequencer
         // round-trip (the manager reads no events).
         let Some(handle) = self.handle(id) else {
-            return self.stored_summary(id).await;
+            let mut summary = self.stored_summary(id).await?;
+            if let Some(link) = self
+                .history
+                .child_link(id)
+                .await
+                .map_err(ServerError::History)?
+            {
+                summary.parent_session_id = Some(link.parent_id.to_string());
+                summary.child_status = Some(link.status);
+                summary.promptable = false;
+            }
+            return Ok(summary);
         };
         let current_seq = handle
             .sequencer
@@ -551,6 +1187,17 @@ impl Service {
             model: selected.alias,
             agent: handle.status.selection.current().id.to_string(),
             current_seq,
+            parent_session_id: handle.parent_session_id.map(|id| id.to_string()),
+            child_status: if handle.parent_session_id.is_some() {
+                self.history
+                    .child_link(id)
+                    .await
+                    .map_err(ServerError::History)?
+                    .map(|link| link.status)
+            } else {
+                None
+            },
+            promptable: handle.parent_session_id.is_none(),
         })
     }
 
@@ -573,6 +1220,9 @@ impl Service {
                 .unwrap_or_else(|| AgentId::build().to_string()),
             variant: meta.variant,
             current_seq: meta.last_seq,
+            parent_session_id: None,
+            child_status: None,
+            promptable: true,
         })
     }
 
@@ -699,6 +1349,67 @@ impl Service {
         resume_workspace: &Path,
         variant: &VariantChoice,
     ) -> Result<SessionId, ServerError> {
+        self.spawn_session_kind(
+            workspace,
+            model,
+            profile,
+            agent,
+            resumed,
+            resume_workspace,
+            variant,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn spawn_session_kind(
+        &self,
+        workspace: &Path,
+        model: Option<&str>,
+        profile: Option<&str>,
+        agent: Option<&str>,
+        resumed: Option<ResumedSession>,
+        resume_workspace: &Path,
+        variant: &VariantChoice,
+        child_policy: Option<(BTreeMap<String, bool>, bool)>,
+        child_parent: Option<SessionId>,
+        inherited: Option<SelectedModel>,
+    ) -> Result<SessionId, ServerError> {
+        let prepared = self
+            .prepare_session_kind(
+                workspace,
+                model,
+                profile,
+                agent,
+                resumed,
+                resume_workspace,
+                variant,
+                child_policy,
+                child_parent,
+                inherited,
+            )
+            .await?;
+        self.store_prepared(&prepared).await?;
+        self.publish_session(prepared).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare_session_kind(
+        &self,
+        workspace: &Path,
+        model: Option<&str>,
+        profile: Option<&str>,
+        agent: Option<&str>,
+        resumed: Option<ResumedSession>,
+        resume_workspace: &Path,
+        variant: &VariantChoice,
+        child_policy: Option<(BTreeMap<String, bool>, bool)>,
+        child_parent: Option<SessionId>,
+        inherited: Option<SelectedModel>,
+    ) -> Result<PreparedSession, ServerError> {
         // Resume keeps the stored model/profile/workspace (the stored row is
         // the authority); a fresh session honors the request's.
         let session_id = match &resumed {
@@ -726,15 +1437,55 @@ impl Service {
         let agents = self
             .load_agents(&workspace, session_id, resumed.is_some())
             .await;
-        let role = Self::pick_agent(&agents, session_id, agent, resumed.as_ref())?;
-        let (resolved, api_key, snapshot, save_late, models_file) = self
-            .resolve_for_spawn(session_id, resume_workspace, &alias, resumed.as_ref())
-            .await?;
+        let role = if child_parent.is_some() {
+            let wanted = agent.unwrap_or_default();
+            agents
+                .get(wanted)
+                .filter(|definition| definition.mode.is_subagent())
+                .cloned()
+                .ok_or_else(|| ServerError::UnknownAgent {
+                    agent: wanted.to_string(),
+                    available: agents
+                        .all()
+                        .filter(|definition| definition.mode.is_subagent())
+                        .map(|definition| definition.id.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                })?
+        } else {
+            Self::pick_agent(&agents, session_id, agent, resumed.as_ref())?
+        };
+        let (resolved, api_key, snapshot, save_late, models_file) =
+            if let Some(selection) = &inherited {
+                let execution = selection
+                    .execution
+                    .as_ref()
+                    .expect("live parent has execution configuration");
+                let resolved = execution.resolved.clone();
+                let models_file = self
+                    .config
+                    .models_path
+                    .clone()
+                    .unwrap_or_else(|| resume_workspace.join("models.json"));
+                let snapshot = selection
+                    .resolution
+                    .as_ref()
+                    .expect("live parent has a resolution")
+                    .as_ref()
+                    .clone();
+                let api_key = execution.api_key.clone();
+                (resolved, api_key, snapshot, false, models_file)
+            } else {
+                self.resolve_for_spawn(session_id, resume_workspace, &alias, resumed.as_ref())
+                    .await?
+            };
         // A resume keeps the variant the row saved; a fresh session takes the
         // request's choice. Either way it is checked against what the alias
         // offers now, before anything is written.
-        let (selected, offered) = self
-            .select_variant(
+        let (selected, offered) = if let Some(selection) = &inherited {
+            (selection.variant.clone(), (*selection.offer).clone())
+        } else {
+            self.select_variant(
                 session_id,
                 &alias,
                 &resolved,
@@ -752,7 +1503,8 @@ impl Service {
                     None => VariantStart::Choice(variant),
                 },
             )
-            .await?;
+            .await?
+        };
         // A resume with a readable offer keeps the saved override current
         // with the definition it now has.
         if let (Some(loaded), Some(chosen)) = (&resumed, &selected) {
@@ -775,13 +1527,38 @@ impl Service {
             reason: e.to_string(),
         })?;
         let session_cancel = CancellationToken::new();
-        let mut actor = build_actor(
-            &workspace,
-            &self.config.config_dir,
-            resolved,
-            api_key,
-            session_cancel.child_token(),
-        );
+        let execution = Arc::new(EffectiveExecution {
+            resolved: resolved.clone(),
+            api_key: api_key.clone(),
+        });
+        let root_tools_enabled =
+            child_policy.is_none() && profile.is_none() && role.mode.is_primary();
+        let mut actor = match &child_policy {
+            Some((allowed, read_only)) => build_child_actor(
+                &workspace,
+                &self.config.config_dir,
+                resolved,
+                api_key,
+                session_cancel.child_token(),
+                allowed.clone(),
+                *read_only,
+            ),
+            None => build_actor(
+                &workspace,
+                &self.config.config_dir,
+                resolved,
+                api_key,
+                session_cancel.child_token(),
+            ),
+        };
+        if root_tools_enabled && role.mode.is_primary() {
+            actor
+                .registry
+                .register(Box::new(crate::tools::task::TaskTool::new(
+                    self.clone(),
+                    session_id,
+                )));
+        }
         if let Some(loaded) = &resumed {
             actor.transcript = loaded.transcript.clone();
             actor.compaction = loaded.compaction.clone();
@@ -813,6 +1590,11 @@ impl Service {
             &self.config.config_dir,
         );
         self.hooks.configure_actor(profile, &mut actor);
+        if let Some((allowed, _)) = &child_policy {
+            actor
+                .registry
+                .retain(|name| allowed.get(name).copied().unwrap_or(false));
+        }
         // A permission request does not outlive the process that asked it:
         // its calls are settled as interrupted and never run again.
         let expired = match &resumed {
@@ -824,10 +1606,85 @@ impl Service {
             None => Vec::new(),
         };
 
+        Ok(PreparedSession {
+            execution,
+            session_id,
+            workspace,
+            alias,
+            profile: profile.map(str::to_string),
+            resumed,
+            actor,
+            agents,
+            role,
+            snapshot,
+            selected,
+            offered,
+            limits,
+            session_cancel,
+            expired,
+            save_late,
+            child_parent,
+        })
+    }
+
+    async fn store_prepared(&self, prepared: &PreparedSession) -> Result<(), ServerError> {
+        self.history
+            .record_session_resolved(
+                prepared.session_id,
+                &prepared.workspace.display().to_string(),
+                &prepared.alias,
+                prepared.profile.as_deref(),
+                Some(&prepared.snapshot),
+                prepared.selected.as_ref(),
+                (prepared.resumed.is_none() && !prepared.role.id.is_build())
+                    .then(|| prepared.role.id.as_str()),
+            )
+            .await
+            .map_err(ServerError::History)?;
+        if prepared.save_late {
+            self.save_legacy_snapshot(prepared.session_id, &prepared.snapshot)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn publish_session(&self, prepared: PreparedSession) -> Result<SessionId, ServerError> {
+        let PreparedSession {
+            execution,
+            session_id,
+            workspace,
+            alias,
+            profile,
+            resumed,
+            mut actor,
+            agents,
+            role,
+            snapshot,
+            selected,
+            offered,
+            limits,
+            session_cancel,
+            expired,
+            save_late: _,
+            child_parent,
+        } = prepared;
+        let profile = profile.as_deref();
         let next_seq = resumed
             .as_ref()
             .map(|loaded| loaded.meta.last_seq + 1)
             .unwrap_or(0);
+        #[cfg(debug_assertions)]
+        if resumed.is_some() {
+            let barrier = self
+                .resume_registration_barrier
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(barrier) = barrier {
+                barrier.reached.notify_one();
+                barrier.release.notified().await;
+            }
+        }
         // The in-memory ring starts empty on resume: subscribers replay from
         // the store, and the ring is only a bounded fallback cache.
         let bus = SessionBus::default();
@@ -836,23 +1693,11 @@ impl Service {
         // History hooks: a persisting emitter + a turn-end transcript
         // snapshot.
         let history = self.history.clone();
-        // Acknowledged: a session whose row cannot be written would
-        // silently lose every later event and snapshot.
-        history
-            .record_session_resolved(
-                session_id,
-                &workspace.display().to_string(),
-                &alias,
-                profile,
-                Some(&snapshot),
-                selected.as_ref(),
-                // Written with the row: a resumed row already has its agent.
-                (!is_resume && !role.id.is_build()).then(|| role.id.as_str()),
-            )
-            .await
-            .map_err(ServerError::History)?;
-        if save_late {
-            self.save_legacy_snapshot(session_id, &snapshot).await?;
+        if child_parent.is_some() {
+            self.unpublished_children
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(session_id);
         }
         let sequencer = Sequencer::spawn(
             session_id,
@@ -883,6 +1728,35 @@ impl Service {
             Some(Box::new(move |transcript: &[ChatMessage]| {
                 history.save_transcript(session_id, transcript.to_vec());
             }));
+        let completion: Option<crate::bus::runtime::CompletionHook> =
+            if let Some(parent) = child_parent {
+                let service = self.clone();
+                Some(Box::new(move |message, outcome| {
+                    use crate::bus::runtime::CompletionOutcome;
+                    let status = match outcome {
+                        CompletionOutcome::Done => "done",
+                        CompletionOutcome::Failed => "failed",
+                        CompletionOutcome::Stopped => "stopped",
+                        CompletionOutcome::Parked => return,
+                    };
+                    let service = service.clone();
+                    tokio::spawn(async move {
+                        let result = message.text.clone();
+                        let (text, _) = crate::tools::bound_output(&result, 16 * 1024);
+                        let _ = service
+                            .finish_child(
+                                parent,
+                                session_id,
+                                status,
+                                (outcome != CompletionOutcome::Done).then(|| result.clone()),
+                                text,
+                            )
+                            .await;
+                    });
+                }))
+            } else {
+                None
+            };
         let status = Arc::new(runtime::RuntimeStatus::with_selection(AgentSelection::new(
             agents, role,
         )));
@@ -910,6 +1784,7 @@ impl Service {
             1
         };
         let selected_model = Arc::new(Mutex::new(SelectedModel {
+            execution: Some(execution),
             alias: alias.clone(),
             resolution: Some(Arc::new(snapshot.clone())),
             revision,
@@ -929,7 +1804,7 @@ impl Service {
             ContextTracker::new(limits, actor.context_breakdown()),
             actor.system_prompt.clone(),
         );
-        let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn_with_status(
+        let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn_with_completion(
             session_id,
             actor,
             inbox,
@@ -937,9 +1812,12 @@ impl Service {
             session_cancel.clone(),
             on_turn_end,
             status.clone(),
+            completion,
         ))));
 
         let handle = SessionHandle {
+            publications: Arc::default(),
+            incarnation: Ulid::new(),
             inbox_tx,
             permissions,
             sequencer,
@@ -951,26 +1829,106 @@ impl Service {
             workspace: workspace.clone(),
             selected: selected_model,
             status,
+            parent_session_id: child_parent,
         };
         let sender = SessionSender::new(session_id, handle.clone());
         let cancel = handle.session_cancel.clone();
-        self.lock_sessions().insert(session_id, handle);
+        {
+            let _admission = if child_parent.is_none() {
+                Some(self.admission_gate.lock().await)
+            } else {
+                None
+            };
+            self.lock_sessions().insert(session_id, handle);
+        }
+        if child_parent.is_none() {
+            self.drain_completions(session_id).await;
+        }
         // The host learns of the session once it is routable. A session
         // already closing hands back a subscription that ends at once.
-        if let Ok(subscription) = self.subscribe(session_id, None).await {
-            self.hooks.started(
-                StartedSession {
-                    id: session_id,
-                    profile: profile.map(str::to_string),
-                    workspace,
-                    resumed: is_resume,
-                },
-                sender,
-                subscription,
-                cancel,
-            );
+        if child_parent.is_none() {
+            if let Ok(subscription) = self.subscribe(session_id, None).await {
+                self.hooks.started(
+                    StartedSession {
+                        id: session_id,
+                        profile: profile.map(str::to_string),
+                        workspace,
+                        resumed: is_resume,
+                    },
+                    sender,
+                    subscription,
+                    cancel,
+                );
+            }
         }
         Ok(session_id)
+    }
+}
+
+fn child_tool_allowed(tool: &str, child: &AgentDefinition, parent: &AgentDefinition) -> bool {
+    let declared = child.tools.get(tool).copied().unwrap_or(true);
+    let write_capability = matches!(tool, "write" | "edit" | "bash");
+    let parent_ceiling = !write_capability
+        || (parent.access != crate::agent::definitions::AgentAccess::ReadOnly
+            && parent.id.as_str() != crate::agent::definitions::PLAN);
+    let child_access =
+        !write_capability || child.access != crate::agent::definitions::AgentAccess::ReadOnly;
+    declared
+        && parent.tools.get(tool).copied().unwrap_or(true)
+        && parent_ceiling
+        && child_access
+        && !matches!(tool, "ask" | "task")
+}
+
+#[cfg(test)]
+mod child_policy_tests {
+    use super::*;
+    use crate::agent::definitions::{AgentAccess, AgentId, AgentMode, AgentSource};
+
+    fn definition(access: AgentAccess, tools: &[(&str, bool)]) -> AgentDefinition {
+        AgentDefinition {
+            id: AgentId::parse("agent").unwrap(),
+            description: String::new(),
+            mode: AgentMode::All,
+            prompt: String::new(),
+            model: None,
+            tools: tools
+                .iter()
+                .map(|(name, allowed)| ((*name).to_string(), *allowed))
+                .collect(),
+            access,
+            source: AgentSource::Builtin,
+            extra: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn child_tool_policy_is_intersected_with_definition_and_parent_ceiling() {
+        let child = definition(
+            AgentAccess::Full,
+            &[("read", false), ("grep", false), ("write", true)],
+        );
+        let build = definition(AgentAccess::Full, &[]);
+        let plan = AgentDefinition {
+            id: AgentId::parse("plan").unwrap(),
+            ..build.clone()
+        };
+        let readonly_parent = definition(AgentAccess::ReadOnly, &[]);
+        let readonly_child = definition(AgentAccess::ReadOnly, &[]);
+        for (tool, child, parent, expected) in [
+            ("read", &child, &build, false),
+            ("grep", &child, &build, false),
+            ("glob", &child, &build, true),
+            ("write", &child, &build, true),
+            ("write", &child, &readonly_parent, false),
+            ("bash", &child, &plan, false),
+            ("edit", &readonly_child, &build, false),
+            ("fetch", &readonly_child, &build, true),
+            ("ask", &build, &build, false),
+            ("task", &build, &build, false),
+        ] {
+            assert_eq!(child_tool_allowed(tool, child, parent), expected, "{tool}");
+        }
     }
 }
 

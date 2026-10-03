@@ -336,6 +336,16 @@ pub struct SessionListEntry {
     pub agent: String,
     /// True when a live, active session with this id exists in this process.
     pub live: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_status: Option<String>,
+    #[serde(skip_serializing_if = "is_promptable")]
+    pub promptable: bool,
+}
+
+fn is_promptable(value: &bool) -> bool {
+    *value
 }
 
 #[derive(Debug, Serialize)]
@@ -366,6 +376,9 @@ async fn list_sessions(
                     message_count: row.message_count,
                     agent: row.agent,
                     live: row.live,
+                    parent_session_id: row.parent_session_id,
+                    child_status: row.child_status,
+                    promptable: row.promptable,
                 })
                 .collect();
             (StatusCode::OK, Json(SessionListBody { sessions })).into_response()
@@ -708,6 +721,9 @@ async fn stop_session(State(state): State<AppState>, Path(id): Path<String>) -> 
 /// body; every other failure shares `{"error": ...}`.
 pub(crate) fn error_response(err: ServerError) -> Response {
     let status = match &err {
+        ServerError::ChildReadOnly => StatusCode::FORBIDDEN,
+        ServerError::SubagentCapacity { .. } => StatusCode::TOO_MANY_REQUESTS,
+        ServerError::SubagentSettings(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::SessionNotFound(_) => StatusCode::NOT_FOUND,
         ServerError::SessionStopping
         | ServerError::ResumeRequired
@@ -741,6 +757,20 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         return (
             status,
             Json(json!({ "error": err.to_string(), "reason": "resume_required" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::ChildReadOnly) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "child_read_only" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::SubagentCapacity { .. }) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "subagent_capacity" })),
         )
             .into_response();
     }

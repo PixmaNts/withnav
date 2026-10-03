@@ -478,6 +478,22 @@ impl Service {
                     let mut guard = lock(&selected);
                     install();
                     guard.alias = target.alias.clone();
+                    if let Some(execution) = &guard.execution {
+                        let mut resolved = execution.resolved.clone();
+                        resolved.alias = target.alias.clone();
+                        resolved.provider_name = target.resolution.provider.clone();
+                        resolved.provider = target.provider.clone();
+                        resolved.model.model = target.model.clone();
+                        resolved.model.reasoning_history = target.reasoning_history;
+                        resolved.model.max_output_tokens = target.max_tokens;
+                        resolved.model.context_window =
+                            Some(target.resolution.bounds.context_window);
+                        resolved.model.max_input_tokens = target.resolution.bounds.max_input_tokens;
+                        guard.execution = Some(Arc::new(super::EffectiveExecution {
+                            resolved,
+                            api_key: target.api_key.clone(),
+                        }));
+                    }
                     guard.resolution = Some(Arc::new(target.resolution.clone()));
                     guard.revision = revision;
                     guard.variant = target.variant.clone();

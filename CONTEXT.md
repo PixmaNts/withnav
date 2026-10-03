@@ -72,8 +72,11 @@ _Avoid_: profile (a profile is the kind of session, such as the navigator)
 
 **Subagent**:
 An agent definition whose mode is `subagent` or `all`, meant to be given a task by another agent
-(`explore` and `review` are built in and read-only). The definitions exist and load; **a subagent
-cannot be started yet**, so only primary agents run today.
+(`explore` and `review` are built in and read-only). A cognition session may start one through
+`task(agent, prompt)` as a real, non-promptable child session. It has an independent transcript, an
+intersected snapshot of the parent's policy, a durable parent-child link, and bounded terminal
+result. `subagent.spawned` and `subagent.done` are replayable events. Delivery into the parent's
+transcript, idle wake, and parent-routed permissions are separate follow-up work.
 _Avoid_: worker, child agent
 
 ## Models and commands

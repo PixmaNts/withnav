@@ -80,7 +80,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use tokio::sync::oneshot;
 use ulid::Ulid;
 
@@ -126,6 +126,21 @@ pub struct LoadedSession {
     pub transcript: Vec<ChatMessage>,
     /// The installed compaction, validated against `transcript`.
     pub compaction: Option<Compaction>,
+}
+
+/// Durable ownership and completion metadata for one background child.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ChildLink {
+    pub parent_id: Ulid,
+    pub child_id: Ulid,
+    pub agent: String,
+    pub goal: String,
+    pub policy_snapshot: String,
+    pub status: String,
+    pub created_at: String,
+    pub terminal_at: Option<String>,
+    pub terminal_reason: Option<String>,
+    pub result_text: Option<String>,
 }
 
 /// The result channel of an acknowledged write.
@@ -288,6 +303,167 @@ impl HistoryStore {
             .send(Msg::Flush(reply))
             .map_err(|_| WRITER_GONE.to_string())?;
         outcome.await.map_err(|_| WRITER_GONE.to_string())?
+    }
+
+    /// Commits the parent/child relationship after both sessions are stored.
+    pub async fn create_child_link(
+        &self,
+        child_id: Ulid,
+        agent: String,
+        goal: String,
+        policy_snapshot: String,
+        capacity: usize,
+        envelope: EventEnvelope,
+    ) -> Result<(), String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let parent_id = envelope.session_id;
+            let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            let inserted = tx.execute(
+                "INSERT INTO child_links (parent_id, child_id, agent, goal, policy_snapshot, status, created_at)
+                 SELECT ?1, ?2, ?3, ?4, ?5, 'running', ?6
+                 WHERE (SELECT COUNT(*) FROM child_links WHERE parent_id=?1 AND status IN ('starting','running')) < ?7
+                   AND EXISTS(SELECT 1 FROM sessions WHERE id=?1)
+                   AND EXISTS(SELECT 1 FROM sessions WHERE id=?2)",
+                params![parent_id.to_string(), child_id.to_string(), agent, goal,
+                    policy_snapshot, now_rfc3339(), capacity as i64],
+            ).map_err(|e| e.to_string())?;
+            if inserted == 0 { return Err("subagent capacity reached or parent/child session is missing".into()); }
+            insert_committed_event(&tx, &envelope)?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(())
+        }).await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn active_child_count(&self, parent_id: Ulid) -> Result<usize, String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            let count: i64 = conn.query_row("SELECT COUNT(*) FROM child_links WHERE parent_id=?1 AND status IN ('starting','running')", [parent_id.to_string()], |row| row.get(0)).map_err(|e| e.to_string())?;
+            usize::try_from(count).map_err(|e| e.to_string())
+        }).await.map_err(|e| e.to_string())?
+    }
+
+    pub fn active_child_counts(&self) -> Result<std::collections::HashMap<Ulid, usize>, String> {
+        let conn = Connection::open(&*self.path).map_err(|e| e.to_string())?;
+        let mut statement = conn.prepare("SELECT parent_id, COUNT(*) FROM child_links WHERE status IN ('starting','running') GROUP BY parent_id").map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.map(|row| {
+            let (id, count) = row.map_err(|e| e.to_string())?;
+            Ok((
+                id.parse().map_err(|e| format!("parent id: {e}"))?,
+                usize::try_from(count).map_err(|e| e.to_string())?,
+            ))
+        })
+        .collect()
+    }
+
+    /// Performs the single terminal compare-and-set for a child. Only the
+    /// first completion wins, together with its pending completion notice.
+    pub async fn finish_child_link(
+        &self,
+        child_id: Ulid,
+        status: String,
+        reason: Option<String>,
+        result: String,
+    ) -> Result<Option<ChildLink>, String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            let terminal_at = now_rfc3339();
+            let changed = tx.execute(
+                "UPDATE child_links SET status=?2, terminal_at=?3, terminal_reason=?4, result_text=?5
+                 WHERE child_id=?1 AND status='running'",
+                params![child_id.to_string(), status, terminal_at, reason, result],
+            ).map_err(|e| e.to_string())?;
+            if changed == 0 { tx.rollback().map_err(|e| e.to_string())?; return Ok(None); }
+            let row = tx.query_row(
+                "SELECT parent_id, child_id, agent, goal, policy_snapshot, status, created_at, terminal_at, terminal_reason, result_text
+                 FROM child_links WHERE child_id=?1",
+                [child_id.to_string()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?, row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?, row.get::<_, Option<String>>(9)?)),
+            ).map_err(|e| e.to_string())?;
+            let outcome = match status.as_str() {
+                "done" => crate::bus::event::SubagentOutcome::Done,
+                "failed" => crate::bus::event::SubagentOutcome::Failed,
+                _ => crate::bus::event::SubagentOutcome::Stopped,
+            };
+            let payload = serde_json::to_string(&crate::bus::event::SubagentDone {
+                parent_session_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
+                child_session_id: child_id, agent: row.2.clone(), outcome,
+                reason: reason.clone(), notification_id: Ulid::new(),
+            }).map_err(|e| e.to_string())?;
+            tx.execute("INSERT INTO completion_outbox (child_id, parent_id, outcome, result_ref, payload) VALUES (?1, ?2, ?3, ?1, ?4)",
+                params![child_id.to_string(), row.0, status, payload]).map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(Some(ChildLink {
+                parent_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
+                child_id: row.1.parse().map_err(|e| format!("child id: {e}"))?,
+                agent: row.2, goal: row.3, policy_snapshot: row.4, status: row.5,
+                created_at: row.6, terminal_at: row.7, terminal_reason: row.8, result_text: row.9,
+            }))
+        }).await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn child_link(&self, child_id: Ulid) -> Result<Option<ChildLink>, String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            conn.query_row(
+                "SELECT parent_id, child_id, agent, goal, policy_snapshot, status, created_at, terminal_at, terminal_reason, result_text
+                 FROM child_links WHERE child_id=?1", [child_id.to_string()], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?, row.get::<_, Option<String>>(8)?,
+                        row.get::<_, Option<String>>(9)?))
+                }
+            ).optional().map_err(|e| e.to_string())?.map(|row| Ok(ChildLink {
+                parent_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
+                child_id: row.1.parse().map_err(|e| format!("child id: {e}"))?,
+                agent: row.2, goal: row.3, policy_snapshot: row.4, status: row.5,
+                created_at: row.6, terminal_at: row.7, terminal_reason: row.8, result_text: row.9,
+            })).transpose()
+        }).await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn pending_completions(
+        &self,
+        parent: Ulid,
+    ) -> Result<Vec<(Ulid, serde_json::Value)>, String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare("SELECT child_id, payload FROM completion_outbox WHERE parent_id=?1 AND delivered=0 ORDER BY rowid").map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([parent.to_string()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
+            rows.map(|row| {
+                let (child, payload) = row.map_err(|e| e.to_string())?;
+                Ok((child.parse().map_err(|e| format!("child id: {e}"))?, serde_json::from_str(&payload).map_err(|e| e.to_string())?))
+            }).collect()
+        }).await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn deliver_completion(
+        &self,
+        child: Ulid,
+        envelope: EventEnvelope,
+    ) -> Result<(), String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            let changed = tx.execute("UPDATE completion_outbox SET delivered=1 WHERE child_id=?1 AND parent_id=?2 AND delivered=0", params![child.to_string(), envelope.session_id.to_string()]).map_err(|e| e.to_string())?;
+            if changed == 0 { return Err("completion already delivered".into()); }
+            insert_committed_event(&tx, &envelope)?;
+            tx.commit().map_err(|e| e.to_string())
+        }).await.map_err(|e| e.to_string())?
     }
 
     /// Registers a session row (INSERT OR IGNORE: a resumed id already has
@@ -523,6 +699,36 @@ fn writer_loop(mut conn: Connection, rx: mpsc::Receiver<Msg>) {
 
 /// Applies one write as ONE transaction: it commits whole or leaves the
 /// database untouched.
+fn insert_committed_event(
+    tx: &rusqlite::Transaction<'_>,
+    envelope: &EventEnvelope,
+) -> Result<(), String> {
+    tx.execute(
+        "INSERT INTO events (session_id, seq, kind, envelope) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            envelope.session_id.to_string(),
+            envelope.seq as i64,
+            envelope.kind,
+            serde_json::to_string(envelope).map_err(|e| e.to_string())?
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    let touched = tx
+        .execute(
+            "UPDATE sessions SET updated_at=?2, last_seq=MAX(last_seq, ?3) WHERE id=?1",
+            params![
+                envelope.session_id.to_string(),
+                now_rfc3339(),
+                envelope.seq as i64
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    if touched != 1 {
+        return Err("event owner session is missing".into());
+    }
+    Ok(())
+}
+
 fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
     let tx = conn.transaction()?;
     match write {
@@ -746,6 +952,29 @@ fn migrate(path: &Path) -> Result<(), String> {
             kind TEXT NOT NULL,
             envelope TEXT NOT NULL,
             PRIMARY KEY (session_id, seq)
+        );
+        CREATE TABLE IF NOT EXISTS child_links (
+            parent_id TEXT NOT NULL,
+            child_id TEXT PRIMARY KEY,
+            agent TEXT NOT NULL,
+            goal TEXT NOT NULL,
+            policy_snapshot TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            terminal_at TEXT,
+            terminal_reason TEXT,
+            result_text TEXT,
+            FOREIGN KEY(parent_id) REFERENCES sessions(id) ON DELETE CASCADE,
+            FOREIGN KEY(child_id) REFERENCES sessions(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS child_links_parent ON child_links(parent_id, created_at);
+        CREATE TABLE IF NOT EXISTS completion_outbox (
+            child_id TEXT PRIMARY KEY REFERENCES child_links(child_id) ON DELETE CASCADE,
+            parent_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            outcome TEXT NOT NULL,
+            result_ref TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            delivered INTEGER NOT NULL DEFAULT 0
         );",
     )
     .map_err(|e| format!("migrate: {e}"))?;
@@ -1162,6 +1391,83 @@ mod tests {
             .await
             .expect("resume")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn child_link_terminal_write_is_a_compare_and_set() {
+        let (_dir, store) = temp_store();
+        let parent = Ulid::new();
+        let child = Ulid::new();
+        store.record_session(parent, "/w", "m", None).await.unwrap();
+        store.record_session(child, "/w", "m", None).await.unwrap();
+        store
+            .create_child_link(
+                child,
+                "explore".into(),
+                "goal".into(),
+                "{}".into(),
+                4,
+                EventEnvelope::new(parent, 0, EventKind::SubagentSpawned, serde_json::json!({})),
+            )
+            .await
+            .unwrap();
+        let first = store
+            .finish_child_link(child, "done".into(), None, "answer".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            first.as_ref().map(|link| link.status.as_str()),
+            Some("done")
+        );
+        assert!(store
+            .finish_child_link(child, "failed".into(), Some("late".into()), "wrong".into(),)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store
+                .child_link(child)
+                .await
+                .unwrap()
+                .unwrap()
+                .result_text
+                .as_deref(),
+            Some("answer")
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_completion_is_delivered_once_after_live_subscriber_disconnects() {
+        let (_dir, store) = temp_store();
+        let parent = Ulid::new();
+        let child = Ulid::new();
+        store.record_session(parent, "/w", "m", None).await.unwrap();
+        store.record_session(child, "/w", "m", None).await.unwrap();
+        store
+            .create_child_link(
+                child,
+                "explore".into(),
+                "goal".into(),
+                "{}".into(),
+                4,
+                EventEnvelope::new(parent, 0, EventKind::SubagentSpawned, serde_json::json!({})),
+            )
+            .await
+            .unwrap();
+        store
+            .finish_child_link(child, "done".into(), None, "answer".into())
+            .await
+            .unwrap();
+        let pending = store.pending_completions(parent).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        let event = EventEnvelope::new(parent, 1, EventKind::SubagentDone, pending[0].1.clone());
+        store
+            .deliver_completion(child, event.clone())
+            .await
+            .unwrap();
+        assert!(store.deliver_completion(child, event).await.is_err());
+        assert!(store.pending_completions(parent).await.unwrap().is_empty());
+        assert_eq!(store.replay(parent, None, 1).await.unwrap().len(), 2);
     }
 
     // Given a store whose events table has been destroyed underneath it

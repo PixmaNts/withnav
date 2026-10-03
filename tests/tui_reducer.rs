@@ -1053,6 +1053,9 @@ fn bug2_resync_keeps_catalog_model_sessions_pending_submit_and_notice() {
         message_count: 1,
         agent: None,
         live: false,
+        parent_session_id: None,
+        child_status: None,
+        promptable: true,
     }];
     s.pending_submit_text = Some("draft".into());
     s.notice = Some("note".into());

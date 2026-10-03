@@ -2063,3 +2063,103 @@ fn each_tab_keeps_its_own_context_epoch() {
     );
     assert_eq!(s.tabs[0].conversation.context_epoch, before + 1);
 }
+
+// ---------------------------------------------------------------- a resume still in flight
+
+/// A tab that asked to resume `id` and has no answer yet.
+fn resuming(s: &mut State, ui: &mut UiState, id: &str) -> Generation {
+    let fx = handle_action(s, ui, Action::ResumeSession(id.into()));
+    assert!(fx.contains(&Effect::Resume(id.into())), "{fx:?}");
+    s.generation.clone()
+}
+
+#[test]
+fn a_tab_waiting_for_a_resume_is_not_reused_by_a_new_conversation() {
+    let (mut s, mut ui) = (st(), ui());
+    resuming(&mut s, &mut ui, "S1");
+    assert_eq!(s.resuming.as_deref(), Some("S1"));
+    assert!(!s.is_blank());
+    handle_action(&mut s, &mut ui, Action::NewConversation);
+    assert_eq!((s.tabs.len(), s.active), (2, 1));
+    assert_eq!(s.tabs[0].resuming.as_deref(), Some("S1"));
+}
+
+#[test]
+fn choosing_a_conversation_being_resumed_focuses_its_tab() {
+    let (mut s, mut ui) = (st(), ui());
+    resuming(&mut s, &mut ui, "S1");
+    handle_action(&mut s, &mut ui, Action::NewConversation);
+    let fx = handle_action(&mut s, &mut ui, Action::ResumeSession("S1".into()));
+    assert_eq!((s.tabs.len(), s.active), (2, 0));
+    assert!(
+        !fx.contains(&Effect::Resume("S1".into())),
+        "asked once: {fx:?}"
+    );
+}
+
+#[test]
+fn a_message_sent_during_a_resume_reaches_the_resumed_conversation() {
+    let (mut s, mut ui) = (st(), ui());
+    let generation = resuming(&mut s, &mut ui, "S1");
+    let fx = handle_action(
+        &mut s,
+        &mut ui,
+        Action::SubmitAt {
+            text: "hello again".into(),
+            revision: 3,
+        },
+    );
+    assert!(fx.is_empty(), "no new conversation is created: {fx:?}");
+    let fx = update(
+        &mut s,
+        ClientEvent::Resumed {
+            generation,
+            result: Ok(CreateSessionResponse {
+                session_id: "S1".into(),
+                root_actor_id: "agent:main".into(),
+                actor_state: "idle".into(),
+            }),
+        },
+    )
+    .unwrap();
+    assert!(s.resuming.is_none());
+    assert_eq!(s.session.as_ref().unwrap().session_id, "S1");
+    let sent = fx
+        .iter()
+        .find_map(|e| match e {
+            Effect::SendAt { request, revision } => Some((request.clone(), *revision)),
+            _ => None,
+        })
+        .expect("the queued message is sent");
+    assert_eq!(sent.1, 3);
+    assert!(matches!(
+        &sent.0.content[..],
+        [navai::bus::command::ContentBlock::Text { text }] if text == "hello again"
+    ));
+    // a second message while the first waited would have been refused, not lost silently
+    let (mut s, mut ui) = (st(), self::ui());
+    resuming(&mut s, &mut ui, "S2");
+    handle_action(&mut s, &mut ui, Action::Submit("one".into()));
+    assert!(handle_action(&mut s, &mut ui, Action::Submit("two".into())).is_empty());
+    assert_eq!(s.pending_submit_text.as_deref(), Some("one"));
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Notice(n) if n.contains("still starting")
+    ));
+}
+
+#[test]
+fn a_failed_resume_frees_the_tab() {
+    let (mut s, mut ui) = (st(), ui());
+    let generation = resuming(&mut s, &mut ui, "S1");
+    update(
+        &mut s,
+        ClientEvent::Resumed {
+            generation,
+            result: Err("HTTP 404".into()),
+        },
+    )
+    .unwrap();
+    assert!(s.resuming.is_none());
+    assert!(s.is_blank());
+}

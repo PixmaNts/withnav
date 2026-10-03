@@ -7,10 +7,27 @@ use crate::tui::{
 };
 
 fn submit(s: &mut State, text: String, revision: u64) -> Vec<Effect> {
+    if s.pending_submit_text.is_some() {
+        // One message waits for the conversation to be ready; a second one is not queued.
+        push_local(
+            s,
+            BlockKind::Notice(
+                "the conversation is still starting; send again once it is ready".into(),
+            ),
+        );
+        return vec![];
+    }
+    if s.resuming.is_some() {
+        // Sent once the resume answers, to the resumed conversation.
+        s.pending_submit_text = Some(text);
+        s.pending_submit = Some(revision);
+        return vec![];
+    }
     match s.session.as_ref().map(|m| m.session_id.clone()) {
         Some(id) if s.activity == Activity::Stopped => {
             s.pending_submit_text = Some(text);
             s.pending_submit = Some(revision);
+            s.resuming = Some(id.clone());
             vec![Effect::Resume(id)]
         }
         Some(_) => vec![send_effect(text, revision)],
@@ -160,8 +177,9 @@ fn resume(s: &mut State, ui: &mut UiState, id: String) -> Vec<Effect> {
             show(s, ui, index)
         };
         // A stopped session keeps its projection and cursor (the subscribe after `Resumed` starts
-        // from `last_applied_seq`); a live one needs nothing.
-        if s.activity == Activity::Stopped {
+        // from `last_applied_seq`); a live one, or one being resumed, needs nothing.
+        if s.activity == Activity::Stopped && s.resuming.is_none() {
+            s.resuming = Some(id.clone());
             effects.push(Effect::Resume(id));
         }
         return effects;
@@ -170,6 +188,7 @@ fn resume(s: &mut State, ui: &mut UiState, id: String) -> Vec<Effect> {
         return vec![];
     };
     start_conversation(s);
+    s.resuming = Some(id.clone());
     effects.push(Effect::Resume(id));
     effects
 }

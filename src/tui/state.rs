@@ -101,6 +101,9 @@ pub struct Tab {
     pub id: u64,
     pub connection: ConnectionStatus,
     pub session: Option<super::protocol::SessionMetadata>,
+    /// The conversation this tab asked the server to resume, until the answer arrives: the tab
+    /// already belongs to it.
+    pub resuming: Option<String>,
     pub selected_model_alias: Option<String>,
     pub selected_model_name: Option<String>,
     pub context_window: Option<u64>,
@@ -126,9 +129,10 @@ pub struct Tab {
 }
 
 impl Tab {
-    /// True when the tab holds nothing yet: no session, nothing being created, no block.
+    /// True when the tab holds nothing yet: no session, nothing being created or resumed, no block.
     pub fn is_blank(&self) -> bool {
         self.session.is_none()
+            && self.resuming.is_none()
             && self.pending_submit_text.is_none()
             && self.conversation.blocks.is_empty()
     }
@@ -188,12 +192,13 @@ impl State {
         self.tabs.iter().position(|t| &t.generation == generation)
     }
 
-    /// The tab showing the conversation `session_id`.
+    /// The tab showing the conversation `session_id`, or waiting for it to be resumed.
     pub fn tab_of_session(&self, session_id: &str) -> Option<usize> {
         self.tabs.iter().position(|t| {
-            t.session
-                .as_ref()
-                .is_some_and(|m| m.session_id == session_id)
+            t.resuming.as_deref() == Some(session_id)
+                || t.session
+                    .as_ref()
+                    .is_some_and(|m| m.session_id == session_id)
         })
     }
 }

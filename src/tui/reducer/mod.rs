@@ -78,6 +78,7 @@ fn reset_projection(s: &mut State) {
 pub(crate) fn start_conversation(s: &mut State) {
     reset_projection(s);
     s.session = None;
+    s.resuming = None;
     s.pending_submit_text = None;
     s.pending_submit = None;
     s.delivery_uncertain = false;
@@ -205,6 +206,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         }
         ClientEvent::Created { result, .. } | ClientEvent::Resumed { result, .. } => match result {
             Ok(r) => {
+                s.resuming = None;
                 // A fetch issued before this (re)start may describe the old runtime.
                 s.conversation.context_epoch += 1;
                 s.session = Some(SessionMetadata {
@@ -229,6 +231,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 }
             }
             Err(x) => {
+                s.resuming = None;
                 s.pending_submit_text = None;
                 s.pending_submit = None;
                 s.notice = Some(x)

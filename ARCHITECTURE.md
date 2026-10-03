@@ -17,13 +17,13 @@ navai-lsp   (one process, two channels: ADR 0006)
    ├─ server/      session HTTP/SSE API, SQLite conversation history
    ├─ bus/         per-session sequencer, event envelopes, inboxes, the agent runtime task
    ├─ agent/       the coding-agent loop (the cognition runs on it)
-   ├─ tools/       read, write, edit, grep, glob, fetch, bash, ask
+   ├─ tools/       eight registry tools: read, write, edit, grep, glob, fetch, bash, ask; each session adds `skill`
    └─ provider/    model access: config, auth, one HTTP client, chat SSE, FIM, System One
 ```
 
 A second binary, `navai` (`src/main.rs`, `src/app.rs`), is a thin CLI over the same library:
 `run` (one task in a terminal), `serve` (the session server alone), `auth`, and `tui` (the terminal
-chat client, below).
+chat client, below). `navai run` exits 3 when permission is required and 130 when interrupted.
 
 ## Modules
 
@@ -33,7 +33,7 @@ Dependencies point down this list. A module never imports one above it.
 |---|---|---|
 | `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
 | `provider/` | `models.json` aliases (`config.rs`, `load_models`), keys (`auth.rs`), one `ModelClient` per endpoint (`client.rs`: auth header, deadline, cancellation, status errors), the chat SSE decoder (`sse.rs`, `mod.rs`), the FIM and System One wire clients | anything navigator-specific: no `crate::navigator` import |
-| `tools/` | the tool trait, the registry, path validation (`validate_path`), native tools (`glob.rs`, `fetch.rs`, `task.rs`), bounded fetch conversion, `ToolContext` roots | which tools a session gets |
+| `tools/` | the tool trait, registry, path validation (`validate_path`), and eight registry tools; `glob.rs` provides bounded file search, `fetch.rs` provides bounded HTTP(S) GET, `task.rs` starts a background subagent, `nofollow.rs` opens reviewed write/edit destinations without following links; file tools use `ToolContext`'s writable and read-only roots (`read`/`grep`/`glob` accept both, `write`/`edit` only the writable roots); `bash` starts in the workspace but is not confined to these roots | which tools a session gets; the per-session `skill` tool is installed by `agent/` |
 | `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the session's folder grants, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission gate (`permissions.rs`: `needs_permission`, `Scope`, `Grants`, `PermissionRequest`, the `plan` exemption), the role guard (`guard.rs`: the `RoleGuard` trait, the `role_conformance` question, `consult`; `session/guard.rs` wires Jev from the `instinct` alias), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`explore`/`review` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events | HTTP, storage |
 | `session/` | the `Service` (registry/router, `service.rs`), child creation and parent policy snapshot, teardown (`lifecycle.rs`), actor construction (`actor.rs`), the SQLite history (`store.rs`, including `child_links` and terminal CAS), primary agent selection, session commands and variants | HTTP, SSE, any profile by name |
@@ -62,8 +62,8 @@ Dependencies point down this list. A module never imports one above it.
 ### Inside `tui/`
 
 The terminal client of the session server: HTTP for commands, SSE for events, nothing else. It
-imports the serialized bus types and no runtime internals. Several conversations are open at once,
-one per tab; each tab streams its own session in the background.
+imports the serialized bus types and no runtime internals. Several conversations can be open at
+once; each is shown in the left sidebar and streams in the background.
 
 | File | Responsibility |
 |---|---|
@@ -74,7 +74,7 @@ one per tab; each tab streams its own session in the background.
 | `client.rs` | the HTTP client: models, sessions, create/resume, send, stop, the command list and a command run, a permission answer (409 `permission_stale` read as stale), open the event stream; send failures split into rejected and uncertain |
 | `stream.rs` | one SSE subscription: decoding, reconnect with backoff, resume after the last seq, cancellation |
 | `reducer/mod.rs` | `update`: `ClientEvent` to `State` changes and new `Effect`s; routes each event to the tab holding its generation, marks a background tab unread, drops events no tab holds |
-| `reducer/envelope.rs` | `EventEnvelope` to blocks: steps, tools (planned, running, settled), usage, errors, command results, permission prompts (open until their `permission.resolved`); the tab's agent from `session.agent_changed`, its variant from a `/variant` result, its model, variant and window from `model.changed` (with a one-line notice for a switch; a catalog refresh never overwrites them); the tab's own `/model` waits on the operation id of its HTTP answer, shown as pending once accepted for after the turn and ended only by that operation's `command.result` or `model.changed`, a new switch, a stop, the session's end or the tab's close; events and replays never send a command; live and replay give the same blocks |
+| `reducer/envelope.rs` | `EventEnvelope` to blocks: steps, tools (planned, running, settled), usage, errors, command results, permission prompts (open until their `permission.resolved`); the tab's agent from `session.agent_changed`, its variant from a `/variant` result, its model, variant and window from `model.changed` (with a one-line notice for a switch; a catalog refresh never overwrites them); the tab's own `/model` waits on the operation id of its HTTP answer, shown as pending once accepted for after the turn and ended only by that operation's `command.result` or `model.changed`, a new switch, a stop, the session's end or the tab's close; events and replays never send a command; most blocks are reconstructed alike, but a deferred switch acceptance names its target only live when matched to this tab's pending operation, or when the event includes the alias (replay otherwise shows generic text) |
 | `reducer/command.rs` | `outcome_text`: a command result as the short text the transcript shows, in the client's own words; `tokens` for `42k` / `1M` |
 | `reducer/actions.rs` | `handle_action`: `Action` to `UiState`/`State` changes and `Effect`s; opening (at most nine), switching and closing tabs; server commands, the build/plan switch, the model and variant picks: on a live conversation the model list and `/model <alias>` send `/model` only (the server applies the target's default variant), nothing for the alias in use, refused locally with the reason while a question or permission request waits; on an empty tab the model and variant picks set what the conversation starts on |
 | `reducer/text.rs` | `strip_controls`, applied to every piece of model and tool text |
@@ -85,14 +85,15 @@ one per tab; each tab streams its own session in the background.
 | `runtime/tests.rs` | executor and loop tests with no terminal and a dead server |
 | `terminal.rs` | raw mode and the alternate screen, restored on exit and on panic |
 | `theme.rs` | the four themes (`ThemeId`, the `Theme` colour roles), the RGB `blend` for tints, and the semantic styles the views draw with |
-| `view/mod.rs` | `draw`: layout of header, sidebar, transcript, right column, status line, editor, key bar and overlays; the key bar lists the keys that apply now, the prompt's while one waits |
-| `view/header.rs` | the header row: `◆ navai`, workspace, git branch and change count, `▌agent` in its colour, alias · model · variant · context gauge, then `→ alias (after this turn)` for a switch the server accepted for after the running turn; the path and the model give way first |
-| `view/panel.rs` | the right column (36 columns, hidden under 140 unless `alt+r` asks): Agents (the one in use, with its role for build and plan), Context (the last snapshot's breakdown and the last compaction), Skills (listed and omitted), Changes (git); a section with no data shows `—`, none is invented |
-| `view/sidebar.rs` | the tab sidebar: number, title, `<agent> · <state>`, unread mark, active tint, tab keys; hidden under 80 columns |
+| `view/mod.rs` | `draw`: layout of header, sidebar, transcript, right panel, status line, editor, key bar and overlays; the key bar lists the keys that apply now, the prompt's while one waits |
+| `view/header.rs` | the header row: `◆ navai`, workspace, git branch and change count, `▌agent` in its colour, alias · model · variant · context gauge, and an accepted model switch scheduled for after the turn; the path and model give way first |
+| `view/panel.rs` | the right panel (36 columns, hidden under 140 unless `alt+r` asks): Agents and role, Context breakdown and last compaction, Skills listed and omitted, and Changes from git; a section with no data shows `—` |
+| `view/sidebar.rs` | the left conversation sidebar: number, title, `<agent> · <state>`, unread mark, active tint and tab keys; hidden under 80 columns (`alt+b` also toggles it) |
 | `view/transcript.rs` | block layout and drawing: messages by origin, steps, tools, errors, permission prompts, scroll and selection |
 | `view/permission.rs` | the inline permission prompt: tool and scope, a short preview of the call (a write's first lines, an edit's change, a command, a URL), the answer keys or the outcome |
 | `view/tool.rs` | the one-line summary and the expanded output of a tool call |
 | `view/markdown.rs` | markdown to styled lines, cached per block revision |
+| `view/text.rs` | terminal-column measurement and grapheme-safe truncation and padding |
 | `view/status.rs` | the status line of the active tab: activity, connection, delivery warning, notice, session tokens; `context_gauge` and `shorten`, shared with the header |
 | `view/pickers.rs` | the model (alias, model, window, variants; on a live conversation enter switches the model only, `ctrl+n` opens a new tab, with a note saying so, when the switch waits for the turn, or why it is refused), variant, session, command, theme and help overlays: centred, accent border, the screen behind dimmed, a `❯` filter line and the keys at the foot; a long list scrolls to its selected row |
 
@@ -104,9 +105,10 @@ edits the editor or returns an `Action`. `reducer::handle_action` changes the st
 through `stream.rs`. Each result comes back on one channel as a `ClientEvent` stamped with the
 generation it was started in; `reducer::update` drops events of an older generation, folds the rest
 into `State` (envelopes become blocks) and may return more effects. After each batch the loop calls
-`view::draw`, which only reads the state. Picking a model or starting a conversation bumps the
-generation, so late results of the old conversation are ignored. A conversation is created on the
-first message, not before.
+`view::draw`, which only reads the state. Starting or resuming a conversation in a tab bumps its
+generation, so late results of its previous session are ignored. Picking a model for a live
+conversation sends `/model <alias>` on that same session; on an empty tab it changes the starting
+configuration. A conversation is created on the first message, not before.
 
 **Permission prompts (terminal client).** `permission.requested` adds a `BlockKind::Permission` to the
 tab and its id to `Conversation::open_permissions`; the matching `permission.resolved` closes it and
@@ -135,9 +137,11 @@ the model are sent in the create request instead.
 **Tabs (terminal client).** Every tab has its own generation, never shared, and the executor keeps one
 SSE stream per generation. An event is applied to the tab that holds its generation, whether it is on
 screen or not (a background tab is then marked unread), and the effects it returns run with that tab's
-session. Opening a conversation (`/new`, ctrl+n, `/sessions`, a model pick) adds a tab; closing one
-drops its generation, so the runtime cancels its stream and its late results are ignored; nothing is
-sent to the server. Before each action the runtime copies the editor into the active tab's draft; the
+session. New-conversation actions such as `/new`, `ctrl+n`, and `ctrl+n` in the model picker allocate
+or reset a generation; `/sessions` opens or resumes a selected session in a tab. Picking a model for
+a live conversation keeps its tab, generation and session and sends `/model <alias>`; on an empty tab,
+the model pick only sets its starting model and variant. Closing a tab drops its generation, so the runtime
+cancels its stream and its late results are ignored; nothing is sent to the server. Before each action the runtime copies the editor into the active tab's draft; the
 reducer puts the next tab's draft back with `Effect::SetEditor`. The context gauge is per tab too: each
 conversation keeps its snapshot, its epoch and its retired incarnations, a `context.updated` or a
 `FetchContext` answer lands on the tab whose generation it carries (without marking it unread), and the
@@ -155,7 +159,9 @@ A stop or a chat message cancels the request; a resume expires every request tha
 `permission.resolved` and settles its calls as interrupted.
 
 **Plan exception to the role guard.** For the `plan` agent `gate` does not look at grants. A `write` or
-`edit` whose canonical destination is a regular `.md` file runs without a request. Every other `write`
+`edit` whose path as written is not a symlink, and whose destination is an existing regular `.md` file
+or a missing `.md` file in an existing directory, runs without a request. A symlink path is not
+exempt, even if it points to another Markdown file. Every other `write`
 or `edit`, and every `bash` or `fetch`, goes to `guard_step`: `guard::consult` sends Jev one
 `role_conformance` choice (role prompt, latest user message, workspace, resolved target, tool,
 exact arguments, at most 16 KiB; a larger call skips Jev) under the `SystemOneClient` deadline and the
@@ -186,11 +192,14 @@ prompts, and every driver turn end triggers a `conversation` evaluation on the f
 
 | Path | What | Written by |
 |---|---|---|
-| `~/.config/navai/models.json`, `auth.json` | aliases and keys | the driver, `navai auth` |
-| `<workspace>/.navigator/pipeline.toml`, `prompts/*.md` | the project's pipeline | the driver |
+| `~/.config/navai/models.json`, `auth.json`, `config.json` | model aliases, provider keys and client settings | the driver, `navai auth`, the TUI |
+| `~/.config/navai/navigator/pipeline.toml`, `prompts/*.md` | the user's pipeline and prompts | the driver |
+| `~/.config/navai/agents/*.md` | user agent definitions | the driver |
+| `<workspace>/.navigator/pipeline.toml`, `prompts/*.md` | the project's pipeline and prompts, overriding the user and built-in defaults | the driver |
 | `<workspace>/.navigator/intent.md` | intent, plan, decisions | the cognition and the driver |
-| `~/.local/share/navai/navai.jsonl` | decision log, replay input | `navigator/log.rs` |
-| `~/.local/share/navai/navai.db` | conversations | `session/store.rs` |
+| `<workspace>/.navai/agents/*.md` | project agent definitions | the driver |
+| `~/.agents/AGENTS.md`, `~/.agents/rules.md`, `~/.agents/skills/` | user rules and skills included in agent sessions | the driver |
+| `~/.local/share/navai/navai.db`, `navai.jsonl`, `tui.log`, `model-catalog/` | conversations, decision log, TUI log and cached provider model lists | `session/store.rs`, `navigator/log.rs`, `tui/`, `provider/catalog.rs` |
 
 Data and config paths come from `paths.rs` and `provider/auth.rs`. On every start `paths::migrate_legacy`
 (`paths/migrate.rs`) moves what the former names left behind to the Navai dirs: `~/.local/share/navigator/*`
@@ -264,8 +273,9 @@ it is and that run keeps using it.
   value behind one lock: the commit callback installs it, together with the runtime's variant and the
   context gauge, before the event is emitted, so a reader sees the old selection or the new one. `AgentSelection::switching`
   refuses `/agent`, `/variant`, `/compact` and another switch while one prepares. After the
-  acknowledged commit the runtime swaps the actor's provider, model, variant and limits, installs a
-  new `ContextTracker` and publishes the durable `model.changed`; `AgentActor::reasoning_floor`
+  commit callback installs the selection, runtime variant and context tracker; `commit_acked` then
+  emits `model.changed` before acknowledging the runtime. Only after that acknowledgement does the
+  runtime swap the actor's provider, model, variant and limits. `AgentActor::reasoning_floor`
   (restored on resume) keeps the earlier reasoning out of the request projection unless the resolved
   identity is the same; the fit check measures that destination projection (`context_breakdown_at`).
 - A helper you need probably exists. Look first in: `provider/client.rs` (any HTTP call to a model),
@@ -274,6 +284,8 @@ it is and that run keeps using it.
   numbered excerpts), `tools/mod.rs` (`validate_path`).
 - A new model call goes through `ModelClient`. A new navigator layer seam goes in `ports.rs`, with
   its adapter in `models.rs` and its fake in `tests/common/navigator.rs`.
+- `navai run` exit status mapping lives in `app.rs`: 0 complete, 1 error, 2 yielded, 3 permission
+  required, 130 interrupted.
 - A new trigger record field goes in `PendingTrigger`; nothing else writes trigger records.
 - Behaviour that should be tunable goes in the pipeline (TOML and prompts), not in Rust (ADR 0005).
 - `src/tui/**` is a server client: HTTP + SSE only. It may share serialized bus event types, but never imports session, agent, or bus runtime internals.

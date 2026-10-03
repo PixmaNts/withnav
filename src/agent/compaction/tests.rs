@@ -397,7 +397,8 @@ fn a_boundary_right_after_a_tool_call_is_refused() {
 
 #[test]
 fn a_boundary_inside_a_batch_of_user_messages_is_refused() {
-    let t = vec![user("a"), user("b"), answer("x"), user("c"), answer("y")];
+    let mut t = vec![user("a"), user("b"), answer("x"), user("c"), answer("y")];
+    t.extend(five_turns(10));
     assert!(invalid(&k(0, "s", vec![]), &t).contains("splits"));
     assert!(validate(&k(2, "s", vec![]), &t).is_ok());
 }
@@ -453,6 +454,35 @@ fn pruning_inside_the_protected_recent_turns_is_refused() {
     // Messages 12.. are the last two turns; message 14 is a tool output there.
     assert!(invalid(&k(3, "s", vec![14]), &t).contains("stay verbatim"));
     assert!(validate(&k(3, "s", vec![6]), &t).is_ok());
+}
+
+#[test]
+fn a_boundary_inside_the_protected_tail_is_refused() {
+    let t = five_turns(10);
+    // The tail starts at message 12; a boundary right before it is fine,
+    // one after it is a clean turn boundary but reaches into the tail.
+    assert!(validate(&k(11, "s", vec![]), &t).is_ok());
+    assert!(invalid(&k(15, "s", vec![]), &t).contains("stay verbatim"));
+    assert!(invalid(&k(18, "s", vec![]), &t).contains("stay verbatim"));
+}
+
+#[test]
+fn a_boundary_that_leaves_a_tool_call_without_its_result_is_refused() {
+    // The result before the boundary answers another id: adjacent roles look
+    // like a cut, but call c1 would be summarized without its output.
+    let mut t = vec![
+        user("a"),
+        call("c1", "read", "{}"),
+        result("other", 10),
+        call("c2", "read", "{}"),
+        result("c2", 10),
+        answer("done"),
+    ];
+    t.extend(five_turns(10));
+    assert!(invalid(&k(2, "s", vec![]), &t).contains("c1"));
+    // Complete exchanges by id are accepted.
+    t[2] = result("c1", 10);
+    assert!(validate(&k(2, "s", vec![]), &t).is_ok());
 }
 
 #[test]

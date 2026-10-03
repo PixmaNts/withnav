@@ -236,6 +236,16 @@ pub fn validate(
             "the boundary {through} splits a turn or a tool exchange"
         ));
     }
+    if let Some(id) = unanswered_before(transcript, next) {
+        return invalid(format!(
+            "the boundary {through} separates the tool call {id} from its result"
+        ));
+    }
+    if next > protected_start(transcript) {
+        return invalid(format!(
+            "the boundary {through} reaches into the recent turns that stay verbatim"
+        ));
+    }
     if compaction.checkpoint.generation == 0 {
         return invalid("generation 0".into());
     }
@@ -276,6 +286,27 @@ pub fn validate(
         last = Some(i);
     }
     Ok(())
+}
+
+/// The id of a tool call before `at` whose result is not also before `at`,
+/// if any: a summary ending at `at` would split that exchange.
+fn unanswered_before(transcript: &[ChatMessage], at: usize) -> Option<&str> {
+    let answered: HashSet<&str> = transcript[..at]
+        .iter()
+        .filter_map(|m| match m {
+            ChatMessage::Tool { tool_call_id, .. } => Some(tool_call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    transcript[..at]
+        .iter()
+        .filter_map(|m| match m {
+            ChatMessage::Assistant { tool_calls, .. } => Some(tool_calls),
+            _ => None,
+        })
+        .flatten()
+        .map(|c| c.id.as_str())
+        .find(|id| !answered.contains(id))
 }
 
 /// The ids of the tool calls whose output is never cut down: the human's

@@ -630,7 +630,8 @@ pub async fn resolve_chat(
     let explicit = resolved.model.context_window.filter(|n| *n > 0);
     // Generated variants need the provider's tiers even when the window is
     // configured.
-    let needs_tiers = resolved.model.variants.is_none() && resolved.provider.catalog_format.is_some();
+    let needs_tiers =
+        resolved.model.variants.is_none() && resolved.provider.catalog_format.is_some();
     let data = if !is_chat {
         None
     } else if explicit.is_some() && !needs_tiers {

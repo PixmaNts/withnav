@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use navai::agent::prompt::build_request;
 use navai::provider::client::ModelClient;
 use navai::provider::config::{default_variant, effective_variants, ModelsConfig, ProviderConfig};
-use navai::provider::openai::ClientCache;
 use navai::provider::openai::ChatMessage;
+use navai::provider::openai::ClientCache;
 use tokio_util::sync::CancellationToken;
 
 mod common;
@@ -118,7 +118,10 @@ async fn the_alias_default_is_applied_when_the_caller_passes_it() {
     let body = send(Some(&variant)).await;
     assert_eq!(
         body,
-        send(Some(&effective_variants(&resolved, &tiers(&["high"]))["high"])).await
+        send(Some(
+            &effective_variants(&resolved, &tiers(&["high"]))["high"]
+        ))
+        .await
     );
     lock_fixture("default_applied", &body);
 }

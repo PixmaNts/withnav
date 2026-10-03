@@ -52,7 +52,20 @@ fn state(
     window_a: u64,
     window_b: u64,
 ) -> AppState {
-    let config = TestServerConfig::mock(&env.root, &a.url)
+    state_at(env, &a.url, &b.url, window_a, window_b, false)
+}
+
+/// [`state`] over two base URLs; `discovery_a` makes provider `a` an OmniRoute
+/// one, whose aliases without variants offer one per reported effort tier.
+fn state_at(
+    env: &Env,
+    a_url: &str,
+    b_url: &str,
+    window_a: u64,
+    window_b: u64,
+    discovery_a: bool,
+) -> AppState {
+    let config = TestServerConfig::mock(&env.root, a_url)
         .chat_tools(window_a)
         .config();
     let entry = |provider: &str, model: &str, window: u64| {
@@ -68,13 +81,17 @@ fn state(
     });
     other["default_variant"] = json!("high");
     let provider = |url: &str| {
-        json!({"base_url": url, "api_key_env": "NAVAI_TEST_KEY", "headers": {},
-               "connect_timeout_ms": 2000, "request_timeout_ms": 600_000})
+        let mut p = json!({"base_url": url, "api_key_env": "NAVAI_TEST_KEY", "headers": {},
+               "connect_timeout_ms": 2000, "request_timeout_ms": 600_000});
+        if discovery_a && url == a_url {
+            p["catalog_format"] = json!("omniroute");
+        }
+        p
     };
     std::fs::write(
         config.models_path.as_ref().expect("models path"),
         json!({
-            "providers": {"a": provider(&a.url), "b": provider(&b.url)},
+            "providers": {"a": provider(a_url), "b": provider(b_url)},
             "models": {
                 "default": entry("a", "model-a", window_a),
                 "twin": entry("a", "model-a", window_a),
@@ -738,4 +755,107 @@ async fn the_fit_check_measures_the_projection_the_target_will_receive() {
         "{after}"
     );
     assert_eq!(after["alias"], "other");
+}
+
+// Given a session whose variant offer was unknown, a turn in flight with a
+//       /model accepted for after it, and a /variant waiting for the
+//       provider's model list
+// When the turn ends and the switch lands before the list arrives
+// Then the variant command is refused, and neither the old offer nor the old
+//      variant is installed on the new model
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_variant_read_against_the_old_model_is_not_installed_after_a_switch() {
+    let env = env();
+    let server = wiremock::MockServer::start().await;
+    let b = spawn_capturing_provider(vec![]).await;
+    wiremock::Mock::given(wiremock::matchers::path("/v1/models"))
+        .respond_with(wiremock::ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let state = state_at(
+        &env,
+        &format!("{}/v1", server.uri()),
+        &b.url,
+        128_000,
+        128_000,
+        true,
+    );
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+
+    // The provider comes back: the model list is slow, and so is the turn,
+    // but less. A failed lookup is not repeated for a few seconds.
+    server.reset().await;
+    let delayed = |ms: u64| std::time::Duration::from_millis(ms);
+    wiremock::Mock::given(wiremock::matchers::path("/v1/models"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_delay(delayed(1500))
+                .set_body_json(json!({"data": [{
+                    "id": "model-a",
+                    "context_length": 128_000,
+                    "capabilities": {"effort_tiers": ["low", "high"]}
+                }]})),
+        )
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::path("/v1/chat/completions"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_delay(delayed(400))
+                .set_body_raw(
+                    sse_body(&[&text_chunk("turn answer")]).into_bytes(),
+                    "text/event-stream",
+                ),
+        )
+        .mount(&server)
+        .await;
+    tokio::time::sleep(delayed(5300)).await;
+
+    let sub = state.subscribe(id, None).await.unwrap();
+    send_text(&state, id, "go").await;
+    wait_for_async("the turn's request", || async {
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .any(|r| r.url.path() == "/v1/chat/completions")
+    })
+    .await;
+    let accepted = state.run_command(id, "model", "other").await.unwrap();
+    assert_eq!(accepted.data.as_ref().unwrap()["applies"], "after_turn");
+    let refused = state.run_command(id, "variant", "high").await.unwrap();
+    // (the command above returns only once the list arrived: the switch,
+    // deferred behind the 400 ms turn, has landed by then)
+    collect_until(sub, |e| e.kind == "model.changed").await;
+    assert_eq!(state.session_summary(id).await.unwrap().model, "other");
+
+    assert!(!refused.ok, "{refused:?}");
+    let error = refused.error.unwrap();
+    assert!(error.contains("switched"), "{error}");
+    let meta = state.history().meta(id).await.unwrap().unwrap();
+    assert_eq!(meta.model, "other");
+    // The new model keeps its own default variant (none), not a choice read
+    // against the old model's offer.
+    assert_eq!(meta.variant.as_deref(), Some("high"));
+    assert_eq!(
+        meta.variant_override.as_deref(),
+        Some(r#"{"reasoning_effort":"high"}"#)
+    );
+    let shown = state.run_command(id, "variant", "").await.unwrap();
+    assert_eq!(shown.data.unwrap()["offered"], json!(["high", "low"]));
+}
+
+async fn wait_for_async<F, Fut>(what: &str, cond: F)
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    for _ in 0..500 {
+        if cond().await {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for {what}");
 }

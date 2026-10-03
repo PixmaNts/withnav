@@ -19,7 +19,9 @@ requests land in `develop`.
   and nothing changes. The choice is saved in one step (alias, resolution, variant) and announced by
   a durable `model.changed` `{operation_id, revision, reason: "switch", previous, new, variant,
   window, input_budget, from_message}`; a resume goes on with the new model. The model's earlier
-  reasoning is only replayed to the same provider and model. `/model` with no argument still shows the
+  reasoning is only replayed to the same provider and model, also after a resume; the choice, that
+  boundary and the `model.changed` event are written in one step, so a failed write changes nothing.
+  Controls accepted during a turn (`/model`, `/compact`) run in the order they came. `/model` with no argument still shows the
   current model.
 - **Role guard for the `plan` agent**: `plan` keeps every tool, and writes markdown freely: a `write`
   or `edit` whose resolved destination is a regular `.md` file (a `.md` name that is a link to another

@@ -2,6 +2,8 @@
 //! commands, run by the service on behalf of any client. Every run publishes
 //! one durable `command.result` on the session stream.
 
+use std::sync::Arc;
+
 use serde_json::{json, Value};
 use ulid::Ulid;
 
@@ -24,6 +26,11 @@ const COMPACTING_ERROR: &str =
 /// Why a model switch waits for a compaction to finish.
 const COMPACTING_MODEL_ERROR: &str =
     "a compaction is running: wait for it to finish, then switch model";
+
+/// Why a variant change read against a model that was switched meanwhile is
+/// not applied.
+const MODEL_CHANGED_ERROR: &str =
+    "the model was switched while the variant was being checked: run /variant again";
 
 const SWITCHING_ERROR: &str = "a model switch is running: wait for it to finish, then retry";
 
@@ -381,6 +388,10 @@ impl Service {
         handle: &SessionHandle,
         arguments: &str,
     ) -> Result<Done, CommandFailure> {
+        // One selection for the whole command: the offer read below belongs to
+        // this alias, and is only applied if the selection is still this one
+        // once the command holds exclusivity.
+        let selected = handle.selected();
         let mut offer = handle.current_offer();
         let mut words = arguments.split_whitespace();
         let Some(word) = words.next() else {
@@ -402,14 +413,13 @@ impl Service {
                 .reread_offer(
                     &session_id.to_string(),
                     &handle.workspace,
-                    &handle.model(),
-                    handle.resolution().as_deref(),
+                    &selected.alias,
+                    selected.resolution.as_deref(),
                 )
                 .await
             {
                 Ok(fresh) if fresh.known => {
-                    handle.replace_offer(fresh);
-                    offer = handle.current_offer();
+                    offer = Arc::new(fresh);
                 }
                 // The alias now names another model: its variants are not
                 // this session's, and nothing is changed.
@@ -426,13 +436,13 @@ impl Service {
         } else if !offer.known && !offer.variants.contains_key(word) {
             return Err(CommandFailure::Refused(
                 ServerError::VariantOfferUnknown {
-                    alias: handle.model(),
+                    alias: selected.alias.clone(),
                     variant: word.to_string(),
                 }
                 .to_string(),
             ));
         } else {
-            exact_variant(&handle.model(), word, &offer.variants)
+            exact_variant(&selected.alias, word, &offer.variants)
                 .map_err(|e| CommandFailure::Refused(e.to_string()))?
         };
         let name = chosen.as_ref().map(|(name, _)| name.clone());
@@ -446,6 +456,14 @@ impl Service {
                 SwitchError::Switching => CommandFailure::Refused(SWITCHING_ERROR.to_string()),
                 _ => CommandFailure::Refused(COMPACTING_ERROR.to_string()),
             })?;
+        // A model switch may have finished while the offer was being read: the
+        // offer and the variant chosen from it belong to the old model.
+        if handle.selected().revision != selected.revision {
+            return Err(CommandFailure::Refused(MODEL_CHANGED_ERROR.to_string()));
+        }
+        if !Arc::ptr_eq(&offer, &handle.current_offer()) && offer.known {
+            handle.replace_offer((*offer).clone());
+        }
         self.history()
             .set_variant(session_id, chosen.as_ref())
             .await
@@ -481,7 +499,8 @@ impl Service {
         if words.next().is_some() {
             return Err(CommandFailure::Refused("usage: /new [alias]".to_string()));
         }
-        let current = handle.model();
+        let selected = handle.selected();
+        let current = selected.alias;
         let alias = alias.unwrap_or(&current).to_string();
         // The same alias keeps this session's variant; another alias starts
         // on its own default.
@@ -587,8 +606,9 @@ impl Service {
     /// `/model`: the alias, what the saved resolution says about it, and a
     /// bounded view of the chat aliases a new session could use.
     fn model_data(&self, handle: &SessionHandle) -> Value {
-        let alias = handle.model();
-        let mut data = match &handle.resolution() {
+        let selected = handle.selected();
+        let alias = selected.alias;
+        let mut data = match &selected.resolution {
             Some(r) => json!({
                 "alias": alias,
                 "model": r.model,

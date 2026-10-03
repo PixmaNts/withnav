@@ -119,7 +119,9 @@ pub struct SelectedModel {
 }
 
 impl SessionHandle {
-    fn selected(&self) -> SelectedModel {
+    /// The model selection, read once: alias, resolution and revision always
+    /// belong together.
+    pub(crate) fn selected(&self) -> SelectedModel {
         match self.selected.lock() {
             Ok(guard) => guard.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),
@@ -129,11 +131,6 @@ impl SessionHandle {
     /// The alias the session talks to now.
     pub fn model(&self) -> String {
         self.selected().alias
-    }
-
-    /// The saved resolution the session runs on.
-    pub fn resolution(&self) -> Option<Arc<crate::provider::catalog::ModelResolution>> {
-        self.selected().resolution
     }
 
     /// The session's current variant offer.

@@ -60,6 +60,11 @@ pub struct ModelTarget {
     pub offer_known: bool,
 }
 
+/// The store write of a switch: the target, the reasoning floor and the
+/// sequenced `model.changed`.
+pub type CommitFn =
+    dyn Fn(ModelTarget, usize, EventEnvelope) -> BoxFuture<Result<(), String>> + Send + Sync;
+
 /// The service's side of a switch.
 pub struct ModelSwitch {
     /// The alias the conversation talks to now.
@@ -72,9 +77,7 @@ pub struct ModelSwitch {
     /// Stores the choice, the reasoning floor and the sequenced `model.changed`
     /// envelope in ONE transaction and returns once it is durable. The
     /// service's own view of the model changes with it.
-    pub commit: Box<
-        dyn Fn(ModelTarget, usize, EventEnvelope) -> BoxFuture<Result<(), String>> + Send + Sync,
-    >,
+    pub commit: Box<CommitFn>,
 }
 
 /// The shared form of [`ModelSwitch`].

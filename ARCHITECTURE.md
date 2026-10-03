@@ -244,7 +244,9 @@ it is and that run keeps using it.
   `sessions.reasoning_floor` and the `model.changed` event row in one transaction), so the bus never
   imports the service or the store. The write goes through `Sequencer::commit_acked`: the event is
   sequenced, written and acknowledged by the store, and only then emitted; a failed write emits
-  nothing and gives the seq back. `AgentSelection::switching`
+  nothing and gives the seq back. `SelectedModel` (alias, resolution, revision, variant, offer) is one
+  value behind one lock: the commit callback installs it, together with the runtime's variant and the
+  context gauge, before the event is emitted, so a reader sees the old selection or the new one. `AgentSelection::switching`
   refuses `/agent`, `/variant`, `/compact` and another switch while one prepares. After the
   acknowledged commit the runtime swaps the actor's provider, model, variant and limits, installs a
   new `ContextTracker` and publishes the durable `model.changed`; `AgentActor::reasoning_floor`

@@ -206,10 +206,11 @@ mod tests {
                     alias: "fast".to_string(),
                     resolution: None,
                     revision: 1,
+                    variant: None,
+                    offer: Arc::default(),
                 },
             )),
             status: Arc::default(),
-            offer: Arc::default(),
         }
     }
 

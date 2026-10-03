@@ -868,6 +868,7 @@ mod tests {
             .flat_map(|n| {
                 [
                     ChatMessage::User {
+                        provenance: Default::default(),
                         content: format!("request {n}"),
                     },
                     ChatMessage::Assistant {

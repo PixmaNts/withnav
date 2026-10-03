@@ -10,6 +10,7 @@ mod commands;
 mod config;
 mod guard;
 mod hooks;
+mod instance;
 mod lifecycle;
 mod message;
 mod rules_log;

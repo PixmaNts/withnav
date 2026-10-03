@@ -5,6 +5,7 @@ use serde_json::json;
 
 fn user(text: &str) -> ChatMessage {
     ChatMessage::User {
+        provenance: Default::default(),
         content: text.into(),
     }
 }

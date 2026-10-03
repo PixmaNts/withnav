@@ -125,6 +125,10 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/sessions/{id}/messages", post(post_message))
         .route("/v1/sessions/{id}/stop", post(stop_session))
         .route(
+            "/v1/sessions/{parent}/children/{child}/continue",
+            post(continue_child),
+        )
+        .route(
             "/v1/sessions/{id}/permissions/{request_id}",
             post(answer_permission),
         )
@@ -715,6 +719,19 @@ async fn stop_session(State(state): State<AppState>, Path(id): Path<String>) -> 
     }
 }
 
+async fn continue_child(
+    State(state): State<AppState>,
+    Path((parent, child)): Path<(String, String)>,
+) -> Response {
+    let (Ok(parent_id), Ok(child_id)) = (parent.parse(), child.parse()) else {
+        return error_response(ServerError::SessionNotFound(child));
+    };
+    match state.continue_child(parent_id, child_id).await {
+        Ok(()) => Json(json!({"accepted":true})).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
 /// The single structured-error funnel: every failure is a typed
 /// [`ServerError`] mapped onto a status code + JSON body. The full-inbox
 /// rejection carries the FROZEN `{accepted:false, reason:"inbox_full"}`
@@ -726,6 +743,7 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         ServerError::SubagentSettings(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::SessionNotFound(_) => StatusCode::NOT_FOUND,
         ServerError::SessionStopping
+        | ServerError::ChildNotParked
         | ServerError::ResumeRequired
         | ServerError::PermissionStale => StatusCode::CONFLICT,
         ServerError::NonLoopbackBind(_) | ServerError::Bind(_) => StatusCode::INTERNAL_SERVER_ERROR,

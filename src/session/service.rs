@@ -286,6 +286,7 @@ fn is_promptable(value: &bool) -> bool {
 /// clone (all fields are `Arc`).
 #[derive(Clone, Debug)]
 pub struct Service {
+    _instance: Arc<super::instance::Instance>,
     /// The live sessions of this process; a closed session is removed.
     pub(super) sessions: Arc<Mutex<HashMap<SessionId, SessionHandle>>>,
     pub(super) config: Arc<SessionConfig>,
@@ -424,13 +425,21 @@ impl Service {
         hooks: Arc<dyn SessionHooks>,
     ) -> Result<Self, ServerError> {
         // No fallback: a conversation that cannot be saved is not served.
-        let history =
+        let mut history =
             super::store::HistoryStore::open(&config.history_db).map_err(ServerError::History)?;
+        let instance = Arc::new(
+            super::instance::Instance::acquire(&config.history_db).map_err(ServerError::History)?,
+        );
+        history.set_owner(instance.id);
+        history
+            .recover_children(&instance.directory)
+            .map_err(ServerError::History)?;
         let seeded_slots = history
             .active_child_counts()
             .map_err(ServerError::History)?;
         let catalog = crate::provider::catalog::ModelCatalog::new(Some(config.data_dir.clone()));
         Ok(Self {
+            _instance: instance,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             config: Arc::new(config),
             history: Arc::new(history),
@@ -829,6 +838,11 @@ impl Service {
             self.release_child_slot(parent);
         }
         self.drain_completions(parent).await;
+        if let Some(owner) = self.handle(parent) {
+            if owner.lifecycle == Lifecycle::Active {
+                owner.status.wake_delivery();
+            }
+        }
         Ok(())
     }
 
@@ -919,6 +933,25 @@ impl Service {
         accept(&handle, command).await
     }
 
+    pub async fn continue_child(
+        &self,
+        parent: SessionId,
+        child: SessionId,
+    ) -> Result<(), ServerError> {
+        let owner = self.routable_handle(parent).await?;
+        if owner.parent_session_id.is_some() {
+            return Err(ServerError::ChildReadOnly);
+        }
+        let handle = self.routable_handle(child).await?;
+        if handle.parent_session_id != Some(parent) {
+            return Err(ServerError::ChildReadOnly);
+        }
+        if !handle.status.continue_budget() {
+            return Err(ServerError::ChildNotParked);
+        }
+        Ok(())
+    }
+
     /// The permission requests of a stored session that never got a
     /// `permission.resolved`: `(request id, tool call id)`, oldest first.
     async fn unresolved_permissions(
@@ -936,7 +969,9 @@ impl Service {
             if envelope.kind == EventKind::PermissionRequested.as_str() {
                 if let Ok(request) = serde_json::from_value::<PermissionRequested>(envelope.payload)
                 {
-                    open.push((request.request_id, request.tool_call_id));
+                    if request.child_session_id.is_none() {
+                        open.push((request.request_id, request.tool_call_id));
+                    }
                 }
             } else if let Ok(done) = serde_json::from_value::<PermissionResolved>(envelope.payload)
             {
@@ -963,6 +998,31 @@ impl Service {
             return Err(ServerError::ChildReadOnly);
         }
         // Claimed at admission: a second answer for the same request is
+        let owned = {
+            self.lock_sessions()
+                .values()
+                .find(|child| {
+                    child.parent_session_id == Some(session_id)
+                        && child.lifecycle == Lifecycle::Active
+                        && child.status.pending_permission() == Some(request_id)
+                })
+                .cloned()
+        };
+        let handle = if handle.status.pending_permission() == Some(request_id) {
+            handle
+        } else if let Some(child) = owned {
+            child
+        } else {
+            let foreign = self.lock_sessions().values().any(|child| {
+                child.parent_session_id.is_some()
+                    && child.status.pending_permission() == Some(request_id)
+            });
+            return Err(if foreign {
+                ServerError::ChildReadOnly
+            } else {
+                ServerError::PermissionStale
+            });
+        };
         // refused at once, not after the resumed turn.
         if !handle.status.claim_permission(request_id) {
             return Err(ServerError::PermissionStale);
@@ -1699,14 +1759,17 @@ impl Service {
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(session_id);
         }
-        let sequencer = Sequencer::spawn(
-            session_id,
-            super::store::PersistingEmitter::new(session_id, bus, (*history).clone()),
-            next_seq,
-        );
+        let mut emitter = super::store::PersistingEmitter::new(session_id, bus, (*history).clone());
+        if let Some((parent_id, parent)) =
+            child_parent.and_then(|id| self.handle(id).map(|h| (id, h)))
+        {
+            emitter = emitter.with_permission_mirror(session_id, parent_id, parent.sequencer);
+        }
+        let sequencer = Sequencer::spawn(session_id, emitter, next_seq);
 
         for (request_id, tool_call_id) in expired {
             let payload = serde_json::to_value(crate::bus::event::PermissionResolved {
+                child_session_id: None,
                 request_id,
                 tool_call_id,
                 resolution: crate::bus::event::PermissionResolution::Expired,
@@ -1761,6 +1824,42 @@ impl Service {
             agents, role,
         )));
         status.init_variant(selected.clone());
+        if child_parent.is_none() {
+            let history = self.history.clone();
+            status.install_delivery(Arc::new(move |mut transcript| {
+                let history = history.clone();
+                Box::pin(async move {
+                    history.flush().await?;
+                    let notices = history.unconsumed_completions(session_id).await?;
+                    if notices.is_empty() {
+                        return Ok(None);
+                    }
+                    let mut children = Vec::new();
+                    for (child, payload, result) in notices {
+                        let mut result = crate::tools::bound_output(&result, 15 * 1024).0;
+                        let mut text = serde_json::json!({
+                            "untrusted_subagent_output": true,
+                            "child_session_id": child,
+                            "agent": payload["agent"],
+                            "outcome": payload["outcome"],
+                            "result": result,
+                        })
+                        .to_string();
+                        while text.len() > 16 * 1024 {
+                            result = crate::tools::bound_output(&result, result.len() / 2).0;
+                            text = serde_json::json!({"untrusted_subagent_output":true,"child_session_id":child,
+                                "agent":payload["agent"],"outcome":payload["outcome"],"result":result}).to_string();
+                        }
+                        transcript.push(ChatMessage::User { provenance: crate::provider::openai::UserProvenance::Subagent, content: text });
+                        children.push(child);
+                    }
+                    history
+                        .consume_completions(session_id, children, transcript.clone())
+                        .await?;
+                    Ok(Some(transcript))
+                })
+            }));
+        }
         // A compaction is saved with the transcript, in one acknowledged write.
         status.install_checkpoint_saver(Arc::new(move |transcript, compaction| {
             let history = saver_history.clone();
@@ -1842,7 +1941,16 @@ impl Service {
             self.lock_sessions().insert(session_id, handle);
         }
         if child_parent.is_none() {
+            if let Some(owner) = self.handle(session_id) {
+                self.history
+                    .drain_permission_mirrors(session_id, owner.sequencer)
+                    .await
+                    .map_err(ServerError::History)?;
+            }
             self.drain_completions(session_id).await;
+            if let Some(owner) = self.handle(session_id) {
+                owner.status.wake_delivery();
+            }
         }
         // The host learns of the session once it is routable. A session
         // already closing hands back a subscription that ends at once.

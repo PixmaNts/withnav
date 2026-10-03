@@ -114,6 +114,7 @@ fn history(turns: usize, reasoning: bool) -> Vec<ChatMessage> {
         .flat_map(|n| {
             [
                 ChatMessage::User {
+                    provenance: Default::default(),
                     content: format!("request {n}"),
                 },
                 ChatMessage::Assistant {
@@ -471,6 +472,7 @@ fn rich_history() -> Vec<ChatMessage> {
     use navai::provider::openai::{RequestFunction, RequestToolCall};
     vec![
         ChatMessage::User {
+            provenance: Default::default(),
             content: "request 0".into(),
         },
         ChatMessage::Assistant {
@@ -500,6 +502,7 @@ fn rich_history() -> Vec<ChatMessage> {
             tool_calls: vec![],
         },
         ChatMessage::User {
+            provenance: Default::default(),
             content: "request 1".into(),
         },
     ]
@@ -732,6 +735,7 @@ async fn the_fit_check_measures_the_projection_the_target_will_receive() {
         .flat_map(|n| {
             [
                 ChatMessage::User {
+                    provenance: Default::default(),
                     content: format!("request {n}"),
                 },
                 ChatMessage::Assistant {

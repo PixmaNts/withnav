@@ -235,6 +235,7 @@ enum WriteError {
 /// thread plus the shared path for blocking reads. Cheap to clone.
 #[derive(Clone)]
 pub struct HistoryStore {
+    owner: Option<Ulid>,
     tx: mpsc::Sender<Msg>,
     path: Arc<PathBuf>,
 }
@@ -271,6 +272,7 @@ impl HistoryStore {
             .spawn(move || writer_loop(conn, rx))
             .map_err(|e| format!("history writer thread: {e}"))?;
         Ok(Self {
+            owner: None,
             tx,
             path: Arc::new(path),
         })
@@ -316,18 +318,20 @@ impl HistoryStore {
         envelope: EventEnvelope,
     ) -> Result<(), String> {
         let path = self.path.clone();
+        let owner = self.owner.map(|id| id.to_string());
         tokio::task::spawn_blocking(move || {
             let parent_id = envelope.session_id;
             let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
-            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
             let inserted = tx.execute(
-                "INSERT INTO child_links (parent_id, child_id, agent, goal, policy_snapshot, status, created_at)
-                 SELECT ?1, ?2, ?3, ?4, ?5, 'running', ?6
+                "INSERT INTO child_links (parent_id, child_id, agent, goal, policy_snapshot, status, created_at, owner_instance)
+                 SELECT ?1, ?2, ?3, ?4, ?5, 'running', ?6, ?8
                  WHERE (SELECT COUNT(*) FROM child_links WHERE parent_id=?1 AND status IN ('starting','running')) < ?7
                    AND EXISTS(SELECT 1 FROM sessions WHERE id=?1)
                    AND EXISTS(SELECT 1 FROM sessions WHERE id=?2)",
                 params![parent_id.to_string(), child_id.to_string(), agent, goal,
-                    policy_snapshot, now_rfc3339(), capacity as i64],
+                    policy_snapshot, now_rfc3339(), capacity as i64, owner],
             ).map_err(|e| e.to_string())?;
             if inserted == 0 { return Err("subagent capacity reached or parent/child session is missing".into()); }
             insert_committed_event(&tx, &envelope)?;
@@ -342,6 +346,16 @@ impl HistoryStore {
             let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
             let count: i64 = conn.query_row("SELECT COUNT(*) FROM child_links WHERE parent_id=?1 AND status IN ('starting','running')", [parent_id.to_string()], |row| row.get(0)).map_err(|e| e.to_string())?;
             usize::try_from(count).map_err(|e| e.to_string())
+        }).await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn child_ids(&self, parent: Ulid) -> Result<Vec<Ulid>, String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare("SELECT child_id FROM child_links WHERE parent_id=?1 ORDER BY created_at, child_id").map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([parent.to_string()], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
+            rows.map(|row| row.map_err(|e| e.to_string())?.parse().map_err(|e| format!("child id: {e}"))).collect()
         }).await.map_err(|e| e.to_string())?
     }
 
@@ -374,43 +388,56 @@ impl HistoryStore {
     ) -> Result<Option<ChildLink>, String> {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
-            let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
-            let tx = conn.transaction().map_err(|e| e.to_string())?;
-            let terminal_at = now_rfc3339();
-            let changed = tx.execute(
-                "UPDATE child_links SET status=?2, terminal_at=?3, terminal_reason=?4, result_text=?5
-                 WHERE child_id=?1 AND status='running'",
-                params![child_id.to_string(), status, terminal_at, reason, result],
-            ).map_err(|e| e.to_string())?;
-            if changed == 0 { tx.rollback().map_err(|e| e.to_string())?; return Ok(None); }
-            let row = tx.query_row(
-                "SELECT parent_id, child_id, agent, goal, policy_snapshot, status, created_at, terminal_at, terminal_reason, result_text
-                 FROM child_links WHERE child_id=?1",
-                [child_id.to_string()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?, row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?,
-                    row.get::<_, Option<String>>(8)?, row.get::<_, Option<String>>(9)?)),
-            ).map_err(|e| e.to_string())?;
-            let outcome = match status.as_str() {
-                "done" => crate::bus::event::SubagentOutcome::Done,
-                "failed" => crate::bus::event::SubagentOutcome::Failed,
-                _ => crate::bus::event::SubagentOutcome::Stopped,
-            };
-            let payload = serde_json::to_string(&crate::bus::event::SubagentDone {
-                parent_session_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
-                child_session_id: child_id, agent: row.2.clone(), outcome,
-                reason: reason.clone(), notification_id: Ulid::new(),
-            }).map_err(|e| e.to_string())?;
-            tx.execute("INSERT INTO completion_outbox (child_id, parent_id, outcome, result_ref, payload) VALUES (?1, ?2, ?3, ?1, ?4)",
-                params![child_id.to_string(), row.0, status, payload]).map_err(|e| e.to_string())?;
-            tx.commit().map_err(|e| e.to_string())?;
-            Ok(Some(ChildLink {
-                parent_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
-                child_id: row.1.parse().map_err(|e| format!("child id: {e}"))?,
-                agent: row.2, goal: row.3, policy_snapshot: row.4, status: row.5,
-                created_at: row.6, terminal_at: row.7, terminal_reason: row.8, result_text: row.9,
-            }))
-        }).await.map_err(|e| e.to_string())?
+            finish_child_link_sync(&path, child_id, status, reason, result)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+
+    pub(super) fn set_owner(&mut self, owner: Ulid) {
+        self.owner = Some(owner);
+    }
+
+    pub(super) fn recover_children(&self, instances: &Path) -> Result<(), String> {
+        let conn = Connection::open(&*self.path).map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT child_id, owner_instance FROM child_links WHERE status IN ('starting','running')")
+            .map_err(|e| e.to_string())?;
+        let ids = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        drop(stmt);
+        drop(conn);
+        let mut locks = std::collections::HashMap::new();
+        for (id, owner) in ids {
+            let owner = owner
+                .map(|id| id.parse::<Ulid>().map_err(|e| e.to_string()))
+                .transpose()?;
+            if let Some(owner) = owner {
+                if let std::collections::hash_map::Entry::Vacant(entry) = locks.entry(owner) {
+                    let Some(lock) = super::instance::stale_lock(instances, owner)? else {
+                        continue;
+                    };
+                    entry.insert(lock);
+                }
+            }
+            finish_child_link_sync(
+                &self.path,
+                id.parse().map_err(|e| format!("child id: {e}"))?,
+                "stopped".into(),
+                Some("restart".into()),
+                String::new(),
+            )?;
+        }
+        for (owner, _lock) in locks {
+            std::fs::remove_file(instances.join(format!("{owner}.lock")))
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     pub async fn child_link(&self, child_id: Ulid) -> Result<Option<ChildLink>, String> {
@@ -450,6 +477,85 @@ impl HistoryStore {
         }).await.map_err(|e| e.to_string())?
     }
 
+    pub async fn repair_permission_mirrors(&self, parent: Ulid) -> Result<(), String> {
+        let events = self.permission_events(parent).await?;
+        let mut open = std::collections::BTreeMap::new();
+        for event in events {
+            if event.kind == "permission.requested" {
+                if let Some(child) = event.payload["child_session_id"].as_str() {
+                    open.insert(
+                        event.payload["request_id"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                        (child.to_string(), event.payload),
+                    );
+                }
+            } else {
+                open.remove(event.payload["request_id"].as_str().unwrap_or_default());
+            }
+        }
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+            for (request, (child, payload)) in open {
+                let terminal = tx.query_row("SELECT status FROM child_links WHERE child_id=?1", [&child], |row| row.get::<_, String>(0)).optional().map_err(|e| e.to_string())?;
+                let resolution = tx.query_row("SELECT envelope FROM events WHERE session_id=?1 AND kind='permission.resolved' AND json_extract(envelope,'$.payload.request_id')=?2 ORDER BY seq DESC LIMIT 1", params![child, request], |row| row.get::<_, String>(0)).optional().map_err(|e| e.to_string())?;
+                let mut resolved = if let Some(event) = resolution {
+                    serde_json::from_str::<EventEnvelope>(&event).map_err(|e| e.to_string())?.payload
+                } else if terminal.as_deref().is_none_or(|state| !matches!(state,"running"|"starting")) {
+                    serde_json::json!({"request_id":request,"tool_call_id":payload["tool_call_id"],"resolution":"expired"})
+                } else { continue; };
+                resolved["child_session_id"] = serde_json::json!(child);
+                queue_permission_resolution(&tx, parent, &resolved).map_err(|e| e.to_string())?;
+            }
+            tx.commit().map_err(|e| e.to_string())
+        }).await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn pending_permission_mirrors(
+        &self,
+        parent: Ulid,
+    ) -> Result<Vec<(String, serde_json::Value)>, String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare("SELECT request_id,payload FROM permission_outbox WHERE parent_id=?1 AND delivered=0 ORDER BY rowid").map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([parent.to_string()], |row| Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
+            rows.map(|row| { let (id,payload) = row.map_err(|e| e.to_string())?; Ok((id,serde_json::from_str(&payload).map_err(|e| e.to_string())?)) }).collect()
+        }).await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn drain_permission_mirrors(
+        &self,
+        parent: Ulid,
+        sequencer: crate::bus::sequencer::Sequencer,
+    ) -> Result<(), String> {
+        self.repair_permission_mirrors(parent).await?;
+        for (id, payload) in self.pending_permission_mirrors(parent).await? {
+            let path = self.path.clone();
+            let result = sequencer.commit_acked(crate::bus::sequencer::Candidate::new(EventKind::PermissionResolved,payload), Box::new(move |event| Box::pin(async move {
+                tokio::task::spawn_blocking(move || {
+                    let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+                    conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
+                    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+                    let changed = tx.execute("UPDATE permission_outbox SET delivered=1 WHERE parent_id=?1 AND request_id=?2 AND delivered=0",params![parent.to_string(),id]).map_err(|e| e.to_string())?;
+                    if changed == 0 { return Err("permission mirror already delivered".into()); }
+                    insert_committed_event(&tx,&event)?;
+                    tx.commit().map_err(|e| e.to_string())
+                }).await.map_err(|e| e.to_string())?
+            }))).await;
+            if let Err(error) = result {
+                if error != "permission mirror already delivered" {
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub async fn deliver_completion(
         &self,
         child: Ulid,
@@ -458,10 +564,49 @@ impl HistoryStore {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
             let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
-            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
             let changed = tx.execute("UPDATE completion_outbox SET delivered=1 WHERE child_id=?1 AND parent_id=?2 AND delivered=0", params![child.to_string(), envelope.session_id.to_string()]).map_err(|e| e.to_string())?;
             if changed == 0 { return Err("completion already delivered".into()); }
             insert_committed_event(&tx, &envelope)?;
+            tx.commit().map_err(|e| e.to_string())
+        }).await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn unconsumed_completions(
+        &self,
+        parent: Ulid,
+    ) -> Result<Vec<(Ulid, serde_json::Value, String)>, String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare("SELECT child_id, payload, result_text FROM completion_outbox WHERE parent_id=?1 AND consumed=0 ORDER BY rowid").map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([parent.to_string()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))).map_err(|e| e.to_string())?;
+            rows.map(|row| {
+                let (child, payload, result) = row.map_err(|e| e.to_string())?;
+                Ok((child.parse().map_err(|e| format!("child id: {e}"))?, serde_json::from_str(&payload).map_err(|e| e.to_string())?, result))
+            }).collect()
+        }).await.map_err(|e| e.to_string())?
+    }
+
+    /// Installs the transcript and consumes precisely its appended notices.
+    pub async fn consume_completions(
+        &self,
+        parent: Ulid,
+        children: Vec<Ulid>,
+        transcript: Vec<ChatMessage>,
+    ) -> Result<(), String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+            for child in children {
+                let changed = tx.execute("UPDATE completion_outbox SET consumed=1 WHERE child_id=?1 AND parent_id=?2 AND consumed=0", params![child.to_string(), parent.to_string()]).map_err(|e| e.to_string())?;
+                if changed != 1 { return Err("completion already consumed or missing".into()); }
+            }
+            let changed = tx.execute("UPDATE sessions SET transcript=?2, updated_at=?3 WHERE id=?1", params![parent.to_string(), serde_json::to_string(&transcript).map_err(|e| e.to_string())?, now_rfc3339()]).map_err(|e| e.to_string())?;
+            if changed != 1 { return Err("completion parent is missing".into()); }
             tx.commit().map_err(|e| e.to_string())
         }).await.map_err(|e| e.to_string())?
     }
@@ -699,6 +844,70 @@ fn writer_loop(mut conn: Connection, rx: mpsc::Receiver<Msg>) {
 
 /// Applies one write as ONE transaction: it commits whole or leaves the
 /// database untouched.
+fn finish_child_link_sync(
+    path: &Path,
+    child_id: Ulid,
+    status: String,
+    reason: Option<String>,
+    result: String,
+) -> Result<Option<ChildLink>, String> {
+    let mut conn = Connection::open(path).map_err(|e| e.to_string())?;
+    conn.busy_timeout(WRITER_BUSY_TIMEOUT)
+        .map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let terminal_at = now_rfc3339();
+    let changed = tx
+        .execute(
+            "UPDATE child_links SET status=?2, terminal_at=?3, terminal_reason=?4, result_text=?5
+                 WHERE child_id=?1 AND status IN ('starting','running')",
+            params![child_id.to_string(), status, terminal_at, reason, result],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        tx.rollback().map_err(|e| e.to_string())?;
+        return Ok(None);
+    }
+    let row = tx.query_row(
+                "SELECT parent_id, child_id, agent, goal, policy_snapshot, status, created_at, terminal_at, terminal_reason, result_text
+                 FROM child_links WHERE child_id=?1",
+                [child_id.to_string()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?, row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?, row.get::<_, Option<String>>(9)?)),
+            ).map_err(|e| e.to_string())?;
+    let outcome = match status.as_str() {
+        "done" => crate::bus::event::SubagentOutcome::Done,
+        "failed" => crate::bus::event::SubagentOutcome::Failed,
+        _ => crate::bus::event::SubagentOutcome::Stopped,
+    };
+    let payload = serde_json::to_string(&crate::bus::event::SubagentDone {
+        parent_session_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
+        child_session_id: child_id,
+        agent: row.2.clone(),
+        outcome,
+        reason: reason.clone(),
+        notification_id: Ulid::new(),
+    })
+    .map_err(|e| e.to_string())?;
+    tx.execute("INSERT INTO completion_outbox (child_id, parent_id, outcome, result_ref, payload, result_text) VALUES (?1, ?2, ?3, ?1, ?4, ?5)",
+                params![child_id.to_string(), row.0, status, payload, result]).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(Some(ChildLink {
+        parent_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
+        child_id: row.1.parse().map_err(|e| format!("child id: {e}"))?,
+        agent: row.2,
+        goal: row.3,
+        policy_snapshot: row.4,
+        status: row.5,
+        created_at: row.6,
+        terminal_at: row.7,
+        terminal_reason: row.8,
+        result_text: row.9,
+    }))
+}
+
 fn insert_committed_event(
     tx: &rusqlite::Transaction<'_>,
     envelope: &EventEnvelope,
@@ -729,8 +938,26 @@ fn insert_committed_event(
     Ok(())
 }
 
+fn queue_permission_resolution(
+    tx: &rusqlite::Transaction<'_>,
+    parent: Ulid,
+    payload: &serde_json::Value,
+) -> Result<(), WriteError> {
+    tx.execute(
+        "INSERT OR IGNORE INTO permission_outbox (parent_id,request_id,payload) VALUES (?1,?2,?3)",
+        params![
+            parent.to_string(),
+            payload["request_id"].as_str().unwrap_or_default(),
+            serde_json::to_string(payload)?
+        ],
+    )?;
+    Ok(())
+}
+
 fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
-    let tx = conn.transaction()?;
+    // Acquire write ownership before reads: a deferred WAL snapshot cannot
+    // upgrade after an outbox connection commits, even with a busy timeout.
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     match write {
         Write::RecordSession {
             id,
@@ -862,6 +1089,21 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             }
         }
         Write::AppendEvent { id, envelope } => {
+            if envelope.kind == "permission.resolved" {
+                let parent = tx
+                    .query_row(
+                        "SELECT parent_id FROM child_links WHERE child_id=?1",
+                        [id.to_string()],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?;
+                if let Some(parent) = parent {
+                    let mut payload = envelope.payload.clone();
+                    payload["child_session_id"] = serde_json::json!(id);
+                    let parent = parent.parse().map_err(|_| WriteError::UnknownSession(id))?;
+                    queue_permission_resolution(&tx, parent, &payload)?;
+                }
+            }
             let payload = serde_json::to_string(&envelope)?;
             tx.execute(
                 "INSERT OR IGNORE INTO events (session_id, seq, kind, envelope)
@@ -910,6 +1152,18 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             )?;
         }
         Write::Delete { id } => {
+            tx.execute(
+                "DELETE FROM permission_outbox WHERE parent_id=?1",
+                [id.to_string()],
+            )?;
+            tx.execute(
+                "DELETE FROM completion_outbox WHERE parent_id=?1",
+                [id.to_string()],
+            )?;
+            tx.execute(
+                "DELETE FROM child_links WHERE child_id=?1 OR parent_id=?1",
+                [id.to_string()],
+            )?;
             tx.execute(
                 "DELETE FROM events WHERE session_id = ?1",
                 params![id.to_string()],
@@ -968,6 +1222,13 @@ fn migrate(path: &Path) -> Result<(), String> {
             FOREIGN KEY(child_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS child_links_parent ON child_links(parent_id, created_at);
+        CREATE TABLE IF NOT EXISTS permission_outbox (
+            parent_id TEXT NOT NULL,
+            request_id TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            delivered INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(parent_id,request_id)
+        );
         CREATE TABLE IF NOT EXISTS completion_outbox (
             child_id TEXT PRIMARY KEY REFERENCES child_links(child_id) ON DELETE CASCADE,
             parent_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -978,6 +1239,32 @@ fn migrate(path: &Path) -> Result<(), String> {
         );",
     )
     .map_err(|e| format!("migrate: {e}"))?;
+    let has_owner = conn
+        .prepare("SELECT 1 FROM pragma_table_info('child_links') WHERE name='owner_instance'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| e.to_string())?;
+    if !has_owner {
+        conn.execute("ALTER TABLE child_links ADD COLUMN owner_instance TEXT", [])
+            .map_err(|e| e.to_string())?;
+    }
+    let has_consumption = conn
+        .prepare("SELECT 1 FROM pragma_table_info('completion_outbox') WHERE name='consumed'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| e.to_string())?;
+    if !has_consumption {
+        conn.execute_batch("BEGIN;
+            ALTER TABLE completion_outbox RENAME TO completion_outbox_legacy;
+            CREATE TABLE completion_outbox (
+                child_id TEXT PRIMARY KEY,
+                parent_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                outcome TEXT NOT NULL, result_ref TEXT NOT NULL, payload TEXT NOT NULL,
+                result_text TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0,
+                consumed INTEGER NOT NULL DEFAULT 0);
+            INSERT INTO completion_outbox (child_id,parent_id,outcome,result_ref,payload,result_text,delivered)
+                SELECT o.child_id,o.parent_id,o.outcome,o.result_ref,o.payload,COALESCE(c.result_text,''),o.delivered
+                FROM completion_outbox_legacy o LEFT JOIN child_links c ON c.child_id=o.child_id;
+            DROP TABLE completion_outbox_legacy; COMMIT;").map_err(|e| e.to_string())?;
+    }
     // A database from before `model_resolution`: add the nullable column.
     let has_column = conn
         .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'model_resolution'")
@@ -1054,14 +1341,25 @@ use crate::bus::SubscribeReply;
 /// (`llm.delta`, `context.updated`; never stored), `session.end` included — to the writer thread, in seq order, synchronously inside the single sequencer task. The
 /// hand-off is a channel send: the sequencer never waits on SQLite.
 pub struct PersistingEmitter {
+    mirror: Option<(Ulid, Ulid, crate::bus::sequencer::Sequencer)>,
     bus: crate::bus::SessionBus,
     session_id: Ulid,
     store: HistoryStore,
 }
 
 impl PersistingEmitter {
+    pub fn with_permission_mirror(
+        mut self,
+        child: Ulid,
+        parent_id: Ulid,
+        parent: crate::bus::sequencer::Sequencer,
+    ) -> Self {
+        self.mirror = Some((child, parent_id, parent));
+        self
+    }
     pub fn new(session_id: Ulid, bus: crate::bus::SessionBus, store: HistoryStore) -> Self {
         Self {
+            mirror: None,
             bus,
             session_id,
             store,
@@ -1071,6 +1369,19 @@ impl PersistingEmitter {
 
 impl Emitter for PersistingEmitter {
     fn emit(&mut self, envelope: EventEnvelope) {
+        if matches!(
+            envelope.kind.as_str(),
+            "permission.requested" | "permission.resolved"
+        ) {
+            if let Some((child, _, parent)) = &self.mirror {
+                let mut payload = envelope.payload.clone();
+                payload["child_session_id"] = serde_json::json!(child);
+                if envelope.kind == "permission.requested" {
+                    let kind = EventKind::PermissionRequested;
+                    let _ = parent.publish(crate::bus::sequencer::Candidate::new(kind, payload));
+                }
+            }
+        }
         let kind = envelope.kind.as_str();
         // An unknown name is stored: only a catalog kind marked live-only is not.
         if EventKind::from_wire(kind).is_none_or(EventKind::is_durable) {
@@ -1083,6 +1394,17 @@ impl Emitter for PersistingEmitter {
                 }
             }
             self.store.append_event(self.session_id, envelope.clone());
+            if envelope.kind == "permission.resolved" {
+                if let Some((_, parent_id, parent)) = &self.mirror {
+                    let (store, parent_id, parent) =
+                        (self.store.clone(), *parent_id, parent.clone());
+                    tokio::spawn(async move {
+                        if store.flush().await.is_ok() {
+                            let _ = store.drain_permission_mirrors(parent_id, parent).await;
+                        }
+                    });
+                }
+            }
         }
         self.bus.emit(envelope);
     }
@@ -1137,6 +1459,48 @@ fn strip_editor_context(content: &str) -> String {
 mod tests {
     use super::*;
     use crate::bus::event::EventKind;
+
+    #[tokio::test]
+    async fn permission_writer_waits_for_outbox_write_ownership_without_poisoning_flush() {
+        let (dir, store) = temp_store();
+        let id = Ulid::new();
+        store
+            .record_session(id, "/ws", "model", None)
+            .await
+            .unwrap();
+        let mut other = side_connection(&dir);
+        let tx = other
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        tx.execute(
+            "UPDATE sessions SET title='outbox owner' WHERE id=?1",
+            [id.to_string()],
+        )
+        .unwrap();
+        store.append_event(
+            id,
+            EventEnvelope::new(
+                id,
+                0,
+                EventKind::PermissionResolved,
+                serde_json::json!({"request_id":Ulid::new(),"resolution":"allow_once"}),
+            ),
+        );
+        let flushing = store.flush();
+        tokio::pin!(flushing);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut flushing)
+                .await
+                .is_err()
+        );
+        tx.commit().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), &mut flushing)
+            .await
+            .unwrap()
+            .unwrap();
+        store.flush().await.unwrap();
+        assert_eq!(store.replay(id, None, 0).await.unwrap().len(), 1);
+    }
 
     fn envelope(seq: u64, kind: EventKind) -> EventEnvelope {
         EventEnvelope::new(Ulid::new(), seq, kind, serde_json::json!({ "n": seq }))
@@ -1196,6 +1560,7 @@ mod tests {
         store.save_transcript(
             id,
             vec![ChatMessage::User {
+                provenance: Default::default(),
                 content: "hi".into(),
             }],
         );
@@ -1369,6 +1734,7 @@ mod tests {
         store.save_transcript(
             id,
             vec![ChatMessage::User {
+                provenance: Default::default(),
                 content: "hi".into(),
             }],
         );
@@ -1468,6 +1834,23 @@ mod tests {
         assert!(store.deliver_completion(child, event).await.is_err());
         assert!(store.pending_completions(parent).await.unwrap().is_empty());
         assert_eq!(store.replay(parent, None, 1).await.unwrap().len(), 2);
+        store.delete(child).await.unwrap();
+        let pending = store.unconsumed_completions(parent).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].2, "answer");
+        store
+            .consume_completions(parent, vec![child], vec![])
+            .await
+            .unwrap();
+        assert!(store
+            .consume_completions(parent, vec![child], vec![])
+            .await
+            .is_err());
+        assert!(store
+            .unconsumed_completions(parent)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     // Given a store whose events table has been destroyed underneath it
@@ -1709,6 +2092,7 @@ mod tests {
         use crate::provider::openai::{RequestFunction, RequestToolCall};
         vec![
             ChatMessage::User {
+                provenance: Default::default(),
                 content: format!("request {n}"),
             },
             ChatMessage::Assistant {

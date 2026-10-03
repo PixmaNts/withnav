@@ -47,6 +47,17 @@ impl Service {
         self.wait_child_operation(id).await;
         let target = {
             let _admission = self.admission_gate.lock().await;
+            let children = self
+                .lock_sessions()
+                .iter()
+                .filter(|(_, h)| h.parent_session_id == Some(id))
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>();
+            for child in children {
+                if let Some(handle) = self.mark_stopping(child) {
+                    handle.session_cancel.cancel();
+                }
+            }
             let target = self.mark_stopping(id);
             if let Some(handle) = &target {
                 handle.session_cancel.cancel();
@@ -55,6 +66,7 @@ impl Service {
         };
         if let Some(handle) = target {
             self.fence_and_remove(id, handle, "stop requested").await;
+            self.close_children(id).await?;
             return Ok(());
         }
         let stored = self
@@ -63,10 +75,35 @@ impl Service {
             .await
             .map_err(ServerError::History)?;
         if stored {
+            self.close_children(id).await?;
             Ok(())
         } else {
             Err(ServerError::SessionNotFound(id.to_string()))
         }
+    }
+
+    async fn close_children(&self, parent: SessionId) -> Result<(), ServerError> {
+        for child in self
+            .history()
+            .child_ids(parent)
+            .await
+            .map_err(ServerError::History)?
+        {
+            self.wait_child_operation(child).await;
+            if let Some(handle) = self.handle(child) {
+                handle.session_cancel.cancel();
+                self.fence_and_remove(child, handle, "parent stopped").await;
+            }
+            self.finish_child(
+                parent,
+                child,
+                "stopped",
+                Some("parent_stopped".into()),
+                String::new(),
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     /// Graceful shutdown: stop every active session (each one's fence emits
@@ -88,7 +125,20 @@ impl Service {
         };
         drop(admission);
         for (id, handle) in targets {
+            self.wait_child_operation(id).await;
+            let parent = handle.parent_session_id;
             self.fence_and_remove(id, handle, "shutdown").await;
+            if let Some(parent) = parent {
+                let _ = self
+                    .finish_child(
+                        parent,
+                        id,
+                        "stopped",
+                        Some("shutdown".into()),
+                        String::new(),
+                    )
+                    .await;
+            }
         }
     }
 

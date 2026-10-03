@@ -164,6 +164,7 @@ pub fn build_summary_request(
     let mut cut = planned.prefix_elidable.iter();
     loop {
         let user = ChatMessage::User {
+            provenance: Default::default(),
             content: render_part(
                 input.current.map(|c| c.checkpoint.summary.as_str()),
                 input.transcript,
@@ -219,7 +220,7 @@ fn render_part(
             ChatMessage::System { content } => {
                 messages.push(json!({"role": "system", "text": content}))
             }
-            ChatMessage::User { content } => {
+            ChatMessage::User { content, .. } => {
                 messages.push(json!({"role": "user", "text": content}))
             }
             ChatMessage::Assistant {

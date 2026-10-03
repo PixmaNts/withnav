@@ -117,6 +117,8 @@ pub enum BusError {
 
 #[derive(Debug, Error)]
 pub enum ServerError {
+    #[error("child is not parked on its step budget")]
+    ChildNotParked,
     #[error("child sessions are read-only to clients")]
     ChildReadOnly,
     #[error("subagent capacity reached: {capacity} children are running; wait for one to finish")]

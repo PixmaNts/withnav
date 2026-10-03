@@ -75,9 +75,20 @@ An agent definition whose mode is `subagent` or `all`, meant to be given a task 
 (`explore` and `review` are built in and read-only). A cognition session may start one through
 `task(agent, prompt)` as a real, non-promptable child session. It has an independent transcript, an
 intersected snapshot of the parent's policy, a durable parent-child link, and bounded terminal
-result. `subagent.spawned` and `subagent.done` are replayable events. Delivery into the parent's
-transcript, idle wake, and parent-routed permissions are separate follow-up work.
+result. `subagent.spawned` and `subagent.done` are replayable events. Results enter the parent's
+transcript once, as bounded untrusted user messages at a turn boundary. Completion wakes an idle
+parent, but cannot answer its pending interaction. Child permissions are answered by the driver
+through the parent's API, with the interaction and grants remaining on the child. Parent stop and
+delete cascade; restart stops unfinished children without replaying their tools.
 _Avoid_: worker, child agent
+
+**Completion notice**:
+A durable outbox entry containing the child's id, outcome, agent and result, independent of the
+child's continued existence. `delivered` means its `subagent.done` event was committed to the parent
+stream; `consumed` means its result message was committed atomically into the parent's transcript.
+These are separate recovery boundaries. Several notices are consumed in order and never use the
+navigator's latest-wins inbox. Deleting the parent removes its notices.
+_Avoid_: tool result (the `task` tool already returned the child id), wake message
 
 ## Models and commands
 

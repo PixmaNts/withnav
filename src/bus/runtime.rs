@@ -11,6 +11,8 @@
 
 mod compact;
 mod deferred;
+mod delivery;
+pub use delivery::Delivery;
 mod model;
 
 use std::sync::{Arc, Mutex};
@@ -88,6 +90,8 @@ struct PermissionSlot {
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
+    budget_parked: std::sync::atomic::AtomicBool,
+    delivery: Mutex<Option<delivery::DeliveryCell>>,
     variant: Mutex<VariantSlot>,
     /// The session's context gauge: written by the runtime at each boundary,
     /// read on demand by the service.
@@ -106,6 +110,28 @@ pub struct RuntimeStatus {
 }
 
 impl RuntimeStatus {
+    pub fn continue_budget(&self) -> bool {
+        if self
+            .budget_parked
+            .compare_exchange(
+                true,
+                false,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        self.controls.tx.send(Control::Continue).is_ok()
+    }
+    pub fn wake_delivery(&self) {
+        let _ = self.controls.tx.send(Control::Delivery);
+    }
+    pub fn install_delivery(&self, delivery: Delivery) {
+        *self.delivery.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(delivery::DeliveryCell(delivery));
+    }
     /// A status that runs as the agent `selection` names.
     pub fn with_selection(selection: crate::agent::selection::AgentSelection) -> Self {
         Self {
@@ -602,6 +628,7 @@ async fn runtime_loop(
     let on_turn_end: SharedHook = Arc::new(Mutex::new(on_turn_end));
     let mut active_task_id: Option<Ulid> = None;
     let mut control = status.controls.take_receiver();
+    let mut delivery_waiting = false;
 
     loop {
         let inbound = tokio::select! {
@@ -613,6 +640,8 @@ async fn runtime_loop(
             Some(control) = recv_control(&mut control) => {
                 // Between turns: run it now, publish its result, then answer.
                 match control {
+                    Control::Continue => Some(Inbound::Continue),
+                    Control::Delivery => { delivery_waiting = true; continue; }
                     Control::Compact(request) => {
                         let outcome = compact::run(
                             &mut actor,
@@ -623,6 +652,7 @@ async fn runtime_loop(
                         )
                         .await;
                         compact::answer(&status, &sequencer, request, outcome).await;
+                        continue;
                     }
                     Control::Model(request) => {
                         let outcome = model::run(
@@ -635,9 +665,9 @@ async fn runtime_loop(
                         )
                         .await;
                         model::answer(&status, &sequencer, request, outcome).await;
+                        continue;
                     }
                 }
-                continue;
             }
             inbound = async {
                 // A command held behind an ask or a permission request goes
@@ -647,6 +677,20 @@ async fn runtime_loop(
                 }
                 inbox.next_inbound().await
             } => inbound,
+            _ = async {
+                if delivery_waiting && !actor.has_pending() { return; }
+                std::future::pending::<()>().await;
+            } => {
+                delivery_waiting = true;
+                if actor.has_pending() { continue; }
+                delivery_waiting = false;
+                match delivery::apply(&mut actor, &status, &sequencer).await {
+                    Ok(true) => Some(Inbound::Completion),
+                    Ok(false) => continue,
+                    Err(error) => { tracing::error!(%error, "subagent wake delivery failed"); break; }
+                }
+            }
+
         };
 
         let Some(inbound) = inbound else {
@@ -656,6 +700,11 @@ async fn runtime_loop(
         // A decision resumes the held call; a batch of commands starts a
         // turn the usual way.
         let resume: Option<(Ulid, PermissionDecision)> = match inbound {
+            Inbound::Continue => None,
+            Inbound::Completion => {
+                active_task_id = Some(Ulid::new());
+                None
+            }
             Inbound::Batch(_) => {
                 let held = actor.pending_permission().cloned();
                 let applied = inbox.apply_batch_to_actor(&mut actor);
@@ -703,8 +752,15 @@ async fn runtime_loop(
             }
         };
         // The turn runs as the agent and the variant selected now; a later
+        if let Err(error) = delivery::apply(&mut actor, &status, &sequencer).await {
+            tracing::error!(%error, "subagent transcript delivery failed");
+            break;
+        }
         // change waits for the turn to end.
         let (role, variant) = status.begin_turn().await;
+        status
+            .budget_parked
+            .store(false, std::sync::atomic::Ordering::Release);
         actor.role = role;
         actor.variant = variant.map(|(_, variant)| variant);
         // A request that would not fit this budget is compacted first.
@@ -769,6 +825,8 @@ async fn runtime_loop(
                     Some(control) = recv_control(&mut control) => {
                         // A turn is running: accept now, run it at its end.
                         match control {
+                            Control::Continue => {}
+                            Control::Delivery => { delivery_waiting = true; }
                             Control::Compact(request) => {
                                 let (operation_id, focus) =
                                     (request.operation_id, request.focus.clone());
@@ -923,6 +981,9 @@ async fn runtime_loop(
             }
             // `compact_when_full` consumes it before the run ends.
             Ok(RunOutcome::NeedsCompaction { .. }) | Ok(RunOutcome::StepBudgetExhausted) => {
+                status
+                    .budget_parked
+                    .store(true, std::sync::atomic::Ordering::Release);
                 if let Some(done) = &completion {
                     done(
                         crate::provider::AssistantMessage {
@@ -1070,6 +1131,7 @@ pub(crate) fn publish_resolved(
     let mut candidate = Candidate::new(
         EventKind::PermissionResolved,
         to_value(&PermissionResolved {
+            child_session_id: None,
             request_id: request.id,
             tool_call_id: request.tool_call_id.clone(),
             resolution,
@@ -1122,6 +1184,7 @@ fn permission_requested(
     request: &crate::agent::permissions::PermissionRequest,
 ) -> serde_json::Value {
     to_value(&crate::bus::event::PermissionRequested {
+        child_session_id: None,
         request_id: request.id,
         tool_call_id: request.tool_call_id.clone(),
         tool: request.tool.clone(),

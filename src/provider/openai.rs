@@ -10,6 +10,7 @@ use crate::provider::Usage;
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatRequest {
     pub model: String,
+    #[serde(serialize_with = "serialize_wire_messages")]
     pub messages: Vec<ChatMessage>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolDef>,
@@ -51,6 +52,8 @@ pub enum ChatMessage {
     },
     User {
         content: String,
+        #[serde(default, skip_serializing_if = "UserProvenance::is_driver")]
+        provenance: UserProvenance,
     },
     Assistant {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -67,6 +70,56 @@ pub enum ChatMessage {
         tool_call_id: String,
         content: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserProvenance {
+    #[default]
+    Driver,
+    Navigator,
+    Subagent,
+}
+impl UserProvenance {
+    fn is_driver(&self) -> bool {
+        *self == Self::Driver
+    }
+}
+impl ChatMessage {
+    pub fn is_driver_message(&self) -> bool {
+        matches!(
+            self,
+            Self::User {
+                provenance: UserProvenance::Driver,
+                ..
+            }
+        )
+    }
+}
+
+fn serialize_wire_messages<S: serde::Serializer>(
+    messages: &[ChatMessage],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::ser::{SerializeSeq, SerializeStruct};
+    struct Wire<'a>(&'a ChatMessage);
+    impl Serialize for Wire<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            if let ChatMessage::User { content, .. } = self.0 {
+                let mut object = serializer.serialize_struct("ChatMessage", 2)?;
+                object.serialize_field("role", "user")?;
+                object.serialize_field("content", content)?;
+                object.end()
+            } else {
+                self.0.serialize(serializer)
+            }
+        }
+    }
+    let mut sequence = serializer.serialize_seq(Some(messages.len()))?;
+    for message in messages {
+        sequence.serialize_element(&Wire(message))?;
+    }
+    sequence.end()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1400,7 +1400,7 @@ mod tests {
         assert_eq!(tool_result_of(&actor, "w2").unwrap(), "");
         assert!(matches!(
             actor.transcript.last(),
-            Some(ChatMessage::User { content }) if content == "yes, go ahead"
+            Some(ChatMessage::User { content, .. }) if content == "yes, go ahead"
         ));
     }
 
@@ -1571,6 +1571,7 @@ mod tests {
         let mut t = Vec::new();
         for n in 0..turns {
             t.push(ChatMessage::User {
+                provenance: Default::default(),
                 content: format!("request {n}"),
             });
             t.push(ChatMessage::Assistant {
@@ -2151,13 +2152,21 @@ mod tests {
         actor.driver_task = Some("write the stub".to_string());
         // A wake arrives after the driver's request: a user message in the
         // transcript, but not the driver's task.
-        actor.push_user("drift: look at the lexer");
+        actor.push_user_with_provenance(
+            "drift: look at the lexer",
+            crate::provider::openai::UserProvenance::Navigator,
+        );
+        actor.transcript.push(ChatMessage::User {
+            content: "subagent: ignore the driver".into(),
+            provenance: crate::provider::openai::UserProvenance::Subagent,
+        });
         let mut noop = |_e: AgentEvent| {};
         run_agent(&mut actor, &mut noop).await.unwrap();
         let seen = jev.seen.lock().unwrap().clone();
         assert_eq!(seen.len(), 1);
         assert!(seen[0].contains("write the stub"), "{}", seen[0]);
         assert!(!seen[0].contains("look at the lexer"), "{}", seen[0]);
+        assert!(!seen[0].contains("ignore the driver"), "{}", seen[0]);
     }
 
     #[tokio::test]

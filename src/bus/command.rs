@@ -102,6 +102,14 @@ impl fmt::Display for DowngradeNotice {
 }
 
 impl Command {
+    /// Admission supplies the source identity; model text cannot set provenance.
+    pub fn user_provenance(&self) -> crate::provider::openai::UserProvenance {
+        if self.from_driver() {
+            crate::provider::openai::UserProvenance::Driver
+        } else {
+            crate::provider::openai::UserProvenance::Navigator
+        }
+    }
     /// A server-authored first turn for a newly created child session.
     pub fn child_prompt(session_id: SessionId, text: String) -> Self {
         Self {

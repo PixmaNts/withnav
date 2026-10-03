@@ -33,6 +33,8 @@ pub struct PermissionAnswer {
 /// What woke the runtime.
 #[derive(Debug)]
 pub enum Inbound {
+    Completion,
+    Continue,
     /// Commands are buffered: apply them and run a turn.
     Batch(usize),
     /// A decision on a permission request.
@@ -210,7 +212,7 @@ impl ActorInbox {
             if cmd.from_driver() {
                 actor.driver_task = Some(text.clone());
             }
-            actor.push_user(text);
+            actor.push_user_with_provenance(text, cmd.user_provenance());
         }
         outcome
     }
@@ -275,7 +277,7 @@ mod tests {
             .transcript
             .iter()
             .filter_map(|m| match m {
-                ChatMessage::User { content } => Some(content.clone()),
+                ChatMessage::User { content, .. } => Some(content.clone()),
                 _ => None,
             })
             .collect()
@@ -387,11 +389,11 @@ mod tests {
         // Rest are user messages, FIFO:
         assert!(matches!(
             actor.transcript.get(1),
-            Some(ChatMessage::User { content }) if content == "second"
+            Some(ChatMessage::User { content, .. }) if content == "second"
         ));
         assert!(matches!(
             actor.transcript.get(2),
-            Some(ChatMessage::User { content }) if content == "third"
+            Some(ChatMessage::User { content, .. }) if content == "third"
         ));
         assert_eq!(actor.transcript.len(), 3);
         assert_eq!(actor.pending, None);
@@ -420,7 +422,7 @@ mod tests {
 
         assert!(matches!(
             actor.transcript.last(),
-            Some(ChatMessage::User { content }) if content == "lean left"
+            Some(ChatMessage::User { content, .. }) if content == "lean left"
         ));
         assert_eq!(actor.pending, None);
     }
@@ -557,6 +559,14 @@ mod tests {
         inbox.drain_transport();
         inbox.apply_batch_to_actor(&mut actor);
         assert_eq!(actor.driver_task.as_deref(), Some("build the parser"));
+        assert!(actor.transcript[0].is_driver_message());
+        assert!(!actor.transcript[1].is_driver_message());
+        let restored: Vec<ChatMessage> =
+            serde_json::from_value(serde_json::to_value(&actor.transcript).unwrap()).unwrap();
+        assert_eq!(
+            crate::agent::compaction::latest_user_batch(&restored),
+            Some(0..1)
+        );
         assert_eq!(
             user_texts(&actor),
             vec!["build the parser", "drift: look at the lexer"]

@@ -7,7 +7,7 @@ use crate::provider::openai::ChatMessage;
 pub type SafeBoundary = Arc<
     dyn Fn(
             Vec<ChatMessage>,
-        ) -> futures::future::BoxFuture<'static, Result<Vec<ChatMessage>, String>>
+        ) -> futures::future::BoxFuture<'static, Result<Option<Vec<ChatMessage>>, String>>
         + Send
         + Sync,
 >;

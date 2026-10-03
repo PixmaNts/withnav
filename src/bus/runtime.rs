@@ -92,6 +92,8 @@ struct PermissionSlot {
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
+    queued_driver: Arc<std::sync::atomic::AtomicUsize>,
+    boundary_deferred: std::sync::atomic::AtomicBool,
     pending_notice: Mutex<Option<delivery::NoticeCell>>,
     steering: Arc<steering::Steering>,
     budget_parked: std::sync::atomic::AtomicBool,
@@ -114,6 +116,10 @@ pub struct RuntimeStatus {
 }
 
 impl RuntimeStatus {
+    pub(crate) fn queue_driver(&self) {
+        self.queued_driver
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
     pub fn install_pending_notice(&self, callback: PendingNotice) {
         *self
             .pending_notice
@@ -677,10 +683,21 @@ async fn runtime_loop(
     let mut active_task_id: Option<Ulid> = None;
     let mut control = status.controls.take_receiver();
     let mut delivery_waiting = false;
+    inbox.track_driver(status.queued_driver.clone());
     let boundary_status = status.clone();
     actor.safe_boundary = Some(Arc::new(move |transcript| {
         let status = boundary_status.clone();
         Box::pin(async move {
+            if status
+                .queued_driver
+                .load(std::sync::atomic::Ordering::Acquire)
+                > 0
+            {
+                status
+                    .boundary_deferred
+                    .store(true, std::sync::atomic::Ordering::Release);
+                return Ok(None);
+            }
             let mut transcript = status.steering.apply(transcript);
             let callback = status
                 .delivery
@@ -693,7 +710,7 @@ async fn runtime_loop(
                     transcript = updated;
                 }
             }
-            Ok(transcript)
+            Ok(Some(transcript))
         })
     }));
 
@@ -960,22 +977,30 @@ async fn runtime_loop(
                 }
             }
         };
-        if completion.is_some() && matches!(outcome, Ok(RunOutcome::Done(_)) | Err(_)) {
-            if !status.steering.finish() {
-                // Admission and the terminal decision share the queue lock.
-                // Accepted guidance must run before publishing a terminal result.
-                outcome = Ok(RunOutcome::Interrupted);
-                interrupted_for_input = true;
-                let queued = status
-                    .steering
-                    .queue
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                replacement = queued.iter().find(|op| op.interrupt).map(|op| op.id);
-                drop(queued);
-                if replacement.is_none() {
-                    let _ = status.controls.tx.send(Control::Steer);
-                }
+        if status
+            .boundary_deferred
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            interrupted_for_input = true;
+            delivery_waiting = true;
+        }
+        if completion.is_some()
+            && matches!(outcome, Ok(RunOutcome::Done(_)) | Err(_))
+            && !status.steering.finish()
+        {
+            // Admission and the terminal decision share the queue lock.
+            // Accepted guidance must run before publishing a terminal result.
+            outcome = Ok(RunOutcome::Interrupted);
+            interrupted_for_input = true;
+            let queued = status
+                .steering
+                .queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            replacement = queued.iter().find(|op| op.interrupt).map(|op| op.id);
+            drop(queued);
+            if replacement.is_none() {
+                let _ = status.controls.tx.send(Control::Steer);
             }
         }
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);

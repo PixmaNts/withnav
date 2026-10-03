@@ -250,9 +250,10 @@ async fn a_legacy_row_gets_its_snapshot_at_activation() {
     let url = base(&server);
 
     // Refused first: no saved bound, provider down, cold cache.
-    let down = MockServer::start().await;
-    let down_url = base(&down);
-    drop(down);
+    // Nothing listens on the discard port: the connection is refused at
+    // once. A dropped mock server's port could be taken by another test
+    // running in parallel, which then answers as a live provider.
+    let down_url = "http://127.0.0.1:9/v1".to_string();
     let legacy = Ulid::new();
     let service = fx.service(&down_url, "mock-model", "cold-data");
     service

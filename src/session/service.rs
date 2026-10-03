@@ -95,6 +95,8 @@ pub struct SessionHandle {
     pub workspace: PathBuf,
     /// The alias the session was created with.
     pub model: String,
+    /// Typed decisions on permission requests, read by the runtime.
+    pub permissions: mpsc::Sender<crate::bus::inbox::PermissionAnswer>,
     /// The runtime's view of its actor: pending `ask`, running turn.
     pub status: Arc<runtime::RuntimeStatus>,
     /// What the session's model offers as variants; replaced when an offer
@@ -267,6 +269,39 @@ impl Service {
     pub async fn send(&self, command: Command) -> Result<MessageAccepted, ServerError> {
         let handle = self.routable_handle(command.session_id).await?;
         accept(&handle, command).await
+    }
+
+    /// Answers the permission request `request_id` of a live session with
+    /// `decision`. The request must be the one the session waits on:
+    /// [`ServerError::PermissionStale`] for one that was answered, cancelled,
+    /// expired or never existed. Returns once the runtime accepted the
+    /// decision; the resumed turn then runs on its own and reports on the
+    /// session stream (`permission.resolved`, then the turn's events).
+    pub async fn answer_permission(
+        &self,
+        session_id: SessionId,
+        request_id: Ulid,
+        decision: crate::agent::permissions::PermissionDecision,
+    ) -> Result<(), ServerError> {
+        let handle = self.routable_handle(session_id).await?;
+        if handle.status.pending_permission() != Some(request_id) {
+            return Err(ServerError::PermissionStale);
+        }
+        let (reply, accepted) = tokio::sync::oneshot::channel();
+        handle
+            .permissions
+            .try_send(crate::bus::inbox::PermissionAnswer {
+                request_id,
+                decision,
+                reply,
+            })
+            .map_err(|_| ServerError::PermissionStale)?;
+        match accepted.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(ServerError::PermissionStale),
+            // The runtime ended before it read the decision.
+            Err(_) => Err(ServerError::SessionStopping),
+        }
     }
 
     /// Creates a session: resolves models.json + the key and the context
@@ -726,6 +761,7 @@ impl Service {
         // THEN the runtime task; the handle is retained so /stop can await
         // the interrupted turn's events before the session.end fence.
         let (inbox_tx, inbox) = ActorInbox::channel();
+        let permissions = inbox.permission_sender();
         let on_turn_end: Option<crate::bus::runtime::TurnEndHook> =
             Some(Box::new(move |transcript: &[ChatMessage]| {
                 history.save_transcript(session_id, transcript.to_vec());
@@ -754,6 +790,7 @@ impl Service {
 
         let handle = SessionHandle {
             inbox_tx,
+            permissions,
             sequencer,
             session_cancel,
             runtime_task,

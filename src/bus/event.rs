@@ -424,6 +424,19 @@ pub enum PermissionResolution {
     Expired,
 }
 
+impl From<&crate::agent::permissions::PermissionDecision> for PermissionResolution {
+    fn from(decision: &crate::agent::permissions::PermissionDecision) -> Self {
+        use crate::agent::permissions::PermissionDecision as Decision;
+        match decision {
+            Decision::AllowOnce => Self::AllowOnce,
+            Decision::AllowFolder => Self::AllowFolder,
+            Decision::Deny { message } => Self::Deny {
+                message: message.clone(),
+            },
+        }
+    }
+}
+
 /// A permission request ended, by a decision, a stop or a restart. Published
 /// exactly once per `permission.requested`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -189,6 +189,7 @@ mod tests {
     fn wedged_runtime_handle() -> SessionHandle {
         SessionHandle {
             inbox_tx: mpsc::channel(1).0,
+            permissions: mpsc::channel(1).0,
             sequencer: Sequencer::spawn(Ulid::new(), SessionBus::default(), 0),
             session_cancel: CancellationToken::new(),
             runtime_task: Arc::new(Mutex::new(Some(tokio::spawn(async {

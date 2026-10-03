@@ -17,12 +17,14 @@ use ulid::Ulid;
 
 use crate::agent::actor::{AgentActor, AgentState};
 use crate::agent::context::{Breakdown, ContextSnapshot, ContextTracker};
-use crate::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
+use crate::agent::permissions::PermissionDecision;
+use crate::agent::run_loop::{resolve_permission, run_agent, AgentEvent, ResolveError, RunOutcome};
 use crate::bus::event::{
-    AgentStateChanged, AgentYield, EventKind, TaskDone, TaskStatus, ToolPostCall, ToolPreCall,
-    ToolSource, TurnEnd, TurnEndOutcome, TurnError, TurnStart, ROOT_ACTOR_ID,
+    AgentStateChanged, AgentYield, EventKind, PermissionResolution, PermissionResolved, TaskDone,
+    TaskStatus, ToolPostCall, ToolPreCall, ToolSource, TurnEnd, TurnEndOutcome, TurnError,
+    TurnStart, ROOT_ACTOR_ID,
 };
-use crate::bus::inbox::ActorInbox;
+use crate::bus::inbox::{ActorInbox, Inbound};
 use crate::bus::sequencer::{Candidate, Sequencer};
 use crate::error::AgentError;
 
@@ -62,6 +64,9 @@ pub struct RuntimeStatus {
     /// The profile's instructions, which the role message carries after the
     /// agent's prompt; needed to re-estimate the role when the agent changes.
     profile_prompt: Mutex<Option<String>>,
+    /// The id of the permission request the actor waits on, if any, so the
+    /// service can refuse a stale decision without waiting for the runtime.
+    pending_permission: Mutex<Option<Ulid>>,
     /// The primary agent the session runs as, and the agents it may switch
     /// to. A turn reads it at its start.
     pub selection: crate::agent::selection::AgentSelection,
@@ -79,6 +84,21 @@ impl RuntimeStatus {
     /// The agent asked the human something and waits for the answer.
     pub fn pending_ask(&self) -> bool {
         self.selection.ask_pending()
+    }
+
+    /// The id of the permission request waiting for a decision.
+    pub fn pending_permission(&self) -> Option<Ulid> {
+        match self.pending_permission.lock() {
+            Ok(guard) => *guard,
+            Err(poisoned) => *poisoned.into_inner(),
+        }
+    }
+
+    fn set_pending_permission(&self, id: Option<Ulid>) {
+        match self.pending_permission.lock() {
+            Ok(mut guard) => *guard = id,
+            Err(poisoned) => *poisoned.into_inner() = id,
+        }
     }
 
     fn slot(&self) -> std::sync::MutexGuard<'_, VariantSlot> {
@@ -126,6 +146,7 @@ impl RuntimeStatus {
         SelectedVariant,
     ) {
         let role = self.selection.begin_turn().await;
+        self.set_pending_permission(None);
         let mut slot = self.slot();
         if let Some(pending) = slot.pending.take() {
             slot.active = pending;
@@ -137,6 +158,7 @@ impl RuntimeStatus {
     /// The turn is over: an agent or variant change may apply.
     fn end_turn(&self, actor: &AgentActor) {
         self.selection.end_turn(actor.has_pending());
+        self.set_pending_permission(actor.pending_permission().map(|request| request.id));
         self.slot().running = false;
     }
 
@@ -415,24 +437,62 @@ async fn runtime_loop(
     let mut active_task_id: Option<Ulid> = None;
 
     loop {
-        let batch = tokio::select! {
+        let inbound = tokio::select! {
             biased;
             _ = session_cancel.cancelled() => {
                 actor.cancel.cancel();
                 break;
             }
-            batch = inbox.next_batch() => batch,
+            inbound = inbox.next_inbound() => inbound,
         };
 
-        let Some(_batch_len) = batch else {
+        let Some(inbound) = inbound else {
             break;
         };
 
-        if active_task_id.is_none() {
-            active_task_id = inbox.peek_first_buffered_command_id();
-        }
-
-        inbox.apply_batch_to_actor(&mut actor);
+        // A decision resumes the held call; a batch of commands starts a
+        // turn the usual way.
+        let resume: Option<(Ulid, PermissionDecision)> = match inbound {
+            Inbound::Batch(_) => {
+                if active_task_id.is_none() {
+                    active_task_id = inbox.peek_first_buffered_command_id();
+                }
+                let held = actor.pending_permission().cloned();
+                inbox.apply_batch_to_actor(&mut actor);
+                // Text never answers a request: it settles it as cancelled.
+                if let Some(request) = held {
+                    if actor.pending_permission().is_none() {
+                        publish_resolved(
+                            &sequencer,
+                            active_task_id,
+                            &request,
+                            PermissionResolution::Cancelled,
+                        );
+                    }
+                }
+                None
+            }
+            Inbound::Answer(answer) => {
+                let held = actor
+                    .pending_permission()
+                    .filter(|request| request.id == answer.request_id)
+                    .cloned();
+                let Some(request) = held else {
+                    let _ = answer
+                        .reply
+                        .send(Err(crate::agent::permissions::PermissionError::Stale));
+                    continue;
+                };
+                publish_resolved(
+                    &sequencer,
+                    active_task_id,
+                    &request,
+                    PermissionResolution::from(&answer.decision),
+                );
+                let _ = answer.reply.send(Ok(()));
+                Some((answer.request_id, answer.decision))
+            }
+        };
         // The turn runs as the agent and the variant selected now; a later
         // change waits for the turn to end.
         let (role, variant) = status.begin_turn().await;
@@ -466,7 +526,24 @@ async fn runtime_loop(
         let actor_cancel = actor.cancel.clone();
         let outcome = {
             let mut observe = |event: AgentEvent<'_>| turn.observe(event);
-            let turn_fut = run_agent(&mut actor, &mut observe);
+            let turn_fut = async {
+                match resume {
+                    None => run_agent(&mut actor, &mut observe).await,
+                    Some((request_id, decision)) => {
+                        match resolve_permission(&mut actor, request_id, decision, &mut observe)
+                            .await
+                        {
+                            Ok(outcome) => Ok(outcome),
+                            Err(ResolveError::Agent(err)) => Err(err),
+                            // Checked against the pending request above.
+                            Err(ResolveError::Rejected(err)) => {
+                                tracing::error!(error = %err, "a checked permission decision was rejected");
+                                Ok(RunOutcome::Interrupted)
+                            }
+                        }
+                    }
+                }
+            };
             tokio::pin!(turn_fut);
             tokio::select! {
                 biased;
@@ -622,8 +699,41 @@ async fn runtime_loop(
         }
     }
 
+    // A stop (or the end of the inbox) while a request waits: its calls never
+    // run, and the request ends as cancelled.
+    if let Some(request) = actor.pending_permission().cloned() {
+        actor.interrupt_pending_permission();
+        publish_resolved(
+            &sequencer,
+            active_task_id,
+            &request,
+            PermissionResolution::Cancelled,
+        );
+        snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
+    }
     teardown(&mut actor, &sequencer);
     actor
+}
+
+/// Publishes the end of a permission request, correlated to the task.
+pub(crate) fn publish_resolved(
+    sequencer: &Sequencer,
+    task_id: Option<Ulid>,
+    request: &crate::agent::permissions::PermissionRequest,
+    resolution: PermissionResolution,
+) {
+    let mut candidate = Candidate::new(
+        EventKind::PermissionResolved,
+        to_value(&PermissionResolved {
+            request_id: request.id,
+            tool_call_id: request.tool_call_id.clone(),
+            resolution,
+        }),
+    );
+    if let Some(task) = task_id {
+        candidate = candidate.with_correlation_id(task);
+    }
+    let _ = sequencer.publish(candidate);
 }
 
 type SharedHook = Arc<Mutex<TurnEndHook>>;

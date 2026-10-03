@@ -6,14 +6,38 @@
 //! InboxFull`) instead of dropping or blocking. The runtime drive loop calls the
 //! methods this module exposes.
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use ulid::Ulid;
 
 use crate::agent::actor::AgentActor;
+use crate::agent::permissions::{PermissionDecision, PermissionError};
 use crate::bus::command::{Command, DowngradeNotice};
 use crate::error::BusError;
 
 pub const INBOX_CAPACITY: usize = 256;
+
+/// How many decisions may wait for the runtime at once.
+const ANSWER_CAPACITY: usize = 16;
+
+/// A driver's decision on one permission request, on its way to the runtime.
+/// It is a typed message of its own, never a [`Command`]: no chat text can
+/// take its place. The runtime answers on `reply` as soon as it has accepted
+/// or refused the decision, before the resumed turn runs.
+#[derive(Debug)]
+pub struct PermissionAnswer {
+    pub request_id: Ulid,
+    pub decision: PermissionDecision,
+    pub reply: oneshot::Sender<Result<(), PermissionError>>,
+}
+
+/// What woke the runtime.
+#[derive(Debug)]
+pub enum Inbound {
+    /// Commands are buffered: apply them and run a turn.
+    Batch(usize),
+    /// A decision on a permission request.
+    Answer(PermissionAnswer),
+}
 
 /// What applying a drained batch did (besides pushing messages).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -31,6 +55,8 @@ pub struct BatchOutcome {
 pub struct ActorInbox {
     commands: Vec<Command>,
     _rx: mpsc::Receiver<Command>,
+    answers_tx: mpsc::Sender<PermissionAnswer>,
+    answers_rx: mpsc::Receiver<PermissionAnswer>,
 }
 
 /// Map a rejected enqueue onto the typed bus error the server turns into
@@ -51,13 +77,41 @@ impl ActorInbox {
     /// the in-actor buffer, sharing a single FIFO order.
     pub fn channel() -> (mpsc::Sender<Command>, Self) {
         let (tx, rx) = mpsc::channel(INBOX_CAPACITY);
+        let (answers_tx, answers_rx) = mpsc::channel(ANSWER_CAPACITY);
         (
             tx,
             Self {
                 commands: Vec::new(),
                 _rx: rx,
+                answers_tx,
+                answers_rx,
             },
         )
+    }
+
+    /// The sender of permission decisions for this actor. The inbox keeps
+    /// one of its own, so the channel never reads as closed while the inbox
+    /// lives.
+    pub fn permission_sender(&self) -> mpsc::Sender<PermissionAnswer> {
+        self.answers_tx.clone()
+    }
+
+    /// The runtime's wait primitive: a decision (they go first) or the next
+    /// FIFO batch of commands. `None` only when every command sender is
+    /// gone. Cancel safe.
+    pub async fn next_inbound(&mut self) -> Option<Inbound> {
+        if !self.commands.is_empty() {
+            return Some(Inbound::Batch(self.drain_transport()));
+        }
+        tokio::select! {
+            biased;
+            Some(answer) = self.answers_rx.recv() => Some(Inbound::Answer(answer)),
+            first = self._rx.recv() => {
+                let first = first?;
+                self.commands.push(first);
+                Some(Inbound::Batch(self.drain_transport()))
+            }
+        }
     }
 
     /// Whether the in-actor buffer holds at least one command.

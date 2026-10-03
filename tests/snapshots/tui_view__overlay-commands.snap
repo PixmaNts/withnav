@@ -14,7 +14,7 @@ expression: snapshot
             │ ❯ type a command…                                                        │            
             │▌/new [alias]          new conversation in a new tab                      │            
             │ /sessions             browse conversations                               │            
-            │ /model [alias]        choose model for a new conversation                │            
+            │ /model [alias]        switch this conversation's model                   │            
             │ /variant [name|off]   choose the model variant for this conversation     │            
             │ /stop                 stop generation                                    │            
             │ /mode                 cycle delivery mode (steer and interrupt send as n │            

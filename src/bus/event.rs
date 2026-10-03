@@ -520,6 +520,20 @@ pub struct SubagentDone {
     pub notification_id: Ulid,
 }
 
+/// What asked for a compaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompactionReason {
+    /// `/compact`.
+    Manual,
+    /// The next request would not fit the input budget: the turn was held at
+    /// a safe boundary, compacted and carried on.
+    Automatic,
+    /// A `/model` switch to a smaller window compacted first, with the model
+    /// the conversation was on.
+    Switch,
+}
+
 /// The conversation was compacted: a summary now stands for its start. A
 /// notice published after the checkpoint is stored; the stored checkpoint,
 /// not this event, is what a resume restores from. The events before it are
@@ -536,6 +550,9 @@ pub struct ContextCompacted {
     /// The estimated prompt size before and after, in tokens.
     pub estimate_before: u64,
     pub estimate_after: u64,
+    /// What asked for it. Absent in an event stored before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<CompactionReason>,
 }
 
 /// A gated tool call waits for a driver's decision. The call has not run.
@@ -1026,6 +1043,7 @@ mod tests {
                     pruned: 2,
                     estimate_before: 120_000,
                     estimate_after: 18_000,
+                    reason: Some(CompactionReason::Manual),
                 })
                 .unwrap(),
             ),

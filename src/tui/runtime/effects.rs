@@ -196,6 +196,7 @@ impl Executor {
                 session_id,
                 request,
                 revision,
+                token,
             } => {
                 let client = self.client.clone();
                 self.spawn_event(async move {
@@ -203,6 +204,7 @@ impl Executor {
                         generation,
                         name: request.name.clone(),
                         revision,
+                        token,
                         result: client.run_command(&session_id, request).await,
                     }
                 });

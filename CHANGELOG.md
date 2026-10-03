@@ -8,6 +8,33 @@ requests land in `develop`.
 
 ### Added
 
+- **Automatic compaction**: when the next request would not fit the model's input budget, the agent
+  compacts the conversation before sending it, at a step boundary, and carries the same turn on: no
+  `turn.end` in between, and the steps it had left are not renewed. The summary is written by the
+  session's own model and variant and aims below about 70% of the budget. A turn that outgrows the
+  window on its own may summarize its own earlier steps, keeping the latest exchange. It never runs
+  while a question or a permission request waits. If even the part that must stay verbatim does not
+  fit, the turn ends with an error saying that `/compact` cannot help either and that a model with a
+  larger window is needed. `/model` to a smaller window now compacts first, with the model the
+  conversation is on (the new one is never asked to read what it cannot hold), then switches; the
+  answer carries a `compacted` summary. If it still cannot fit, the switch is refused and nothing
+  changes. `context.compacted` gains a `reason` (`manual`, `automatic`, `switch`); events stored
+  before it have none.
+- **Switching model from the terminal client**: in a conversation, the model list (`f2` or
+  `/model`) now moves that conversation to the model you pick, and `/model <alias>` typed in the
+  message box does the same. Only the model changes: the conversation takes that model's default
+  variant, and `/variant` changes it after the switch. Picking the model already in use sends
+  nothing and says so. `ctrl+n` in the model list opens the model in a new tab instead, and
+  `/new <alias>` still opens a new tab. On an empty tab, picking a model and then a variant still
+  starts the conversation on them. While the agent is working, the switch happens when its turn
+  ends, and the top row shows `→ alias (after this turn)` until then; the mark goes away when that
+  switch is made or refused, when the conversation stops, or when the tab is closed. While the
+  agent waits for your answer or for a permission decision, the switch is refused and the reason
+  is shown. After a switch, the top row shows the new model, its variant and its window, and the
+  conversation shows one line such as `model: opus → luna · high · 872k`. Reading the model list
+  again does not change what the top row shows. If the server refuses the switch, its reason is
+  shown and nothing changes.
+
 - **`/model <alias>` switches the model of the conversation**: the conversation, its id and its
   stream stay; the next request goes to the new alias with its own default variant and the whole
   history. It runs between turns: at once when the session is idle, after the running turn

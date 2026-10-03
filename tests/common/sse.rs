@@ -176,6 +176,46 @@ pub async fn spawn_gated_provider(
     }
 }
 
+/// Like [`spawn_responding_provider`], but the answer to request `hold` is
+/// held back until `release` is notified, so a test can act while that
+/// request (a summary, say) is in flight. `reached` is notified once the
+/// held request has arrived.
+pub async fn spawn_holding_provider(
+    count: usize,
+    hold: usize,
+    reached: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    respond: impl Fn(usize, &str) -> Vec<u8> + Send + 'static,
+) -> CapturingProvider {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock bind");
+    let addr = listener.local_addr().expect("mock addr");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = requests.clone();
+    tokio::spawn(async move {
+        for i in 0..count {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                break;
+            };
+            let request = read_http_request(&mut sock).await;
+            let response = respond(i, &request);
+            captured.lock().expect("requests").push(request);
+            if i == hold {
+                reached.notify_one();
+                release.notified().await;
+            }
+            let _ = sock.write_all(&response).await;
+            let _ = sock.flush().await;
+            let _ = sock.shutdown().await;
+        }
+    });
+    CapturingProvider {
+        url: format!("http://{addr}/v1"),
+        requests,
+    }
+}
+
 /// A provider whose answers the test writes piece by piece: every request it accepts comes out
 /// of `requests` as its body and a sender; each string sent is written as one SSE `data:` frame,
 /// and dropping the sender ends the answer with `[DONE]`.

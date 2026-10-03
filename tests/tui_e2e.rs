@@ -1025,3 +1025,215 @@ async fn the_header_shows_the_workspace_branch_and_its_changes() {
     .await;
     assert!(screen(&mut rt).contains("trial ●2"));
 }
+
+/// A server whose two aliases talk to two providers: `alpha` (provider `a`, 128k) and `luna`
+/// (provider `b`, 256k, variants `low` and `high`, default `high`).
+async fn two_provider_env(root: tempfile::TempDir, a_url: &str, b_url: &str) -> Env {
+    isolate_xdg();
+    let config = TestServerConfig::mock(root.path(), a_url)
+        .model_alias("alpha", "model-a")
+        .chat_tools(128_000)
+        .config();
+    let entry = |provider: &str, model: &str, window: u64| {
+        json!({
+            "provider": provider, "model": model, "supports_tools": true,
+            "context_window": window, "reasoning_history": "preserve"
+        })
+    };
+    let mut luna = entry("b", "model-b", 256_000);
+    luna["variants"] = json!({
+        "low": {"reasoning_effort": "low"},
+        "high": {"reasoning_effort": "high"}
+    });
+    luna["default_variant"] = json!("high");
+    let provider = |url: &str| {
+        json!({"base_url": url, "api_key_env": "NAVAI_TEST_KEY", "headers": {},
+               "connect_timeout_ms": 2000, "request_timeout_ms": 600_000})
+    };
+    std::fs::write(
+        config.models_path.as_ref().expect("models path"),
+        json!({
+            "providers": {"a": provider(a_url), "b": provider(b_url)},
+            "models": {"alpha": entry("a", "model-a", 128_000), "luna": luna}
+        })
+        .to_string(),
+    )
+    .expect("models.json");
+    std::fs::write(
+        config.config_dir.join("auth.json"),
+        json!({"a": {"api_key": "key-a"}, "b": {"api_key": "key-b"}}).to_string(),
+    )
+    .expect("auth.json");
+    let state = navai::server::session::AppState::new(config).expect("state");
+    let (addr, task) = spawn_server(state).await;
+    let ws = workspace_of(&root);
+    std::fs::create_dir_all(&ws).expect("workspace dir");
+    Env {
+        base: format!("http://{addr}"),
+        ws,
+        task,
+        _root: root,
+    }
+}
+
+// Given a conversation on `alpha` (provider a)
+// When the model list switches it to `luna` and the next message is sent
+// Then the next request goes to provider b, the header and the tab show luna with its default
+//      variant and window, and the transcript shows one switch notice
+// And `/model alpha` typed in the editor switches it back, without opening a tab
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_model_list_and_slash_model_switch_the_live_conversation_between_providers() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let a = spawn_capturing_provider(vec![
+        final_answer("From a.", usage(10, 2)),
+        final_answer("Back on a.", usage(12, 2)),
+    ])
+    .await;
+    let b = spawn_capturing_provider(vec![final_answer("From b.", usage(11, 2))]).await;
+    let env = two_provider_env(root, &a.url, &b.url).await;
+    let mut rt = env.runtime();
+    rt.start(None);
+    until("the model catalog", &mut rt, |_, rt| {
+        rt.state.catalog.len() == 2
+    })
+    .await;
+    // on an empty tab, picking starts the conversation on alpha
+    pick_model(&mut rt, 0);
+    type_and_send(&mut rt, "hello");
+    until("the first answer", &mut rt, |_, rt| {
+        has_final(rt, "From a.")
+    })
+    .await;
+    assert_eq!(rt.state.selected_model_alias.as_deref(), Some("alpha"));
+
+    // the model list on a live tab: enter on luna switches the model; the server applies its
+    // default variant
+    press(&mut rt, KeyCode::F(2));
+    let shown = screen(&mut rt);
+    assert!(shown.contains("Switch this conversation to…"), "{shown}");
+    press(&mut rt, KeyCode::Down);
+    press(&mut rt, KeyCode::Enter);
+    assert_eq!(rt.ui.overlay, None, "no variant step");
+    until("the switch", &mut rt, |_, rt| {
+        rt.state.selected_model_alias.as_deref() == Some("luna")
+    })
+    .await;
+    assert_eq!(rt.state.tabs.len(), 1, "no new tab");
+    assert_eq!(rt.state.variant.as_deref(), Some("high"));
+    assert_eq!(rt.state.context_window, Some(256_000));
+    let header = screen(&mut rt)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    assert!(header.contains("luna"), "{header}");
+    let notices: Vec<_> = rt
+        .state
+        .conversation
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.kind {
+            BlockKind::Notice(n) if n.starts_with("model:") => Some(n.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notices, ["model: alpha → luna · high · 256k"]);
+
+    type_and_send(&mut rt, "and now?");
+    until("the answer from b", &mut rt, |_, rt| {
+        has_final(rt, "From b.")
+    })
+    .await;
+    assert_eq!(b.bodies().len(), 1, "the request went to provider b");
+    assert!(b.bodies()[0].contains("\"model-b\""), "{}", b.bodies()[0]);
+    assert_eq!(a.bodies().len(), 1);
+
+    // `/model alpha` typed in the editor switches back, in the same tab
+    type_and_send(&mut rt, "/model alpha");
+    until("the switch back", &mut rt, |_, rt| {
+        rt.state.selected_model_alias.as_deref() == Some("alpha")
+    })
+    .await;
+    assert_eq!(rt.state.tabs.len(), 1);
+    assert_eq!(rt.state.variant, None);
+    type_and_send(&mut rt, "again");
+    until("the answer from a", &mut rt, |_, rt| {
+        has_final(rt, "Back on a.")
+    })
+    .await;
+    assert_eq!(a.bodies().len(), 2);
+
+    // ctrl+n in the model list opens luna in a new tab; the first conversation stays on alpha
+    press(&mut rt, KeyCode::F(2));
+    press(&mut rt, KeyCode::Down);
+    rt.handle_terminal_event(Event::Key(KeyEvent::new(
+        KeyCode::Char('n'),
+        KeyModifiers::CONTROL,
+    )));
+    press(&mut rt, KeyCode::Enter);
+    assert_eq!((rt.state.tabs.len(), rt.state.active), (2, 1));
+    assert_eq!(rt.state.selected_model_alias.as_deref(), Some("luna"));
+    assert!(
+        rt.state.session.is_none(),
+        "it starts with the first message"
+    );
+    assert_eq!(
+        rt.state.tabs[0].selected_model_alias.as_deref(),
+        Some("alpha")
+    );
+}
+
+// Given a conversation on `alpha` whose answer is still streaming
+// When `/model luna` is typed
+// Then the server accepts it for after the turn: the header shows "→ luna (after this turn)"
+//      beside alpha; once the turn ends the conversation is on luna and the mark is gone
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_switch_typed_during_a_turn_waits_for_it_and_shows_in_the_header() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let mut a = spawn_streaming_provider().await;
+    let b = spawn_capturing_provider(vec![]).await;
+    let env = two_provider_env(root, &a.url, &b.url).await;
+    let mut rt = env.runtime();
+    rt.start(None);
+    until("the model catalog", &mut rt, |_, rt| {
+        rt.state.catalog.len() == 2
+    })
+    .await;
+    pick_model(&mut rt, 0);
+    type_and_send(&mut rt, "a long one");
+    let (_, answer) = next_request(&mut rt, &mut a).await;
+    answer.send(chunk(json!({"content": "working"}))).unwrap();
+    until("the turn running", &mut rt, |_, rt| {
+        rt.state.activity == Activity::Running
+    })
+    .await;
+
+    type_and_send(&mut rt, "/model luna");
+    until("the acceptance", &mut rt, |_, rt| {
+        rt.state.pending_model() == Some("luna")
+    })
+    .await;
+    assert_eq!(rt.state.selected_model_alias.as_deref(), Some("alpha"));
+    let header = screen(&mut rt)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    assert!(header.contains("→ luna (after this turn)"), "{header}");
+    assert!(header.contains("alpha"), "{header}");
+
+    answer.send(usage_chunk("stop", usage(10, 2))).unwrap();
+    drop(answer);
+    until("the switch after the turn", &mut rt, |_, rt| {
+        rt.state.selected_model_alias.as_deref() == Some("luna")
+            && rt.state.pending_model().is_none()
+    })
+    .await;
+    let header = screen(&mut rt)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    assert!(!header.contains("after this turn"), "{header}");
+    assert!(header.contains("luna"), "{header}");
+}

@@ -175,6 +175,18 @@ pub struct Tab {
     /// The variant chosen in the model picker for a conversation not created yet: `None` leaves
     /// the alias's default, `Some(None)` asks for none.
     pub start_variant: Option<Option<String>>,
+    /// The last `/model` this client sent, from the send until the server settles it: the header
+    /// shows `→ alias (after this turn)` once it is accepted for after the running turn.
+    pub model_switch: Option<ModelSwitch>,
+    /// The last token given to a command request of this tab.
+    pub command_token: u64,
+    /// The `/model` operations the stream reported as settled (done, refused, cancelled, or
+    /// carried by a `model.changed`), the last few: an HTTP answer arriving after its own result
+    /// does not mark a settled switch as waiting.
+    pub settled_model_ops: std::collections::VecDeque<String>,
+    /// The seq of the last `model.changed`: a session summary read at an older seq does not
+    /// overwrite the model.
+    pub model_seq: Option<u64>,
     /// The request an answer was sent for, until `permission.resolved` ends it (or the answer
     /// did not reach the server): its keys are ignored meanwhile, another request's are not.
     pub answered_permission: Option<String>,
@@ -222,6 +234,28 @@ impl Tab {
             && self.resuming.is_none()
             && self.pending_submit_text.is_none()
             && self.conversation.blocks.is_empty()
+    }
+}
+
+/// A `/model` this client sent and the server has not settled.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ModelSwitch {
+    pub alias: String,
+    /// The token of the request that asked for it: only its HTTP answer binds the operation.
+    pub token: u64,
+    /// The operation the server gave the command; `None` until its HTTP answer.
+    pub operation_id: Option<String>,
+    /// The server accepted it for after the running turn.
+    pub deferred: bool,
+}
+
+impl Tab {
+    /// The alias a switch accepted for after this turn goes to, while it waits.
+    pub fn pending_model(&self) -> Option<&str> {
+        self.model_switch
+            .as_ref()
+            .filter(|m| m.deferred)
+            .map(|m| m.alias.as_str())
     }
 }
 

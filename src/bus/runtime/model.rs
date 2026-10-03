@@ -140,8 +140,28 @@ fn identity_json(identity: &ModelIdentity) -> Value {
     })
 }
 
-/// Moves `actor` to the model `alias`. Nothing changes unless the target
-/// fits and the store acknowledged the choice.
+/// Moves `actor` to the model `alias`. Nothing about the selection changes
+/// unless the target fits and the store acknowledged the choice.
+///
+/// A conversation that is larger than the target's input budget is compacted
+/// first, by the model it is on now (the target may be too small to read it),
+/// aiming at the target's budget and writing the checkpoint under the target's
+/// terms.
+///
+/// Two acknowledged commits, in this order, never one transaction:
+///
+/// 1. the checkpoint (transcript and `sessions.checkpoint`, with its
+///    `context.compacted` of reason `switch`), installed on the actor;
+/// 2. the switch (selection, floor and `model.changed`).
+///
+/// If the second fails (the store refuses it, or a stop cancels it) the first
+/// stands: the conversation stays on the OLD model WITH the new checkpoint,
+/// which a resume restores. The checkpoint is a smaller prompt than before,
+/// measured for the target's budget; it is a valid prompt for the old model
+/// as well (the same transcript, summarized), but is not sized for it, so
+/// nothing is promised about how much room it leaves there. When even the
+/// recent turns that must stay verbatim do not fit the target, nothing is
+/// compacted and the switch is refused.
 pub(super) async fn run(
     actor: &mut AgentActor,
     status: &StdArc<RuntimeStatus>,
@@ -183,12 +203,17 @@ pub(super) async fn run(
     } else {
         actor.reasoning_floor
     };
-    let estimate = actor.context_breakdown_at(floor).total();
     let budget = target.limits.budget.input_budget;
-    if estimate > budget {
-        return Err(format!(
-            "the conversation does not fit {alias}'s window: /compact first"
-        ));
+    let mut compacted = None;
+    if actor.context_breakdown_at(floor).total() > budget {
+        compacted =
+            Some(compact_for_target(actor, status, sequencer, cancel, alias, floor, budget).await?);
+        if actor.context_breakdown_at(floor).total() > budget {
+            return Err(format!(
+                "the conversation still does not fit {alias}'s window after a compaction: \
+                 choose a model with a larger context window, or start a new conversation"
+            ));
+        }
     }
     // A session that is stopping commits nothing: the stop wins.
     if cancel.is_cancelled() {
@@ -257,7 +282,74 @@ pub(super) async fn run(
             "window": window,
             "input_budget": budget,
             "from_message": from_message,
+            "compacted": compacted.map(|done| json!({
+                "generation": done.generation,
+                "estimate_before": done.estimate_before,
+                "estimate_after": done.estimate_after,
+            })),
         }),
+    })
+}
+
+/// Compacts the conversation with the model it is on now, so that it fits
+/// `budget`, the input budget of the model it is about to move to. The
+/// estimate is the destination's: its reasoning policy applies (`floor`).
+async fn compact_for_target(
+    actor: &mut AgentActor,
+    status: &StdArc<RuntimeStatus>,
+    sequencer: &Sequencer,
+    cancel: &CancellationToken,
+    alias: &str,
+    floor: usize,
+    budget: u64,
+) -> Result<super::compact::Compacted, String> {
+    use super::compact::{install, summarize, Failure, Goal};
+    use crate::agent::compaction::{Aim, CompactionError};
+    use crate::bus::event::CompactionReason;
+
+    let source_budget = status
+        .context_snapshot()
+        .map(|snapshot| snapshot.input_budget)
+        .ok_or_else(|| "this session has no context budget".to_string())?;
+    // The transcript as the destination reads it.
+    let seen_by_target = actor.planning_transcript(floor);
+    let goal = Goal {
+        focus: None,
+        aim: Aim::Fit,
+        destination_budget: budget,
+        source_budget,
+    };
+    let refused = |why: String| {
+        format!(
+            "the conversation does not fit {alias}'s window and cannot be compacted to fit it: \
+             {why}"
+        )
+    };
+    let summarized = summarize(actor, status, cancel, &seen_by_target, goal)
+        .await
+        .map_err(|e| match e {
+            Failure::Compaction(CompactionError::Cancelled) => {
+                super::compact::CANCELLED.to_string()
+            }
+            Failure::Compaction(
+                e @ (CompactionError::Capacity { .. }
+                | CompactionError::NothingToCompact
+                | CompactionError::SummaryInputTooLarge { .. }),
+            ) => refused(e.to_string()),
+            other => format!("the compaction before the switch failed: {other}"),
+        })?;
+    install(
+        actor,
+        status,
+        sequencer,
+        cancel,
+        summarized,
+        CompactionReason::Switch,
+    )
+    .await
+    .map_err(|e| match e {
+        Failure::Compaction(CompactionError::Cancelled) => super::compact::CANCELLED.to_string(),
+        other => format!("the compaction before the switch failed: {other}"),
     })
 }
 

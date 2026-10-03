@@ -339,6 +339,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         }
         Some(EventKind::ContextCompacted) => {
             let v = e.payload;
+            s.conversation.last_compaction = serde_json::from_value(v.clone()).ok();
             let tokens = |key: &str| crate::agent::context::tokens_k(v[key].as_u64().unwrap_or(0));
             s.conversation.blocks.push(block(
                 format!("notice:{}", e.seq),

@@ -303,6 +303,8 @@ pub enum Action {
     CloseTab,
     /// Hides or shows the tab sidebar.
     ToggleSidebar,
+    /// Hides or shows the right column.
+    TogglePanel,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {

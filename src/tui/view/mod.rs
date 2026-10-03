@@ -1,6 +1,7 @@
 //! Draws the terminal UI without mutating the conversation projection.
 mod header;
 mod markdown;
+pub mod panel;
 mod permission;
 mod pickers;
 pub mod sidebar;
@@ -26,6 +27,8 @@ pub struct RenderCache {
     markdown: std::collections::HashMap<u64, markdown::MarkdownCache>,
     /// The open permission request whose keys line was on screen at the last draw.
     pub prompt_shown: Option<String>,
+    /// Whether the right column was drawn.
+    pub panel_drawn: bool,
 }
 
 /// Splits a hint line (`key label  key label`) into keys in text colour and labels in muted.
@@ -65,6 +68,7 @@ pub fn draw(
     markdown.set_theme(theme);
     let area = frame.area();
     frame.buffer_mut().set_style(area, theme.base());
+    cache.panel_drawn = false;
     if area.width < 24 || area.height < 9 {
         cache.prompt_shown = None;
         let bottom = area.bottom().saturating_sub(3);
@@ -84,6 +88,7 @@ pub fn draw(
         return;
     }
     let full = area;
+    let panel_shown = panel::shown(ui, area.width);
     let area = if sidebar::shown(ui, area.width) {
         let [bar, rest] = Layout::default()
             .direction(Direction::Horizontal)
@@ -112,6 +117,18 @@ pub fn draw(
         Paragraph::new("─".repeat(usize::from(area.width))).style(theme.border()),
         rule,
     );
+    // The right column sits beside the transcript; the transcript keeps at least 40 columns.
+    let transcript = if panel_shown && transcript.width >= panel::WIDTH + 40 {
+        let [left, right] = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(1), Constraint::Length(panel::WIDTH)])
+            .areas(transcript);
+        panel::draw(frame, right, state, &theme);
+        cache.panel_drawn = true;
+        left
+    } else {
+        transcript
+    };
     cache.prompt_shown = transcript::draw(frame, transcript, state, ui, &theme, markdown);
     frame.render_widget(
         Paragraph::new("─".repeat(usize::from(area.width))).style(theme.border()),

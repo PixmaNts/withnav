@@ -2266,6 +2266,12 @@ fn context_compacted_pushes_a_one_line_notice() {
         s.conversation.blocks.last().map(|b| b.kind.clone()),
         Some(BlockKind::Notice("context compacted: ~120k -> ~18k".into()))
     );
+    let kept = s
+        .conversation
+        .last_compaction
+        .as_ref()
+        .expect("kept for the panel");
+    assert_eq!((kept.generation, kept.estimate_after), (1, 18_000));
 }
 
 // ---------------------------------------------------------------- server commands

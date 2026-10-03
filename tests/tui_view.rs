@@ -2333,3 +2333,142 @@ fn the_header_shows_the_branch_its_changes_and_the_agent_in_its_colour() {
     assert!(header.contains("▌plan  cognition"), "{header}");
     assert!(header.contains("/ 200k"), "{header}");
 }
+
+// ---------------------------------------------------------------- right column
+
+fn snapshot_with(breakdown: navai::bus::event::Breakdown) -> navai::bus::event::ContextSnapshot {
+    navai::bus::event::ContextSnapshot {
+        alias: "cognition".into(),
+        variant: None,
+        window: 200_000,
+        window_source: "models.json".into(),
+        estimated: true,
+        estimate_total: 41_200,
+        breakdown,
+        output_reserve: 8192,
+        margin: 10_000,
+        input_budget: 181_808,
+        percent: 21,
+        last_usage: None,
+        skills: navai::bus::event::SkillCounts {
+            listed: 12,
+            omitted: 3,
+        },
+        rule_files: 2,
+        incarnation: ulid::Ulid(7),
+        revision: 1,
+    }
+}
+
+/// `done()` with a context snapshot, a compaction and git changes: what the column reads.
+fn with_panel_data() -> State {
+    let mut s = done();
+    s.conversation.context = Some(snapshot_with(navai::bus::event::Breakdown {
+        system: 3_100,
+        rules: 1_900,
+        skills_catalog: 2_400,
+        tools: 6_800,
+        messages: 27_000,
+    }));
+    s.conversation.last_compaction = Some(navai::bus::event::ContextCompacted {
+        generation: 1,
+        through_message: 40,
+        pruned: 6,
+        estimate_before: 150_000,
+        estimate_after: 38_000,
+    });
+    let files = (0..14)
+        .map(|n| navai::tui::git::Change {
+            mark: ['M', 'A', 'D', '?'][n % 4],
+            path: format!("src/tui/view/file_{n}.rs"),
+        })
+        .take(navai::tui::git::MAX_FILES)
+        .collect();
+    s.git = Some(navai::tui::git::GitStatus {
+        branch: Some("feat/tui-design".into()),
+        dirty: 14,
+        files,
+    });
+    s
+}
+
+#[test]
+fn the_right_column_reads_the_snapshot_the_compaction_and_git() {
+    let s = with_panel_data();
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    render("panel-160", (160, 40), &s, &ui, &Editor::new());
+    let shown = screen_text(&s, &ui, (160, 40));
+    for want in [
+        "AGENTS",
+        "● build  in use",
+        "Implements the task, verifies",
+        "○ explore",
+        "○ review",
+        "rules · 2 files",
+        "messages                    ~27k",
+        "next request          ~41k · 21%",
+        "input budget                182k",
+        "compacted ×1 · ~150k → ~38k",
+        "listed                        12",
+        "omitted, no room               3",
+        "M src/tui/view/file_0.rs",
+        "6 more",
+    ] {
+        assert!(shown.contains(want), "{want}: {shown}");
+    }
+    // nothing the server does not report
+    for absent in ["INTENT", "drift", "LAYERS", "MCP", "PLUGINS"] {
+        assert!(!shown.contains(absent), "{absent}: {shown}");
+    }
+}
+
+#[test]
+fn the_right_column_shows_a_dash_before_any_snapshot_and_no_changes_outside_git() {
+    let s = done();
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    let shown = screen_text(&s, &ui, (160, 30));
+    assert!(shown.contains("CONTEXT"), "{shown}");
+    assert!(shown.contains("SKILLS"), "{shown}");
+    assert!(shown.contains(" —"), "{shown}");
+    assert!(!shown.contains("CHANGES"), "not a repository: {shown}");
+}
+
+#[test]
+fn the_right_column_hides_under_140_columns_and_alt_r_toggles_it() {
+    let s = with_panel_data();
+    let mut ui = UiState::default();
+    assert!(!screen_text(&s, &ui, (139, 30)).contains("AGENTS"));
+    assert!(screen_text(&s, &ui, (140, 30)).contains("AGENTS"));
+    // alt+r flips what was on screen
+    let mut editor = Editor::new();
+    let action = route_key(
+        key(KeyCode::Char('r'), KeyModifiers::ALT),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(action, Some(Action::TogglePanel));
+    ui.panel_drawn = false;
+    let mut state = s.clone();
+    navai::tui::reducer::handle_action(&mut state, &mut ui, Action::TogglePanel);
+    assert_eq!(ui.panel_shown, Some(true));
+    assert!(
+        screen_text(&s, &ui, (120, 30)).contains("AGENTS"),
+        "shown on demand"
+    );
+    ui.panel_drawn = true;
+    navai::tui::reducer::handle_action(&mut state, &mut ui, Action::TogglePanel);
+    assert!(
+        !screen_text(&s, &ui, (200, 30)).contains("AGENTS"),
+        "hidden on demand"
+    );
+    // too narrow to leave the transcript room: not drawn even when asked for
+    ui.panel_shown = Some(true);
+    assert!(!screen_text(&s, &ui, (90, 30)).contains("AGENTS"));
+}

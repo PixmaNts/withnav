@@ -5,7 +5,6 @@ expression: snapshot
  Conversations       │ ◆ navai  …dev/project  ▌build  cognition · cc/claude-opus-5-5 · 12.4k / 200k 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
 ▌  build · idle      │ │ YOU                                                                        
-                     │ │  Explain the failure, then fix it.                                         
             ┌─────────────────────────── Keyboard shortcuts ───────────────────────────┐            
             │ enter                   send / choose                                    │            
             │ alt+enter / ctrl+j      newline                                          │            
@@ -15,6 +14,7 @@ expression: snapshot
             │ alt+1 … alt+9           switch to tab 1 … 9                              │            
             │ alt+w                   close tab (the conversation is kept)             │            
             │ alt+b                   hide / show the tab bar                          │            
+            │ alt+r                   hide / show the side panel                       │            
             │ f2                      models                                           │            
             │ f1                      help                                             │            
             │ tab                     build / plan (empty message)                     │            

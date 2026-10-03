@@ -1,0 +1,44 @@
+---
+source: tests/tui_view.rs
+expression: snapshot
+---
+ Conversations       │ ◆ navai  ~/dev/project  feat/tui-design ●14                                   ▌build  cognition · cc/claude-opus-5-5 · ~41k / 200k · 21% 
+▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+▌  build · idle      │ │ YOU                                                                                                │                                   
+                     │ │  Explain the failure, then fix it.                                                                 │ AGENTS                            
+                     │ │                                                                                                    │  ● build  in use                  
+                     │ │ ASSISTANT                                                                                          │    Implements the task, verifies  
+                     │ │ ▸ Reasoning                                                                                        │    it and reports                 
+                     │ │  The parser treats an empty argument as a missing value.                                           │  ○ explore  read-only codebase e… 
+                     │ │                                                                                                    │  ○ review  read-only code review  
+                     │ │ ▸ × bash cargo test parser  error  1.42 s  exit 101                                                │                                   
+                     │ │                                                                                                    │ CONTEXT                           
+                     │ │ ASSISTANT                                                                                          │  system                       ~3k 
+                     │ │  I found the failing test. The empty argument is discarded.                                        │  rules · 2 files              ~2k 
+                     │ │                                                                                                    │  skills                       ~2k 
+                     │                                                                                                      │  tools                        ~7k 
+                     │                                                                                                      │  messages                    ~27k 
+                     │                                                                                                      │  next request          ~41k · 21% 
+                     │                                                                                                      │  input budget                182k 
+                     │                                                                                                      │  compacted ×1 · ~150k → ~38k      
+                     │                                                                                                      │                                   
+                     │                                                                                                      │ SKILLS                            
+                     │                                                                                                      │  listed                        12 
+                     │                                                                                                      │  omitted, no room               3 
+                     │                                                                                                      │                                   
+                     │                                                                                                      │ CHANGES                           
+                     │                                                                                                      │  M src/tui/view/file_0.rs         
+                     │                                                                                                      │  A src/tui/view/file_1.rs         
+                     │                                                                                                      │  D src/tui/view/file_2.rs         
+                     │                                                                                                      │  ? src/tui/view/file_3.rs         
+                     │                                                                                                      │  M src/tui/view/file_4.rs         
+                     │                                                                                                      │  A src/tui/view/file_5.rs         
+                     │                                                                                                      │  D src/tui/view/file_6.rs         
+                     │                                                                                                      │  ? src/tui/view/file_7.rs         
+                     │                                                                                                      │    6 more                         
+                     │──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                     │ ready                                                                                                                  session 31.2k tok 
+                     │┌ Message ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ alt+1…9 switch      ││                                                                                                                                        │
+ alt+w close         │└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ alt+b hide bar      │ enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help

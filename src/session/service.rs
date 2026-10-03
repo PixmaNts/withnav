@@ -933,6 +933,25 @@ impl Service {
         accept(&handle, command).await
     }
 
+    pub async fn continue_child(
+        &self,
+        parent: SessionId,
+        child: SessionId,
+    ) -> Result<(), ServerError> {
+        let owner = self.routable_handle(parent).await?;
+        if owner.parent_session_id.is_some() {
+            return Err(ServerError::ChildReadOnly);
+        }
+        let handle = self.routable_handle(child).await?;
+        if handle.parent_session_id != Some(parent) {
+            return Err(ServerError::ChildReadOnly);
+        }
+        if !handle.status.continue_budget() {
+            return Err(ServerError::ChildNotParked);
+        }
+        Ok(())
+    }
+
     /// The permission requests of a stored session that never got a
     /// `permission.resolved`: `(request id, tool call id)`, oldest first.
     async fn unresolved_permissions(

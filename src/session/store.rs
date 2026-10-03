@@ -417,11 +417,11 @@ impl HistoryStore {
                 .map(|id| id.parse::<Ulid>().map_err(|e| e.to_string()))
                 .transpose()?;
             if let Some(owner) = owner {
-                if !locks.contains_key(&owner) {
+                if let std::collections::hash_map::Entry::Vacant(entry) = locks.entry(owner) {
                     let Some(lock) = super::instance::stale_lock(instances, owner)? else {
                         continue;
                     };
-                    locks.insert(owner, lock);
+                    entry.insert(lock);
                 }
             }
             finish_child_link_sync(

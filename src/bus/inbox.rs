@@ -34,6 +34,7 @@ pub struct PermissionAnswer {
 #[derive(Debug)]
 pub enum Inbound {
     Completion,
+    Continue,
     /// Commands are buffered: apply them and run a turn.
     Batch(usize),
     /// A decision on a permission request.

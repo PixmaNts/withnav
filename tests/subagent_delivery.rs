@@ -8,6 +8,92 @@ use serde_json::{json, Value};
 mod common;
 
 #[tokio::test]
+async fn owner_continue_admits_one_budget_renewal_and_child_finishes() {
+    use tower::ServiceExt;
+    let mut provider = common::sse::spawn_streaming_provider().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let state = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(128_000)
+        .state();
+    let parent = state.create_session(&ws, None, None).await.unwrap();
+    let other = state.create_session(&ws, None, None).await.unwrap();
+    let child = state
+        .create_child_session(parent, "explore", "inspect")
+        .await
+        .unwrap();
+    let (_, first) = provider.requests.recv().await.unwrap();
+    assert!(matches!(
+        state.continue_child(parent, child).await,
+        Err(navai::error::ServerError::ChildNotParked)
+    ));
+    assert!(matches!(
+        state.continue_child(other, child).await,
+        Err(navai::error::ServerError::ChildReadOnly)
+    ));
+    let steps = navai::agent::run_loop::max_steps();
+    let mut stream = Some(first);
+    for index in 0..steps {
+        let tx = stream.take().unwrap();
+        tx.send(tool_call_chunk(
+            &format!("read-{index}"),
+            "glob",
+            &json!({"pattern":"*"}),
+        ))
+        .unwrap();
+        drop(tx);
+        if index + 1 < steps {
+            stream = Some(provider.requests.recv().await.unwrap().1);
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let navai::bus::ResumeOutcome::Replay(events) =
+                state.subscribe(child, None).await.unwrap().replay
+            {
+                if events
+                    .iter()
+                    .any(|e| e.kind == "agent.yield" && e.payload["kind"] == "budget")
+                {
+                    break;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let app = navai::server::app(state.clone());
+    let request = || {
+        axum::http::Request::post(format!("/v1/sessions/{parent}/children/{child}/continue"))
+            .body(axum::body::Body::empty())
+            .unwrap()
+    };
+    let (a, b) = tokio::join!(
+        app.clone().oneshot(request()),
+        app.clone().oneshot(request())
+    );
+    let mut statuses = vec![a.unwrap().status().as_u16(), b.unwrap().status().as_u16()];
+    statuses.sort();
+    assert_eq!(statuses, vec![200, 409]);
+    let (_, stream) = provider.requests.recv().await.unwrap();
+    stream.send(text_chunk("child complete")).unwrap();
+    drop(stream);
+    let (_, stream) = tokio::time::timeout(Duration::from_secs(2), provider.requests.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        state.child_metadata(child).await.unwrap().unwrap().status,
+        "done"
+    );
+    assert_eq!(state.reserved_child_count(parent), 0);
+    state.close_all().await;
+    drop(stream);
+}
+
+#[tokio::test]
 async fn queued_driver_correction_precedes_completion_only_wake() {
     let mut provider = common::sse::spawn_streaming_provider().await;
     let tmp = tempfile::tempdir().unwrap();

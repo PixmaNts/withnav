@@ -21,6 +21,10 @@ requests land in `develop`.
   without occupying the parent actor's pending interaction. Grants remain child-local. Stopping a
   parent stops its children, deleting it removes the tree, and startup terminalizes unfinished
   children as stopped without replaying tools. No steer, interrupt, watchdog or nested TUI yet.
+  A driver can renew a budget-parked child's step budget once through
+  `POST /v1/sessions/{parent}/children/{child}/continue`; foreign owners are refused and a child
+  that is not budget-parked returns 409. This is distinct from permission answers and is not a
+  model tool.
 
 ## [0.3.0] - 2026-10-03
 

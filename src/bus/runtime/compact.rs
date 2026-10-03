@@ -94,6 +94,7 @@ pub struct CompactRequest {
 #[derive(Debug)]
 pub enum Control {
     Delivery,
+    Continue,
     Compact(CompactRequest),
     Model(super::model::ModelRequest),
 }

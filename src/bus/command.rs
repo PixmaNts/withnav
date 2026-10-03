@@ -115,6 +115,12 @@ impl Command {
         Ok(())
     }
 
+    /// Whether a driver wrote it: a `user:` source (the CLI, HTTP). Anything
+    /// else (the navigator's wakes) is not the driver's word.
+    pub fn from_driver(&self) -> bool {
+        self.source_actor_id.starts_with("user:")
+    }
+
     /// Concat of the Text blocks (the loop wants a string, the wire
     /// wants typed blocks). Non-Text blocks never reach here in a valid batch:
     /// `validate_content` runs at the accept boundary.

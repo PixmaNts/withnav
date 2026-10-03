@@ -533,7 +533,14 @@ async fn runtime_loop(
                 compact::answer(&status, &sequencer, request, outcome).await;
                 continue;
             }
-            inbound = inbox.next_inbound() => inbound,
+            inbound = async {
+                // A command held behind an ask or a permission request goes
+                // in once nothing is pending.
+                if !actor.has_pending() {
+                    inbox.release_held();
+                }
+                inbox.next_inbound().await
+            } => inbound,
         };
 
         let Some(inbound) = inbound else {
@@ -544,11 +551,15 @@ async fn runtime_loop(
         // turn the usual way.
         let resume: Option<(Ulid, PermissionDecision)> = match inbound {
             Inbound::Batch(_) => {
-                if active_task_id.is_none() {
-                    active_task_id = inbox.peek_first_buffered_command_id();
-                }
                 let held = actor.pending_permission().cloned();
-                inbox.apply_batch_to_actor(&mut actor);
+                let applied = inbox.apply_batch_to_actor(&mut actor);
+                // Only commands that were held: nothing changed, no turn.
+                let Some(first) = applied.first_applied else {
+                    continue;
+                };
+                if active_task_id.is_none() {
+                    active_task_id = Some(first);
+                }
                 // Text never answers a request: it settles it as cancelled.
                 if let Some(request) = held {
                     if actor.pending_permission().is_none() {

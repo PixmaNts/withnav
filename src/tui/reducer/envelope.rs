@@ -69,6 +69,16 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         "subagent.spawned" | "subagent.done" | "subagent.watchdog"
     ) {
         let v = &e.payload;
+        let own = s
+            .session
+            .as_ref()
+            .map(|m| m.session_id.as_str())
+            .or(s.resuming.as_deref());
+        if e.kind != "subagent.watchdog"
+            && (v["parent_session_id"].as_str() != own || own.is_none())
+        {
+            return Ok(());
+        }
         let id = v["child_session_id"].as_str().ok_or_else(bad)?;
         let at = s
             .children

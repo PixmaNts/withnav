@@ -278,13 +278,18 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             }
         }
         ClientEvent::Envelope { envelope, .. } => {
-            let spawned = (envelope.kind == "subagent.spawned")
-                .then(|| {
-                    envelope.payload["child_session_id"]
-                        .as_str()
-                        .map(str::to_string)
-                })
-                .flatten();
+            let spawned = (envelope.kind == "subagent.spawned"
+                && envelope.payload["parent_session_id"].as_str()
+                    == s.session
+                        .as_ref()
+                        .map(|m| m.session_id.as_str())
+                        .or(s.resuming.as_deref()))
+            .then(|| {
+                envelope.payload["child_session_id"]
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .flatten();
             // A turn may have changed files: the branch and the changes are read again.
             let turn_end = envelope.kind == crate::bus::event::EventKind::TurnEnd.as_str();
             let child_status = if s.read_only() {

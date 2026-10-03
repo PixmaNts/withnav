@@ -18,6 +18,21 @@ use ulid::Ulid;
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
 #[test]
+fn a_child_spawn_event_on_its_own_stream_adds_no_self_child() {
+    let mut s = subagent_parent();
+    s.session.as_mut().unwrap().session_id = Ulid(2).to_string();
+    s.parent_session_id = Some(Ulid(1).to_string());
+    let effects = subagent_event(
+        &mut s,
+        1,
+        "subagent.spawned",
+        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"explore","goal":"Read tests"}),
+    );
+    assert!(s.children.is_empty());
+    assert!(effects.is_empty());
+}
+
+#[test]
 fn startup_child_metadata_opens_read_only_without_resume() {
     let mut s = State::default();
     let effects = handle_action(
@@ -202,7 +217,7 @@ fn optional_subagent_delivery_and_watchdog_fields_are_tolerated() {
             &mut s,
             4,
             "subagent.done",
-            json!({"child_session_id":Ulid(2),"agent":"explore","outcome":"done","delivery":delivery}),
+            json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"explore","outcome":"done","delivery":delivery}),
         );
         subagent_event(
             &mut s,

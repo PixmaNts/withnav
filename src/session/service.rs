@@ -87,6 +87,7 @@ pub enum Lifecycle {
 /// so no lock is ever held across an await.
 #[derive(Clone)]
 pub struct SessionHandle {
+    pub(crate) publications: Arc<Mutex<Vec<CancellationToken>>>,
     pub incarnation: Ulid,
     /// Bounded per-actor command transport (message routes post here).
     pub inbox_tx: mpsc::Sender<Command>,
@@ -191,6 +192,12 @@ struct ChildReservation {
     parent: SessionId,
     committed: bool,
 }
+struct Publication(CancellationToken);
+impl Drop for Publication {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
 impl Drop for ChildReservation {
     fn drop(&mut self) {
         if !self.committed {
@@ -266,6 +273,8 @@ pub struct Service {
     catalog: crate::provider::catalog::ModelCatalog,
     #[cfg(debug_assertions)]
     child_preparation_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
+    child_publication_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     /// Test seam: parks a command run between its work and the publication
     /// of its result, to interleave lifecycle changes deterministically.
     /// Test seam: parks a model switch after its store write and before its
@@ -284,6 +293,20 @@ impl Service {
             .child_preparation_barrier
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_child_publication(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .child_publication_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn session_is_cancelled(&self, id: SessionId) -> bool {
+        self.handle(id)
+            .is_some_and(|h| h.session_cancel.is_cancelled())
     }
 
     #[cfg(debug_assertions)]
@@ -328,6 +351,8 @@ impl Service {
             catalog,
             #[cfg(debug_assertions)]
             child_preparation_barrier: Arc::default(),
+            #[cfg(debug_assertions)]
+            child_publication_barrier: Arc::default(),
             #[cfg(test)]
             install_barrier: Arc::default(),
             #[cfg(test)]
@@ -491,6 +516,32 @@ impl Service {
         if current.incarnation != incarnation || current.session_cancel.is_cancelled() {
             return Err(ServerError::SessionStopping);
         }
+        let publication = CancellationToken::new();
+        {
+            let mut pending = current
+                .publications
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            pending.retain(|token| !token.is_cancelled());
+            pending.push(publication.clone());
+        }
+        let _publication = Publication(publication);
+        drop(_admission);
+        #[cfg(debug_assertions)]
+        {
+            let barrier = self
+                .child_publication_barrier
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(barrier) = barrier {
+                barrier.reached.notify_one();
+                barrier.release.notified().await;
+            }
+        }
+        if parent_handle.session_cancel.is_cancelled() {
+            return Err(ServerError::SessionStopping);
+        }
         let child = prepared.session_id;
         self.unpublished_children
             .lock()
@@ -515,12 +566,16 @@ impl Service {
         let history = self.history.clone();
         let agent = agent.to_string();
         let goal = prompt.to_string();
+        let cancel = parent_handle.session_cancel.clone();
         if let Err(error) = parent_handle
             .sequencer
             .commit_acked(
                 Candidate::new(EventKind::SubagentSpawned, spawned_payload.clone()),
                 Box::new(move |envelope| {
                     Box::pin(async move {
+                        if cancel.is_cancelled() {
+                            return Err("parent cancelled before child commit".into());
+                        }
                         history
                             .create_child_link(child, agent, goal, frozen, cap, envelope)
                             .await
@@ -1590,6 +1645,7 @@ impl Service {
         ))));
 
         let handle = SessionHandle {
+            publications: Arc::default(),
             incarnation: Ulid::new(),
             inbox_tx,
             permissions,

@@ -103,6 +103,14 @@ impl Service {
     /// across any await.
     async fn fence_and_remove(&self, id: SessionId, handle: SessionHandle, reason: &str) {
         handle.session_cancel.cancel();
+        let pending = handle
+            .publications
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        for publication in pending {
+            publication.cancelled().await;
+        }
         drop(handle.inbox_tx);
 
         if let Some(mut task) = handle
@@ -211,6 +219,7 @@ mod tests {
     /// exists for.
     fn wedged_runtime_handle() -> SessionHandle {
         SessionHandle {
+            publications: Arc::default(),
             incarnation: Ulid::new(),
             inbox_tx: mpsc::channel(1).0,
             permissions: mpsc::channel(1).0,

@@ -20,6 +20,52 @@ async fn stopping_parent_during_task_preparation_does_not_wait_or_leak() {
 }
 
 #[tokio::test]
+async fn stop_cancels_parent_before_waiting_for_child_publication() {
+    let fx = fixture();
+    install_agents(&fx.root, &fx.ws);
+    let parent = fx
+        .state
+        .create_session(&fx.ws, Some("default"), None)
+        .await
+        .unwrap();
+    let barrier = navai::session::ChildPreparationBarrier::default();
+    fx.state.pause_child_publication(barrier.clone());
+    let service = fx.state.service();
+    let spawn = tokio::spawn(async move {
+        service
+            .create_child_session(parent, "explore", "inspect")
+            .await
+    });
+    barrier.reached.notified().await;
+    let service = fx.state.service();
+    let stop = tokio::spawn(async move { service.close_session(parent).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !fx.state.session_is_cancelled(parent) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!stop.is_finished());
+    barrier.release.notify_one();
+    assert!(spawn.await.unwrap().is_err());
+    tokio::time::timeout(std::time::Duration::from_secs(2), stop)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(fx.state.reserved_child_count(parent), 0);
+    assert_eq!(
+        fx.state
+            .list(&fx.ws.display().to_string())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn resumed_parent_rejects_spawn_from_previous_incarnation() {
     paused_child_admission(true).await;
 }

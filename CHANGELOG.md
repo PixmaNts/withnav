@@ -53,8 +53,14 @@ requests land in `develop`.
   "pay particular attention to") and keeps the system components, the latest request, the unfinished
   turn, any pending `ask` and the last two completed turns verbatim. Old tool outputs outside that tail
   can become elision markers (ids and call/result pairs kept; never an `ask` answer or a loaded skill).
-  The summary is validated (non-empty, no tool call, at most 8 KiB). A running turn is not interrupted:
-  the command answers "accepted, runs after this turn" and runs when the turn ends; it is refused while
+  The summary is validated (non-empty, no tool call, at most 8 KiB), shown to the summarizer as JSON
+  and to the agent as escaped conversation data under a system rule; consecutive user messages
+  count as one turn when the last two completed turns are kept, and a stored checkpoint is checked
+  on resume for complete-exchange boundaries, the cap and outputs that may be elided. A running turn is not interrupted:
+  the command answers "accepted, runs after this turn" and runs when the turn ends (a stop first answers
+  it with a failed `command.result` under the same operation id, before `session.end`); the summary
+  request never holds the service-wide lifecycle gate, so a stop, a shutdown and other sessions do not
+  wait for the provider and a stopped session commits nothing; it is refused while
   an `ask` waits, and answers a clear error when there is nothing to compact or the recent turns cannot
   fit the input budget. The result is saved with the transcript in one transaction, in a new nullable
   versioned `sessions.checkpoint` column (older conversations resume as before; a stored checkpoint that

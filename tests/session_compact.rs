@@ -345,3 +345,92 @@ async fn a_summary_in_flight_never_holds_up_a_stop_or_another_session() {
     assert!(checkpoint.is_none(), "a stopped session commits nothing");
     assert!(stored(&state, id, "context.compacted").await.is_empty());
 }
+
+/// The `command.result` events of `/compact`, in stream order.
+async fn compact_results(state: &AppState, id: ulid::Ulid) -> Vec<EventEnvelope> {
+    stored(state, id, "command.result")
+        .await
+        .into_iter()
+        .filter(|e| e.payload["name"] == "compact")
+        .collect()
+}
+
+// Given a /compact accepted while a turn runs
+// When the session is stopped before the turn ends
+// Then the accepted operation is told it will not happen, under its own id,
+//      before session.end, and nothing is committed
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deferred_compact_is_cancelled_with_its_own_id_when_the_session_stops() {
+    let (tmp, ws) = tmp_ws();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let provider = spawn_gated_provider(vec![answer("never read")], release.clone()).await;
+    let state = state(tmp.path(), &provider);
+    let id = seeded(&state, &ws, 4).await;
+
+    send_text(&state, id, "go").await;
+    common::server::wait_for("the turn's request", || provider.bodies().len() == 1).await;
+    let accepted = state.run_command(id, "compact", "").await.unwrap();
+    assert_eq!(accepted.data.as_ref().unwrap()["accepted"], true);
+
+    state.close_session(id).await.unwrap();
+    state.history().flush().await.unwrap();
+
+    let results = compact_results(&state, id).await;
+    assert_eq!(results.len(), 2, "{results:?}");
+    assert_eq!(results[0].payload["ok"], true);
+    assert_eq!(results[1].payload["ok"], false);
+    for r in &results {
+        assert_eq!(r.payload["operation_id"], accepted.operation_id.to_string());
+    }
+    assert!(results[1].payload["error"]
+        .as_str()
+        .unwrap()
+        .contains("nothing was compacted"));
+    let sub = state.subscribe(id, None).await.unwrap();
+    let navai::bus::ResumeOutcome::Replay(all) = sub.replay else {
+        panic!("replay expected")
+    };
+    let seq_of = |kind: &str| all.iter().rev().find(|e| e.kind == kind).map(|e| e.seq);
+    assert!(results[1].seq < seq_of("session.end").expect("session.end"));
+    assert!(stored(&state, id, "context.compacted").await.is_empty());
+    let (_, _, checkpoint) = state.history().load_for_resume(id).await.unwrap().unwrap();
+    assert!(checkpoint.is_none());
+}
+
+// Given a /compact accepted while a turn runs
+// When the turn ends by asking the human something
+// Then the deferred run is refused under the id it was accepted with
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deferred_compact_refused_after_an_ask_keeps_its_operation_id() {
+    let (tmp, ws) = tmp_ws();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let ask = tool_call_chunk("ask_1", "ask", &json!({"question": "which scope?"}));
+    let provider = spawn_gated_provider(vec![http_sse(&sse_body(&[&ask]))], release.clone()).await;
+    let state = state(tmp.path(), &provider);
+    let id = seeded(&state, &ws, 4).await;
+    let sub = state.subscribe(id, None).await.unwrap();
+
+    send_text(&state, id, "go").await;
+    common::server::wait_for("the turn's request", || provider.bodies().len() == 1).await;
+    let accepted = state.run_command(id, "compact", "").await.unwrap();
+    assert_eq!(accepted.data.as_ref().unwrap()["accepted"], true);
+    release.notify_one();
+    collect_until(sub, |e| {
+        e.kind == "command.result" && e.payload["ok"] == false
+    })
+    .await;
+
+    let results = compact_results(&state, id).await;
+    assert_eq!(results.len(), 2, "{results:?}");
+    assert_eq!(results[1].payload["ok"], false);
+    assert_eq!(
+        results[1].payload["operation_id"],
+        accepted.operation_id.to_string()
+    );
+    assert!(results[1].payload["error"]
+        .as_str()
+        .unwrap()
+        .contains("waiting for an answer"));
+    assert_eq!(provider.bodies().len(), 1, "no summary request");
+    assert!(stored(&state, id, "context.compacted").await.is_empty());
+}

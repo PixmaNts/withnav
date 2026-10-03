@@ -1106,13 +1106,14 @@ async fn the_model_list_and_slash_model_switch_the_live_conversation_between_pro
     .await;
     assert_eq!(rt.state.selected_model_alias.as_deref(), Some("alpha"));
 
-    // the model list on a live tab: enter on luna, enter on its default variant
+    // the model list on a live tab: enter on luna switches the model; the server applies its
+    // default variant
     press(&mut rt, KeyCode::F(2));
     let shown = screen(&mut rt);
     assert!(shown.contains("Switch this conversation to…"), "{shown}");
     press(&mut rt, KeyCode::Down);
     press(&mut rt, KeyCode::Enter);
-    press(&mut rt, KeyCode::Enter);
+    assert_eq!(rt.ui.overlay, None, "no variant step");
     until("the switch", &mut rt, |_, rt| {
         rt.state.selected_model_alias.as_deref() == Some("luna")
     })

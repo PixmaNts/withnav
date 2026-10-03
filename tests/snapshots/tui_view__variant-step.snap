@@ -2,8 +2,8 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ navai  ~/dev/project     ▌build  cognition · cc/claude-opus-5-5 · — / 200k 
-▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
+ Conversations       │ ◆ navai                    ▌build  cognition · cc/claude-opus-5-5 · — / 200k 
+▌1 new conversation  │──────────────────────────────────────────────────────────────────────────────
 ▌  build · idle      │                                                                              
                      │                                                                              
                      │                                                                              
@@ -12,7 +12,7 @@ expression: snapshot
                      │                                                                              
                      │                                                                              
                      │                                                                              
-            ┌─────────────────────────── Switch on variant… ───────────────────────────┐            
+            ┌─────────────────────────── Start on variant… ────────────────────────────┐            
             │ ❯ filter…                                                                │            
             │   low                                                                    │            
             │▌  high                default                                            │            

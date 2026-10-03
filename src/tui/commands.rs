@@ -160,7 +160,7 @@ pub const KEYS: &[(&str, &str)] = &[
 /// `off` (always: a live conversation can drop its variant), starting on the variant in use.
 pub fn variant_choices(state: &State, pick: &VariantPick) -> (Vec<String>, usize) {
     let (mut rows, wanted) = match pick {
-        VariantPick::NewConversation(alias) | VariantPick::Switch(alias) => {
+        VariantPick::NewConversation(alias) => {
             let entry = state.catalog.iter().find(|m| &m.alias == alias);
             let rows: Vec<String> = entry.map(|m| m.variants.clone()).unwrap_or_default();
             if rows.is_empty() {

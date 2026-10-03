@@ -333,14 +333,9 @@ fn overlay_precedence_and_empty_slash() {
     assert_eq!(editor.text(), "/abc");
     ui.overlay = Some(Overlay::Models);
     let enter = key(KeyCode::Enter, KeyModifiers::NONE);
-    assert_eq!(route_key(enter, &s, &mut ui, &mut editor), None);
+    // a live conversation switches the model, with no variant step
     assert_eq!(
-        route_key(
-            key(KeyCode::Enter, KeyModifiers::NONE),
-            &s,
-            &mut ui,
-            &mut editor
-        ),
+        route_key(enter, &s, &mut ui, &mut editor),
         Some(Action::SwitchModel("cognition".into()))
     );
     assert_eq!(editor.text(), "/abc");
@@ -408,7 +403,9 @@ fn transcript_keys_select_expand_and_follow() {
 
 #[test]
 fn pickers_filter_and_keep_draft() {
-    let s = state();
+    // an empty tab: the model, then the variant it starts on
+    let mut s = state();
+    s.session = None;
     let mut ui = UiState {
         overlay: Some(Overlay::Models),
         ..UiState::default()
@@ -431,7 +428,7 @@ fn pickers_filter_and_keep_draft() {
     assert_eq!(ui.overlay, Some(Overlay::Variants));
     assert_eq!(
         route_key(enter, &s, &mut ui, &mut editor),
-        Some(Action::SwitchModel("fast".into()))
+        Some(Action::PickModel("fast".into()))
     );
     assert_eq!(editor.text(), "draft");
     ui.overlay = Some(Overlay::Sessions);
@@ -1309,7 +1306,9 @@ fn the_model_picker_filters_a_long_catalog_and_shows_window_and_variants() {
 
 #[test]
 fn picking_a_model_with_variants_asks_which_one_default_first() {
-    let s = big_catalog();
+    // an empty tab: the variant step chooses what the conversation starts on
+    let mut s = big_catalog();
+    s.session = None;
     let mut ui = UiState::default();
     let mut editor = Editor::new();
     route_key(
@@ -1334,7 +1333,7 @@ fn picking_a_model_with_variants_asks_which_one_default_first() {
     assert!(rows
         .iter()
         .any(|r| r.contains("off") && r.contains("no variant")));
-    assert!(rows.iter().any(|r| r.contains("Switch on variant")));
+    assert!(rows.iter().any(|r| r.contains("Start on variant")));
     // esc goes back to the models with the same one selected
     route_key(
         key(KeyCode::Esc, KeyModifiers::NONE),
@@ -1357,8 +1356,9 @@ fn picking_a_model_with_variants_asks_which_one_default_first() {
 }
 
 #[test]
-fn a_model_without_variants_shows_a_note_and_switches_without_one() {
-    let s = big_catalog();
+fn a_model_without_variants_shows_a_note_and_starts_without_one() {
+    let mut s = big_catalog();
+    s.session = None;
     let mut ui = UiState::default();
     let mut editor = Editor::new();
     route_key(
@@ -1377,7 +1377,7 @@ fn a_model_without_variants_shows_a_note_and_switches_without_one() {
     assert!(!all.contains("off "), "nothing to choose: {all}");
     assert_eq!(
         route_key(enter, &s, &mut ui, &mut editor),
-        Some(Action::SwitchModel("flash".into()))
+        Some(Action::PickModel("flash".into()))
     );
     assert_eq!(ui.overlay, None);
 }
@@ -2879,7 +2879,7 @@ fn the_header_shows_the_model_in_use_and_a_switch_waiting_for_the_turn() {
     let shown = screen_text(&s, &ui, (100, 30));
     assert!(shown.contains("Switch this conversation to…"), "{shown}");
     assert!(
-        shown.contains("applies after this turn · ctrl+n new tab on it"),
+        shown.contains("the model only, after this turn; /variant after the switch"),
         "{shown}"
     );
     // and refuses while a permission request waits
@@ -2917,18 +2917,19 @@ fn enter_in_the_model_list_switches_a_live_tab_and_ctrl_n_opens_a_new_one() {
         route_key(enter, &s, &mut ui, &mut editor),
         Some(Action::PickModel("cognition".into()))
     );
-    // enter: the switch
+    // enter: the switch, the model only (no variant step)
     route_key(
         key(KeyCode::F(2), KeyModifiers::NONE),
         &s,
         &mut ui,
         &mut editor,
     );
-    route_key(enter, &s, &mut ui, &mut editor);
     assert_eq!(
-        ui.variant_pick,
-        Some(navai::tui::state::VariantPick::Switch("cognition".into()))
+        route_key(enter, &s, &mut ui, &mut editor),
+        Some(Action::SwitchModel("cognition".into()))
     );
+    assert_eq!(ui.variant_pick, None);
+    assert_eq!(ui.overlay, None);
     // while a question waits, enter says why and switches nothing
     let mut waiting = done();
     waiting.activity = Activity::AwaitingUser;

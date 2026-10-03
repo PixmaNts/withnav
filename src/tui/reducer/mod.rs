@@ -29,7 +29,7 @@ use super::{
     protocol::{
         AnswerError, ClientEvent, Effect, Generation, ProtocolError, SessionMetadata, SubmitRequest,
     },
-    state::{Activity, Block, BlockKind, ConnectionStatus, State, NO_VARIANT},
+    state::{Activity, Block, BlockKind, ConnectionStatus, State},
 };
 
 /// The generation an event is tagged with: the tab it belongs to.
@@ -110,7 +110,6 @@ pub(crate) fn start_conversation(s: &mut State) {
     s.model_seq = None;
     s.model_request = None;
     s.model_pending = None;
-    s.variant_after_switch = None;
     s.variant_offer = None;
     s.variant_list_wanted = false;
     s.pending_submit_text = None;
@@ -201,36 +200,9 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         ClientEvent::Envelope { envelope, .. } => {
             // A turn may have changed files: the branch and the changes are read again.
             let turn_end = envelope.kind == crate::bus::event::EventKind::TurnEnd.as_str();
-            let switched = (envelope.kind == crate::bus::event::EventKind::ModelChanged.as_str())
-                .then(|| {
-                    envelope.payload["new"]["alias"]
-                        .as_str()
-                        .map(str::to_string)
-                })
-                .flatten();
             envelope::apply_envelope(s, envelope)?;
             if turn_end {
                 effects.extend(read_git(s));
-            }
-            // The variant chosen with a switch is asked for once the conversation is on it.
-            if let Some(alias) = switched {
-                if s.variant_after_switch
-                    .as_ref()
-                    .is_some_and(|(a, _)| *a == alias)
-                {
-                    if let Some((_, chosen)) = s.variant_after_switch.take() {
-                        if let Some(m) = s.session.as_ref() {
-                            effects.push(Effect::RunCommand {
-                                session_id: m.session_id.clone(),
-                                request: crate::tui::protocol::CommandRequest {
-                                    name: "variant".into(),
-                                    arguments: chosen.unwrap_or_else(|| NO_VARIANT.into()),
-                                },
-                                revision: None,
-                            });
-                        }
-                    }
-                }
             }
         }
         ClientEvent::Git { status, .. } => {

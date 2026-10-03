@@ -15,7 +15,7 @@ expression: snapshot
                      │                                                                              
             ┌────────────────────── Switch this conversation to… ──────────────────────┐            
             │ ❯ opus                                                                   │            
-            │ enter switches this conversation · ctrl+n new tab on it                  │            
+            │ switches the model only; /variant after the switch · ctrl+n new tab      │            
             │▌opus              cc/claude-opus-5-5                  1M  low high max   │            
             │                                                                          │            
             │ ↑↓ move  enter choose  esc close                                         │            

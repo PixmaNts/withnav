@@ -15,7 +15,7 @@ expression: snapshot
                      │ │                                                                            
             ┌────────────────────── Switch this conversation to… ──────────────────────┐            
             │ ❯ filter models…                                                         │            
-            │ enter switches this conversation · ctrl+n new tab on it                  │            
+            │ switches the model only; /variant after the switch · ctrl+n new tab      │            
             │▌cognition         cc/claude-opus-5-5                              200k   │            
             │ fast              cc/flash                                           —   │            
             │                                                                          │            

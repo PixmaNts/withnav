@@ -94,9 +94,7 @@ pub fn route_key(
             KeyCode::Esc => {
                 ui.filter.clear();
                 // esc in the second step of the model picker goes back to the models.
-                if let Some(VariantPick::NewConversation(alias) | VariantPick::Switch(alias)) =
-                    ui.variant_pick.take()
-                {
+                if let Some(VariantPick::NewConversation(alias)) = ui.variant_pick.take() {
                     ui.overlay = Some(Overlay::Models);
                     let back = overlay_names(Overlay::Models, state, ui)
                         .iter()
@@ -121,7 +119,6 @@ pub fn route_key(
                 ui.overlay = None;
                 return Some(match pick {
                     Some(VariantPick::NewConversation(alias)) => Action::PickModel(alias),
-                    Some(VariantPick::Switch(alias)) => Action::SwitchModel(alias),
                     _ => Action::CloseOverlay,
                 });
             }
@@ -136,18 +133,17 @@ pub fn route_key(
             KeyCode::Enter => {
                 let name = names.get(*selected)?;
                 let action = match overlay {
+                    // A live conversation switches to it, the model only (the server applies its
+                    // default variant), refused with the reason while the agent waits for the
+                    // driver. An empty tab goes on to choose the variant it starts on.
+                    Overlay::Models if reducer::occupied(state) => {
+                        if let Some(why) = reducer::switch_blocked(state) {
+                            return Some(Action::ShowNotice(why.into()));
+                        }
+                        Action::SwitchModel(name.clone())
+                    }
                     Overlay::Models => {
-                        // A live conversation switches to it; an empty tab starts on it. The
-                        // switch is refused, with the reason, while the agent waits for the driver.
-                        let pick = if reducer::occupied(state) {
-                            if let Some(why) = reducer::switch_blocked(state) {
-                                return Some(Action::ShowNotice(why.into()));
-                            }
-                            VariantPick::Switch(name.clone())
-                        } else {
-                            VariantPick::NewConversation(name.clone())
-                        };
-                        variant_step(state, ui, pick);
+                        variant_step(state, ui, VariantPick::NewConversation(name.clone()));
                         return None;
                     }
                     Overlay::Variants => Action::PickVariant(name.clone()),

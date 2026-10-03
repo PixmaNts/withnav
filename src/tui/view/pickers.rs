@@ -24,7 +24,6 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
         Overlay::Themes => " Theme ",
         Overlay::Variants => match &ui.variant_pick {
             Some(VariantPick::NewConversation(_)) => " Start on variant… ",
-            Some(VariantPick::Switch(_)) => " Switch on variant… ",
             _ => " Variant ",
         },
     };
@@ -96,7 +95,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
             let pick = ui.variant_pick.clone().unwrap_or(VariantPick::Current);
             let (names, _) = commands::variant_choices(state, &pick);
             let (default, current) = match &pick {
-                VariantPick::NewConversation(alias) | VariantPick::Switch(alias) => (
+                VariantPick::NewConversation(alias) => (
                     state
                         .catalog
                         .iter()
@@ -264,18 +263,15 @@ fn note(overlay: Overlay, state: &State, ui: &UiState, empty: bool) -> Option<&'
         Overlay::Models if live => Some(match blocked {
             Some(why) => why,
             None if state.activity == Activity::Running => {
-                "applies after this turn · ctrl+n new tab on it"
+                "the model only, after this turn; /variant after the switch · ctrl+n new tab"
             }
-            None => "enter switches this conversation · ctrl+n new tab on it",
+            None => "switches the model only; /variant after the switch · ctrl+n new tab",
         }),
         Overlay::Variants => {
             if empty && ui.filter.is_empty() {
                 return Some(match ui.variant_pick {
                     Some(VariantPick::NewConversation(_)) => {
                         "this model has no variants · enter starts without one"
-                    }
-                    Some(VariantPick::Switch(_)) => {
-                        "this model has no variants · enter switches without one"
                     }
                     _ => "this model has no variants",
                 });
@@ -285,7 +281,6 @@ fn note(overlay: Overlay, state: &State, ui: &UiState, empty: bool) -> Option<&'
             }
             match ui.variant_pick {
                 Some(VariantPick::Current) | None => Some("applies next turn"),
-                Some(VariantPick::Switch(_)) => Some("applies after this turn"),
                 Some(VariantPick::NewConversation(_)) => None,
             }
         }

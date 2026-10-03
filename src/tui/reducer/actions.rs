@@ -257,17 +257,12 @@ pub fn occupied(tab: &Tab) -> bool {
     tab.session.is_some() || tab.resuming.is_some() || tab.pending_submit_text.is_some()
 }
 
-/// Moves the active conversation to `alias` through `/model`; a tab with no conversation yet
-/// starts on it instead. `variant` is what the picker's second step chose (`None` keeps the
-/// target's default); a different one is asked for with `/variant` once the switch is in.
-fn switch_model(
-    s: &mut State,
-    ui: &mut UiState,
-    alias: String,
-    variant: Option<Option<String>>,
-) -> Vec<Effect> {
+/// Moves the active conversation to `alias` through `/model`: the model only, the server applies
+/// the alias's default variant (`/variant` changes it after). A tab with no conversation yet
+/// starts on it instead.
+fn switch_model(s: &mut State, ui: &mut UiState, alias: String) -> Vec<Effect> {
     if !occupied(s) {
-        return pick_model(s, ui, alias, variant).unwrap_or_default();
+        return pick_model(s, ui, alias, None).unwrap_or_default();
     }
     if let Some(why) = switch_blocked(s) {
         push_local(
@@ -280,14 +275,6 @@ fn switch_model(
         );
         return vec![];
     }
-    let default = s
-        .catalog
-        .iter()
-        .find(|m| m.alias == alias)
-        .and_then(|m| m.default_variant.clone());
-    s.variant_after_switch = variant
-        .filter(|chosen| *chosen != default)
-        .map(|chosen| (alias.clone(), chosen));
     let effects = run_command(s, "model".into(), alias.clone(), None);
     s.model_request = (!effects.is_empty()).then_some(alias);
     effects
@@ -371,7 +358,7 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
         Action::NewConversation => blank_tab(s, ui).unwrap_or_default(),
         Action::ResumeSession(id) => resume(s, ui, id),
         Action::PickModel(alias) => pick_model(s, ui, alias, None).unwrap_or_default(),
-        Action::SwitchModel(alias) => switch_model(s, ui, alias, None),
+        Action::SwitchModel(alias) => switch_model(s, ui, alias),
         Action::PickVariant(name) => {
             let pick = ui.variant_pick.take();
             ui.overlay = None;
@@ -380,7 +367,6 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                 Some(VariantPick::NewConversation(alias)) => {
                     pick_model(s, ui, alias, Some(chosen)).unwrap_or_default()
                 }
-                Some(VariantPick::Switch(alias)) => switch_model(s, ui, alias, Some(chosen)),
                 Some(VariantPick::Current) => run_command(
                     s,
                     "variant".into(),

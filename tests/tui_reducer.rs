@@ -3701,15 +3701,22 @@ fn a_refused_switch_shows_the_servers_reason_and_changes_nothing() {
 }
 
 #[test]
-fn a_variant_chosen_with_the_switch_is_asked_for_once_the_switch_is_made() {
+fn events_replays_and_a_resync_never_send_a_command() {
     let (mut s, mut ui) = (st(), ui());
     models_now(&mut s, Some("a".into())).unwrap();
     created_now(&mut s, "S1").unwrap();
-    // the picker's second step on a live tab
-    ui.variant_pick = Some(VariantPick::Switch("b".into()));
-    let fx = handle_action(&mut s, &mut ui, Action::PickVariant("low".into()));
-    assert_eq!(fx, vec![model_command("b")]);
+    s.activity = Activity::Running;
+    assert_eq!(
+        handle_action(&mut s, &mut ui, Action::SwitchModel("b".into())),
+        vec![model_command("b")]
+    );
     let mut script = Script::new();
+    command_result(
+        &mut script,
+        true,
+        Some(json!({"accepted": true, "applies": "after_turn"})),
+        None,
+    );
     model_changed(
         &mut script,
         2,
@@ -3719,25 +3726,28 @@ fn a_variant_chosen_with_the_switch_is_asked_for_once_the_switch_is_made() {
         Some("high"),
         1000,
     );
-    let ev = envelope(&s, &script.out[0]);
-    let fx = update(&mut s, ev).unwrap();
-    assert_eq!(
-        fx,
-        vec![Effect::RunCommand {
-            session_id: "S1".into(),
-            request: CommandRequest {
-                name: "variant".into(),
-                arguments: "low".into(),
-            },
-            revision: None,
-        }]
+    // each event, then the same events again (a duplicate delivery), send nothing
+    for e in script.out.iter().chain(script.out.iter()) {
+        let ev = envelope(&s, e);
+        assert_eq!(update(&mut s, ev).unwrap(), vec![], "{}", e.kind);
+    }
+    // a resync while a switch is pending re-subscribes, and asks the server for nothing else
+    let mut s = st();
+    models_now(&mut s, Some("a".into())).unwrap();
+    created_now(&mut s, "S1").unwrap();
+    s.activity = Activity::Running;
+    handle_action(&mut s, &mut ui, Action::SwitchModel("b".into()));
+    let resync = ClientEvent::Resync {
+        generation: s.generation.clone(),
+    };
+    let fx = update(&mut s, resync).unwrap();
+    assert!(
+        fx.iter().all(|e| matches!(e, Effect::Subscribe { .. })),
+        "{fx:?}"
     );
-    assert_eq!(s.variant_after_switch, None);
-    // keeping the target's default asks for nothing more
-    ui.variant_pick = Some(VariantPick::Switch("a".into()));
-    handle_action(&mut s, &mut ui, Action::PickVariant("off".into()));
-    assert_eq!(
-        s.variant_after_switch, None,
-        "a has no default variant: off is its default"
-    );
+    // and the replay that follows sends nothing either
+    for e in &script.out {
+        let ev = envelope(&s, e);
+        assert_eq!(update(&mut s, ev).unwrap(), vec![]);
+    }
 }

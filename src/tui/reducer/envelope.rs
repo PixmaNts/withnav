@@ -401,9 +401,6 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 } else {
                     s.model_request = None;
                     s.model_pending = None;
-                    if !ok {
-                        s.variant_after_switch = None;
-                    }
                 }
                 if made {
                     return Ok(());

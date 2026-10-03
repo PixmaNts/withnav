@@ -3,6 +3,7 @@ pub mod compaction;
 pub mod context;
 pub mod definitions;
 pub mod instructions;
+pub mod permissions;
 pub mod prompt;
 pub mod response;
 #[path = "loop.rs"]

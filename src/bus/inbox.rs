@@ -6,19 +6,47 @@
 //! InboxFull`) instead of dropping or blocking. The runtime drive loop calls the
 //! methods this module exposes.
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use ulid::Ulid;
 
 use crate::agent::actor::AgentActor;
+use crate::agent::permissions::{PermissionDecision, PermissionError};
 use crate::bus::command::{Command, DowngradeNotice};
 use crate::error::BusError;
 
 pub const INBOX_CAPACITY: usize = 256;
 
+/// How many decisions may wait for the runtime at once.
+const ANSWER_CAPACITY: usize = 16;
+
+/// A driver's decision on one permission request, on its way to the runtime.
+/// It is a typed message of its own, never a [`Command`]: no chat text can
+/// take its place. The runtime answers on `reply` as soon as it has accepted
+/// or refused the decision, before the resumed turn runs.
+#[derive(Debug)]
+pub struct PermissionAnswer {
+    pub request_id: Ulid,
+    pub decision: PermissionDecision,
+    pub reply: oneshot::Sender<Result<(), PermissionError>>,
+}
+
+/// What woke the runtime.
+#[derive(Debug)]
+pub enum Inbound {
+    /// Commands are buffered: apply them and run a turn.
+    Batch(usize),
+    /// A decision on a permission request.
+    Answer(PermissionAnswer),
+}
+
 /// What applying a drained batch did (besides pushing messages).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BatchOutcome {
     pub downgrade_notice: Option<DowngradeNotice>,
+    /// How many commands reached the transcript: the rest were held.
+    pub applied: usize,
+    /// The first command that reached the transcript.
+    pub first_applied: Option<Ulid>,
 }
 
 /// The sole holder of the inbox transport's receiver side. The runtime
@@ -30,7 +58,14 @@ pub struct BatchOutcome {
 /// drain/apply explicit so the runtime drive loop controls the timing.
 pub struct ActorInbox {
     commands: Vec<Command>,
+    /// The latest command that is not the driver's, set aside while the
+    /// actor waits on an `ask` or a permission request: such a command would
+    /// answer the ask or cancel the request. Released by
+    /// [`release_held`](Self::release_held) once nothing is pending.
+    held: Option<Command>,
     _rx: mpsc::Receiver<Command>,
+    answers_tx: mpsc::Sender<PermissionAnswer>,
+    answers_rx: mpsc::Receiver<PermissionAnswer>,
 }
 
 /// Map a rejected enqueue onto the typed bus error the server turns into
@@ -51,13 +86,42 @@ impl ActorInbox {
     /// the in-actor buffer, sharing a single FIFO order.
     pub fn channel() -> (mpsc::Sender<Command>, Self) {
         let (tx, rx) = mpsc::channel(INBOX_CAPACITY);
+        let (answers_tx, answers_rx) = mpsc::channel(ANSWER_CAPACITY);
         (
             tx,
             Self {
                 commands: Vec::new(),
+                held: None,
                 _rx: rx,
+                answers_tx,
+                answers_rx,
             },
         )
+    }
+
+    /// The sender of permission decisions for this actor. The inbox keeps
+    /// one of its own, so the channel never reads as closed while the inbox
+    /// lives.
+    pub fn permission_sender(&self) -> mpsc::Sender<PermissionAnswer> {
+        self.answers_tx.clone()
+    }
+
+    /// The runtime's wait primitive: a decision (they go first) or the next
+    /// FIFO batch of commands. `None` only when every command sender is
+    /// gone. Cancel safe.
+    pub async fn next_inbound(&mut self) -> Option<Inbound> {
+        if !self.commands.is_empty() {
+            return Some(Inbound::Batch(self.drain_transport()));
+        }
+        tokio::select! {
+            biased;
+            Some(answer) = self.answers_rx.recv() => Some(Inbound::Answer(answer)),
+            first = self._rx.recv() => {
+                let first = first?;
+                self.commands.push(first);
+                Some(Inbound::Batch(self.drain_transport()))
+            }
+        }
     }
 
     /// Whether the in-actor buffer holds at least one command.
@@ -100,16 +164,48 @@ impl ActorInbox {
         Some(self.commands.len())
     }
 
+    /// Whether a held command waits for the actor to have nothing pending.
+    pub fn has_held(&self) -> bool {
+        self.held.is_some()
+    }
+
+    /// Moves the held command, if any, back into the buffer so the next
+    /// [`next_inbound`](Self::next_inbound) delivers it. The runtime calls it
+    /// only while the actor has nothing pending.
+    pub fn release_held(&mut self) {
+        if let Some(command) = self.held.take() {
+            self.commands.push(command);
+        }
+    }
+
     /// Map the drained FIFO batch onto `push_user` semantics: the FIRST
     /// command after a Yield completes the pending ask (the existing
     /// `AgentActor` branch — untouched here), the rest are user messages.
-    /// Stop is not a command: it goes through session cancellation.
+    /// While the actor has a pending interaction, a command that is not the
+    /// driver's is held instead (the latest one is kept): it could neither
+    /// answer an ask nor cancel a permission request. Driver text keeps its
+    /// meaning. Stop is not a command: it goes through session cancellation.
     pub fn apply_batch_to_actor(&mut self, actor: &mut AgentActor) -> BatchOutcome {
         let mut outcome = BatchOutcome::default();
-        for cmd in self.commands.drain(..) {
+        for cmd in std::mem::take(&mut self.commands) {
+            if !cmd.from_driver() {
+                if actor.has_pending() {
+                    self.held = Some(cmd);
+                    continue;
+                }
+                // A newer navigator command supersedes a held older one, even
+                // when driver text in the same batch just cleared what was
+                // pending: releasing the older one later would put stale
+                // guidance after the newer.
+                self.held = None;
+            }
             if outcome.downgrade_notice.is_none() {
                 outcome.downgrade_notice = cmd.downgrade_notice();
             }
+            if outcome.first_applied.is_none() {
+                outcome.first_applied = Some(cmd.command_id);
+            }
+            outcome.applied += 1;
             actor.push_user(cmd.text_content());
         }
         outcome
@@ -119,7 +215,7 @@ impl ActorInbox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::actor::AgentState;
+    use crate::agent::actor::{AgentState, PendingInteraction};
     use crate::bus::command::{ContentBlock, DeliveryMode};
     use crate::provider::config::{ProviderConfig, ReasoningHistory};
     use crate::provider::openai::ChatMessage;
@@ -271,7 +367,9 @@ mod tests {
 
         let mut actor = test_actor();
         actor.state = AgentState::Yielded;
-        actor.pending_ask_id = Some("call_ask".into());
+        actor.pending = Some(PendingInteraction::Ask {
+            tool_call_id: "call_ask".into(),
+        });
 
         inbox.drain_transport();
         inbox.apply_batch_to_actor(&mut actor);
@@ -292,7 +390,7 @@ mod tests {
             Some(ChatMessage::User { content }) if content == "third"
         ));
         assert_eq!(actor.transcript.len(), 3);
-        assert_eq!(actor.pending_ask_id, None);
+        assert_eq!(actor.pending, None);
     }
 
     // Given an Idle actor with a steer command buffered (downgraded, Phase 2)
@@ -307,7 +405,7 @@ mod tests {
 
         let mut actor = test_actor();
         actor.state = AgentState::Idle;
-        assert_eq!(actor.pending_ask_id, None);
+        assert_eq!(actor.pending, None);
 
         inbox.drain_transport();
         let outcome = inbox.apply_batch_to_actor(&mut actor);
@@ -320,7 +418,7 @@ mod tests {
             actor.transcript.last(),
             Some(ChatMessage::User { content }) if content == "lean left"
         ));
-        assert_eq!(actor.pending_ask_id, None);
+        assert_eq!(actor.pending, None);
     }
 
     // Given a batch mixing a steer and plain next-turn commands
@@ -371,5 +469,114 @@ mod tests {
             inbox.next_batch().await.is_none(),
             "all senders dropped ends the drive loop"
         );
+    }
+
+    fn command_from(source: &str, text: &str) -> Command {
+        let mut cmd = text_command(DeliveryMode::NextTurn, text);
+        cmd.source_actor_id = source.into();
+        cmd
+    }
+
+    fn pending_permission_actor() -> AgentActor {
+        use crate::agent::permissions::{PermissionRequest, Scope};
+        let mut actor = test_actor();
+        actor.state = AgentState::Yielded;
+        actor.pending = Some(PendingInteraction::Permission {
+            request: Box::new(PermissionRequest {
+                id: Ulid::new(),
+                tool_call_id: "w1".into(),
+                tool: "write".into(),
+                arguments: "{}".into(),
+                scope: Scope::Folder("/w".into()),
+                agent: "build".into(),
+                reason: "r".into(),
+            }),
+            call: crate::provider::ToolCall {
+                id: "w1".into(),
+                name: "write".into(),
+                args: serde_json::json!({}),
+                args_valid: true,
+            },
+            remaining_calls: vec![],
+            destination: None,
+            steps_left: 3,
+        });
+        actor
+    }
+
+    // Given an actor waiting on a permission request or an ask
+    // When navigator commands arrive
+    // Then they are held, the latest one alone is kept, nothing reaches the
+    //      transcript and the request stays open; once nothing is pending the
+    //      held command is released
+    #[tokio::test]
+    async fn a_navigator_command_is_held_while_an_interaction_is_pending() {
+        for mut actor in [pending_permission_actor(), {
+            let mut a = test_actor();
+            a.state = AgentState::Yielded;
+            a.pending = Some(PendingInteraction::Ask {
+                tool_call_id: "call_ask".into(),
+            });
+            a
+        }] {
+            let (tx, mut inbox) = ActorInbox::channel();
+            send(&tx, command_from("navigator", "first wake"));
+            send(&tx, command_from("navigator", "latest wake"));
+            inbox.drain_transport();
+            let before = actor.transcript.len();
+            let outcome = inbox.apply_batch_to_actor(&mut actor);
+            assert_eq!(outcome.applied, 0);
+            assert!(actor.has_pending(), "the interaction stays open");
+            assert_eq!(actor.transcript.len(), before);
+            assert!(inbox.has_held());
+            assert!(!inbox.has_buffered());
+
+            actor.pending = None;
+            inbox.release_held();
+            assert!(!inbox.has_held());
+            inbox.drain_transport();
+            let outcome = inbox.apply_batch_to_actor(&mut actor);
+            assert_eq!(outcome.applied, 1);
+            assert_eq!(user_texts(&actor), vec!["latest wake"]);
+        }
+    }
+
+    // Given a pending permission request
+    // When driver text arrives, after a navigator command
+    // Then the driver text cancels the request as before, and the navigator
+    //      command that came before it was held, not applied
+    #[tokio::test]
+    async fn driver_text_still_cancels_a_pending_permission_request() {
+        let (tx, mut inbox) = ActorInbox::channel();
+        send(&tx, command_from("navigator", "wake"));
+        send(&tx, command_from("user:http", "never mind"));
+        inbox.drain_transport();
+        let mut actor = pending_permission_actor();
+        let outcome = inbox.apply_batch_to_actor(&mut actor);
+        assert_eq!(outcome.applied, 1);
+        assert!(!actor.has_pending(), "the driver's text settled it");
+        assert_eq!(user_texts(&actor), vec!["never mind"]);
+        assert!(inbox.has_held());
+    }
+
+    // Given a pending permission request
+    // When one batch brings an older navigator command, driver text (which
+    //      cancels the request) and a newer navigator command
+    // Then the newer navigator command is applied after the driver text and
+    //      the older one is dropped: it is never released after the newer
+    #[tokio::test]
+    async fn a_newer_navigator_command_supersedes_a_held_older_one() {
+        let (tx, mut inbox) = ActorInbox::channel();
+        send(&tx, command_from("navigator", "wake A"));
+        send(&tx, command_from("user:http", "never mind"));
+        send(&tx, command_from("navigator", "wake B"));
+        inbox.drain_transport();
+        let mut actor = pending_permission_actor();
+        let outcome = inbox.apply_batch_to_actor(&mut actor);
+        assert_eq!(outcome.applied, 2);
+        assert_eq!(user_texts(&actor), vec!["never mind", "wake B"]);
+        assert!(!inbox.has_held(), "the older wake is superseded");
+        inbox.release_held();
+        assert!(!inbox.has_buffered());
     }
 }

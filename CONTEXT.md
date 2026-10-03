@@ -70,6 +70,25 @@ A role described in a built-in or a markdown file: description, mode (primary, s
 role prompt, optional model, tool allow/deny map and access level. `build` and `plan` are reserved.
 _Avoid_: profile (a profile is the kind of session, such as the navigator)
 
+## Permissions
+
+**Permission request**:
+A tool call (`write`, `edit`, `bash`, `fetch`) that has not run and waits for the driver's decision:
+allow once, allow the folder, or deny with a message. Only a typed answer to that request resolves it;
+chat text never does. It does not survive a restart.
+_Avoid_: confirmation, approval prompt
+
+**Folder grant**:
+An "allow folder" answer, kept in memory for the session: it lets the same agent run the same kind of
+call (file changes, `bash`, or `fetch` for an origin) in that folder and below without asking again.
+A grant on the workspace never covers the config directory. For `bash` the folder is the scope the
+driver approved, not a confinement.
+_Avoid_: whitelist, permission rule
+
+**Pending interaction**:
+What a yielded actor waits for: the answer to an `ask`, or the decision on a permission request (with
+the held call and the calls behind it).
+
 ## Shared context
 
 **Shared context**:

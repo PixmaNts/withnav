@@ -14,6 +14,10 @@
 //!   A stopped conversation (stopped, or stored only) answers 409
 //!   `{"error", "reason":"resume_required"}`: resume it first.
 //! - `POST /v1/sessions/:id/stop` -> `{accepted:true, actor_state:"stopped"}`
+//! - `POST /v1/sessions/:id/permissions/:request_id` `{decision:"allow_once"|"allow_folder"|"deny", message?}`
+//!   -> `{accepted:true}`: the typed answer to a `permission.requested`. 404 unknown session or
+//!   malformed id, 409 `{"error","reason":"permission_stale"}` for a request that is not waiting
+//!   (answered, cancelled, expired, never existed), 400 for a body that is not a decision.
 //! - `GET  /v1/sessions/:id/context` -> the context snapshot (`alias, variant?, window, window_source, estimate_total, breakdown{system,rules,skills_catalog,tools,messages}, output_reserve, margin, input_budget, percent, last_usage?{prompt_tokens,completion_tokens,step}, revision`); an estimate of the NEXT request, `last_usage` is the provider's count for the last one
 //! - `GET  /v1/commands`      -> `{commands:[{name, description, args_hint}]}`
 //! - `POST /v1/sessions/:id/commands` `{name, arguments?}` -> `{operation_id, ok, data?, error?}`
@@ -120,6 +124,10 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/sessions/{id}", get(get_session).delete(delete_session))
         .route("/v1/sessions/{id}/messages", post(post_message))
         .route("/v1/sessions/{id}/stop", post(stop_session))
+        .route(
+            "/v1/sessions/{id}/permissions/{request_id}",
+            post(answer_permission),
+        )
         .route("/v1/sessions/{id}/context", get(get_context))
         .route("/v1/commands", get(list_commands))
         .route("/v1/sessions/{id}/commands", post(post_command))
@@ -620,6 +628,65 @@ async fn post_message(
     }
 }
 
+/// `POST /v1/sessions/:id/permissions/:request_id` body.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnswerPermissionRequest {
+    pub decision: DecisionKind,
+    /// What the model reads back on a denial.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionKind {
+    AllowOnce,
+    AllowFolder,
+    Deny,
+}
+
+/// The message a denial carries when the driver gave none.
+const DEFAULT_DENIAL: &str = "the user denied this tool call";
+
+async fn answer_permission(
+    State(state): State<AppState>,
+    Path((id, request_id)): Path<(String, String)>,
+    body: Result<Json<AnswerPermissionRequest>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Ok(session_id) = id.parse::<Ulid>() else {
+        return error_response(ServerError::SessionNotFound(id));
+    };
+    if let Err(err) = state.routable_handle(session_id).await {
+        return error_response(err);
+    }
+    let Ok(request_id) = request_id.parse::<Ulid>() else {
+        return error_response(ServerError::PermissionStale);
+    };
+    let Json(body) = match body {
+        Ok(body) => body,
+        Err(rejection) => return error_response(ServerError::MalformedBody(rejection.body_text())),
+    };
+    use crate::agent::permissions::PermissionDecision;
+    let decision = match body.decision {
+        DecisionKind::AllowOnce => PermissionDecision::AllowOnce,
+        DecisionKind::AllowFolder => PermissionDecision::AllowFolder,
+        DecisionKind::Deny => PermissionDecision::Deny {
+            message: body
+                .message
+                .filter(|m| !m.trim().is_empty())
+                .unwrap_or_else(|| DEFAULT_DENIAL.to_string()),
+        },
+    };
+    match state
+        .answer_permission(session_id, request_id, decision)
+        .await
+    {
+        Ok(()) => Json(json!({ "accepted": true })).into_response(),
+        Err(err) => error_response(err),
+    }
+}
+
 async fn stop_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let parsed: Ulid = match id.parse() {
         Ok(parsed) => parsed,
@@ -642,7 +709,9 @@ async fn stop_session(State(state): State<AppState>, Path(id): Path<String>) -> 
 pub(crate) fn error_response(err: ServerError) -> Response {
     let status = match &err {
         ServerError::SessionNotFound(_) => StatusCode::NOT_FOUND,
-        ServerError::SessionStopping | ServerError::ResumeRequired => StatusCode::CONFLICT,
+        ServerError::SessionStopping
+        | ServerError::ResumeRequired
+        | ServerError::PermissionStale => StatusCode::CONFLICT,
         ServerError::NonLoopbackBind(_) | ServerError::Bind(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::InboxFull => StatusCode::SERVICE_UNAVAILABLE,
         ServerError::NonTextContent | ServerError::MalformedBody(_) => StatusCode::BAD_REQUEST,
@@ -672,6 +741,13 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         return (
             status,
             Json(json!({ "error": err.to_string(), "reason": "resume_required" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::PermissionStale) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "permission_stale" })),
         )
             .into_response();
     }

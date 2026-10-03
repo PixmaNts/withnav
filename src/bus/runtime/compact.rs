@@ -190,9 +190,10 @@ pub(super) async fn run(
     cancel: &CancellationToken,
     focus: Option<&str>,
 ) -> Result<Compacted, String> {
-    if actor.pending_ask_id.is_some() {
+    if actor.has_pending() {
         return Err(
-            "the agent is waiting for an answer: reply to its question first, then compact"
+            "the agent is waiting for an answer or a decision: reply to its question or \
+             decide on its permission request first, then compact"
                 .to_string(),
         );
     }

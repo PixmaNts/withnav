@@ -342,7 +342,7 @@ mod tests {
     /// (d) A 10k llm.delta flood interleaved with one of EACH
     /// durable kind: deltas never enter the ring, and ALL durable kinds
     /// remain resumable in seq order (none lost, none invalidated). Deltas
-    /// consume no ring slots, so `RING_CAP >= 14` suffices — the watermark
+    /// consume no ring slots, so every durable kind fits — the watermark
     /// stays None and every durable event survives the flood.
     #[test]
     fn ten_k_delta_flood_leaves_every_durable_kind_resumable() {
@@ -371,9 +371,8 @@ mod tests {
                 seq += 1;
             }
         }
-        // 14 * (1 + 833) = 11_676 events emitted; the 833 after each durable
-        // one are llm.delta.
-        assert_eq!(seq, 11_676);
+        // Each durable kind is followed by 833 llm.delta.
+        assert_eq!(seq, durable_kinds.len() as u64 * 834);
         assert_eq!(bus.last_evicted_durable_seq(), None);
 
         let reply = subscribe(&mut bus, None, seq);
@@ -405,12 +404,13 @@ mod tests {
 
         // A delta gap NEVER invalidates replay: a cursor sitting deep inside
         // the flood still replays the remaining durables (deltas are legal
-        // gaps). Durables sit at seqs i*834: 0, 834, .., 10842.
+        // gaps). Durables sit at seqs i*834.
         let reply = subscribe(&mut bus, Some(5_000), seq);
-        assert_eq!(
-            replay_seqs(&reply.replay),
-            vec![5004, 5838, 6672, 7506, 8340, 9174, 10008, 10842]
-        );
+        let expected: Vec<u64> = (0..durable_kinds.len() as u64)
+            .map(|i| i * 834)
+            .filter(|s| *s > 5_000)
+            .collect();
+        assert_eq!(replay_seqs(&reply.replay), expected);
     }
 
     /// (a) + (b) DETERMINISTIC disconnect-not-drop, driven directly on the

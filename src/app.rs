@@ -13,6 +13,9 @@ pub const EXIT_DONE: i32 = 0;
 pub const EXIT_ERROR: i32 = 1;
 pub const EXIT_YIELDED: i32 = 2;
 pub const EXIT_INTERRUPTED: i32 = 130;
+/// A tool call needs approval and nobody can give it: `navai run` never
+/// approves on its own.
+pub const EXIT_PERMISSION_REQUIRED: i32 = 3;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -111,6 +114,11 @@ pub struct RunArgs {
     /// `off` for no variant. Default: the alias's default variant.
     #[arg(long)]
     pub variant: Option<String>,
+    /// UNSAFE: approve every permission request once, without asking. By
+    /// default a run that reaches a `write`, `edit`, `bash` or `fetch` call
+    /// stops with `permission_required` and exit code 3.
+    #[arg(long)]
+    pub yes: bool,
 }
 
 #[derive(Args, Debug)]
@@ -277,7 +285,8 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
     post_prompt(&state, session_id, &prompt).await?;
 
     let mut renderer = Renderer::new(args.show_thinking);
-    let exit = render_until_terminal(&mut sub, &mut renderer).await;
+    let approve = args.yes.then_some((&state, session_id));
+    let exit = render_until_terminal(&mut sub, &mut renderer, approve).await;
 
     let _ = state.close_session(session_id).await;
     Ok(exit)
@@ -315,9 +324,15 @@ async fn post_prompt(
 /// `turn.end`, reproducing the Phase-1 `finish` behavior (stdout via the
 /// UiEvents, plus the stderr line + exit code for interrupted/error) from the
 /// event stream instead of the raw `RunOutcome`.
+///
+/// A `permission.requested` ends the run with [`EXIT_PERMISSION_REQUIRED`] and
+/// a `permission_required: <tool> <scope>` line on stderr, unless `approve` is
+/// given (`--yes`): then each request is answered `allow_once` and the run
+/// goes on. Nothing is ever approved implicitly.
 async fn render_until_terminal(
     sub: &mut crate::session::Subscription,
     renderer: &mut Renderer,
+    approve: Option<(&crate::server::session::AppState, ulid::Ulid)>,
 ) -> i32 {
     if let crate::bus::ResumeOutcome::Replay(events) = &sub.replay {
         for env in events {
@@ -331,11 +346,39 @@ async fn render_until_terminal(
     };
     // Ctrl-C cancels the session token, so cancellation arrives here as a real
     // turn.end{interrupted} event — just read the live stream to the terminal.
+    // The turn that asked ends `yielded`; with `--yes` that is not the end.
+    let mut answered = 0usize;
     while let Some(env) = live.recv().await {
         if let Some(ui) = event_to_ui(&env) {
             renderer.render(ui);
         }
+        if env.kind == EventKind::PermissionRequested.as_str() {
+            let Ok(request) = serde_json::from_value::<crate::bus::event::PermissionRequested>(
+                env.payload.clone(),
+            ) else {
+                return EXIT_ERROR;
+            };
+            let Some((state, session_id)) = approve else {
+                eprintln!("\npermission_required: {} {}", request.tool, request.scope);
+                return EXIT_PERMISSION_REQUIRED;
+            };
+            let decision = crate::agent::permissions::PermissionDecision::AllowOnce;
+            if let Err(err) = state
+                .answer_permission(session_id, request.request_id, decision)
+                .await
+            {
+                eprintln!("\nerror: {err}");
+                return EXIT_ERROR;
+            }
+            answered += 1;
+        }
         if env.kind == EventKind::TurnEnd.as_str() {
+            let yielded = serde_json::from_value::<TurnEnd>(env.payload.clone())
+                .is_ok_and(|end| end.outcome == TurnEndOutcome::Yielded);
+            if yielded && answered > 0 {
+                answered -= 1;
+                continue;
+            }
             return exit_code_for(&env);
         }
     }
@@ -463,6 +506,8 @@ pub fn event_to_ui(envelope: &EventEnvelope) -> Option<UiEvent> {
         | EventKind::TaskDone
         | EventKind::CommandResult
         | EventKind::SessionAgentChanged
+        | EventKind::PermissionRequested
+        | EventKind::PermissionResolved
         | EventKind::ContextCompacted => None,
         EventKind::ContextUpdated => None,
     }

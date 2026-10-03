@@ -124,14 +124,13 @@ impl Tool for WriteTool {
         boxed(async move {
             let path = arg_str(&args, "path")?;
             let content = arg_str(&args, "content")?;
-            let target = Path::new(&path);
 
-            if let Some(parent) = target.parent() {
-                if !parent.as_os_str().is_empty() {
-                    tokio::fs::create_dir_all(parent).await?;
-                }
+            // Validate first: a refused path must leave nothing on disk, not
+            // even the folders leading to it.
+            let resolved = validate_path(&cx.writable_roots, Path::new(&path))?;
+            if let Some(parent) = resolved.parent() {
+                tokio::fs::create_dir_all(parent).await?;
             }
-            let resolved = validate_path(&cx.writable_roots, target)?;
             atomic_write(&resolved, content.as_bytes())?;
             Ok(ToolResult::ok(format!("wrote {} bytes", content.len())))
         })
@@ -393,6 +392,24 @@ mod tests {
             .await
             .unwrap();
         assert!(target.is_file());
+    }
+
+    #[tokio::test]
+    async fn a_rejected_write_creates_no_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let cx = ctx(&root);
+        let target = tmp.path().join("outside/deep/file.txt");
+        let res = WriteTool
+            .call(
+                json!({"path": target.to_str().unwrap(), "content": "x"}),
+                CancellationToken::new(),
+                &cx,
+            )
+            .await;
+        assert!(res.is_err());
+        assert!(!tmp.path().join("outside").exists());
     }
 
     #[tokio::test]

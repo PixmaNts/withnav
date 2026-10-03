@@ -401,7 +401,7 @@ async fn cancel_ends_an_idle_stream_promptly() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_tool_post_call_carries_duration_ms() {
-    let call = tool_call_chunk("call_1", "bash", &json!({ "command": "echo hi" }));
+    let call = tool_call_chunk("call_1", "glob", &json!({ "pattern": "*" }));
     let server = TestServer::start(vec![http_sse(&sse_body(&[&call])), answer("done")]).await;
     let client = Client::new(server.base.clone(), None);
     let id = create(&client, &server).await;

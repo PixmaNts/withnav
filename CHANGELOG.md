@@ -8,6 +8,26 @@ requests land in `develop`.
 
 ### Added
 
+- **Permission gate**: a session that runs as an agent asks before it runs `write`, `edit`, `bash`
+  or `fetch`; `read`, `grep`, `glob`, `skill` and `ask` never ask. The call does not run: the turn
+  yields with a durable `permission.requested` `{request_id, tool_call_id, tool, arguments (at most
+  4 KiB), scope, agent, reason}`. The scope is the canonical parent folder for `write`/`edit`, the
+  workspace for `bash` (what the driver approves, not a confinement) and the URL origin for `fetch`.
+  `POST /v1/sessions/{id}/permissions/{request_id}` with `{"decision":"allow_once"|"allow_folder"|"deny","message"?}`
+  answers it (409 `permission_stale` for a request that is not waiting, 404 unknown session). Allowing
+  runs exactly that call and appends its real result; `allow_folder` also covers later calls of the
+  same kind in that folder and below for the same agent until the session ends (never the config
+  directory through a workspace grant); a denial appends a `denied` result with code
+  `permission_denied` and your message; the calls that came after it in the same assistant message
+  are then processed, each one may ask in turn. Chat text never approves: a message sent while a request waits cancels it.
+  `permission.resolved` ends every request (`allow_once`, `allow_folder`, `deny`, `cancelled` by a
+  stop or a message, `expired` after a restart). A restart settles a held call as interrupted and
+  never runs it. `/agent`, `/variant` and the other session commands are refused while a request
+  waits. The catalog has 18 kinds with `permission.requested` and `permission.resolved`
+  (with develop's `context.compacted`).
+- **`navai run` and permissions**: a run that needs approval prints `permission_required: <tool>
+  <scope>` on stderr and exits 3 instead of hanging. `--yes` approves every request once; it is
+  unsafe and off by default.
 - **Server commands in the terminal client**: typing `/` opens a list of every command, the
   client's and the server's (`/context`, `/agent`, `/compact`…), with their arguments; what you type
   after the slash narrows it, enter runs the highlighted one, and a space or an argument puts the
@@ -92,7 +112,7 @@ requests land in `develop`.
   are refused ("a compaction is running") while a summary is being prepared; the summary
   request never holds the service-wide lifecycle gate, so a stop, a shutdown and other sessions do not
   wait for the provider and a stopped session commits nothing; it is refused while
-  an `ask` waits, and answers a clear error when there is nothing to compact or the recent turns cannot
+  an `ask` or a permission request waits (a `/compact` deferred behind a turn that ends on a permission request is refused the same way, under its operation id), and answers a clear error when there is nothing to compact or the recent turns cannot
   fit the input budget. The result is saved with the transcript in one transaction, in a new nullable
   versioned `sessions.checkpoint` column (older conversations resume as before; a stored checkpoint that
   does not fit its transcript fails the resume with an explicit error); `sessions.transcript` still
@@ -223,6 +243,15 @@ requests land in `develop`.
 
 ### Fixed
 
+- **Permission gate fixes**: a call that is rejected for its arguments (a path outside the roots, a
+  write that would create a folder) is rejected before the gate, without asking; only a valid call asks. An approval is bound to the destination that was reviewed: a call that resolves
+  elsewhere when it runs asks again. A held call keeps what is left of the step budget across
+  approvals instead of starting a new one. A navigator wake is held by the session runtime while a
+  permission request or an `ask` is pending, and delivered only once nothing is pending (the latest
+  one is kept), so it can no longer cancel a later request of the same turn; driver text still
+  cancels a request. A second answer to the same request is refused with 409 `permission_stale` at once, before
+  anything is changed. `/stop` goes through while a request waits and cancels it
+  (`permission.resolved` `cancelled`).
 - The navigator no longer holds back its advice while your code is still unfinished: a remark worth
   making is shown even when the edit is mid-way, and a one-line fix counts as a change worth
   looking at. A remark is still shown at most once every 45 seconds, and a stuck or drifting file

@@ -407,6 +407,101 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
     );
 }
 
+// Given a navigator conversation whose cognition waits on a permission request
+// When a wake is posted
+// Then the session runtime holds it and the request stays open; once the
+//      driver answers and the turn ends, the wake is delivered
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wake_never_cancels_an_open_permission_request() {
+    let server = MockServer::start().await;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().canonicalize().expect("canonical");
+    let ws = root.join("ws");
+    std::fs::create_dir_all(&ws).expect("ws dir");
+    let target = ws.join("note.txt");
+    let write = serde_json::json!({"choices": [{"index": 0, "finish_reason": "tool_calls",
+    "delta": {"tool_calls": [{"index": 0, "id": "w1", "function": {
+        "name": "write",
+        "arguments": serde_json::json!({"path": target, "content": "x"}).to_string(),
+    }}]}}]})
+    .to_string();
+    let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;
+    for (body, marker, priority) in [
+        (write.as_str(), "write the note", 5u8),
+        (done, "\"role\":\"tool\"", 3),
+    ] {
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(wiremock::matchers::body_string_contains(marker.to_string()))
+            .respond_with(sse_response(&[body]))
+            .with_priority(priority)
+            .mount(&server)
+            .await;
+    }
+    let feed = navai::navigator::ConversationFeed::new();
+    let state = test_state_with_feed(&root, &server.uri(), Some(feed.clone()));
+    let id = state
+        .create_session(&ws, None, Some("navigator"))
+        .await
+        .expect("create");
+
+    send_text(&state, id, "write the note").await;
+    let requested = loop {
+        state.history().flush().await.expect("flush");
+        let sub = subscribe(&state, id).await;
+        if let navai::bus::ResumeOutcome::Replay(all) = sub.replay {
+            if let Some(found) = all.into_iter().find(|e| e.kind == "permission.requested") {
+                break found;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let request_id: ulid::Ulid = requested.payload["request_id"]
+        .as_str()
+        .and_then(|id| id.parse().ok())
+        .expect("request id");
+    assert_eq!(
+        feed.post_wake("a wake while asking").await,
+        navai::navigator::WakeOutcome::Posted(id),
+        "the feed posts it; the runtime holds it behind the request"
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    state.history().flush().await.expect("flush");
+    let sub = subscribe(&state, id).await;
+    let navai::bus::ResumeOutcome::Replay(all) = sub.replay else {
+        panic!("expected a replay");
+    };
+    assert!(
+        !all.iter().any(|e| e.kind == "permission.resolved"),
+        "the request is still open"
+    );
+
+    state
+        .answer_permission(
+            id,
+            request_id,
+            navai::agent::permissions::PermissionDecision::AllowOnce,
+        )
+        .await
+        .expect("answer");
+    let requests = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let requests = server.received_requests().await.expect("wiremock retains");
+            if requests
+                .iter()
+                .any(|r| String::from_utf8_lossy(&r.body).contains("a wake while asking"))
+            {
+                break requests;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the held wake arrives once the request is resolved");
+    assert!(!requests.is_empty());
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
+}
+
 /// A fresh subscription: replay (the whole retained history) then live, in
 /// the same shape `collect_until` drains.
 async fn subscribe(state: &AppState, id: ulid::Ulid) -> navai::session::Subscription {

@@ -50,9 +50,11 @@ use crate::agent::instructions::Instructions;
 use crate::agent::selection::AgentSelection;
 use crate::agent::skills::Skills;
 use crate::bus::command::Command;
+use crate::bus::event::EventKind;
 use crate::bus::event::ROOT_ACTOR_ID;
 use crate::bus::inbox::ActorInbox;
 use crate::bus::runtime;
+use crate::bus::sequencer::Candidate;
 use crate::bus::sequencer::Sequencer;
 use crate::bus::SessionBus;
 use crate::error::ServerError;
@@ -95,6 +97,8 @@ pub struct SessionHandle {
     pub workspace: PathBuf,
     /// The alias the session was created with.
     pub model: String,
+    /// Typed decisions on permission requests, read by the runtime.
+    pub permissions: mpsc::Sender<crate::bus::inbox::PermissionAnswer>,
     /// The runtime's view of its actor: pending `ask`, running turn.
     pub status: Arc<runtime::RuntimeStatus>,
     /// What the session's model offers as variants; replaced when an offer
@@ -268,6 +272,75 @@ impl Service {
     pub async fn send(&self, command: Command) -> Result<MessageAccepted, ServerError> {
         let handle = self.routable_handle(command.session_id).await?;
         accept(&handle, command).await
+    }
+
+    /// The permission requests of a stored session that never got a
+    /// `permission.resolved`: `(request id, tool call id)`, oldest first.
+    async fn unresolved_permissions(
+        &self,
+        id: SessionId,
+    ) -> Result<Vec<(Ulid, String)>, ServerError> {
+        use crate::bus::event::{PermissionRequested, PermissionResolved};
+        let events = self
+            .history
+            .permission_events(id)
+            .await
+            .map_err(ServerError::History)?;
+        let mut open: Vec<(Ulid, String)> = Vec::new();
+        for envelope in events {
+            if envelope.kind == EventKind::PermissionRequested.as_str() {
+                if let Ok(request) = serde_json::from_value::<PermissionRequested>(envelope.payload)
+                {
+                    open.push((request.request_id, request.tool_call_id));
+                }
+            } else if let Ok(done) = serde_json::from_value::<PermissionResolved>(envelope.payload)
+            {
+                open.retain(|(request_id, _)| *request_id != done.request_id);
+            }
+        }
+        Ok(open)
+    }
+
+    /// Answers the permission request `request_id` of a live session with
+    /// `decision`. The request must be the one the session waits on:
+    /// [`ServerError::PermissionStale`] for one that was answered, cancelled,
+    /// expired or never existed. Returns once the runtime accepted the
+    /// decision; the resumed turn then runs on its own and reports on the
+    /// session stream (`permission.resolved`, then the turn's events).
+    pub async fn answer_permission(
+        &self,
+        session_id: SessionId,
+        request_id: Ulid,
+        decision: crate::agent::permissions::PermissionDecision,
+    ) -> Result<(), ServerError> {
+        let handle = self.routable_handle(session_id).await?;
+        // Claimed at admission: a second answer for the same request is
+        // refused at once, not after the resumed turn.
+        if !handle.status.claim_permission(request_id) {
+            return Err(ServerError::PermissionStale);
+        }
+        let (reply, accepted) = tokio::sync::oneshot::channel();
+        if handle
+            .permissions
+            .try_send(crate::bus::inbox::PermissionAnswer {
+                request_id,
+                decision,
+                reply,
+            })
+            .is_err()
+        {
+            handle.status.release_permission(request_id);
+            return Err(ServerError::PermissionStale);
+        }
+        match accepted.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => {
+                handle.status.release_permission(request_id);
+                Err(ServerError::PermissionStale)
+            }
+            // The runtime ended before it read the decision.
+            Err(_) => Err(ServerError::SessionStopping),
+        }
     }
 
     /// Creates a session: resolves models.json + the key and the context
@@ -685,9 +758,16 @@ impl Service {
             .await;
         actor.set_skills(skills);
         self.hooks.configure_actor(profile, &mut actor);
-        if resumed.is_some() {
-            actor.restore_pending_ask();
-        }
+        // A permission request does not outlive the process that asked it:
+        // its calls are settled as interrupted and never run again.
+        let expired = match &resumed {
+            Some(_) => {
+                actor.restore_pending_ask();
+                actor.settle_unanswered_calls();
+                self.unresolved_permissions(session_id).await?
+            }
+            None => Vec::new(),
+        };
 
         let next_seq = resumed
             .as_ref()
@@ -725,6 +805,16 @@ impl Service {
             next_seq,
         );
 
+        for (request_id, tool_call_id) in expired {
+            let payload = serde_json::to_value(crate::bus::event::PermissionResolved {
+                request_id,
+                tool_call_id,
+                resolution: crate::bus::event::PermissionResolution::Expired,
+            })
+            .unwrap_or(serde_json::Value::Null);
+            let _ = sequencer.publish(Candidate::new(EventKind::PermissionResolved, payload));
+        }
+
         if !is_resume {
             // session.start is seq 0, sequenced before the runtime exists.
             let _ = sequencer.publish(start_candidate(&workspace));
@@ -732,6 +822,7 @@ impl Service {
         // THEN the runtime task; the handle is retained so /stop can await
         // the interrupted turn's events before the session.end fence.
         let (inbox_tx, inbox) = ActorInbox::channel();
+        let permissions = inbox.permission_sender();
         let saver_history = history.clone();
         let on_turn_end: Option<crate::bus::runtime::TurnEndHook> =
             Some(Box::new(move |transcript: &[ChatMessage]| {
@@ -770,6 +861,7 @@ impl Service {
 
         let handle = SessionHandle {
             inbox_tx,
+            permissions,
             sequencer,
             session_cancel,
             runtime_task,

@@ -7,9 +7,11 @@ use crate::agent::compaction::{
 };
 use crate::agent::definitions::AgentDefinition;
 use crate::agent::instructions::Instructions;
+use crate::agent::permissions::{Grants, PermissionRequest};
 use crate::agent::skills::{SkillTool, Skills};
 use crate::provider::config::{ProviderConfig, ReasoningHistory};
 use crate::provider::openai::ChatMessage;
+use crate::provider::ToolCall;
 use crate::tools::{Registry, ToolContext};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,6 +20,27 @@ pub enum AgentState {
     Running,
     Yielded,
     Stopped,
+}
+
+/// What a yielded actor waits for: an answer to an `ask`, or a decision on a
+/// gated tool call.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PendingInteraction {
+    /// The next user text is the result of the `ask` call `tool_call_id`.
+    Ask { tool_call_id: String },
+    /// `call` has not run: it waits for a decision on `request`, and the
+    /// sibling calls of the same assistant message that follow it wait behind
+    /// it. Only a typed decision resolves it, never user text.
+    Permission {
+        request: Box<PermissionRequest>,
+        call: ToolCall,
+        remaining_calls: Vec<ToolCall>,
+        /// For `write` and `edit`: the canonical file the request was made
+        /// for. The call runs on an approval only if it still resolves there.
+        destination: Option<std::path::PathBuf>,
+        /// The model steps left in the turn when the call was held.
+        steps_left: usize,
+    },
 }
 
 pub struct AgentActor {
@@ -57,7 +80,9 @@ pub struct AgentActor {
     pub skills: Arc<Skills>,
     pub cancel: CancellationToken,
     pub state: AgentState,
-    pub pending_ask_id: Option<String>,
+    pub pending: Option<PendingInteraction>,
+    /// The folder and origin approvals given in this session; memory only.
+    pub grants: Grants,
 }
 
 impl AgentActor {
@@ -90,7 +115,8 @@ impl AgentActor {
             skills: Arc::new(Skills::default()),
             cancel,
             state: AgentState::Idle,
-            pending_ask_id: None,
+            pending: None,
+            grants: Grants::default(),
         }
     }
 
@@ -161,6 +187,19 @@ impl AgentActor {
         )
     }
 
+    /// Whether the actor waits for an answer or a decision.
+    pub fn has_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// The permission request the actor waits on, if any.
+    pub fn pending_permission(&self) -> Option<&PermissionRequest> {
+        match &self.pending {
+            Some(PendingInteraction::Permission { request, .. }) => Some(request),
+            _ => None,
+        }
+    }
+
     /// Persists `compaction` through `persist`, which is handed the full
     /// transcript and must return only once the write is durable, then
     /// installs it. A failed write installs nothing. The compaction is
@@ -180,13 +219,13 @@ impl AgentActor {
         Ok(())
     }
 
-    /// Re-derives `pending_ask_id` from a restored transcript: the `ask` call
+    /// Re-derives the pending `ask` from a restored transcript: the `ask` call
     /// of the last assistant message that has no `Tool` message after it. The
     /// transcript is used (not the stored `agent.yield` event) because that
     /// event does not carry the tool call id, and a dangling `ask` needs its
     /// result whatever the events say.
     pub fn restore_pending_ask(&mut self) {
-        self.pending_ask_id = None;
+        self.pending = None;
         let Some(last) = self
             .transcript
             .iter()
@@ -202,22 +241,100 @@ impl AgentActor {
                 .iter()
                 .any(|m| matches!(m, ChatMessage::Tool { tool_call_id, .. } if tool_call_id == id))
         };
-        self.pending_ask_id = tool_calls
+        self.pending = tool_calls
             .iter()
             .rev()
             .find(|tc| tc.function.name == "ask" && !answered(&tc.id))
-            .map(|tc| tc.id.clone());
+            .map(|tc| PendingInteraction::Ask {
+                tool_call_id: tc.id.clone(),
+            });
+    }
+
+    /// Appends user text. It answers a pending `ask`; it never answers a
+    /// pending permission: that one is settled as interrupted (neither run
+    /// nor approved) so the transcript stays well formed, and the text
+    /// follows as an ordinary message.
+    /// For a restored transcript: settles, as interrupted, every call of the
+    /// last assistant message that has no result and is not the pending
+    /// `ask`. Such a call was held by a permission request, or running, when
+    /// the process ended; it is never run again. Returns how many were
+    /// settled.
+    pub fn settle_unanswered_calls(&mut self) -> usize {
+        let Some(last) = self
+            .transcript
+            .iter()
+            .rposition(|m| matches!(m, ChatMessage::Assistant { .. }))
+        else {
+            return 0;
+        };
+        let ChatMessage::Assistant { tool_calls, .. } = &self.transcript[last] else {
+            return 0;
+        };
+        let asking = match &self.pending {
+            Some(PendingInteraction::Ask { tool_call_id }) => Some(tool_call_id.as_str()),
+            _ => None,
+        };
+        let unanswered: Vec<String> = tool_calls
+            .iter()
+            .filter(|tc| Some(tc.id.as_str()) != asking)
+            .filter(|tc| {
+                !self.transcript[last + 1..].iter().any(
+                    |m| matches!(m, ChatMessage::Tool { tool_call_id, .. } if *tool_call_id == tc.id),
+                )
+            })
+            .map(|tc| tc.id.clone())
+            .collect();
+        for id in &unanswered {
+            self.transcript.push(ChatMessage::Tool {
+                tool_call_id: id.clone(),
+                content: String::new(),
+            });
+        }
+        unanswered.len()
     }
 
     pub fn push_user(&mut self, text: impl Into<String>) {
         let text = text.into();
-        if let Some(ask_id) = self.pending_ask_id.take() {
+        match self.pending.take() {
+            Some(PendingInteraction::Ask { tool_call_id }) => {
+                self.transcript.push(ChatMessage::Tool {
+                    tool_call_id,
+                    content: text,
+                });
+            }
+            Some(PendingInteraction::Permission {
+                call,
+                remaining_calls,
+                ..
+            }) => {
+                self.settle_interrupted(&call, &remaining_calls);
+                self.transcript.push(ChatMessage::User { content: text });
+            }
+            None => self.transcript.push(ChatMessage::User { content: text }),
+        }
+    }
+
+    /// Settles every call a pending permission holds as interrupted: none of
+    /// them runs. For a stop; a pending `ask` is left as it is.
+    pub fn interrupt_pending_permission(&mut self) {
+        if let Some(PendingInteraction::Permission {
+            call,
+            remaining_calls,
+            ..
+        }) = self
+            .pending
+            .take_if(|p| matches!(p, PendingInteraction::Permission { .. }))
+        {
+            self.settle_interrupted(&call, &remaining_calls);
+        }
+    }
+
+    fn settle_interrupted(&mut self, call: &ToolCall, remaining: &[ToolCall]) {
+        for call in std::iter::once(call).chain(remaining) {
             self.transcript.push(ChatMessage::Tool {
-                tool_call_id: ask_id,
-                content: text,
+                tool_call_id: call.id.clone(),
+                content: String::new(),
             });
-        } else {
-            self.transcript.push(ChatMessage::User { content: text });
         }
     }
 }

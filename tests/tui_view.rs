@@ -1887,7 +1887,7 @@ fn n_asks_for_a_message_then_enter_denies_with_it() {
         [answer("allow_folder", None)]
     );
     assert!(keys("n", &s, &mut ui, &mut editor).is_empty());
-    assert_eq!(ui.deny_message.as_deref(), Some(""));
+    assert_eq!(ui.deny_draft("R1"), Some(""));
     keys("use cargo clean", &s, &mut ui, &mut editor);
     assert_eq!(
         editor.text(),
@@ -1918,6 +1918,70 @@ fn n_asks_for_a_message_then_enter_denies_with_it() {
         &mut editor,
     );
     assert_eq!(esc, Some(answer("deny", None)));
+}
+
+/// `s` with its open request `R1` replaced by `R2` (R1 ended elsewhere).
+fn next_request(s: &State) -> State {
+    let mut s = s.clone();
+    let mut second = prompt("bash", json!({"command": "rm -rf /"}), ("folder", "/"));
+    second.id = "permission:R2".into();
+    if let BlockKind::Permission(p) = &mut second.kind {
+        p.request_id = "R2".into();
+    }
+    if let BlockKind::Permission(p) = &mut s.conversation.blocks.last_mut().unwrap().kind {
+        p.resolution = Some("cancelled".into());
+    }
+    s.conversation.open_permissions = vec![second.id.clone()];
+    s.conversation.blocks.push(second);
+    s
+}
+
+#[test]
+fn a_deny_message_does_not_carry_over_to_the_next_request() {
+    let s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
+    let mut ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    let mut editor = Editor::new();
+    keys("nnot here", &s, &mut ui, &mut editor);
+    assert_eq!(ui.deny_draft("R1"), Some("not here"));
+    let s2 = next_request(&s);
+    // the message is not shown on R2, and enter does not deny R2 with it
+    let shown = screen_text(&s2, &ui, (100, 30));
+    assert!(!shown.contains("not here"), "{shown}");
+    assert!(shown.contains("y allow once"), "{shown}");
+    let enter = keys("⏎", &s2, &mut ui, &mut editor);
+    assert!(
+        !enter
+            .iter()
+            .any(|a| matches!(a, Action::AnswerPermission { .. })),
+        "{enter:?}"
+    );
+    assert_eq!(ui.deny_message, None);
+    // a paste is not added to R1's message either
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    keys("nold", &s, &mut ui, &mut editor);
+    route_paste("pasted".into(), &s2, &mut ui, &mut editor);
+    assert_eq!(ui.deny_message, None);
+    assert_eq!(editor.text(), "pasted", "it goes to the editor");
+    // on R2, n starts a message of its own
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    keys("nold", &s, &mut ui, &mut editor);
+    keys("nnew", &s2, &mut ui, &mut editor);
+    assert_eq!(ui.deny_draft("R2"), Some("new"));
+    assert_eq!(
+        keys("⏎", &s2, &mut ui, &mut editor),
+        [Action::AnswerPermission {
+            request_id: "R2".into(),
+            answer: navai::tui::protocol::PermissionAnswer {
+                decision: "deny".into(),
+                message: Some("new".into()),
+            },
+        }]
+    );
 }
 
 #[test]

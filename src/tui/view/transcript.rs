@@ -184,7 +184,7 @@ fn block_text(
                 Keys::Inactive
             } else if state.answered_permission.as_deref() == Some(prompt.request_id.as_str()) {
                 Keys::Sent
-            } else if let Some(message) = ui.deny_message.as_deref() {
+            } else if let Some(message) = ui.deny_draft(&prompt.request_id) {
                 Keys::Denying(message)
             } else {
                 Keys::Ready

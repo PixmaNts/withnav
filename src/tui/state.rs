@@ -304,6 +304,23 @@ pub enum VariantPick {
 /// The word for "no variant" in the list and in `/variant off`.
 pub const NO_VARIANT: &str = "off";
 
+/// A deny message being typed, for one permission request only.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DenyDraft {
+    pub request_id: String,
+    pub text: String,
+}
+
+impl UiState {
+    /// The deny message typed for `request_id`, if that is the request it was started on.
+    pub fn deny_draft(&self, request_id: &str) -> Option<&str> {
+        self.deny_message
+            .as_ref()
+            .filter(|d| d.request_id == request_id)
+            .map(|d| d.text.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Focus {
     #[default]
@@ -330,8 +347,9 @@ pub struct UiState {
     /// Enter was pressed once on a message while this permission request (id, editor revision)
     /// was open: a second enter on the same text sends it.
     pub send_over_permission: Option<(String, u64)>,
-    /// The message being typed after `n` on a permission prompt; `None` when not denying.
-    pub deny_message: Option<String>,
+    /// The message being typed after `n` on a permission prompt, with the request it denies;
+    /// `None` when not denying.
+    pub deny_message: Option<DenyDraft>,
     /// The command palette was opened by typing `/` in the editor: the editor holds the line and
     /// the filter follows it.
     pub palette_typed: bool,

@@ -3,7 +3,7 @@
 use super::{
     commands,
     protocol::{Action, Overlay, PermissionAnswer},
-    state::{Activity, Focus, State, UiState, VariantPick},
+    state::{Activity, DenyDraft, Focus, State, UiState, VariantPick},
     theme::ThemeId,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -419,7 +419,11 @@ fn permission_key(
     let plain = !key
         .modifiers
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
-    if let Some(message) = ui.deny_message.as_mut() {
+    // A message started on a request that ended (or was replaced) does not carry over.
+    if ui.deny_draft(&request_id).is_none() {
+        ui.deny_message = None;
+    }
+    if let Some(DenyDraft { text: message, .. }) = ui.deny_message.as_mut() {
         return Some(match key.code {
             KeyCode::Enter => {
                 let message = std::mem::take(message);
@@ -454,7 +458,10 @@ fn permission_key(
         KeyCode::Char('y') => Some(Some(answer("allow_once", None))),
         KeyCode::Char('a') => Some(Some(answer("allow_folder", None))),
         KeyCode::Char('n') => {
-            ui.deny_message = Some(String::new());
+            ui.deny_message = Some(DenyDraft {
+                request_id: request_id.clone(),
+                text: String::new(),
+            });
             Some(None)
         }
         _ => None,
@@ -543,9 +550,14 @@ pub fn route_paste(
     ui: &mut UiState,
     editor: &mut Editor,
 ) -> Option<Action> {
-    // While a deny message is typed, a paste goes into it (one line).
-    if let Some(message) = ui.deny_message.as_mut() {
-        if ui.overlay.is_none() && state.open_permission().is_some() {
+    // While a deny message is typed, a paste goes into it (one line); a message left from a
+    // request that is no longer the open one is dropped.
+    let open = state.open_permission().map(|p| p.request_id.as_str());
+    if ui.deny_message.is_some() && open.is_none_or(|id| ui.deny_draft(id).is_none()) {
+        ui.deny_message = None;
+    }
+    if let Some(DenyDraft { text: message, .. }) = ui.deny_message.as_mut() {
+        if ui.overlay.is_none() {
             message.push_str(&text.replace(['\n', '\r'], " "));
             return None;
         }

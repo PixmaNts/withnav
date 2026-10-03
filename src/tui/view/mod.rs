@@ -195,7 +195,8 @@ pub fn draw(
         let answerable = state
             .open_permission()
             .filter(|p| state.answered_permission.as_deref() != Some(p.request_id.as_str()));
-        let hint = match (answerable, &ui.deny_message) {
+        let draft = answerable.and_then(|p| ui.deny_draft(&p.request_id));
+        let hint = match (answerable, draft) {
             (Some(_), Some(_)) => " enter deny with this message  esc deny without one",
             (Some(_), None) if editor.text().is_empty() => {
                 " y allow once  a always  n deny  esc stop  ctrl+p commands"

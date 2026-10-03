@@ -21,6 +21,13 @@ pub enum TerminalOwner {
 }
 
 impl WatchdogPark {
+    pub fn claim_stuck(&self, generation: u64) -> bool {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.0 != generation || !state.1 || self.is_doubt() {
+            return false;
+        }
+        self.claim_terminal(TerminalOwner::Watchdog)
+    }
     pub fn transition(&self, running: bool) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.0 = state.0.wrapping_add(1);

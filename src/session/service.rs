@@ -287,6 +287,8 @@ fn is_promptable(value: &bool) -> bool {
 #[derive(Clone, Debug)]
 pub struct Service {
     #[cfg(debug_assertions)]
+    pub(crate) watchdog_ownership_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
     pub(crate) lifecycle_claim_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
     pub(crate) watchdog_stop_failure: Arc<std::sync::atomic::AtomicBool>,
@@ -334,6 +336,14 @@ pub struct Service {
 }
 
 impl Service {
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_watchdog_ownership(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .watchdog_ownership_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn pause_lifecycle_claim(&self, barrier: ChildPreparationBarrier) {
@@ -500,6 +510,8 @@ impl Service {
             .map_err(ServerError::History)?;
         let catalog = crate::provider::catalog::ModelCatalog::new(Some(config.data_dir.clone()));
         Ok(Self {
+            #[cfg(debug_assertions)]
+            watchdog_ownership_barrier: Arc::default(),
             #[cfg(debug_assertions)]
             lifecycle_claim_barrier: Arc::default(),
             #[cfg(debug_assertions)]

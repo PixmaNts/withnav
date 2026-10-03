@@ -567,6 +567,44 @@ async fn delete_rechecks_owned_teardown_before_claiming_stopping() {
 }
 
 #[tokio::test]
+async fn replacement_between_stuck_verdict_and_ownership_is_not_stopped() {
+    let mut f = Fixture::new(vec![Ok(Verdict::Stuck)]).await;
+    let barrier = navai::session::ChildPreparationBarrier::default();
+    f.service.pause_watchdog_ownership(barrier.clone());
+    f.tick(300).await;
+    barrier.reached.notified().bounded(file!(), line!()).await;
+    f.service
+        .steer_child(f.parent, f.child, "replacement must survive", true)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (request, stream) = f
+        .provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(request.contains("replacement must survive"));
+    barrier.release.notify_one();
+    let _next = f.sleeps.recv().bounded(file!(), line!()).await.unwrap();
+    assert_eq!(
+        f.service
+            .child_metadata(f.child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "running"
+    );
+    assert!(!f.events().await.iter().any(|e| e.kind == "subagent.done"));
+    assert_eq!(f.service.reserved_child_count(f.parent), 1);
+    drop(stream);
+    f.close().await;
+}
+
+#[tokio::test]
 async fn failed_stop_write_restores_doubt_and_driver_continue_releases_waiter() {
     let mut f = Fixture::new(vec![Ok(Verdict::Doubt)]).await;
     f.tick(300).await;

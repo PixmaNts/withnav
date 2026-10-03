@@ -66,7 +66,10 @@ impl Service {
                     owner.status.wake_delivery();
                 }
             }
-            Verdict::Stuck => self.stop_watchdog_child(parent, child).await?,
+            Verdict::Stuck => {
+                self.stop_watchdog_child_generation(parent, child, Some(generation))
+                    .await?
+            }
         }
         Ok(())
     }
@@ -76,6 +79,28 @@ impl Service {
         parent: SessionId,
         child: SessionId,
     ) -> Result<(), ServerError> {
+        self.stop_watchdog_child_generation(parent, child, None)
+            .await
+    }
+
+    async fn stop_watchdog_child_generation(
+        &self,
+        parent: SessionId,
+        child: SessionId,
+        generation: Option<u64>,
+    ) -> Result<(), ServerError> {
+        #[cfg(debug_assertions)]
+        {
+            let barrier = self
+                .watchdog_ownership_barrier
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(barrier) = barrier {
+                barrier.reached.notify_one();
+                barrier.release.notified().await;
+            }
+        }
         let Some(handle) = self.handle(child) else {
             return Err(ServerError::ChildNotParked);
         };
@@ -94,11 +119,15 @@ impl Service {
             {
                 return Ok(());
             }
-            if !handle
-                .status
-                .watchdog
-                .claim_terminal(crate::bus::runtime::TerminalOwner::Watchdog)
-            {
+            let claimed = match generation {
+                Some(generation) => handle.status.watchdog.claim_stuck(generation),
+                None => handle
+                    .status
+                    .watchdog
+                    .claim_terminal(crate::bus::runtime::TerminalOwner::Watchdog),
+            };
+            if !claimed {
+                tracing::debug!(%child, "discarded obsolete watchdog stopping intent");
                 return Ok(());
             }
             if handle.session_cancel.is_cancelled() {

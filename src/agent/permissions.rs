@@ -188,6 +188,34 @@ pub struct Needed {
     pub destination: Option<PathBuf>,
 }
 
+/// Whether `role` is checked by the role guard: `plan` is. Every other agent
+/// runs under the ordinary permission gate alone.
+pub fn is_guarded(role: &AgentDefinition) -> bool {
+    role.id.as_str() == crate::agent::definitions::PLAN
+}
+
+/// Whether a guarded agent may run `tool` on `needed` without the guard and
+/// without a request: a `write` or `edit` whose RESOLVED destination is a
+/// regular `.md` file (a plan's normal job). The destination is the canonical
+/// path `validate_path` produced, so a `.md` name that is a symlink to
+/// another file is not exempt, and neither is a link that dangles: writing
+/// through it would create its target.
+pub fn exempt_from_guard(tool: &str, needed: &Needed) -> bool {
+    if !matches!(tool, "write" | "edit") {
+        return false;
+    }
+    let Some(destination) = needed.destination.as_deref() else {
+        return false;
+    };
+    let markdown = destination
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
+    let link = std::fs::symlink_metadata(destination)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false);
+    markdown && !link
+}
+
 /// What the gate decides about a call, with no side effect.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Gate {

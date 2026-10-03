@@ -1,7 +1,8 @@
 use crate::agent::actor::{AgentActor, AgentState, PendingInteraction};
 use crate::agent::context::Breakdown;
 use crate::agent::permissions::{
-    needs_permission, Gate, PermissionDecision, PermissionError, PermissionRequest,
+    exempt_from_guard, is_guarded, needs_permission, Gate, PermissionDecision, PermissionError,
+    PermissionRequest,
 };
 use crate::agent::prompt::{assistant_history_message, build_request};
 use crate::agent::response::{classify, HumanRequest, StepOutcome};
@@ -345,7 +346,13 @@ fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
         Gate::Needs(needed) => needed,
     };
     let agent = role.id.as_str();
-    if actor
+    // A guarded agent writes its markdown without asking; everything else
+    // it does is an exception, and no folder grant covers an exception.
+    if is_guarded(role) {
+        if exempt_from_guard(&call.name, &needed) {
+            return Gated::Run;
+        }
+    } else if actor
         .grants
         .covers(agent, &call.name, &needed.scope, &actor.tool_context)
     {

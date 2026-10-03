@@ -226,7 +226,10 @@ struct Done {
 
 impl Done {
     fn data(data: Value) -> Self {
-        Self { data, created: None }
+        Self {
+            data,
+            created: None,
+        }
     }
 }
 

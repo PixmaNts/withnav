@@ -91,9 +91,7 @@ pub fn unknown_error(name: &str) -> String {
     let mut close: Vec<&str> = COMMANDS
         .iter()
         .map(|c| c.name)
-        .filter(|c| {
-            c.starts_with(&lower) || lower.starts_with(c) || edit_distance(c, &lower) <= 2
-        })
+        .filter(|c| c.starts_with(&lower) || lower.starts_with(c) || edit_distance(c, &lower) <= 2)
         .collect();
     let all = close.is_empty();
     if all {

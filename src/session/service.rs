@@ -326,6 +326,21 @@ pub struct Service {
 }
 
 impl Service {
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_negative_result_eligibility(
+        &self,
+        id: SessionId,
+        barrier: ChildPreparationBarrier,
+    ) -> Result<(), ServerError> {
+        let handle = self
+            .handle(id)
+            .ok_or_else(|| ServerError::SessionNotFound(id.to_string()))?;
+        handle
+            .status
+            .pause_negative_eligibility(barrier.reached, barrier.release);
+        Ok(())
+    }
     pub(super) async fn wait_child_operation(&self, id: SessionId) {
         let pending = {
             let _admission = self.admission_gate.lock().await;

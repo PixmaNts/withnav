@@ -93,6 +93,9 @@ struct PermissionSlot {
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
+    #[cfg(debug_assertions)]
+    negative_eligibility_barrier:
+        Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
     boundary_eligible: Mutex<Option<delivery::EligibleCell>>,
     queued_driver: Arc<std::sync::atomic::AtomicUsize>,
     boundary_deferred: std::sync::atomic::AtomicBool,
@@ -118,6 +121,17 @@ pub struct RuntimeStatus {
 }
 
 impl RuntimeStatus {
+    #[cfg(debug_assertions)]
+    pub(crate) fn pause_negative_eligibility(
+        &self,
+        reached: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    ) {
+        *self
+            .negative_eligibility_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some((reached, release));
+    }
     pub fn install_boundary_eligible(&self, callback: BoundaryEligible) {
         *self
             .boundary_eligible
@@ -710,16 +724,32 @@ async fn runtime_loop(
     actor.safe_boundary = Some(Arc::new(move |transcript| {
         let status = boundary_status.clone();
         Box::pin(async move {
-            if status
+            let driver_queued = status
                 .queued_driver
                 .load(std::sync::atomic::Ordering::Acquire)
-                > 0
-                && status.result_eligible().await
-            {
-                status
-                    .boundary_deferred
-                    .store(true, std::sync::atomic::Ordering::Release);
-                return Ok(None);
+                > 0;
+            if driver_queued {
+                if status.result_eligible().await {
+                    status
+                        .boundary_deferred
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    return Ok(None);
+                }
+                #[cfg(debug_assertions)]
+                {
+                    let barrier = status
+                        .negative_eligibility_barrier
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take();
+                    if let Some((reached, release)) = barrier {
+                        reached.notify_one();
+                        release.notified().await;
+                    }
+                }
+                // Eligibility and consumption otherwise read different outbox
+                // snapshots. A later completion must not overtake this driver.
+                return Ok(Some(status.steering.apply(transcript)));
             }
             let mut transcript = status.steering.apply(transcript);
             let callback = status

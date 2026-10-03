@@ -10,6 +10,115 @@ fn body(request: &str) -> Value {
 }
 
 #[tokio::test]
+async fn completion_after_negative_eligibility_cannot_overtake_queued_driver() {
+    let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let state = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(128000)
+        .state();
+    let parent = state
+        .create_session(&ws, None, None)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    state
+        .send(navai::bus::command::Command::child_prompt(
+            parent,
+            "original".into(),
+        ))
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (_, parent_stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let _child = state
+        .create_child_with_delivery(parent, "explore", "inspect", "steer")
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (_, child_stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    state
+        .send(navai::bus::command::Command::child_prompt(
+            parent,
+            "driver correction".into(),
+        ))
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let barrier = navai::session::ChildPreparationBarrier::default();
+    state
+        .pause_negative_result_eligibility(parent, barrier.clone())
+        .unwrap();
+    parent_stream
+        .send(tool_call_chunk("glob", "glob", &json!({"pattern":"*"})))
+        .unwrap();
+    drop(parent_stream);
+    barrier.reached.notified().bounded(file!(), line!()).await;
+    child_stream.send(text_chunk("late child result")).unwrap();
+    drop(child_stream);
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while state
+            .history()
+            .unconsumed_completions(parent)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .is_empty()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .bounded(file!(), line!())
+    .await
+    .unwrap();
+    barrier.release.notify_one();
+    let (request, stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(!request.contains("driver correction"));
+    assert!(!request.contains("late child result"));
+    stream.send(text_chunk("natural boundary")).unwrap();
+    drop(stream);
+    let (request, stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let b = body(&request);
+    let messages = b["messages"].as_array().unwrap();
+    let driver = messages
+        .iter()
+        .position(|m| m["content"] == "driver correction")
+        .unwrap();
+    let result = messages
+        .iter()
+        .position(|m| {
+            m["content"]
+                .as_str()
+                .is_some_and(|s| s.contains("late child result"))
+        })
+        .unwrap();
+    assert!(driver < result);
+    state.close_all().bounded(file!(), line!()).await;
+    drop(stream);
+}
+
+#[tokio::test]
 async fn two_interrupts_deliver_both_inputs_in_admission_order() {
     let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
     let tmp = tempfile::tempdir().unwrap();

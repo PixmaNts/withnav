@@ -23,7 +23,8 @@ requests land in `develop`.
   `permission.resolved` ends every request (`allow_once`, `allow_folder`, `deny`, `cancelled` by a
   stop or a message, `expired` after a restart). A restart settles a held call as interrupted and
   never runs it. `/agent`, `/variant` and the other session commands are refused while a request
-  waits. The catalog has 17 kinds with `permission.requested` and `permission.resolved`.
+  waits. The catalog has 18 kinds with `permission.requested` and `permission.resolved`
+  (with develop's `context.compacted`).
 - **`navai run` and permissions**: a run that needs approval prints `permission_required: <tool>
   <scope>` on stderr and exits 3 instead of hanging. `--yes` approves every request once; it is
   unsafe and off by default.
@@ -111,7 +112,7 @@ requests land in `develop`.
   are refused ("a compaction is running") while a summary is being prepared; the summary
   request never holds the service-wide lifecycle gate, so a stop, a shutdown and other sessions do not
   wait for the provider and a stopped session commits nothing; it is refused while
-  an `ask` waits, and answers a clear error when there is nothing to compact or the recent turns cannot
+  an `ask` or a permission request waits (a `/compact` deferred behind a turn that ends on a permission request is refused the same way, under its operation id), and answers a clear error when there is nothing to compact or the recent turns cannot
   fit the input budget. The result is saved with the transcript in one transaction, in a new nullable
   versioned `sessions.checkpoint` column (older conversations resume as before; a stored checkpoint that
   does not fit its transcript fails the resume with an explicit error); `sessions.transcript` still
@@ -242,6 +243,13 @@ requests land in `develop`.
 
 ### Fixed
 
+- **Permission gate fixes**: a call that is rejected for its arguments (a path outside the roots, a
+  write that would create a folder) is rejected before the gate, without asking; only a valid call asks. An approval is bound to the destination that was reviewed: a call that resolves
+  elsewhere when it runs asks again. A held call keeps what is left of the step budget across
+  approvals instead of starting a new one. Navigator wakes are held while a permission request is
+  open. A second answer to the same request is refused with 409 `permission_stale` at once, before
+  anything is changed. `/stop` goes through while a request waits and cancels it
+  (`permission.resolved` `cancelled`).
 - The navigator no longer holds back its advice while your code is still unfinished: a remark worth
   making is shown even when the edit is mid-way, and a one-line fix counts as a change worth
   looking at. A remark is still shown at most once every 45 seconds, and a stuck or drifting file

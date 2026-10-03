@@ -608,3 +608,71 @@ async fn the_stop_command_is_accepted_while_a_request_is_pending() {
         requested[0].payload["request_id"]
     );
 }
+
+// Given a permission request that waits for a decision
+// When /compact runs, now or accepted behind the turn that raised the request
+// Then it is refused, nothing is summarized, and a deferred one is refused
+//      under the operation id it was accepted with
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_while_a_permission_request_is_open_is_refused() {
+    let env = env();
+    let target = env.ws.join("a.txt");
+    let provider = provider(vec![one_write("w1", &target), done("written")]).await;
+    let state = config(&env, &provider).chat_tools(20_000).state();
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+
+    say(&state, id, "write a.txt").await;
+    wait_events(&state, id, "permission.requested", 1).await;
+    wait_events(&state, id, "turn.end", 1).await;
+
+    let out = state.run_command(id, "compact", "").await.unwrap();
+    assert!(!out.ok, "{out:?}");
+    let error = out.error.unwrap();
+    assert!(
+        error.contains("permission request"),
+        "the reason names the pending request: {error}"
+    );
+    assert_eq!(provider.bodies().len(), 1, "no summary request");
+    assert!(events(&state, id, "context.compacted").await.is_empty());
+    assert!(!target.exists(), "the held call did not run");
+}
+
+// Given a /compact accepted while a turn runs
+// When the turn ends on a permission request
+// Then the deferred run is refused under its own operation id
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deferred_compact_is_refused_when_the_turn_ends_on_a_permission_request() {
+    let env = env();
+    let target = env.ws.join("a.txt");
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let provider = common::sse::spawn_gated_provider(
+        vec![one_write("w1", &target), done("written")],
+        release.clone(),
+    )
+    .await;
+    let state = config(&env, &provider).chat_tools(20_000).state();
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+
+    say(&state, id, "write a.txt").await;
+    common::server::wait_for("the turn's request", || provider.bodies().len() == 1).await;
+    let accepted = state.run_command(id, "compact", "").await.unwrap();
+    assert_eq!(accepted.data.as_ref().unwrap()["accepted"], true);
+    release.notify_one();
+    wait_events(&state, id, "permission.requested", 1).await;
+
+    let results = wait_events(&state, id, "command.result", 2).await;
+    let refusal = results
+        .iter()
+        .find(|e| e.payload["ok"] == false)
+        .expect("a refusal");
+    assert_eq!(
+        refusal.payload["operation_id"],
+        accepted.operation_id.to_string()
+    );
+    assert!(refusal.payload["error"]
+        .as_str()
+        .unwrap()
+        .contains("permission request"));
+    assert_eq!(provider.bodies().len(), 1, "no summary request");
+    assert!(events(&state, id, "context.compacted").await.is_empty());
+}

@@ -15,6 +15,8 @@ pub struct SessionListing {
     pub updated_at: String,
     /// Number of driver messages (`message.received` events).
     pub message_count: u64,
+    /// The primary agent the session runs as.
+    pub agent: String,
     pub live: bool,
 }
 
@@ -38,6 +40,10 @@ impl Service {
                 created_at: row.meta.created_at,
                 updated_at: row.meta.updated_at,
                 message_count: row.message_count,
+                agent: row
+                    .meta
+                    .primary_agent
+                    .unwrap_or_else(|| crate::agent::definitions::BUILD.to_string()),
             })
             .collect())
     }

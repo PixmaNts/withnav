@@ -164,6 +164,7 @@ async fn restarted_server_answers_get_for_a_stored_conversation() {
     assert_eq!(summary["actor_state"], "stopped");
     assert_eq!(summary["current_seq"], last);
     assert_eq!(summary["session_id"], restarted.id.as_str());
+    assert_eq!(summary["agent"], "build", "a legacy row runs as build");
     let mut keys: Vec<&str> = summary
         .as_object()
         .expect("object")
@@ -175,6 +176,7 @@ async fn restarted_server_answers_get_for_a_stored_conversation() {
         keys,
         [
             "actor_state",
+            "agent",
             "current_seq",
             "model",
             "session_id",

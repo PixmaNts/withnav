@@ -43,9 +43,20 @@ const ERROR_SUMMARY_CAP: usize = 256;
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
     pending_ask: AtomicBool,
+    /// The primary agent the session runs as, and the agents it may switch
+    /// to. A turn reads it at its start.
+    pub selection: crate::agent::selection::AgentSelection,
 }
 
 impl RuntimeStatus {
+    /// A status that runs as the agent `selection` names.
+    pub fn with_selection(selection: crate::agent::selection::AgentSelection) -> Self {
+        Self {
+            pending_ask: AtomicBool::new(false),
+            selection,
+        }
+    }
+
     /// The agent asked the human something and waits for the answer.
     pub fn pending_ask(&self) -> bool {
         self.pending_ask.load(Ordering::SeqCst)
@@ -266,6 +277,9 @@ async fn runtime_loop(
 
         inbox.apply_batch_to_actor(&mut actor);
         status.sync_ask(&actor);
+        // The turn runs as the agent selected now; a later switch waits for
+        // the turn to end.
+        actor.role = status.selection.begin_turn().await;
 
         let task_id = active_task_id.unwrap_or_default();
         let turn_id = Ulid::new();
@@ -305,6 +319,7 @@ async fn runtime_loop(
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let result_message_id = turn.message_id;
         status.sync_ask(&actor);
+        status.selection.end_turn();
 
         // A collapsed session surfaces its first publish failure as the turn
         // error (checked BEFORE translating the natural outcome).

@@ -70,7 +70,9 @@ fn builtins_are_build_plan_explore_and_review() {
     assert_eq!(plan.access, AgentAccess::Full, "plan keeps all tools");
     assert!(plan.prompt.contains("markdown"));
     assert!(plan.prompt.contains("fetch") && plan.prompt.contains("skill"));
-    assert!(agents.get("build").unwrap().prompt.contains("verify"));
+    let build = agents.get("build").unwrap();
+    assert!(build.prompt.is_empty(), "the system contract is its prompt");
+    assert!(build.description.contains("verifies"));
 }
 
 #[test]

@@ -9,7 +9,7 @@
 //! sequencer, never silently drops a durable event — the client reconnects and
 //! replays via [`Sequencer::subscribe_since`], or reads the store up to the
 //! [`LiveSubscription`] high-water mark). The in-memory [`EventRing`]
-//! retains the 12 durable kinds and tracks `last_evicted_durable_seq`, the
+//! retains every durable kind and tracks `last_evicted_durable_seq`, the
 //! resume floor for the [`ResumeOutcome`] contract.
 pub mod command;
 pub mod event;
@@ -339,19 +339,19 @@ mod tests {
         assert!(reply.live.is_none());
     }
 
-    /// (d) A 10k llm.delta flood interleaved with one of EACH of the 12
-    /// durable kinds: deltas never enter the ring, and ALL 12 durable kinds
+    /// (d) A 10k llm.delta flood interleaved with one of EACH
+    /// durable kind: deltas never enter the ring, and ALL durable kinds
     /// remain resumable in seq order (none lost, none invalidated). Deltas
-    /// consume no ring slots, so `RING_CAP >= 12` suffices — the watermark
+    /// consume no ring slots, so `RING_CAP >= 13` suffices — the watermark
     /// stays None and every durable event survives the flood.
     #[test]
-    fn ten_k_delta_flood_leaves_all_12_durable_kinds_resumable() {
+    fn ten_k_delta_flood_leaves_every_durable_kind_resumable() {
         let durable_kinds: Vec<EventKind> = EventKind::ALL
             .iter()
             .copied()
             .filter(|k| k.is_durable())
             .collect();
-        assert_eq!(durable_kinds.len(), 12);
+        assert_eq!(durable_kinds.len(), super::event::EVENT_KIND_COUNT - 1);
 
         let mut bus = SessionBus::default();
         let mut seq: u64 = 0;
@@ -370,8 +370,8 @@ mod tests {
                 seq += 1;
             }
         }
-        // 12 * (1 + 833) = 10_008 events emitted; 9_996 are llm.delta.
-        assert_eq!(seq, 10_008);
+        // 13 * (1 + 833) = 10_842 events emitted; 10_829 are llm.delta.
+        assert_eq!(seq, 10_842);
         assert_eq!(bus.last_evicted_durable_seq(), None);
 
         let reply = subscribe(&mut bus, None, seq);
@@ -379,9 +379,13 @@ mod tests {
             ResumeOutcome::Replay(events) => events,
             other => panic!("expected Replay, got {other:?}"),
         };
-        assert_eq!(replayed.len(), 12, "exactly the 12 durable events");
+        assert_eq!(
+            replayed.len(),
+            durable_kinds.len(),
+            "exactly the durable events"
+        );
 
-        // All 12 kinds present, in emission (== seq) order.
+        // Every durable kind present, in emission (== seq) order.
         let replayed_kinds: Vec<EventKind> = replayed
             .iter()
             .map(|e| EventKind::from_wire(&e.kind).expect("catalog kinds parse"))
@@ -399,11 +403,11 @@ mod tests {
 
         // A delta gap NEVER invalidates replay: a cursor sitting deep inside
         // the flood still replays the remaining durables (deltas are legal
-        // gaps). Durables sit at seqs i*834: 0, 834, .., 9174.
+        // gaps). Durables sit at seqs i*834: 0, 834, .., 10008.
         let reply = subscribe(&mut bus, Some(5_000), seq);
         assert_eq!(
             replay_seqs(&reply.replay),
-            vec![5004, 5838, 6672, 7506, 8340, 9174]
+            vec![5004, 5838, 6672, 7506, 8340, 9174, 10008]
         );
     }
 

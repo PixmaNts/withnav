@@ -347,7 +347,11 @@ fn builtin_definitions() -> Vec<AgentDefinition> {
             BUILD,
             "Implements the task, verifies it and reports",
             AgentMode::Primary,
-            include_str!("builtin/build.md"),
+            // The system contract every request starts with already is the
+            // build stance (implement, verify, report): `build` adds no role
+            // text, so a session on the default agent sends the same
+            // requests it always did.
+            "",
             BTreeMap::new(),
             AgentAccess::Full,
         ),

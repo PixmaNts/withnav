@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::definitions::AgentDefinition;
 use crate::agent::instructions::Instructions;
 use crate::agent::skills::{SkillTool, Skills};
 use crate::provider::config::{ProviderConfig, ReasoningHistory};
@@ -31,6 +32,11 @@ pub struct AgentActor {
     /// An optional role prompt, sent as a second system message right after
     /// the system contract on every request. It is not part of the transcript.
     pub system_prompt: Option<String>,
+    /// The primary agent this turn runs as: a snapshot installed when the
+    /// turn starts, so a role change never reaches a turn in flight. `None`
+    /// for an actor built outside a session. Its prompt is sent together with
+    /// `system_prompt`; it is not part of the transcript.
+    pub role: Option<Arc<AgentDefinition>>,
     /// The local instructions read when the session was created or resumed,
     /// sent as one system message after the role prompt. A snapshot: the
     /// files are not read again.
@@ -66,6 +72,7 @@ impl AgentActor {
             max_tokens,
             max_steps: crate::agent::run_loop::max_steps(),
             system_prompt: None,
+            role: None,
             rules: Instructions::default(),
             skills: Arc::new(Skills::default()),
             cancel,
@@ -78,6 +85,27 @@ impl AgentActor {
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(prompt.into());
         self
+    }
+
+    /// The text of the role system message: the selected agent's prompt, then
+    /// the profile's instructions (the profile has the last word). `None`
+    /// when both are empty, which is the case for the default `build` agent
+    /// on a session without a profile.
+    pub fn role_message(&self) -> Option<String> {
+        let agent = self
+            .role
+            .as_ref()
+            .map(|role| role.prompt.trim())
+            .filter(|prompt| !prompt.is_empty());
+        let profile = self
+            .system_prompt
+            .as_deref()
+            .filter(|prompt| !prompt.trim().is_empty());
+        match (agent, profile) {
+            (Some(agent), Some(profile)) => Some(format!("{agent}\n\n{profile}")),
+            (Some(only), None) | (None, Some(only)) => Some(only.to_string()),
+            (None, None) => None,
+        }
     }
 
     /// Installs the skills snapshot: with at least one skill, the `skill` tool

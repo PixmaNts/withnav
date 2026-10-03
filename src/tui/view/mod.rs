@@ -92,6 +92,10 @@ fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
                 hints: &["enter deny", "esc no message"],
                 required: 2,
             },
+            Hints {
+                hints: &["enter deny", "esc omit"],
+                required: 2,
+            },
         ],
         // The plan agent's exceptions are allowed once or denied, never always.
         (Some(open), None) if editor.text().is_empty() && !permission::offers_always(open) => &[

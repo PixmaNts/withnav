@@ -2781,6 +2781,28 @@ fn wide_and_combining_names_never_push_the_gauge_off_the_header() {
 }
 
 #[test]
+fn a_deny_message_keeps_both_keys_on_a_narrow_key_bar() {
+    for s in [
+        asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws"))),
+        plan_exception(),
+    ] {
+        let ui = UiState {
+            deny_message: Some(navai::tui::state::DenyDraft {
+                request_id: "R1".into(),
+                text: "keep it".into(),
+            }),
+            ..UiState::default()
+        };
+        for width in [24u16, 28, 40, 80] {
+            let row = bottom_row(&s, &ui, &Editor::new(), (width, 30));
+            let row = row.rsplit('│').next().unwrap_or(&row).to_string();
+            assert!(row.contains("enter deny"), "{width}: {row}");
+            assert!(row.contains("esc "), "{width}: {row}");
+        }
+    }
+}
+
+#[test]
 fn a_plan_exception_never_offers_always_on_the_key_bar() {
     let s = plan_exception();
     let ui = UiState::default();

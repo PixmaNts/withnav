@@ -93,7 +93,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     // The model takes up to 30 columns, then the path what is left (cut from its start).
     let model = (room >= 8).then(|| {
         let shown = fit_end(model, room.min(33) - 3);
-        room -= columns(&shown) + 3;
+        room = room.saturating_sub(columns(&shown) + 3);
         vec![
             Span::styled(" · ", theme.muted()),
             Span::styled(shown, theme.muted()),
@@ -101,7 +101,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     });
     let path = (room >= 8).then(|| {
         let shown = shorten(path, room - 2);
-        room -= columns(&shown) + 2;
+        room = room.saturating_sub(columns(&shown) + 2);
         vec![Span::raw("  "), Span::styled(shown, theme.muted())]
     });
 

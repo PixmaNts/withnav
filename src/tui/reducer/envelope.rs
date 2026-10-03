@@ -297,6 +297,17 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         Some(EventKind::PermissionRequested) => {
             let v = e.payload;
             let child = v["child_session_id"].as_str();
+            let child_name = child
+                .and_then(|id| s.children.iter().find(|c| c.session_id == id))
+                .map(|c| c.name.clone());
+            if let Some(child) = child.and_then(|id| {
+                s.children
+                    .iter_mut()
+                    .find(|c| c.session_id == id && !c.status.terminal())
+            }) {
+                child.status = ChildStatus::Permission;
+                child.event_seq = Some(e.seq);
+            }
             let text = |key: &str| -> Result<String, ProtocolError> {
                 Ok(strip_controls(v[key].as_str().ok_or_else(bad)?))
             };
@@ -315,7 +326,11 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 agent: strip_controls(v["agent"].as_str().unwrap_or_default()),
                 reason: strip_controls(&match child {
                     Some(child) => format!(
-                        "child {child}: {}",
+                        "subagent {}: {}",
+                        child_name
+                            .as_deref()
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or(child),
                         v["reason"].as_str().unwrap_or_default()
                     ),
                     None => v["reason"].as_str().unwrap_or_default().to_string(),
@@ -374,6 +389,14 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         }
         Some(EventKind::PermissionResolved) => {
             let v = e.payload;
+            if let Some(child) = v["child_session_id"].as_str().and_then(|id| {
+                s.children
+                    .iter_mut()
+                    .find(|c| c.session_id == id && !c.status.terminal())
+            }) {
+                child.status = ChildStatus::Running;
+                child.event_seq = Some(e.seq);
+            }
             let request_id = v["request_id"].as_str().ok_or_else(bad)?;
             let resolution = strip_controls(v["resolution"].as_str().ok_or_else(bad)?);
             let id = format!("permission:{request_id}");

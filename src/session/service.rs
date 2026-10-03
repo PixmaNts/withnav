@@ -632,84 +632,48 @@ impl Service {
         reason: Option<String>,
         result: String,
     ) -> Result<(), ServerError> {
-        let Some(link) = self
+        if self
             .history
-            .child_link(child)
+            .finish_child_link(child, status.to_string(), reason, result)
             .await
             .map_err(ServerError::History)?
-        else {
-            return Ok(());
-        };
-        if link.status != "running" {
-            return Ok(());
+            .is_some()
+        {
+            self.release_child_slot(parent);
         }
-        let owner = self.handle(parent);
-        let outcome = match status {
-            "done" => crate::bus::event::SubagentOutcome::Done,
-            "failed" => crate::bus::event::SubagentOutcome::Failed,
-            _ => crate::bus::event::SubagentOutcome::Stopped,
-        };
-        let payload = serde_json::to_value(crate::bus::event::SubagentDone {
-            parent_session_id: parent,
-            child_session_id: child,
-            agent: link.agent,
-            outcome,
-            reason: reason.clone(),
-            notification_id: Ulid::new(),
-        })
-        .map_err(|e| ServerError::History(e.to_string()))?;
-        let history = self.history.clone();
-        let service = self.clone();
-        let status = status.to_string();
-        let Some(owner) = owner else {
-            let _admission = self.admission_gate.lock().await;
-            let meta = history
-                .meta(parent)
-                .await
-                .map_err(ServerError::History)?
-                .ok_or_else(|| ServerError::SessionNotFound(parent.to_string()))?;
-            let envelope = crate::bus::event::EventEnvelope::new(
-                parent,
-                meta.last_seq + 1,
-                EventKind::SubagentDone,
-                payload,
-            );
-            if history
-                .finish_child_link(child, status, reason, result, envelope)
-                .await
-                .map_err(ServerError::History)?
-                .is_some()
-            {
-                self.release_child_slot(parent);
-            }
-            return Ok(());
-        };
-        let committed = owner
-            .sequencer
-            .commit_acked(
-                Candidate::new(EventKind::SubagentDone, payload),
-                Box::new(move |envelope| {
-                    Box::pin(async move {
-                        if history
-                            .finish_child_link(child, status, reason, result, envelope)
-                            .await?
-                            .is_some()
-                        {
-                            service.release_child_slot(parent);
-                            Ok(())
-                        } else {
-                            Err("child already terminal".into())
-                        }
-                    })
-                }),
-            )
-            .await;
-        if let Err(error) = committed {
-            if error != "child already terminal" {
-                return Err(ServerError::History(error));
-            }
-        }
+        self.drain_completions(parent).await;
         Ok(())
+    }
+
+    async fn drain_completions(&self, parent: SessionId) {
+        let Some(owner) = self.handle(parent) else {
+            return;
+        };
+        let pending = match self.history.pending_completions(parent).await {
+            Ok(pending) => pending,
+            Err(error) => {
+                tracing::error!(%error, "completion outbox read failed");
+                return;
+            }
+        };
+        for (child, payload) in pending {
+            let history = self.history.clone();
+            if let Err(error) = owner
+                .sequencer
+                .commit_acked(
+                    Candidate::new(EventKind::SubagentDone, payload),
+                    Box::new(move |envelope| {
+                        Box::pin(async move { history.deliver_completion(child, envelope).await })
+                    }),
+                )
+                .await
+            {
+                if error != "completion already delivered" {
+                    tracing::debug!(%error, "completion retained for parent resume");
+                    break;
+                }
+            }
+        }
     }
 
     fn release_child_slot(&self, parent: SessionId) {
@@ -1669,6 +1633,9 @@ impl Service {
                 None
             };
             self.lock_sessions().insert(session_id, handle);
+        }
+        if child_parent.is_none() {
+            self.drain_completions(session_id).await;
         }
         // The host learns of the session once it is routable. A session
         // already closing hands back a subscription that ends at once.

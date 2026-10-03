@@ -66,6 +66,85 @@ async fn stop_cancels_parent_before_waiting_for_child_publication() {
 }
 
 #[tokio::test]
+async fn child_completion_after_parent_close_is_pending_until_resume() {
+    let mut provider = common::sse::spawn_streaming_provider().await;
+    let fx = fixture_at(&provider.url);
+    install_agents(&fx.root, &fx.ws);
+    let parent = fx
+        .state
+        .create_session(&fx.ws, Some("default"), None)
+        .await
+        .unwrap();
+    let child = fx
+        .state
+        .create_child_session(parent, "explore", "inspect")
+        .await
+        .unwrap();
+    let (_, stream) = provider.requests.recv().await.unwrap();
+    fx.state.close_session(parent).await.unwrap();
+    stream.send(text_chunk("finished offline")).unwrap();
+    drop(stream);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while fx.state.reserved_child_count(parent) != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        fx.state
+            .child_metadata(child)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "done"
+    );
+    assert_eq!(
+        fx.state
+            .history()
+            .pending_completions(parent)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    fx.state
+        .create_or_resume_session(&fx.ws, None, None, Some(parent))
+        .await
+        .unwrap();
+    assert!(fx
+        .state
+        .history()
+        .pending_completions(parent)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        events(&fx, parent)
+            .await
+            .iter()
+            .filter(|e| e.kind == "subagent.done")
+            .count(),
+        1
+    );
+    fx.state.close_session(parent).await.unwrap();
+    fx.state
+        .create_or_resume_session(&fx.ws, None, None, Some(parent))
+        .await
+        .unwrap();
+    assert_eq!(
+        events(&fx, parent)
+            .await
+            .iter()
+            .filter(|e| e.kind == "subagent.done")
+            .count(),
+        1
+    );
+    fx.state.close_all().await;
+}
+
+#[tokio::test]
 async fn resumed_parent_rejects_spawn_from_previous_incarnation() {
     paused_child_admission(true).await;
 }

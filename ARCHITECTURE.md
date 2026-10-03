@@ -88,7 +88,7 @@ one per tab; each tab streams its own session in the background.
 | `view/transcript.rs` | block layout and drawing: messages by origin, steps, tools, errors, scroll and selection |
 | `view/tool.rs` | the one-line summary and the expanded output of a tool call |
 | `view/markdown.rs` | markdown to styled lines, cached per block revision |
-| `view/status.rs` | the status line: connection, model, activity, context (the server's estimate, else the last prompt count) and session tokens |
+| `view/status.rs` | the status line of the active tab: connection, model, activity, context (the server's estimate, else the last prompt count) and session tokens |
 | `view/pickers.rs` | the model, session, command, theme and help overlays |
 
 ## Data flows
@@ -109,7 +109,10 @@ screen or not (a background tab is then marked unread), and the effects it retur
 session. Opening a conversation (`/new`, ctrl+n, `/sessions`, a model pick) adds a tab; closing one
 drops its generation, so the runtime cancels its stream and its late results are ignored; nothing is
 sent to the server. Before each action the runtime copies the editor into the active tab's draft; the
-reducer puts the next tab's draft back with `Effect::SetEditor`.
+reducer puts the next tab's draft back with `Effect::SetEditor`. The context gauge is per tab too: each
+conversation keeps its snapshot, its epoch and its retired incarnations, a `context.updated` or a
+`FetchContext` answer lands on the tab whose generation it carries (without marking it unread), and the
+status line shows the active tab's.
 
 **Keystroke to suggestion (reflex).** The extension asks `navigator/inlineCompletion` after 150 ms
 of pause. `runtime/inline.rs` reads the document and the reflex context, `reflex.rs` builds the FIM

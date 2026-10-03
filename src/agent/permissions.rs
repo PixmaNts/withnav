@@ -206,25 +206,64 @@ pub fn offered_decision(agent: &str, decision: PermissionDecision) -> Permission
 }
 
 /// Whether a guarded agent may run `tool` on `needed` without the guard and
-/// without a request: a `write` or `edit` whose RESOLVED destination is a
-/// regular `.md` file (a plan's normal job). The destination is the canonical
-/// path `validate_path` produced, so a `.md` name that is a symlink to
-/// another file is not exempt, and neither is a link that dangles: writing
-/// through it would create its target.
-pub fn exempt_from_guard(tool: &str, needed: &Needed) -> bool {
+/// without a request: a `write` or `edit` of a markdown file, in the plan's
+/// normal course of work. All of these must hold, so that nothing but a plain
+/// markdown file is ever exempt:
+///
+/// * the RESOLVED destination ends in `.md`;
+/// * the path as the model wrote it is not a link (any kind, dangling or
+///   not): the check is on the un-canonicalized path, whose resolution would
+///   hide a link to another `.md` file or to a file that is not markdown;
+/// * the destination is an existing regular file (not a directory, a FIFO or
+///   a device), or a missing one in a folder that already exists: a write
+///   that would create folders is an exception.
+pub fn exempt_from_guard(tool: &str, args: &Value, needed: &Needed) -> bool {
     if !matches!(tool, "write" | "edit") {
         return false;
     }
-    let Some(destination) = needed.destination.as_deref() else {
+    let (Some(destination), Some(path)) = (
+        needed.destination.as_deref(),
+        args.get("path").and_then(Value::as_str),
+    ) else {
         return false;
     };
-    let markdown = destination
+    if !destination
         .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
-    let link = std::fs::symlink_metadata(destination)
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+    {
+        return false;
+    }
+    if is_link(Path::new(path)) || is_link(destination) {
+        return false;
+    }
+    match std::fs::symlink_metadata(destination) {
+        Ok(meta) => meta.file_type().is_file(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            destination.parent().is_some_and(|parent| parent.is_dir())
+        }
+        Err(_) => false,
+    }
+}
+
+fn is_link(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
         .map(|meta| meta.file_type().is_symlink())
-        .unwrap_or(false);
-    markdown && !link
+        .unwrap_or(false)
+}
+
+/// Whether `args`' path still resolves to `destination`, the canonical file a
+/// call was checked for, and that file is not a link now. A call whose file
+/// moved between the check and the dispatch (a link put in its place) must
+/// not run on the old verdict.
+pub fn still_resolves(args: &Value, destination: Option<&Path>, cx: &ToolContext) -> bool {
+    let Some(destination) = destination else {
+        return true;
+    };
+    let Some(path) = args.get("path").and_then(Value::as_str) else {
+        return false;
+    };
+    validate_path(&cx.writable_roots, Path::new(path)).is_ok_and(|now| now == destination)
+        && !is_link(destination)
 }
 
 /// What the gate decides about a call, with no side effect.
@@ -552,5 +591,72 @@ mod tests {
         // A grant on the config directory itself covers it.
         grants.grant("build", "write", Scope::Folder(inner.clone()));
         assert!(grants.covers("build", "write", &Scope::Folder(inner.join("agents")), &cx));
+    }
+
+    fn exempt(f: &Fixture, tool: &str, path: &Path) -> bool {
+        let args = json!({"path": path, "content": "x"});
+        match gate(f, tool, args.clone()) {
+            Gate::Needs(needed) => exempt_from_guard(tool, &args, &needed),
+            other => panic!("expected a request, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn only_a_plain_markdown_file_is_exempt_from_the_guard() {
+        let f = fixture();
+        std::fs::write(f.ws.join("a.md"), "a").unwrap();
+        assert!(exempt(&f, "write", &f.ws.join("a.md")), "an existing .md");
+        assert!(exempt(&f, "edit", &f.ws.join("a.md")));
+        assert!(exempt(&f, "write", &f.ws.join("new.MD")), "a new .md");
+        assert!(!exempt(&f, "write", &f.ws.join("src/main.rs")));
+        assert!(
+            !exempt(&f, "write", &f.ws.join("deeper/new.md")),
+            "creating a folder is an exception"
+        );
+    }
+
+    #[test]
+    fn a_link_in_the_final_component_is_never_exempt() {
+        let f = fixture();
+        std::fs::write(f.ws.join("a.md"), "a").unwrap();
+        std::fs::write(f.ws.join("main.rs"), "fn main() {}").unwrap();
+        std::os::unix::fs::symlink(f.ws.join("a.md"), f.ws.join("to_md.md")).unwrap();
+        std::os::unix::fs::symlink(f.ws.join("main.rs"), f.ws.join("to_rs.md")).unwrap();
+        std::os::unix::fs::symlink(f.ws.join("missing.md"), f.ws.join("dangling.md")).unwrap();
+        for name in ["to_md.md", "to_rs.md", "dangling.md"] {
+            assert!(!exempt(&f, "write", &f.ws.join(name)), "{name}");
+            assert!(!exempt(&f, "edit", &f.ws.join(name)), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_directory_or_a_pipe_named_like_markdown_is_not_exempt() {
+        let f = fixture();
+        std::fs::create_dir(f.ws.join("dir.md")).unwrap();
+        let made = std::process::Command::new("mkfifo")
+            .arg(f.ws.join("pipe.md"))
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(!exempt(&f, "write", &f.ws.join("dir.md")));
+        if made {
+            assert!(!exempt(&f, "write", &f.ws.join("pipe.md")));
+        }
+    }
+
+    #[test]
+    fn a_target_that_moved_no_longer_resolves() {
+        let f = fixture();
+        let file = f.ws.join("a.md");
+        std::fs::write(&file, "a").unwrap();
+        let args = json!({"path": file});
+        assert!(still_resolves(&args, Some(&file), &f.cx));
+        assert!(still_resolves(&args, None, &f.cx), "nothing to compare");
+        std::fs::remove_file(&file).unwrap();
+        std::fs::write(f.ws.join("b.rs"), "b").unwrap();
+        std::os::unix::fs::symlink(f.ws.join("b.rs"), &file).unwrap();
+        assert!(!still_resolves(&args, Some(&file), &f.cx));
+        // Reviewed for the link's target as it now resolves: still the same file.
+        assert!(still_resolves(&args, Some(&f.ws.join("b.rs")), &f.cx));
     }
 }

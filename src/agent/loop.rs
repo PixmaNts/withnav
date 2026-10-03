@@ -2,8 +2,8 @@ use crate::agent::actor::{AgentActor, AgentState, PendingInteraction};
 use crate::agent::context::Breakdown;
 use crate::agent::guard::{self, CallFacts, GuardInput, Judged};
 use crate::agent::permissions::{
-    exempt_from_guard, is_guarded, needs_permission, Gate, Needed, PermissionDecision,
-    PermissionError, PermissionRequest,
+    exempt_from_guard, is_guarded, needs_permission, still_resolves, Gate, Needed,
+    PermissionDecision, PermissionError, PermissionRequest,
 };
 use crate::agent::prompt::{assistant_history_message, build_request};
 use crate::agent::response::{classify, HumanRequest, StepOutcome};
@@ -228,82 +228,49 @@ pub async fn resolve_permission(
         PermissionDecision::AllowOnce | PermissionDecision::AllowFolder => {
             // The approval is for the destination the driver reviewed. Resolve
             // it again: a call that now lands elsewhere, or is refused, does
-            // not run on this approval.
-            let asked_again = match gate(actor, &call) {
-                Gated::Run => {
-                    let result = execute_call(actor, &call, None, None, observe).await;
-                    append_tool_result(actor, &call.id, &result);
-                    None
-                }
-                Gated::Rejected(message) => {
-                    reject_call(actor, &call, message, observe);
-                    None
-                }
-                Gated::Ask(fresh, fresh_destination) => {
-                    if fresh_destination == destination && fresh.scope == request.scope {
-                        if decision == PermissionDecision::AllowFolder {
-                            actor.grants.grant(
-                                &request.agent,
-                                &request.tool,
-                                request.scope.clone(),
-                            );
-                        }
-                        let result =
-                            execute_call(actor, &call, destination.as_deref(), None, observe).await;
-                        append_tool_result(actor, &call.id, &result);
-                        None
-                    } else {
-                        Some((fresh, fresh_destination))
+            // not run on this approval, and goes through the gate afresh.
+            let one = match gate(actor, &call) {
+                Gated::Ask(fresh, fresh_destination)
+                    if fresh_destination == destination && fresh.scope == request.scope =>
+                {
+                    if decision == PermissionDecision::AllowFolder {
+                        actor
+                            .grants
+                            .grant(&request.agent, &request.tool, request.scope.clone());
                     }
+                    run_reviewed(actor, &call, destination.as_deref(), observe).await
                 }
                 // An exception of a guarded agent: the driver's approval is
                 // for this one call and never becomes a grant, whatever the
                 // decision said.
-                Gated::Guarded(needed) => {
-                    if needed.destination == destination && needed.scope == request.scope {
-                        let result =
-                            execute_call(actor, &call, destination.as_deref(), None, observe).await;
-                        append_tool_result(actor, &call.id, &result);
-                        None
-                    } else {
-                        match guard_step(actor, &call, needed).await {
-                            GuardStep::Run(note, fresh_destination) => {
-                                let result = execute_call(
-                                    actor,
-                                    &call,
-                                    fresh_destination.as_deref(),
-                                    Some(note),
-                                    observe,
-                                )
-                                .await;
-                                append_tool_result(actor, &call.id, &result);
-                                None
-                            }
-                            GuardStep::Ask(fresh, fresh_destination) => {
-                                Some((fresh, fresh_destination))
-                            }
-                            GuardStep::Interrupted => {
-                                append_interrupted(actor, &call.id);
-                                for rest in &remaining_calls {
-                                    append_interrupted(actor, &rest.id);
-                                }
-                                actor.state = AgentState::Idle;
-                                return Ok(RunOutcome::Interrupted);
-                            }
-                        }
-                    }
+                Gated::Guarded(needed)
+                    if needed.destination == destination && needed.scope == request.scope =>
+                {
+                    run_reviewed(actor, &call, destination.as_deref(), observe).await
                 }
+                _ => run_gated(actor, &call, observe).await,
             };
-            if let Some((fresh, fresh_destination)) = asked_again {
-                actor.pending = Some(PendingInteraction::Permission {
-                    request: Box::new(fresh.clone()),
-                    call,
-                    remaining_calls,
-                    destination: fresh_destination,
-                    steps_left,
-                });
-                actor.state = AgentState::Yielded;
-                return Ok(RunOutcome::PermissionRequired(fresh));
+            match one {
+                One::Settled => {}
+                One::Ask(fresh, fresh_destination) => {
+                    actor.pending = Some(PendingInteraction::Permission {
+                        request: Box::new(fresh.clone()),
+                        call,
+                        remaining_calls,
+                        destination: fresh_destination,
+                        steps_left,
+                    });
+                    actor.state = AgentState::Yielded;
+                    return Ok(RunOutcome::PermissionRequired(fresh));
+                }
+                One::Interrupted => {
+                    append_interrupted(actor, &call.id);
+                    for rest in &remaining_calls {
+                        append_interrupted(actor, &rest.id);
+                    }
+                    actor.state = AgentState::Idle;
+                    return Ok(RunOutcome::Interrupted);
+                }
             }
         }
         PermissionDecision::Deny { message } => {
@@ -346,45 +313,28 @@ async fn run_calls(
             actor.state = AgentState::Idle;
             return Calls::Interrupted;
         }
-        let (request, destination) = match gate(actor, &call) {
-            Gated::Run => {
-                let result = execute_call(actor, &call, None, None, observe).await;
-                append_tool_result(actor, &call.id, &result);
-                continue;
+        match run_gated(actor, &call, observe).await {
+            One::Settled => {}
+            One::Ask(request, destination) => {
+                actor.pending = Some(PendingInteraction::Permission {
+                    request: Box::new(request.clone()),
+                    call,
+                    remaining_calls: calls.into(),
+                    destination,
+                    steps_left,
+                });
+                actor.state = AgentState::Yielded;
+                return Calls::Permission(request);
             }
-            Gated::Rejected(message) => {
-                reject_call(actor, &call, message, observe);
-                continue;
+            One::Interrupted => {
+                append_interrupted(actor, &call.id);
+                for rest in &calls {
+                    append_interrupted(actor, &rest.id);
+                }
+                actor.state = AgentState::Idle;
+                return Calls::Interrupted;
             }
-            Gated::Ask(request, destination) => (request, destination),
-            Gated::Guarded(needed) => match guard_step(actor, &call, needed).await {
-                GuardStep::Run(note, destination) => {
-                    let result =
-                        execute_call(actor, &call, destination.as_deref(), Some(note), observe)
-                            .await;
-                    append_tool_result(actor, &call.id, &result);
-                    continue;
-                }
-                GuardStep::Ask(request, destination) => (request, destination),
-                GuardStep::Interrupted => {
-                    append_interrupted(actor, &call.id);
-                    for rest in &calls {
-                        append_interrupted(actor, &rest.id);
-                    }
-                    actor.state = AgentState::Idle;
-                    return Calls::Interrupted;
-                }
-            },
-        };
-        actor.pending = Some(PendingInteraction::Permission {
-            request: Box::new(request.clone()),
-            call,
-            remaining_calls: calls.into(),
-            destination,
-            steps_left,
-        });
-        actor.state = AgentState::Yielded;
-        return Calls::Permission(request);
+        }
     }
     observe(AgentEvent::ContextEstimated(actor.context_breakdown()));
     Calls::Finished
@@ -392,8 +342,11 @@ async fn run_calls(
 
 /// What the gate decided about a call.
 enum Gated {
-    /// Runs now: no role, not gated, or already covered by a grant.
-    Run,
+    /// Runs now: no role, not gated, covered by a grant, or a guarded agent's
+    /// markdown. The path is the canonical file a `write` or `edit` was
+    /// checked for: the tool is handed it, and only if it still resolves
+    /// there.
+    Run(Option<PathBuf>),
     /// Refused before it runs; the string is the tool error.
     Rejected(String),
     /// Waits for a decision; the path is the canonical file a `write` or
@@ -406,19 +359,19 @@ enum Gated {
 
 fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
     let Some(role) = actor.role.as_deref() else {
-        return Gated::Run;
+        return Gated::Run(None);
     };
     let needed = match needs_permission(Some(role), &call.name, &call.args, &actor.tool_context) {
-        Gate::Ungated => return Gated::Run,
+        Gate::Ungated => return Gated::Run(None),
         Gate::Rejected(message) => return Gated::Rejected(message),
         Gate::Needs(needed) => needed,
     };
     let agent = role.id.as_str();
-    // A guarded agent writes its markdown without asking; everything else
-    // it does is an exception, and no folder grant covers an exception.
+    // A guarded agent writes its markdown without asking; everything else it
+    // does is an exception, and no folder grant covers an exception.
     if is_guarded(role) {
-        if exempt_from_guard(&call.name, &needed) {
-            return Gated::Run;
+        if exempt_from_guard(&call.name, &call.args, &needed) {
+            return Gated::Run(needed.destination);
         }
         return Gated::Guarded(needed);
     }
@@ -426,12 +379,79 @@ fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
         .grants
         .covers(agent, &call.name, &needed.scope, &actor.tool_context)
     {
-        return Gated::Run;
+        return Gated::Run(needed.destination);
     }
     Gated::Ask(
         PermissionRequest::new(call, needed.scope, agent),
         needed.destination,
     )
+}
+
+/// How one call came out of the gate and, when it was let through, its run.
+enum One {
+    /// Run, or refused: its result is in the transcript.
+    Settled,
+    /// The driver decides; the path is the canonical file the request is for.
+    Ask(PermissionRequest, Option<PathBuf>),
+    /// The session was stopped while the call was being checked.
+    Interrupted,
+}
+
+/// How many times a call whose file moved under it is checked afresh before
+/// it is refused: a file that keeps changing is not one to write.
+const REGATE_LIMIT: usize = 3;
+
+/// Takes `call` through the gate and runs it when it is let through. A call
+/// whose file no longer resolves where it was checked (a link put in its
+/// place, during the check or while Jev was asked) does not run: it goes
+/// through the gate again, the guard first and the driver after.
+async fn run_gated(
+    actor: &mut AgentActor,
+    call: &ToolCall,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+) -> One {
+    for _ in 0..REGATE_LIMIT {
+        let (destination, note) = match gate(actor, call) {
+            Gated::Rejected(message) => {
+                reject_call(actor, call, message, observe);
+                return One::Settled;
+            }
+            Gated::Run(destination) => (destination, None),
+            Gated::Ask(request, destination) => return One::Ask(request, destination),
+            Gated::Guarded(needed) => match guard_step(actor, call, needed).await {
+                GuardStep::Run(note, destination) => (destination, Some(note)),
+                GuardStep::Ask(request, destination) => return One::Ask(request, destination),
+                GuardStep::Interrupted => return One::Interrupted,
+            },
+        };
+        if let Some(result) = execute_call(actor, call, destination.as_deref(), note, observe).await
+        {
+            append_tool_result(actor, &call.id, &result);
+            return One::Settled;
+        }
+    }
+    reject_call(
+        actor,
+        call,
+        "the target changed while the call was being checked; nothing was changed".to_string(),
+        observe,
+    );
+    One::Settled
+}
+
+/// Runs a call the driver reviewed for `destination`; if that file moved, the
+/// call is checked afresh instead.
+async fn run_reviewed(
+    actor: &mut AgentActor,
+    call: &ToolCall,
+    destination: Option<&Path>,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+) -> One {
+    if let Some(result) = execute_call(actor, call, destination, None, observe).await {
+        append_tool_result(actor, &call.id, &result);
+        return One::Settled;
+    }
+    run_gated(actor, call, observe).await
 }
 
 /// What the role guard made of an exception.
@@ -501,16 +521,24 @@ fn reject_call(
     append_tool_result(actor, &call.id, &result);
 }
 
-/// Dispatches `call`. With a `destination` (the canonical file an approved
-/// `write` or `edit` was reviewed for) the tool is handed that path, so the
-/// file written is the one approved.
+/// Dispatches `call`. With a `destination` (the canonical file a `write` or
+/// `edit` was checked or approved for) the tool is handed that path, so the
+/// file written is the one reviewed, and only if the call's own path still
+/// resolves there and the file is not a link now. `None`: it moved, nothing
+/// ran and nothing was observed.
 async fn execute_call(
     actor: &AgentActor,
     call: &ToolCall,
     destination: Option<&Path>,
     guard_note: Option<serde_json::Value>,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
-) -> ToolResult {
+) -> Option<ToolResult> {
+    // The seam tests use to move a file between the check and the dispatch.
+    #[cfg(test)]
+    tests::before_dispatch();
+    if !still_resolves(&call.args, destination, &actor.tool_context) {
+        return None;
+    }
     observe(AgentEvent::PreCall {
         tool_call_id: &call.id,
         name: &call.name,
@@ -547,7 +575,7 @@ async fn execute_call(
         name: &call.name,
         result: &result,
     });
-    result
+    Some(result)
 }
 
 fn append_tool_result(actor: &mut AgentActor, tool_call_id: &str, result: &ToolResult) {
@@ -1547,6 +1575,23 @@ mod tests {
 
     use crate::agent::guard::{GuardError, GuardInput, RoleGuard, Verdict};
 
+    thread_local! {
+        static BEFORE_DISPATCH: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// Called by `execute_call` just before it re-checks the target: lets a
+    /// test move a file in the gap between the gate and the dispatch.
+    pub(super) fn before_dispatch() {
+        if let Some(hook) = BEFORE_DISPATCH.with(|h| h.borrow_mut().take()) {
+            hook();
+        }
+    }
+
+    fn on_next_dispatch(hook: impl FnOnce() + 'static) {
+        BEFORE_DISPATCH.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+    }
+
     /// A guard that answers what it was told and counts its questions.
     struct FakeJev {
         answer: Result<Verdict, GuardError>,
@@ -1879,5 +1924,92 @@ mod tests {
         assert!(actor
             .grants
             .covers("build", "write", &request.scope, &actor.tool_context));
+    }
+
+    /// A guard that answers from a script and runs `during` while "asking".
+    struct ScriptedJev {
+        answers: std::sync::Mutex<Vec<Verdict>>,
+        during: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+        asked: std::sync::atomic::AtomicUsize,
+    }
+
+    impl RoleGuard for ScriptedJev {
+        fn judge<'a>(
+            &'a self,
+            _input: &'a GuardInput,
+            _cancel: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<'a, Result<Verdict, GuardError>> {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Some(during) = self.during.lock().unwrap().take() {
+                during();
+            }
+            let verdict = self.answers.lock().unwrap().remove(0);
+            Box::pin(async move { Ok(verdict) })
+        }
+    }
+
+    #[tokio::test]
+    async fn markdown_swapped_for_a_link_to_code_between_check_and_dispatch_is_gated_again() {
+        let jev = FakeJev::new(Ok(Verdict::Violates));
+        let mut actor = plan_actor(Some(jev.clone()), "http://127.0.0.1:1/v1");
+        let ws = actor.tool_context.workspace.clone();
+        let (notes, code) = (ws.join("notes.md"), ws.join("main.rs"));
+        std::fs::write(&notes, "old notes").unwrap();
+        std::fs::write(&code, "fn main() {}").unwrap();
+        let server = spawn_mock(write_script(&notes)).await;
+        actor.provider.base_url = server.url.clone();
+        {
+            let (notes, code) = (notes.clone(), code.clone());
+            on_next_dispatch(move || {
+                std::fs::remove_file(&notes).unwrap();
+                std::os::unix::fs::symlink(&code, &notes).unwrap();
+            });
+        }
+        let outcome = run_plan(&mut actor, &mut Notes::default()).await.unwrap();
+        let RunOutcome::PermissionRequired(request) = outcome else {
+            panic!("a moved target must be checked again, got {outcome:?}");
+        };
+        assert_eq!(jev.asked(), 1, "the guard saw the new target");
+        assert_eq!(
+            request.scope,
+            Scope::Folder(ws.clone()),
+            "the driver is asked about the link's target"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&code).unwrap(),
+            "fn main() {}",
+            "no code was changed"
+        );
+        assert_eq!(tool_result_of(&actor, "w1"), None);
+    }
+
+    #[tokio::test]
+    async fn a_target_swapped_while_jev_is_asked_is_not_written_on_the_old_verdict() {
+        let mut actor = plan_actor(None, "http://127.0.0.1:1/v1");
+        let ws = actor.tool_context.workspace.clone();
+        let (stub, secret) = (ws.join("stub.rs"), ws.join("secret.toml"));
+        std::fs::write(&stub, "old").unwrap();
+        std::fs::write(&secret, "keep").unwrap();
+        let jev = Arc::new(ScriptedJev {
+            answers: std::sync::Mutex::new(vec![Verdict::Conforms, Verdict::Violates]),
+            during: std::sync::Mutex::new(Some(Box::new({
+                let (stub, secret) = (stub.clone(), secret.clone());
+                move || {
+                    std::fs::remove_file(&stub).unwrap();
+                    std::os::unix::fs::symlink(&secret, &stub).unwrap();
+                }
+            }))),
+            asked: std::sync::atomic::AtomicUsize::new(0),
+        });
+        actor.guard = Some(jev.clone() as Arc<dyn RoleGuard>);
+        let server = spawn_mock(write_script(&stub)).await;
+        actor.provider.base_url = server.url.clone();
+        let outcome = run_plan(&mut actor, &mut Notes::default()).await.unwrap();
+        let RunOutcome::PermissionRequired(_) = outcome else {
+            panic!("the swapped target goes to the guard again, then the driver: {outcome:?}");
+        };
+        assert_eq!(jev.asked.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "keep");
+        assert_eq!(std::fs::read_to_string(&stub).unwrap(), "keep");
     }
 }

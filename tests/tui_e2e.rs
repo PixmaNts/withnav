@@ -23,7 +23,8 @@ use navai::tui::TuiOptions;
 mod common;
 use common::server::{spawn_server, TestServerConfig};
 use common::sse::{
-    http_sse, spawn_capturing_provider, spawn_responding_provider, sse_body, tool_call_chunk,
+    http_sse, spawn_capturing_provider, spawn_responding_provider, spawn_streaming_provider,
+    sse_body, tool_call_chunk, StreamingProvider,
 };
 
 /// The longest any single wait may take.
@@ -455,28 +456,54 @@ fn final_text_of(tab: &navai::tui::state::Tab, text: &str) -> bool {
             .any(|b| matches!(&b.kind, BlockKind::AssistantStep { text: t, .. } if t == text))
 }
 
-// Given a provider that answers each conversation with its own text
-// When a message is sent in one tab, ctrl+n opens a second tab and a message is sent there before
-//      the first answer arrived
-// Then both conversations stream at once, each into its own tab, one stream per tab, and the tab
-//      in the background is marked unread
-// And closing a tab stops its stream and leaves its conversation on the server
+type Answer = tokio::sync::mpsc::UnboundedSender<String>;
+
+/// Applies the runtime's events until the provider receives a request; returns its body and the
+/// sender that writes its answer.
+async fn next_request(rt: &mut Runtime, provider: &mut StreamingProvider) -> (String, Answer) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        tokio::select! {
+            request = provider.requests.recv() => return request.expect("provider open"),
+            event = tokio::time::timeout(left, rt.recv()) => {
+                let event = event
+                    .expect("timed out waiting for a provider request")
+                    .expect("event channel open");
+                rt.apply_event(event);
+            }
+        }
+    }
+}
+
+fn streamed_text(tab: &navai::tui::state::Tab) -> String {
+    tab.conversation
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.kind {
+            BlockKind::AssistantStep { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+// Given a provider whose two answers stay open and are written a piece at a time
+// When a message is sent in one tab, ctrl+n opens a second tab and a message is sent there
+// Then the pieces of both answers, interleaved, land each in its own tab while both stream, one
+//      stream per tab, and the tab in the background is marked unread
+// And closing the second tab mid-turn stops its stream only: the first keeps streaming to the end,
+//      and the closed conversation stays on the server
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_tabs_stream_their_own_conversations_at_once() {
     let root = tempfile::tempdir().expect("tempdir");
-    let provider = spawn_responding_provider(8, |_, request| {
-        if request.contains("first question") {
-            final_answer("Answer to the first.", usage(10, 2))
-        } else {
-            final_answer("Answer to the second.", usage(20, 3))
-        }
-    })
-    .await;
+    let mut provider = spawn_streaming_provider().await;
     let env = Env::start(root, &provider.url).await;
     let mut rt = started(&env).await;
     pick_model(&mut rt, 0);
 
     type_and_send(&mut rt, "first question");
+    let (body, first) = next_request(&mut rt, &mut provider).await;
+    assert!(body.contains("first question"), "{body}");
     rt.handle_terminal_event(Event::Key(KeyEvent::new(
         KeyCode::Char('n'),
         KeyModifiers::CONTROL,
@@ -487,45 +514,73 @@ async fn two_tabs_stream_their_own_conversations_at_once() {
         "the new tab starts with an empty editor"
     );
     type_and_send(&mut rt, "second question");
+    let (body, second) = next_request(&mut rt, &mut provider).await;
+    assert!(body.contains("second question"), "{body}");
 
-    until("both answers", &mut rt, |_, rt| {
-        final_text_of(&rt.state.tabs[0], "Answer to the first.")
-            && final_text_of(&rt.state.tabs[1], "Answer to the second.")
-    })
-    .await;
-    let (first, second) = (&rt.state.tabs[0], &rt.state.tabs[1]);
-    let first_id = first
-        .session
-        .as_ref()
-        .expect("first session")
-        .session_id
-        .clone();
-    let second_id = second
-        .session
-        .as_ref()
-        .expect("second session")
-        .session_id
-        .clone();
-    assert_ne!(first_id, second_id);
-    assert!(!final_text_of(first, "Answer to the second."));
-    assert!(!final_text_of(second, "Answer to the first."));
-    assert!(first.unread, "the background tab got news");
-    assert!(!second.unread, "the tab on screen is read");
+    // Interleaved pieces: each reaches its own tab while both answers are still open.
+    for (n, piece) in ["one ", "two "].iter().enumerate() {
+        first
+            .send(chunk(json!({"content": format!("alpha {piece}")})))
+            .unwrap();
+        second
+            .send(chunk(json!({"content": format!("beta {piece}")})))
+            .unwrap();
+        let (want_a, want_b) = match n {
+            0 => ("alpha one ", "beta one "),
+            _ => ("alpha one alpha two ", "beta one beta two "),
+        };
+        until("both pieces", &mut rt, |_, rt| {
+            streamed_text(&rt.state.tabs[0]) == want_a && streamed_text(&rt.state.tabs[1]) == want_b
+        })
+        .await;
+    }
+    assert_eq!(rt.state.tabs[0].activity, Activity::Running);
+    assert_eq!(rt.state.tabs[1].activity, Activity::Running);
+    assert!(rt.state.tabs[0].unread, "the background tab got news");
+    assert!(!rt.state.tabs[1].unread, "the tab on screen is read");
     assert_eq!(rt.executor().stream_count(), 2);
-    assert_unique_ids(&first.conversation.blocks);
-    assert_unique_ids(&second.conversation.blocks);
     let shown = screen(&mut rt);
-    assert!(shown.contains("Answer to the second."), "{shown}");
-    assert!(!shown.contains("Answer to the first."), "{shown}");
+    assert!(shown.contains("beta one beta two"), "{shown}");
+    assert!(!shown.contains("alpha one"), "{shown}");
+    let second_id = session_id(&rt);
 
-    // Closing the second tab stops its stream only; the server keeps the conversation.
+    // Close the second tab mid-turn: its stream stops, the first keeps streaming.
     rt.handle_terminal_event(Event::Key(KeyEvent::new(
         KeyCode::Char('w'),
         KeyModifiers::ALT,
     )));
     assert_eq!(rt.state.tabs.len(), 1);
     assert_eq!(rt.executor().stream_count(), 1);
-    assert_eq!(session_id(&rt), first_id);
+    let notice = rt
+        .state
+        .conversation
+        .blocks
+        .iter()
+        .rev()
+        .find_map(|b| match &b.kind {
+            BlockKind::Notice(n) => Some(n.clone()),
+            _ => None,
+        });
+    assert!(
+        notice
+            .as_deref()
+            .is_some_and(|n| n.contains("keeps running on the server")),
+        "{notice:?}"
+    );
+    second
+        .send(chunk(json!({"content": "beta three"})))
+        .unwrap();
+    first
+        .send(chunk(json!({"content": "alpha three"})))
+        .unwrap();
+    first.send(usage_chunk("stop", usage(10, 3))).unwrap();
+    drop(first);
+    until("the first answer to finish", &mut rt, |_, rt| {
+        final_text_of(&rt.state.tabs[0], "alpha one alpha two alpha three")
+    })
+    .await;
+    assert!(!streamed_text(&rt.state.tabs[0]).contains("beta"));
+    drop(second);
     let listed = Client::new(env.base.clone(), None)
         .sessions(&env.ws.to_string_lossy())
         .await

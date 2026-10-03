@@ -11,7 +11,7 @@ expression: snapshot
                      │ │ ▸ Reasoning                                                                
                      │ │  The parser treats an empty argument as a missing value.                   
             ┌──────────────────────────────── Commands ────────────────────────────────┐            
-            │ filter:                                                                  │            
+            │ ❯ type a command…                                                        │            
             │▌/new [alias]          new conversation in a new tab                      │            
             │ /sessions             browse conversations                               │            
             │ /model [alias]        choose model for a new conversation                │            
@@ -22,8 +22,8 @@ expression: snapshot
             │ /help                 show keyboard shortcuts                            │            
             │ /quit                 quit terminal client                               │            
             │                                                                          │            
+            │ ↑↓ move  enter run  esc close                                            │            
             └──────────────────────────────────────────────────────────────────────────┘            
-                     │                                                                              
                      │                                                                              
                      │                                                                              
                      │──────────────────────────────────────────────────────────────────────────────

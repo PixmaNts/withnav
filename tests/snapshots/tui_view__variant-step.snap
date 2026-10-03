@@ -12,14 +12,14 @@ expression: snapshot
                      │                                                                              
                      │                                                                              
                      │                                                                              
-                     │                                                                              
             ┌─────────────────────────── Start on variant… ────────────────────────────┐            
-            │ filter:                                                                  │            
+            │ ❯ filter…                                                                │            
             │   low                                                                    │            
             │▌  high                default                                            │            
             │   max                                                                    │            
             │   off                 no variant                                         │            
             │                                                                          │            
+            │ ↑↓ move  enter choose  esc close                                         │            
             └──────────────────────────────────────────────────────────────────────────┘            
                      │                                                                              
                      │                                                                              

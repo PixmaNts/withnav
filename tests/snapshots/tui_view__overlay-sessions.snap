@@ -15,11 +15,11 @@ expression: snapshot
                      │ │                                                                            
                      │ │ ASSISTANT                                                                  
             ┌───────────────────────────── Conversations ──────────────────────────────┐            
-            │ filter:                                                                  │            
+            │ ❯ filter…                                                                │            
             │▌Fix parser  ·  2026-10-02  ·  01JABCDEFGH                                │            
             │                                                                          │            
+            │ ↑↓ move  enter choose  esc close                                         │            
             └──────────────────────────────────────────────────────────────────────────┘            
-                     │                                                                              
                      │                                                                              
                      │                                                                              
                      │                                                                              

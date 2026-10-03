@@ -13,15 +13,15 @@ expression: snapshot
                      │                                                                              
                      │                                                                              
             ┌──────────────────────────────── Variant ─────────────────────────────────┐            
-            │ filter:                                                                  │            
+            │ ❯ filter…                                                                │            
             │ applies next turn                                                        │            
             │   low                                                                    │            
             │▌● high                                                                   │            
             │   max                                                                    │            
             │   off                 no variant                                         │            
             │                                                                          │            
+            │ ↑↓ move  enter choose  esc close                                         │            
             └──────────────────────────────────────────────────────────────────────────┘            
-                     │                                                                              
                      │                                                                              
                      │                                                                              
                      │                                                                              

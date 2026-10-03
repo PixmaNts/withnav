@@ -8,9 +8,8 @@ expression: snapshot
                      │                                                                              
                      │                                                                              
                      │                                                                              
-                     │                                                                              
             ┌──────────────────────────────── Commands ────────────────────────────────┐            
-            │ filter:                                                                  │            
+            │ ❯ type a command…                                                        │            
             │▌/new [alias]          new conversation in a new tab                      │            
             │ /sessions             browse conversations                               │            
             │ /model [alias]        choose model for a new conversation                │            
@@ -24,6 +23,7 @@ expression: snapshot
             │ /compact              server compact                                     │            
             │ /agent [id]           server agent                                       │            
             │                                                                          │            
+            │ ↑↓ move  enter run  esc close                                            │            
             └──────────────────────────────────────────────────────────────────────────┘            
                      │                                                                              
                      │──────────────────────────────────────────────────────────────────────────────

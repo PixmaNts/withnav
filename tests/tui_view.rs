@@ -2526,3 +2526,47 @@ fn the_key_bar_follows_what_the_keys_do_now() {
         "its label"
     );
 }
+
+// ---------------------------------------------------------------- popups
+
+#[test]
+fn every_popup_is_centred_with_an_accent_border_over_a_dimmed_screen() {
+    let s = done();
+    let theme = Theme::ayu_dark();
+    for overlay in [
+        Overlay::Commands,
+        Overlay::Models,
+        Overlay::Themes,
+        Overlay::Sessions,
+        Overlay::Help,
+    ] {
+        let ui = UiState {
+            overlay: Some(overlay),
+            follow_bottom: true,
+            ..UiState::default()
+        };
+        let (w, h) = (120u16, 36u16);
+        let t = cells(&s, &ui, (w, h));
+        let buffer = t.backend().buffer();
+        let top = (0..h)
+            .find(|y| row_text(&t, *y, w).contains('┌'))
+            .expect("a popup");
+        let line = row_text(&t, top, w);
+        let left = line[..line.find('┌').unwrap()].chars().count() as u16;
+        let right = line[..line.rfind('┐').unwrap()].chars().count() as u16;
+        assert!(
+            left.abs_diff(w - 1 - right) <= 1,
+            "{overlay:?} centred: {left} {right}"
+        );
+        assert_eq!(buffer[(left, top)].fg, theme.accent, "{overlay:?} border");
+        let bottom = (top..h)
+            .find(|y| row_text(&t, *y, w).contains('└'))
+            .unwrap();
+        assert!(
+            row_text(&t, bottom - 1, w).contains("esc"),
+            "{overlay:?} keys"
+        );
+        // behind it, the header text is dimmed
+        assert_ne!(buffer[(30, 0)].fg, theme.text, "{overlay:?} backdrop");
+    }
+}

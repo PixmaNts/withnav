@@ -144,7 +144,8 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
             .collect(),
     };
     let note = note(overlay, state, ui, rows.is_empty());
-    let height = (rows.len() + 4 + usize::from(note.is_some()))
+    // Filter line, rows, note, then a blank line and the keys line.
+    let height = (rows.len() + 5 + usize::from(note.is_some()))
         .min(usize::from(area.height.saturating_sub(2)))
         .max(3) as u16;
     let box_area = Rect::new(
@@ -153,6 +154,8 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
         width,
         height,
     );
+    // The screen behind is dimmed, so the popup reads as the one thing to answer.
+    dim(frame, area, theme);
     frame.render_widget(Clear, box_area);
     frame.buffer_mut().set_style(box_area, theme.surface());
     let block = Block::default()
@@ -165,12 +168,28 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
         horizontal: 2,
         vertical: 1,
     });
+    let keys = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
+    let inner = Rect {
+        height: inner.height.saturating_sub(2),
+        ..inner
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(keys_line(overlay), theme.muted())),
+        keys,
+    );
     if overlay != Overlay::Help {
+        let placeholder = match overlay {
+            Overlay::Commands => "type a command…",
+            Overlay::Models => "filter models…",
+            _ => "filter…",
+        };
+        let typed = if ui.filter.is_empty() {
+            Span::styled(placeholder, theme.muted())
+        } else {
+            Span::styled(ui.filter.clone(), theme.text())
+        };
         frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("filter: ", theme.muted()),
-                Span::styled(ui.filter.clone(), theme.text()),
-            ])),
+            Paragraph::new(Line::from(vec![Span::styled("❯ ", theme.accent()), typed])),
             Rect { height: 1, ..inner },
         );
     }
@@ -209,6 +228,27 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
                 .set_fg(theme.accent);
         }
         frame.render_widget(Paragraph::new(row), rect);
+    }
+}
+
+/// The keys a popup takes, at its foot.
+fn keys_line(overlay: Overlay) -> &'static str {
+    match overlay {
+        Overlay::Help => "esc close",
+        Overlay::Themes => "↑↓ preview  enter keep  esc put back",
+        Overlay::Commands => "↑↓ move  enter run  esc close",
+        _ => "↑↓ move  enter choose  esc close",
+    }
+}
+
+/// Darkens what is behind a popup: the text goes muted, the background stays.
+fn dim(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+    let faded = crate::tui::theme::blend(theme.muted, theme.bg, 0.6);
+    let buffer = frame.buffer_mut();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            buffer[(x, y)].set_fg(faded);
+        }
     }
 }
 

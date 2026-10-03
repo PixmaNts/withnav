@@ -12,14 +12,14 @@ expression: snapshot
                      │ │  The parser treats an empty argument as a missing value.                   
                      │ │                                                                            
                      │ │ ▸ × bash cargo test parser  error  1.42 s  exit 101                        
-                     │ │                                                                            
             ┌───────────────────────────────── Theme ──────────────────────────────────┐            
-            │ filter:                                                                  │            
+            │ ❯ filter…                                                                │            
             │▌● Ayu Dark      ayu-dark     Aa  ■■■■■■                                  │            
             │   Ayu Light     ayu-light    Aa  ■■■■■■                                  │            
             │   Nord Dark     nord-dark    Aa  ■■■■■■                                  │            
             │   Nord Light    nord-light   Aa  ■■■■■■                                  │            
             │                                                                          │            
+            │ ↑↓ preview  enter keep  esc put back                                     │            
             └──────────────────────────────────────────────────────────────────────────┘            
                      │                                                                              
                      │                                                                              

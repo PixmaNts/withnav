@@ -13,12 +13,12 @@ expression: snapshot
                      │ │                                                                            
                      │ │ ▸ × bash cargo test parser  error  1.42 s  exit 101                        
                      │ │                                                                            
-                     │ │ ASSISTANT                                                                  
             ┌───────────────────── Start a new conversation with… ─────────────────────┐            
-            │ filter:                                                                  │            
+            │ ❯ filter models…                                                         │            
             │▌cognition         cc/claude-opus-5-5                              200k   │            
             │ fast              cc/flash                                           —   │            
             │                                                                          │            
+            │ ↑↓ move  enter choose  esc close                                         │            
             └──────────────────────────────────────────────────────────────────────────┘            
                      │                                                                              
                      │                                                                              

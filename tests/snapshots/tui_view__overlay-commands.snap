@@ -2,20 +2,20 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- navai  ~/dev/project                                                      Fix parser · 01JABCDEFGH 
-────────────────────────────────────────────────────────────────────────────────────────────────────
- │ YOU                                                                                              
- │  Explain the failure, then fix it.                                                               
- │                                                                                                  
- │ ASSISTANT                                                                                        
- │ ▸ Reasoning                                                                                      
- │  The parser treats an empty argument as a missing value.                                         
- │                                                                                                  
- │ ▸ × bash ┌──────────────────────────────── Commands ────────────────────────────────┐            
- │          │ filter:                                                                  │            
- │ ASSISTANT│▌/new         new conversation in a new tab                               │            
- │  I found │ /sessions    browse conversations                                        │            
- │          │ /model       choose model for a new conversation                         │            
+ Conversations       │ navai  ~/dev/project                                Fix parser · 01JABCDEFGH 
+▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
+▌  build · idle      │ │ YOU                                                                        
+                     │ │  Explain the failure, then fix it.                                         
+                     │ │                                                                            
+                     │ │ ASSISTANT                                                                  
+                     │ │ ▸ Reasoning                                                                
+                     │ │  The parser treats an empty argument as a missing value.                   
+                     │ │                                                                            
+            ┌──────────────────────────────── Commands ────────────────────────────────┐            
+            │ filter:                                                                  │            
+            │▌/new         new conversation in a new tab                               │            
+            │ /sessions    browse conversations                                        │            
+            │ /model       choose model for a new conversation                         │            
             │ /stop        stop generation                                             │            
             │ /mode        cycle delivery mode (steer and interrupt send as next-turn) │            
             │ /theme       choose the colour theme                                     │            
@@ -23,12 +23,12 @@ expression: snapshot
             │ /quit        quit terminal client                                        │            
             │                                                                          │            
             └──────────────────────────────────────────────────────────────────────────┘            
-                                                                                                    
-                                                                                                    
-                                                                                                    
-────────────────────────────────────────────────────────────────────────────────────────────────────
- cognition · cc/claude-opus-5-5   ctx 12.4k / 200k   session 31.2k tok   ready                      
-┌ Message ─────────────────────────────────────────────────────────────────────────────────────────┐
-│                                                                                                  │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
- enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │──────────────────────────────────────────────────────────────────────────────
+                     │ cognition · claude-opus-5-5   ctx 12.4k / 200k   ready                       
+                     │┌ Message ───────────────────────────────────────────────────────────────────┐
+ alt+1…9 switch      ││                                                                            │
+ alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
+ alt+b hide bar      │ enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help

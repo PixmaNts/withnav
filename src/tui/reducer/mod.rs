@@ -20,7 +20,7 @@ mod actions;
 mod envelope;
 mod text;
 
-pub use actions::handle_action;
+pub use actions::{handle_action, short_id};
 pub use text::strip_controls;
 
 use super::{

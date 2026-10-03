@@ -1,6 +1,7 @@
 //! Draws the terminal UI without mutating the conversation projection.
 mod markdown;
 mod pickers;
+pub mod sidebar;
 mod status;
 pub mod tool;
 mod transcript;
@@ -85,6 +86,17 @@ pub fn draw(
         );
         return;
     }
+    let full = area;
+    let area = if sidebar::shown(ui, area.width) {
+        let [bar, rest] = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(sidebar::WIDTH), Constraint::Min(1)])
+            .areas(area);
+        sidebar::draw(frame, bar, state, &theme);
+        rest
+    } else {
+        area
+    };
     let editor_height = (editor.text().lines().count().max(1) as u16 + 2).min(7);
     let [header, rule, transcript, separator, status, input, hints] = Layout::default()
         .direction(Direction::Vertical)
@@ -174,5 +186,5 @@ pub fn draw(
         let hint = " enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help";
         frame.render_widget(Paragraph::new(Line::from(hint_spans(hint, &theme))), hints);
     }
-    pickers::draw(frame, area, state, ui, &theme);
+    pickers::draw(frame, full, state, ui, &theme);
 }

@@ -2,20 +2,20 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- navai  ~/dev/project                                                      Fix parser · 01JABCDEFGH 
-────────────────────────────────────────────────────────────────────────────────────────────────────
- │ YOU                                                                                              
- │  Explain the failure, then fix it.                                                               
- │          ┌─────────────────────────── Keyboard shortcuts ───────────────────────────┐            
- │ ASSISTANT│ enter                   send / choose                                    │            
- │ ▸ Reasoni│ alt+enter / ctrl+j      newline                                          │            
- │  The pars│ ctrl+p / /              commands                                         │            
- │          │ ctrl+n                  new conversation, in a new tab                   │            
- │ ▸ × bash │ ctrl+o                  sessions (opens in a tab)                        │            
- │          │ alt+1 … alt+9           switch to tab 1 … 9                              │            
- │ ASSISTANT│ alt+w                   close tab (the conversation is kept)             │            
- │  I found │ alt+b                   hide / show the tab bar                          │            
- │          │ f2                      models                                           │            
+ Conversations       │ navai  ~/dev/project                                Fix parser · 01JABCDEFGH 
+▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
+▌  build · idle      │ │ YOU                                                                        
+                     │ │  Explain the failure, then fix it.                                         
+            ┌─────────────────────────── Keyboard shortcuts ───────────────────────────┐            
+            │ enter                   send / choose                                    │            
+            │ alt+enter / ctrl+j      newline                                          │            
+            │ ctrl+p / /              commands                                         │            
+            │ ctrl+n                  new conversation, in a new tab                   │            
+            │ ctrl+o                  sessions (opens in a tab)                        │            
+            │ alt+1 … alt+9           switch to tab 1 … 9                              │            
+            │ alt+w                   close tab (the conversation is kept)             │            
+            │ alt+b                   hide / show the tab bar                          │            
+            │ f2                      models                                           │            
             │ f1                      help                                             │            
             │ tab / shift+tab         switch focus                                     │            
             │ page up / page down     scroll                                           │            
@@ -26,9 +26,9 @@ expression: snapshot
             │ ctrl+q                  quit                                             │            
             │                                                                          │            
             │                                                                          │            
-────────────└──────────────────────────────────────────────────────────────────────────┘────────────
- cognition · cc/claude-opus-5-5   ctx 12.4k / 200k   session 31.2k tok   ready                      
-┌ Message ─────────────────────────────────────────────────────────────────────────────────────────┐
-│                                                                                                  │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
- enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help
+            └──────────────────────────────────────────────────────────────────────────┘────────────
+                     │ cognition · claude-opus-5-5   ctx 12.4k / 200k   ready                       
+                     │┌ Message ───────────────────────────────────────────────────────────────────┐
+ alt+1…9 switch      ││                                                                            │
+ alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
+ alt+b hide bar      │ enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help

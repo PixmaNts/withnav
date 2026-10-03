@@ -194,6 +194,17 @@ pub fn is_guarded(role: &AgentDefinition) -> bool {
     role.id.as_str() == crate::agent::definitions::PLAN
 }
 
+/// The decision that is applied for `agent`: a guarded agent's exceptions are
+/// offered once or denied, never "allow folder", so that answer counts as a
+/// single approval.
+pub fn offered_decision(agent: &str, decision: PermissionDecision) -> PermissionDecision {
+    if agent == crate::agent::definitions::PLAN && decision == PermissionDecision::AllowFolder {
+        PermissionDecision::AllowOnce
+    } else {
+        decision
+    }
+}
+
 /// Whether a guarded agent may run `tool` on `needed` without the guard and
 /// without a request: a `write` or `edit` whose RESOLVED destination is a
 /// regular `.md` file (a plan's normal job). The destination is the canonical

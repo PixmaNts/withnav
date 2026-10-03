@@ -757,6 +757,11 @@ impl Service {
             .load_skills(&workspace, session_id, resumed.is_some())
             .await;
         actor.set_skills(skills);
+        actor.guard = super::guard::jev_guard(
+            self.config.models_path.as_deref(),
+            &workspace,
+            &self.config.config_dir,
+        );
         self.hooks.configure_actor(profile, &mut actor);
         // A permission request does not outlive the process that asked it:
         // its calls are settled as interrupted and never run again.

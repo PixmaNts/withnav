@@ -6,6 +6,7 @@ use crate::agent::compaction::{
     effective_history, validate as validate_compaction, Compaction, Components,
 };
 use crate::agent::definitions::AgentDefinition;
+use crate::agent::guard::RoleGuard;
 use crate::agent::instructions::Instructions;
 use crate::agent::permissions::{Grants, PermissionRequest};
 use crate::agent::skills::{SkillTool, Skills};
@@ -83,6 +84,10 @@ pub struct AgentActor {
     pub pending: Option<PendingInteraction>,
     /// The folder and origin approvals given in this session; memory only.
     pub grants: Grants,
+    /// The second opinion a guarded agent's exceptions go through before the
+    /// driver. `None` when the session has no guard: every exception then goes
+    /// to the driver.
+    pub guard: Option<Arc<dyn RoleGuard>>,
 }
 
 impl AgentActor {
@@ -117,6 +122,7 @@ impl AgentActor {
             state: AgentState::Idle,
             pending: None,
             grants: Grants::default(),
+            guard: None,
         }
     }
 

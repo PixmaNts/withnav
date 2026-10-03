@@ -1,8 +1,9 @@
 use crate::agent::actor::{AgentActor, AgentState, PendingInteraction};
 use crate::agent::context::Breakdown;
+use crate::agent::guard::{self, CallFacts, GuardInput, Judged};
 use crate::agent::permissions::{
-    exempt_from_guard, is_guarded, needs_permission, Gate, PermissionDecision, PermissionError,
-    PermissionRequest,
+    exempt_from_guard, is_guarded, needs_permission, Gate, Needed, PermissionDecision,
+    PermissionError, PermissionRequest,
 };
 use crate::agent::prompt::{assistant_history_message, build_request};
 use crate::agent::response::{classify, HumanRequest, StepOutcome};
@@ -228,13 +229,15 @@ pub async fn resolve_permission(
             // The approval is for the destination the driver reviewed. Resolve
             // it again: a call that now lands elsewhere, or is refused, does
             // not run on this approval.
-            match gate(actor, &call) {
+            let asked_again = match gate(actor, &call) {
                 Gated::Run => {
-                    let result = execute_call(actor, &call, None, observe).await;
+                    let result = execute_call(actor, &call, None, None, observe).await;
                     append_tool_result(actor, &call.id, &result);
+                    None
                 }
                 Gated::Rejected(message) => {
                     reject_call(actor, &call, message, observe);
+                    None
                 }
                 Gated::Ask(fresh, fresh_destination) => {
                     if fresh_destination == destination && fresh.scope == request.scope {
@@ -246,20 +249,61 @@ pub async fn resolve_permission(
                             );
                         }
                         let result =
-                            execute_call(actor, &call, destination.as_deref(), observe).await;
+                            execute_call(actor, &call, destination.as_deref(), None, observe).await;
                         append_tool_result(actor, &call.id, &result);
+                        None
                     } else {
-                        actor.pending = Some(PendingInteraction::Permission {
-                            request: Box::new(fresh.clone()),
-                            call,
-                            remaining_calls,
-                            destination: fresh_destination,
-                            steps_left,
-                        });
-                        actor.state = AgentState::Yielded;
-                        return Ok(RunOutcome::PermissionRequired(fresh));
+                        Some((fresh, fresh_destination))
                     }
                 }
+                // An exception of a guarded agent: the driver's approval is
+                // for this one call and never becomes a grant, whatever the
+                // decision said.
+                Gated::Guarded(needed) => {
+                    if needed.destination == destination && needed.scope == request.scope {
+                        let result =
+                            execute_call(actor, &call, destination.as_deref(), None, observe).await;
+                        append_tool_result(actor, &call.id, &result);
+                        None
+                    } else {
+                        match guard_step(actor, &call, needed).await {
+                            GuardStep::Run(note, fresh_destination) => {
+                                let result = execute_call(
+                                    actor,
+                                    &call,
+                                    fresh_destination.as_deref(),
+                                    Some(note),
+                                    observe,
+                                )
+                                .await;
+                                append_tool_result(actor, &call.id, &result);
+                                None
+                            }
+                            GuardStep::Ask(fresh, fresh_destination) => {
+                                Some((fresh, fresh_destination))
+                            }
+                            GuardStep::Interrupted => {
+                                append_interrupted(actor, &call.id);
+                                for rest in &remaining_calls {
+                                    append_interrupted(actor, &rest.id);
+                                }
+                                actor.state = AgentState::Idle;
+                                return Ok(RunOutcome::Interrupted);
+                            }
+                        }
+                    }
+                }
+            };
+            if let Some((fresh, fresh_destination)) = asked_again {
+                actor.pending = Some(PendingInteraction::Permission {
+                    request: Box::new(fresh.clone()),
+                    call,
+                    remaining_calls,
+                    destination: fresh_destination,
+                    steps_left,
+                });
+                actor.state = AgentState::Yielded;
+                return Ok(RunOutcome::PermissionRequired(fresh));
             }
         }
         PermissionDecision::Deny { message } => {
@@ -302,24 +346,45 @@ async fn run_calls(
             actor.state = AgentState::Idle;
             return Calls::Interrupted;
         }
-        match gate(actor, &call) {
+        let (request, destination) = match gate(actor, &call) {
             Gated::Run => {
-                let result = execute_call(actor, &call, None, observe).await;
+                let result = execute_call(actor, &call, None, None, observe).await;
                 append_tool_result(actor, &call.id, &result);
+                continue;
             }
-            Gated::Rejected(message) => reject_call(actor, &call, message, observe),
-            Gated::Ask(request, destination) => {
-                actor.pending = Some(PendingInteraction::Permission {
-                    request: Box::new(request.clone()),
-                    call,
-                    remaining_calls: calls.into(),
-                    destination,
-                    steps_left,
-                });
-                actor.state = AgentState::Yielded;
-                return Calls::Permission(request);
+            Gated::Rejected(message) => {
+                reject_call(actor, &call, message, observe);
+                continue;
             }
-        }
+            Gated::Ask(request, destination) => (request, destination),
+            Gated::Guarded(needed) => match guard_step(actor, &call, needed).await {
+                GuardStep::Run(note, destination) => {
+                    let result =
+                        execute_call(actor, &call, destination.as_deref(), Some(note), observe)
+                            .await;
+                    append_tool_result(actor, &call.id, &result);
+                    continue;
+                }
+                GuardStep::Ask(request, destination) => (request, destination),
+                GuardStep::Interrupted => {
+                    append_interrupted(actor, &call.id);
+                    for rest in &calls {
+                        append_interrupted(actor, &rest.id);
+                    }
+                    actor.state = AgentState::Idle;
+                    return Calls::Interrupted;
+                }
+            },
+        };
+        actor.pending = Some(PendingInteraction::Permission {
+            request: Box::new(request.clone()),
+            call,
+            remaining_calls: calls.into(),
+            destination,
+            steps_left,
+        });
+        actor.state = AgentState::Yielded;
+        return Calls::Permission(request);
     }
     observe(AgentEvent::ContextEstimated(actor.context_breakdown()));
     Calls::Finished
@@ -334,6 +399,9 @@ enum Gated {
     /// Waits for a decision; the path is the canonical file a `write` or
     /// `edit` was resolved to.
     Ask(PermissionRequest, Option<PathBuf>),
+    /// An exception of a guarded agent: the role guard is asked before the
+    /// driver is. See [`guard_step`].
+    Guarded(Needed),
 }
 
 fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
@@ -352,7 +420,9 @@ fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
         if exempt_from_guard(&call.name, &needed) {
             return Gated::Run;
         }
-    } else if actor
+        return Gated::Guarded(needed);
+    }
+    if actor
         .grants
         .covers(agent, &call.name, &needed.scope, &actor.tool_context)
     {
@@ -362,6 +432,51 @@ fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
         PermissionRequest::new(call, needed.scope, agent),
         needed.destination,
     )
+}
+
+/// What the role guard made of an exception.
+enum GuardStep {
+    /// Jev judged it within the role: it runs, with this note on its result,
+    /// on the canonical destination that was judged.
+    Run(serde_json::Value, Option<PathBuf>),
+    /// The driver decides.
+    Ask(PermissionRequest, Option<PathBuf>),
+    /// The session was stopped while Jev was asked.
+    Interrupted,
+}
+
+/// Asks the role guard about an exception of a guarded agent. Only a valid
+/// `conforms` runs the call; everything else becomes a permission request
+/// whose reason says why, offered once (an approval of an exception never
+/// becomes a grant). The guard is advisory, not a sandbox.
+async fn guard_step(actor: &AgentActor, call: &ToolCall, needed: Needed) -> GuardStep {
+    let role = actor.role.as_deref();
+    let role_id = role.map(|r| r.id.as_str()).unwrap_or("plan");
+    let task = actor.transcript.iter().rev().find_map(|m| match m {
+        ChatMessage::User { content } => Some(content.as_str()),
+        _ => None,
+    });
+    let input = GuardInput::describe(&CallFacts {
+        role_id,
+        role_prompt: role.map(|r| r.prompt.as_str()).unwrap_or(""),
+        task,
+        workspace: &actor.tool_context.workspace,
+        tool: &call.name,
+        target: needed.destination.as_deref(),
+        arguments: &call.args,
+    });
+    match guard::consult(actor.guard.as_ref(), input, role_id, &actor.cancel).await {
+        Judged::Allowed(note) => GuardStep::Run(note, needed.destination),
+        Judged::Interrupted => GuardStep::Interrupted,
+        Judged::AskDriver(why) => {
+            let mut request = PermissionRequest::new(call, needed.scope, role_id);
+            request.reason = format!(
+                "{why}. {} (approve this call once, or deny)",
+                request.reason
+            );
+            GuardStep::Ask(request, needed.destination)
+        }
+    }
 }
 
 /// Settles a call the gate refused: it is never dispatched, and the model
@@ -393,6 +508,7 @@ async fn execute_call(
     actor: &AgentActor,
     call: &ToolCall,
     destination: Option<&Path>,
+    guard_note: Option<serde_json::Value>,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> ToolResult {
     observe(AgentEvent::PreCall {
@@ -407,7 +523,7 @@ async fn execute_call(
             serde_json::Value::String(destination.to_string_lossy().into_owned()),
         );
     }
-    let result = actor
+    let mut result = actor
         .registry
         .dispatch(
             &call.name,
@@ -417,6 +533,15 @@ async fn execute_call(
         )
         .await
         .unwrap_or_else(|e| ToolResult::error("tool_error", e.to_string()));
+    // The role guard let this call run: the durable `tool.post_call` says so.
+    if let Some(note) = guard_note {
+        match &mut result.metadata {
+            serde_json::Value::Object(map) => {
+                map.insert("guard".into(), note);
+            }
+            other => *other = serde_json::json!({ "guard": note }),
+        }
+    }
     observe(AgentEvent::PostCall {
         tool_call_id: &call.id,
         name: &call.name,

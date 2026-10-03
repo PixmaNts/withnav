@@ -7,6 +7,10 @@ use serde_json::Value;
 use crate::error::{ConfigError, ProviderError};
 
 /// One variant: a JSON object merged shallowly into the chat request body.
+/// Only the keys the request owns are refused ([`RESERVED_VARIANT_KEYS`]);
+/// any other key is allowed on purpose, including ones the request does not
+/// otherwise set (such as `response_format`), so a variant can carry
+/// provider-specific options.
 pub type Variant = serde_json::Map<String, Value>;
 /// The variants of one alias, by name.
 pub type Variants = BTreeMap<String, Variant>;
@@ -253,7 +257,7 @@ pub fn effective_variants(resolved: &ResolvedModel, effort_tiers: &[String]) -> 
 }
 
 /// A `default_variant` that the alias's variants do not contain (a generated
-/// tier the catalog no longer reports).
+/// tier the catalog no longer reports). See `ResolvedChat::default_override`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownVariant {
     pub alias: String,
@@ -268,24 +272,6 @@ impl std::fmt::Display for UnknownVariant {
             self.alias, self.variant
         )
     }
-}
-
-/// The alias's `default_variant` with its override object: `None` when the
-/// alias sets no default.
-pub fn default_variant(
-    resolved: &ResolvedModel,
-    effort_tiers: &[String],
-) -> Result<Option<(String, Variant)>, UnknownVariant> {
-    let Some(name) = resolved.model.default_variant.clone() else {
-        return Ok(None);
-    };
-    effective_variants(resolved, effort_tiers)
-        .remove(&name)
-        .map(|v| Some((name.clone(), v)))
-        .ok_or(UnknownVariant {
-            alias: resolved.alias.clone(),
-            variant: name,
-        })
 }
 
 pub fn resolve_models_path(
@@ -614,22 +600,8 @@ mod tests {
     #[test]
     fn generation_never_picks_a_default() {
         let r = resolve_in(r#", "catalog_format": "omniroute""#, "");
-        assert_eq!(default_variant(&r, &tiers(&["low", "high"])), Ok(None));
-    }
-
-    #[test]
-    fn a_generated_default_that_the_catalog_dropped_is_reported() {
-        let r = resolve_in(
-            r#", "catalog_format": "omniroute""#,
-            r#", "default_variant": "max""#,
-        );
-        let (name, v) = default_variant(&r, &tiers(&["low", "max"]))
-            .unwrap()
-            .unwrap();
-        assert_eq!(name, "max");
-        assert_eq!(v["reasoning_effort"], "max");
-        let e = default_variant(&r, &tiers(&["low"])).unwrap_err();
-        assert_eq!(e.variant, "max");
+        assert_eq!(r.model.default_variant, None);
+        assert!(effective_variants(&r, &tiers(&["low", "high"])).len() == 2);
     }
 
     #[test]

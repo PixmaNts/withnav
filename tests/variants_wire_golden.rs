@@ -6,8 +6,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use navai::agent::prompt::build_request;
+use navai::provider::catalog::{resolve_chat, ModelCatalog, ResolvedChat};
 use navai::provider::client::ModelClient;
-use navai::provider::config::{default_variant, effective_variants, ModelsConfig, ProviderConfig};
+use navai::provider::config::{ModelsConfig, ProviderConfig};
 use navai::provider::openai::ChatMessage;
 use navai::provider::openai::ClientCache;
 use tokio_util::sync::CancellationToken;
@@ -31,16 +32,43 @@ fn lock_fixture(name: &str, body: &str) {
     }
 }
 
-const MODELS: &str = r#"{
-  "providers": {"p": {"base_url": "http://unused/v1", "catalog_format": "omniroute"}},
-  "models": {
-    "plain": {"provider": "p", "model": "m", "variants": {}},
-    "deep": {"provider": "p", "model": "m", "default_variant": "high"},
-    "nested": {"provider": "p", "model": "m", "variants": {
-      "think": {"thinking": {"type": "enabled", "budget_tokens": 8000}, "reasoning_effort": "high"}
-    }}
-  }
-}"#;
+/// A models.json with three aliases on one OmniRoute provider at `base_url`.
+fn models(base_url: &str) -> String {
+    format!(
+        r#"{{
+  "providers": {{"p": {{"base_url": "{base_url}", "catalog_format": "omniroute"}}}},
+  "models": {{
+    "plain": {{"provider": "p", "model": "m", "variants": {{}}}},
+    "deep": {{"provider": "p", "model": "m", "default_variant": "high"}},
+    "nested": {{"provider": "p", "model": "m", "variants": {{
+      "think": {{"thinking": {{"type": "enabled", "budget_tokens": 8000}}, "reasoning_effort": "high"}}
+    }}}}
+  }}
+}}"#
+    )
+}
+
+/// Resolves `alias` the way a session does: through the provider's `/models`
+/// list, which reports `tiers` for the model.
+async fn resolve(alias: &str, tiers: &[&str]) -> ResolvedChat {
+    let provider = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::path("/v1/models"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"data": [{
+                "id": "m", "context_length": 8000,
+                "capabilities": {"effort_tiers": tiers}
+            }]}),
+        ))
+        .mount(&provider)
+        .await;
+    let cfg = ModelsConfig::parse(&models(&format!("{}/v1", provider.uri()))).unwrap();
+    let resolved = cfg.resolve(alias).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    resolve_chat(&catalog, &resolved, "k", &ClientCache::new())
+        .await
+        .unwrap()
+}
 
 /// Sends one request through `ModelClient::chat` and returns the body the
 /// provider received.
@@ -76,17 +104,11 @@ async fn send(variant: Option<&navai::provider::config::Variant>) -> String {
     bodies[0].clone()
 }
 
-fn tiers(names: &[&str]) -> Vec<String> {
-    names.iter().map(|s| s.to_string()).collect()
-}
-
 #[tokio::test]
 async fn low_high_and_max_each_add_their_reasoning_effort() {
-    let cfg = ModelsConfig::parse(MODELS).unwrap();
-    let resolved = cfg.resolve("deep").unwrap();
-    let variants = effective_variants(&resolved, &tiers(&["low", "high", "max"]));
+    let chat = resolve("deep", &["low", "high", "max"]).await;
     for tier in ["low", "high", "max"] {
-        let body = send(Some(&variants[tier])).await;
+        let body = send(Some(&chat.variants[tier])).await;
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed["reasoning_effort"], tier);
         assert_eq!(parsed["model"], "test-model", "the model is never replaced");
@@ -96,10 +118,8 @@ async fn low_high_and_max_each_add_their_reasoning_effort() {
 
 #[tokio::test]
 async fn a_nested_options_object_is_sent_as_is() {
-    let cfg = ModelsConfig::parse(MODELS).unwrap();
-    let resolved = cfg.resolve("nested").unwrap();
-    let variants = effective_variants(&resolved, &[]);
-    let body = send(Some(&variants["think"])).await;
+    let chat = resolve("nested", &[]).await;
+    let body = send(Some(&chat.variants["think"])).await;
     let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(parsed["thinking"]["type"], "enabled");
     assert_eq!(parsed["thinking"]["budget_tokens"], 8000);
@@ -109,20 +129,14 @@ async fn a_nested_options_object_is_sent_as_is() {
 
 #[tokio::test]
 async fn the_alias_default_is_applied_when_the_caller_passes_it() {
-    let cfg = ModelsConfig::parse(MODELS).unwrap();
-    let resolved = cfg.resolve("deep").unwrap();
-    let (name, variant) = default_variant(&resolved, &tiers(&["low", "high"]))
+    let chat = resolve("deep", &["low", "high"]).await;
+    let (name, variant) = chat
+        .default_override("deep")
         .unwrap()
         .expect("deep has a default");
     assert_eq!(name, "high");
     let body = send(Some(&variant)).await;
-    assert_eq!(
-        body,
-        send(Some(
-            &effective_variants(&resolved, &tiers(&["high"]))["high"]
-        ))
-        .await
-    );
+    assert_eq!(body, send(Some(&chat.variants["high"])).await);
     lock_fixture("default_applied", &body);
 }
 
@@ -130,9 +144,7 @@ async fn the_alias_default_is_applied_when_the_caller_passes_it() {
 async fn no_variant_leaves_the_body_byte_identical_to_the_unvaried_request() {
     let plain = send(None).await;
     assert_eq!(plain, send(Some(&Default::default())).await);
-    let cfg = ModelsConfig::parse(MODELS).unwrap();
-    let resolved = cfg.resolve("plain").unwrap();
-    assert!(effective_variants(&resolved, &tiers(&["low"])).is_empty());
+    assert!(resolve("plain", &["low"]).await.variants.is_empty());
     // The same request as the Phase-1 lock: system contract, user "hello".
     let locked: Vec<String> = serde_json::from_slice(
         &std::fs::read(

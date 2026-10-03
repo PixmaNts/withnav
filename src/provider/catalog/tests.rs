@@ -737,6 +737,34 @@ async fn an_explicit_empty_tier_list_removes_the_tiers() {
 }
 
 #[tokio::test]
+async fn a_generated_default_is_resolved_and_one_the_catalog_dropped_is_reported() {
+    let tiers = |t: &str| {
+        format!(
+            r#"{{"data":[{{"id":"m","context_length":8000,"capabilities":{{"effort_tiers":{t}}}}}]}}"#
+        )
+    };
+    let mut r = resolved("", "m", ApiKind::Chat, None);
+    r.provider.catalog_format = Some(crate::provider::config::CatalogFormat::Omniroute);
+    r.model.default_variant = Some("max".into());
+    for (reported, expected) in [(r#"["low","max"]"#, true), (r#"["low"]"#, false)] {
+        let (dir, server) = (tempfile::tempdir().unwrap(), serve(&tiers(reported)).await);
+        r.provider.base_url = format!("{}/v1", server.uri());
+        let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+        let chat = resolve_chat(&catalog, &r, "key", &ClientCache::new())
+            .await
+            .unwrap();
+        let chosen = chat.default_override("alias");
+        if expected {
+            let (name, v) = chosen.unwrap().unwrap();
+            assert_eq!(name, "max");
+            assert_eq!(v["reasoning_effort"], "max");
+        } else {
+            assert_eq!(chosen.unwrap_err().variant, "max");
+        }
+    }
+}
+
+#[tokio::test]
 async fn a_cache_file_with_a_zero_limit_is_ignored_and_refreshed() {
     let (dir, server) = (tempfile::tempdir().unwrap(), serve(FIXTURE).await);
     let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));

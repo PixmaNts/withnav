@@ -10,6 +10,297 @@ fn body(request: &str) -> Value {
 }
 
 #[tokio::test]
+async fn two_interrupts_deliver_both_inputs_in_admission_order() {
+    let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let state = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(128000)
+        .state();
+    let parent = state
+        .create_session(&ws, None, None)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let child = state
+        .create_child_session(parent, "explore", "inspect")
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (_, old) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    state
+        .steer_child(parent, child, "interrupt first", true)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    state
+        .steer_child(parent, child, "interrupt second", true)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let mut streams = Vec::new();
+    let request = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let (request, stream) = provider.requests.recv().await.unwrap();
+            streams.push(stream);
+            if request.contains("interrupt second") {
+                break request;
+            }
+        }
+    })
+    .bounded(file!(), line!())
+    .await
+    .unwrap();
+    let b = body(&request);
+    let messages = b["messages"].as_array().unwrap();
+    let first = messages
+        .iter()
+        .position(|m| m["content"] == "interrupt first")
+        .unwrap();
+    let second = messages
+        .iter()
+        .position(|m| m["content"] == "interrupt second")
+        .unwrap();
+    assert!(first < second);
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|m| m["content"] == "interrupt first")
+            .count(),
+        1
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|m| m["content"] == "interrupt second")
+            .count(),
+        1
+    );
+    state.close_all().bounded(file!(), line!()).await;
+    drop(old);
+    drop(streams);
+}
+
+#[tokio::test]
+async fn result_interrupt_replacement_uses_accepted_deferred_model() {
+    let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let config = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(128000)
+        .config();
+    let path = config.models_path.as_ref().unwrap();
+    let mut models: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    models["models"]["replacement"] = models["models"]["default"].clone();
+    models["models"]["replacement"]["model"] = json!("replacement-model");
+    std::fs::write(path, models.to_string()).unwrap();
+    let state = AppState::new(config).unwrap();
+    let parent = state
+        .create_session(&ws, None, None)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    state
+        .send(navai::bus::command::Command::child_prompt(
+            parent,
+            "driver".into(),
+        ))
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (_, old) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let _child = state
+        .create_child_with_delivery(parent, "explore", "inspect", "interrupt")
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (_, child_stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let command = state
+        .run_command(parent, "model", "replacement")
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(command.ok);
+    child_stream.send(text_chunk("result")).unwrap();
+    drop(child_stream);
+    let (request, stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert_eq!(body(&request)["model"], "replacement-model");
+    assert!(request.contains("untrusted_subagent_output"));
+    state.close_all().bounded(file!(), line!()).await;
+    drop(old);
+    drop(stream);
+}
+
+#[tokio::test]
+async fn interrupt_held_automatic_summary_restores_valid_checkpoint_and_input_once() {
+    use common::sse::{http_sse, spawn_holding_provider, sse_body};
+    let reached = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let provider =
+        spawn_holding_provider(8, 2, reached.clone(), release.clone(), |index, request| {
+            let body: Value =
+                serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+            let text = if body["tools"]
+                .as_array()
+                .is_none_or(|tools| tools.is_empty())
+            {
+                text_chunk("Goal: inspect sources. Next: finish.")
+            } else if index < 2 {
+                tool_call_chunk(&format!("read-{index}"), "read", &json!({"path":"big.txt"}))
+            } else {
+                text_chunk("finished after interruption")
+            };
+            http_sse(&sse_body(&[&text]))
+        })
+        .bounded(file!(), line!())
+        .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    std::fs::write(ws.join("big.txt"), "lorem ipsum ".repeat(2000)).unwrap();
+    let state = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(20000)
+        .state();
+    let parent = state
+        .create_session(&ws, None, None)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let child = state
+        .create_child_session(parent, "explore", "inspect the file twice")
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    reached.notified().bounded(file!(), line!()).await;
+    state
+        .steer_child(parent, child, "replacement after summary", true)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while state.child_metadata(child).await.unwrap().unwrap().status == "running" {
+            tokio::task::yield_now().await;
+        }
+    })
+    .bounded(file!(), line!())
+    .await
+    .unwrap();
+    state
+        .history()
+        .flush()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (_, transcript, checkpoint) = state
+        .history()
+        .load_for_resume(child)
+        .bounded(file!(), line!())
+        .await
+        .unwrap()
+        .unwrap();
+    // A cancelled summary may leave no checkpoint; any committed one must
+    // restore against the actual paired transcript, never a partial summary.
+    if let Some(checkpoint) = checkpoint {
+        navai::agent::compaction::validate(&checkpoint, &transcript).unwrap();
+    }
+    assert_eq!(transcript.iter().filter(|m|matches!(m,navai::provider::openai::ChatMessage::User {content,..} if content=="replacement after summary")).count(),1);
+    state.close_all().bounded(file!(), line!()).await;
+}
+
+#[tokio::test]
+async fn queued_driver_without_result_preserves_running_turn_and_budget() {
+    let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let state = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(128000)
+        .state();
+    let parent = state
+        .create_session(&ws, None, None)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    state
+        .send(navai::bus::command::Command::child_prompt(
+            parent,
+            "original".into(),
+        ))
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (_, stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    state
+        .send(navai::bus::command::Command::child_prompt(
+            parent,
+            "next turn driver".into(),
+        ))
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    stream
+        .send(tool_call_chunk("glob", "glob", &json!({"pattern":"*"})))
+        .unwrap();
+    drop(stream);
+    let (request, stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(!request.contains("next turn driver"));
+    let events = replay(&state, parent).bounded(file!(), line!()).await;
+    assert_eq!(events.iter().filter(|e| e.kind == "turn.start").count(), 1);
+    assert!(!events.iter().any(|e| e.kind == "turn.end"));
+    stream.send(text_chunk("natural finish")).unwrap();
+    drop(stream);
+    let (request, stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(request.contains("next turn driver"));
+    let events = replay(&state, parent).bounded(file!(), line!()).await;
+    assert!(events
+        .iter()
+        .any(|e| e.kind == "turn.end" && e.payload["outcome"] == "done"));
+    assert!(!events
+        .iter()
+        .any(|e| e.kind == "turn.end" && e.payload["outcome"] == "interrupted"));
+    state.close_all().bounded(file!(), line!()).await;
+    drop(stream);
+}
+
+#[tokio::test]
 async fn queued_driver_precedes_mid_turn_result_steer() {
     let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
     let tmp = tempfile::tempdir().unwrap();

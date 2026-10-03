@@ -1909,6 +1909,17 @@ impl Service {
         status.init_variant(selected.clone());
         if child_parent.is_none() {
             let pending_history = self.history.clone();
+            let eligible_history = self.history.clone();
+            status.install_boundary_eligible(Arc::new(move || {
+                let history = eligible_history.clone();
+                Box::pin(async move {
+                    Ok(history
+                        .unconsumed_completions(session_id)
+                        .await?
+                        .iter()
+                        .any(|(_, payload, _)| payload["delivery"] == "steer"))
+                })
+            }));
             status.install_pending_notice(Arc::new(move |id| {
                 let history = pending_history.clone();
                 Box::pin(async move {

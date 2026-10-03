@@ -13,6 +13,7 @@ mod compact;
 mod deferred;
 mod delivery;
 mod steering;
+pub use delivery::BoundaryEligible;
 pub use delivery::Delivery;
 pub use delivery::PendingNotice;
 mod model;
@@ -92,6 +93,7 @@ struct PermissionSlot {
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
+    boundary_eligible: Mutex<Option<delivery::EligibleCell>>,
     queued_driver: Arc<std::sync::atomic::AtomicUsize>,
     boundary_deferred: std::sync::atomic::AtomicBool,
     pending_notice: Mutex<Option<delivery::NoticeCell>>,
@@ -116,6 +118,24 @@ pub struct RuntimeStatus {
 }
 
 impl RuntimeStatus {
+    pub fn install_boundary_eligible(&self, callback: BoundaryEligible) {
+        *self
+            .boundary_eligible
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(delivery::EligibleCell(callback));
+    }
+    async fn result_eligible(&self) -> bool {
+        let callback = self
+            .boundary_eligible
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|c| c.0.clone());
+        match callback {
+            Some(callback) => callback().await.unwrap_or(false),
+            None => false,
+        }
+    }
     pub(crate) fn queue_driver(&self) {
         self.queued_driver
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
@@ -694,6 +714,7 @@ async fn runtime_loop(
                 .queued_driver
                 .load(std::sync::atomic::Ordering::Acquire)
                 > 0
+                && status.result_eligible().await
             {
                 status
                     .boundary_deferred

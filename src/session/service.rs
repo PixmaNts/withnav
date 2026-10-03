@@ -1117,15 +1117,15 @@ impl Service {
         let session_cancel = CancellationToken::new();
         let root_tools_enabled =
             child_policy.is_none() && profile.is_none() && role.mode.is_primary();
-        let mut actor = match child_policy {
+        let mut actor = match &child_policy {
             Some((allowed, read_only)) => build_child_actor(
                 &workspace,
                 &self.config.config_dir,
                 resolved,
                 api_key,
                 session_cancel.child_token(),
-                allowed,
-                read_only,
+                allowed.clone(),
+                *read_only,
             ),
             None => build_actor(
                 &workspace,
@@ -1174,6 +1174,11 @@ impl Service {
             &self.config.config_dir,
         );
         self.hooks.configure_actor(profile, &mut actor);
+        if let Some((allowed, _)) = &child_policy {
+            actor
+                .registry
+                .retain(|name| allowed.get(name).copied().unwrap_or(false));
+        }
         // A permission request does not outlive the process that asked it:
         // its calls are settled as interrupted and never run again.
         let expired = match &resumed {
@@ -1367,7 +1372,11 @@ fn child_tool_allowed(tool: &str, child: &AgentDefinition, parent: &AgentDefinit
             && parent.id.as_str() != crate::agent::definitions::PLAN);
     let child_access =
         !write_capability || child.access != crate::agent::definitions::AgentAccess::ReadOnly;
-    declared && parent_ceiling && child_access && !matches!(tool, "ask" | "task")
+    declared
+        && parent.tools.get(tool).copied().unwrap_or(true)
+        && parent_ceiling
+        && child_access
+        && !matches!(tool, "ask" | "task")
 }
 
 #[cfg(test)]

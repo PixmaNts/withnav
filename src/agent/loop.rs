@@ -395,6 +395,12 @@ enum Gated {
 }
 
 fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
+    if actor.registry.get(&call.name).is_none() {
+        return Gated::Rejected(format!(
+            "tool '{}' is disabled by this session's policy",
+            call.name
+        ));
+    }
     let Some(role) = actor.role.as_deref() else {
         return Gated::Run(None);
     };

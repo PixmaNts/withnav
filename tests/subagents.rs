@@ -79,6 +79,77 @@ async fn events(fx: &Fx, id: ulid::Ulid) -> Vec<navai::bus::event::EventEnvelope
 }
 
 #[tokio::test]
+async fn forbidden_child_calls_are_denied_before_permissions() {
+    let provider = spawn_capturing_provider(vec![
+        http_sse(&sse_body(&[&tool_call_chunk(
+            "write-denied",
+            "write",
+            &json!({"path":"forbidden.txt","content":"bad"}),
+        )])),
+        http_sse(&sse_body(&[&tool_call_chunk(
+            "ask-denied",
+            "ask",
+            &json!({"question":"approve?"}),
+        )])),
+        http_sse(&sse_body(&[&text_chunk("finished")])),
+    ])
+    .await;
+    let fx = fixture_at(&provider.url);
+    install_agents(&fx.root, &fx.ws);
+    std::fs::write(
+        fx.ws.join(".navai/agents/build.md"),
+        "---\nmode: primary\ntools:\n  write: false\n---\nBuild.",
+    )
+    .unwrap();
+    let parent = fx
+        .state
+        .create_session(&fx.ws, Some("default"), None)
+        .await
+        .unwrap();
+    let child = fx
+        .state
+        .create_child_session(parent, "writer", "try forbidden tools")
+        .await
+        .unwrap();
+    for _ in 0..200 {
+        if fx
+            .state
+            .child_metadata(child)
+            .await
+            .unwrap()
+            .unwrap()
+            .status
+            != "running"
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(!fx.ws.join("forbidden.txt").exists());
+    let replay = events(&fx, child).await;
+    assert!(!replay
+        .iter()
+        .any(|e| e.kind == "permission.requested" || e.kind == "agent.yield"));
+    let posts: Vec<_> = replay
+        .iter()
+        .filter(|e| e.kind == "tool.post_call")
+        .collect();
+    assert_eq!(posts.len(), 2, "{replay:#?}");
+    for post in posts {
+        assert_eq!(post.payload["status"], "error");
+    }
+    assert_eq!(
+        fx.state
+            .child_metadata(child)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "done"
+    );
+}
+
+#[tokio::test]
 async fn child_policy_depth_metadata_and_terminal_notices() {
     let release = std::sync::Arc::new(tokio::sync::Notify::new());
     let provider = spawn_gated_provider(

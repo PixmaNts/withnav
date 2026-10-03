@@ -277,6 +277,8 @@ pub struct Service {
     child_publication_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
     resume_registration_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
+    child_start_failure: Arc<Mutex<Option<bool>>>,
     /// Test seam: parks a command run between its work and the publication
     /// of its result, to interleave lifecycle changes deterministically.
     /// Test seam: parks a model switch after its store write and before its
@@ -288,6 +290,14 @@ pub struct Service {
 }
 
 impl Service {
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn fail_child_start(&self, publication: bool) {
+        *self
+            .child_start_failure
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(publication);
+    }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn pause_child_preparation(&self, barrier: ChildPreparationBarrier) {
@@ -365,6 +375,8 @@ impl Service {
             child_publication_barrier: Arc::default(),
             #[cfg(debug_assertions)]
             resume_registration_barrier: Arc::default(),
+            #[cfg(debug_assertions)]
+            child_start_failure: Arc::default(),
             #[cfg(test)]
             install_barrier: Arc::default(),
             #[cfg(test)]
@@ -608,21 +620,73 @@ impl Service {
         }
         let mut reservation = reservation;
         reservation.committed = true;
-        self.publish_session(prepared).await?;
+        let start = async {
+            #[cfg(debug_assertions)]
+            if self
+                .child_start_failure
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                == Some(&true)
+            {
+                self.child_start_failure
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                return Err(ServerError::History(
+                    "injected child publication failure".into(),
+                ));
+            }
+            self.publish_session(prepared).await?;
+            if parent_handle.session_cancel.is_cancelled() {
+                return Err(ServerError::SessionStopping);
+            }
+            if let Some(handle) = self.handle(child) {
+                handle
+                    .sequencer
+                    .publish_acked(Candidate::new(EventKind::SubagentSpawned, spawned_payload))
+                    .await
+                    .map_err(|e| ServerError::History(e.to_string()))?;
+                #[cfg(debug_assertions)]
+                if self
+                    .child_start_failure
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                    == Some(false)
+                {
+                    return Err(ServerError::History("injected child start failure".into()));
+                }
+                accept(&handle, Command::child_prompt(child, prompt.to_string())).await?;
+            } else {
+                return Err(ServerError::SessionStopping);
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(error) = start {
+            if let Some(handle) = self.mark_stopping(child) {
+                self.fence_and_remove(child, handle, "child start failed")
+                    .await;
+            }
+            self.finish_child(
+                parent,
+                child,
+                "failed",
+                Some(error.to_string()),
+                String::new(),
+            )
+            .await?;
+            self.unpublished_children
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&child);
+            return Err(error);
+        }
         self.unpublished_children
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&child);
-        if let Some(handle) = self.handle(child) {
-            handle
-                .sequencer
-                .publish_acked(Candidate::new(EventKind::SubagentSpawned, spawned_payload))
-                .await
-                .map_err(|e| ServerError::History(e.to_string()))?;
-            accept(&handle, Command::child_prompt(child, prompt.to_string())).await?;
-        } else {
-            return Err(ServerError::SessionStopping);
-        }
         Ok(child)
     }
 

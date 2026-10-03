@@ -66,6 +66,57 @@ async fn stop_cancels_parent_before_waiting_for_child_publication() {
 }
 
 #[tokio::test]
+async fn committed_child_is_terminalized_when_publication_or_start_fails() {
+    for publication in [true, false] {
+        let fx = fixture();
+        install_agents(&fx.root, &fx.ws);
+        let parent = fx
+            .state
+            .create_session(&fx.ws, Some("default"), None)
+            .await
+            .unwrap();
+        fx.state.fail_child_start(publication);
+        assert!(fx
+            .state
+            .create_child_session(parent, "explore", "inspect")
+            .await
+            .is_err());
+        assert_eq!(fx.state.reserved_child_count(parent), 0);
+        assert_eq!(
+            fx.state.history().active_child_count(parent).await.unwrap(),
+            0
+        );
+        let replay = events(&fx, parent).await;
+        let spawn = replay
+            .iter()
+            .find(|e| e.kind == "subagent.spawned")
+            .unwrap();
+        let child = spawn.payload["child_session_id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let link = fx.state.child_metadata(child).await.unwrap().unwrap();
+        assert_eq!(link.status, "failed");
+        assert!(link.terminal_reason.unwrap().contains("injected child"));
+        assert!(matches!(
+            fx.state
+                .send(navai::bus::command::Command::child_prompt(
+                    child,
+                    "retry".into()
+                ))
+                .await,
+            Err(navai::error::ServerError::ResumeRequired)
+        ));
+        assert_eq!(
+            replay.iter().filter(|e| e.kind == "subagent.done").count(),
+            1
+        );
+        fx.state.close_all().await;
+    }
+}
+
+#[tokio::test]
 async fn child_completion_after_parent_close_is_pending_until_resume() {
     let mut provider = common::sse::spawn_streaming_provider().await;
     let fx = fixture_at(&provider.url);

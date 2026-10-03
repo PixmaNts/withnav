@@ -101,7 +101,12 @@ impl Service {
     /// `session.end` has been emitted and queued to the store writer, (4)
     /// flushes the store, and (5) removes the registry entry. No lock is held
     /// across any await.
-    async fn fence_and_remove(&self, id: SessionId, handle: SessionHandle, reason: &str) {
+    pub(super) async fn fence_and_remove(
+        &self,
+        id: SessionId,
+        handle: SessionHandle,
+        reason: &str,
+    ) {
         handle.session_cancel.cancel();
         let pending = handle
             .publications
@@ -149,7 +154,7 @@ impl Service {
     /// returns its handle; `None` for anything else. The entry stays in the
     /// map until the close finishes, so a concurrent request sees `Stopping`
     /// rather than a hole.
-    fn mark_stopping(&self, id: SessionId) -> Option<SessionHandle> {
+    pub(super) fn mark_stopping(&self, id: SessionId) -> Option<SessionHandle> {
         let mut guard = self.lock_sessions();
         let handle = guard.get_mut(&id)?;
         if handle.lifecycle != Lifecycle::Active {

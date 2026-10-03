@@ -332,8 +332,9 @@ pub(super) fn restore_context(s: &mut State, kept: ContextKept) {
 
 /// Shows `snapshot` unless it is stale. Incarnation ids carry no order, so staleness is
 /// decided here: within the incarnation shown, a lower revision is stale; a snapshot of a
-/// new incarnation replaces the one shown, which is then retired for good; a snapshot of a
-/// retired incarnation is never shown again, however late it arrives.
+/// new incarnation replaces the one shown, which is then retired; a snapshot of one of the
+/// last eight retired incarnations is never shown again, however late it arrives (an older
+/// HTTP answer is also dropped by its fetch epoch).
 pub(super) fn keep_newer_context(s: &mut State, snapshot: ContextSnapshot) {
     let conversation = &mut s.conversation;
     if conversation

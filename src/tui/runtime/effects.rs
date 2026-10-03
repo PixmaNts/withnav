@@ -38,6 +38,7 @@ pub struct Context {
 struct ActiveStream {
     cancel: CancellationToken,
     generation: Generation,
+    child_session_id: Option<String>,
 }
 
 /// Owns the client, the event channel and the live event streams, one per open tab.
@@ -105,6 +106,57 @@ impl Executor {
     pub fn execute(&mut self, effect: Effect, ctx: &Context, editor: &mut Editor) -> Flow {
         let generation = ctx.generation.clone();
         match effect {
+            Effect::WatchChild(child_session_id) => {
+                self.streams.retain(|s| {
+                    let gone = s.generation == generation
+                        && s.child_session_id.as_ref() == Some(&child_session_id);
+                    if gone {
+                        s.cancel.cancel();
+                    }
+                    !gone
+                });
+                let cancel = CancellationToken::new();
+                let mut events = stream::subscribe(
+                    self.client.clone(),
+                    child_session_id.clone(),
+                    None,
+                    generation.clone(),
+                    cancel.clone(),
+                );
+                let (tx, stop, child, tag) = (
+                    self.tx.clone(),
+                    cancel.clone(),
+                    child_session_id.clone(),
+                    generation.clone(),
+                );
+                tokio::spawn(async move {
+                    loop {
+                        let next = tokio::select! { _ = stop.cancelled() => break, next = events.next() => next };
+                        match next {
+                            Some(ClientEvent::Envelope { envelope, .. }) => {
+                                if tx
+                                    .send(ClientEvent::ChildEnvelope {
+                                        generation: tag.clone(),
+                                        child_session_id: child.clone(),
+                                        envelope,
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            None => break,
+                            _ => {}
+                        }
+                    }
+                });
+                self.streams.push(ActiveStream {
+                    cancel,
+                    generation,
+                    child_session_id: Some(child_session_id),
+                });
+            }
             Effect::FetchModels => {
                 let (client, workspace) = (self.client.clone(), ctx.workspace.clone());
                 self.spawn_event(async move {
@@ -313,7 +365,13 @@ impl Executor {
 
     /// Starts the stream of the tab tagged `generation`, replacing the one it had.
     fn subscribe(&mut self, session_id: String, cursor: Option<u64>, generation: Generation) {
-        self.cancel_stream(&generation);
+        self.streams.retain(|s| {
+            let gone = s.generation == generation && s.child_session_id.is_none();
+            if gone {
+                s.cancel.cancel();
+            }
+            !gone
+        });
         let cancel = CancellationToken::new();
         let mut events = stream::subscribe(
             self.client.clone(),
@@ -339,7 +397,11 @@ impl Executor {
                 }
             }
         });
-        self.streams.push(ActiveStream { cancel, generation });
+        self.streams.push(ActiveStream {
+            cancel,
+            generation,
+            child_session_id: None,
+        });
     }
 
     fn spawn_event(&self, work: impl Future<Output = ClientEvent> + Send + 'static) {

@@ -35,6 +35,7 @@ use super::{
 /// The generation an event is tagged with: the tab it belongs to.
 pub fn generation(e: &ClientEvent) -> &Generation {
     match e {
+        ClientEvent::ChildEnvelope { generation, .. } => generation,
         ClientEvent::Envelope { generation, .. }
         | ClientEvent::Resync { generation }
         | ClientEvent::StreamConnected { generation }
@@ -250,7 +251,39 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
 fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>, ProtocolError> {
     let mut effects = vec![];
     match e {
+        ClientEvent::ChildEnvelope {
+            child_session_id,
+            envelope,
+            ..
+        } => {
+            if let Some(child) = s
+                .children
+                .iter_mut()
+                .find(|c| c.session_id == child_session_id)
+            {
+                if child.child_seq.is_none_or(|seq| envelope.seq > seq) && !child.status.terminal()
+                {
+                    child.child_seq = Some(envelope.seq);
+                    child.status = match envelope.kind.as_str() {
+                        "turn.start" => super::state::ChildStatus::Running,
+                        "agent.yield" if envelope.payload["kind"] == "budget" => {
+                            super::state::ChildStatus::OutOfSteps
+                        }
+                        "permission.requested" => super::state::ChildStatus::Permission,
+                        "permission.resolved" => super::state::ChildStatus::Running,
+                        _ => child.status,
+                    };
+                }
+            }
+        }
         ClientEvent::Envelope { envelope, .. } => {
+            let spawned = (envelope.kind == "subagent.spawned")
+                .then(|| {
+                    envelope.payload["child_session_id"]
+                        .as_str()
+                        .map(str::to_string)
+                })
+                .flatten();
             // A turn may have changed files: the branch and the changes are read again.
             let turn_end = envelope.kind == crate::bus::event::EventKind::TurnEnd.as_str();
             let child_status = if s.read_only() {
@@ -267,6 +300,9 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 None
             };
             envelope::apply_envelope(s, envelope)?;
+            if let Some(child) = spawned {
+                effects.push(Effect::WatchChild(child));
+            }
             if let Some(status) = child_status {
                 s.child_status = status;
                 let child_id = s
@@ -463,6 +499,12 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             if let Ok(b) = result {
                 s.sessions = b.sessions;
                 seed_children(s);
+                effects.extend(
+                    s.children
+                        .iter()
+                        .filter(|c| !c.status.terminal())
+                        .map(|c| Effect::WatchChild(c.session_id.clone())),
+                );
             }
         }
         ClientEvent::Created { result, .. } | ClientEvent::Resumed { result, .. } => match result {

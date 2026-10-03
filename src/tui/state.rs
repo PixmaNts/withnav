@@ -277,6 +277,7 @@ pub struct ChildAgent {
     pub reason: Option<String>,
     /// A sequenced parent event takes precedence over a session-list snapshot.
     pub event_seq: Option<u64>,
+    pub child_seq: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

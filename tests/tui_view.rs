@@ -21,6 +21,107 @@ fn message(id: &str, source: &str, text: &str) -> Block {
         },
     }
 }
+
+#[test]
+fn a_narrow_terminal_reaches_children_and_keeps_the_transcript_read_only() {
+    use navai::tui::{
+        reducer::handle_action,
+        state::{ChildAgent, ChildStatus},
+    };
+    let mut s = state();
+    s.children.push(ChildAgent {
+        session_id: "child-session".into(),
+        name: "explore".into(),
+        goal: "Read parser tests".into(),
+        status: ChildStatus::Running,
+        ..Default::default()
+    });
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    let action = route_key(
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT),
+        &s,
+        &mut ui,
+        &mut editor,
+    )
+    .unwrap();
+    handle_action(&mut s, &mut ui, action);
+    assert_eq!(ui.overlay, Some(Overlay::Children));
+    let action = route_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    )
+    .unwrap();
+    assert_eq!(action, Action::OpenChild("child-session".into()));
+    handle_action(&mut s, &mut ui, action);
+    assert!(s.read_only());
+    assert!(route_key(
+        KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor
+    )
+    .is_none());
+    route_paste("can't send this".into(), &s, &mut ui, &mut editor);
+    assert!(editor.text().is_empty());
+    let mut terminal = Terminal::new(TestBackend::new(60, 16)).unwrap();
+    terminal
+        .draw(|frame| view::draw(frame, &s, &ui, &editor, &mut RenderCache::default()))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let line = |y| {
+        (0..60)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    };
+    insta::assert_snapshot!(line(0), @" ◆ subagent of Fix parser  ▌explore · —");
+    insta::assert_snapshot!(line(15), @" alt+w parent · alt+s subagents · page↑/↓ scroll · esc stop");
+    assert!((0..16).any(|y| line(y).contains("can't be written to")));
+    assert!(!(0..16).any(|y| line(y).contains("Conversations")));
+    let action = route_key(
+        KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT),
+        &s,
+        &mut ui,
+        &mut editor,
+    )
+    .unwrap();
+    handle_action(&mut s, &mut ui, action);
+    assert!(!s.read_only());
+}
+
+#[test]
+fn delivered_subagent_output_is_not_labelled_as_the_driver() {
+    let mut s = state();
+    s.conversation.blocks.push(message(
+        "result",
+        "user:subagent",
+        "The parser test passed.",
+    ));
+    let mut terminal = Terminal::new(TestBackend::new(60, 16)).unwrap();
+    terminal
+        .draw(|frame| {
+            view::draw(
+                frame,
+                &s,
+                &UiState::default(),
+                &Editor::new(),
+                &mut RenderCache::default(),
+            )
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let text = (0..16)
+        .map(|y| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("SUBAGENT OUTPUT · untrusted data"));
+    assert!(text.contains("The parser test passed."));
+    assert!(!text.contains("YOU"));
+}
 fn step(text: &str, thinking: &str) -> Block {
     Block {
         id: "step".into(),

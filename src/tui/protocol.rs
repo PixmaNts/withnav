@@ -176,6 +176,11 @@ pub struct CommandResponse {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientEvent {
+    ChildEnvelope {
+        generation: Generation,
+        child_session_id: String,
+        envelope: EventEnvelope,
+    },
     Envelope {
         generation: Generation,
         envelope: EventEnvelope,
@@ -355,6 +360,7 @@ pub enum ChildControl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
+    WatchChild(String),
     FetchModels,
     ListSessions,
     /// Reads the server's command list.

@@ -1252,7 +1252,14 @@ impl Service {
         let completion: Option<crate::bus::runtime::CompletionHook> =
             if let Some(parent) = child_parent {
                 let service = self.clone();
-                Some(Box::new(move |message, success| {
+                Some(Box::new(move |message, outcome| {
+                    use crate::bus::runtime::CompletionOutcome;
+                    let status = match outcome {
+                        CompletionOutcome::Done => "done",
+                        CompletionOutcome::Failed => "failed",
+                        CompletionOutcome::Stopped => "stopped",
+                        CompletionOutcome::Parked => return,
+                    };
                     let service = service.clone();
                     tokio::spawn(async move {
                         let result = message.text.clone();
@@ -1261,8 +1268,8 @@ impl Service {
                             .finish_child(
                                 parent,
                                 session_id,
-                                if success { "done" } else { "failed" },
-                                (!success).then(|| result.clone()),
+                                status,
+                                (outcome != CompletionOutcome::Done).then(|| result.clone()),
                                 text,
                             )
                             .await;

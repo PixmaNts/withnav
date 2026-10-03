@@ -79,6 +79,76 @@ async fn events(fx: &Fx, id: ulid::Ulid) -> Vec<navai::bus::event::EventEnvelope
 }
 
 #[tokio::test]
+async fn permission_parked_child_keeps_capacity_until_stopped() {
+    let provider = spawn_capturing_provider(vec![http_sse(&sse_body(&[&tool_call_chunk(
+        "permission",
+        "bash",
+        &json!({"command":"true"}),
+    )]))])
+    .await;
+    let fx = fixture_at(&provider.url);
+    install_agents(&fx.root, &fx.ws);
+    std::fs::write(
+        fx.root.join("cfg/config.json"),
+        json!({"subagents":{"max_concurrent":1}}).to_string(),
+    )
+    .unwrap();
+    let parent = fx
+        .state
+        .create_session(&fx.ws, Some("default"), None)
+        .await
+        .unwrap();
+    let child = fx
+        .state
+        .create_child_session(parent, "writer", "write")
+        .await
+        .unwrap();
+    for _ in 0..200 {
+        if events(&fx, child)
+            .await
+            .iter()
+            .any(|e| e.kind == "permission.requested")
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(events(&fx, child)
+        .await
+        .iter()
+        .any(|e| e.kind == "permission.requested"));
+    assert_eq!(
+        fx.state
+            .child_metadata(child)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "running"
+    );
+    assert!(!events(&fx, parent)
+        .await
+        .iter()
+        .any(|e| e.kind == "subagent.done"));
+    assert!(matches!(
+        fx.state
+            .create_child_session(parent, "writer", "another")
+            .await,
+        Err(navai::error::ServerError::SubagentCapacity { .. })
+    ));
+    fx.state.close_session(child).await.unwrap();
+    assert_eq!(
+        fx.state
+            .child_metadata(child)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "stopped"
+    );
+}
+
+#[tokio::test]
 async fn forbidden_child_calls_are_denied_before_permissions() {
     let provider = spawn_capturing_provider(vec![
         http_sse(&sse_body(&[&tool_call_chunk(
@@ -212,7 +282,7 @@ async fn child_policy_depth_metadata_and_terminal_notices() {
     fx.state.close_session(child).await.unwrap();
     release.notify_one();
     let link = fx.state.child_metadata(child).await.unwrap().unwrap();
-    assert!(matches!(link.status.as_str(), "stopped" | "failed"));
+    assert_eq!(link.status, "stopped");
     let stored = fx.state.session_summary(child).await.unwrap();
     assert_eq!(
         stored.parent_session_id.as_deref(),

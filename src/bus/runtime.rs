@@ -46,7 +46,14 @@ use crate::error::AgentError;
 /// The turn-end transcript hook: called with the actor's transcript after
 /// each turn's terminal events (the history store's snapshot seam).
 pub type TurnEndHook = Box<dyn Fn(&[crate::provider::openai::ChatMessage]) + Send>;
-pub type CompletionHook = Box<dyn Fn(crate::provider::AssistantMessage, bool) + Send>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionOutcome {
+    Done,
+    Failed,
+    Stopped,
+    Parked,
+}
+pub type CompletionHook = Box<dyn Fn(crate::provider::AssistantMessage, CompletionOutcome) + Send>;
 
 /// Cancel reason recorded on `session.end` when the session token fires.
 const CANCEL_REASON: &str = "cancel";
@@ -818,7 +825,7 @@ async fn runtime_loop(
         match outcome {
             Ok(RunOutcome::Done(message)) => {
                 if let Some(done) = &completion {
-                    done(message.clone(), true);
+                    done(message.clone(), CompletionOutcome::Done);
                 }
                 emit_turn_end(
                     &mut turn,
@@ -847,7 +854,7 @@ async fn runtime_loop(
                             text: request.question.clone(),
                             ..Default::default()
                         },
-                        false,
+                        CompletionOutcome::Parked,
                     );
                 }
                 turn.publish(
@@ -877,7 +884,7 @@ async fn runtime_loop(
                             text: request.reason.clone(),
                             ..Default::default()
                         },
-                        false,
+                        CompletionOutcome::Parked,
                     );
                 }
                 turn.publish(
@@ -901,7 +908,7 @@ async fn runtime_loop(
                             text: "stopped".into(),
                             ..Default::default()
                         },
-                        false,
+                        CompletionOutcome::Stopped,
                     );
                 }
                 emit_turn_end(
@@ -922,7 +929,7 @@ async fn runtime_loop(
                             text: "step budget exhausted".into(),
                             ..Default::default()
                         },
-                        false,
+                        CompletionOutcome::Parked,
                     );
                 }
                 // The internal variant NEVER leaks: the wire sees a yield of
@@ -954,7 +961,7 @@ async fn runtime_loop(
                             text: err.to_string(),
                             ..Default::default()
                         },
-                        false,
+                        CompletionOutcome::Failed,
                     );
                 }
                 // Err sets Idle FIRST, then the events observe it.

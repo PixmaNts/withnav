@@ -33,10 +33,10 @@ Dependencies point down this list. A module never imports one above it.
 |---|---|---|
 | `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
 | `provider/` | `models.json` aliases (`config.rs`, `load_models`), keys (`auth.rs`), one `ModelClient` per endpoint (`client.rs`: auth header, deadline, cancellation, status errors), the chat SSE decoder (`sse.rs`, `mod.rs`), the FIM and System One wire clients | anything navigator-specific: no `crate::navigator` import |
-| `tools/` | the tool trait, registry, path validation (`validate_path`), and eight registry tools; `glob.rs` provides bounded file search, `fetch.rs` provides bounded HTTP(S) GET, `nofollow.rs` opens reviewed write/edit destinations without following links; file tools use `ToolContext`'s writable and read-only roots (`read`/`grep`/`glob` accept both, `write`/`edit` only the writable roots); `bash` starts in the workspace but is not confined to these roots | which tools a session gets; the per-session `skill` tool is installed by `agent/` |
+| `tools/` | the tool trait, registry, path validation (`validate_path`), and eight registry tools; `glob.rs` provides bounded file search, `fetch.rs` provides bounded HTTP(S) GET, `task.rs` starts a background subagent, `nofollow.rs` opens reviewed write/edit destinations without following links; file tools use `ToolContext`'s writable and read-only roots (`read`/`grep`/`glob` accept both, `write`/`edit` only the writable roots); `bash` starts in the workspace but is not confined to these roots | which tools a session gets; the per-session `skill` tool is installed by `agent/` |
 | `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the session's folder grants, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission gate (`permissions.rs`: `needs_permission`, `Scope`, `Grants`, `PermissionRequest`, the `plan` exemption), the role guard (`guard.rs`: the `RoleGuard` trait, the `role_conformance` question, `consult`; `session/guard.rs` wires Jev from the `instinct` alias), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`explore`/`review` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events | HTTP, storage |
-| `session/` | the `Service` (registry and router, `service.rs`), teardown and close (`lifecycle.rs`), actor construction (`actor.rs`), subscriptions, the `SessionHooks` seam (`hooks.rs`: default model, actor setup, a `started` callback with a `SessionSender` that can only post) the SQLite history (`store.rs`), the primary agent of each session (`sessions.primary_agent`, `/agent`) and the session commands (`commands.rs`: the registry and line routing; `run_command.rs`: `Service::list_commands` / `run_command`, each run publishing a `command.result`; `Service::context`), and the session variant (saved in `sessions.variant`, chosen in `service/resolve.rs`, held by the runtime's `RuntimeStatus` and applied at each turn start) | HTTP, SSE, any profile by name |
+| `session/` | the `Service` (registry/router, `service.rs`), child creation and parent policy snapshot, result delivery callbacks and owner permission routing, tree teardown (`lifecycle.rs`), actor construction (`actor.rs`), the SQLite history (`store.rs`, including `child_links`, terminal CAS and completion outbox), primary agent selection, session commands and variants | HTTP, SSE, any profile by name |
 | `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service` | session state, the model layers |
 | `navigator/` | everything the driver perceives as the navigator, below | session internals |
 
@@ -64,6 +64,19 @@ Dependencies point down this list. A module never imports one above it.
 The terminal client of the session server: HTTP for commands, SSE for events, nothing else. It
 imports the serialized bus types and no runtime internals. Several conversations can be open at
 once; each is shown in the left sidebar and streams in the background.
+
+Subagents are real, read-only child sessions nested under their parent. Parent events reconstruct
+their agent, delegated goal, completion and permission state; session lists seed known links without
+inventing goals. Lightweight child-stream watches read budget yields even before a transcript is
+opened. `alt+s` opens a searchable list using the same popup style, also when the sidebar is hidden
+below 80 columns. Opening a child only reads metadata and subscribes to replay plus live events:
+it never resumes the child or sends it messages or commands. Its header names its parent, agent
+and reported model; the message box is disabled. `alt+w` closes it and returns to its open parent.
+Child stop and `alt+c` continue requests are confirmed in a popup; refusals keep the reported state
+and show the server's error. Child permissions remain in the parent's conversation and use its
+permission endpoint. A completion is one short notice; messages sourced from `user:subagent` are
+labelled as untrusted subagent output. Optional delivery fields and `subagent.watchdog` payloads
+are read without depending on a newer server event enum. Missing data is not guessed.
 
 | File | Responsibility |
 |---|---|
@@ -189,6 +202,74 @@ SSE. A navigator session also feeds the `ConversationFeed`, attached by `Navigat
 prompts, and every driver turn end triggers a `conversation` evaluation on the focused document.
 
 ## State on disk
+
+**Background children.** Admission reserves capacity and snapshots the parent's complete effective
+execution configuration and policy. Publication and failed-start cleanup have parent- and
+child-scoped ownership records; lifecycle callers wait outside admission, so child deletion cannot
+race registration or joining. Child work never takes the lifecycle gate. Parent stop marks and
+cancels every live member before joining; parent deletion removes stored descendants too.
+
+Terminal `child_links` CAS records a self-contained `completion_outbox` notice and only its winner
+releases capacity. A parent's sequencer commits `subagent.done` and the notice's `delivered` marker
+together. `bus/runtime/delivery.rs` invokes the service callback at the next turn boundary, after
+earlier transcript snapshots have drained. The callback appends bounded untrusted JSON user
+messages in notice order. Each message is sequenced as durable `message.received` and its commit
+callback atomically saves the transcript, notice's `consumed` marker and event before emission or
+the model call. Its payload keeps `{command_id, source, target, mode, content}` with
+`source: "subagent"`, plus `child_session_id`, `agent`, `outcome`; watchdog deliveries add
+`watchdog: true` and doubt notices include `verdict`. Content is the same bounded untrusted JSON
+text stored in the transcript. A crash before emission therefore replays the committed event
+without consuming or delivering the message twice. No new event kind is added (22 total).
+It never injects through navigator commands or changes the driver task. The runtime's existing
+control channel carries delivery wakes: idle parents run immediately, busy parents wait until the
+boundary, and pending interactions cannot be answered by a result. Stopped parents have no wake;
+resume drains durable notices. Child deletion keeps unconsumed notices and their result text.
+
+Child permission events are mirrored by `PersistingEmitter` onto the parent stream with optional
+`child_session_id`; the child's typed interaction and grants remain authoritative. Owner-scoped
+answers claim and use the child's existing permission channel. A foreign parent cannot answer,
+and child `ask` stays unavailable. Startup terminalizes persisted starting/running children through
+the same CAS with reason `restart`, queues their notices, then seeds capacity; no tool is replayed.
+
+**Steering and turn interrupts.** `agent/boundary.rs` exposes the single injection seam, called by
+`run_steps` before a provider request once the whole previous tool batch has settled. Runtime
+steering (`bus/runtime/steering.rs`) applies queued parent instructions with `Parent` provenance,
+using identified operations that reserve interrupt input for its replacement turn. The guidance
+queue is in memory and can be lost on a crash; results remain durable in the completion outbox.
+then the durable delivery callback consumes eligible mid-turn results. Both precede the request's
+budget check. A renewable actor turn token is separate from `session_cancel`: an input interrupt
+unwinds the current provider/tool work, pairs interrupted calls with results, records the old
+turn's interruption, then renews the token without terminalizing the child. Session stop still
+cancels the lifetime token and tears down the tree.
+
+`tools/steer_subagent.rs` is installed only alongside root `task`, never in child or metacognition
+registries. `Service::steer_child` validates ownership and active child-link state; it queues input
+through the runtime's existing control channel, without taking lifecycle. Explicit child interrupts
+settle pending permissions through the existing cancellation and durable mirror path. Parked steer
+does not answer any interaction. `child_links.delivery` stores `next_turn`, `steer` or `interrupt`;
+the self-contained completion outbox retains it after child deletion. Parent result interrupts
+fall back to next-turn delivery for pending human interactions; inbox commands and queued controls
+are checked before completion-only wakes. `subagent.spawned` and `subagent.done` payloads include
+`delivery`; no new event kind is introduced.
+
+**Child watchdog.** `session/subagents/watchdog.rs` owns the monotonic clock and judge seams,
+bounded evidence, separate `subagent_progress` System One choice and consecutive-failure rule.
+`supervisor.rs` owns one service task per published child, cancelled by lifetime stop or terminal
+completion. It sleeps a full configured interval between checks, never replays missed ticks,
+skips parked/idle children and awaits Jev outside lifecycle/admission. `bus/runtime/progress.rs`
+records only observable text, call/result and step activity; thinking is never evidence.
+
+`outcomes.rs` puts every verdict except the first failed check in the existing durable outbox.
+The parent's sequencer emits `subagent.watchdog`; only doubt notices need transcript consumption
+and a parent wake. Doubt is an ephemeral `RuntimeStatus.watchdog` hold at the existing safe boundary:
+no further provider request until resumed; the complete tool batch still settles. The boundary
+wait respects the renewable turn token as well as session stop. Stuck and model stop claim the
+terminal reason, cancel and join under child-scoped operation ownership, then commit the terminal
+child CAS and bounded partial text before releasing capacity, without taking lifecycle.
+`tools/decide_subagent.rs` is installed beside root `task` only;
+`decision.rs` enforces owner and watchdog-doubt state, never answers permissions or budgets.
+The existing owner continue endpoint also resumes doubt. Recovery terminalizes unfinished links
+as before; no supervision state is restored. The event catalog has 22 kinds.
 
 | Path | What | Written by |
 |---|---|---|

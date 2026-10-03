@@ -76,6 +76,9 @@ impl Service {
     ) -> Result<CommandOutcome, ServerError> {
         let mut gate = Some(self.lifecycle_gate().await);
         let handle = self.routable_handle(session_id).await?;
+        if handle.parent_session_id.is_some() {
+            return Err(ServerError::ChildReadOnly);
+        }
         let spec = commands::find(name);
         let name = match spec {
             Some(spec) => spec.name.to_string(),
@@ -865,6 +868,7 @@ mod tests {
             .flat_map(|n| {
                 [
                     ChatMessage::User {
+                        provenance: Default::default(),
                         content: format!("request {n}"),
                     },
                     ChatMessage::Assistant {

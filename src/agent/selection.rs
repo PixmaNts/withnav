@@ -124,6 +124,10 @@ impl AgentSelection {
         self.state().ask_pending
     }
 
+    pub fn is_running(&self) -> bool {
+        self.state().running
+    }
+
     /// Records whether an `ask` waits for its answer, for a session that
     /// starts with one (a resumed conversation).
     pub fn set_ask_pending(&self, pending: bool) {

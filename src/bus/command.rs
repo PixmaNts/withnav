@@ -102,6 +102,26 @@ impl fmt::Display for DowngradeNotice {
 }
 
 impl Command {
+    /// Admission supplies the source identity; model text cannot set provenance.
+    pub fn user_provenance(&self) -> crate::provider::openai::UserProvenance {
+        if self.from_driver() {
+            crate::provider::openai::UserProvenance::Driver
+        } else {
+            crate::provider::openai::UserProvenance::Navigator
+        }
+    }
+    /// A server-authored first turn for a newly created child session.
+    pub fn child_prompt(session_id: SessionId, text: String) -> Self {
+        Self {
+            command_id: Ulid::new(),
+            session_id,
+            source_actor_id: "user:subagent".into(),
+            target_actor_id: "agent:main".into(),
+            mode: DeliveryMode::NextTurn,
+            content: vec![ContentBlock::Text { text }],
+            created_at: SystemTime::now(),
+        }
+    }
     /// Phase-2 content rule: Text-only. The server maps the typed
     /// error to 400; the inbox rejects before buffering.
     pub fn validate_content(&self) -> Result<(), ServerError> {

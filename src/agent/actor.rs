@@ -45,6 +45,7 @@ pub enum PendingInteraction {
 }
 
 pub struct AgentActor {
+    pub safe_boundary: Option<super::boundary::SafeBoundary>,
     pub transcript: Vec<ChatMessage>,
     /// The installed compaction: what stands for the start of `transcript`
     /// and which tool outputs the prompt shows as markers. `transcript`
@@ -123,6 +124,7 @@ impl AgentActor {
             transcript: Vec::new(),
             compaction: None,
             registry,
+            safe_boundary: None,
             tool_context,
             provider,
             api_key,
@@ -345,6 +347,14 @@ impl AgentActor {
     }
 
     pub fn push_user(&mut self, text: impl Into<String>) {
+        self.push_user_with_provenance(text, crate::provider::openai::UserProvenance::Driver);
+    }
+
+    pub fn push_user_with_provenance(
+        &mut self,
+        text: impl Into<String>,
+        provenance: crate::provider::openai::UserProvenance,
+    ) {
         let text = text.into();
         match self.pending.take() {
             Some(PendingInteraction::Ask { tool_call_id }) => {
@@ -359,9 +369,15 @@ impl AgentActor {
                 ..
             }) => {
                 self.settle_interrupted(&call, &remaining_calls);
-                self.transcript.push(ChatMessage::User { content: text });
+                self.transcript.push(ChatMessage::User {
+                    provenance,
+                    content: text,
+                });
             }
-            None => self.transcript.push(ChatMessage::User { content: text }),
+            None => self.transcript.push(ChatMessage::User {
+                provenance,
+                content: text,
+            }),
         }
     }
 

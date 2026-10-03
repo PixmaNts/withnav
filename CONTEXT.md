@@ -72,9 +72,62 @@ _Avoid_: profile (a profile is the kind of session, such as the navigator)
 
 **Subagent**:
 An agent definition whose mode is `subagent` or `all`, meant to be given a task by another agent
-(`explore` and `review` are built in and read-only). The definitions exist and load; **a subagent
-cannot be started yet**, so only primary agents run today.
+(`explore` and `review` are built in and read-only). A cognition session may start one through
+`task(agent, prompt)` as a real, non-promptable child session. It has an independent transcript, an
+intersected snapshot of the parent's policy, a durable parent-child link, and bounded terminal
+result. `subagent.spawned` and `subagent.done` are replayable events. Results enter the parent's
+transcript once, as bounded untrusted user messages at a turn boundary. Completion wakes an idle
+parent, but cannot answer its pending interaction. Child permissions are answered by the driver
+through the parent's API, with the interaction and grants remaining on the child. Parent stop and
+delete cascade; restart stops unfinished children without replaying their tools.
 _Avoid_: worker, child agent
+
+**Completion notice**:
+Watchdog doubts also use the durable outbox to ask the parent model for a decision, independently
+of terminal completion; their notice ids are distinct from the child's id.
+A durable outbox entry containing the child's id, outcome, agent and result, independent of the
+child's continued existence. `delivered` means its `subagent.done` event was committed to the parent
+stream; `consumed` means its result message was committed atomically into the parent's transcript.
+These are separate recovery boundaries. Several notices are consumed in order and never use the
+navigator's latest-wins inbox. Deleting the parent removes its notices.
+_Avoid_: tool result (the `task` tool already returned the child id), wake message
+
+**Safe boundary**:
+The point before an agent's next provider request, after every call in the previous tool batch has
+its result and with no pending ask or permission. Injected guidance and eligible results enter
+here, before budget estimation and automatic compaction. Never between a tool call and its result.
+_Avoid_: step event (observation is not an injection boundary)
+
+**Steer**:
+Parent guidance injected into a running child's transcript at its next safe boundary, without
+restarting the turn. A parked interaction keeps it queued. `Parent` provenance prevents guidance
+from replacing the driver's instruction for compaction or the plan guard. A child result whose
+delivery mode is `steer` uses the same boundary on the parent, with untrusted subagent provenance.
+_Avoid_: driver message, permission answer
+
+**Interrupt**:
+Cancel only the current turn, settle its outstanding tool results, record interrupted `turn.end`,
+renew the turn cancellation token and start fresh with the new input. The session and child link
+stay live. An explicit parent instruction may cancel a child's pending interaction; a delivered
+child result never cancels the parent's human interaction, instead waiting for the next turn.
+_Avoid_: stop (stop tears down the session)
+
+**Watchdog**:
+The instinct's separate progress check for a running background child, every 300 seconds by
+default (`subagents.watchdog_interval_secs`; 0 disables). It reads a bounded goal, time since
+message/tool activity, last tool call and result, and step count, never reasoning. `active` does
+nothing; `stuck` terminalizes the child with reason `watchdog` and delivers its partial output
+marked "stopped by watchdog". `doubt` holds the child before its next provider request, after the
+whole tool batch, and wakes its parent with "continue or stop?" plus that evidence. Two consecutive
+unavailable, timed-out or invalid answers also yield doubt; one is silent. Permission-, budget-
+and doubt-parked children are not checked, and missed intervals are discarded.
+
+Only the owning root cognition can use `decide_subagent(child_id, decision, note?)` to continue
+or stop a watchdog doubt. This cannot approve a tool or renew a step budget. The driver's existing
+Stop and owner Continue endpoints still work. `subagent.watchdog` is a durable parent-stream
+verdict with `child_session_id`, `verdict`, `reason` and `checked_at`; evidence is untrusted data.
+Recovery stops doubts like any other unfinished child; watchdog state is not restored.
+_Avoid_: role guard (that checks role conformance, not progress), permission request
 
 ## Models and commands
 

@@ -21,6 +21,151 @@ fn message(id: &str, source: &str, text: &str) -> Block {
         },
     }
 }
+
+#[test]
+fn a_child_permission_preview_never_uses_a_colliding_parent_call() {
+    let mut s = state();
+    let mut parent = tool_block(None);
+    parent.id = "tool:call-1".into();
+    if let BlockKind::ToolCall { args, .. } = &mut parent.kind {
+        *args = json!({"command":"rm parent-file"});
+    }
+    let mut child = prompt(
+        "bash",
+        json!({"command":"cat child-file"}),
+        ("folder", "/ws"),
+    );
+    if let BlockKind::Permission(p) = &mut child.kind {
+        p.tool_call_id = "call-1".into();
+        p.child_session_id = Some("child".into());
+    }
+    s.conversation.blocks = vec![parent, child];
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal
+        .draw(|f| {
+            view::draw(
+                f,
+                &s,
+                &UiState::default(),
+                &Editor::new(),
+                &mut RenderCache::default(),
+            )
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let text = (0..30)
+        .map(|y| {
+            (0..100)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("cat child-file"));
+    let preview = text.split("PERMISSION").last().unwrap();
+    assert!(!preview.contains("rm parent-file"));
+}
+
+#[test]
+fn a_narrow_terminal_reaches_children_and_keeps_the_transcript_read_only() {
+    use navai::tui::{
+        reducer::handle_action,
+        state::{ChildAgent, ChildStatus},
+    };
+    let mut s = state();
+    s.children.push(ChildAgent {
+        session_id: "child-session".into(),
+        name: "explore".into(),
+        goal: "Read parser tests".into(),
+        status: ChildStatus::Running,
+        ..Default::default()
+    });
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    let action = route_key(
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT),
+        &s,
+        &mut ui,
+        &mut editor,
+    )
+    .unwrap();
+    handle_action(&mut s, &mut ui, action);
+    assert_eq!(ui.overlay, Some(Overlay::Children));
+    let action = route_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    )
+    .unwrap();
+    assert_eq!(action, Action::OpenChild("child-session".into()));
+    handle_action(&mut s, &mut ui, action);
+    assert!(s.read_only());
+    assert!(route_key(
+        KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor
+    )
+    .is_none());
+    route_paste("can't send this".into(), &s, &mut ui, &mut editor);
+    assert!(editor.text().is_empty());
+    let mut terminal = Terminal::new(TestBackend::new(60, 16)).unwrap();
+    terminal
+        .draw(|frame| view::draw(frame, &s, &ui, &editor, &mut RenderCache::default()))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let line = |y| {
+        (0..60)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    };
+    insta::assert_snapshot!(line(0), @" ◆ subagent of Fix parser  ▌explore · —");
+    insta::assert_snapshot!(line(15), @" alt+w parent · alt+s subagents · page↑/↓ scroll · esc stop");
+    assert!((0..16).any(|y| line(y).contains("can't be written to")));
+    assert!(!(0..16).any(|y| line(y).contains("Conversations")));
+    let action = route_key(
+        KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT),
+        &s,
+        &mut ui,
+        &mut editor,
+    )
+    .unwrap();
+    handle_action(&mut s, &mut ui, action);
+    assert!(!s.read_only());
+}
+
+#[test]
+fn delivered_subagent_output_is_not_labelled_as_the_driver() {
+    let mut s = state();
+    s.conversation.blocks.push(message(
+        "result",
+        "user:subagent",
+        "The parser test passed.",
+    ));
+    let mut terminal = Terminal::new(TestBackend::new(60, 16)).unwrap();
+    terminal
+        .draw(|frame| {
+            view::draw(
+                frame,
+                &s,
+                &UiState::default(),
+                &Editor::new(),
+                &mut RenderCache::default(),
+            )
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let text = (0..16)
+        .map(|y| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("SUBAGENT OUTPUT · untrusted data"));
+    assert!(text.contains("The parser test passed."));
+    assert!(!text.contains("YOU"));
+}
 fn step(text: &str, thinking: &str) -> Block {
     Block {
         id: "step".into(),
@@ -59,6 +204,9 @@ fn state() -> State {
             model: "cognition".into(),
             agent: None,
             variant: None,
+            parent_session_id: None,
+            promptable: true,
+            child_status: None,
             current_seq: 42,
         }),
         ..Tab::default()
@@ -87,6 +235,9 @@ fn state() -> State {
             message_count: 3,
             agent: None,
             live: true,
+            parent_session_id: None,
+            child_status: None,
+            promptable: true,
         }],
         ..State::default()
     }
@@ -1753,6 +1904,7 @@ fn prompt(tool: &str, arguments: serde_json::Value, scope: (&str, &str)) -> Bloc
     Block {
         id: "permission:R1".into(),
         kind: BlockKind::Permission(navai::tui::state::PermissionPrompt {
+            child_session_id: None,
             request_id: "R1".into(),
             tool_call_id: "c1".into(),
             tool: tool.into(),

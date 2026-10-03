@@ -8,6 +8,14 @@ use serde_json::{Map, Value};
 
 pub const FILE_NAME: &str = "config.json";
 
+/// How many children one session may have running at once when the settings
+/// say nothing.
+pub const DEFAULT_MAX_SUBAGENTS: usize = 4;
+
+/// The most the settings may allow: more children than this is a mistake,
+/// not a plan.
+pub const MAX_SUBAGENTS_LIMIT: usize = 64;
+
 #[derive(Debug, thiserror::Error)]
 pub enum SettingsError {
     #[error("cannot read {path}: {source}")]
@@ -31,9 +39,49 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// Progress-check interval; zero disables child supervision.
+    pub fn subagents_watchdog_interval_secs(&self) -> Result<u64, String> {
+        let Some(value) = self
+            .root
+            .get("subagents")
+            .and_then(|s| s.get("watchdog_interval_secs"))
+        else {
+            return Ok(300);
+        };
+        value
+            .as_u64()
+            .filter(|n| *n <= 365 * 24 * 60 * 60)
+            .ok_or_else(|| {
+                "subagents.watchdog_interval_secs must be an integer from 0 to 31536000".into()
+            })
+    }
     /// The theme id the terminal client saved, `tui.theme`.
     pub fn tui_theme(&self) -> Option<&str> {
         self.root.get("tui")?.get("theme")?.as_str()
+    }
+
+    /// `subagents.max_concurrent`: how many children one session may have at
+    /// once (starting, running or waiting for an answer). Absent means
+    /// [`DEFAULT_MAX_SUBAGENTS`]; anything but an integer from 1 to
+    /// [`MAX_SUBAGENTS_LIMIT`] is an error, never a silent default.
+    pub fn subagents_max_concurrent(&self) -> Result<usize, String> {
+        let Some(value) = self
+            .root
+            .get("subagents")
+            .and_then(|subagents| subagents.get("max_concurrent"))
+        else {
+            return Ok(DEFAULT_MAX_SUBAGENTS);
+        };
+        value
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| (1..=MAX_SUBAGENTS_LIMIT).contains(n))
+            .ok_or_else(|| {
+                format!(
+                    "subagents.max_concurrent must be an integer from 1 to {MAX_SUBAGENTS_LIMIT}, \
+                     not {value}"
+                )
+            })
     }
 
     pub fn set_tui_theme(&mut self, id: &str) {
@@ -108,6 +156,31 @@ pub fn save_tui_theme(config_dir: &Path, id: &str) -> Result<(), SettingsError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn watchdog_interval_defaults_disables_and_rejects_invalid_values() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.subagents_watchdog_interval_secs(), Ok(300));
+        for n in [0, 1, 300, 31536000] {
+            settings.root.insert(
+                "subagents".into(),
+                serde_json::json!({"watchdog_interval_secs":n}),
+            );
+            assert_eq!(settings.subagents_watchdog_interval_secs(), Ok(n));
+        }
+        for value in [
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("300"),
+            serde_json::Value::Null,
+            serde_json::json!(31536001),
+        ] {
+            settings.root.insert(
+                "subagents".into(),
+                serde_json::json!({"watchdog_interval_secs":value}),
+            );
+            assert!(settings.subagents_watchdog_interval_secs().is_err());
+        }
+    }
 
     #[test]
     fn a_missing_file_gives_the_defaults() {
@@ -155,6 +228,32 @@ mod tests {
             std::fs::read_to_string(path(dir.path())).unwrap(),
             "{ not json"
         );
+    }
+
+    #[test]
+    fn the_subagent_limit_defaults_and_is_validated() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.subagents_max_concurrent(), Ok(4));
+        for (raw, want) in [("2", Ok(2)), ("64", Ok(64)), ("1", Ok(1))] {
+            settings.root.insert(
+                "subagents".into(),
+                serde_json::json!({ "max_concurrent": serde_json::from_str::<Value>(raw).unwrap() }),
+            );
+            assert_eq!(settings.subagents_max_concurrent(), want, "{raw}");
+        }
+        for bad in ["0", "-1", "65", "2.5", "\"4\"", "null", "true"] {
+            settings.root.insert(
+                "subagents".into(),
+                serde_json::json!({ "max_concurrent": serde_json::from_str::<Value>(bad).unwrap() }),
+            );
+            let error = settings.subagents_max_concurrent().unwrap_err();
+            assert!(error.contains("subagents.max_concurrent"), "{bad}: {error}");
+        }
+        // Other keys under `subagents` change nothing.
+        settings
+            .root
+            .insert("subagents".into(), serde_json::json!({ "other": 1 }));
+        assert_eq!(settings.subagents_max_concurrent(), Ok(4));
     }
 
     #[test]

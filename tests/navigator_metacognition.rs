@@ -96,6 +96,13 @@ async fn received_bodies(server: &MockServer) -> Vec<Value> {
         .collect()
 }
 
+async fn isolated_server() -> MockServer {
+    // A cancelled remark can outlive its client future in the HTTP server.
+    // Do not recycle that server's address/state into another parallel test.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("mock listener");
+    MockServer::builder().listener(listener).start().await
+}
+
 // Given a wiremock chat provider where the first round asks to `read` a
 // file and the second answers the remark
 // When the metacognition remarks with a workspace
@@ -108,7 +115,7 @@ async fn one_read_round_then_a_remark() {
     std::fs::create_dir_all(ws.join("src")).unwrap();
     std::fs::write(ws.join("src/other.rs"), "fn helper() {}\n").unwrap();
 
-    let server = MockServer::start().await;
+    let server = isolated_server().await;
     // Round 1: tool call. Round 2: the remark.
     let round1 = sse_stream(vec![sse_data(&delta_tool_call(
         "call-1",
@@ -148,7 +155,12 @@ async fn one_read_round_then_a_remark() {
         .iter()
         .map(|m| m["role"].as_str().unwrap())
         .collect();
-    assert_eq!(roles, vec!["system", "user", "assistant", "tool"]);
+    assert_eq!(
+        roles,
+        vec!["system", "user", "assistant", "tool"],
+        "server={}; requests={bodies:#?}",
+        server.uri()
+    );
 
     // The log: a round, a tool, then the final round.
     let log = NavLog::new(&log_path);
@@ -183,7 +195,7 @@ async fn tool_loop_is_capped_then_forces_the_answer() {
     let ws = tmp.path().to_path_buf();
     std::fs::write(ws.join("a.rs"), "a\n").unwrap();
 
-    let server = MockServer::start().await;
+    let server = isolated_server().await;
     let tool_round = sse_stream(vec![sse_data(&delta_tool_call(
         "c",
         "read",
@@ -237,7 +249,7 @@ async fn over_budget_returns_silence() {
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path().to_path_buf();
 
-    let server = MockServer::start().await;
+    let server = isolated_server().await;
     let slow = sse_stream(vec![sse_data(&delta_text(
         r#"{"line": 1, "text": "late"}"#,
     ))]);
@@ -291,7 +303,7 @@ async fn read_of_an_open_buffer_answers_from_the_buffer() {
     std::fs::write(&file, "OLD DISK TEXT\n").unwrap();
     let buffer_text = "EDITED IN THE BUFFER\nsecond line\n";
 
-    let server = MockServer::start().await;
+    let server = isolated_server().await;
     let round1 = sse_stream(vec![sse_data(&delta_tool_call(
         "call-1",
         "read",
@@ -349,7 +361,7 @@ async fn buffer_read_honours_offset_and_limit() {
 #[tokio::test]
 async fn the_branch_prompt_reaches_the_models_system_message() {
     let tmp = tempfile::tempdir().unwrap();
-    let server = MockServer::start().await;
+    let server = isolated_server().await;
     let answer = sse_stream(vec![sse_data(&delta_text(r#"{"silent": true}"#))]);
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
@@ -368,7 +380,8 @@ async fn the_branch_prompt_reaches_the_models_system_message() {
     assert_eq!(bodies[0]["messages"][0]["role"], "system");
     assert!(
         system.contains("driver: keep the parser"),
-        "branch prompt in the system message: {system}"
+        "branch prompt in the system message: {system}; server={}; requests={bodies:#?}",
+        server.uri()
     );
 }
 
@@ -381,7 +394,7 @@ async fn a_prose_answer_is_a_typed_malformed_error() {
     use navai::navigator::ports::ModelError;
 
     let tmp = tempfile::tempdir().unwrap();
-    let server = MockServer::start().await;
+    let server = isolated_server().await;
     let answer = sse_stream(vec![sse_data(&delta_text("you should refactor this"))]);
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
@@ -407,7 +420,7 @@ async fn a_prose_answer_is_a_typed_malformed_error() {
 async fn the_remark_request_is_capped_at_1024_tokens() {
     for (configured, expected) in [(None, 1024), (Some(8192), 1024), (Some(256), 256)] {
         let tmp = tempfile::tempdir().unwrap();
-        let server = MockServer::start().await;
+        let server = isolated_server().await;
         let answer = sse_stream(vec![sse_data(&delta_text(r#"{"silent": true}"#))]);
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
@@ -463,7 +476,7 @@ async fn the_final_round_tells_the_model_to_answer_now() {
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path().to_path_buf();
     std::fs::write(ws.join("a.rs"), "a\n").unwrap();
-    let server = MockServer::start().await;
+    let server = isolated_server().await;
     let tool_round = sse_stream(vec![sse_data(&delta_tool_call(
         "c",
         "read",
@@ -518,7 +531,7 @@ async fn a_tool_attempt_in_the_final_answer_is_asked_again_once() {
         "{\"tool_calls\": [{\"name\": \"read\"}]}",
     ] {
         let tmp = tempfile::tempdir().unwrap();
-        let server = MockServer::start().await;
+        let server = isolated_server().await;
         script_texts(&server, &[leaked, r#"{"line": 2, "text": "fine now"}"#]).await;
 
         let c = commenter(server.uri(), None);
@@ -531,7 +544,11 @@ async fn a_tool_attempt_in_the_final_answer_is_asked_again_once() {
         let bodies = received_bodies(&server).await;
         assert_eq!(bodies.len(), 2, "{leaked}");
         for body in &bodies {
-            assert!(body.get("tools").is_none(), "the retry offers no tools");
+            assert!(
+                body.get("tools").is_none(),
+                "the retry offers no tools; server={}; requests={bodies:#?}",
+                server.uri()
+            );
         }
         let retry = user_messages(&bodies[1]);
         assert_eq!(
@@ -552,7 +569,7 @@ async fn a_tool_attempt_in_the_final_answer_is_asked_again_once() {
 async fn provider_tool_calls_in_the_final_round_are_asked_again() {
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path().to_path_buf();
-    let server = MockServer::start().await;
+    let server = isolated_server().await;
     let leaked = sse_stream(vec![sse_data(&delta_tool_call(
         "c",
         "read",
@@ -589,7 +606,7 @@ async fn two_tool_attempts_in_a_row_are_malformed() {
     use navai::navigator::ports::ModelError;
 
     let tmp = tempfile::tempdir().unwrap();
-    let server = MockServer::start().await;
+    let server = isolated_server().await;
     script_texts(&server, &[DSML_CALL, DSML_CALL, r#"{"silent": true}"#]).await;
 
     let c = commenter(server.uri(), None);
@@ -613,7 +630,7 @@ async fn two_tool_attempts_in_a_row_are_malformed() {
 #[tokio::test]
 async fn prose_without_tool_markup_is_not_retried() {
     let tmp = tempfile::tempdir().unwrap();
-    let server = MockServer::start().await;
+    let server = isolated_server().await;
     script_texts(&server, &["just prose", r#"{"silent": true}"#]).await;
 
     let c = commenter(server.uri(), None);
@@ -638,7 +655,7 @@ async fn a_help_remark_gets_three_tool_rounds_and_an_ordinary_one_one() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().to_path_buf();
         std::fs::write(ws.join("a.rs"), "a\n").unwrap();
-        let server = MockServer::start().await;
+        let server = isolated_server().await;
         let tool_round = sse_stream(vec![sse_data(&delta_tool_call(
             "c",
             "read",
@@ -671,7 +688,7 @@ async fn a_help_remark_gets_three_tool_rounds_and_an_ordinary_one_one() {
 #[tokio::test]
 async fn the_branch_context_is_sent_once() {
     let tmp = tempfile::tempdir().unwrap();
-    let server = MockServer::start().await;
+    let server = isolated_server().await;
     script_texts(&server, &[r#"{"silent": true}"#]).await;
 
     let c = commenter(server.uri(), None);
@@ -701,7 +718,7 @@ async fn the_branch_context_is_sent_once() {
 #[tokio::test]
 async fn without_a_branch_prompt_the_user_turn_carries_the_context() {
     let tmp = tempfile::tempdir().unwrap();
-    let server = MockServer::start().await;
+    let server = isolated_server().await;
     script_texts(&server, &[r#"{"silent": true}"#]).await;
 
     let c = commenter(server.uri(), None);

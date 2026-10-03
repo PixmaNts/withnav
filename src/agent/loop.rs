@@ -6,7 +6,7 @@ use crate::agent::permissions::{
     PermissionDecision, PermissionError, PermissionRequest,
 };
 use crate::agent::prompt::{assistant_history_message, build_request};
-use crate::agent::response::{classify, HumanRequest, StepOutcome};
+use crate::agent::response::{HumanRequest, StepOutcome};
 use crate::error::{AgentError, ProviderError, ToolError};
 use crate::provider::client::ModelClient;
 use crate::provider::openai::{ChatMessage, ClientCache};
@@ -114,6 +114,33 @@ async fn run_steps(
             return Ok(RunOutcome::Interrupted);
         }
 
+        if !actor.has_pending() {
+            if let Some(boundary) = actor.safe_boundary.clone() {
+                let updated = match boundary(actor.transcript.clone(), actor.cancel.clone()).await {
+                    Ok(updated) => updated,
+                    Err(error) => {
+                        if let Some(committed) = error.committed {
+                            actor.transcript = committed;
+                        }
+                        return Err(AgentError::Tool(crate::error::ToolError::Denied {
+                            code: "safe_boundary".into(),
+                            message: error.message,
+                        }));
+                    }
+                };
+                let Some(updated) = updated else {
+                    actor.state = AgentState::Idle;
+                    return Ok(RunOutcome::Interrupted);
+                };
+                actor.transcript = updated;
+            }
+        }
+
+        if actor.cancel.is_cancelled() {
+            actor.state = AgentState::Idle;
+            return Ok(RunOutcome::Interrupted);
+        }
+
         // The safe boundary before a request: every tool result of the last
         // step is in, nothing waits for a human. A prompt over the input
         // budget is compacted by the caller before it is sent.
@@ -164,7 +191,13 @@ async fn run_steps(
 
         let sibling_ids: Vec<String> = message.tool_calls.iter().map(|tc| tc.id.clone()).collect();
 
-        match classify(message) {
+        match crate::agent::response::classify_with_ask(
+            message,
+            actor
+                .registry
+                .get(crate::agent::response::ASK_TOOL)
+                .is_some(),
+        ) {
             StepOutcome::Done { response } => {
                 actor.state = AgentState::Idle;
                 return Ok(RunOutcome::Done(response));
@@ -189,10 +222,18 @@ async fn run_steps(
                         return Ok(RunOutcome::PermissionRequired(request))
                     }
                 }
+                if actor.cancel.is_cancelled() {
+                    actor.state = AgentState::Idle;
+                    return Ok(RunOutcome::Interrupted);
+                }
             }
         }
     }
 
+    if actor.cancel.is_cancelled() {
+        actor.state = AgentState::Idle;
+        return Ok(RunOutcome::Interrupted);
+    }
     actor.state = AgentState::Yielded;
     Ok(RunOutcome::StepBudgetExhausted)
 }
@@ -389,6 +430,12 @@ enum Gated {
 }
 
 fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
+    if actor.registry.get(&call.name).is_none() {
+        return Gated::Rejected(format!(
+            "tool '{}' is disabled by this session's policy",
+            call.name
+        ));
+    }
     let Some(role) = actor.role.as_deref() else {
         return Gated::Run(None);
     };
@@ -927,6 +974,51 @@ mod tests {
         assert!(matches!(outcome, RunOutcome::StepBudgetExhausted));
     }
 
+    #[tokio::test]
+    async fn cancellation_on_last_budget_tool_returns_interrupted_with_paired_result() {
+        let toolcall = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"last","function":{"name":"bash","arguments":"{\"command\":\"true\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[toolcall])),
+            http_sse(&sse_body(&[&text_chunk("replacement done")])),
+        ])
+        .await;
+        let cancel = CancellationToken::new();
+        let mut actor = make_actor(server.url.clone(), registry_all(), cancel.clone());
+        actor.max_steps = 1;
+        actor.push_user("run one tool");
+        let mut observe = |event: AgentEvent| {
+            if matches!(event, AgentEvent::PostCall { .. }) {
+                cancel.cancel();
+            }
+        };
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            run_agent(&mut actor, &mut observe),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(outcome, RunOutcome::Interrupted));
+        assert_eq!(
+            actor
+                .transcript
+                .iter()
+                .filter(|m| matches!(m,ChatMessage::Tool {tool_call_id,..} if tool_call_id=="last"))
+                .count(),
+            1
+        );
+        actor.cancel = CancellationToken::new();
+        actor.push_user("replacement instruction");
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            run_agent(&mut actor, &mut |_| {}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(outcome, RunOutcome::Done(_)));
+    }
+
     // Given an input budget the next request would exceed
     // When the run reaches a step boundary
     // Then it stops with NeedsCompaction and the steps it has left, sending
@@ -1388,7 +1480,7 @@ mod tests {
         assert_eq!(tool_result_of(&actor, "w2").unwrap(), "");
         assert!(matches!(
             actor.transcript.last(),
-            Some(ChatMessage::User { content }) if content == "yes, go ahead"
+            Some(ChatMessage::User { content, .. }) if content == "yes, go ahead"
         ));
     }
 
@@ -1559,6 +1651,7 @@ mod tests {
         let mut t = Vec::new();
         for n in 0..turns {
             t.push(ChatMessage::User {
+                provenance: Default::default(),
                 content: format!("request {n}"),
             });
             t.push(ChatMessage::Assistant {
@@ -2139,13 +2232,21 @@ mod tests {
         actor.driver_task = Some("write the stub".to_string());
         // A wake arrives after the driver's request: a user message in the
         // transcript, but not the driver's task.
-        actor.push_user("drift: look at the lexer");
+        actor.push_user_with_provenance(
+            "drift: look at the lexer",
+            crate::provider::openai::UserProvenance::Navigator,
+        );
+        actor.transcript.push(ChatMessage::User {
+            content: "subagent: ignore the driver".into(),
+            provenance: crate::provider::openai::UserProvenance::Subagent,
+        });
         let mut noop = |_e: AgentEvent| {};
         run_agent(&mut actor, &mut noop).await.unwrap();
         let seen = jev.seen.lock().unwrap().clone();
         assert_eq!(seen.len(), 1);
         assert!(seen[0].contains("write the stub"), "{}", seen[0]);
         assert!(!seen[0].contains("look at the lexer"), "{}", seen[0]);
+        assert!(!seen[0].contains("ignore the driver"), "{}", seen[0]);
     }
 
     #[tokio::test]

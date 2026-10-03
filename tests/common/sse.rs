@@ -105,8 +105,8 @@ impl CapturingProvider {
     }
 }
 
-/// Serves `responses` one per accepted connection, in order, after reading
-/// the whole request (head and `Content-Length` body).
+/// Serves `responses` one per complete request, in order. Incomplete
+/// cancelled connections consume neither a response nor a recorded index.
 pub async fn spawn_capturing_provider(responses: Vec<Vec<u8>>) -> CapturingProvider {
     let count = responses.len();
     spawn_responding_provider(count, move |i, _| responses[i].clone()).await
@@ -125,12 +125,16 @@ pub async fn spawn_responding_provider(
     let requests = Arc::new(Mutex::new(Vec::new()));
     let captured = requests.clone();
     tokio::spawn(async move {
-        for i in 0..count {
+        let mut i = 0;
+        while i < count {
             let Ok((mut sock, _)) = listener.accept().await else {
                 break;
             };
-            let request = read_http_request(&mut sock).await;
+            let Some(request) = read_http_request(&mut sock).await else {
+                continue;
+            };
             let response = respond(i, &request);
+            i += 1;
             captured.lock().expect("requests").push(request);
             let _ = sock.write_all(&response).await;
             let _ = sock.flush().await;
@@ -157,10 +161,14 @@ pub async fn spawn_gated_provider(
     let captured = requests.clone();
     tokio::spawn(async move {
         for (i, response) in responses.into_iter().enumerate() {
-            let Ok((mut sock, _)) = listener.accept().await else {
-                break;
+            let (mut sock, request) = loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                if let Some(request) = read_http_request(&mut sock).await {
+                    break (sock, request);
+                }
             };
-            let request = read_http_request(&mut sock).await;
             captured.lock().expect("requests").push(request);
             if i == 0 {
                 release.notified().await;
@@ -194,14 +202,18 @@ pub async fn spawn_holding_provider(
     let requests = Arc::new(Mutex::new(Vec::new()));
     let captured = requests.clone();
     tokio::spawn(async move {
-        for i in 0..count {
+        let mut i = 0;
+        while i < count {
             let Ok((mut sock, _)) = listener.accept().await else {
                 break;
             };
-            let request = read_http_request(&mut sock).await;
+            let Some(request) = read_http_request(&mut sock).await else {
+                continue;
+            };
             let response = respond(i, &request);
+            i += 1;
             captured.lock().expect("requests").push(request);
-            if i == hold {
+            if i - 1 == hold {
                 reached.notify_one();
                 release.notified().await;
             }
@@ -216,9 +228,10 @@ pub async fn spawn_holding_provider(
     }
 }
 
-/// A provider whose answers the test writes piece by piece: every request it accepts comes out
+/// A provider whose answers the test writes piece by piece: every complete request comes out
 /// of `requests` as its body and a sender; each string sent is written as one SSE `data:` frame,
 /// and dropping the sender ends the answer with `[DONE]`.
+/// A complete request remains counted even if its response is later cancelled.
 pub struct StreamingProvider {
     pub url: String,
     pub requests: tokio::sync::mpsc::Receiver<(String, tokio::sync::mpsc::UnboundedSender<String>)>,
@@ -234,7 +247,9 @@ pub async fn spawn_streaming_provider() -> StreamingProvider {
         while let Ok((mut sock, _)) = listener.accept().await {
             let tx = tx.clone();
             tokio::spawn(async move {
-                let request = read_http_request(&mut sock).await;
+                let Some(request) = read_http_request(&mut sock).await else {
+                    return;
+                };
                 let (chunks, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
                 if tx.send((request, chunks)).await.is_err() {
                     return;
@@ -262,33 +277,37 @@ pub async fn spawn_streaming_provider() -> StreamingProvider {
     }
 }
 
-/// Reads one HTTP request: until the head is complete and `Content-Length`
-/// body bytes followed it, or the peer closed.
-async fn read_http_request(sock: &mut tokio::net::TcpStream) -> String {
+/// Reads a complete Content-Length request. Cancelled clients can close a
+/// connection before writing its head or body; those are not requests and
+/// must not consume a scripted response index or enter captured history.
+async fn read_http_request(sock: &mut tokio::net::TcpStream) -> Option<String> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
     loop {
-        let n = sock.read(&mut chunk).await.unwrap_or(0);
+        let n = sock.read(&mut chunk).await.ok()?;
         if n == 0 {
-            break;
+            return None;
         }
         buf.extend_from_slice(&chunk[..n]);
-        let text = String::from_utf8_lossy(&buf);
-        if let Some(idx) = text.find("\r\n\r\n") {
-            let content_len = text[..idx]
-                .lines()
-                .find_map(|l| {
-                    l.to_lowercase()
-                        .strip_prefix("content-length:")
-                        .map(|v| v.trim().parse::<usize>().unwrap_or(0))
-                })
-                .unwrap_or(0);
-            if buf.len() >= idx + 4 + content_len {
-                break;
-            }
+        let Some(idx) = buf.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
+            continue;
+        };
+        let head = std::str::from_utf8(&buf[..idx]).ok()?;
+        let content_len = head
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>())
+            })
+            .transpose()
+            .ok()?
+            .unwrap_or(0);
+        let end = idx.checked_add(4)?.checked_add(content_len)?;
+        if buf.len() >= end {
+            return String::from_utf8(buf[..end].to_vec()).ok();
         }
     }
-    String::from_utf8_lossy(&buf).into_owned()
 }
 
 /// One parsed SSE frame: its `id:` (if any), `event:` name (default

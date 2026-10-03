@@ -4,6 +4,51 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-04
+
+Background subagents: a conversation's agent can delegate work to other agents that run on their
+own, report back, can be steered or interrupted, and are watched by Jev. The terminal client shows
+them under their conversation.
+
+### Added
+
+- **Subagents**: a conversation's agent can start a subagent with the `task` tool
+  (`task(agent, prompt, delivery?)`, for agents whose mode is `subagent` or `all`, such as `explore`
+  and `review`). The subagent is a separate conversation that runs in the background; the tool
+  answers at once with its id. At most 4 run per conversation (`subagents.max_concurrent` in
+  `config.json`). A subagent gets the workspace, rules and skills but not the parent's history,
+  runs on the parent's model and variant unless its definition names one, never gets `ask` or
+  `task`, and cannot write when it or its parent is read-only or `plan`.
+- **Results back to the parent**: a finished subagent's result is added once to the parent
+  conversation as a bounded message marked as untrusted subagent output, and published on the
+  parent's stream as `message.received` with `source: "subagent"`. By default it arrives at the
+  parent's next turn; `delivery: "steer"` adds it to the running turn at its next safe point, and
+  `delivery: "interrupt"` restarts the parent's turn on it. A parent waiting for your answer is
+  never interrupted, and your own queued messages always come first. An idle parent starts a turn
+  as soon as a subagent finishes. Results survive a restart and the deletion of the subagent.
+- **Steering a subagent**: the parent's agent can use `steer_subagent(child_id, message, mode)`.
+  `steer` adds guidance to the subagent's running turn before its next model request, after all
+  the tool results of its current step; `interrupt` cancels that turn and starts a new one with the
+  message, keeping the same subagent.
+- **Jev watchdog**: every 5 minutes (`subagents.watchdog_interval_secs`, 0 turns it off) Jev checks
+  each running subagent from its goal, how long it has been quiet, its last tool call and its step
+  count. `stuck` stops it and hands its partial work to the parent; `doubt` pauses it and asks the
+  parent's agent, which answers with `decide_subagent(child_id, continue|stop)`. Jev failing to
+  answer twice in a row counts as doubt.
+- **You stay in control**: a subagent's permission requests appear in the parent conversation and
+  are answered there; approvals stay with that subagent. You can read and stop a subagent but not
+  write to it. `POST /v1/sessions/{parent}/children/{child}/continue` gives a subagent that ran out
+  of steps one more budget, or releases a watchdog pause. Stopping a conversation stops its
+  subagents; deleting it deletes them.
+- **Subagents in the terminal client**: subagents are listed under their conversation with their
+  goal and state (running, waiting for permission, out of steps, in doubt, done, failed, stopped).
+  `alt+s` opens a searchable list, also below 80 columns; `enter` opens a subagent's conversation
+  read-only, `alt+w` goes back. Stop and `alt+c` (continue) ask for confirmation. A finished
+  subagent shows as one line in the parent conversation.
+- **Events**: `subagent.spawned`, `subagent.done` and `subagent.watchdog` on the parent's stream;
+  the event catalog has 22 kinds. Session lists show `parent_session_id`, `child_status` and
+  `promptable: false` for subagents.
+
 ## [0.3.0] - 2026-10-03
 
 Navai becomes a terminal coding agent as well as a navigator: a chat client with tabs, tool

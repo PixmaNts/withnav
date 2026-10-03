@@ -12,10 +12,13 @@ use crate::provider::openai::ToolDef;
 
 pub mod bash;
 pub mod control;
+pub mod decide_subagent;
 pub mod fetch;
 pub mod glob;
 pub mod native;
 pub mod nofollow;
+pub mod steer_subagent;
+pub mod task;
 
 /// The argument the agent loop adds to a `write` or `edit` whose destination
 /// was reviewed: `path` is then that canonical file, and the tool opens it
@@ -211,6 +214,13 @@ impl Registry {
 
     pub fn names(&self) -> Vec<String> {
         self.tools.keys().cloned().collect()
+    }
+
+    /// Removes tools outside a session's frozen capability ceiling. Both
+    /// schemas and dispatch use this registry, so a model cannot bypass a
+    /// hidden tool by naming it directly.
+    pub fn retain(&mut self, mut allowed: impl FnMut(&str) -> bool) {
+        self.tools.retain(|name, _| allowed(name));
     }
 
     pub fn schemas(&self) -> Vec<ToolDef> {

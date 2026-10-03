@@ -40,7 +40,10 @@ impl crate::navigator::ports::ReflexContextModel for LlmCommenter {
                     ChatMessage::System {
                         content: REFLEX_CONTEXT_PROMPT.to_string(),
                     },
-                    ChatMessage::User { content: user },
+                    ChatMessage::User {
+                        provenance: Default::default(),
+                        content: user,
+                    },
                 ],
                 tools: Vec::new(),
                 stream: true,

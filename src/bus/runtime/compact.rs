@@ -93,6 +93,12 @@ pub struct CompactRequest {
 /// What the session service asks of the runtime between turns.
 #[derive(Debug)]
 pub enum Control {
+    Delivery,
+    Continue,
+    Steer,
+    Interrupt(ulid::Ulid),
+    DeliverySteer,
+    DeliveryInterrupt(ulid::Ulid),
     Compact(CompactRequest),
     Model(super::model::ModelRequest),
 }

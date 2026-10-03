@@ -25,6 +25,41 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     frame.buffer_mut().set_style(area, theme.panel());
     let agent = state.agent_name();
     let agent_style = super::sidebar::agent_style(agent, theme);
+    if let Some(parent) = &state.parent_session_id {
+        let parent_name = state
+            .tab_of_session(parent)
+            .map(|i| super::sidebar::tab_title(state, &state.tabs[i]))
+            .unwrap_or_else(|| crate::tui::reducer::short_id(parent));
+        let width = usize::from(area.width);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!(
+                        " ◆ subagent of {}",
+                        fit_end(&parent_name, width.saturating_sub(35).min(24))
+                    ),
+                    theme.title(),
+                ),
+                Span::styled(format!("  ▌{}", fit_end(agent, 14)), theme.subagent()),
+                Span::styled(
+                    format!(
+                        " · {}",
+                        fit_end(
+                            state
+                                .selected_model_name
+                                .as_deref()
+                                .or(state.selected_model_alias.as_deref())
+                                .unwrap_or("—"),
+                            width.saturating_sub(42)
+                        )
+                    ),
+                    theme.muted(),
+                ),
+            ])),
+            area,
+        );
+        return;
+    }
     let alias = state.selected_model_alias.as_deref().unwrap_or("—");
     let model = state.selected_model_name.as_deref().unwrap_or("—");
     let (used, window, percent) = context_gauge(state);

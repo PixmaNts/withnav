@@ -17,6 +17,43 @@ use crate::error::ServerError;
 const TEARDOWN_AWAIT_CAP: Duration = Duration::from_secs(10);
 
 impl Service {
+    /// Ownership inspection and lifecycle claim share admission; waits always retry.
+    async fn claim_lifecycle_stop(&self, id: SessionId) -> Option<SessionHandle> {
+        #[cfg(debug_assertions)]
+        {
+            let barrier = self
+                .lifecycle_claim_barrier
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(barrier) = barrier {
+                barrier.reached.notify_one();
+                barrier.release.notified().await;
+            }
+        }
+        loop {
+            let pending = {
+                let _admission = self.admission_gate.lock().await;
+                let pending = self
+                    .child_operations
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&id)
+                    .cloned();
+                if pending.is_none() {
+                    let target = self.mark_stopping(id);
+                    if let Some(handle) = &target {
+                        handle.session_cancel.cancel();
+                    }
+                    return target;
+                }
+                pending
+            };
+            if let Some(pending) = pending {
+                pending.cancelled().await;
+            }
+        }
+    }
     /// Ordered teardown of ONE session (`/stop`): `Stopping` FIRST (so
     /// concurrent requests see it), cancel the session token, wait for the
     /// runtime to unwind, fence the sequencer (`session.end` is the LAST
@@ -25,14 +62,54 @@ impl Service {
     /// already closed (or only stored) is a no-op; unknown is a 404.
     pub async fn close_session(&self, id: SessionId) -> Result<(), ServerError> {
         let _gate = self.lifecycle_gate().await;
-        self.close_session_gated(id).await
+        self.wait_child_operation(id).await;
+        let parent = self.handle(id).and_then(|h| h.parent_session_id);
+        self.close_session_gated(id).await?;
+        if let Some(parent) = parent {
+            self.finish_child(
+                parent,
+                id,
+                "stopped",
+                Some("stopped_by_owner".into()),
+                String::new(),
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     /// [`Service::close_session`] for a caller that already holds the
     /// lifecycle gate.
     pub(super) async fn close_session_gated(&self, id: SessionId) -> Result<(), ServerError> {
-        if let Some(handle) = self.mark_stopping(id) {
+        let target = self.claim_lifecycle_stop(id).await;
+        let claimed_children = {
+            let _admission = self.admission_gate.lock().await;
+            let children = self
+                .lock_sessions()
+                .iter()
+                .filter(|(_, h)| h.parent_session_id == Some(id))
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>();
+            let mut claimed = std::collections::HashMap::new();
+            for child in children {
+                if self
+                    .child_operations
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains_key(&child)
+                {
+                    continue;
+                }
+                if let Some(handle) = self.mark_stopping(child) {
+                    handle.session_cancel.cancel();
+                    claimed.insert(child, handle);
+                }
+            }
+            claimed
+        };
+        if let Some(handle) = target {
             self.fence_and_remove(id, handle, "stop requested").await;
+            self.close_children(id, claimed_children).await?;
             return Ok(());
         }
         let stored = self
@@ -41,29 +118,111 @@ impl Service {
             .await
             .map_err(ServerError::History)?;
         if stored {
+            self.close_children(id, claimed_children).await?;
             Ok(())
         } else {
             Err(ServerError::SessionNotFound(id.to_string()))
         }
     }
 
+    async fn close_children(
+        &self,
+        parent: SessionId,
+        mut claimed: std::collections::HashMap<SessionId, SessionHandle>,
+    ) -> Result<(), ServerError> {
+        for child in self
+            .history()
+            .child_ids(parent)
+            .await
+            .map_err(ServerError::History)?
+        {
+            let handle = match claimed.remove(&child) {
+                Some(handle) => Some(handle),
+                None => self.claim_lifecycle_stop(child).await,
+            };
+            if let Some(handle) = handle {
+                self.fence_and_remove(child, handle, "parent stopped").await;
+            }
+            self.finish_child(
+                parent,
+                child,
+                "stopped",
+                Some("parent_stopped".into()),
+                String::new(),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     /// Graceful shutdown: stop every active session (each one's fence emits
     /// its `session.end`), then return so axum finishes draining.
     pub async fn close_all(&self) {
         let _gate = self.lifecycle_gate().await;
-        let targets: Vec<(SessionId, SessionHandle)> = {
-            let mut guard = self.lock_sessions();
-            guard
-                .iter_mut()
-                .filter(|(_, handle)| handle.lifecycle == Lifecycle::Active)
-                .map(|(id, handle)| {
-                    handle.lifecycle = Lifecycle::Stopping;
-                    (*id, handle.clone())
-                })
-                .collect()
-        };
-        for (id, handle) in targets {
-            self.fence_and_remove(id, handle, "shutdown").await;
+        loop {
+            let admission = self.admission_gate.lock().await;
+            let owned = self
+                .child_operations
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let targets: Vec<(SessionId, SessionHandle)> = {
+                let mut guard = self.lock_sessions();
+                guard
+                    .iter_mut()
+                    .filter(|(id, _)| !owned.contains_key(id))
+                    .map(|(id, handle)| {
+                        handle.lifecycle = Lifecycle::Stopping;
+                        handle.session_cancel.cancel();
+                        (*id, handle.clone())
+                    })
+                    .collect()
+            };
+            drop(admission);
+            #[cfg(debug_assertions)]
+            {
+                let barrier = self
+                    .shutdown_snapshot_barrier
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                if let Some(barrier) = barrier {
+                    barrier.reached.notify_one();
+                    barrier.release.notified().await;
+                }
+            }
+            if targets.is_empty() && owned.is_empty() {
+                let _admission = self.admission_gate.lock().await;
+                if self.lock_sessions().is_empty()
+                    && self
+                        .child_operations
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .is_empty()
+                {
+                    break;
+                }
+                continue;
+            }
+            for operation in owned.into_values() {
+                operation.cancelled().await;
+            }
+            for (id, handle) in targets {
+                self.wait_child_operation(id).await;
+                let parent = handle.parent_session_id;
+                self.fence_and_remove(id, handle, "shutdown").await;
+                if let Some(parent) = parent {
+                    let _ = self
+                        .finish_child(
+                            parent,
+                            id,
+                            "stopped",
+                            Some("shutdown".into()),
+                            String::new(),
+                        )
+                        .await;
+                }
+            }
         }
     }
 
@@ -78,8 +237,21 @@ impl Service {
     /// `session.end` has been emitted and queued to the store writer, (4)
     /// flushes the store, and (5) removes the registry entry. No lock is held
     /// across any await.
-    async fn fence_and_remove(&self, id: SessionId, handle: SessionHandle, reason: &str) {
+    pub(super) async fn fence_and_remove(
+        &self,
+        id: SessionId,
+        handle: SessionHandle,
+        reason: &str,
+    ) {
         handle.session_cancel.cancel();
+        let pending = handle
+            .publications
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        for publication in pending {
+            publication.cancelled().await;
+        }
         drop(handle.inbox_tx);
 
         if let Some(mut task) = handle
@@ -118,7 +290,7 @@ impl Service {
     /// returns its handle; `None` for anything else. The entry stays in the
     /// map until the close finishes, so a concurrent request sees `Stopping`
     /// rather than a hole.
-    fn mark_stopping(&self, id: SessionId) -> Option<SessionHandle> {
+    pub(super) fn mark_stopping(&self, id: SessionId) -> Option<SessionHandle> {
         let mut guard = self.lock_sessions();
         let handle = guard.get_mut(&id)?;
         if handle.lifecycle != Lifecycle::Active {
@@ -188,6 +360,8 @@ mod tests {
     /// exists for.
     fn wedged_runtime_handle() -> SessionHandle {
         SessionHandle {
+            publications: Arc::default(),
+            incarnation: Ulid::new(),
             inbox_tx: mpsc::channel(1).0,
             permissions: mpsc::channel(1).0,
             sequencer: Sequencer::spawn(Ulid::new(), SessionBus::default(), 0),
@@ -203,6 +377,7 @@ mod tests {
             workspace: PathBuf::from("/w"),
             selected: Arc::new(std::sync::Mutex::new(
                 crate::session::service::SelectedModel {
+                    execution: None,
                     alias: "fast".to_string(),
                     resolution: None,
                     revision: 1,
@@ -211,6 +386,7 @@ mod tests {
                 },
             )),
             status: Arc::default(),
+            parent_session_id: None,
         }
     }
 

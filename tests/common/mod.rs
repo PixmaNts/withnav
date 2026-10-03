@@ -3,6 +3,7 @@
 //! does not use is dead code there: hence the crate-level allow.
 #![allow(dead_code)]
 
+pub mod deadline;
 pub mod navigator;
 pub mod server;
 pub mod sse;

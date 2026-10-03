@@ -65,6 +65,7 @@ fn history(turns: usize) -> Vec<ChatMessage> {
         .flat_map(|n| {
             [
                 ChatMessage::User {
+                    provenance: Default::default(),
                     content: format!("request {n}"),
                 },
                 ChatMessage::Assistant {
@@ -515,6 +516,7 @@ async fn a_switched_session_with_large_old_reasoning_compacts_and_continues() {
         .flat_map(|n| {
             [
                 ChatMessage::User {
+                    provenance: Default::default(),
                     content: format!("request {n}"),
                 },
                 ChatMessage::Assistant {

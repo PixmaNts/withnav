@@ -65,11 +65,15 @@ async fn route(handle: &SessionHandle, command: Command) -> Result<MessageAccept
         mode: command.mode.as_str().to_string(),
     };
     let committed = command.clone();
+    let status = handle.status.clone();
     handle
         .sequencer
         .accept_command(
             pending,
             Box::new(move || {
+                if committed.from_driver() {
+                    status.queue_driver();
+                }
                 permit.send(committed);
             }),
         )

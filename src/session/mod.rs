@@ -10,13 +10,18 @@ mod commands;
 mod config;
 mod guard;
 mod hooks;
+mod instance;
 mod lifecycle;
 mod message;
 mod rules_log;
 mod run_command;
 mod sender;
 mod service;
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub use service::ChildPreparationBarrier;
 pub mod store;
+pub mod subagents;
 mod subscription;
 
 pub use catalog::SessionListing;

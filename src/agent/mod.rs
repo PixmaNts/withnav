@@ -1,4 +1,5 @@
 pub mod actor;
+pub mod boundary;
 pub mod compaction;
 pub mod context;
 pub mod definitions;

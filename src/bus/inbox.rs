@@ -33,6 +33,8 @@ pub struct PermissionAnswer {
 /// What woke the runtime.
 #[derive(Debug)]
 pub enum Inbound {
+    Completion,
+    Continue,
     /// Commands are buffered: apply them and run a turn.
     Batch(usize),
     /// A decision on a permission request.
@@ -57,6 +59,7 @@ pub struct BatchOutcome {
 /// receiver would make every later `try_send` a `Closed` error) and keeps
 /// drain/apply explicit so the runtime drive loop controls the timing.
 pub struct ActorInbox {
+    queued_driver: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     commands: Vec<Command>,
     /// The latest command that is not the driver's, set aside while the
     /// actor waits on an `ask` or a permission request: such a command would
@@ -82,6 +85,9 @@ impl From<mpsc::error::TrySendError<Command>> for BusError {
 }
 
 impl ActorInbox {
+    pub(crate) fn track_driver(&mut self, count: std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        self.queued_driver = Some(count);
+    }
     /// Create the bounded per-actor inbox transport: one `mpsc` channel plus
     /// the in-actor buffer, sharing a single FIFO order.
     pub fn channel() -> (mpsc::Sender<Command>, Self) {
@@ -90,6 +96,7 @@ impl ActorInbox {
         (
             tx,
             Self {
+                queued_driver: None,
                 commands: Vec::new(),
                 held: None,
                 _rx: rx,
@@ -188,6 +195,15 @@ impl ActorInbox {
     pub fn apply_batch_to_actor(&mut self, actor: &mut AgentActor) -> BatchOutcome {
         let mut outcome = BatchOutcome::default();
         for cmd in std::mem::take(&mut self.commands) {
+            if cmd.from_driver() {
+                if let Some(count) = &self.queued_driver {
+                    let _ = count.fetch_update(
+                        std::sync::atomic::Ordering::AcqRel,
+                        std::sync::atomic::Ordering::Acquire,
+                        |n| Some(n.saturating_sub(1)),
+                    );
+                }
+            }
             if !cmd.from_driver() {
                 if actor.has_pending() {
                     self.held = Some(cmd);
@@ -210,7 +226,7 @@ impl ActorInbox {
             if cmd.from_driver() {
                 actor.driver_task = Some(text.clone());
             }
-            actor.push_user(text);
+            actor.push_user_with_provenance(text, cmd.user_provenance());
         }
         outcome
     }
@@ -275,7 +291,7 @@ mod tests {
             .transcript
             .iter()
             .filter_map(|m| match m {
-                ChatMessage::User { content } => Some(content.clone()),
+                ChatMessage::User { content, .. } => Some(content.clone()),
                 _ => None,
             })
             .collect()
@@ -387,11 +403,11 @@ mod tests {
         // Rest are user messages, FIFO:
         assert!(matches!(
             actor.transcript.get(1),
-            Some(ChatMessage::User { content }) if content == "second"
+            Some(ChatMessage::User { content, .. }) if content == "second"
         ));
         assert!(matches!(
             actor.transcript.get(2),
-            Some(ChatMessage::User { content }) if content == "third"
+            Some(ChatMessage::User { content, .. }) if content == "third"
         ));
         assert_eq!(actor.transcript.len(), 3);
         assert_eq!(actor.pending, None);
@@ -420,7 +436,7 @@ mod tests {
 
         assert!(matches!(
             actor.transcript.last(),
-            Some(ChatMessage::User { content }) if content == "lean left"
+            Some(ChatMessage::User { content, .. }) if content == "lean left"
         ));
         assert_eq!(actor.pending, None);
     }
@@ -557,6 +573,14 @@ mod tests {
         inbox.drain_transport();
         inbox.apply_batch_to_actor(&mut actor);
         assert_eq!(actor.driver_task.as_deref(), Some("build the parser"));
+        assert!(actor.transcript[0].is_driver_message());
+        assert!(!actor.transcript[1].is_driver_message());
+        let restored: Vec<ChatMessage> =
+            serde_json::from_value(serde_json::to_value(&actor.transcript).unwrap()).unwrap();
+        assert_eq!(
+            crate::agent::compaction::latest_user_batch(&restored),
+            Some(0..1)
+        );
         assert_eq!(
             user_texts(&actor),
             vec!["build the parser", "drift: look at the lexer"]

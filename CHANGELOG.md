@@ -8,6 +8,26 @@ requests land in `develop`.
 
 ### Added
 
+- **Permission gate**: a session that runs as an agent asks before it runs `write`, `edit`, `bash`
+  or `fetch`; `read`, `grep`, `glob`, `skill` and `ask` never ask. The call does not run: the turn
+  yields with a durable `permission.requested` `{request_id, tool_call_id, tool, arguments (at most
+  4 KiB), scope, agent, reason}`. The scope is the canonical parent folder for `write`/`edit`, the
+  workspace for `bash` (what the driver approves, not a confinement) and the URL origin for `fetch`.
+  `POST /v1/sessions/{id}/permissions/{request_id}` with `{"decision":"allow_once"|"allow_folder"|"deny","message"?}`
+  answers it (409 `permission_stale` for a request that is not waiting, 404 unknown session). Allowing
+  runs exactly that call and appends its real result; `allow_folder` also covers later calls of the
+  same kind in that folder and below for the same agent until the session ends (never the config
+  directory through a workspace grant); a denial appends a `denied` result with code
+  `permission_denied` and your message; the calls that came after it in the same assistant message
+  are then processed, each one may ask in turn. Chat text never approves: a message sent while a request waits cancels it.
+  `permission.resolved` ends every request (`allow_once`, `allow_folder`, `deny`, `cancelled` by a
+  stop or a message, `expired` after a restart). A restart settles a held call as interrupted and
+  never runs it. `/agent`, `/variant` and the other session commands are refused while a request
+  waits. The catalog has 17 kinds with `permission.requested` and `permission.resolved`.
+- **`navai run` and permissions**: a run that needs approval prints `permission_required: <tool>
+  <scope>` on stderr and exits 3 instead of hanging. `--yes` approves every request once; it is
+  unsafe and off by default.
+
 - **Several conversations at once in the terminal client**: each conversation opens in its own tab
   and keeps streaming while you look at another one. `/new` and ctrl+n open a new tab; picking a
   conversation in `/sessions` opens it in a tab, or brings its tab forward if it is already open; up

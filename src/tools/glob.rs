@@ -87,33 +87,67 @@ impl Tool for GlobTool {
                 None => cx.workspace.clone(),
             };
             let roots = cx.read_roots();
-
-            // Path validation, the walk and the rendering all touch the
-            // filesystem or sort large lists: none of it runs on the runtime.
-            let worker_cancel = cancel.clone();
-            let worker = tokio::task::spawn_blocking(move || {
-                let root = validate_path(&roots, &requested)?;
-                if !root.is_dir() {
-                    return Err(ToolError::NotFound(root));
-                }
-                let walked = walk(
-                    &root,
-                    &matcher,
-                    &worker_cancel,
-                    GLOB_MAX_VISITED,
-                    GLOB_MAX_DURATION,
-                );
-                if walked.stop == Stop::Canceled {
-                    return Ok(ToolResult::interrupted());
-                }
-                Ok(render(walked, limit))
-            });
-            tokio::select! {
-                _ = cancel.cancelled() => Ok(ToolResult::interrupted()),
-                joined = worker => joined
-                    .map_err(|e| ToolError::Io(std::io::Error::other(e)))?,
-            }
+            search(
+                roots,
+                requested,
+                matcher,
+                limit,
+                cancel,
+                GLOB_MAX_DURATION + GLOB_TIMEOUT_MARGIN,
+                || {},
+            )
+            .await
         })
+    }
+}
+
+/// Slack past the walk's own deadline before the caller stops waiting for the
+/// worker: a single slow filesystem call cannot be interrupted, only
+/// abandoned.
+const GLOB_TIMEOUT_MARGIN: Duration = Duration::from_millis(500);
+
+/// Validation, walk and rendering on a blocking worker, under an outer
+/// timeout. On expiry the worker's token is cancelled (it stops at its next
+/// check) and the result says the search stopped on its time limit.
+/// `before_walk` runs on the worker after validation; tests use it to stall.
+async fn search(
+    roots: Vec<PathBuf>,
+    requested: PathBuf,
+    matcher: Matcher,
+    limit: usize,
+    cancel: CancellationToken,
+    outer: Duration,
+    before_walk: impl FnOnce() + Send + 'static,
+) -> Result<ToolResult, ToolError> {
+    let worker_cancel = cancel.child_token();
+    let token = worker_cancel.clone();
+    let worker = tokio::task::spawn_blocking(move || {
+        let root = validate_path(&roots, &requested)?;
+        if !root.is_dir() {
+            return Err(ToolError::NotFound(root));
+        }
+        before_walk();
+        let walked = walk(&root, &matcher, &token, GLOB_MAX_VISITED, GLOB_MAX_DURATION);
+        if walked.stop == Stop::Canceled {
+            return Ok(ToolResult::interrupted());
+        }
+        Ok(render(walked, limit))
+    });
+    tokio::select! {
+        _ = cancel.cancelled() => {
+            worker_cancel.cancel();
+            Ok(ToolResult::interrupted())
+        }
+        timed = tokio::time::timeout(outer, worker) => match timed {
+            Ok(joined) => joined.map_err(|e| ToolError::Io(std::io::Error::other(e)))?,
+            Err(_) => {
+                worker_cancel.cancel();
+                Ok(render(
+                    Walked { paths: Vec::new(), visited: 0, stop: Stop::Timeout },
+                    limit,
+                ))
+            }
+        },
     }
 }
 
@@ -576,6 +610,32 @@ mod tests {
         );
         assert_eq!(walked.stop, Stop::Timeout);
         assert!(walked.visited < 200);
+    }
+
+    // Given a worker that stalls past the outer timeout
+    // When the search runs
+    // Then it answers "search stopped" on time and the worker's token is cancelled
+    #[tokio::test]
+    async fn a_stalled_worker_is_abandoned_at_the_outer_timeout() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(tmp.path(), "a.txt");
+        let cx = cx(tmp.path());
+        let started = Instant::now();
+        let res = search(
+            cx.read_roots(),
+            tmp.path().to_path_buf(),
+            Matcher::new("*.txt").unwrap(),
+            10,
+            CancellationToken::new(),
+            Duration::from_millis(100),
+            || std::thread::sleep(Duration::from_millis(1500)),
+        )
+        .await
+        .unwrap();
+        assert!(started.elapsed() < Duration::from_millis(1000));
+        assert_eq!(res.status, ToolStatus::Ok);
+        assert_eq!(res.metadata["stopped"], "timeout");
+        assert!(res.output.contains("search stopped on its time limit"));
     }
 
     // Given a cancelled token and only empty directories

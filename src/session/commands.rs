@@ -47,8 +47,8 @@ pub const COMMANDS: [CommandSpec; 7] = [
     },
     CommandSpec {
         name: "variant",
-        description: "Show or change the model variant",
-        args_hint: "[name]",
+        description: "Show the model variant and the ones on offer, or switch (off clears it)",
+        args_hint: "[name|off]",
     },
     CommandSpec {
         name: "compact",
@@ -58,7 +58,7 @@ pub const COMMANDS: [CommandSpec; 7] = [
 ];
 
 /// Commands that are registered but have no implementation yet.
-pub const NOT_AVAILABLE: [&str; 2] = ["variant", "compact"];
+pub const NOT_AVAILABLE: [&str; 1] = ["compact"];
 
 /// The error text of a registered command with no implementation.
 pub fn not_available_error(name: &str) -> String {
@@ -224,6 +224,27 @@ impl CommandOutcome {
                     .unwrap_or_else(|_| data.to_string())
             }
             "stop" => "stopped".to_string(),
+            "variant" => {
+                let current = match data["variant"].as_str() {
+                    Some(name) => format!("variant: {name}"),
+                    None => "variant: (none set)".to_string(),
+                };
+                let offered = data["offered"]
+                    .as_array()
+                    .map(|l| l.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+                    .unwrap_or_default();
+                let offer = if offered.is_empty() {
+                    "no variants on offer".to_string()
+                } else {
+                    format!("on offer: {}", offered.join(", "))
+                };
+                match data["applies"].as_str() {
+                    Some("next_turn") => {
+                        format!("{current} from the next turn; {offer}")
+                    }
+                    _ => format!("{current}; {offer}"),
+                }
+            }
             _ => data.to_string(),
         }
     }

@@ -6,7 +6,8 @@
 //! - `GET  /v1/models?workspace=` -> `{models:[{alias, model, context_window?, enabled?, disabled_reason?, window_source?, stale?, stale_age_secs?, refresh_error?, reported_output?, max_input_tokens?, discrepancy?, variants?, default_variant?, default_variant_unavailable?}], default?}`
 //! - `POST /v1/sessions`      -> `{session_id, root_actor_id:"agent:main", actor_state:"idle"}`
 //!   (422 `{"error", "reason":"no_context_window"}` for a chat alias with no known window)
-//! - `GET  /v1/sessions/:id`  -> `{session_id, actor_state, workspace, model, current_seq}`
+//! - `GET  /v1/sessions/:id`  -> `{session_id, actor_state, workspace, model, variant, current_seq}`
+//!   (`variant` is the variant name or null; `POST /v1/sessions` takes an optional `variant`)
 //! - `POST /v1/sessions/:id/messages` -> `{command_id, accepted:true, actor_state, notice?}`
 //!   (frozen error bodies: 404 unknown id / 409 stopping / 503 `{"accepted":false,"reason":"inbox_full"}`
 //!   / 400 non-Text). All errors share the `{"error": ...}` shape.
@@ -43,6 +44,15 @@ pub struct HealthBody {
     pub status: &'static str,
 }
 
+/// Distinguishes an omitted field (`None`, by `serde(default)`) from an
+/// explicit `null` (`Some(None)`).
+fn present_or_null<'de, D>(d: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(d).map(Some)
+}
+
 /// Frozen create-session request.
 #[derive(Debug, Deserialize)]
 pub struct CreateSessionRequest {
@@ -51,6 +61,11 @@ pub struct CreateSessionRequest {
     pub model: Option<String>,
     #[serde(default)]
     pub profile: Option<String>,
+    /// The model variant to start on: a string is the exact name of a
+    /// variant the alias offers, `null` means no variant, and an omitted
+    /// field means the alias's default variant.
+    #[serde(default, deserialize_with = "present_or_null")]
+    pub variant: Option<Option<String>>,
     /// Optional id of a past conversation to resume (same id returned; the
     /// conversation continues with its stored events and transcript).
     #[serde(default)]
@@ -239,14 +254,36 @@ async fn create_session(
             return error_response(ServerError::SessionNotFound(request.resume.unwrap()));
         }
     };
-    let session_id = state
-        .create_or_resume_session(
-            std::path::Path::new(&request.workspace),
-            request.model.as_deref(),
-            request.profile.as_deref(),
-            resume,
-        )
-        .await;
+    if resume.is_some() && request.variant.is_some() {
+        return error_response(ServerError::MalformedBody(
+            "a resumed session keeps its saved variant: change it with /variant".to_string(),
+        ));
+    }
+    let session_id = match resume {
+        Some(_) => {
+            state
+                .create_or_resume_session(
+                    std::path::Path::new(&request.workspace),
+                    request.model.as_deref(),
+                    request.profile.as_deref(),
+                    resume,
+                )
+                .await
+        }
+        None => state
+            .create_session_with_variant(
+                std::path::Path::new(&request.workspace),
+                request.model.as_deref(),
+                request.profile.as_deref(),
+                match request.variant {
+                    None => crate::session::VariantChoice::Default,
+                    Some(None) => crate::session::VariantChoice::Clear,
+                    Some(Some(name)) => crate::session::VariantChoice::Exact(name),
+                },
+            )
+            .await
+            .map(|id| (id, false)),
+    };
     match session_id {
         Ok((id, _)) => (
             StatusCode::OK,
@@ -604,7 +641,12 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         ServerError::NoContextWindow { .. } | ServerError::ImpossibleBudget { .. } => {
             StatusCode::UNPROCESSABLE_ENTITY
         }
-        ServerError::ModelIdentityChanged { .. } => StatusCode::CONFLICT,
+        ServerError::ModelIdentityChanged { .. } | ServerError::VariantUnavailable { .. } => {
+            StatusCode::CONFLICT
+        }
+        ServerError::UnknownVariant { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+        ServerError::DefaultVariantUnavailable { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+        ServerError::VariantOfferUnknown { .. } => StatusCode::SERVICE_UNAVAILABLE,
         ServerError::SavedResolutionInvalid { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::History(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::Config(_) | ServerError::Model(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -641,6 +683,27 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         return (
             status,
             Json(json!({ "error": err.to_string(), "reason": "model_identity_changed" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::VariantUnavailable { .. }) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "variant_unavailable" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::VariantOfferUnknown { .. }) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "variant_offer_unknown" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::UnknownVariant { .. }) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "unknown_variant" })),
         )
             .into_response();
     }

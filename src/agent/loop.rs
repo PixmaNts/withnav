@@ -86,9 +86,12 @@ pub async fn run_agent(
         );
 
         let message = match client
-            .chat(request, None, &actor.cancel, &mut |delta| {
-                observe(AgentEvent::Delta(delta))
-            })
+            .chat(
+                request,
+                actor.variant.as_ref(),
+                &actor.cancel,
+                &mut |delta| observe(AgentEvent::Delta(delta)),
+            )
             .await
         {
             Ok(m) => m,

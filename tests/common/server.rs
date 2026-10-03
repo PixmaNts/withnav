@@ -60,6 +60,9 @@ pub struct TestServerConfig {
     chat_tools: Option<u64>,
     without_window: bool,
     extra_aliases: Vec<(String, String)>,
+    variants: Option<Value>,
+    default_variant: Option<String>,
+    omniroute: bool,
 }
 
 impl TestServerConfig {
@@ -87,6 +90,9 @@ impl TestServerConfig {
             chat_tools: None,
             without_window: false,
             extra_aliases: Vec::new(),
+            variants: None,
+            default_variant: None,
+            omniroute: false,
         }
     }
 
@@ -121,6 +127,27 @@ impl TestServerConfig {
     pub fn extra_alias(mut self, alias: &str, model: &str) -> Self {
         self.extra_aliases
             .push((alias.to_string(), model.to_string()));
+        self
+    }
+
+    /// Gives the alias these `variants` (a JSON object by name) and,
+    /// optionally, a `default_variant`.
+    pub fn variants(mut self, variants: Value, default: Option<&str>) -> Self {
+        self.variants = Some(variants);
+        self.default_variant = default.map(str::to_string);
+        self
+    }
+
+    /// Marks the provider as an OmniRoute one: an alias without `variants`
+    /// then offers one variant per effort tier its model list reports.
+    pub fn omniroute(mut self) -> Self {
+        self.omniroute = true;
+        self
+    }
+
+    /// A `default_variant` on an alias with no `variants` of its own.
+    pub fn default_variant(mut self, name: &str) -> Self {
+        self.default_variant = Some(name.to_string());
         self
     }
 
@@ -161,6 +188,12 @@ impl TestServerConfig {
                 .unwrap()
                 .remove("context_window");
         }
+        if let Some(variants) = &self.variants {
+            alias_entry["variants"] = variants.clone();
+        }
+        if let Some(default) = &self.default_variant {
+            alias_entry["default_variant"] = json!(default);
+        }
         let mut models = serde_json::Map::new();
         models.insert(self.alias.clone(), alias_entry.clone());
         for (alias, model) in &self.extra_aliases {
@@ -168,18 +201,20 @@ impl TestServerConfig {
             entry["model"] = json!(model);
             models.insert(alias.clone(), entry);
         }
+        let mut provider = json!({
+            "base_url": self.base_url,
+            "api_key_env": "NAVAI_TEST_KEY",
+            "headers": {},
+            "connect_timeout_ms": self.connect_timeout_ms,
+            "request_timeout_ms": self.request_timeout_ms
+        });
+        if self.omniroute {
+            provider["catalog_format"] = json!("omniroute");
+        }
         std::fs::write(
             &models_path,
             json!({
-                "providers": {
-                    PROVIDER: {
-                        "base_url": self.base_url,
-                        "api_key_env": "NAVAI_TEST_KEY",
-                        "headers": {},
-                        "connect_timeout_ms": self.connect_timeout_ms,
-                        "request_timeout_ms": self.request_timeout_ms
-                    }
-                },
+                "providers": { PROVIDER: provider },
                 "models": models
             })
             .to_string(),

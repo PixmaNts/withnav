@@ -178,6 +178,7 @@ async fn restarted_server_answers_get_for_a_stored_conversation() {
             "current_seq",
             "model",
             "session_id",
+            "variant",
             "workspace"
         ]
     );

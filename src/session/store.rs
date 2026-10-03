@@ -30,7 +30,7 @@
 //! Schema:
 //! - `sessions(id TEXT PRIMARY KEY, workspace TEXT, model TEXT, profile TEXT,
 //!   title TEXT, created_at TEXT, updated_at TEXT, last_seq INTEGER, transcript TEXT,
-//!   model_resolution TEXT)`
+//!   model_resolution TEXT, variant TEXT, variant_override TEXT)`
 //! - `events(session_id TEXT, seq INTEGER, kind TEXT, envelope TEXT,
 //!   PRIMARY KEY(session_id, seq))`
 //!
@@ -47,6 +47,13 @@
 //! identity and bounds the conversation runs on. It is written once (at
 //! creation, or at the first activation of a row that has none) and never
 //! overwritten: a catalog refresh does not move a conversation.
+//!
+//! `variant` is NULL or the name of the model variant the conversation
+//! runs with: NULL means none (a row from before the column has none). It
+//! changes only through [`HistoryStore::set_variant`]. `variant_override` is
+//! NULL or the JSON object the variant sent when it was chosen, written
+//! together with `variant` (NULL for a row from before the column), so a
+//! resume can send the same keys when the offer cannot be read.
 
 mod read;
 
@@ -77,6 +84,11 @@ pub struct StoredSession {
     /// (created before the column existed). Parsed by the session service,
     /// so an invalid value fails the resume instead of being dropped here.
     pub model_resolution: Option<String>,
+    /// The saved model variant name; `None` means no variant.
+    pub variant: Option<String>,
+    /// The raw JSON of the saved variant's override object; `None` for a row
+    /// saved before it was kept, or with no variant.
+    pub variant_override: Option<String>,
 }
 
 /// A full session load: the row's metadata, its stored envelopes (in seq
@@ -99,6 +111,13 @@ enum Write {
         model: String,
         profile: Option<String>,
         resolution: Option<String>,
+        variant: Option<String>,
+        variant_override: Option<String>,
+    },
+    SetVariant {
+        id: Ulid,
+        variant: Option<String>,
+        variant_override: Option<String>,
     },
     SetResolution {
         id: Ulid,
@@ -233,7 +252,7 @@ impl HistoryStore {
         model: &str,
         profile: Option<&str>,
     ) -> Result<(), String> {
-        self.record_session_resolved(id, workspace, model, profile, None)
+        self.record_session_resolved(id, workspace, model, profile, None, None)
             .await
     }
 
@@ -246,7 +265,9 @@ impl HistoryStore {
         model: &str,
         profile: Option<&str>,
         resolution: Option<&crate::provider::catalog::ModelResolution>,
+        variant: Option<&(String, crate::provider::config::Variant)>,
     ) -> Result<(), String> {
+        let (variant, variant_override) = split_variant(variant)?;
         let resolution = resolution
             .map(serde_json::to_string)
             .transpose()
@@ -257,6 +278,24 @@ impl HistoryStore {
             model: model.to_string(),
             profile: profile.map(str::to_string),
             resolution,
+            variant,
+            variant_override,
+        })
+        .await
+    }
+
+    /// Saves the model variant of a session with its override object
+    /// (`None` clears both) and waits for the commit.
+    pub async fn set_variant(
+        &self,
+        id: Ulid,
+        variant: Option<&(String, crate::provider::config::Variant)>,
+    ) -> Result<(), String> {
+        let (variant, variant_override) = split_variant(variant)?;
+        self.acked(Write::SetVariant {
+            id,
+            variant,
+            variant_override,
         })
         .await
     }
@@ -320,6 +359,18 @@ impl HistoryStore {
     }
 }
 
+/// The two columns a selected variant is saved in: its name and its override
+/// object as JSON.
+fn split_variant(
+    variant: Option<&(String, crate::provider::config::Variant)>,
+) -> Result<(Option<String>, Option<String>), String> {
+    let Some((name, object)) = variant else {
+        return Ok((None, None));
+    };
+    let raw = serde_json::to_string(object).map_err(|e| format!("serialize variant: {e}"))?;
+    Ok((Some(name.clone()), Some(raw)))
+}
+
 /// One row of the list projection: the session metadata plus its driver
 /// message count (`message.received` events).
 #[derive(Debug, Clone)]
@@ -373,15 +424,39 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             model,
             profile,
             resolution,
+            variant,
+            variant_override,
         } => {
             let now = now_rfc3339();
             tx.execute(
                 "INSERT OR IGNORE INTO sessions
                  (id, workspace, model, profile, title, created_at, updated_at, last_seq, transcript,
-                  model_resolution)
-                 VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5, -1, NULL, ?6)",
-                params![id.to_string(), workspace, model, profile, now, resolution],
+                  model_resolution, variant, variant_override)
+                 VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5, -1, NULL, ?6, ?7, ?8)",
+                params![
+                    id.to_string(),
+                    workspace,
+                    model,
+                    profile,
+                    now,
+                    resolution,
+                    variant,
+                    variant_override
+                ],
             )?;
+        }
+        Write::SetVariant {
+            id,
+            variant,
+            variant_override,
+        } => {
+            let touched = tx.execute(
+                "UPDATE sessions SET variant = ?2, variant_override = ?3 WHERE id = ?1",
+                params![id.to_string(), variant, variant_override],
+            )?;
+            if touched == 0 {
+                return Err(WriteError::UnknownSession(id));
+            }
         }
         Write::SetResolution { id, resolution } => {
             let touched = tx.execute(
@@ -482,7 +557,9 @@ fn migrate(path: &Path) -> Result<(), String> {
             updated_at TEXT NOT NULL,
             last_seq INTEGER NOT NULL DEFAULT -1,
             transcript TEXT,
-            model_resolution TEXT
+            model_resolution TEXT,
+            variant TEXT,
+            variant_override TEXT
         );
         CREATE TABLE IF NOT EXISTS events (
             session_id TEXT NOT NULL,
@@ -500,6 +577,23 @@ fn migrate(path: &Path) -> Result<(), String> {
         .map_err(|e| format!("migrate: {e}"))?;
     if !has_column {
         conn.execute("ALTER TABLE sessions ADD COLUMN model_resolution TEXT", [])
+            .map_err(|e| format!("migrate: {e}"))?;
+    }
+    // A database from before `variant`: add the nullable column (NULL = none).
+    let has_variant = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'variant'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| format!("migrate: {e}"))?;
+    if !has_variant {
+        conn.execute("ALTER TABLE sessions ADD COLUMN variant TEXT", [])
+            .map_err(|e| format!("migrate: {e}"))?;
+    }
+    let has_override = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'variant_override'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| format!("migrate: {e}"))?;
+    if !has_override {
+        conn.execute("ALTER TABLE sessions ADD COLUMN variant_override TEXT", [])
             .map_err(|e| format!("migrate: {e}"))?;
     }
     Ok(())
@@ -995,8 +1089,52 @@ mod tests {
         let store = HistoryStore::open(&path).expect("migrates");
         let meta = store.meta(id).await.expect("meta").expect("present");
         assert_eq!(meta.model_resolution, None);
+        assert_eq!(meta.variant, None, "an old row has no variant");
+        assert_eq!(meta.variant_override, None);
         drop(store);
         HistoryStore::open(&path).expect("idempotent");
+    }
+
+    // Given a session saved with a variant
+    // When the variant is changed, cleared, and set for an unknown id
+    // Then each read shows it; the unknown id is an error
+    #[tokio::test]
+    async fn the_variant_is_saved_changed_and_cleared() {
+        let pick = |name: &str| {
+            let mut object = crate::provider::config::Variant::new();
+            object.insert("reasoning_effort".into(), name.into());
+            (name.to_string(), object)
+        };
+        let (_dir, store) = temp_store();
+        let id = Ulid::new();
+        store
+            .record_session_resolved(id, "/w", "m", None, None, Some(&pick("high")))
+            .await
+            .expect("record");
+        let read = |store: &HistoryStore| {
+            let store = store.clone();
+            async move { store.meta(id).await.expect("meta").expect("row").variant }
+        };
+        assert_eq!(read(&store).await.as_deref(), Some("high"));
+        store
+            .set_variant(id, Some(&pick("low")))
+            .await
+            .expect("set");
+        assert_eq!(read(&store).await.as_deref(), Some("low"));
+        let raw = store.meta(id).await.unwrap().unwrap().variant_override;
+        assert_eq!(raw.as_deref(), Some(r#"{"reasoning_effort":"low"}"#));
+        store.set_variant(id, None).await.expect("clear");
+        assert_eq!(read(&store).await, None);
+        assert_eq!(
+            store.meta(id).await.unwrap().unwrap().variant_override,
+            None
+        );
+        assert!(store
+            .set_variant(Ulid::new(), Some(&pick("x")))
+            .await
+            .is_err());
+        let listed = store.list("/w").await.expect("list");
+        assert_eq!(listed[0].meta.variant, None);
     }
 
     // Given a saved resolution
@@ -1038,7 +1176,7 @@ mod tests {
             .await
             .expect("ignored");
         store
-            .record_session_resolved(id, "/w", "m", None, Some(&make(300)))
+            .record_session_resolved(id, "/w", "m", None, Some(&make(300)), None)
             .await
             .expect("existing row keeps its own");
         let meta = store.meta(id).await.expect("meta").expect("present");

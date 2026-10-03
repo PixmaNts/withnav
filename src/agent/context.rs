@@ -310,6 +310,23 @@ impl ContextTracker {
         });
     }
 
+    /// Names the variant the session now runs with. Returns the new snapshot
+    /// when the name changed (the revision goes up), `None` when it did not.
+    pub fn set_variant(&mut self, variant: Option<String>) -> Option<&ContextSnapshot> {
+        if self.limits.variant == variant {
+            return None;
+        }
+        self.limits.variant = variant;
+        self.current = ContextSnapshot::new(
+            &self.limits,
+            self.current.breakdown,
+            self.last_usage.clone(),
+            self.incarnation,
+            self.current.revision + 1,
+        );
+        Some(&self.current)
+    }
+
     /// Moves to a new estimate. Returns the new snapshot when the estimate or
     /// the last usage changed (the revision goes up), `None` when nothing did.
     pub fn update(&mut self, breakdown: Breakdown) -> Option<&ContextSnapshot> {

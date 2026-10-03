@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use ulid::Ulid;
 
 use super::commands::{self, CommandOutcome, CommandSpec};
-use super::service::{Service, SessionHandle, SessionId};
+use super::service::{exact_variant, Service, SessionHandle, SessionId, VariantChoice, CLEAR_WORD};
 use crate::bus::event::{CommandResult, EventKind};
 use crate::bus::sequencer::Candidate;
 use crate::error::ServerError;
@@ -143,6 +143,7 @@ impl Service {
                 .and_then(|snapshot| serde_json::to_value(snapshot).ok())
                 .map(Done::data)
                 .ok_or_else(|| CommandFailure::Refused("no context snapshot yet".to_string())),
+            "variant" => self.variant_command(session_id, handle, arguments).await,
             "new" => self.new_conversation(session_id, handle, arguments).await,
             // The stop itself is done by `run_command` after the result is
             // published: the stream ends with the session.
@@ -151,6 +152,94 @@ impl Service {
                 other,
             ))),
         }
+    }
+
+    /// `/variant [name|off]`: shows the variant and the names on offer, or
+    /// switches. `off` clears the variant; any other word is the exact name
+    /// of an offered variant (`none` included, when the model offers it). A
+    /// switch is checked against the offer, saved, and only then handed to
+    /// the runtime, which applies it at the next turn boundary.
+    async fn variant_command(
+        &self,
+        session_id: SessionId,
+        handle: &SessionHandle,
+        arguments: &str,
+    ) -> Result<Done, CommandFailure> {
+        let mut offer = handle.current_offer();
+        let mut words = arguments.split_whitespace();
+        let Some(word) = words.next() else {
+            let offered: Vec<&String> = offer.variants.keys().collect();
+            return Ok(Done::data(json!({
+                "variant": handle.status.selected_variant(),
+                "offered": offered,
+            })));
+        };
+        if words.next().is_some() {
+            return Err(CommandFailure::Refused(
+                "usage: /variant [name|off]".to_string(),
+            ));
+        }
+        // An offer that was unknown when the session started is read again
+        // now: the provider may be back.
+        if word != CLEAR_WORD && !offer.known {
+            match self
+                .reread_offer(
+                    &session_id.to_string(),
+                    &handle.workspace,
+                    &handle.model,
+                    handle.resolution.as_deref(),
+                )
+                .await
+            {
+                Ok(fresh) if fresh.known => {
+                    handle.replace_offer(fresh);
+                    offer = handle.current_offer();
+                }
+                // The alias now names another model: its variants are not
+                // this session's, and nothing is changed.
+                Err(e @ ServerError::ModelIdentityChanged { .. }) => {
+                    return Err(CommandFailure::Refused(e.to_string()));
+                }
+                // Still unknown, or unreadable for now: the retryable
+                // refusal below applies.
+                Ok(_) | Err(_) => {}
+            }
+        }
+        let chosen = if word == CLEAR_WORD {
+            None
+        } else if !offer.known && !offer.variants.contains_key(word) {
+            return Err(CommandFailure::Refused(
+                ServerError::VariantOfferUnknown {
+                    alias: handle.model.clone(),
+                    variant: word.to_string(),
+                }
+                .to_string(),
+            ));
+        } else {
+            exact_variant(&handle.model, word, &offer.variants)
+                .map_err(|e| CommandFailure::Refused(e.to_string()))?
+        };
+        let name = chosen.as_ref().map(|(name, _)| name.clone());
+        self.history()
+            .set_variant(session_id, chosen.as_ref())
+            .await
+            .map_err(|e| CommandFailure::Server(ServerError::History(e)))?;
+        let offered: Vec<&String> = offer.variants.keys().collect();
+        let now = handle.status.select_variant(chosen);
+        // The gauge shows the variant that is selected, even when it applies
+        // from the next turn.
+        if let Some(snapshot) = handle.status.set_context_variant(name.clone()) {
+            if let Ok(payload) = serde_json::to_value(&snapshot) {
+                let _ = handle
+                    .sequencer
+                    .publish(Candidate::new(EventKind::ContextUpdated, payload));
+            }
+        }
+        Ok(Done::data(json!({
+            "variant": name,
+            "offered": offered,
+            "applies": if now { "now" } else { "next_turn" },
+        })))
     }
 
     /// `/new [alias]`: a fresh session in the same workspace, with the
@@ -167,6 +256,16 @@ impl Service {
             return Err(CommandFailure::Refused("usage: /new [alias]".to_string()));
         }
         let alias = alias.unwrap_or(&handle.model).to_string();
+        // The same alias keeps this session's variant; another alias starts
+        // on its own default.
+        let variant = if alias == handle.model {
+            match handle.status.selected_variant() {
+                Some(name) => VariantChoice::Exact(name),
+                None => VariantChoice::Clear,
+            }
+        } else {
+            VariantChoice::Default
+        };
         let profile = self
             .history()
             .meta(session_id)
@@ -174,7 +273,12 @@ impl Service {
             .map_err(|e| CommandFailure::Server(ServerError::History(e)))?
             .and_then(|meta| meta.profile);
         match self
-            .create_session(&handle.workspace, Some(&alias), profile.as_deref())
+            .create_session_with_variant(
+                &handle.workspace,
+                Some(&alias),
+                profile.as_deref(),
+                variant,
+            )
             .await
         {
             Ok(id) => Ok(Done {

@@ -95,9 +95,30 @@ pub struct SessionHandle {
     pub model: String,
     /// The runtime's view of its actor: pending `ask`, running turn.
     pub status: Arc<runtime::RuntimeStatus>,
+    /// What the session's model offers as variants; replaced when an offer
+    /// that was unknown at the start becomes known.
+    pub offer: Arc<Mutex<Arc<resolve::Offer>>>,
     /// The saved model resolution (identity, window, where the window came
     /// from) the session runs on.
     pub resolution: Option<Arc<crate::provider::catalog::ModelResolution>>,
+}
+
+impl SessionHandle {
+    /// The session's current variant offer.
+    pub(crate) fn current_offer(&self) -> Arc<resolve::Offer> {
+        match self.offer.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    pub(crate) fn replace_offer(&self, offer: resolve::Offer) {
+        let mut guard = match self.offer.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *guard = Arc::new(offer);
+    }
 }
 
 impl std::fmt::Debug for SessionHandle {
@@ -126,6 +147,8 @@ pub struct SessionSummary {
     pub actor_state: String,
     pub workspace: String,
     pub model: String,
+    /// The model variant in use; `null` for none.
+    pub variant: Option<String>,
     pub current_seq: u64,
 }
 
@@ -254,9 +277,24 @@ impl Service {
         model: Option<&str>,
         profile: Option<&str>,
     ) -> Result<SessionId, ServerError> {
-        self.create_or_resume_session(workspace, model, profile, None)
+        self.create_session_with_variant(workspace, model, profile, VariantChoice::Default)
             .await
-            .map(|(id, _)| id)
+    }
+
+    /// [`create_session`] with the variant to start on: the alias default,
+    /// none, or a variant the alias offers (anything else is an error). The
+    /// variant is saved with the session.
+    pub async fn create_session_with_variant(
+        &self,
+        workspace: &Path,
+        model: Option<&str>,
+        profile: Option<&str>,
+        variant: VariantChoice,
+    ) -> Result<SessionId, ServerError> {
+        let id = self
+            .spawn_session(workspace, model, profile, None, workspace, &variant)
+            .await?;
+        Ok(id)
     }
 
     /// [`create_session`] with an optional `resume` id (the POST
@@ -302,12 +340,19 @@ impl Service {
                 return Err(ServerError::SessionNotFound(id.to_string()));
             };
             let loaded = ResumedSession { meta, transcript };
-            self.spawn_session(workspace, None, None, Some(loaded), workspace)
-                .await?;
+            self.spawn_session(
+                workspace,
+                None,
+                None,
+                Some(loaded),
+                workspace,
+                &VariantChoice::Default,
+            )
+            .await?;
             return Ok((id, true));
         }
         let id = self
-            .spawn_session(workspace, model, profile, None, workspace)
+            .create_session_with_variant(workspace, model, profile, VariantChoice::Default)
             .await?;
         Ok((id, false))
     }
@@ -344,6 +389,7 @@ impl Service {
             actor_state: handle.actor_state.clone(),
             workspace: handle.workspace.display().to_string(),
             model: handle.model.clone(),
+            variant: handle.status.selected_variant(),
             current_seq,
         })
     }
@@ -362,6 +408,7 @@ impl Service {
             actor_state: "stopped".to_string(),
             workspace: meta.workspace,
             model: meta.model,
+            variant: meta.variant,
             current_seq: meta.last_seq,
         })
     }
@@ -429,6 +476,7 @@ impl Service {
         profile: Option<&str>,
         resumed: Option<ResumedSession>,
         resume_workspace: &Path,
+        variant: &VariantChoice,
     ) -> Result<SessionId, ServerError> {
         // Resume keeps the stored model/profile/workspace (the stored row is
         // the authority); a fresh session honors the request's.
@@ -451,12 +499,46 @@ impl Service {
                 (workspace.to_path_buf(), alias.to_string(), profile)
             }
         };
-        let (resolved, api_key, snapshot, save_late) = self
+        let (resolved, api_key, snapshot, save_late, models_file) = self
             .resolve_for_spawn(session_id, resume_workspace, &alias, resumed.as_ref())
             .await?;
+        // A resume keeps the variant the row saved; a fresh session takes the
+        // request's choice. Either way it is checked against what the alias
+        // offers now, before anything is written.
+        let (selected, offered) = self
+            .select_variant(
+                session_id,
+                &alias,
+                &resolved,
+                &api_key,
+                &models_file,
+                match &resumed {
+                    Some(loaded) => {
+                        VariantStart::Saved(loaded.meta.variant.as_deref().map(|name| {
+                            resolve::SavedVariant {
+                                name,
+                                override_json: loaded.meta.variant_override.as_deref(),
+                            }
+                        }))
+                    }
+                    None => VariantStart::Choice(variant),
+                },
+            )
+            .await?;
+        // A resume with a readable offer keeps the saved override current
+        // with the definition it now has.
+        if let (Some(loaded), Some(chosen)) = (&resumed, &selected) {
+            let current = serde_json::to_string(&chosen.1).ok();
+            if offered.known && current != loaded.meta.variant_override {
+                self.history
+                    .set_variant(session_id, Some(chosen))
+                    .await
+                    .map_err(ServerError::History)?;
+            }
+        }
         let limits = ContextLimits::from_resolution(
             &alias,
-            None,
+            selected.as_ref().map(|(name, _)| name.as_str()),
             &snapshot,
             resolved.model.max_output_tokens,
         )
@@ -508,6 +590,7 @@ impl Service {
                 &alias,
                 profile,
                 Some(&snapshot),
+                selected.as_ref(),
             )
             .await
             .map_err(ServerError::History)?;
@@ -532,6 +615,7 @@ impl Service {
                 history.save_transcript(session_id, transcript.to_vec());
             }));
         let status = Arc::new(runtime::RuntimeStatus::default());
+        status.init_variant(selected);
         let limits = limits.with_sources(&actor.rules, &actor.skills);
         status.install_context(ContextTracker::new(limits, actor.context_breakdown()));
         let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn_with_status(
@@ -555,6 +639,7 @@ impl Service {
             workspace: workspace.clone(),
             model: alias,
             status,
+            offer: Arc::new(Mutex::new(Arc::new(offered))),
             resolution: Some(Arc::new(snapshot)),
         };
         let sender = SessionSender::new(session_id, handle.clone());
@@ -580,6 +665,10 @@ impl Service {
 }
 
 mod resolve;
+pub(crate) use resolve::exact_variant;
+pub use resolve::VariantChoice;
+use resolve::VariantStart;
+pub use resolve::CLEAR_WORD;
 
 #[cfg(test)]
 pub(crate) mod tests;

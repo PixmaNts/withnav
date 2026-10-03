@@ -322,7 +322,8 @@ impl HistoryStore {
         tokio::task::spawn_blocking(move || {
             let parent_id = envelope.session_id;
             let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
-            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
             let inserted = tx.execute(
                 "INSERT INTO child_links (parent_id, child_id, agent, goal, policy_snapshot, status, created_at, owner_instance)
                  SELECT ?1, ?2, ?3, ?4, ?5, 'running', ?6, ?8
@@ -497,7 +498,8 @@ impl HistoryStore {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
             let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
-            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
             for (request, (child, payload)) in open {
                 let terminal = tx.query_row("SELECT status FROM child_links WHERE child_id=?1", [&child], |row| row.get::<_, String>(0)).optional().map_err(|e| e.to_string())?;
                 let resolution = tx.query_row("SELECT envelope FROM events WHERE session_id=?1 AND kind='permission.resolved' AND json_extract(envelope,'$.payload.request_id')=?2 ORDER BY seq DESC LIMIT 1", params![child, request], |row| row.get::<_, String>(0)).optional().map_err(|e| e.to_string())?;
@@ -537,7 +539,8 @@ impl HistoryStore {
             let result = sequencer.commit_acked(crate::bus::sequencer::Candidate::new(EventKind::PermissionResolved,payload), Box::new(move |event| Box::pin(async move {
                 tokio::task::spawn_blocking(move || {
                     let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
-                    let tx = conn.transaction().map_err(|e| e.to_string())?;
+                    conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
+                    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
                     let changed = tx.execute("UPDATE permission_outbox SET delivered=1 WHERE parent_id=?1 AND request_id=?2 AND delivered=0",params![parent.to_string(),id]).map_err(|e| e.to_string())?;
                     if changed == 0 { return Err("permission mirror already delivered".into()); }
                     insert_committed_event(&tx,&event)?;
@@ -561,7 +564,8 @@ impl HistoryStore {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
             let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
-            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
             let changed = tx.execute("UPDATE completion_outbox SET delivered=1 WHERE child_id=?1 AND parent_id=?2 AND delivered=0", params![child.to_string(), envelope.session_id.to_string()]).map_err(|e| e.to_string())?;
             if changed == 0 { return Err("completion already delivered".into()); }
             insert_committed_event(&tx, &envelope)?;
@@ -595,7 +599,8 @@ impl HistoryStore {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
             let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
-            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
             for child in children {
                 let changed = tx.execute("UPDATE completion_outbox SET consumed=1 WHERE child_id=?1 AND parent_id=?2 AND consumed=0", params![child.to_string(), parent.to_string()]).map_err(|e| e.to_string())?;
                 if changed != 1 { return Err("completion already consumed or missing".into()); }
@@ -847,7 +852,11 @@ fn finish_child_link_sync(
     result: String,
 ) -> Result<Option<ChildLink>, String> {
     let mut conn = Connection::open(path).map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    conn.busy_timeout(WRITER_BUSY_TIMEOUT)
+        .map_err(|e| e.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     let terminal_at = now_rfc3339();
     let changed = tx
         .execute(
@@ -946,7 +955,9 @@ fn queue_permission_resolution(
 }
 
 fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
-    let tx = conn.transaction()?;
+    // Acquire write ownership before reads: a deferred WAL snapshot cannot
+    // upgrade after an outbox connection commits, even with a busy timeout.
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     match write {
         Write::RecordSession {
             id,
@@ -1448,6 +1459,48 @@ fn strip_editor_context(content: &str) -> String {
 mod tests {
     use super::*;
     use crate::bus::event::EventKind;
+
+    #[tokio::test]
+    async fn permission_writer_waits_for_outbox_write_ownership_without_poisoning_flush() {
+        let (dir, store) = temp_store();
+        let id = Ulid::new();
+        store
+            .record_session(id, "/ws", "model", None)
+            .await
+            .unwrap();
+        let mut other = side_connection(&dir);
+        let tx = other
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        tx.execute(
+            "UPDATE sessions SET title='outbox owner' WHERE id=?1",
+            [id.to_string()],
+        )
+        .unwrap();
+        store.append_event(
+            id,
+            EventEnvelope::new(
+                id,
+                0,
+                EventKind::PermissionResolved,
+                serde_json::json!({"request_id":Ulid::new(),"resolution":"allow_once"}),
+            ),
+        );
+        let flushing = store.flush();
+        tokio::pin!(flushing);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut flushing)
+                .await
+                .is_err()
+        );
+        tx.commit().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), &mut flushing)
+            .await
+            .unwrap()
+            .unwrap();
+        store.flush().await.unwrap();
+        assert_eq!(store.replay(id, None, 0).await.unwrap().len(), 1);
+    }
 
     fn envelope(seq: u64, kind: EventKind) -> EventEnvelope {
         EventEnvelope::new(Ulid::new(), seq, kind, serde_json::json!({ "n": seq }))

@@ -195,10 +195,6 @@ pub struct SessionSummary {
     pub promptable: bool,
 }
 
-fn default_promptable() -> bool {
-    true
-}
-
 fn is_promptable(value: &bool) -> bool {
     *value
 }

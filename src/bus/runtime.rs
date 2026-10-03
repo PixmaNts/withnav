@@ -557,6 +557,7 @@ pub fn spawn_with_status(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_with_completion(
     session_id: Ulid,
     actor: AgentActor,
@@ -580,6 +581,7 @@ pub fn spawn_with_completion(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn runtime_loop(
     _session_id: Ulid,
     mut actor: AgentActor,

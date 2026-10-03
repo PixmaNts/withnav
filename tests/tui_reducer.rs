@@ -3086,6 +3086,82 @@ fn a_denial_or_a_cancel_settles_the_held_call() {
 }
 
 #[test]
+fn a_fresh_request_after_a_retarget_replaces_the_prompt_for_that_call() {
+    // allowed, but the call now lands elsewhere: the server asks again for w1
+    let mut script = permission_script(10);
+    resolved(&mut script, 10, PermissionResolution::AllowOnce);
+    script.turn_start(2);
+    script.push(
+        EventKind::PermissionRequested,
+        &PermissionRequested {
+            request_id: Ulid(11),
+            tool_call_id: "w1".into(),
+            tool: "write".into(),
+            arguments: json!({"path": "/elsewhere/a.txt", "content": "one\ntwo"}).to_string(),
+            scope: navai::agent::permissions::Scope::Folder("/elsewhere".into()),
+            agent: "build".into(),
+            reason: "write changes a file".into(),
+        },
+    );
+    script.turn_end(2, TurnEndOutcome::Yielded, None);
+    let mut s = st();
+    feed(&mut s, &script.out);
+    let prompts: Vec<_> = s
+        .conversation
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.kind {
+            BlockKind::Permission(p) => Some(p),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(prompts.len(), 1, "one prompt for w1, not two");
+    assert_eq!(prompts[0].request_id, Ulid(11).to_string());
+    assert_eq!(prompts[0].scope, "/elsewhere");
+    assert_eq!(prompts[0].resolution, None);
+    assert_eq!(
+        s.open_permission().map(|p| p.request_id.clone()),
+        Some(Ulid(11).to_string())
+    );
+    assert_eq!(s.conversation.open_permissions.len(), 1);
+    // replay gives the same single prompt
+    let mut again = st();
+    feed(&mut again, &script.out);
+    assert_eq!(again.conversation.blocks, s.conversation.blocks);
+
+    // a denied call asked again later (a new turn reusing the id) keeps its record
+    let mut script = permission_script(20);
+    resolved(
+        &mut script,
+        20,
+        PermissionResolution::Deny {
+            message: "no".into(),
+        },
+    );
+    script.push(
+        EventKind::PermissionRequested,
+        &PermissionRequested {
+            request_id: Ulid(21),
+            tool_call_id: "w1".into(),
+            tool: "write".into(),
+            arguments: "{}".into(),
+            scope: navai::agent::permissions::Scope::Folder("/ws".into()),
+            agent: "build".into(),
+            reason: String::new(),
+        },
+    );
+    let mut s = st();
+    feed(&mut s, &script.out);
+    let count = s
+        .conversation
+        .blocks
+        .iter()
+        .filter(|b| matches!(b.kind, BlockKind::Permission(_)))
+        .count();
+    assert_eq!(count, 2);
+}
+
+#[test]
 fn a_background_tab_with_an_open_request_waits_and_is_unread() {
     let (mut s, mut ui) = (st(), ui());
     created_now(&mut s, "S1").unwrap();

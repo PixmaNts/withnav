@@ -273,10 +273,49 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 resolution: None,
                 message: None,
             };
-            s.conversation.open_permissions.push(id.clone());
-            s.conversation
+            // A fresh request for the call just approved (it now lands
+            // elsewhere) replaces that prompt instead of adding a second one.
+            let retarget = s
+                .conversation
                 .blocks
-                .push(block(id, BlockKind::Permission(prompt)));
+                .iter()
+                .rposition(|b| matches!(&b.kind, BlockKind::Permission(_)))
+                .filter(|&at| {
+                    matches!(
+                        &s.conversation.blocks[at].kind,
+                        BlockKind::Permission(old) if old.tool_call_id == prompt.tool_call_id
+                            && old.resolution.as_deref().is_none_or(|r| r.starts_with("allow"))
+                    )
+                })
+                .filter(|_| {
+                    let tool_id = format!("tool:{}", prompt.tool_call_id);
+                    !s.conversation.blocks.iter().any(|b| {
+                        b.id == tool_id
+                            && matches!(
+                                &b.kind,
+                                BlockKind::ToolCall {
+                                    status: Some(_),
+                                    ..
+                                }
+                            )
+                    })
+                });
+            s.conversation.open_permissions.push(id.clone());
+            match retarget {
+                Some(at) => {
+                    let old = std::mem::replace(
+                        &mut s.conversation.blocks[at],
+                        block(id, BlockKind::Permission(prompt)),
+                    );
+                    s.conversation
+                        .open_permissions
+                        .retain(|open| open != &old.id);
+                }
+                None => s
+                    .conversation
+                    .blocks
+                    .push(block(id, BlockKind::Permission(prompt))),
+            }
             s.activity = Activity::AwaitingUser;
         }
         Some(EventKind::PermissionResolved) => {

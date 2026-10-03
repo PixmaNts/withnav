@@ -775,6 +775,13 @@ impl Service {
         if let Some(loaded) = &resumed {
             actor.transcript = loaded.transcript.clone();
             actor.compaction = loaded.compaction.clone();
+            // Reasoning of the models the conversation moved away from stays
+            // out of the projection, as before the stop.
+            actor.reasoning_floor = loaded
+                .meta
+                .reasoning_floor
+                .map_or(0, |floor| usize::try_from(floor).unwrap_or(usize::MAX))
+                .min(actor.transcript.len());
             // The task the role guard judges against: the driver's latest
             // stored words, not a navigator wake.
             actor.driver_task = self

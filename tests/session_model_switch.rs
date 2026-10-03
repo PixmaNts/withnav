@@ -111,12 +111,15 @@ fn history(turns: usize, reasoning: bool) -> Vec<ChatMessage> {
 
 /// A live session that resumed from a stored conversation of `turns` turns.
 async fn seeded(state: &AppState, ws: &Path, turns: usize, reasoning: bool) -> ulid::Ulid {
+    seeded_with(state, ws, history(turns, reasoning)).await
+}
+
+/// A live session that resumed from the stored `transcript`.
+async fn seeded_with(state: &AppState, ws: &Path, transcript: Vec<ChatMessage>) -> ulid::Ulid {
     let id = state.create_session(ws, None, None).await.expect("create");
     state.close_session(id).await.expect("close");
     state.history().flush().await.expect("flush");
-    state
-        .history()
-        .save_transcript(id, history(turns, reasoning));
+    state.history().save_transcript(id, transcript);
     state.history().flush().await.expect("flush");
     state
         .create_or_resume_session(ws, None, None, Some(id))
@@ -441,4 +444,156 @@ async fn a_resume_after_a_switch_uses_the_new_model() {
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].payload["revision"], 2);
     assert_eq!(events[1].payload["revision"], 3);
+}
+
+/// Reasoning, a tool exchange and a reasoning-only assistant message.
+fn rich_history() -> Vec<ChatMessage> {
+    use navai::provider::openai::{RequestFunction, RequestToolCall};
+    vec![
+        ChatMessage::User {
+            content: "request 0".into(),
+        },
+        ChatMessage::Assistant {
+            content: None,
+            reasoning_content: Some("thinking about the call".into()),
+            tool_calls: vec![RequestToolCall {
+                id: "call_1".into(),
+                kind: "function".into(),
+                function: RequestFunction {
+                    name: "read".into(),
+                    arguments: "{\"path\":\"a.txt\"}".into(),
+                },
+            }],
+        },
+        ChatMessage::Tool {
+            tool_call_id: "call_1".into(),
+            content: "file contents".into(),
+        },
+        ChatMessage::Assistant {
+            content: Some("read it".into()),
+            reasoning_content: Some("thinking about the answer".into()),
+            tool_calls: vec![],
+        },
+        ChatMessage::Assistant {
+            content: None,
+            reasoning_content: Some("only thoughts".into()),
+            tool_calls: vec![],
+        },
+        ChatMessage::User {
+            content: "request 1".into(),
+        },
+    ]
+}
+
+fn assert_projection_without_reasoning(request: &Value) {
+    let messages = request["messages"].as_array().unwrap();
+    assert!(
+        messages
+            .iter()
+            .all(|m| m.get("reasoning_content").is_none()),
+        "{request}"
+    );
+    // The tool exchange is kept as a pair; the reasoning-only message is gone.
+    assert!(messages
+        .iter()
+        .any(|m| m["role"] == "assistant" && m["tool_calls"][0]["id"] == "call_1"));
+    assert!(messages
+        .iter()
+        .any(|m| m["role"] == "tool" && m["tool_call_id"] == "call_1"));
+    assert!(
+        !messages.iter().any(|m| m["role"] == "assistant"
+            && m.get("tool_calls").is_none()
+            && m["content"].as_str().is_none_or(str::is_empty)),
+        "{request}"
+    );
+    assert!(all_text(request).contains("read it"));
+}
+
+// Given a conversation with reasoning, a tool exchange and a reasoning-only
+//       message, switched to another model and stopped
+// When it is resumed
+// Then the other model still never receives the reasoning of the first, the
+//      tool exchange is intact, and the stored transcript keeps the reasoning
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resume_keeps_the_reasoning_boundary_of_the_switch() {
+    let env = env();
+    let a = spawn_capturing_provider(vec![]).await;
+    let b = spawn_capturing_provider(vec![answer("one"), answer("two")]).await;
+    let state = state(&env, &a, &b, 128_000, 128_000);
+    let id = seeded_with(&state, &env.ws, rich_history()).await;
+    let out = state.run_command(id, "model", "other").await.unwrap();
+    assert!(out.ok, "{out:?}");
+    let meta = state.history().meta(id).await.unwrap().unwrap();
+    assert_eq!(meta.reasoning_floor, Some(6));
+
+    turn_done(&state, id, "before the stop").await;
+    assert_projection_without_reasoning(&body(&b, 0));
+
+    state.close_session(id).await.unwrap();
+    state.history().flush().await.unwrap();
+    state
+        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .await
+        .unwrap();
+    turn_done(&state, id, "after the stop").await;
+    assert!(a.bodies().is_empty());
+    assert_projection_without_reasoning(&body(&b, 1));
+    assert!(all_text(&body(&b, 1)).contains("before the stop"));
+
+    // The transcript keeps what the first model thought.
+    state.close_session(id).await.unwrap();
+    state.history().flush().await.unwrap();
+    let stored = state.history().load(id).await.unwrap().unwrap().transcript;
+    assert!(stored.iter().any(|m| matches!(
+        m,
+        ChatMessage::Assistant { reasoning_content: Some(r), .. } if r == "only thoughts"
+    )));
+}
+
+// Given a store that cannot take the `model.changed` event of the switch
+// When /model runs
+// Then it is refused, the row is unchanged, nothing is announced, the actor
+//      keeps talking to the old model, and a later switch goes through
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_switch_whose_event_cannot_be_stored_changes_nothing() {
+    let env = env();
+    let a = spawn_capturing_provider(vec![answer("still a")]).await;
+    let b = spawn_capturing_provider(vec![]).await;
+    let state = state(&env, &a, &b, 128_000, 128_000);
+    let id = seeded(&state, &env.ws, 2, true).await;
+    state.history().flush().await.unwrap();
+    let head = state.session_summary(id).await.unwrap().current_seq + 1;
+
+    // A row already sits where the event would be written.
+    let conn = rusqlite::Connection::open(env.root.join("history.db")).unwrap();
+    conn.execute(
+        "INSERT INTO events (session_id, seq, kind, envelope) VALUES (?1, ?2, 'x', '{}')",
+        rusqlite::params![id.to_string(), head as i64],
+    )
+    .unwrap();
+
+    let out = state.run_command(id, "model", "other").await.unwrap();
+    assert!(!out.ok, "{out:?}");
+    assert!(out.error.unwrap().contains("could not be saved"));
+    let meta = state.history().meta(id).await.unwrap().unwrap();
+    assert_eq!(meta.model, "default");
+    assert_eq!(meta.variant, None);
+    assert_eq!(meta.reasoning_floor, None);
+    assert!(!meta.model_resolution.unwrap().contains("model-b"));
+    assert_eq!(state.session_summary(id).await.unwrap().model, "default");
+    assert!(stored(&state, id, "model.changed").await.is_empty());
+
+    turn_done(&state, id, "go on").await;
+    assert!(b.bodies().is_empty());
+    let request = body(&a, 0);
+    assert_eq!(request["model"], "model-a");
+    assert!(request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m.get("reasoning_content").is_some()));
+
+    let retry = state.run_command(id, "model", "other").await.unwrap();
+    assert!(retry.ok, "{retry:?}");
+    assert_eq!(stored(&state, id, "model.changed").await.len(), 1);
 }

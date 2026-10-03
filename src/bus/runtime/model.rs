@@ -25,6 +25,7 @@ use crate::bus::event::{
 use crate::bus::sequencer::{Candidate, Sequencer};
 use crate::provider::catalog::ModelResolution;
 use crate::provider::config::{ProviderConfig, ReasoningHistory, Variants};
+use std::sync::Arc as StdArc;
 
 /// Why a switch refused while the agent waits for a human.
 pub const PENDING_MODEL_ERROR: &str =
@@ -62,8 +63,15 @@ pub struct ModelTarget {
 
 /// The store write of a switch: the target, the reasoning floor and the
 /// sequenced `model.changed`.
-pub type CommitFn =
-    dyn Fn(ModelTarget, usize, EventEnvelope) -> BoxFuture<Result<(), String>> + Send + Sync;
+pub type CommitFn = dyn Fn(ModelTarget, usize, EventEnvelope, Install) -> BoxFuture<Result<(), String>>
+    + Send
+    + Sync;
+
+/// What the runtime installs for the new selection (the variant it applies and
+/// the context gauge). The service runs it, once the store write is durable,
+/// in the same step in which it installs its own view of the selection, so
+/// readers never see one without the other. It must not block.
+pub type Install = Box<dyn FnOnce() + Send>;
 
 /// The service's side of a switch.
 pub struct ModelSwitch {
@@ -136,7 +144,7 @@ fn identity_json(identity: &ModelIdentity) -> Value {
 /// fits and the store acknowledged the choice.
 pub(super) async fn run(
     actor: &mut AgentActor,
-    status: &RuntimeStatus,
+    status: &StdArc<RuntimeStatus>,
     sequencer: &Sequencer,
     cancel: &CancellationToken,
     alias: &str,
@@ -199,17 +207,33 @@ pub(super) async fn run(
         from_message: from_message as u64,
     })
     .unwrap_or(Value::Null);
+    // The new gauge is built before the write, against the destination
+    // projection, and installed with the selection.
+    let limits = target
+        .limits
+        .clone()
+        .with_sources(&actor.rules, &actor.skills);
+    let tracker = ContextTracker::new(limits, actor.context_breakdown_at(floor));
+    let snapshot = tracker.snapshot().clone();
+    let install: Install = {
+        let (status, variant) = (status.clone(), target.variant.clone());
+        Box::new(move || {
+            status.replace_variant(variant);
+            status.replace_context(tracker);
+        })
+    };
     // The selection (row, resolution, variant, floor) and its event are
     // written in one transaction; the event reaches the stream only once it
     // is durable, and nothing below runs when it is not.
     let commit = {
         let (switcher, target) = (switcher.clone(), target.clone());
-        Box::new(move |envelope: EventEnvelope| (switcher.commit)(target, floor, envelope))
+        Box::new(move |envelope: EventEnvelope| (switcher.commit)(target, floor, envelope, install))
     };
     sequencer
         .commit_acked(Candidate::new(EventKind::ModelChanged, changed), commit)
         .await
         .map_err(|e| format!("the model switch could not be saved: {e}"))?;
+    status.controls.before_switch_swap().await;
 
     actor.reasoning_floor = floor;
     actor.provider = target.provider.clone();
@@ -218,13 +242,7 @@ pub(super) async fn run(
     actor.reasoning_history = target.reasoning_history;
     actor.max_tokens = target.max_tokens;
     actor.variant = target.variant.clone().map(|(_, variant)| variant);
-    status.replace_variant(target.variant.clone());
     let variant_name = target.variant.as_ref().map(|(name, _)| name.clone());
-    let limits = target
-        .limits
-        .clone()
-        .with_sources(&actor.rules, &actor.skills);
-    let snapshot = status.replace_context(ContextTracker::new(limits, actor.context_breakdown()));
 
     if let Ok(payload) = serde_json::to_value(&snapshot) {
         let _ = sequencer.publish(Candidate::new(EventKind::ContextUpdated, payload));

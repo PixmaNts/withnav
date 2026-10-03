@@ -21,7 +21,7 @@ pub use compact::{
     FOCUS_MAX_CHARS,
 };
 pub use model::{
-    BoxFuture, ModelReply, ModelRequest, ModelSwitch, ModelSwitcher, ModelTarget,
+    BoxFuture, Install, ModelReply, ModelRequest, ModelSwitch, ModelSwitcher, ModelTarget,
     PENDING_MODEL_ERROR,
 };
 
@@ -225,11 +225,8 @@ impl RuntimeStatus {
     }
 
     /// Installs the context tracker of a new model selection.
-    fn replace_context(&self, tracker: ContextTracker) -> ContextSnapshot {
-        let mut guard = self.lock_context();
-        let snapshot = tracker.snapshot().clone();
-        *guard = Some(tracker);
-        snapshot
+    fn replace_context(&self, tracker: ContextTracker) {
+        *self.lock_context() = Some(tracker);
     }
 
     /// The variant name that is selected: the pending one when a change is
@@ -289,6 +286,13 @@ impl RuntimeStatus {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         } = profile_prompt;
+    }
+
+    /// Parks the runtime after its next compaction and before the result is
+    /// published.
+    #[cfg(test)]
+    pub(crate) fn arm_switch_barrier(&self) -> Arc<compact::ResultBarrier> {
+        self.controls.arm_switch_barrier()
     }
 
     /// Parks the runtime after its next compaction and before the result is

@@ -105,6 +105,8 @@ pub(super) struct Controls {
     switcher: Mutex<Option<super::model::SwitcherCell>>,
     #[cfg(test)]
     barrier: Mutex<Option<Arc<ResultBarrier>>>,
+    #[cfg(test)]
+    switch_barrier: Mutex<Option<Arc<ResultBarrier>>>,
 }
 
 /// Parks the runtime after a compaction ran and before its result is
@@ -134,6 +136,8 @@ impl Default for Controls {
             switcher: Mutex::new(None),
             #[cfg(test)]
             barrier: Mutex::new(None),
+            #[cfg(test)]
+            switch_barrier: Mutex::new(None),
         }
     }
 }
@@ -173,6 +177,31 @@ impl Controls {
         *self.barrier.lock().expect("barrier") = Some(barrier.clone());
         barrier
     }
+
+    #[cfg(test)]
+    pub(super) fn arm_switch_barrier(&self) -> Arc<ResultBarrier> {
+        let barrier = Arc::new(ResultBarrier::default());
+        *self.switch_barrier.lock().expect("barrier") = Some(barrier.clone());
+        barrier
+    }
+
+    /// Test seam: parks a model switch after its selection is installed and
+    /// before the actor is moved to the new model.
+    #[cfg(test)]
+    pub(super) async fn before_switch_swap(&self) {
+        let barrier = self
+            .switch_barrier
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take());
+        if let Some(barrier) = barrier {
+            barrier.reached.notify_one();
+            barrier.release.notified().await;
+        }
+    }
+
+    #[cfg(not(test))]
+    pub(super) async fn before_switch_swap(&self) {}
 
     #[cfg(test)]
     pub(super) async fn before_result(&self) {

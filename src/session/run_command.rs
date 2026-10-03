@@ -397,7 +397,7 @@ impl Service {
         let Some(word) = words.next() else {
             let offered: Vec<&String> = offer.variants.keys().collect();
             return Ok(Done::data(json!({
-                "variant": handle.status.selected_variant(),
+                "variant": selected.variant_name(),
                 "offered": offered,
             })));
         };
@@ -461,18 +461,24 @@ impl Service {
         if handle.selected().revision != selected.revision {
             return Err(CommandFailure::Refused(MODEL_CHANGED_ERROR.to_string()));
         }
-        if !Arc::ptr_eq(&offer, &handle.current_offer()) && offer.known {
-            handle.replace_offer((*offer).clone());
-        }
         self.history()
             .set_variant(session_id, chosen.as_ref())
             .await
             .map_err(|e| CommandFailure::Server(ServerError::History(e)))?;
         let offered: Vec<&String> = offer.variants.keys().collect();
-        let now = handle.status.select_variant(chosen);
+        // The selection, the runtime's variant and the gauge change together.
+        let (now, snapshot) = {
+            let mut selection = handle.lock_selected();
+            selection.variant = chosen.clone();
+            if !Arc::ptr_eq(&offer, &selection.offer) && offer.known {
+                selection.offer = offer.clone();
+            }
+            let now = handle.status.select_variant(chosen);
+            (now, handle.status.set_context_variant(name.clone()))
+        };
         // The gauge shows the variant that is selected, even when it applies
         // from the next turn.
-        if let Some(snapshot) = handle.status.set_context_variant(name.clone()) {
+        if let Some(snapshot) = snapshot {
             if let Ok(payload) = serde_json::to_value(&snapshot) {
                 let _ = handle
                     .sequencer
@@ -500,12 +506,12 @@ impl Service {
             return Err(CommandFailure::Refused("usage: /new [alias]".to_string()));
         }
         let selected = handle.selected();
-        let current = selected.alias;
+        let current = selected.alias.clone();
         let alias = alias.unwrap_or(&current).to_string();
         // The same alias keeps this session's variant; another alias starts
         // on its own default.
         let variant = if alias == current {
-            match handle.status.selected_variant() {
+            match selected.variant_name() {
                 Some(name) => VariantChoice::Exact(name),
                 None => VariantChoice::Clear,
             }
@@ -573,6 +579,24 @@ impl Service {
 
     #[cfg(not(test))]
     async fn before_publish_hook(&self) {}
+
+    /// Test seam: parks a model switch between its store write and the
+    /// installation of the new selection.
+    #[cfg(test)]
+    pub(super) async fn before_switch_install(&self) {
+        let barrier = self
+            .install_barrier
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take());
+        if let Some(barrier) = barrier {
+            barrier.reached.notify_one();
+            barrier.release.notified().await;
+        }
+    }
+
+    #[cfg(not(test))]
+    pub(super) async fn before_switch_install(&self) {}
 }
 
 /// What a successful command produced.

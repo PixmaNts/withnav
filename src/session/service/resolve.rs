@@ -428,7 +428,6 @@ impl Service {
         id: Ulid,
         workspace: PathBuf,
         selected: Arc<Mutex<SelectedModel>>,
-        offer: Arc<Mutex<Arc<Offer>>>,
     ) -> ModelSwitcher {
         let current = {
             let selected = selected.clone();
@@ -453,9 +452,12 @@ impl Service {
             move || lock(&selected).revision + 1
         };
         let committer = {
-            let (service, selected, offer) = (self.clone(), selected, offer);
-            move |target: ModelTarget, floor: usize, envelope: crate::bus::event::EventEnvelope| {
-                let (service, selected, offer) = (service.clone(), selected.clone(), offer.clone());
+            let (service, selected) = (self.clone(), selected);
+            move |target: ModelTarget,
+                  floor: usize,
+                  envelope: crate::bus::event::EventEnvelope,
+                  install: crate::bus::runtime::Install| {
+                let (service, selected) = (service.clone(), selected.clone());
                 Box::pin(async move {
                     let revision = envelope.payload["revision"].as_u64().unwrap_or(0);
                     service
@@ -469,12 +471,17 @@ impl Service {
                             envelope,
                         )
                         .await?;
+                    service.before_switch_install().await;
+                    // The model, its variant, its offer, the runtime's variant
+                    // slot and the context gauge change under one lock: a
+                    // reader sees the old selection or the new, never a mix.
                     let mut guard = lock(&selected);
+                    install();
                     guard.alias = target.alias.clone();
                     guard.resolution = Some(Arc::new(target.resolution.clone()));
                     guard.revision = revision;
-                    drop(guard);
-                    *lock(&offer) = Arc::new(Offer {
+                    guard.variant = target.variant.clone();
+                    guard.offer = Arc::new(Offer {
                         variants: target.offer.clone(),
                         known: target.offer_known,
                     });

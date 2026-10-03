@@ -48,7 +48,7 @@ pub(super) fn report_cancelled(sequencer: &Sequencer, queue: &Queue, why: &str) 
 pub(super) async fn run(
     queue: Queue,
     actor: &mut AgentActor,
-    status: &super::RuntimeStatus,
+    status: &std::sync::Arc<super::RuntimeStatus>,
     sequencer: &Sequencer,
     cancel: &CancellationToken,
 ) {

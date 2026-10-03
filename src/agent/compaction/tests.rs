@@ -601,11 +601,12 @@ fn a_mid_turn_checkpoint_carries_the_latest_user_request_verbatim() {
     assert!(real >= request_tokens);
 }
 
-// Given a checkpoint that stands for the latest user request
-// Then it fails validation: a summary has no authority, and the prompt it
-//      makes must still carry the instruction
+// Given a checkpoint whose boundary is past the latest user request
+// Then it is valid, because the prompt it makes still carries that request
+//      verbatim: a summary has no authority, so the instruction is never left
+//      to the summary alone
 #[test]
-fn a_checkpoint_that_would_drop_the_latest_user_request_is_refused() {
+fn a_checkpoint_past_the_latest_user_request_still_carries_it_verbatim() {
     let t = vec![
         user("older"),
         answer("ok"),

@@ -461,8 +461,9 @@ pub enum Aim {
     /// recent turns are not protected any more, only the latest exchange (the
     /// last assistant step and its tool results) stays verbatim, so older
     /// tool outputs of the unfinished turn can be cut down to markers, and its
-    /// earlier steps summarized. The latest user request is summarized only
-    /// when keeping it would not fit.
+    /// earlier steps summarized. The latest user request is never left to the
+    /// summary: it is carried verbatim after it, and when it cannot fit the
+    /// plan fails with a capacity error.
     FitMidTurn,
 }
 

@@ -8,6 +8,17 @@ requests land in `develop`.
 
 ### Added
 
+- **Switching model from the terminal client**: in a conversation, the model list (`f2` or
+  `/model`) now moves that conversation to the model you pick, then to the variant you pick, and
+  `/model <alias>` typed in the message box does the same. `ctrl+n` in the model list opens the
+  model in a new tab instead, and `/new <alias>` still opens a new tab. On an empty tab, picking a
+  model still starts the conversation on it. While the agent is working, the switch happens when
+  its turn ends, and the top row shows `→ alias (after this turn)` until then. While the agent
+  waits for your answer or for a permission decision, the switch is refused and the reason is
+  shown. After a switch, the top row shows the new model, its variant and its window, and the
+  conversation shows one line such as `model: opus → luna · high · 872k`. If the server refuses
+  the switch, its reason is shown and nothing changes.
+
 - **`/model <alias>` switches the model of the conversation**: the conversation, its id and its
   stream stay; the next request goes to the new alias with its own default variant and the whole
   history. It runs between turns: at once when the session is idle, after the running turn

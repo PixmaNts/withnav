@@ -74,9 +74,9 @@ one per tab; each tab streams its own session in the background.
 | `client.rs` | the HTTP client: models, sessions, create/resume, send, stop, the command list and a command run, a permission answer (409 `permission_stale` read as stale), open the event stream; send failures split into rejected and uncertain |
 | `stream.rs` | one SSE subscription: decoding, reconnect with backoff, resume after the last seq, cancellation |
 | `reducer/mod.rs` | `update`: `ClientEvent` to `State` changes and new `Effect`s; routes each event to the tab holding its generation, marks a background tab unread, drops events no tab holds |
-| `reducer/envelope.rs` | `EventEnvelope` to blocks: steps, tools (planned, running, settled), usage, errors, command results, permission prompts (open until their `permission.resolved`); the tab's agent from `session.agent_changed` and its variant from a `/variant` result; live and replay give the same blocks |
+| `reducer/envelope.rs` | `EventEnvelope` to blocks: steps, tools (planned, running, settled), usage, errors, command results, permission prompts (open until their `permission.resolved`); the tab's agent from `session.agent_changed`, its variant from a `/variant` result, its model, variant and window from `model.changed` (with a one-line notice for a switch); a `/model` accepted for after the turn kept as the pending switch until `model.changed`, a refused one shown with the server's reason; live and replay give the same blocks |
 | `reducer/command.rs` | `outcome_text`: a command result as the short text the transcript shows, in the client's own words; `tokens` for `42k` / `1M` |
-| `reducer/actions.rs` | `handle_action`: `Action` to `UiState`/`State` changes and `Effect`s; opening (at most nine), switching and closing tabs; server commands, the build/plan switch, the model and variant picks |
+| `reducer/actions.rs` | `handle_action`: `Action` to `UiState`/`State` changes and `Effect`s; opening (at most nine), switching and closing tabs; server commands, the build/plan switch, the model and variant picks: on a live conversation the model list and `/model <alias>` send `/model` (then `/variant` for a chosen variant other than the target's default), refused locally with the reason while a question or permission request waits; on an empty tab the pick sets the starting model |
 | `reducer/text.rs` | `strip_controls`, applied to every piece of model and tool text |
 | `input.rs` | the `Editor` and `route_key`/`route_paste`: keys to editor edits or `Action`s; the open permission request's `y`/`a`/`n` and deny message; the second enter before text that would cancel it |
 | `commands.rs` | the command catalog, the key help and the key to `Action` map; `palette`, the client's and the server's commands in one list; `route`, the server's prefix rule (a slash in the first column, `//text` is the literal `/text`) with the client's own commands kept local and their arguments checked; `variant_choices`, the rows of the variant list |
@@ -86,7 +86,7 @@ one per tab; each tab streams its own session in the background.
 | `terminal.rs` | raw mode and the alternate screen, restored on exit and on panic |
 | `theme.rs` | the four themes (`ThemeId`, the `Theme` colour roles), the RGB `blend` for tints, and the semantic styles the views draw with |
 | `view/mod.rs` | `draw`: layout of header, sidebar, transcript, right column, status line, editor, key bar and overlays; the key bar lists the keys that apply now, the prompt's while one waits |
-| `view/header.rs` | the header row: `◆ navai`, workspace, git branch and change count, `▌agent` in its colour, alias · model · variant · context gauge; the path and the model give way first |
+| `view/header.rs` | the header row: `◆ navai`, workspace, git branch and change count, `▌agent` in its colour, alias · model · variant · context gauge, then `→ alias (after this turn)` for a switch the server accepted for after the running turn; the path and the model give way first |
 | `view/panel.rs` | the right column (36 columns, hidden under 140 unless `alt+r` asks): Agents (the one in use, with its role for build and plan), Context (the last snapshot's breakdown and the last compaction), Skills (listed and omitted), Changes (git); a section with no data shows `—`, none is invented |
 | `view/sidebar.rs` | the tab sidebar: number, title, `<agent> · <state>`, unread mark, active tint, tab keys; hidden under 80 columns |
 | `view/transcript.rs` | block layout and drawing: messages by origin, steps, tools, errors, permission prompts, scroll and selection |
@@ -94,7 +94,7 @@ one per tab; each tab streams its own session in the background.
 | `view/tool.rs` | the one-line summary and the expanded output of a tool call |
 | `view/markdown.rs` | markdown to styled lines, cached per block revision |
 | `view/status.rs` | the status line of the active tab: activity, connection, delivery warning, notice, session tokens; `context_gauge` and `shorten`, shared with the header |
-| `view/pickers.rs` | the model (alias, model, window, variants), variant, session, command, theme and help overlays: centred, accent border, the screen behind dimmed, a `❯` filter line and the keys at the foot; a long list scrolls to its selected row |
+| `view/pickers.rs` | the model (alias, model, window, variants; on a live conversation it switches it, `ctrl+n` opens a new tab, with a note when the switch waits for the turn or is refused), variant, session, command, theme and help overlays: centred, accent border, the screen behind dimmed, a `❯` filter line and the keys at the foot; a long list scrolls to its selected row |
 
 ## Data flows
 

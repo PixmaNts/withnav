@@ -83,6 +83,9 @@ pub fn route_key(
     if matches!(key.kind, KeyEventKind::Release) {
         return None;
     }
+    if ui.overlay == Some(Overlay::Commands) && ui.palette_typed {
+        return typed_palette_key(key, state, ui, editor);
+    }
     if let Some(overlay) = ui.overlay {
         let names = overlay_names(overlay, state, ui);
         let selected = ui.selection.entry(format!("{overlay:?}")).or_default();
@@ -134,7 +137,22 @@ pub fn route_key(
                     }
                     Overlay::Variants => Action::PickVariant(name.clone()),
                     Overlay::Sessions => Action::ResumeSession(name.clone()),
-                    Overlay::Commands => commands::command_action(name, ui.mode)?,
+                    Overlay::Commands => {
+                        let row = commands::palette_rows(state, &ui.filter, false)
+                            .into_iter()
+                            .find(|r| &r.name == name)?;
+                        if !row.runs_bare() {
+                            // It needs an argument: the name goes to the editor to finish.
+                            editor.set_text(&format!("{} ", row.name));
+                            editor
+                                .area_mut()
+                                .move_cursor(ratatui_textarea::CursorMove::End);
+                            ui.overlay = None;
+                            ui.filter.clear();
+                            return None;
+                        }
+                        commands::palette_action(&row, ui.mode, None)?
+                    }
                     Overlay::Themes => Action::PickTheme(ThemeId::from_id(name)?),
                     Overlay::Help => return None,
                 };
@@ -250,7 +268,13 @@ pub fn route_key(
         }
     }
     if key.code == KeyCode::Char('/') && editor.text().is_empty() {
+        // The slash is typed into the editor; the palette follows what comes after it.
+        editor.set_text("/");
+        editor
+            .area_mut()
+            .move_cursor(ratatui_textarea::CursorMove::End);
         ui.overlay = Some(Overlay::Commands);
+        ui.palette_typed = true;
         ui.filter.clear();
         ui.selection.insert("Commands".into(), 0);
         return Some(Action::OpenOverlay(Overlay::Commands));
@@ -294,6 +318,80 @@ pub fn route_key(
     None
 }
 
+/// A key while the palette follows the editor. Every printable key and backspace edit the line;
+/// the palette then closes when the line is no longer a command name being typed (a space or an
+/// argument after it, a name no row starts with, `//`, an empty line), leaving the line for enter.
+fn typed_palette_key(
+    key: KeyEvent,
+    state: &State,
+    ui: &mut UiState,
+    editor: &mut Editor,
+) -> Option<Action> {
+    let rows = commands::palette_rows(state, &ui.filter, true);
+    let selected = ui.selection.entry("Commands".into()).or_default();
+    match key.code {
+        KeyCode::Esc => {
+            // The line stays; esc only puts the list away.
+            close_palette(ui);
+            return Some(Action::CloseOverlay);
+        }
+        KeyCode::Up => {
+            *selected = selected.saturating_sub(1);
+            return None;
+        }
+        KeyCode::Down => {
+            *selected = (*selected + 1).min(rows.len().saturating_sub(1));
+            return None;
+        }
+        KeyCode::Tab | KeyCode::Enter => {
+            let row = rows.get(*selected)?.clone();
+            let complete = key.code == KeyCode::Tab || !row.runs_bare();
+            close_palette(ui);
+            if complete {
+                // Fills in the name; the driver types the argument and sends it with enter.
+                editor.set_text(&format!("{} ", row.name));
+                editor
+                    .area_mut()
+                    .move_cursor(ratatui_textarea::CursorMove::End);
+                return Some(Action::CloseOverlay);
+            }
+            let revision = editor.revision();
+            let action = commands::palette_action(&row, ui.mode, Some(revision));
+            if !row.server {
+                // A client command runs now; nothing waits for a server to take the line.
+                editor.clear_if_revision(revision);
+            }
+            return action;
+        }
+        _ => {}
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    if editor.area_mut().input_without_shortcuts(key) {
+        editor.bump();
+    }
+    let text = editor.text();
+    let name = text.strip_prefix('/').unwrap_or_default();
+    let still_a_name = text.starts_with('/')
+        && !name.starts_with('/')
+        && !name.contains(char::is_whitespace)
+        && !commands::palette_rows(state, name, true).is_empty();
+    if !still_a_name {
+        close_palette(ui);
+        return Some(Action::CloseOverlay);
+    }
+    ui.filter = name.to_string();
+    ui.selection.insert("Commands".into(), 0);
+    None
+}
+
+fn close_palette(ui: &mut UiState) {
+    ui.overlay = None;
+    ui.palette_typed = false;
+    ui.filter.clear();
+}
+
 /// The keys of the rows an overlay lists under the current filter, in display order.
 fn overlay_names(overlay: Overlay, state: &State, ui: &UiState) -> Vec<String> {
     match overlay {
@@ -319,13 +417,9 @@ fn overlay_names(overlay: Overlay, state: &State, ui: &UiState) -> Vec<String> {
             })
             .map(|x| x.id.clone())
             .collect(),
-        Overlay::Commands => commands::CATALOG
-            .iter()
-            .filter(|x| {
-                x.name.contains(&ui.filter.to_lowercase())
-                    || x.description.contains(&ui.filter.to_lowercase())
-            })
-            .map(|x| x.name.to_string())
+        Overlay::Commands => commands::palette_rows(state, &ui.filter, ui.palette_typed)
+            .into_iter()
+            .map(|r| r.name)
             .collect(),
         Overlay::Themes => ThemeId::ALL
             .iter()

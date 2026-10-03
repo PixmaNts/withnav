@@ -134,6 +134,18 @@ fn press(rt: &mut Runtime, code: KeyCode) {
     rt.handle_terminal_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
 }
 
+/// Types `text` key by key through the terminal input (`⏎` is enter).
+fn type_keys(rt: &mut Runtime, text: &str) {
+    for c in text.chars() {
+        let code = if c == '⏎' {
+            KeyCode::Enter
+        } else {
+            KeyCode::Char(c)
+        };
+        press(rt, code);
+    }
+}
+
 fn type_and_send(rt: &mut Runtime, text: &str) {
     rt.editor.set_text(text);
     press(rt, KeyCode::Enter);
@@ -611,7 +623,7 @@ fn command_blocks(tab: &navai::tui::state::Tab) -> Vec<(String, bool, String)> {
 }
 
 // Given a conversation that answered once
-// When the driver types `/context`, then an unknown `/contxt`, then `//context`
+// When the driver types, key by key, `/context`, then an unknown `/contxt`, then `//context`
 // Then the first two run on the server and come back as command blocks (the editor cleared once
 //      the server took them), and the third is sent as the message "/context"
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -632,7 +644,7 @@ async fn typed_server_commands_run_and_show_their_outcome() {
     type_and_send(&mut rt, "hello");
     until("the first answer", &mut rt, |_, rt| has_final(rt, "Hi.")).await;
 
-    type_and_send(&mut rt, "/context");
+    type_keys(&mut rt, "/context⏎");
     until("the context outcome", &mut rt, |_, rt| {
         command_blocks(&rt.state)
             .iter()
@@ -647,7 +659,7 @@ async fn typed_server_commands_run_and_show_their_outcome() {
     })
     .await;
 
-    type_and_send(&mut rt, "/contxt");
+    type_keys(&mut rt, "/contxt⏎");
     until("the unknown command's answer", &mut rt, |_, rt| {
         command_blocks(&rt.state)
             .iter()
@@ -659,8 +671,12 @@ async fn typed_server_commands_run_and_show_their_outcome() {
     assert!(text.contains("/context"), "names the close one: {text}");
     let shown = screen(&mut rt);
     assert!(shown.contains("/contxt · error"), "{shown}");
+    until("the editor to clear", &mut rt, |_, rt| {
+        rt.editor.text().is_empty()
+    })
+    .await;
 
-    type_and_send(&mut rt, "//context");
+    type_keys(&mut rt, "//context⏎");
     until("the literal message's answer", &mut rt, |_, rt| {
         has_final(rt, "A literal slash.")
     })
@@ -800,4 +816,15 @@ async fn variant_step_and_slash_variant_drive_the_server() {
     .await;
     let body: serde_json::Value = serde_json::from_str(&provider.bodies()[1]).expect("body");
     assert_eq!(body["reasoning_effort"], "high", "{body}");
+
+    // typed key by key: `/variant low⏎` switches back
+    until("the editor to clear", &mut rt, |_, rt| {
+        rt.editor.text().is_empty()
+    })
+    .await;
+    type_keys(&mut rt, "/variant low⏎");
+    until("the switch to low", &mut rt, |_, rt| {
+        rt.state.variant.as_deref() == Some("low")
+    })
+    .await;
 }

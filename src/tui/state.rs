@@ -276,6 +276,9 @@ pub struct UiState {
     pub theme: crate::tui::theme::ThemeId,
     /// The theme in effect when the theme picker opened; `esc` goes back to it.
     pub theme_on_open: Option<crate::tui::theme::ThemeId>,
+    /// The command palette was opened by typing `/` in the editor: the editor holds the line and
+    /// the filter follows it.
+    pub palette_typed: bool,
     /// What the variant list is choosing for, while it is open.
     pub variant_pick: Option<VariantPick>,
     /// The tab sidebar is hidden by the driver (it also hides itself on narrow terminals).

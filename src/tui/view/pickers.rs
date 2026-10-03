@@ -71,16 +71,13 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
                 ])
             })
             .collect(),
-        Overlay::Commands => commands::CATALOG
-            .iter()
-            .filter(|entry| {
-                entry.name.contains(&ui.filter.to_lowercase())
-                    || entry.description.contains(&ui.filter.to_lowercase())
-            })
-            .map(|entry| {
+        Overlay::Commands => commands::palette_rows(state, &ui.filter, ui.palette_typed)
+            .into_iter()
+            .map(|row| {
+                let usage = format!("{} {}", row.name, row.args_hint);
                 Line::from(vec![
-                    Span::styled(format!("{:<13}", entry.name), theme.accent()),
-                    Span::styled(entry.description, theme.muted()),
+                    Span::styled(format!("{:<22}", usage.trim_end()), theme.accent()),
+                    Span::styled(row.description, theme.muted()),
                 ])
             })
             .collect(),

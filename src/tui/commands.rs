@@ -8,45 +8,127 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub struct Command {
     pub name: &'static str,
     pub description: &'static str,
+    /// Argument synopsis, empty when the command takes none (`[alias]`).
+    pub args_hint: &'static str,
 }
 pub const CATALOG: &[Command] = &[
     Command {
         name: "/new",
         description: "new conversation in a new tab",
+        args_hint: "[alias]",
     },
     Command {
         name: "/sessions",
         description: "browse conversations",
+        args_hint: "",
     },
     Command {
         name: "/model",
         description: "choose model for a new conversation",
+        args_hint: "[alias]",
     },
     Command {
         name: "/variant",
         description: "choose the model variant for this conversation",
+        args_hint: "[name|off]",
     },
     Command {
         name: "/stop",
         description: "stop generation",
+        args_hint: "",
     },
     Command {
         name: "/mode",
         description: "cycle delivery mode (steer and interrupt send as next-turn)",
+        args_hint: "",
     },
     Command {
         name: "/theme",
         description: "choose the colour theme",
+        args_hint: "",
     },
     Command {
         name: "/help",
         description: "show keyboard shortcuts",
+        args_hint: "",
     },
     Command {
         name: "/quit",
         description: "quit terminal client",
+        args_hint: "",
     },
 ];
+
+/// One row of the command palette: a client command or one the server runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaletteRow {
+    /// With its leading slash.
+    pub name: String,
+    pub args_hint: String,
+    pub description: String,
+    /// The server runs it in the conversation.
+    pub server: bool,
+}
+
+impl PaletteRow {
+    /// The command can run with no argument (none, or only optional ones).
+    pub fn runs_bare(&self) -> bool {
+        self.args_hint.is_empty() || self.args_hint.starts_with('[')
+    }
+}
+
+/// The client's commands, then the server's that the client does not handle itself.
+pub fn palette(state: &State) -> Vec<PaletteRow> {
+    let mut rows: Vec<PaletteRow> = CATALOG
+        .iter()
+        .map(|c| PaletteRow {
+            name: c.name.to_string(),
+            args_hint: c.args_hint.to_string(),
+            description: c.description.to_string(),
+            server: false,
+        })
+        .collect();
+    for c in &state.server_commands {
+        let name = format!("/{}", c.name);
+        if !rows.iter().any(|r| r.name == name) {
+            rows.push(PaletteRow {
+                name,
+                args_hint: c.args_hint.clone(),
+                description: c.description.to_lowercase(),
+                server: true,
+            });
+        }
+    }
+    rows
+}
+
+/// The palette rows under `filter`. Typed after `/` (`by_name`), it matches the start of the
+/// command name; typed in the palette opened with ctrl+p, any part of the name or description.
+pub fn palette_rows(state: &State, filter: &str, by_name: bool) -> Vec<PaletteRow> {
+    let filter = filter.to_lowercase();
+    palette(state)
+        .into_iter()
+        .filter(|r| {
+            if by_name {
+                r.name[1..].starts_with(&filter)
+            } else {
+                r.name.contains(&filter) || r.description.to_lowercase().contains(&filter)
+            }
+        })
+        .collect()
+}
+
+/// What choosing a palette row does: the client's action, or a server run with no argument.
+pub fn palette_action(row: &PaletteRow, mode: Mode, revision: Option<u64>) -> Option<Action> {
+    if row.server {
+        return Some(Action::RunCommand {
+            name: row.name[1..].to_string(),
+            arguments: String::new(),
+            revision,
+        });
+    }
+    command_action(&row.name, mode)
+}
 
 pub const KEYS: &[(&str, &str)] = &[
     ("enter", "send / choose"),

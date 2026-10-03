@@ -331,7 +331,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             if let Some(child) = child.and_then(|id| {
                 s.children
                     .iter_mut()
-                    .find(|c| c.session_id == id && !c.status.terminal())
+                    .find(|c| c.session_id == id && !c.status.terminal() && c.child_seq.is_none())
             }) {
                 child.status = ChildStatus::Permission;
                 child.event_seq = Some(e.seq);
@@ -420,7 +420,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             if let Some(child) = v["child_session_id"].as_str().and_then(|id| {
                 s.children
                     .iter_mut()
-                    .find(|c| c.session_id == id && !c.status.terminal())
+                    .find(|c| c.session_id == id && !c.status.terminal() && c.child_seq.is_none())
             }) {
                 child.status = ChildStatus::Running;
                 child.event_seq = Some(e.seq);

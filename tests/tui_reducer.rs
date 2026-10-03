@@ -17,6 +17,69 @@ use ulid::Ulid;
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
+#[test]
+fn late_permission_mirrors_and_replayed_child_events_do_not_hide_continue() {
+    let mut s = subagent_parent();
+    spawn_subagent(&mut s, None);
+    let mut script = Script::new();
+    script.seq = 10;
+    script.raw(
+        "agent.yield",
+        json!({"kind":"budget","question":"step budget exhausted"}),
+    );
+    update(
+        &mut s,
+        ClientEvent::ChildEnvelope {
+            generation: Generation(0),
+            child_session_id: Ulid(2).to_string(),
+            envelope: script.out[0].clone(),
+        },
+    )
+    .unwrap();
+    subagent_event(
+        &mut s,
+        2,
+        "permission.resolved",
+        json!({"request_id":"old","resolution":"allow_once","child_session_id":Ulid(2)}),
+    );
+    assert_eq!(s.children[0].status, ChildStatus::OutOfSteps);
+    script.seq = 5;
+    script.raw(
+        "permission.resolved",
+        json!({"request_id":"old","resolution":"allow_once"}),
+    );
+    update(
+        &mut s,
+        ClientEvent::ChildEnvelope {
+            generation: Generation(0),
+            child_session_id: Ulid(2).to_string(),
+            envelope: script.out[1].clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.children[0].status, ChildStatus::OutOfSteps);
+}
+
+#[test]
+fn a_terminal_list_status_updates_a_child_without_an_open_parent() {
+    let mut s = subagent_parent();
+    s.session.as_mut().unwrap().session_id = Ulid(2).to_string();
+    s.parent_session_id = Some(Ulid(1).to_string());
+    s.child_status = ChildStatus::Running;
+    let entry = serde_json::from_value(json!({"id":Ulid(2),"created_at":"now","updated_at":"now","message_count":1,"live":false,"parent_session_id":Ulid(1),"child_status":"done","promptable":false})).unwrap();
+    update(
+        &mut s,
+        ClientEvent::Sessions {
+            generation: Generation(0),
+            result: Ok(SessionListBody {
+                sessions: vec![entry],
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.active_child_status(), ChildStatus::Done);
+}
+
 #[tokio::test]
 async fn child_watches_keep_the_parent_owner_are_idempotent_and_end_on_completion() {
     use navai::tui::{

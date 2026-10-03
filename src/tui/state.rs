@@ -204,6 +204,7 @@ pub struct Tab {
     /// Read-only transcript opened from a parent's reported child link.
     pub parent_session_id: Option<String>,
     pub child_status: ChildStatus,
+    pub child_status_seq: Option<u64>,
     /// The workspace's branch and changes at the last read; `None` until read, or when the
     /// workspace is not a git repository.
     pub git: Option<super::git::GitStatus>,
@@ -296,6 +297,19 @@ pub enum ChildStatus {
 }
 
 impl ChildStatus {
+    pub fn project(status: &mut Self, seq: &mut Option<u64>, event: &EventEnvelope) {
+        if status.terminal() || seq.is_some_and(|held| event.seq <= held) {
+            return;
+        }
+        *seq = Some(event.seq);
+        *status = match event.kind.as_str() {
+            "turn.start" => Self::Running,
+            "agent.yield" if event.payload["kind"] == "budget" => Self::OutOfSteps,
+            "permission.requested" => Self::Permission,
+            "permission.resolved" => Self::Running,
+            _ => *status,
+        };
+    }
     pub fn from_wire(status: &str) -> Self {
         match status {
             "running" | "active" => Self::Running,

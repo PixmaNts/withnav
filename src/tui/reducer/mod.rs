@@ -257,25 +257,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             envelope,
             ..
         } => {
-            if let Some(child) = s
-                .children
-                .iter_mut()
-                .find(|c| c.session_id == child_session_id)
-            {
-                if child.child_seq.is_none_or(|seq| envelope.seq > seq) && !child.status.terminal()
-                {
-                    child.child_seq = Some(envelope.seq);
-                    child.status = match envelope.kind.as_str() {
-                        "turn.start" => super::state::ChildStatus::Running,
-                        "agent.yield" if envelope.payload["kind"] == "budget" => {
-                            super::state::ChildStatus::OutOfSteps
-                        }
-                        "permission.requested" => super::state::ChildStatus::Permission,
-                        "permission.resolved" => super::state::ChildStatus::Running,
-                        _ => child.status,
-                    };
-                }
-            }
+            project_child(s, &child_session_id, &envelope);
         }
         ClientEvent::Envelope { envelope, .. } => {
             let spawned = (envelope.kind == "subagent.spawned"
@@ -292,19 +274,16 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             .flatten();
             // A turn may have changed files: the branch and the changes are read again.
             let turn_end = envelope.kind == crate::bus::event::EventKind::TurnEnd.as_str();
-            let child_status = if s.read_only() {
-                match envelope.kind.as_str() {
-                    "turn.start" => Some(super::state::ChildStatus::Running),
-                    "agent.yield" if envelope.payload["kind"] == "budget" => {
-                        Some(super::state::ChildStatus::OutOfSteps)
-                    }
-                    "permission.requested" => Some(super::state::ChildStatus::Permission),
-                    "permission.resolved" => Some(super::state::ChildStatus::Running),
-                    _ => None,
+            if s.read_only() && s.last_applied_seq.is_none_or(|seq| envelope.seq > seq) {
+                if let Some(id) = s
+                    .session
+                    .as_ref()
+                    .map(|m| m.session_id.clone())
+                    .or(s.resuming.clone())
+                {
+                    project_child(s, &id, &envelope);
                 }
-            } else {
-                None
-            };
+            }
             envelope::apply_envelope(s, envelope)?;
             effects.extend(
                 s.children
@@ -314,25 +293,6 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             );
             if let Some(child) = spawned {
                 effects.push(watch_child(s, child));
-            }
-            if let Some(status) = child_status {
-                s.child_status = status;
-                let child_id = s
-                    .session
-                    .as_ref()
-                    .map(|m| m.session_id.clone())
-                    .or(s.resuming.clone());
-                if let Some(child_id) = child_id {
-                    for tab in &mut s.tabs {
-                        if let Some(child) = tab
-                            .children
-                            .iter_mut()
-                            .find(|c| c.session_id == child_id && !c.status.terminal())
-                        {
-                            child.status = status;
-                        }
-                    }
-                }
             }
             if turn_end {
                 effects.extend(read_git(s));
@@ -680,6 +640,28 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
     Ok(effects)
 }
 
+fn project_child(s: &mut State, id: &str, envelope: &crate::bus::event::EventEnvelope) {
+    for tab in &mut s.tabs {
+        if let Some(child) = tab.children.iter_mut().find(|c| c.session_id == id) {
+            super::state::ChildStatus::project(&mut child.status, &mut child.child_seq, envelope);
+        }
+        if tab.read_only()
+            && tab
+                .session
+                .as_ref()
+                .map(|m| m.session_id.as_str())
+                .or(tab.resuming.as_deref())
+                == Some(id)
+        {
+            super::state::ChildStatus::project(
+                &mut tab.child_status,
+                &mut tab.child_status_seq,
+                envelope,
+            );
+        }
+    }
+}
+
 fn watch_child(tab: &super::state::Tab, child_session_id: String) -> Effect {
     Effect::WatchChild {
         parent_session_id: tab
@@ -711,6 +693,19 @@ fn child_watches(s: &State) -> Vec<Effect> {
 
 fn seed_children(s: &mut State) {
     for tab in &mut s.tabs {
+        if let Some(entry) = s.sessions.iter().find(|e| {
+            tab.session
+                .as_ref()
+                .map(|m| m.session_id.as_str())
+                .or(tab.resuming.as_deref())
+                == Some(e.id.as_str())
+        }) {
+            let status =
+                super::state::ChildStatus::from_wire(entry.child_status.as_deref().unwrap_or(""));
+            if status.terminal() {
+                tab.child_status = status;
+            }
+        }
         let Some(parent) = tab
             .session
             .as_ref()
@@ -725,7 +720,12 @@ fn seed_children(s: &mut State) {
             .filter(|e| e.parent_session_id.as_ref() == Some(parent))
         {
             if let Some(child) = tab.children.iter_mut().find(|c| c.session_id == entry.id) {
-                if child.event_seq.is_none() {
+                if child.event_seq.is_none()
+                    || super::state::ChildStatus::from_wire(
+                        entry.child_status.as_deref().unwrap_or(""),
+                    )
+                    .terminal()
+                {
                     child.status = super::state::ChildStatus::from_wire(
                         entry.child_status.as_deref().unwrap_or(""),
                     );

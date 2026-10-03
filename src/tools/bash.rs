@@ -280,21 +280,40 @@ mod tests {
             let cx = ctx(tmp.path());
             async move { run_bash(&cmd, &cx, cancel2, 30_000, 200).await }
         });
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        let descendant_pid: i32 = std::fs::read_to_string(&pidfile)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
+        // Under a loaded test run the shell can take well over a few hundred
+        // milliseconds to start and write the pid: wait for the file instead
+        // of sleeping a fixed time, bounded so a real failure still fails.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let descendant_pid: i32 = loop {
+            if let Some(pid) = std::fs::read_to_string(&pidfile)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
+                break pid;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the shell never wrote the descendant's pid"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
         cancel.cancel();
         let res = handle.await.unwrap().unwrap();
         assert_eq!(res.status, ToolStatus::Interrupted);
-        tokio::time::sleep(Duration::from_millis(400)).await;
-        let alive = matches!(
-            nix::sys::signal::kill(Pid::from_raw(descendant_pid), None),
-            Ok(())
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let alive = || {
+            matches!(
+                nix::sys::signal::kill(Pid::from_raw(descendant_pid), None),
+                Ok(())
+            )
+        };
+        while alive() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            !alive(),
+            "descendant {descendant_pid} should be dead (ESRCH)"
         );
-        assert!(!alive, "descendant {descendant_pid} should be dead (ESRCH)");
     }
 
     #[tokio::test]

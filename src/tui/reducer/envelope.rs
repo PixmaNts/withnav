@@ -10,7 +10,7 @@
 //! are only buffered per index until the step's `llm.response` replaces them.
 use super::{block, text::strip_controls};
 use crate::{
-    bus::event::{EventEnvelope, EventKind},
+    bus::event::{ContextSnapshot, EventEnvelope, EventKind},
     provider::{StreamDelta, ToolCall, Usage},
     tools::ToolStatus,
     tui::{
@@ -251,6 +251,10 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 settle_turn_tools(s, &actor, t, outcome);
             }
         }
+        Some(EventKind::ContextUpdated) => {
+            let snapshot = serde_json::from_value(e.payload).map_err(|_| bad())?;
+            keep_newer_context(s, snapshot);
+        }
         Some(EventKind::AgentState) => {
             s.activity = match e.payload["to"].as_str().unwrap_or("") {
                 "running" => Activity::Running,
@@ -299,6 +303,17 @@ fn upsert(v: &mut Vec<Block>, id: String, kind: BlockKind) {
         b.kind = kind
     } else {
         v.push(block(id, kind))
+    }
+}
+
+/// Keeps `snapshot` unless the state already holds a newer revision.
+pub(super) fn keep_newer_context(s: &mut State, snapshot: ContextSnapshot) {
+    if s.conversation
+        .context
+        .as_ref()
+        .is_none_or(|held| snapshot.revision >= held.revision)
+    {
+        s.conversation.context = Some(snapshot);
     }
 }
 

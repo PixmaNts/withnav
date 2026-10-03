@@ -56,6 +56,10 @@ pub struct Conversation {
     pub tools_by_turn: HashMap<(String, String), Vec<String>>,
     pub usage_by_step: HashMap<(String, String, String), Usage>,
     pub context_tokens: Option<u64>,
+    /// The server's estimate of the next request, from `context.updated` or
+    /// `GET /context`; the status line shows it. `context_tokens` stays the
+    /// provider's last prompt count.
+    pub context: Option<crate::bus::event::ContextSnapshot>,
     pub completion_tokens: Option<u64>,
     pub session_tokens: Option<u64>,
     pub missing_usage: bool,

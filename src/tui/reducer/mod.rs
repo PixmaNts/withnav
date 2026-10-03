@@ -33,6 +33,7 @@ fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::Created { generation, .. }
         | ClientEvent::Resumed { generation, .. }
         | ClientEvent::Metadata { generation, .. }
+        | ClientEvent::Context { generation, .. }
         | ClientEvent::Submitted { generation, .. }
         | ClientEvent::Stopped { generation, .. }
         | ClientEvent::DeliveryUncertain { generation }
@@ -104,7 +105,11 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
         ClientEvent::Envelope { envelope, .. } => envelope::apply_envelope(s, envelope)?,
         ClientEvent::Resync { .. } => {
             // Keeps catalog, model, session list, pending submit, notice and the session itself.
+            // The gauge is server state, not derived from the replay (`context.updated` is
+            // live-only), so it stays too.
+            let context = s.conversation.context.take();
             reset_projection(s);
+            s.conversation.context = context;
             effects.push(Effect::Subscribe {
                 session_id: s
                     .session
@@ -153,9 +158,10 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
                     s.activity = Activity::Idle;
                 }
                 effects.push(Effect::FetchMetadata(r.session_id.clone()));
+                effects.push(Effect::FetchContext(r.session_id.clone()));
                 // `None` for a fresh conversation; the kept cursor when resuming the same one.
                 effects.push(Effect::Subscribe {
-                    session_id: r.session_id,
+                    session_id: r.session_id.clone(),
                     cursor: s.last_applied_seq,
                 });
                 if let Some(text) = s.pending_submit_text.take() {
@@ -175,6 +181,12 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
                 s.selected_model_alias = Some(m.model.clone());
                 refresh_model(s);
                 s.session = Some(m)
+            }
+        }
+        // An older server has no endpoint: the gauge stays on the provider's count.
+        ClientEvent::Context { result, .. } => {
+            if let Ok(snapshot) = result {
+                envelope::keep_newer_context(s, snapshot);
             }
         }
         ClientEvent::Submitted {

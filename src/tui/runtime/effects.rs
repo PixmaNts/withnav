@@ -132,6 +132,15 @@ impl Executor {
                     }
                 });
             }
+            Effect::FetchContext(id) => {
+                let client = self.client.clone();
+                self.spawn_event(async move {
+                    ClientEvent::Context {
+                        generation,
+                        result: client.context(&id).await,
+                    }
+                });
+            }
             Effect::Subscribe { session_id, cursor } => {
                 self.subscribe(session_id, cursor, generation);
             }

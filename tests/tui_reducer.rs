@@ -926,13 +926,13 @@ fn stop_then_resume() {
     assert_eq!(fx, vec![Effect::Resume("S1".into())]);
     let fx = resumed_now(&mut s, "S1").unwrap();
     assert_eq!(
-        fx[1],
+        fx[2],
         Effect::Subscribe {
             session_id: "S1".into(),
             cursor: Some(5)
         }
     );
-    assert!(matches!(&fx[2], Effect::SendAt { revision: 4, .. }));
+    assert!(matches!(&fx[3], Effect::SendAt { revision: 4, .. }));
     feed(&mut s, &load("resumed"));
     assert_eq!(s.activity, Activity::Idle);
     assert_eq!(steps(&s).len(), 2);
@@ -1382,4 +1382,100 @@ fn message_source_is_kept_as_the_actor_id() {
         &s.conversation.blocks[0].kind,
         BlockKind::Message { source, .. } if source == "user:http"
     ));
+}
+
+// ---------------------------------------------------------------- context gauge
+
+fn snapshot(revision: u64, estimate_total: u64) -> ContextSnapshot {
+    ContextSnapshot {
+        alias: "default".into(),
+        variant: None,
+        window: 1_000_000,
+        window_source: "models.json".into(),
+        estimate_total,
+        breakdown: Default::default(),
+        output_reserve: 8192,
+        margin: 50_000,
+        input_budget: 941_808,
+        percent: estimate_total * 100 / 1_000_000,
+        last_usage: None,
+        revision,
+    }
+}
+
+#[test]
+fn context_updated_feeds_the_gauge_and_keeps_the_provider_count_apart() {
+    let mut s = run("tools_replay");
+    assert_eq!(s.conversation.context_tokens, Some(150));
+    assert!(s.conversation.context.is_none());
+    let mut script = Script::new();
+    script.seq = 1_000;
+    script.push(EventKind::ContextUpdated, &snapshot(2, 42_000));
+    feed(&mut s, &script.out);
+    assert_eq!(
+        s.conversation.context.as_ref().unwrap().estimate_total,
+        42_000
+    );
+    assert_eq!(s.conversation.context_tokens, Some(150));
+}
+
+#[test]
+fn an_older_snapshot_never_replaces_a_newer_one() {
+    let mut s = st();
+    let mut script = Script::new();
+    script.push(EventKind::ContextUpdated, &snapshot(5, 50_000));
+    script.push(EventKind::ContextUpdated, &snapshot(4, 10_000));
+    feed(&mut s, &script.out);
+    assert_eq!(s.conversation.context.as_ref().unwrap().revision, 5);
+    let ev = ClientEvent::Context {
+        generation: s.generation.clone(),
+        result: Ok(snapshot(6, 60_000)),
+    };
+    update(&mut s, ev).unwrap();
+    assert_eq!(
+        s.conversation.context.as_ref().unwrap().estimate_total,
+        60_000
+    );
+    // An error (an older server has no endpoint) changes nothing.
+    let ev = ClientEvent::Context {
+        generation: s.generation.clone(),
+        result: Err("HTTP 404".into()),
+    };
+    update(&mut s, ev).unwrap();
+    assert_eq!(s.conversation.context.as_ref().unwrap().revision, 6);
+}
+
+#[test]
+fn a_malformed_context_payload_is_a_protocol_error() {
+    let mut s = st();
+    let mut script = Script::new();
+    script.raw("context.updated", json!({"window": "big"}));
+    let ev = envelope(&s, &script.out[0]);
+    assert!(update(&mut s, ev).is_err());
+}
+
+#[test]
+fn creating_a_session_fetches_its_context_and_a_resync_keeps_it() {
+    let mut s = st();
+    models_now(&mut s, Some("a".into())).unwrap();
+    let created = ClientEvent::Created {
+        generation: s.generation.clone(),
+        result: Ok(CreateSessionResponse {
+            session_id: "s1".into(),
+            root_actor_id: "agent:main".into(),
+            actor_state: "idle".into(),
+        }),
+    };
+    let effects = update(&mut s, created).unwrap();
+    assert!(effects.contains(&Effect::FetchContext("s1".into())));
+    let held = ClientEvent::Context {
+        generation: s.generation.clone(),
+        result: Ok(snapshot(3, 30_000)),
+    };
+    update(&mut s, held).unwrap();
+    let resync = ClientEvent::Resync {
+        generation: s.generation.clone(),
+    };
+    update(&mut s, resync).unwrap();
+    assert_eq!(s.conversation.context.as_ref().unwrap().revision, 3);
 }

@@ -392,6 +392,60 @@ impl CommandResult {
     }
 }
 
+/// The estimated size of one request, split by where its text comes from.
+/// The categories add up to [`Breakdown::total`] exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Breakdown {
+    /// The system contract and the role prompt.
+    pub system: u64,
+    /// The local instructions message.
+    pub rules: u64,
+    /// The skills catalog message.
+    pub skills_catalog: u64,
+    /// The serialized tool definitions.
+    pub tools: u64,
+    /// The history: user and assistant text, reasoning, tool calls, tool
+    /// outputs and loaded skill bodies.
+    pub messages: u64,
+}
+
+/// The provider usage of the last step that reported one: the input the
+/// provider actually counted for that request, never the estimate of the next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    /// The `step_id` of the `llm.response` that reported it.
+    pub step: Ulid,
+}
+
+/// How full the context window is: the payload of `context.updated` and the
+/// body of `GET /v1/sessions/:id/context`. Three numbers that must stay apart:
+/// `estimate_total` sizes the NEXT request (an estimate, bytes / 4), `last_usage`
+/// is what the provider counted for the LAST one, and cumulative session usage
+/// lives in the `llm.response` and `turn.end` events, not here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextSnapshot {
+    pub alias: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    pub window: u64,
+    /// `models.json` or a `discovered.*` field.
+    pub window_source: String,
+    pub estimate_total: u64,
+    pub breakdown: Breakdown,
+    pub output_reserve: u64,
+    pub margin: u64,
+    pub input_budget: u64,
+    /// `estimate_total` as a whole percent of `window`.
+    pub percent: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_usage: Option<LastUsage>,
+    /// Counts up with every snapshot of a session; a client keeps the
+    /// highest it has seen.
+    pub revision: u64,
+}
+
 // --- RFC 3339 timestamp (no chrono dependency; UTC only) ---
 
 /// Current UTC time as RFC 3339 with millisecond precision (`...Z`).
@@ -670,7 +724,7 @@ mod tests {
             ),
             (
                 "context.updated",
-                serde_json::to_value(&crate::agent::context::ContextSnapshot {
+                serde_json::to_value(&ContextSnapshot {
                     alias: "default".into(),
                     variant: None,
                     window: 200_000,

@@ -131,6 +131,10 @@ pub enum ClientEvent {
         generation: Generation,
         result: Result<SessionMetadata, String>,
     },
+    Context {
+        generation: Generation,
+        result: Result<crate::bus::event::ContextSnapshot, String>,
+    },
     Submitted {
         generation: Generation,
         revision: u64,
@@ -199,6 +203,7 @@ pub enum Effect {
     Create(CreateSessionRequest),
     Resume(String),
     FetchMetadata(String),
+    FetchContext(String),
     Subscribe {
         session_id: String,
         cursor: Option<u64>,

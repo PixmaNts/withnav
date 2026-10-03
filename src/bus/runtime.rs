@@ -14,7 +14,9 @@ mod compact;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-pub use compact::{CheckpointSaver, CompactReply, CompactRequest, Compacted, FOCUS_MAX_CHARS};
+pub use compact::{
+    deferred_wire, CheckpointSaver, CompactReply, CompactRequest, Compacted, FOCUS_MAX_CHARS,
+};
 
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
@@ -185,6 +187,13 @@ impl RuntimeStatus {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         } = profile_prompt;
+    }
+
+    /// Parks the runtime after its next compaction and before the result is
+    /// published.
+    #[cfg(test)]
+    pub(crate) fn arm_result_barrier(&self) -> Arc<compact::ResultBarrier> {
+        self.controls.arm_barrier()
     }
 
     /// Re-estimates the system category for a session now running as `role`;
@@ -461,13 +470,16 @@ async fn runtime_loop(
                 break;
             }
             Some(request) = recv_control(&mut control) => {
-                // Between turns: run it now and answer with the result.
-                let focus = request.focus.as_deref();
-                let reply = match compact::run(&mut actor, &status, &sequencer, &session_cancel, focus).await {
-                    Ok(done) => CompactReply::Done(done),
-                    Err(why) => CompactReply::Refused(why),
-                };
-                let _ = request.reply.send(reply);
+                // Between turns: run it now, publish its result, then answer.
+                let outcome = compact::run(
+                    &mut actor,
+                    &status,
+                    &sequencer,
+                    &session_cancel,
+                    request.focus.as_deref(),
+                )
+                .await;
+                compact::answer(&status, &sequencer, request, outcome).await;
                 continue;
             }
             batch = inbox.next_batch() => batch,
@@ -527,9 +539,11 @@ async fn runtime_loop(
                     }
                     outcome = &mut turn_fut => break outcome,
                     Some(request) = recv_control(&mut control) => {
-                        // A turn is running: answer now, run it at its end.
-                        deferred.push((request.operation_id, request.focus));
-                        let _ = request.reply.send(CompactReply::Deferred);
+                        // A turn is running: accept now, run it at its end.
+                        let (operation_id, focus) = (request.operation_id, request.focus.clone());
+                        if compact::accept_deferred(&sequencer, request).await {
+                            deferred.push((operation_id, focus));
+                        }
                     }
                 }
             }
@@ -670,7 +684,7 @@ async fn runtime_loop(
         // A `/compact` that arrived during the turn runs now, between turns.
         if !deferred.is_empty() {
             let focus = compact::merge_focus(&deferred);
-            if let Err(why) = compact::run(
+            match compact::run(
                 &mut actor,
                 &status,
                 &sequencer,
@@ -679,7 +693,8 @@ async fn runtime_loop(
             )
             .await
             {
-                compact::report_failure(&sequencer, &deferred, &why);
+                Ok(done) => compact::report_done(&sequencer, &deferred, &done),
+                Err(why) => compact::report_failure(&sequencer, &deferred, &why),
             }
         }
     }

@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use super::RuntimeStatus;
 use crate::agent::actor::AgentActor;
 use crate::agent::compaction::{self, Aim, Compaction, PrepareInput};
-use crate::bus::event::{ContextCompacted, EventKind};
+use crate::bus::event::{CommandResult, ContextCompacted, EventKind};
 use crate::bus::sequencer::{Candidate, Sequencer};
 use crate::provider::openai::ChatMessage;
 
@@ -47,7 +47,28 @@ pub struct Compacted {
     pub estimate_after: u64,
 }
 
-/// The runtime's answer to a compaction request.
+impl Compacted {
+    /// The `data` of the command result: `applies` says when it took effect.
+    pub fn wire(&self, applies: &str) -> serde_json::Value {
+        serde_json::json!({
+            "generation": self.generation,
+            "through_message": self.through_message,
+            "pruned": self.pruned,
+            "estimate_before": self.estimate_before,
+            "estimate_after": self.estimate_after,
+            "applies": applies,
+        })
+    }
+}
+
+/// The `data` of the result that accepts a request for after the running turn.
+pub fn deferred_wire() -> serde_json::Value {
+    serde_json::json!({ "accepted": true, "applies": "after_turn" })
+}
+
+/// The runtime's answer to a compaction request. The runtime has already
+/// published the request's `command.result` under its operation id when it
+/// answers, so the answer only tells the caller what to report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompactReply {
     /// Done now.
@@ -74,6 +95,17 @@ pub(super) struct Controls {
     pub(super) tx: mpsc::UnboundedSender<CompactRequest>,
     rx: Mutex<Option<mpsc::UnboundedReceiver<CompactRequest>>>,
     saver: Mutex<Option<SaverCell>>,
+    #[cfg(test)]
+    barrier: Mutex<Option<Arc<ResultBarrier>>>,
+}
+
+/// Parks the runtime after a compaction ran and before its result is
+/// published.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct ResultBarrier {
+    pub(crate) reached: tokio::sync::Notify,
+    pub(crate) release: tokio::sync::Notify,
 }
 
 struct SaverCell(CheckpointSaver);
@@ -91,6 +123,8 @@ impl Default for Controls {
             tx,
             rx: Mutex::new(Some(rx)),
             saver: Mutex::new(None),
+            #[cfg(test)]
+            barrier: Mutex::new(None),
         }
     }
 }
@@ -109,6 +143,25 @@ impl Controls {
             Err(poisoned) => poisoned.into_inner(),
         } = Some(SaverCell(saver));
     }
+
+    #[cfg(test)]
+    pub(super) fn arm_barrier(&self) -> Arc<ResultBarrier> {
+        let barrier = Arc::new(ResultBarrier::default());
+        *self.barrier.lock().expect("barrier") = Some(barrier.clone());
+        barrier
+    }
+
+    #[cfg(test)]
+    async fn before_result(&self) {
+        let barrier = self.barrier.lock().ok().and_then(|mut guard| guard.take());
+        if let Some(barrier) = barrier {
+            barrier.reached.notify_one();
+            barrier.release.notified().await;
+        }
+    }
+
+    #[cfg(not(test))]
+    async fn before_result(&self) {}
 
     fn saver(&self) -> Option<CheckpointSaver> {
         match self.saver.lock() {
@@ -151,8 +204,10 @@ pub(super) async fn run(
         .controls
         .saver()
         .ok_or_else(|| "this session cannot save a compaction".to_string())?;
-    // Between turns the agent and the variant may have changed since the
-    // last turn started: the summary runs as the session is now.
+    // From here until the checkpoint is committed or given up, the agent and
+    // the variant cannot change: the summary, the budget check and the gauge
+    // all measure the same role.
+    let _preparing = status.selection.begin_compaction().await;
     if actor.role.is_some() {
         actor.role = Some(status.selection.current());
     }
@@ -224,10 +279,91 @@ fn publish_compacted(
     }
 }
 
+/// Publishes the `command.result` of a request that ran between turns and
+/// then answers the caller. The result is on the stream, acknowledged, before
+/// the reply: a stop that follows cannot fence the stream between the work
+/// and its result. When the result cannot be published (the session closed)
+/// the request is dropped unanswered, which the caller reports as stopping.
+pub(super) async fn answer(
+    status: &RuntimeStatus,
+    sequencer: &Sequencer,
+    request: CompactRequest,
+    outcome: Result<Compacted, String>,
+) {
+    let result = match &outcome {
+        Ok(done) => CommandResult {
+            operation_id: request.operation_id,
+            name: "compact".to_string(),
+            ok: true,
+            data: Some(CommandResult::bound_data(done.wire("now"))),
+            error: None,
+        },
+        Err(why) => CommandResult {
+            operation_id: request.operation_id,
+            name: "compact".to_string(),
+            ok: false,
+            data: None,
+            error: Some(why.clone()),
+        },
+    };
+    status.controls.before_result().await;
+    let payload = serde_json::to_value(result).unwrap_or(serde_json::Value::Null);
+    if sequencer
+        .publish_acked(Candidate::new(EventKind::CommandResult, payload))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let _ = request.reply.send(match outcome {
+        Ok(done) => CompactReply::Done(done),
+        Err(why) => CompactReply::Refused(why),
+    });
+}
+
+/// Accepts a request that arrived while a turn runs: its acceptance is
+/// published, acknowledged, before the caller is told, so a later refusal or
+/// cancellation of the same operation can never come first. Returns whether
+/// the request was accepted.
+pub(super) async fn accept_deferred(sequencer: &Sequencer, request: CompactRequest) -> bool {
+    let payload = serde_json::to_value(CommandResult {
+        operation_id: request.operation_id,
+        name: "compact".to_string(),
+        ok: true,
+        data: Some(CommandResult::bound_data(deferred_wire())),
+        error: None,
+    })
+    .unwrap_or(serde_json::Value::Null);
+    if sequencer
+        .publish_acked(Candidate::new(EventKind::CommandResult, payload))
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    let _ = request.reply.send(CompactReply::Deferred);
+    true
+}
+
+/// Tells the stream that the requests that waited for the turn ran, under
+/// the operation id each command answered with.
+pub(super) fn report_done(sequencer: &Sequencer, waiting: &Waiting, done: &Compacted) {
+    for (operation_id, _) in waiting {
+        let payload = serde_json::to_value(CommandResult {
+            operation_id: *operation_id,
+            name: "compact".to_string(),
+            ok: true,
+            data: Some(CommandResult::bound_data(done.wire("after_turn"))),
+            error: None,
+        })
+        .unwrap_or(serde_json::Value::Null);
+        let _ = sequencer.publish(Candidate::new(EventKind::CommandResult, payload));
+    }
+}
+
 /// Tells the stream that each request that waited for the turn did not
 /// happen, under the operation id its command answered with.
 pub(super) fn report_failure(sequencer: &Sequencer, waiting: &Waiting, why: &str) {
-    use crate::bus::event::CommandResult;
     for (operation_id, _) in waiting {
         let payload = serde_json::to_value(CommandResult {
             operation_id: *operation_id,

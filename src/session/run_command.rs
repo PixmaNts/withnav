@@ -16,6 +16,10 @@ use crate::error::ServerError;
 /// How many alias names `/model` lists; the rest is `GET /v1/models`.
 const MODEL_CATALOG_CAP: usize = 50;
 
+/// Why an agent or variant change waits for a compaction to finish.
+const COMPACTING_ERROR: &str =
+    "a compaction is running: wait for it to finish, then change the agent or variant";
+
 /// Longest unknown command name echoed into the result.
 const UNKNOWN_NAME_CAP: usize = 64;
 
@@ -80,14 +84,31 @@ impl Service {
             }
             None => Err(CommandFailure::Refused(commands::unknown_error(&name))),
         };
+        // `/compact` is published by the runtime, in order with the rest of
+        // its operation, before it answers.
+        let mut published = false;
         let (ok, data, error) = match result {
             Ok(done) => {
                 created = done.created;
+                published = done.published;
                 (true, Some(CommandResult::bound_data(done.data)), None)
             }
             Err(CommandFailure::Refused(error)) => (false, None, Some(error)),
+            Err(CommandFailure::Published(error)) => {
+                published = true;
+                (false, None, Some(error))
+            }
             Err(CommandFailure::Server(err)) => return Err(err),
         };
+        if published {
+            return Ok(CommandOutcome {
+                operation_id,
+                name,
+                ok,
+                data,
+                error,
+            });
+        }
         let payload = serde_json::to_value(CommandResult {
             operation_id,
             name: name.clone(),
@@ -198,19 +219,11 @@ impl Service {
         // The summary is a provider call: nothing else may wait for it.
         drop(gate.take());
         match handle.status.request_compact(focus, operation_id).await {
-            Some(CompactReply::Done(done)) => Ok(Done::data(json!({
-                "generation": done.generation,
-                "through_message": done.through_message,
-                "pruned": done.pruned,
-                "estimate_before": done.estimate_before,
-                "estimate_after": done.estimate_after,
-                "applies": "now",
-            }))),
-            Some(CompactReply::Deferred) => Ok(Done::data(json!({
-                "accepted": true,
-                "applies": "after_turn",
-            }))),
-            Some(CompactReply::Refused(why)) => Err(CommandFailure::Refused(why)),
+            Some(CompactReply::Done(done)) => Ok(Done::published(done.wire("now"))),
+            Some(CompactReply::Deferred) => {
+                Ok(Done::published(crate::bus::runtime::deferred_wire()))
+            }
+            Some(CompactReply::Refused(why)) => Err(CommandFailure::Published(why)),
             None => Err(CommandFailure::Server(ServerError::SessionStopping)),
         }
     }
@@ -265,6 +278,7 @@ impl Service {
                 SwitchError::AskPending => {
                     CommandFailure::Refused(commands::ASK_PENDING_ERROR.to_string())
                 }
+                SwitchError::Compacting => CommandFailure::Refused(COMPACTING_ERROR.to_string()),
                 SwitchError::Busy => CommandFailure::Refused(
                     "the agent is working: wait for the turn to end or stop it, then switch"
                         .to_string(),
@@ -362,6 +376,13 @@ impl Service {
                 .map_err(|e| CommandFailure::Refused(e.to_string()))?
         };
         let name = chosen.as_ref().map(|(name, _)| name.clone());
+        // No compaction starts, and none is preparing, while this applies.
+        let _exclusive = handle
+            .status
+            .selection
+            .exclusive_unless_compacting()
+            .await
+            .map_err(|_| CommandFailure::Refused(COMPACTING_ERROR.to_string()))?;
         self.history()
             .set_variant(session_id, chosen.as_ref())
             .await
@@ -426,6 +447,7 @@ impl Service {
             Ok(id) => Ok(Done {
                 data: json!({ "session_id": id.to_string(), "model": alias }),
                 created: Some(id),
+                published: false,
             }),
             Err(err @ ServerError::History(_)) => Err(CommandFailure::Server(err)),
             Err(err) => Err(CommandFailure::Refused(err.to_string())),
@@ -437,6 +459,8 @@ impl Service {
 enum CommandFailure {
     /// The command's own error: reported in the result.
     Refused(String),
+    /// Refused, and the runtime already published the result.
+    Published(String),
     /// The session cannot take commands: the caller's error.
     Server(ServerError),
 }
@@ -474,6 +498,8 @@ struct Done {
     /// A session the command created, to close again if its result cannot
     /// be published.
     created: Option<SessionId>,
+    /// The runtime already published the result.
+    published: bool,
 }
 
 impl Done {
@@ -481,6 +507,14 @@ impl Done {
         Self {
             data,
             created: None,
+            published: false,
+        }
+    }
+
+    fn published(data: Value) -> Self {
+        Self {
+            published: true,
+            ..Self::data(data)
         }
     }
 }
@@ -526,6 +560,10 @@ mod tests {
     /// A service over a temp directory with one chat alias on an
     /// unreachable provider: sessions are created but never run.
     fn service(dir: &Path) -> Service {
+        service_with(dir, "http://127.0.0.1:1/v1", 128000)
+    }
+
+    fn service_with(dir: &Path, url: &str, window: u64) -> Service {
         std::fs::create_dir_all(dir.join("cfg")).expect("cfg dir");
         std::fs::write(
             dir.join("cfg/auth.json"),
@@ -543,10 +581,12 @@ mod tests {
         }
         std::fs::write(
             dir.join("models.json"),
-            r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1","api_key_env":"K",
-            "headers":{},"connect_timeout_ms":100,"request_timeout_ms":100}},
-            "models":{"default":{"provider":"mock","model":"m","supports_tools":true,
-            "reasoning_history":"preserve","context_window":128000}}}"#,
+            format!(
+                r#"{{"providers":{{"mock":{{"base_url":"{url}","api_key_env":"K",
+            "headers":{{}},"connect_timeout_ms":2000,"request_timeout_ms":20000}}}},
+            "models":{{"default":{{"provider":"mock","model":"m","supports_tools":true,
+            "reasoning_history":"preserve","context_window":{window}}}}}}}"#
+            ),
         )
         .expect("models");
         Service::new(SessionConfig {
@@ -670,6 +710,112 @@ mod tests {
         let err = run.await.unwrap().unwrap_err();
         assert!(matches!(err, ServerError::SessionStopping), "{err:?}");
         assert_eq!(service.session_count(), 1, "the created session is closed");
+    }
+
+    /// A provider that answers its one request with `text`.
+    async fn one_answer_provider(text: &str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let chunk = json!({"choices": [{"index": 0, "finish_reason": "stop",
+            "delta": {"content": text}}]})
+        .to_string();
+        let response =
+            crate::provider::test_support::http_sse(&crate::provider::test_support::sse_body(&[
+                &chunk,
+            ]));
+        tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 1 << 20];
+            let mut seen = 0;
+            // The request is complete once its JSON body closes.
+            while let Ok(n) = sock.read(&mut buf[seen..]).await {
+                if n == 0 {
+                    break;
+                }
+                seen += n;
+                if buf[..seen].ends_with(b"}") {
+                    break;
+                }
+            }
+            let _ = sock.write_all(&response).await;
+            let _ = sock.shutdown().await;
+        });
+        format!("http://{addr}/v1")
+    }
+
+    /// A conversation of four long turns on a window that it overruns.
+    async fn seeded_long(service: &Service, dir: &Path) -> SessionId {
+        use crate::provider::openai::ChatMessage;
+        let id = service.create_session(dir, None, None).await.unwrap();
+        service.close_session(id).await.unwrap();
+        service.history().flush().await.unwrap();
+        let turns: Vec<ChatMessage> = (0..4)
+            .flat_map(|n| {
+                [
+                    ChatMessage::User {
+                        content: format!("request {n}"),
+                    },
+                    ChatMessage::Assistant {
+                        content: Some(format!("answer {n} {}", "word ".repeat(1200))),
+                        reasoning_content: None,
+                        tool_calls: vec![],
+                    },
+                ]
+            })
+            .collect();
+        service.history().save_transcript(id, turns);
+        service.history().flush().await.unwrap();
+        service
+            .create_or_resume_session(dir, None, None, Some(id))
+            .await
+            .unwrap();
+        id
+    }
+
+    // Given an idle /compact that committed, parked before its result is
+    //       published
+    // When the session is stopped meanwhile
+    // Then the stop does not fence the stream before the result: the result
+    //      is stored before session.end and the command reports success
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stop_after_a_commit_never_fences_out_the_compact_result() {
+        let tmp = tempfile::tempdir().unwrap();
+        let url = one_answer_provider("Goal: finish.").await;
+        let service = service_with(tmp.path(), &url, 20_000);
+        let id = seeded_long(&service, tmp.path()).await;
+        let barrier = service.handle(id).unwrap().status.arm_result_barrier();
+
+        let run = tokio::spawn({
+            let service = service.clone();
+            async move { service.run_command(id, "compact", "").await }
+        });
+        barrier.reached.notified().await;
+        let stop = tokio::spawn({
+            let service = service.clone();
+            async move { service.close_session(id).await }
+        });
+        settle().await;
+
+        barrier.release.notify_one();
+        let out = run.await.unwrap().expect("the command reports");
+        assert!(out.ok, "{out:?}");
+        assert_eq!(out.data.as_ref().unwrap()["applies"], "now");
+        stop.await.unwrap().expect("stop");
+
+        service.history().flush().await.unwrap();
+        let kinds = stored_kinds(&service, id).await;
+        let result = kinds.iter().position(|k| k == "command.result").unwrap();
+        let compacted = kinds.iter().position(|k| k == "context.compacted").unwrap();
+        let end = kinds.iter().rposition(|k| k == "session.end").unwrap();
+        assert!(compacted < result && result < end, "{kinds:?}");
+        assert_eq!(
+            kinds.iter().filter(|k| *k == "command.result").count(),
+            1,
+            "{kinds:?}"
+        );
     }
 
     async fn stored_kinds(service: &Service, id: SessionId) -> Vec<String> {

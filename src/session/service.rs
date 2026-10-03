@@ -286,6 +286,11 @@ impl Service {
             return Err(ServerError::ChildReadOnly);
         }
         let parent_role = parent_handle.status.selection.current();
+        let parent_policy = parent_role.clone();
+        if parent_role.id.as_str() == crate::agent::definitions::PLAN {
+            // The role guard remains the parent's policy ceiling; a child
+            // cannot inherit writes merely because its definition is full.
+        }
         let cap = crate::settings::load(&self.config.config_dir)
             .map_err(|e| ServerError::MalformedBody(e.to_string()))?
             .subagents_max_concurrent()
@@ -351,7 +356,8 @@ impl Service {
                 &VariantChoice::Default,
                 Some((
                     allowed,
-                    definition.access == crate::agent::definitions::AgentAccess::ReadOnly,
+                    definition.access == crate::agent::definitions::AgentAccess::ReadOnly
+                        || parent_policy.access == crate::agent::definitions::AgentAccess::ReadOnly,
                 )),
             )
             .await;

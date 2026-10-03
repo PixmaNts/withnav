@@ -4,11 +4,15 @@ use std::path::{Path, PathBuf};
 
 use navai::bus::event::EventKind;
 use navai::server::AppState;
-use serde_json::json;
+use navai::tools::Tool;
+use serde_json::{json, Value};
 
 mod common;
 use common::server::TestServerConfig;
-use common::sse::{http_sse, spawn_gated_provider, sse_body, text_chunk};
+use common::sse::{
+    http_sse, spawn_capturing_provider, spawn_gated_provider, spawn_holding_provider, sse_body,
+    text_chunk, tool_call_chunk,
+};
 
 struct Fx {
     _tmp: tempfile::TempDir,
@@ -59,6 +63,13 @@ fn install_agents(root: &Path, ws: &Path) {
     .unwrap();
 }
 
+fn add_cognition_model(root: &Path) {
+    let path = root.join("models.json");
+    let mut models: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    models["models"]["cognition"] = models["models"]["default"].clone();
+    std::fs::write(path, models.to_string()).unwrap();
+}
+
 async fn events(fx: &Fx, id: ulid::Ulid) -> Vec<navai::bus::event::EventEnvelope> {
     fx.state.history().flush().await.unwrap();
     match fx.state.subscribe(id, None).await.unwrap().replay {
@@ -103,6 +114,10 @@ async fn child_policy_depth_metadata_and_terminal_notices() {
         Some(parent.to_string().as_str())
     );
     assert_eq!(summary.promptable, false);
+    let child_events = events(&fx, child).await;
+    assert!(child_events
+        .iter()
+        .any(|e| e.kind == EventKind::SubagentSpawned.as_str()));
     let listed = fx.state.list(&fx.ws.display().to_string()).await.unwrap();
     let child_row = listed.iter().find(|entry| entry.id == child).unwrap();
     assert_eq!(
@@ -193,6 +208,67 @@ async fn capacity_error_has_clear_machine_and_model_message() {
 }
 
 #[tokio::test]
+async fn child_depth_has_no_task_registry_entry() {
+    let fx = fixture();
+    install_agents(&fx.root, &fx.ws);
+    let parent = fx
+        .state
+        .create_session(&fx.ws, Some("default"), None)
+        .await
+        .unwrap();
+    let child = fx
+        .state
+        .create_child_session(parent, "writer", "do work")
+        .await
+        .unwrap();
+    assert!(matches!(
+        fx.state
+            .create_child_session(child, "writer", "nested")
+            .await,
+        Err(navai::error::ServerError::ChildReadOnly)
+    ));
+    let metadata = fx.state.child_metadata(child).await.unwrap().unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&metadata.policy_snapshot).unwrap()["task"],
+        false
+    );
+}
+
+#[tokio::test]
+async fn parent_sse_replay_contains_spawned_and_done_after_completion() {
+    let provider =
+        spawn_capturing_provider(vec![http_sse(&sse_body(&[&text_chunk("child result")]))]).await;
+    let fx = fixture_at(&provider.url);
+    install_agents(&fx.root, &fx.ws);
+    let parent = fx
+        .state
+        .create_session(&fx.ws, Some("default"), None)
+        .await
+        .unwrap();
+    let child = fx
+        .state
+        .create_child_session(parent, "explore", "review")
+        .await
+        .unwrap();
+    for _ in 0..100 {
+        if fx
+            .state
+            .child_metadata(child)
+            .await
+            .unwrap()
+            .is_some_and(|link| link.status != "running")
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let replay = events(&fx, parent).await;
+    let kinds: Vec<&str> = replay.iter().map(|event| event.kind.as_str()).collect();
+    assert!(kinds.contains(&EventKind::SubagentSpawned.as_str()));
+    assert!(kinds.contains(&EventKind::SubagentDone.as_str()));
+}
+
+#[tokio::test]
 async fn child_slot_is_released_after_terminal_result() {
     let response = http_sse(&sse_body(&[&text_chunk("completed")]));
     let provider = common::sse::spawn_capturing_provider(vec![response]).await;
@@ -233,6 +309,151 @@ async fn child_slot_is_released_after_terminal_result() {
         .await
         .unwrap();
     fx.state.close_session(next).await.unwrap();
+}
+
+#[tokio::test]
+async fn task_ack_returns_before_child_turn_finishes() {
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let provider = spawn_holding_provider(
+        3,
+        0,
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+        release.clone(),
+        |i, _| {
+            if i == 0 {
+                http_sse(&sse_body(&[&tool_call_chunk(
+                    "spawn-1",
+                    "task",
+                    &json!({"agent":"explore","prompt":"inspect"}),
+                )]))
+            } else {
+                http_sse(&sse_body(&[&text_chunk(if i == 1 {
+                    "child result"
+                } else {
+                    "parent continued"
+                })]))
+            }
+        },
+    )
+    .await;
+    let fx = fixture_at(&provider.url);
+    install_agents(&fx.root, &fx.ws);
+    add_cognition_model(&fx.root);
+    let parent = fx
+        .state
+        .create_session(&fx.ws, Some("cognition"), None)
+        .await
+        .unwrap();
+    let task = navai::tools::task::TaskTool::new(fx.state.service(), parent);
+    let cx = navai::tools::ToolContext {
+        workspace: fx.ws.clone(),
+        writable_roots: vec![fx.ws.clone()],
+        readable_roots: vec![],
+    };
+    let result = task
+        .call(
+            json!({"agent":"explore","prompt":"inspect"}),
+            tokio_util::sync::CancellationToken::new(),
+            &cx,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.output.contains("\"status\":\"running\""), true);
+    for _ in 0..100 {
+        if events(&fx, parent)
+            .await
+            .iter()
+            .any(|e| e.kind == EventKind::SubagentSpawned.as_str())
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let parent_events = events(&fx, parent).await;
+    let spawned = parent_events
+        .iter()
+        .find(|e| e.kind == EventKind::SubagentSpawned.as_str())
+        .unwrap_or_else(|| panic!("no spawn event: {parent_events:#?}"));
+    let child_id: ulid::Ulid = spawned.payload["child_session_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let meta = fx.state.child_metadata(child_id).await.unwrap().unwrap();
+    assert_eq!(meta.status, "running");
+    assert_eq!(meta.goal, "inspect");
+    assert_eq!(
+        fx.state.session_summary(child_id).await.unwrap().promptable,
+        false
+    );
+    release.notify_one();
+    for _ in 0..100 {
+        if fx
+            .state
+            .child_metadata(child_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status
+            != "running"
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let done = fx.state.child_metadata(child_id).await.unwrap().unwrap();
+    assert!(matches!(done.status.as_str(), "done" | "failed"));
+}
+
+#[tokio::test]
+async fn full_access_child_of_plan_parent_has_no_write_dispatch() {
+    let provider =
+        spawn_capturing_provider(vec![http_sse(&sse_body(&[&text_chunk("unused")]))]).await;
+    let fx = fixture_at(&provider.url);
+    install_agents(&fx.root, &fx.ws);
+    let parent = fx
+        .state
+        .create_session_as(&fx.ws, Some("default"), None, Some("plan"))
+        .await
+        .unwrap();
+    let child = fx
+        .state
+        .create_child_session(parent, "writer", "do an edit")
+        .await
+        .unwrap();
+    let link = fx.state.child_metadata(child).await.unwrap().unwrap();
+    let policy: Value = serde_json::from_str(&link.policy_snapshot).unwrap();
+    for tool in ["write", "edit", "bash"] {
+        assert_eq!(policy[tool], false, "{tool}");
+    }
+}
+
+#[tokio::test]
+async fn declared_read_only_child_tool_denial_is_reflected_in_saved_policy() {
+    let fx = fixture();
+    install_agents(&fx.root, &fx.ws);
+    let parent = fx
+        .state
+        .create_session(&fx.ws, Some("default"), None)
+        .await
+        .unwrap();
+    let child = fx
+        .state
+        .create_child_session(parent, "filtered", "inspect")
+        .await
+        .unwrap();
+    let policy: Value = serde_json::from_str(
+        &fx.state
+            .child_metadata(child)
+            .await
+            .unwrap()
+            .unwrap()
+            .policy_snapshot,
+    )
+    .unwrap();
+    assert_eq!(policy["read"], false);
+    assert_eq!(policy["grep"], false);
+    fx.state.close_session(child).await.unwrap();
 }
 
 #[tokio::test]

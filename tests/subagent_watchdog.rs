@@ -424,7 +424,7 @@ async fn doubt_is_skipped_on_later_ticks_and_driver_continue_resumes() {
 }
 
 #[tokio::test]
-async fn interval_zero_starts_no_supervisor_and_navigator_profile_has_no_decision_tool() {
+async fn interval_zero_starts_no_supervisor_and_children_have_no_decision_tool() {
     let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path().join("ws");
@@ -468,5 +468,145 @@ async fn interval_zero_starts_no_supervisor_and_navigator_profile_has_no_decisio
     assert!(!request.contains("decide_subagent"));
     assert!(sleeps.try_recv().is_err());
     drop(stream);
+    service.close_all().bounded(file!(), line!()).await;
+}
+
+#[tokio::test]
+async fn budget_parked_child_is_skipped_without_asking_instinct() {
+    let mut f = Fixture::new(vec![]).await;
+    let mut stream = Some(f.stream);
+    for step in 0..navai::agent::run_loop::max_steps() {
+        let tx = stream.take().unwrap();
+        tx.send(tool_call_chunk(
+            &format!("glob-{step}"),
+            "glob",
+            &json!({"pattern":"*"}),
+        ))
+        .unwrap();
+        drop(tx);
+        if step + 1 < navai::agent::run_loop::max_steps() {
+            stream = Some(
+                f.provider
+                    .requests
+                    .recv()
+                    .bounded(file!(), line!())
+                    .await
+                    .unwrap()
+                    .1,
+            );
+        }
+    }
+    async {
+        loop {
+            f.service.history().flush().await.unwrap();
+            if f.service
+                .history()
+                .replay(f.child, None, u64::MAX)
+                .await
+                .unwrap()
+                .iter()
+                .any(|e| e.kind == "agent.yield" && e.payload["kind"] == "budget")
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+    .bounded(file!(), line!())
+    .await;
+    let waiter = f.sleeps.recv().bounded(file!(), line!()).await.unwrap();
+    *f.clock.now.lock().unwrap() += Duration::from_secs(300);
+    waiter.send(()).unwrap();
+    let _next = f.sleeps.recv().bounded(file!(), line!()).await.unwrap();
+    assert!(f.checked.try_recv().is_err());
+    assert!(f
+        .service
+        .decide_subagent(f.parent, f.child, false, None)
+        .bounded(file!(), line!())
+        .await
+        .is_err());
+    f.service.close_all().bounded(file!(), line!()).await;
+}
+
+#[tokio::test]
+async fn permission_parked_child_is_skipped_and_decision_cannot_approve_it() {
+    let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(ws.join(".navai/agents")).unwrap();
+    std::fs::write(
+        ws.join(".navai/agents/writer.md"),
+        "---\nmode: subagent\naccess: full\n---\nWrite.",
+    )
+    .unwrap();
+    let service = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(128000)
+        .state();
+    let (tx, mut sleeps) = mpsc::unbounded_channel();
+    let clock = Arc::new(FakeClock {
+        now: Mutex::new(Instant::now()),
+        sleeps: tx,
+    });
+    let (tx, mut checked) = mpsc::unbounded_channel();
+    service.install_watchdog_test(
+        clock.clone(),
+        Arc::new(FakeJudge {
+            answers: Mutex::new(Default::default()),
+            checked: tx,
+        }),
+    );
+    let parent = service
+        .create_session(&ws, None, None)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let child = service
+        .create_child_session(parent, "writer", "write file")
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (_, stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    stream
+        .send(tool_call_chunk(
+            "write",
+            "bash",
+            &json!({"command":"printf not-approved > new.txt"}),
+        ))
+        .unwrap();
+    drop(stream);
+    async {
+        loop {
+            service.history().flush().await.unwrap();
+            if service
+                .history()
+                .replay(child, None, u64::MAX)
+                .await
+                .unwrap()
+                .iter()
+                .any(|e| e.kind == "permission.requested")
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+    .bounded(file!(), line!())
+    .await;
+    let waiter = sleeps.recv().bounded(file!(), line!()).await.unwrap();
+    *clock.now.lock().unwrap() += Duration::from_secs(300);
+    waiter.send(()).unwrap();
+    let _next = sleeps.recv().bounded(file!(), line!()).await.unwrap();
+    assert!(checked.try_recv().is_err());
+    assert!(service
+        .decide_subagent(parent, child, false, None)
+        .bounded(file!(), line!())
+        .await
+        .is_err());
+    assert!(!ws.join("new.txt").exists());
     service.close_all().bounded(file!(), line!()).await;
 }

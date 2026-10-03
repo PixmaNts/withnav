@@ -60,7 +60,7 @@ impl WatchdogPark {
             let notified = self.resumed.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            if !self.is_doubt() {
+            if !self.is_doubt() && !self.stopped.load(Ordering::Acquire) {
                 break;
             }
             tokio::select! { biased; _ = cancel.cancelled() => break, _ = notified => {} }

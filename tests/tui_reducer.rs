@@ -2266,6 +2266,30 @@ fn context_compacted_pushes_a_one_line_notice() {
         s.conversation.blocks.last().map(|b| b.kind.clone()),
         Some(BlockKind::Notice("context compacted: ~120k -> ~18k".into()))
     );
+    let kept = s
+        .conversation
+        .last_compaction
+        .as_ref()
+        .expect("kept for the panel");
+    assert_eq!((kept.generation, kept.estimate_after), (1, 18_000));
+    // a million tokens reads as the gauge writes it
+    let mut script = Script::new();
+    script.start().push(
+        EventKind::ContextCompacted,
+        &ContextCompacted {
+            generation: 2,
+            through_message: 70,
+            pruned: 0,
+            estimate_before: 1_000_000,
+            estimate_after: 1_500,
+        },
+    );
+    let mut s = st();
+    feed(&mut s, &script.out);
+    assert_eq!(
+        s.conversation.blocks.last().map(|b| b.kind.clone()),
+        Some(BlockKind::Notice("context compacted: ~1M -> ~2k".into()))
+    );
 }
 
 // ---------------------------------------------------------------- server commands
@@ -3341,4 +3365,86 @@ fn answering_posts_once_and_a_stale_answer_drops_the_prompt_with_a_notice() {
     created_now(&mut other, "S2").unwrap();
     feed(&mut other, &permission_script(4).out);
     assert!(handle_action(&mut other, &mut ui, answer()).is_empty());
+}
+
+// ---------------------------------------------------------------- git state
+
+fn git_now(s: &mut State, branch: Option<&str>) -> Vec<Effect> {
+    let ev = ClientEvent::Git {
+        generation: s.generation.clone(),
+        status: branch.map(|b| navai::tui::git::GitStatus {
+            branch: Some(b.into()),
+            dirty: 2,
+            files: vec![],
+        }),
+    };
+    update(s, ev).unwrap()
+}
+
+#[test]
+fn the_git_state_is_read_at_start_and_after_each_turn_one_read_at_a_time() {
+    let mut s = st();
+    let fx = created_now(&mut s, "S1").unwrap();
+    assert_eq!(fx.iter().filter(|e| **e == Effect::ReadGit).count(), 1);
+    // a turn ends while the first read runs: one more read once it returns, not two at once
+    let mut script = Script::new();
+    script.start().user("hi").turn_start(1);
+    script.turn_end(1, TurnEndOutcome::Done, Some(usage(1, 1)));
+    let mut asked = 0;
+    for e in &script.out {
+        let ev = envelope(&s, e);
+        asked += update(&mut s, ev)
+            .unwrap()
+            .iter()
+            .filter(|e| **e == Effect::ReadGit)
+            .count();
+    }
+    assert_eq!(asked, 0, "a read is already running");
+    assert_eq!(git_now(&mut s, Some("main")), vec![Effect::ReadGit]);
+    assert_eq!(s.git.as_ref().unwrap().branch.as_deref(), Some("main"));
+    assert!(git_now(&mut s, Some("main")).is_empty());
+    // not a repository: nothing shown
+    let mut again = script.out.last().unwrap().clone();
+    again.seq += 100;
+    let ev = envelope(&s, &again);
+    assert_eq!(update(&mut s, ev).unwrap(), vec![Effect::ReadGit]);
+    git_now(&mut s, None);
+    assert_eq!(s.git, None);
+}
+
+#[test]
+fn a_git_result_reaches_the_tab_that_asked_and_a_stale_one_is_dropped() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    let first = s.generation.clone();
+    handle_action(&mut s, &mut ui, Action::NewConversation);
+    assert_eq!(s.active, 1);
+    let status = |branch: &str| navai::tui::git::GitStatus {
+        branch: Some(branch.into()),
+        dirty: 1,
+        files: vec![],
+    };
+    // the first tab, now in the background, gets its own result
+    update(
+        &mut s,
+        ClientEvent::Git {
+            generation: first.clone(),
+            status: Some(status("one")),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.tabs[0].git, Some(status("one")));
+    assert!(!s.tabs[0].git_reading);
+    assert_eq!(s.git, None, "the tab on screen is untouched");
+    // a result for a generation no tab holds (the tab was closed or moved on) changes nothing
+    let before = s.clone();
+    update(
+        &mut s,
+        ClientEvent::Git {
+            generation: Generation(9_999),
+            status: Some(status("gone")),
+        },
+    )
+    .unwrap();
+    assert_eq!(s, before);
 }

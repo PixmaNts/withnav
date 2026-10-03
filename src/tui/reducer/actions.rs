@@ -374,6 +374,11 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             ui.sidebar_hidden = !ui.sidebar_hidden;
             vec![]
         }
+        Action::TogglePanel => {
+            // Flips what the driver saw, whether the width or an earlier toggle decided it.
+            ui.panel_shown = Some(!ui.panel_drawn);
+            vec![]
+        }
         Action::Stop => s
             .session
             .as_ref()

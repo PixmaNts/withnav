@@ -239,6 +239,15 @@ impl Executor {
                     }
                 }
             }
+            Effect::ReadGit => {
+                let workspace = std::path::PathBuf::from(&ctx.workspace);
+                self.spawn_event(async move {
+                    ClientEvent::Git {
+                        generation,
+                        status: crate::tui::git::read(&workspace).await,
+                    }
+                });
+            }
             // Applied by the runtime before it reaches here.
             Effect::ShowVariants { .. } => {}
             Effect::Quit => return Flow::Quit,

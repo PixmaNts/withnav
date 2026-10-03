@@ -943,7 +943,7 @@ fn sidebar_hides_on_demand_and_on_narrow_terminals() {
     ui.sidebar_hidden = true;
     render("sidebar-hidden", (100, 24), &s, &ui, &Editor::new());
     let hidden = cells(&s, &ui, (100, 24));
-    assert!(row_text(&hidden, 0, 100).starts_with(" navai"));
+    assert!(row_text(&hidden, 0, 100).starts_with(" ◆ navai"));
     assert!(!(0..24).any(|y| row_text(&hidden, y, 100).contains("build · ")));
 }
 
@@ -2391,4 +2391,457 @@ fn sending_text_over_an_open_request_asks_for_a_second_enter() {
         keys("⏎", &plain, &mut ui, &mut editor).as_slice(),
         [Action::SubmitAt { .. }]
     ));
+}
+
+// ---------------------------------------------------------------- header
+
+#[test]
+fn the_header_shows_the_branch_its_changes_and_the_agent_in_its_colour() {
+    let mut s = done();
+    s.git = Some(navai::tui::git::GitStatus {
+        branch: Some("feat/tui-design".into()),
+        dirty: 3,
+        files: vec![],
+    });
+    let ui = UiState::default();
+    let t = cells(&s, &ui, (140, 20));
+    let header = row_text(&t, 0, 140);
+    for want in [
+        "◆ navai",
+        "~/dev/project",
+        "feat/tui-design ●3",
+        "▌build  cognition · cc/claude-opus-5-5 · 12.4k / 200k",
+    ] {
+        assert!(header.contains(want), "{want}: {header}");
+    }
+    let theme = Theme::ayu_dark();
+    let x = header[..header.find("▌build").unwrap()].chars().count() as u16;
+    assert_eq!(t.backend().buffer()[(x, 0)].fg, theme.accent);
+    s.agent = Some("plan".into());
+    let t = cells(&s, &ui, (140, 20));
+    let header = row_text(&t, 0, 140);
+    let x = header[..header.find("▌plan").unwrap()].chars().count() as u16;
+    assert_eq!(t.backend().buffer()[(x, 0)].fg, theme.blue);
+    // not a repository: no branch, nothing made up
+    s.git = None;
+    let header = row_text(&cells(&s, &ui, (140, 20)), 0, 140);
+    assert!(!header.contains('●'), "{header}");
+    // narrow: the path and the model give way before the agent and the gauge
+    let header = row_text(&cells(&s, &ui, (60, 20)), 0, 60);
+    assert!(header.contains("▌plan  cognition"), "{header}");
+    assert!(header.contains("/ 200k"), "{header}");
+}
+
+// ---------------------------------------------------------------- right column
+
+fn snapshot_with(breakdown: navai::bus::event::Breakdown) -> navai::bus::event::ContextSnapshot {
+    navai::bus::event::ContextSnapshot {
+        alias: "cognition".into(),
+        variant: None,
+        window: 200_000,
+        window_source: "models.json".into(),
+        estimated: true,
+        estimate_total: 41_200,
+        breakdown,
+        output_reserve: 8192,
+        margin: 10_000,
+        input_budget: 181_808,
+        percent: 21,
+        last_usage: None,
+        skills: navai::bus::event::SkillCounts {
+            listed: 12,
+            omitted: 3,
+        },
+        rule_files: 2,
+        incarnation: ulid::Ulid(7),
+        revision: 1,
+    }
+}
+
+/// `done()` with a context snapshot, a compaction and git changes: what the column reads.
+fn with_panel_data() -> State {
+    let mut s = done();
+    s.conversation.context = Some(snapshot_with(navai::bus::event::Breakdown {
+        system: 3_100,
+        rules: 1_900,
+        skills_catalog: 2_400,
+        tools: 6_800,
+        messages: 27_000,
+    }));
+    s.conversation.last_compaction = Some(navai::bus::event::ContextCompacted {
+        generation: 1,
+        through_message: 40,
+        pruned: 6,
+        estimate_before: 150_000,
+        estimate_after: 38_000,
+    });
+    let files = (0..14)
+        .map(|n| navai::tui::git::Change {
+            mark: ['M', 'A', 'D', '?'][n % 4],
+            path: format!("src/tui/view/file_{n}.rs"),
+        })
+        .take(navai::tui::git::MAX_FILES)
+        .collect();
+    s.git = Some(navai::tui::git::GitStatus {
+        branch: Some("feat/tui-design".into()),
+        dirty: 14,
+        files,
+    });
+    s
+}
+
+#[test]
+fn the_right_column_reads_the_snapshot_the_compaction_and_git() {
+    let s = with_panel_data();
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    render("panel-160", (160, 40), &s, &ui, &Editor::new());
+    let shown = screen_text(&s, &ui, (160, 40));
+    for want in [
+        "AGENTS",
+        "● build  in use",
+        "Implements the task, verifies",
+        "rules · 2 files",
+        "messages                    ~27k",
+        "next request          ~41k · 21%",
+        "input budget                182k",
+        "compacted ×1 · ~150k → ~38k",
+        "listed                        12",
+        "omitted, no room               3",
+        "M src/tui/view/file_0.rs",
+        "4 more",
+    ] {
+        assert!(shown.contains(want), "{want}: {shown}");
+    }
+    // nothing the server does not report
+    for absent in [
+        "INTENT", "drift", "LAYERS", "MCP", "PLUGINS", "explore", "review",
+    ] {
+        assert!(!shown.contains(absent), "{absent}: {shown}");
+    }
+}
+
+#[test]
+fn the_right_column_shows_a_dash_before_any_snapshot_and_no_changes_outside_git() {
+    let s = done();
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    let shown = screen_text(&s, &ui, (160, 30));
+    assert!(shown.contains("CONTEXT"), "{shown}");
+    assert!(shown.contains("SKILLS"), "{shown}");
+    assert!(shown.contains(" —"), "{shown}");
+    assert!(!shown.contains("CHANGES"), "not a repository: {shown}");
+}
+
+#[test]
+fn the_right_column_hides_under_140_columns_and_alt_r_toggles_it() {
+    let s = with_panel_data();
+    let mut ui = UiState::default();
+    assert!(!screen_text(&s, &ui, (139, 30)).contains("AGENTS"));
+    assert!(screen_text(&s, &ui, (140, 30)).contains("AGENTS"));
+    // alt+r flips what was on screen
+    let mut editor = Editor::new();
+    let action = route_key(
+        key(KeyCode::Char('r'), KeyModifiers::ALT),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(action, Some(Action::TogglePanel));
+    ui.panel_drawn = false;
+    let mut state = s.clone();
+    navai::tui::reducer::handle_action(&mut state, &mut ui, Action::TogglePanel);
+    assert_eq!(ui.panel_shown, Some(true));
+    assert!(
+        screen_text(&s, &ui, (120, 30)).contains("AGENTS"),
+        "shown on demand"
+    );
+    ui.panel_drawn = true;
+    navai::tui::reducer::handle_action(&mut state, &mut ui, Action::TogglePanel);
+    assert!(
+        !screen_text(&s, &ui, (200, 30)).contains("AGENTS"),
+        "hidden on demand"
+    );
+    // too narrow to leave the transcript room: not drawn even when asked for
+    ui.panel_shown = Some(true);
+    assert!(!screen_text(&s, &ui, (90, 30)).contains("AGENTS"));
+}
+
+// ---------------------------------------------------------------- key bar
+
+fn bottom_row(s: &State, ui: &UiState, editor: &Editor, size: (u16, u16)) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
+    terminal
+        .draw(|f| view::draw(f, s, ui, editor, &mut RenderCache::default()))
+        .unwrap();
+    row_text(&terminal, size.1 - 1, size.0)
+}
+
+#[test]
+fn the_key_bar_follows_what_the_keys_do_now() {
+    let s = done();
+    let ui = UiState::default();
+    let mut editor = Editor::new();
+    let bar = bottom_row(&s, &ui, &editor, (200, 20));
+    assert!(
+        bar.contains(
+            "tab build/plan · ctrl+p palette · alt+1…9 tabs · /model · /compact · esc stop · alt+r panel · f1 help"
+        ),
+        "{bar}"
+    );
+    // narrow: whole hints only, the first ones kept
+    let bar = bottom_row(&s, &ui, &editor, (60, 20));
+    assert!(bar.trim_end().ends_with("/model"), "{bar}");
+    // typing: sending and newlines
+    editor.set_text("hello");
+    let bar = bottom_row(&s, &ui, &editor, (200, 20));
+    assert!(bar.contains("enter send · alt+enter newline"), "{bar}");
+    // a prompt waits: its keys first
+    let s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
+    let bar = bottom_row(&s, &ui, &Editor::new(), (200, 30));
+    assert!(
+        bar.contains("y allow once · a always · n deny · esc stop · ctrl+p palette"),
+        "{bar}"
+    );
+    let theme = Theme::ayu_dark();
+    let mut terminal = Terminal::new(TestBackend::new(200, 30)).unwrap();
+    terminal
+        .draw(|f| view::draw(f, &s, &ui, &Editor::new(), &mut RenderCache::default()))
+        .unwrap();
+    let x = bar[..bar.find("y allow").unwrap()].chars().count() as u16;
+    assert_eq!(
+        terminal.backend().buffer()[(x, 29)].fg,
+        theme.text,
+        "the key"
+    );
+    assert_eq!(
+        terminal.backend().buffer()[(x + 2, 29)].fg,
+        theme.muted,
+        "its label"
+    );
+}
+
+// ---------------------------------------------------------------- popups
+
+#[test]
+fn every_popup_is_centred_with_an_accent_border_over_a_dimmed_screen() {
+    let s = done();
+    let theme = Theme::ayu_dark();
+    for overlay in [
+        Overlay::Commands,
+        Overlay::Models,
+        Overlay::Themes,
+        Overlay::Sessions,
+        Overlay::Help,
+    ] {
+        let ui = UiState {
+            overlay: Some(overlay),
+            follow_bottom: true,
+            ..UiState::default()
+        };
+        let (w, h) = (120u16, 36u16);
+        let t = cells(&s, &ui, (w, h));
+        let buffer = t.backend().buffer();
+        let top = (0..h)
+            .find(|y| row_text(&t, *y, w).contains('┌'))
+            .expect("a popup");
+        let line = row_text(&t, top, w);
+        let left = line[..line.find('┌').unwrap()].chars().count() as u16;
+        let right = line[..line.rfind('┐').unwrap()].chars().count() as u16;
+        assert!(
+            left.abs_diff(w - 1 - right) <= 1,
+            "{overlay:?} centred: {left} {right}"
+        );
+        assert_eq!(buffer[(left, top)].fg, theme.accent, "{overlay:?} border");
+        let bottom = (top..h)
+            .find(|y| row_text(&t, *y, w).contains('└'))
+            .unwrap();
+        assert!(
+            row_text(&t, bottom - 1, w).contains("esc"),
+            "{overlay:?} keys"
+        );
+        // behind it, the header text is dimmed
+        assert_ne!(buffer[(30, 0)].fg, theme.text, "{overlay:?} backdrop");
+    }
+}
+
+// ---------------------------------------------------------------- full layout
+
+#[test]
+fn the_layout_at_100_140_and_200_columns_in_dark_and_light() {
+    let s = with_panel_data();
+    for (theme, name) in [(ThemeId::AyuDark, "dark"), (ThemeId::AyuLight, "light")] {
+        let ui = UiState {
+            follow_bottom: true,
+            theme,
+            ..UiState::default()
+        };
+        for width in [100u16, 140, 200] {
+            // The text is the same in both themes: one snapshot per width, the colours below.
+            let shown = if name == "dark" {
+                render(
+                    &format!("layout-{width}"),
+                    (width, 40),
+                    &s,
+                    &ui,
+                    &Editor::new(),
+                )
+            } else {
+                screen_text(&s, &ui, (width, 40))
+            };
+            assert!(shown.contains("feat/tui-design ●14"), "{width}: {shown}");
+            assert_eq!(shown.contains("AGENTS"), width >= 140, "{width}: {shown}");
+            // the theme paints the header panel and the transcript background
+            let t = cells(&s, &ui, (width, 40));
+            let palette = theme.palette();
+            assert_eq!(t.backend().buffer()[(width - 1, 0)].bg, palette.panel);
+            assert_eq!(t.backend().buffer()[(30, 10)].bg, palette.bg);
+            let header = row_text(&t, 0, width);
+            let x = header[..header.find('◆').unwrap()].chars().count() as u16;
+            assert_eq!(
+                t.backend().buffer()[(x, 0)].fg,
+                palette.accent_text,
+                "{name}"
+            );
+            if width >= 140 {
+                let row = (0..40)
+                    .find(|y| row_text(&t, *y, width).contains("AGENTS"))
+                    .unwrap();
+                assert_eq!(t.backend().buffer()[(width - 2, row)].bg, palette.panel);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- wide and combining text
+
+#[test]
+fn wide_and_combining_names_never_push_the_gauge_off_the_header() {
+    let mut s = with_panel_data();
+    let workspace = "/home/pixma/開発/プロジェクト/とても長いフォルダの名前/ソース";
+    if let Some(m) = s.session.as_mut() {
+        m.workspace = workspace.into();
+    }
+    s.selected_model_name = Some("ベンダー/とても長いモデルの名前-e\u{301}-v2".into());
+    s.git = Some(navai::tui::git::GitStatus {
+        branch: Some("機能/端末の配置-e\u{301}".into()),
+        dirty: 2,
+        files: vec![
+            navai::tui::git::Change {
+                mark: 'M',
+                path: "源/表示/とても長いファイルの名前です.rs".into(),
+            },
+            navai::tui::git::Change {
+                mark: 'A',
+                path: "cafe\u{301}/re\u{301}sume\u{301}.md".into(),
+            },
+        ],
+    });
+    let ui = UiState::default();
+    for width in [80u16, 100, 140, 200] {
+        let t = cells(&s, &ui, (width, 40));
+        let header = row_text(&t, 0, width);
+        assert!(
+            header.contains("200k"),
+            "{width}: the gauge stays: {header}"
+        );
+        assert!(header.contains("▌build"), "{width}: {header}");
+        // the header ends with the gauge and its trailing space: nothing was cut at the edge
+        assert!(
+            header.trim_end().ends_with("200k · 21%"),
+            "{width}: {header}"
+        );
+    }
+    // Wide characters take two cells, the second one blank: read the text without those.
+    let t = cells(&s, &ui, (160, 40));
+    let buffer = t.backend().buffer();
+    let shown: String = (0..40u16)
+        .map(|y| {
+            let mut row = String::new();
+            let mut x = 0u16;
+            while x < 160 {
+                let symbol = buffer[(x, y)].symbol();
+                row.push_str(symbol);
+                x += navai::tui::view::text::columns(symbol).max(1) as u16;
+            }
+            row
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        shown.contains("A cafe\u{301}/re\u{301}sume\u{301}.md"),
+        "{shown}"
+    );
+    assert!(shown.contains("M …も長いファイルの名前です.rs"), "{shown}");
+    assert!(shown.contains("機能/端末の配置-e\u{301} ●2"), "{shown}");
+}
+
+#[test]
+fn a_deny_message_keeps_both_keys_on_a_narrow_key_bar() {
+    for s in [
+        asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws"))),
+        plan_exception(),
+    ] {
+        let ui = UiState {
+            deny_message: Some(navai::tui::state::DenyDraft {
+                request_id: "R1".into(),
+                text: "keep it".into(),
+            }),
+            ..UiState::default()
+        };
+        for width in [24u16, 28, 40, 80] {
+            let row = bottom_row(&s, &ui, &Editor::new(), (width, 30));
+            let row = row.rsplit('│').next().unwrap_or(&row).to_string();
+            assert!(row.contains("enter deny"), "{width}: {row}");
+            assert!(row.contains("esc "), "{width}: {row}");
+        }
+    }
+}
+
+#[test]
+fn a_plan_exception_never_offers_always_on_the_key_bar() {
+    let s = plan_exception();
+    let ui = UiState::default();
+    for width in [24u16, 30, 40, 60, 100] {
+        let row = bottom_row(&s, &ui, &Editor::new(), (width, 30));
+        let row = row.rsplit('│').next().unwrap_or(&row).to_string();
+        assert!(!row.contains("always"), "{width}: {row}");
+        assert!(!row.split(" · ").any(|h| h.trim() == "a"), "{width}: {row}");
+        assert!(row.contains('y') && row.contains('n'), "{width}: {row}");
+    }
+}
+
+#[test]
+fn the_three_permission_choices_stay_on_a_narrow_key_bar() {
+    let s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
+    let ui = UiState::default();
+    let bar = |width: u16| bottom_row(&s, &ui, &Editor::new(), (width, 30));
+    let wide = bar(100);
+    assert!(
+        wide.contains("y allow once · a always · n deny · esc stop · ctrl+p palette"),
+        "{wide}"
+    );
+    // `y allow once · a always · n deny` needs 34 columns; below that the short labels
+    let full = bar(34);
+    assert!(full.contains("y allow once · a always · n deny"), "{full}");
+    let mid = bar(30);
+    assert!(mid.contains("y once · a always · n deny"), "{mid}");
+    let narrow = bar(24);
+    assert!(narrow.contains("y · a · n"), "{narrow}");
+    for width in [24u16, 30, 40, 50, 60, 80] {
+        let row = bar(width);
+        // At 80 columns and more the sidebar takes the left of the row.
+        let row = row.rsplit('│').next().unwrap_or(&row).to_string();
+        for key in ["y", "a", "n"] {
+            assert!(
+                row.split(" · ")
+                    .any(|h| h.trim() == key || h.trim().starts_with(&format!("{key} "))),
+                "{width}: {key} missing: {row}"
+            );
+        }
+    }
 }

@@ -23,6 +23,16 @@ requests land in `develop`.
   boundary and the `model.changed` event are written in one step, so a failed write changes nothing.
   Controls accepted during a turn (`/model`, `/compact`) run in the order they came. `/model` with no argument still shows the
   current model.
+- **A new layout for the terminal client**: the top row shows the workspace, its git branch with
+  the number of changed files, the agent in use (`build` in the accent colour, `plan` in blue) and
+  the model, its variant and how full the context is. The branch and the changes are read when a
+  conversation starts and after each turn. On a terminal 140 columns or wider a column on the right
+  shows the agent in use and its role, what the next request is made of (system,
+  rules, skills, tools, messages, the input budget and the last compaction), how many skills are
+  listed or left out, and the changed files. `alt+r` hides or shows it. A part with nothing to show
+  yet shows `—`. The bottom row lists the keys that apply now, with the permission keys while a
+  prompt waits. Popups dim the screen behind them and show their keys at the bottom.
+
 - **Role guard for the `plan` agent**: `plan` keeps every tool, and writes markdown freely: a `write`
   or `edit` whose resolved destination is a regular `.md` file (a `.md` name that is a link to another
   file does not count) runs with no request. Every other `write` or `edit`, and every `bash` and

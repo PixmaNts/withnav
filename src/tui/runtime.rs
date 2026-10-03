@@ -252,6 +252,7 @@ impl Runtime {
     pub fn render(&mut self, frame: &mut ratatui::Frame<'_>) {
         view::draw(frame, &self.state, &self.ui, &self.editor, &mut self.cache);
         self.ui.prompt_shown = self.cache.prompt_shown.clone();
+        self.ui.panel_drawn = self.cache.panel_drawn;
     }
 
     fn draw(&mut self, guard: &mut TerminalGuard) -> Result<(), TuiError> {

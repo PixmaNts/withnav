@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ navai  workspace                                            new conversation 
+ Conversations       │ ◆ navai                                                ▌build  — · — · — / — 
  6 starting…         │──────────────────────────────────────────────────────────────────────────────
    build · idle      │                                                                              
  7 starting…         │                                                                              
@@ -11,8 +11,8 @@ expression: snapshot
    build · idle      │                                                                              
 ▌9 starting…         │                                                                              
 ▌  build · idle      │──────────────────────────────────────────────────────────────────────────────
-                     │▌build  — · — · — / —   offline   ready                                       
+                     │ ready   offline                                                session — tok 
                      │┌ Message ───────────────────────────────────────────────────────────────────┐
  alt+1…9 switch      ││                                                                            │
  alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
- alt+b hide bar      │ enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help
+ alt+b hide bar      │ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model · /compact · esc stop

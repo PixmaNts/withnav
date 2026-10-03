@@ -74,18 +74,25 @@ impl Service {
     /// in memory nor on disk.
     pub async fn delete(&self, id: SessionId) -> Result<(), ServerError> {
         let _gate = self.lifecycle_gate().await;
-        let parent = self.handle(id).and_then(|handle| handle.parent_session_id);
         // A live session is closed; a stored one is a no-op; an id the store
         // does not know is a 404.
+        let parent = self.handle(id).and_then(|handle| handle.parent_session_id);
         self.close_session_gated(id).await?;
+        if let Some(parent) = parent {
+            self.finish_child(
+                parent,
+                id,
+                "stopped",
+                Some("deleted_by_owner".into()),
+                String::new(),
+            )
+            .await?;
+        }
         self.discard(id);
         self.history()
             .delete(id)
             .await
             .map_err(ServerError::History)?;
-        if let Some(parent) = parent {
-            self.reset_child_slots_for_delete(parent).await?;
-        }
         Ok(())
     }
 }

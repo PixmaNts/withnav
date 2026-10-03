@@ -34,6 +34,57 @@ async fn admission_wait_is_cancelled_without_acquiring_the_gate() {
 }
 
 #[tokio::test]
+async fn concurrent_terminal_winners_release_exactly_their_reservations() {
+    let (_dir, service) = test_service();
+    let parent = Ulid::new();
+    service
+        .history()
+        .record_session(parent, "/w", "default", None)
+        .await
+        .unwrap();
+    service.subagent_slots.lock().unwrap().insert(parent, 4);
+    let children = [Ulid::new(), Ulid::new(), Ulid::new(), Ulid::new()];
+    for child in children {
+        service
+            .history()
+            .record_session(child, "/w", "default", None)
+            .await
+            .unwrap();
+        service
+            .history()
+            .create_child_link(
+                parent,
+                child,
+                "explore".into(),
+                "goal".into(),
+                "{}".into(),
+                4,
+            )
+            .await
+            .unwrap();
+    }
+    let (a, b) = tokio::join!(
+        service.finish_child(parent, children[0], "done", None, "a".into()),
+        service.finish_child(parent, children[1], "done", None, "b".into())
+    );
+    a.unwrap();
+    b.unwrap();
+    service
+        .finish_child(parent, children[0], "failed", None, "late".into())
+        .await
+        .unwrap();
+    assert_eq!(service.subagent_slots.lock().unwrap()[&parent], 2);
+    let reservation = ChildReservation {
+        slots: service.subagent_slots.clone(),
+        parent,
+        committed: false,
+    };
+    service.subagent_slots.lock().unwrap().insert(parent, 3);
+    drop(reservation);
+    assert_eq!(service.subagent_slots.lock().unwrap()[&parent], 2);
+}
+
+#[tokio::test]
 async fn listing_hides_child_until_relationship_commits() {
     let (_dir, service) = test_service();
     let parent = Ulid::new();

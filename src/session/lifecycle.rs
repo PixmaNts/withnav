@@ -36,7 +36,6 @@ impl Service {
                 String::new(),
             )
             .await?;
-            self.reset_child_slots_for_delete(parent).await?;
         }
         Ok(())
     }

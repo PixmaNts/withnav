@@ -343,6 +343,24 @@ impl HistoryStore {
         }).await.map_err(|e| e.to_string())?
     }
 
+    pub fn active_child_counts(&self) -> Result<std::collections::HashMap<Ulid, usize>, String> {
+        let conn = Connection::open(&*self.path).map_err(|e| e.to_string())?;
+        let mut statement = conn.prepare("SELECT parent_id, COUNT(*) FROM child_links WHERE status IN ('starting','running') GROUP BY parent_id").map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.map(|row| {
+            let (id, count) = row.map_err(|e| e.to_string())?;
+            Ok((
+                id.parse().map_err(|e| format!("parent id: {e}"))?,
+                usize::try_from(count).map_err(|e| e.to_string())?,
+            ))
+        })
+        .collect()
+    }
+
     /// Performs the single terminal compare-and-set for a child. Only the
     /// first completion wins; callers publish the matching notice afterward.
     pub async fn finish_child_link(

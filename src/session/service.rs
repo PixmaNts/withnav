@@ -281,6 +281,9 @@ impl Service {
         // No fallback: a conversation that cannot be saved is not served.
         let history =
             super::store::HistoryStore::open(&config.history_db).map_err(ServerError::History)?;
+        let seeded_slots = history
+            .active_child_counts()
+            .map_err(ServerError::History)?;
         let catalog = crate::provider::catalog::ModelCatalog::new(Some(config.data_dir.clone()));
         Ok(Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -289,7 +292,7 @@ impl Service {
             hooks,
             gate: Arc::new(tokio::sync::Mutex::new(())),
             admission_gate: Arc::new(tokio::sync::Mutex::new(())),
-            subagent_slots: Arc::default(),
+            subagent_slots: Arc::new(Mutex::new(seeded_slots)),
             unpublished_children: Arc::default(),
             catalog,
             #[cfg(test)]
@@ -378,21 +381,12 @@ impl Service {
             .map_err(ServerError::SubagentSettings)?;
         let _spawn_lock = self.child_admission(&parent_handle.session_cancel).await?;
         let parent_handle = self.routable_handle(parent).await?;
-        let persisted_active = self
-            .history
-            .active_child_count(parent)
-            .await
-            .map_err(ServerError::History)?;
         {
             let mut slots = self
                 .subagent_slots
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let current = slots
-                .get(&parent)
-                .copied()
-                .unwrap_or(persisted_active)
-                .max(persisted_active);
+            let current = slots.get(&parent).copied().unwrap_or(0);
             if current >= cap {
                 return Err(ServerError::SubagentCapacity { capacity: cap });
             }
@@ -501,9 +495,7 @@ impl Service {
         } else {
             Err(ServerError::SessionStopping)
         };
-        if let Err(error) = start_result {
-            return Err(error);
-        }
+        start_result?;
         let spawned_payload = serde_json::to_value(crate::bus::event::SubagentSpawned {
             parent_session_id: parent,
             child_session_id: child,
@@ -569,32 +561,18 @@ impl Service {
                 .sequencer
                 .publish(Candidate::new(EventKind::SubagentDone, payload));
         }
-        let active = self
-            .history
-            .active_child_count(parent)
-            .await
-            .map_err(ServerError::History)?;
-        self.subagent_slots
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(parent, active);
+        self.release_child_slot(parent);
         Ok(())
     }
 
-    pub(super) async fn reset_child_slots_for_delete(
-        &self,
-        parent: SessionId,
-    ) -> Result<(), ServerError> {
-        let active = self
-            .history
-            .active_child_count(parent)
-            .await
-            .map_err(ServerError::History)?;
-        self.subagent_slots
+    fn release_child_slot(&self, parent: SessionId) {
+        let mut slots = self
+            .subagent_slots
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(parent, active);
-        Ok(())
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(count) = slots.get_mut(&parent) {
+            *count = count.saturating_sub(1);
+        }
     }
 
     /// A clone of the session's handle, for routing without holding the

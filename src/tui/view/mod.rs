@@ -32,12 +32,29 @@ pub struct RenderCache {
     pub panel_drawn: bool,
 }
 
-/// The key bar: `key label` pairs, keys in text colour and labels muted, as many as fit in
-/// `width` columns; they are in order of use, so the last ones give way first.
-fn key_bar(hints: &[&str], width: usize, theme: &Theme) -> Vec<Span<'static>> {
+/// One way to show the keys that apply now: the hints in order of use, the first `required` of
+/// which must all be on the bar.
+struct Hints {
+    hints: &'static [&'static str],
+    required: usize,
+}
+
+/// The columns `hints` take on the bar, separators and the leading space included.
+fn bar_width(hints: &[&str]) -> usize {
+    1 + hints.iter().map(|h| text::columns(h)).sum::<usize>() + 3 * hints.len().saturating_sub(1)
+}
+
+/// The key bar: `key label` pairs, keys in text colour and labels muted. The first of `choices`
+/// whose required hints fit is used; from it, as many hints as fit, the last ones giving way.
+fn key_bar(choices: &[Hints], width: usize, theme: &Theme) -> Vec<Span<'static>> {
+    let chosen = choices
+        .iter()
+        .find(|c| bar_width(&c.hints[..c.required]) <= width)
+        .or(choices.last())
+        .map_or(&[][..], |c| c.hints);
     let mut spans = vec![Span::raw(" ")];
     let mut used = 1;
-    for (index, hint) in hints.iter().enumerate() {
+    for (index, hint) in chosen.iter().enumerate() {
         let sep = if index == 0 { "" } else { " · " };
         let wanted = text::columns(sep) + text::columns(hint);
         if used + wanted > width {
@@ -56,40 +73,69 @@ fn key_bar(hints: &[&str], width: usize, theme: &Theme) -> Vec<Span<'static>> {
     spans
 }
 
-/// The keys that apply now: a permission prompt's while one waits for an answer, the deny
-/// message's while one is typed, else the everyday ones.
-fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [&'static str] {
+/// The keys that apply now: a permission prompt's while one waits for an answer (all three
+/// choices always shown, shorter when the row is narrow), the deny message's while one is typed,
+/// else the everyday ones.
+fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
     // An answered request takes no keys: the usual hints come back.
     let answerable = state
         .open_permission()
         .filter(|p| state.answered_permission.as_deref() != Some(p.request_id.as_str()));
     let draft = answerable.and_then(|p| ui.deny_draft(&p.request_id));
     match (answerable, draft) {
-        (Some(_), Some(_)) => &["enter deny with this message", "esc deny without one"],
+        (Some(_), Some(_)) => &[
+            Hints {
+                hints: &["enter deny with this message", "esc deny without one"],
+                required: 2,
+            },
+            Hints {
+                hints: &["enter deny", "esc no message"],
+                required: 2,
+            },
+        ],
         (Some(_), None) if editor.text().is_empty() => &[
-            "y allow once",
-            "a always",
-            "n deny",
-            "esc stop",
-            "ctrl+p palette",
+            Hints {
+                hints: &[
+                    "y allow once",
+                    "a always",
+                    "n deny",
+                    "esc stop",
+                    "ctrl+p palette",
+                ],
+                required: 3,
+            },
+            Hints {
+                hints: &["y once", "a always", "n deny", "esc stop"],
+                required: 3,
+            },
+            Hints {
+                hints: &["y", "a", "n"],
+                required: 3,
+            },
         ],
-        _ if editor.text().is_empty() => &[
-            "tab build/plan",
-            "ctrl+p palette",
-            "alt+1…9 tabs",
-            "/model",
-            "/compact",
-            "esc stop",
-            "alt+r panel",
-            "f1 help",
-        ],
-        _ => &[
-            "enter send",
-            "alt+enter newline",
-            "ctrl+p palette",
-            "esc stop",
-            "f1 help",
-        ],
+        _ if editor.text().is_empty() => &[Hints {
+            hints: &[
+                "tab build/plan",
+                "ctrl+p palette",
+                "alt+1…9 tabs",
+                "/model",
+                "/compact",
+                "esc stop",
+                "alt+r panel",
+                "f1 help",
+            ],
+            required: 0,
+        }],
+        _ => &[Hints {
+            hints: &[
+                "enter send",
+                "alt+enter newline",
+                "ctrl+p palette",
+                "esc stop",
+                "f1 help",
+            ],
+            required: 0,
+        }],
     }
 }
 

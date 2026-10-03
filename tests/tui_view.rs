@@ -2681,3 +2681,34 @@ fn wide_and_combining_names_never_push_the_gauge_off_the_header() {
     assert!(shown.contains("M …も長いファイルの名前です.rs"), "{shown}");
     assert!(shown.contains("機能/端末の配置-e\u{301} ●2"), "{shown}");
 }
+
+#[test]
+fn the_three_permission_choices_stay_on_a_narrow_key_bar() {
+    let s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
+    let ui = UiState::default();
+    let bar = |width: u16| bottom_row(&s, &ui, &Editor::new(), (width, 30));
+    let wide = bar(100);
+    assert!(
+        wide.contains("y allow once · a always · n deny · esc stop · ctrl+p palette"),
+        "{wide}"
+    );
+    // `y allow once · a always · n deny` needs 34 columns; below that the short labels
+    let full = bar(34);
+    assert!(full.contains("y allow once · a always · n deny"), "{full}");
+    let mid = bar(30);
+    assert!(mid.contains("y once · a always · n deny"), "{mid}");
+    let narrow = bar(24);
+    assert!(narrow.contains("y · a · n"), "{narrow}");
+    for width in [24u16, 30, 40, 50, 60, 80] {
+        let row = bar(width);
+        // At 80 columns and more the sidebar takes the left of the row.
+        let row = row.rsplit('│').next().unwrap_or(&row).to_string();
+        for key in ["y", "a", "n"] {
+            assert!(
+                row.split(" · ")
+                    .any(|h| h.trim() == key || h.trim().starts_with(&format!("{key} "))),
+                "{width}: {key} missing: {row}"
+            );
+        }
+    }
+}

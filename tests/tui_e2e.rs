@@ -840,3 +840,118 @@ async fn variant_step_and_slash_variant_drive_the_server() {
     })
     .await;
 }
+
+/// One step that calls `write` on `path` with `content`.
+fn step_with_write(id: &str, path: &Path, content: &str) -> Vec<u8> {
+    let call = tool_call_chunk(id, "write", &json!({ "path": path, "content": content }));
+    http_sse(&sse_body(&[
+        &call,
+        &usage_chunk("tool_calls", usage(50, 5)),
+    ]))
+}
+
+fn open_request(rt: &Runtime) -> Option<String> {
+    rt.state.open_permission().map(|p| p.request_id.clone())
+}
+
+// Given a build conversation whose model asks to write a file
+// When the prompt appears and the driver presses y
+// Then the file is written, the prompt shows "allowed once" and the turn carries on to the answer
+// And when the model asks again and the driver presses n, types a reason and enter, the file is
+//     left alone and the model's next request carries the denial with that reason
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_permission_prompt_allows_with_y_and_denies_with_n_and_a_reason() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let ws = workspace_of(&root);
+    std::fs::create_dir_all(&ws).expect("ws");
+    let ws = std::fs::canonicalize(&ws).expect("canonical ws");
+    let allowed = ws.join("allowed.txt");
+    let denied = ws.join("denied.txt");
+    let provider = spawn_capturing_provider(vec![
+        step_with_write("w1", &allowed, "hello\nworld"),
+        final_answer("Written.", usage(60, 2)),
+        step_with_write("w2", &denied, "nope"),
+        final_answer("Understood.", usage(70, 2)),
+    ])
+    .await;
+    let env = Env::start(root, &provider.url).await;
+    let mut rt = started(&env).await;
+    pick_model(&mut rt, 0);
+
+    type_and_send(&mut rt, "write allowed.txt");
+    until("the permission prompt", &mut rt, |_, rt| {
+        open_request(rt).is_some() && rt.editor.text().is_empty()
+    })
+    .await;
+    assert!(!allowed.exists(), "nothing runs before the answer");
+    let shown = screen(&mut rt);
+    assert!(shown.contains("wants to run write in"), "{shown}");
+    assert!(shown.contains("+ hello"), "{shown}");
+    assert!(shown.contains("y allow once"), "{shown}");
+    assert!(shown.contains("permission needed"), "{shown}");
+
+    press(&mut rt, KeyCode::Char('y'));
+    until("the answer after the write", &mut rt, |_, rt| {
+        has_final(rt, "Written.")
+    })
+    .await;
+    assert!(open_request(&rt).is_none());
+    assert_eq!(std::fs::read_to_string(&allowed).unwrap(), "hello\nworld");
+    let (_, status, _) = tool_block(&rt, "w1");
+    assert_eq!(status, Some(ToolStatus::Ok));
+    assert!(screen(&mut rt).contains("allowed once"));
+
+    type_and_send(&mut rt, "now write denied.txt");
+    until("the second prompt", &mut rt, |_, rt| {
+        open_request(rt).is_some() && rt.editor.text().is_empty()
+    })
+    .await;
+    type_keys(&mut rt, "nkeep the folder clean⏎");
+    until("the answer after the denial", &mut rt, |_, rt| {
+        has_final(rt, "Understood.")
+    })
+    .await;
+    assert!(!denied.exists());
+    let (_, status, _) = tool_block(&rt, "w2");
+    assert_eq!(status, Some(ToolStatus::Denied));
+    let next = &provider.bodies()[3];
+    assert!(next.contains("keep the folder clean"), "{next}");
+    assert!(next.contains("permission_denied"), "{next}");
+    assert!(screen(&mut rt).contains("denied: keep the folder clean"));
+}
+
+// Given an open permission request
+// When the driver types a message and presses enter twice
+// Then the first enter only warns; the second sends the text, which cancels the request
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn text_sent_over_an_open_request_cancels_it_after_a_warning() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let ws = workspace_of(&root);
+    std::fs::create_dir_all(&ws).expect("ws");
+    let target = std::fs::canonicalize(&ws).expect("canonical").join("a.txt");
+    let provider = spawn_capturing_provider(vec![
+        step_with_write("w1", &target, "x"),
+        final_answer("Fine, I will not.", usage(60, 2)),
+    ])
+    .await;
+    let env = Env::start(root, &provider.url).await;
+    let mut rt = started(&env).await;
+    pick_model(&mut rt, 0);
+    type_and_send(&mut rt, "write a.txt");
+    until("the prompt", &mut rt, |_, rt| {
+        open_request(rt).is_some() && rt.editor.text().is_empty()
+    })
+    .await;
+    rt.editor.set_text("actually, do not write anything");
+    press(&mut rt, KeyCode::Enter);
+    assert!(open_request(&rt).is_some());
+    assert!(screen(&mut rt).contains("press enter again to send"));
+    press(&mut rt, KeyCode::Enter);
+    until("the answer", &mut rt, |_, rt| {
+        has_final(rt, "Fine, I will not.")
+    })
+    .await;
+    assert!(open_request(&rt).is_none());
+    assert!(!target.exists());
+    assert!(screen(&mut rt).contains("cancelled"));
+}

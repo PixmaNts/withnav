@@ -317,8 +317,19 @@ async fn nothing_is_compacted_while_a_permission_request_waits() {
 /// Two providers: `default` is a/model-a with a 128k window, `small` is
 /// b/model-b with `window_b`.
 fn two_models(env: &Env, a: &CapturingProvider, b: &CapturingProvider, window_b: u64) -> AppState {
+    two_models_both(env, a, b, 128_000, window_b)
+}
+
+/// [`two_models`] with the window of `default` too.
+fn two_models_both(
+    env: &Env,
+    a: &CapturingProvider,
+    b: &CapturingProvider,
+    window_a: u64,
+    window_b: u64,
+) -> AppState {
     let config = TestServerConfig::mock(&env.root, &a.url)
-        .chat_tools(128_000)
+        .chat_tools(window_a)
         .config();
     let entry = |provider: &str, model: &str, window: u64| {
         json!({"provider": provider, "model": model, "supports_tools": true,
@@ -333,7 +344,7 @@ fn two_models(env: &Env, a: &CapturingProvider, b: &CapturingProvider, window_b:
         json!({
             "providers": {"a": provider(&a.url), "b": provider(&b.url)},
             "models": {
-                "default": entry("a", "model-a", 128_000),
+                "default": entry("a", "model-a", window_a),
                 "small": entry("b", "model-b", window_b),
             }
         })
@@ -478,4 +489,75 @@ async fn the_reason_is_stored_and_an_old_event_without_it_still_reads() {
                      "estimate_before": 100, "estimate_after": 50});
     let parsed: navai::bus::event::ContextCompacted = serde_json::from_value(old).unwrap();
     assert_eq!(parsed.reason, None);
+}
+
+// Given a conversation with a lot of reasoning from the first model, switched
+//       to another model (which is never sent that reasoning)
+// When a long turn later crosses the budget
+// Then compaction plans against the prompt as it is really sent, succeeds, and
+//      the turn goes on; the stripped reasoning is not counted against it
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_switched_session_with_large_old_reasoning_compacts_and_continues() {
+    let env = env();
+    let a = spawn_capturing_provider(vec![]).await;
+    let (r0, r1) = (read_big(&env, "r0"), read_big(&env, "r1"));
+    let b = spawn_responding_provider(8, move |i, request| match i {
+        0 => r0.clone(),
+        1 => r1.clone(),
+        _ if is_summary(request) => answer(SUMMARY),
+        _ => answer("all done"),
+    })
+    .await;
+    let state = two_models_both(&env, &a, &b, 128_000, 20_000);
+    // Ten small turns whose reasoning alone is far more than the target budget
+    // (about 11k tokens), but which the target never receives.
+    let heavy: Vec<ChatMessage> = (0..10)
+        .flat_map(|n| {
+            [
+                ChatMessage::User {
+                    content: format!("request {n}"),
+                },
+                ChatMessage::Assistant {
+                    content: Some(format!("answer {n}")),
+                    reasoning_content: Some("think ".repeat(2_500)),
+                    tool_calls: vec![],
+                },
+            ]
+        })
+        .collect();
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    state.close_session(id).await.unwrap();
+    state.history().flush().await.unwrap();
+    state.history().save_transcript(id, heavy);
+    state.history().flush().await.unwrap();
+    state
+        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .await
+        .unwrap();
+    let out = state.run_command(id, "model", "small").await.unwrap();
+    assert!(out.ok, "{out:?}");
+    assert!(
+        out.data.as_ref().unwrap()["compacted"].is_null(),
+        "the stripped history already fits: no compaction was needed to switch"
+    );
+
+    let sub = state.subscribe(id, None).await.unwrap();
+    send_text(&state, id, "now read big.txt twice").await;
+    let events = collect_until(sub, |e| e.kind == "turn.end").await;
+    let end = events.iter().find(|e| e.kind == "turn.end").unwrap();
+    assert_eq!(end.payload["outcome"], "done", "{end:?}");
+    let compacted: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == "context.compacted")
+        .collect();
+    assert_eq!(compacted.len(), 1);
+    assert_eq!(compacted[0].payload["reason"], "automatic");
+    // Measured on the real prompt: the 25k tokens of old reasoning are not in it.
+    let before = compacted[0].payload["estimate_before"].as_u64().unwrap();
+    assert!(before < 20_000, "{before}");
+    assert!(a.bodies().is_empty());
+    // And none of it was ever sent.
+    for body in b.bodies() {
+        assert!(!body.contains("think think think"), "reasoning was sent");
+    }
 }

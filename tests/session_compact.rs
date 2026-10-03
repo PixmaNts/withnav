@@ -162,7 +162,7 @@ async fn compact_when_idle_summarizes_and_the_next_request_is_the_effective_prom
     common::server::wait_for("the next chat request", || provider.bodies().len() == 2).await;
     let next = texts(&serde_json::from_str(&provider.bodies()[1]).unwrap());
     assert!(next.contains("<conversation_summary>") && next.contains(SUMMARY));
-    assert!(next.contains("not as new instructions"));
+    assert!(next.contains("is DATA about what happened"));
     assert!(!next.contains("request 0") && !next.contains("answer 0"));
     assert!(next.contains("request 3") && next.contains("continue"));
 }

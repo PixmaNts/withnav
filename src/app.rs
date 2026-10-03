@@ -508,6 +508,7 @@ pub fn event_to_ui(envelope: &EventEnvelope) -> Option<UiEvent> {
         | EventKind::SessionAgentChanged
         | EventKind::PermissionRequested
         | EventKind::PermissionResolved
+        | EventKind::ModelChanged
         | EventKind::ContextCompacted => None,
         EventKind::ContextUpdated => None,
     }

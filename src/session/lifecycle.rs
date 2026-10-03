@@ -201,10 +201,16 @@ mod tests {
             lifecycle: Lifecycle::Active,
             actor_state: "idle".to_string(),
             workspace: PathBuf::from("/w"),
-            model: "fast".to_string(),
+            selected: Arc::new(std::sync::Mutex::new(
+                crate::session::service::SelectedModel {
+                    alias: "fast".to_string(),
+                    resolution: None,
+                    revision: 1,
+                    variant: None,
+                    offer: Arc::default(),
+                },
+            )),
             status: Arc::default(),
-            offer: Arc::default(),
-            resolution: None,
         }
     }
 

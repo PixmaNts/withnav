@@ -2,6 +2,8 @@
 //! commands, run by the service on behalf of any client. Every run publishes
 //! one durable `command.result` on the session stream.
 
+use std::sync::Arc;
+
 use serde_json::{json, Value};
 use ulid::Ulid;
 
@@ -9,7 +11,7 @@ use super::commands::{self, CommandOutcome, CommandSpec};
 use super::service::{exact_variant, Service, SessionHandle, SessionId, VariantChoice, CLEAR_WORD};
 use crate::agent::selection::SwitchError;
 use crate::bus::event::{CommandResult, EventKind, SessionAgentChanged};
-use crate::bus::runtime::CompactReply;
+use crate::bus::runtime::{CompactReply, ModelReply};
 use crate::bus::sequencer::Candidate;
 use crate::error::ServerError;
 
@@ -19,6 +21,18 @@ const MODEL_CATALOG_CAP: usize = 50;
 /// Why an agent or variant change waits for a compaction to finish.
 const COMPACTING_ERROR: &str =
     "a compaction is running: wait for it to finish, then change the agent or variant";
+
+/// Why an agent, variant, compaction or model change waits for a model switch.
+/// Why a model switch waits for a compaction to finish.
+const COMPACTING_MODEL_ERROR: &str =
+    "a compaction is running: wait for it to finish, then switch model";
+
+/// Why a variant change read against a model that was switched meanwhile is
+/// not applied.
+const MODEL_CHANGED_ERROR: &str =
+    "the model was switched while the variant was being checked: run /variant again";
+
+const SWITCHING_ERROR: &str = "a model switch is running: wait for it to finish, then retry";
 
 /// Longest unknown command name echoed into the result.
 const UNKNOWN_NAME_CAP: usize = 64;
@@ -173,16 +187,15 @@ impl Service {
             )));
         }
         if spec.args_hint.is_empty() && !arguments.is_empty() {
-            return Err(CommandFailure::Refused(match spec.name {
-                "model" => "switching model inside a conversation is not available yet: \
-                            use /new <alias>"
-                    .to_string(),
-                name => format!("usage: /{name}"),
-            }));
+            return Err(CommandFailure::Refused(format!("usage: /{}", spec.name)));
         }
         match spec.name {
             "help" => Ok(Done::data(json!({ "commands": commands::COMMANDS }))),
-            "model" => Ok(Done::data(self.model_data(handle))),
+            "model" if arguments.is_empty() => Ok(Done::data(self.model_data(handle))),
+            "model" => {
+                self.model_command(handle, arguments, operation_id, gate)
+                    .await
+            }
             "context" => handle
                 .status
                 .context_snapshot()
@@ -216,6 +229,9 @@ impl Service {
         operation_id: Ulid,
         gate: &mut Option<tokio::sync::MutexGuard<'_, ()>>,
     ) -> Result<Done, CommandFailure> {
+        if handle.status.selection.switching() {
+            return Err(CommandFailure::Refused(SWITCHING_ERROR.to_string()));
+        }
         let focus = (!arguments.is_empty()).then(|| arguments.to_string());
         if focus
             .as_deref()
@@ -234,6 +250,46 @@ impl Service {
                 Ok(Done::published(crate::bus::runtime::deferred_wire()))
             }
             Some(CompactReply::Refused(why)) => Err(CommandFailure::Published(why)),
+            None => Err(CommandFailure::Server(ServerError::SessionStopping)),
+        }
+    }
+
+    /// `/model <alias>`: moves the conversation to another model. The runtime
+    /// does it between turns: at once when the session is idle, after the
+    /// running turn otherwise (the answer says so). Refused while an `ask` or
+    /// a permission request waits (before this is reached), and while a
+    /// compaction is preparing its summary.
+    async fn model_command(
+        &self,
+        handle: &SessionHandle,
+        arguments: &str,
+        operation_id: Ulid,
+        gate: &mut Option<tokio::sync::MutexGuard<'_, ()>>,
+    ) -> Result<Done, CommandFailure> {
+        let mut words = arguments.split_whitespace();
+        let (Some(alias), None) = (words.next(), words.next()) else {
+            return Err(CommandFailure::Refused("usage: /model [alias]".to_string()));
+        };
+        let selection = &handle.status.selection;
+        if selection.compacting() {
+            return Err(CommandFailure::Refused(COMPACTING_MODEL_ERROR.to_string()));
+        }
+        if selection.switching() {
+            return Err(CommandFailure::Refused(SWITCHING_ERROR.to_string()));
+        }
+        // Resolving the target is a provider lookup: nothing else may wait
+        // for it.
+        drop(gate.take());
+        match handle
+            .status
+            .request_model_switch(alias.to_string(), operation_id)
+            .await
+        {
+            Some(ModelReply::Done(done)) => Ok(Done::published(done.wire("now"))),
+            Some(ModelReply::Deferred) => Ok(Done::published(
+                json!({ "accepted": true, "applies": "after_turn" }),
+            )),
+            Some(ModelReply::Refused(why)) => Err(CommandFailure::Published(why)),
             None => Err(CommandFailure::Server(ServerError::SessionStopping)),
         }
     }
@@ -289,6 +345,7 @@ impl Service {
                     CommandFailure::Refused(commands::ASK_PENDING_ERROR.to_string())
                 }
                 SwitchError::Compacting => CommandFailure::Refused(COMPACTING_ERROR.to_string()),
+                SwitchError::Switching => CommandFailure::Refused(SWITCHING_ERROR.to_string()),
                 SwitchError::Busy => CommandFailure::Refused(
                     "the agent is working: wait for the turn to end or stop it, then switch"
                         .to_string(),
@@ -331,12 +388,16 @@ impl Service {
         handle: &SessionHandle,
         arguments: &str,
     ) -> Result<Done, CommandFailure> {
-        let mut offer = handle.current_offer();
+        // One selection for the whole command: the offer read below belongs to
+        // this alias, and is only applied if the selection is still this one
+        // once the command holds exclusivity.
+        let selected = handle.selected();
+        let mut offer = selected.offer.clone();
         let mut words = arguments.split_whitespace();
         let Some(word) = words.next() else {
             let offered: Vec<&String> = offer.variants.keys().collect();
             return Ok(Done::data(json!({
-                "variant": handle.status.selected_variant(),
+                "variant": selected.variant_name(),
                 "offered": offered,
             })));
         };
@@ -352,14 +413,13 @@ impl Service {
                 .reread_offer(
                     &session_id.to_string(),
                     &handle.workspace,
-                    &handle.model,
-                    handle.resolution.as_deref(),
+                    &selected.alias,
+                    selected.resolution.as_deref(),
                 )
                 .await
             {
                 Ok(fresh) if fresh.known => {
-                    handle.replace_offer(fresh);
-                    offer = handle.current_offer();
+                    offer = Arc::new(fresh);
                 }
                 // The alias now names another model: its variants are not
                 // this session's, and nothing is changed.
@@ -376,13 +436,13 @@ impl Service {
         } else if !offer.known && !offer.variants.contains_key(word) {
             return Err(CommandFailure::Refused(
                 ServerError::VariantOfferUnknown {
-                    alias: handle.model.clone(),
+                    alias: selected.alias.clone(),
                     variant: word.to_string(),
                 }
                 .to_string(),
             ));
         } else {
-            exact_variant(&handle.model, word, &offer.variants)
+            exact_variant(&selected.alias, word, &offer.variants)
                 .map_err(|e| CommandFailure::Refused(e.to_string()))?
         };
         let name = chosen.as_ref().map(|(name, _)| name.clone());
@@ -392,16 +452,33 @@ impl Service {
             .selection
             .exclusive_unless_compacting()
             .await
-            .map_err(|_| CommandFailure::Refused(COMPACTING_ERROR.to_string()))?;
+            .map_err(|err| match err {
+                SwitchError::Switching => CommandFailure::Refused(SWITCHING_ERROR.to_string()),
+                _ => CommandFailure::Refused(COMPACTING_ERROR.to_string()),
+            })?;
+        // A model switch may have finished while the offer was being read: the
+        // offer and the variant chosen from it belong to the old model.
+        if handle.selected().revision != selected.revision {
+            return Err(CommandFailure::Refused(MODEL_CHANGED_ERROR.to_string()));
+        }
         self.history()
             .set_variant(session_id, chosen.as_ref())
             .await
             .map_err(|e| CommandFailure::Server(ServerError::History(e)))?;
         let offered: Vec<&String> = offer.variants.keys().collect();
-        let now = handle.status.select_variant(chosen);
+        // The selection, the runtime's variant and the gauge change together.
+        let (now, snapshot) = {
+            let mut selection = handle.lock_selected();
+            selection.variant = chosen.clone();
+            if !Arc::ptr_eq(&offer, &selection.offer) && offer.known {
+                selection.offer = offer.clone();
+            }
+            let now = handle.status.select_variant(chosen);
+            (now, handle.status.set_context_variant(name.clone()))
+        };
         // The gauge shows the variant that is selected, even when it applies
         // from the next turn.
-        if let Some(snapshot) = handle.status.set_context_variant(name.clone()) {
+        if let Some(snapshot) = snapshot {
             if let Ok(payload) = serde_json::to_value(&snapshot) {
                 let _ = handle
                     .sequencer
@@ -428,11 +505,13 @@ impl Service {
         if words.next().is_some() {
             return Err(CommandFailure::Refused("usage: /new [alias]".to_string()));
         }
-        let alias = alias.unwrap_or(&handle.model).to_string();
+        let selected = handle.selected();
+        let current = selected.alias.clone();
+        let alias = alias.unwrap_or(&current).to_string();
         // The same alias keeps this session's variant; another alias starts
         // on its own default.
-        let variant = if alias == handle.model {
-            match handle.status.selected_variant() {
+        let variant = if alias == current {
+            match selected.variant_name() {
                 Some(name) => VariantChoice::Exact(name),
                 None => VariantChoice::Clear,
             }
@@ -500,6 +579,24 @@ impl Service {
 
     #[cfg(not(test))]
     async fn before_publish_hook(&self) {}
+
+    /// Test seam: parks a model switch between its store write and the
+    /// installation of the new selection.
+    #[cfg(test)]
+    pub(super) async fn before_switch_install(&self) {
+        let barrier = self
+            .install_barrier
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take());
+        if let Some(barrier) = barrier {
+            barrier.reached.notify_one();
+            barrier.release.notified().await;
+        }
+    }
+
+    #[cfg(not(test))]
+    pub(super) async fn before_switch_install(&self) {}
 }
 
 /// What a successful command produced.
@@ -533,16 +630,18 @@ impl Service {
     /// `/model`: the alias, what the saved resolution says about it, and a
     /// bounded view of the chat aliases a new session could use.
     fn model_data(&self, handle: &SessionHandle) -> Value {
-        let mut data = match &handle.resolution {
+        let selected = handle.selected();
+        let alias = selected.alias;
+        let mut data = match &selected.resolution {
             Some(r) => json!({
-                "alias": handle.model,
+                "alias": alias,
                 "model": r.model,
                 "provider": r.provider,
                 "window": r.bounds.context_window,
                 "window_source": r.provenance.context_window,
                 "max_input_tokens": r.bounds.max_input_tokens,
             }),
-            None => json!({ "alias": handle.model }),
+            None => json!({ "alias": alias }),
         };
         if let Ok(models) = self.list_models(&handle.workspace) {
             let mut names: Vec<String> = models.into_iter().map(|(alias, _)| alias).collect();
@@ -838,5 +937,126 @@ mod tests {
             },
             Err(err) => panic!("subscribe: {err}"),
         }
+    }
+
+    /// A service with `default` (no variant) and `other` (variants, default
+    /// `high`) on one unreachable provider.
+    fn two_model_service(dir: &Path) -> Service {
+        let service = service(dir);
+        std::fs::write(
+            dir.join("models.json"),
+            r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1","api_key_env":"K",
+            "headers":{},"connect_timeout_ms":200,"request_timeout_ms":200}},
+            "models":{
+              "default":{"provider":"mock","model":"m","supports_tools":true,
+                "reasoning_history":"preserve","context_window":128000},
+              "other":{"provider":"mock","model":"m2","supports_tools":true,
+                "reasoning_history":"preserve","context_window":128000,
+                "variants":{"high":{"reasoning_effort":"high"},"low":{"reasoning_effort":"low"}},
+                "default_variant":"high"}}}"#,
+        )
+        .expect("models");
+        service
+    }
+
+    /// What a reader sees of the session: the summary pair, the gauge label
+    /// and the model/variant a bare `/new` would inherit.
+    async fn view(service: &Service, id: SessionId, dir: &Path) -> (String, Option<String>) {
+        let summary = service.session_summary(id).await.unwrap();
+        let gauge = service.context(id).await.unwrap();
+        assert_eq!(gauge.alias, summary.model, "gauge and summary agree");
+        assert_eq!(gauge.variant, summary.variant, "gauge and summary agree");
+        let created = service.run_command(id, "new", "").await.unwrap();
+        assert!(created.ok, "{created:?}");
+        let new_id: SessionId = created.data.unwrap()["session_id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let child = service.session_summary(new_id).await.unwrap();
+        assert_eq!(
+            (child.model.clone(), child.variant.clone()),
+            (summary.model.clone(), summary.variant.clone()),
+            "/new inherits the one selection the summary shows"
+        );
+        service.close_session(new_id).await.unwrap();
+        let _ = dir;
+        (summary.model, summary.variant)
+    }
+
+    // Given a /model switch parked right after its store write, and then right
+    //       after its selection is installed
+    // When /new and the session summary read the session at each point
+    // Then each sees either the old pair (default, no variant) or the new pair
+    //      (other, high), never a mix, and the gauge label always agrees
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_reader_never_sees_a_mix_of_two_model_selections() {
+        let tmp = tempfile::tempdir().unwrap();
+        let service = two_model_service(tmp.path());
+        let id = service
+            .create_session(tmp.path(), None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            view(&service, id, tmp.path()).await,
+            ("default".to_string(), None)
+        );
+
+        let stored = Arc::new(Barrier::default());
+        *service.install_barrier.lock().unwrap() = Some(stored.clone());
+        let installed = service.handle(id).unwrap().status.arm_switch_barrier();
+        let switch = tokio::spawn({
+            let service = service.clone();
+            async move { service.run_command(id, "model", "other").await }
+        });
+
+        // The row is written, nothing is installed yet: the old pair. The
+        // sequencer of this session is busy with the write, so only what does
+        // not queue on it is read here.
+        stored.reached.notified().await;
+        let handle = service.handle(id).unwrap();
+        let during = handle.selected();
+        assert_eq!(
+            (during.alias.as_str(), during.variant_name()),
+            ("default", None)
+        );
+        let gauge = service.context(id).await.unwrap();
+        assert_eq!((gauge.alias.as_str(), gauge.variant), ("default", None));
+        let early_new = tokio::spawn({
+            let service = service.clone();
+            async move { service.run_command(id, "new", "").await }
+        });
+        settle().await;
+        stored.release.notify_one();
+
+        // The selection is installed, the actor is not moved yet: the new pair.
+        installed.reached.notified().await;
+        assert_eq!(
+            view(&service, id, tmp.path()).await,
+            ("other".to_string(), Some("high".to_string()))
+        );
+        installed.release.notify_one();
+
+        let out = switch.await.unwrap().unwrap();
+        assert!(out.ok, "{out:?}");
+        // The /new that started before the install read one whole selection:
+        // the old pair (it was parked behind the write) or the new one.
+        let early = early_new.await.unwrap().unwrap();
+        assert!(early.ok, "{early:?}");
+        let early_id: SessionId = early.data.unwrap()["session_id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let child = service.session_summary(early_id).await.unwrap();
+        let pair = (child.model.as_str(), child.variant.as_deref());
+        assert!(
+            pair == ("default", None) || pair == ("other", Some("high")),
+            "{pair:?}"
+        );
+        assert_eq!(
+            view(&service, id, tmp.path()).await,
+            ("other".to_string(), Some("high".to_string()))
+        );
     }
 }

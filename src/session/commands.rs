@@ -27,8 +27,8 @@ pub const COMMANDS: [CommandSpec; 8] = [
     CommandSpec {
         name: "model",
         description:
-            "Show the session's model alias, its context window and where the window comes from",
-        args_hint: "",
+            "Show the session's model alias, its context window and where the window comes from, or switch to another alias",
+        args_hint: "[alias]",
     },
     CommandSpec {
         name: "new",

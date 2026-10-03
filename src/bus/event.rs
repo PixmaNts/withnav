@@ -1,7 +1,7 @@
-//! Frozen `EventEnvelope` shape and the 18-kind `EventKind`
+//! Frozen `EventEnvelope` shape and the 19-kind `EventKind`
 //! catalog (the twelve original kinds plus `command.result`,
 //! `context.updated`, `session.agent_changed`, `context.compacted`,
-//! `permission.requested` and `permission.resolved`).
+//! `permission.requested`, `permission.resolved` and `model.changed`).
 //!
 //! Reserved-but-deferred kind names (NOT in the enum, never emitted this slice):
 //! `prompt.pre_llm`, `tool.progress`, `context.pre_compact` (Phase 3),
@@ -23,13 +23,14 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// The single root actor id for this slice (all events are published by it).
 pub const ROOT_ACTOR_ID: &str = "agent:main";
 
-/// The catalog emits EXACTLY 18 kinds: 2 session +
+/// The catalog emits EXACTLY 19 kinds: 2 session +
 /// message + 2 turn + 2 llm + 2 tool + 2 agent + task + command result +
-/// context update + agent change + context compacted + 2 permission = 18. The
-/// first twelve are frozen; `command.result`, `context.updated`,
-/// `session.agent_changed`, `context.compacted`, `permission.requested` and
-/// `permission.resolved` were added without changing the envelope version.
-pub const EVENT_KIND_COUNT: usize = 18;
+/// context update + agent change + context compacted + 2 permission + model
+/// change = 19. The first twelve are frozen; `command.result`,
+/// `context.updated`, `session.agent_changed`, `context.compacted`,
+/// `permission.requested`, `permission.resolved` and `model.changed` were
+/// added without changing the envelope version.
+pub const EVENT_KIND_COUNT: usize = 19;
 
 /// Durable kinds are retained in the reconnect ring and the history store;
 /// `llm.delta` and `context.updated` are live-only (the latter is a
@@ -68,7 +69,8 @@ impl EventKind {
             | Self::SessionAgentChanged
             | Self::ContextCompacted
             | Self::PermissionRequested
-            | Self::PermissionResolved => [
+            | Self::PermissionResolved
+            | Self::ModelChanged => [
                 Self::SessionStart,
                 Self::SessionEnd,
                 Self::MessageReceived,
@@ -87,18 +89,19 @@ impl EventKind {
                 Self::ContextCompacted,
                 Self::PermissionRequested,
                 Self::PermissionResolved,
+                Self::ModelChanged,
             ],
         }
     }
 
-    /// The 18 emitted kinds, in catalog order. The bus iterates this to seed
+    /// The 19 emitted kinds, in catalog order. The bus iterates this to seed
     /// the ring/fan-out.
     pub const ALL: [EventKind; EVENT_KIND_COUNT] = Self::all_variants();
 }
 
 const _: () = assert!(EventKind::ALL.len() == EVENT_KIND_COUNT);
 
-/// Typed catalog of the 18 emitted event kinds; the wire name is the dotted
+/// Typed catalog of the 19 emitted event kinds; the wire name is the dotted
 /// string (serialized verbatim, e.g. `"llm.delta"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventKind {
@@ -138,6 +141,8 @@ pub enum EventKind {
     PermissionRequested,
     #[serde(rename = "permission.resolved")]
     PermissionResolved,
+    #[serde(rename = "model.changed")]
+    ModelChanged,
 }
 
 impl EventKind {
@@ -162,6 +167,7 @@ impl EventKind {
             EventKind::ContextCompacted => "context.compacted",
             EventKind::PermissionRequested => "permission.requested",
             EventKind::PermissionResolved => "permission.resolved",
+            EventKind::ModelChanged => "model.changed",
         }
     }
 
@@ -186,6 +192,7 @@ impl EventKind {
             "context.compacted" => Some(EventKind::ContextCompacted),
             "permission.requested" => Some(EventKind::PermissionRequested),
             "permission.resolved" => Some(EventKind::PermissionResolved),
+            "model.changed" => Some(EventKind::ModelChanged),
             _ => None,
         }
     }
@@ -398,6 +405,60 @@ pub struct SessionAgentChanged {
     pub agent: String,
     /// The agent it ran as until now.
     pub previous: String,
+}
+
+/// Who a session talks to: the alias it was asked for and what that resolved
+/// to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelIdentity {
+    pub alias: String,
+    pub provider: String,
+    pub model: String,
+}
+
+/// Why the model selection of a session was announced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ModelChangeReason {
+    /// The first selection of a new session.
+    #[serde(rename = "initial")]
+    Initial,
+    /// `/model <alias>` moved the conversation to another alias.
+    #[serde(rename = "switch")]
+    Switch,
+    /// The variant changed on the same alias.
+    #[serde(rename = "variant")]
+    Variant,
+    /// A resume refreshed the saved variant from the current offer.
+    #[serde(rename = "resume-refresh")]
+    ResumeRefresh,
+}
+
+/// The model selection of a session was committed: the first one at its
+/// start, then every switch of alias or variant. The events table is the
+/// selection history; a turn belongs to the selection in force at its
+/// `turn.start`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelChanged {
+    /// The `command.result` operation that asked for it; absent for the
+    /// session's own start and a resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<Ulid>,
+    /// 1 for the first selection of the conversation, +1 for each later one.
+    pub revision: u64,
+    pub reason: ModelChangeReason,
+    /// What the session talked to until now; absent at the start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<ModelIdentity>,
+    pub new: ModelIdentity,
+    /// The variant in force from now on; `null` for none.
+    pub variant: Option<String>,
+    /// The new model's context window, in tokens.
+    pub window: u64,
+    /// The input budget the conversation now fits, in tokens.
+    pub input_budget: u64,
+    /// Index, in the full transcript, of the first message the new selection
+    /// answers: the transcript length when it was committed.
+    pub from_message: u64,
 }
 
 /// The conversation was compacted: a summary now stands for its start. A
@@ -630,7 +691,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const KIND_NAMES: [&str; 18] = [
+    const KIND_NAMES: [&str; 19] = [
         "session.start",
         "session.end",
         "message.received",
@@ -649,13 +710,14 @@ mod tests {
         "context.compacted",
         "permission.requested",
         "permission.resolved",
+        "model.changed",
     ];
 
     #[test]
-    fn event_kind_catalog_is_exactly_the_eighteen() {
+    fn event_kind_catalog_is_exactly_the_nineteen() {
         let kinds = EventKind::ALL;
-        assert_eq!(EVENT_KIND_COUNT, 18);
-        assert_eq!(kinds.len(), 18);
+        assert_eq!(EVENT_KIND_COUNT, 19);
+        assert_eq!(kinds.len(), 19);
         assert_eq!(SCHEMA_VERSION, 1);
         let names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
         assert_eq!(names, KIND_NAMES);
@@ -925,6 +987,29 @@ mod tests {
                     request_id: Ulid::new(),
                     tool_call_id: "call_1".into(),
                     resolution: PermissionResolution::Expired,
+                })
+                .unwrap(),
+            ),
+            (
+                "model.changed",
+                serde_json::to_value(&ModelChanged {
+                    operation_id: Some(Ulid::new()),
+                    revision: 2,
+                    reason: ModelChangeReason::Switch,
+                    previous: Some(ModelIdentity {
+                        alias: "a".into(),
+                        provider: "p".into(),
+                        model: "m1".into(),
+                    }),
+                    new: ModelIdentity {
+                        alias: "b".into(),
+                        provider: "p".into(),
+                        model: "m2".into(),
+                    },
+                    variant: Some("high".into()),
+                    window: 200_000,
+                    input_budget: 181_808,
+                    from_message: 7,
                 })
                 .unwrap(),
             ),

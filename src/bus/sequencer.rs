@@ -43,6 +43,17 @@ pub struct PendingCommand {
 /// one. Must not block: it runs inside the single sequencer mailbox.
 pub type CommandCommit = Box<dyn FnOnce() + Send>;
 
+/// The store write of an acknowledged commit: handed the sequenced envelope,
+/// it returns once the write is durable. Supplied by the session service, so
+/// the bus never imports the store.
+pub type AckedCommit = Box<
+    dyn FnOnce(
+            EventEnvelope,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+        + Send,
+>;
+
 /// Ack returned AFTER the event is sequenced and the command committed.
 #[derive(Debug, Clone, Copy)]
 pub struct AcceptReceipt {
@@ -67,6 +78,15 @@ pub enum Ingress {
     PublishAcked {
         candidate: Candidate,
         reply: oneshot::Sender<u64>,
+    },
+    /// Sequence `candidate`, hand the envelope to `commit` and wait for the
+    /// write to be durable, and only then emit it. A failed commit emits
+    /// nothing and gives the seq back, so the stream has no gap. The sequencer
+    /// serves nothing else while the write runs: later events queue behind it.
+    CommitAcked {
+        candidate: Candidate,
+        commit: AckedCommit,
+        reply: oneshot::Sender<Result<u64, String>>,
     },
     /// Atomic subscribe-then-replay: resolve the cursor against the
     /// ring and register a live queue in ONE synchronous mailbox step.
@@ -188,6 +208,31 @@ impl Sequencer {
             },
         )?;
         reply_rx.await.map_err(|_| BusError::SequencerClosed)
+    }
+
+    /// Sequences `candidate`, runs `commit` with the sequenced envelope, and
+    /// emits the event only once `commit` returned `Ok`. The returned seq is
+    /// proof that the write is durable and the event is on the stream. On a
+    /// commit error nothing is emitted and the seq is not used. Fails when the
+    /// session closes first.
+    pub async fn commit_acked(
+        &self,
+        candidate: Candidate,
+        commit: AckedCommit,
+    ) -> Result<u64, String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        ingress_send(
+            &self.ingress_tx,
+            Ingress::CommitAcked {
+                candidate,
+                commit,
+                reply: reply_tx,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        reply_rx
+            .await
+            .map_err(|_| BusError::SequencerClosed.to_string())?
     }
 
     /// Event-before-action acceptance. The handler's order is: seq-assign
@@ -331,6 +376,28 @@ async fn run(
                 };
                 emitter.emit(stamp(session_id, seq, candidate));
                 let _ = reply.send(seq);
+            }
+            Ingress::CommitAcked {
+                candidate,
+                commit,
+                reply,
+            } => {
+                let Some(seq) = take_seq(&mut next_seq) else {
+                    let _ = reply.send(Err(BusError::SeqSpaceExhausted.to_string()));
+                    break;
+                };
+                let envelope = stamp(session_id, seq, candidate);
+                match commit(envelope.clone()).await {
+                    Ok(()) => {
+                        emitter.emit(envelope);
+                        let _ = reply.send(Ok(seq));
+                    }
+                    Err(why) => {
+                        // Nobody saw this seq: give it back.
+                        next_seq = seq;
+                        let _ = reply.send(Err(why));
+                    }
+                }
             }
             Ingress::AcceptCommand {
                 commit,
@@ -784,5 +851,52 @@ mod tests {
         assert_eq!(take_seq(&mut next), Some(u64::MAX - 1));
         assert_eq!(take_seq(&mut next), None);
         assert_eq!(take_seq(&mut next), None);
+    }
+
+    // Given a commit that succeeds
+    // Then the event is emitted only after it ran, and the ack carries its seq
+    #[tokio::test]
+    async fn a_commit_acked_event_is_emitted_after_its_commit() {
+        let (seq, mut rx) = spawn_with_collector();
+        let (ran_tx, ran_rx) = oneshot::channel();
+        let assigned = seq
+            .commit_acked(
+                turn_candidate("switch"),
+                Box::new(move |envelope| {
+                    Box::pin(async move {
+                        let _ = ran_tx.send(envelope.seq);
+                        Ok(())
+                    })
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ran_rx.await.unwrap(), assigned);
+        assert_eq!(rx.recv().await.unwrap().seq, assigned);
+    }
+
+    // Given a commit that fails
+    // Then nothing is emitted, the error comes back, and the next event takes
+    //      the same seq: no gap
+    #[tokio::test]
+    async fn a_failed_commit_emits_nothing_and_leaves_no_gap() {
+        let (seq, mut rx) = spawn_with_collector();
+        seq.publish(start_candidate()).unwrap();
+        let failed = seq
+            .commit_acked(
+                turn_candidate("lost"),
+                Box::new(|_| Box::pin(async { Err("disk full".to_string()) })),
+            )
+            .await;
+        assert_eq!(failed.unwrap_err(), "disk full");
+        let next = seq.publish_acked(turn_candidate("after")).await.unwrap();
+        assert_eq!(next, 1);
+        assert_eq!(rx.recv().await.unwrap().seq, 0);
+        let after = rx.recv().await.unwrap();
+        assert_eq!(
+            (after.seq, after.payload["tag"].as_str()),
+            (1, Some("after"))
+        );
+        assert!(rx.try_recv().is_err());
     }
 }

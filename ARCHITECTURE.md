@@ -235,6 +235,23 @@ it is and that run keeps using it.
   stored checkpoint against the transcript and fails clearly when it does not fit. The durable
   `context.compacted` notice is explanatory; the stored checkpoint is the recovery source. Automatic
   compaction reuses `plan` and `prepare` with `Aim::Fit` and the same commit path.
+- Model switching (`/model <alias>` inside a conversation): `bus/runtime/model.rs`, run like
+  `/compact` through the same control channel (`RuntimeStatus::request_model_switch`), between turns
+  or after the running turn, from one ordered queue of deferred controls (`bus/runtime/deferred.rs`;
+  adjacent compactions are one). The session service supplies the `ModelSwitch` callbacks
+  (`session/service/resolve.rs`: the target resolved like a new session, its default variant;
+  `HistoryStore::switch_model`: `sessions.model`, `model_resolution`, the variant, the nullable
+  `sessions.reasoning_floor` and the `model.changed` event row in one transaction), so the bus never
+  imports the service or the store. The write goes through `Sequencer::commit_acked`: the event is
+  sequenced, written and acknowledged by the store, and only then emitted; a failed write emits
+  nothing and gives the seq back. `SelectedModel` (alias, resolution, revision, variant, offer) is one
+  value behind one lock: the commit callback installs it, together with the runtime's variant and the
+  context gauge, before the event is emitted, so a reader sees the old selection or the new one. `AgentSelection::switching`
+  refuses `/agent`, `/variant`, `/compact` and another switch while one prepares. After the
+  acknowledged commit the runtime swaps the actor's provider, model, variant and limits, installs a
+  new `ContextTracker` and publishes the durable `model.changed`; `AgentActor::reasoning_floor`
+  (restored on resume) keeps the earlier reasoning out of the request projection unless the resolved
+  identity is the same; the fit check measures that destination projection (`context_breakdown_at`).
 - A helper you need probably exists. Look first in: `provider/client.rs` (any HTTP call to a model),
   `provider/config.rs` (`load_models`), `navigator/log.rs` (`excerpt`, `new_ulid_string`),
   `bus/event.rs` (`now_rfc3339`), `navigator/lsp/uri.rs`, `navigator/document.rs` (diffs and

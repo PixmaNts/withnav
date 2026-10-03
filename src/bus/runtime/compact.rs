@@ -89,14 +89,24 @@ pub struct CompactRequest {
     pub reply: oneshot::Sender<CompactReply>,
 }
 
-/// The two ends of the control channel and the saver.
+/// What the session service asks of the runtime between turns.
+#[derive(Debug)]
+pub enum Control {
+    Compact(CompactRequest),
+    Model(super::model::ModelRequest),
+}
+
+/// The two ends of the control channel, the saver and the model switcher.
 #[derive(Debug)]
 pub(super) struct Controls {
-    pub(super) tx: mpsc::UnboundedSender<CompactRequest>,
-    rx: Mutex<Option<mpsc::UnboundedReceiver<CompactRequest>>>,
+    pub(super) tx: mpsc::UnboundedSender<Control>,
+    rx: Mutex<Option<mpsc::UnboundedReceiver<Control>>>,
     saver: Mutex<Option<SaverCell>>,
+    switcher: Mutex<Option<super::model::SwitcherCell>>,
     #[cfg(test)]
     barrier: Mutex<Option<Arc<ResultBarrier>>>,
+    #[cfg(test)]
+    switch_barrier: Mutex<Option<Arc<ResultBarrier>>>,
 }
 
 /// Parks the runtime after a compaction ran and before its result is
@@ -123,14 +133,17 @@ impl Default for Controls {
             tx,
             rx: Mutex::new(Some(rx)),
             saver: Mutex::new(None),
+            switcher: Mutex::new(None),
             #[cfg(test)]
             barrier: Mutex::new(None),
+            #[cfg(test)]
+            switch_barrier: Mutex::new(None),
         }
     }
 }
 
 impl Controls {
-    pub(super) fn take_receiver(&self) -> Option<mpsc::UnboundedReceiver<CompactRequest>> {
+    pub(super) fn take_receiver(&self) -> Option<mpsc::UnboundedReceiver<Control>> {
         match self.rx.lock() {
             Ok(mut guard) => guard.take(),
             Err(poisoned) => poisoned.into_inner().take(),
@@ -144,6 +157,20 @@ impl Controls {
         } = Some(SaverCell(saver));
     }
 
+    pub(super) fn set_switcher(&self, switcher: super::model::ModelSwitcher) {
+        *match self.switcher.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        } = Some(super::model::SwitcherCell(switcher));
+    }
+
+    pub(super) fn switcher(&self) -> Option<super::model::ModelSwitcher> {
+        match self.switcher.lock() {
+            Ok(guard) => guard.as_ref().map(|c| Arc::clone(&c.0)),
+            Err(poisoned) => poisoned.into_inner().as_ref().map(|c| Arc::clone(&c.0)),
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn arm_barrier(&self) -> Arc<ResultBarrier> {
         let barrier = Arc::new(ResultBarrier::default());
@@ -152,7 +179,32 @@ impl Controls {
     }
 
     #[cfg(test)]
-    async fn before_result(&self) {
+    pub(super) fn arm_switch_barrier(&self) -> Arc<ResultBarrier> {
+        let barrier = Arc::new(ResultBarrier::default());
+        *self.switch_barrier.lock().expect("barrier") = Some(barrier.clone());
+        barrier
+    }
+
+    /// Test seam: parks a model switch after its selection is installed and
+    /// before the actor is moved to the new model.
+    #[cfg(test)]
+    pub(super) async fn before_switch_swap(&self) {
+        let barrier = self
+            .switch_barrier
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take());
+        if let Some(barrier) = barrier {
+            barrier.reached.notify_one();
+            barrier.release.notified().await;
+        }
+    }
+
+    #[cfg(not(test))]
+    pub(super) async fn before_switch_swap(&self) {}
+
+    #[cfg(test)]
+    pub(super) async fn before_result(&self) {
         let barrier = self.barrier.lock().ok().and_then(|mut guard| guard.take());
         if let Some(barrier) = barrier {
             barrier.reached.notify_one();
@@ -161,7 +213,7 @@ impl Controls {
     }
 
     #[cfg(not(test))]
-    async fn before_result(&self) {}
+    pub(super) async fn before_result(&self) {}
 
     fn saver(&self) -> Option<CheckpointSaver> {
         match self.saver.lock() {

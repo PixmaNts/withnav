@@ -29,7 +29,8 @@ impl HistoryStore {
             with_read_tx(&path, |tx| {
                 tx.query_row(
                     "SELECT id, workspace, model, profile, title, created_at, updated_at, last_seq,
-                            model_resolution, variant, variant_override, primary_agent
+                            model_resolution, variant, variant_override, primary_agent,
+                            reasoning_floor
                      FROM sessions WHERE id = ?1",
                     params![id.to_string()],
                     row_to_session,
@@ -64,6 +65,37 @@ impl HistoryStore {
                     .prepare(
                         "SELECT seq, envelope FROM events
                          WHERE session_id = ?1 AND kind IN ('permission.requested', 'permission.resolved')
+                         ORDER BY seq ASC",
+                    )
+                    .map_err(|e| format!("prepare: {e}"))?;
+                let rows = stmt
+                    .query_map(params![id.to_string()], |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(|e| format!("query: {e}"))?;
+                let mut out = Vec::new();
+                for row in rows {
+                    let (seq, raw) = row.map_err(|e| format!("row: {e}"))?;
+                    out.push(
+                        serde_json::from_str::<EventEnvelope>(&raw)
+                            .map_err(|e| format!("event seq {seq} does not decode: {e}"))?,
+                    );
+                }
+                Ok(out)
+            })
+        })
+        .await
+    }
+
+    /// The `model.changed` envelopes of one session, in seq order.
+    pub async fn model_events(&self, id: Ulid) -> Result<Vec<EventEnvelope>, String> {
+        let path = Arc::clone(&self.path);
+        blocking(move || {
+            with_read_tx(&path, |tx| {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT seq, envelope FROM events
+                         WHERE session_id = ?1 AND kind = 'model.changed'
                          ORDER BY seq ASC",
                     )
                     .map_err(|e| format!("prepare: {e}"))?;
@@ -208,6 +240,7 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSession> {
         variant: row.get(9)?,
         variant_override: row.get(10)?,
         primary_agent: row.get(11)?,
+        reasoning_floor: row.get::<_, Option<i64>>(12)?.map(|n| n.max(0) as u64),
     })
 }
 
@@ -218,6 +251,7 @@ fn list_sync(path: &Path, workspace: &str) -> Result<Vec<ListedSession>, String>
                 "SELECT s.id, s.workspace, s.model, s.profile, s.title,
                         s.created_at, s.updated_at, s.last_seq,
                         s.model_resolution, s.variant, s.variant_override, s.primary_agent,
+                        s.reasoning_floor,
                         (SELECT COUNT(*) FROM events e
                          WHERE e.session_id = s.id AND e.kind = 'message.received')
                  FROM sessions s WHERE s.workspace = ?1
@@ -228,7 +262,7 @@ fn list_sync(path: &Path, workspace: &str) -> Result<Vec<ListedSession>, String>
             .query_map(params![workspace], |row| {
                 Ok(ListedSession {
                     meta: row_to_session(row)?,
-                    message_count: row.get::<_, i64>(12)?.max(0) as u64,
+                    message_count: row.get::<_, i64>(13)?.max(0) as u64,
                 })
             })
             .map_err(|e| format!("query: {e}"))?;
@@ -250,14 +284,14 @@ fn resume_tx(tx: &Transaction<'_>, id: Ulid) -> Result<Option<Resumed>, String> 
     let Some((meta, transcript, checkpoint)) = tx
         .query_row(
             "SELECT id, workspace, model, profile, title, created_at, updated_at, last_seq,
-                    model_resolution, variant, variant_override, primary_agent, transcript,
-                    checkpoint
+                    model_resolution, variant, variant_override, primary_agent, reasoning_floor,
+                    transcript, checkpoint
              FROM sessions WHERE id = ?1",
             params![id.to_string()],
             |row| {
                 let meta = row_to_session(row)?;
-                let transcript: Option<String> = row.get(12)?;
-                let checkpoint: Option<String> = row.get(13)?;
+                let transcript: Option<String> = row.get(13)?;
+                let checkpoint: Option<String> = row.get(14)?;
                 Ok((meta, transcript, checkpoint))
             },
         )

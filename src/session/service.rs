@@ -95,35 +95,61 @@ pub struct SessionHandle {
     /// Last state the manager knows about ("idle" at creation).
     pub actor_state: String,
     pub workspace: PathBuf,
-    /// The alias the session was created with.
-    pub model: String,
+    /// The alias and saved resolution the session talks to now: they change
+    /// when `/model` switches it.
+    pub selected: Arc<Mutex<SelectedModel>>,
     /// Typed decisions on permission requests, read by the runtime.
     pub permissions: mpsc::Sender<crate::bus::inbox::PermissionAnswer>,
     /// The runtime's view of its actor: pending `ask`, running turn.
     pub status: Arc<runtime::RuntimeStatus>,
-    /// What the session's model offers as variants; replaced when an offer
-    /// that was unknown at the start becomes known.
-    pub offer: Arc<Mutex<Arc<resolve::Offer>>>,
-    /// The saved model resolution (identity, window, where the window came
-    /// from) the session runs on.
+}
+
+/// The model selection of a live session, as the service sees it: the alias,
+/// its saved resolution, the variant chosen on it and what it offers are one
+/// value, so a reader never combines the alias of one selection with the
+/// variant of another. A model switch installs all of it under one lock.
+#[derive(Debug, Clone)]
+pub struct SelectedModel {
+    pub alias: String,
+    /// The saved resolution (identity, window, where the window came from)
+    /// the session runs on.
     pub resolution: Option<Arc<crate::provider::catalog::ModelResolution>>,
+    /// 1 for the first selection of the conversation, +1 for each switch.
+    pub revision: u64,
+    /// The variant selected on the alias (the one a change waiting for the
+    /// running turn will apply included), with its override object.
+    pub variant: runtime::SelectedVariant,
+    /// What the alias offers as variants; replaced when an offer that was
+    /// unknown at the start becomes known.
+    pub(crate) offer: Arc<resolve::Offer>,
+}
+
+impl SelectedModel {
+    /// The name of the selected variant.
+    pub fn variant_name(&self) -> Option<String> {
+        self.variant.as_ref().map(|(name, _)| name.clone())
+    }
 }
 
 impl SessionHandle {
-    /// The session's current variant offer.
-    pub(crate) fn current_offer(&self) -> Arc<resolve::Offer> {
-        match self.offer.lock() {
-            Ok(guard) => guard.clone(),
-            Err(poisoned) => poisoned.into_inner().clone(),
-        }
+    /// The model selection, read once: alias, resolution and revision always
+    /// belong together.
+    pub(crate) fn selected(&self) -> SelectedModel {
+        self.lock_selected().clone()
     }
 
-    pub(crate) fn replace_offer(&self, offer: resolve::Offer) {
-        let mut guard = match self.offer.lock() {
+    /// The alias the session talks to now.
+    pub fn model(&self) -> String {
+        self.selected().alias
+    }
+
+    /// Holds the selection while a reader looks at the other things that
+    /// change with it (the context gauge). No `.await` while it is held.
+    pub(crate) fn lock_selected(&self) -> MutexGuard<'_, SelectedModel> {
+        match self.selected.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
-        };
-        *guard = Arc::new(offer);
+        }
     }
 }
 
@@ -134,7 +160,7 @@ impl std::fmt::Debug for SessionHandle {
             .field("lifecycle", &self.lifecycle)
             .field("actor_state", &self.actor_state)
             .field("workspace", &self.workspace)
-            .field("model", &self.model)
+            .field("model", &self.model())
             .finish_non_exhaustive()
     }
 }
@@ -179,6 +205,10 @@ pub struct Service {
     catalog: crate::provider::catalog::ModelCatalog,
     /// Test seam: parks a command run between its work and the publication
     /// of its result, to interleave lifecycle changes deterministically.
+    /// Test seam: parks a model switch after its store write and before its
+    /// installation.
+    #[cfg(test)]
+    pub(super) install_barrier: Arc<Mutex<Option<Arc<super::run_command::Barrier>>>>,
     #[cfg(test)]
     pub(super) publish_barrier: Arc<Mutex<Option<Arc<super::run_command::Barrier>>>>,
 }
@@ -207,6 +237,8 @@ impl Service {
             hooks,
             gate: Arc::new(tokio::sync::Mutex::new(())),
             catalog,
+            #[cfg(test)]
+            install_barrier: Arc::default(),
             #[cfg(test)]
             publish_barrier: Arc::default(),
         })
@@ -485,6 +517,9 @@ impl Service {
     /// same value the last `context.updated` carried.
     pub async fn context(&self, id: SessionId) -> Result<ContextSnapshot, ServerError> {
         let handle = self.routable_handle(id).await?;
+        // Read under the selection lock: a switch installs the gauge together
+        // with the selection.
+        let _selection = handle.lock_selected();
         handle
             .status
             .context_snapshot()
@@ -507,13 +542,14 @@ impl Service {
             .await
             .map(|next| next.saturating_sub(1))
             .unwrap_or(0);
+        let selected = handle.selected();
         Ok(SessionSummary {
             session_id: id.to_string(),
             actor_state: handle.actor_state.clone(),
             workspace: handle.workspace.display().to_string(),
-            model: handle.model.clone(),
+            variant: selected.variant_name(),
+            model: selected.alias,
             agent: handle.status.selection.current().id.to_string(),
-            variant: handle.status.selected_variant(),
             current_seq,
         })
     }
@@ -749,6 +785,13 @@ impl Service {
         if let Some(loaded) = &resumed {
             actor.transcript = loaded.transcript.clone();
             actor.compaction = loaded.compaction.clone();
+            // Reasoning of the models the conversation moved away from stays
+            // out of the projection, as before the stop.
+            actor.reasoning_floor = loaded
+                .meta
+                .reasoning_floor
+                .map_or(0, |floor| usize::try_from(floor).unwrap_or(usize::MAX))
+                .min(actor.transcript.len());
             // The task the role guard judges against: the driver's latest
             // stored words, not a navigator wake.
             actor.driver_task = self
@@ -843,7 +886,7 @@ impl Service {
         let status = Arc::new(runtime::RuntimeStatus::with_selection(AgentSelection::new(
             agents, role,
         )));
-        status.init_variant(selected);
+        status.init_variant(selected.clone());
         // A compaction is saved with the transcript, in one acknowledged write.
         status.install_checkpoint_saver(Arc::new(move |transcript, compaction| {
             let history = saver_history.clone();
@@ -853,6 +896,31 @@ impl Service {
                     .await
             })
         }));
+        // The selection history is the stored `model.changed` events: a
+        // resumed conversation goes on counting from the last one.
+        let revision = if is_resume {
+            self.history
+                .model_events(session_id)
+                .await
+                .map_err(ServerError::History)?
+                .last()
+                .and_then(|event| event.payload["revision"].as_u64())
+                .unwrap_or(1)
+        } else {
+            1
+        };
+        let selected_model = Arc::new(Mutex::new(SelectedModel {
+            alias: alias.clone(),
+            resolution: Some(Arc::new(snapshot.clone())),
+            revision,
+            variant: selected,
+            offer: Arc::new(offered),
+        }));
+        status.install_model_switcher(self.model_switcher(
+            session_id,
+            workspace.clone(),
+            selected_model.clone(),
+        ));
         let limits = limits.with_sources(&actor.rules, &actor.skills);
         // The role is on the actor before the first estimate: a session that
         // starts as `plan` counts plan's role before any turn runs.
@@ -881,10 +949,8 @@ impl Service {
             lifecycle: Lifecycle::Active,
             actor_state: "idle".to_string(),
             workspace: workspace.clone(),
-            model: alias,
+            selected: selected_model,
             status,
-            offer: Arc::new(Mutex::new(Arc::new(offered))),
-            resolution: Some(Arc::new(snapshot)),
         };
         let sender = SessionSender::new(session_id, handle.clone());
         let cancel = handle.session_cancel.clone();

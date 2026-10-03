@@ -8,6 +8,21 @@ requests land in `develop`.
 
 ### Added
 
+- **`/model <alias>` switches the model of the conversation**: the conversation, its id and its
+  stream stay; the next request goes to the new alias with its own default variant and the whole
+  history. It runs between turns: at once when the session is idle, after the running turn
+  otherwise (the answer says `applies: after_turn`); it never cancels a turn. A switch to the
+  alias already in use does nothing. It is refused while the agent waits for an answer or a
+  permission decision, and while a compaction or another switch runs (`/agent`, `/variant` and
+  `/compact` are refused during a switch too). If the conversation does not fit the new model's
+  input budget it is refused with "the conversation does not fit <alias>'s window: /compact first",
+  and nothing changes. The choice is saved in one step (alias, resolution, variant) and announced by
+  a durable `model.changed` `{operation_id, revision, reason: "switch", previous, new, variant,
+  window, input_budget, from_message}`; a resume goes on with the new model. The model's earlier
+  reasoning is only replayed to the same provider and model, also after a resume; the choice, that
+  boundary and the `model.changed` event are written in one step, so a failed write changes nothing.
+  Controls accepted during a turn (`/model`, `/compact`) run in the order they came. `/model` with no argument still shows the
+  current model.
 - **A new layout for the terminal client**: the top row shows the workspace, its git branch with
   the number of changed files, the agent in use (`build` in the accent colour, `plan` in blue) and
   the model, its variant and how full the context is. The branch and the changes are read when a

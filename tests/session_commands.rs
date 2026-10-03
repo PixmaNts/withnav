@@ -362,12 +362,6 @@ async fn arguments_to_argument_free_commands_are_rejected() {
     let state = state(tmp.path());
     let id = state.create_session(&ws, None, None).await.expect("create");
 
-    let out = state.run_command(id, "model", "other").await.expect("run");
-    assert!(!out.ok);
-    assert_eq!(
-        out.error.unwrap(),
-        "switching model inside a conversation is not available yet: use /new <alias>"
-    );
     let out = state
         .run_command(id, "stop", "anything")
         .await
@@ -377,7 +371,7 @@ async fn arguments_to_argument_free_commands_are_rejected() {
     let out = state.run_command(id, "help", "x").await.expect("run");
     assert_eq!(out.error.unwrap(), "usage: /help");
     assert_eq!(state.session_summary(id).await.unwrap().actor_state, "idle");
-    assert_eq!(results(&state, id).await.len(), 3, "failures are durable");
+    assert_eq!(results(&state, id).await.len(), 2, "failures are durable");
 }
 
 // Given aliases in models.json

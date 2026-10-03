@@ -30,7 +30,7 @@
 //! Schema:
 //! - `sessions(id TEXT PRIMARY KEY, workspace TEXT, model TEXT, profile TEXT,
 //!   title TEXT, created_at TEXT, updated_at TEXT, last_seq INTEGER, transcript TEXT,
-//!   model_resolution TEXT, variant TEXT, variant_override TEXT, primary_agent TEXT)`
+//!   model_resolution TEXT, variant TEXT, variant_override TEXT, primary_agent TEXT, reasoning_floor INTEGER)`
 //! - `events(session_id TEXT, seq INTEGER, kind TEXT, envelope TEXT,
 //!   PRIMARY KEY(session_id, seq))`
 //!
@@ -66,6 +66,11 @@
 //! before the column existed) or the id of the primary agent the session runs
 //! as. It changes with `/agent`, and the change is committed before it is
 //! reported.
+//!
+//! `reasoning_floor` is NULL (zero) or the transcript index below which the
+//! request projection leaves reasoning out: the messages written before a
+//! `/model` switch to another model identity. It is written with the model,
+//! resolution and variant of the switch, in the same transaction.
 
 mod read;
 
@@ -106,6 +111,10 @@ pub struct StoredSession {
     pub variant_override: Option<String>,
     /// The raw `primary_agent` column: `None` is the `build` agent.
     pub primary_agent: Option<String>,
+    /// Transcript messages before this index come from a model the
+    /// conversation no longer talks to: the request projection leaves their
+    /// reasoning out. `None` (a row never switched) is zero.
+    pub reasoning_floor: Option<u64>,
 }
 
 /// A full session load: the row's metadata, its stored envelopes (in seq
@@ -142,6 +151,16 @@ enum Write {
     SetResolution {
         id: Ulid,
         resolution: String,
+    },
+    SwitchModel {
+        id: Ulid,
+        model: String,
+        resolution: String,
+        variant: Option<String>,
+        variant_override: Option<String>,
+        reasoning_floor: i64,
+        /// The sequenced `model.changed` stored with the new selection.
+        envelope: EventEnvelope,
     },
     FillEndpoint {
         id: Ulid,
@@ -329,6 +348,35 @@ impl HistoryStore {
             id,
             variant,
             variant_override,
+        })
+        .await
+    }
+
+    /// Moves a session to another model alias in ONE transaction: the alias,
+    /// its resolution, its variant (with the override object), the reasoning
+    /// floor and the sequenced `model.changed` event change together or not at
+    /// all (an event row already at that seq fails the whole write). Waits for
+    /// the commit.
+    pub async fn switch_model(
+        &self,
+        id: Ulid,
+        alias: &str,
+        resolution: &crate::provider::catalog::ModelResolution,
+        variant: Option<&(String, crate::provider::config::Variant)>,
+        reasoning_floor: usize,
+        envelope: EventEnvelope,
+    ) -> Result<(), String> {
+        let (variant, variant_override) = split_variant(variant)?;
+        let resolution = serde_json::to_string(resolution)
+            .map_err(|e| format!("serialize model resolution: {e}"))?;
+        self.acked(Write::SwitchModel {
+            id,
+            model: alias.to_string(),
+            resolution,
+            variant,
+            variant_override,
+            reasoning_floor: i64::try_from(reasoning_floor).unwrap_or(i64::MAX),
+            envelope,
         })
         .await
     }
@@ -538,6 +586,48 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                 return Err(WriteError::UnknownSession(id));
             }
         }
+        Write::SwitchModel {
+            id,
+            model,
+            resolution,
+            variant,
+            variant_override,
+            reasoning_floor,
+            envelope,
+        } => {
+            let touched = tx.execute(
+                "UPDATE sessions
+                 SET model = ?2, model_resolution = ?3, variant = ?4, variant_override = ?5,
+                     reasoning_floor = ?6
+                 WHERE id = ?1",
+                params![
+                    id.to_string(),
+                    model,
+                    resolution,
+                    variant,
+                    variant_override,
+                    reasoning_floor
+                ],
+            )?;
+            if touched == 0 {
+                return Err(WriteError::UnknownSession(id));
+            }
+            // A plain insert: a row already at this seq is an error, not a
+            // reason to keep the selection without its event.
+            tx.execute(
+                "INSERT INTO events (session_id, seq, kind, envelope) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    id.to_string(),
+                    envelope.seq as i64,
+                    envelope.kind,
+                    serde_json::to_string(&envelope)?
+                ],
+            )?;
+            tx.execute(
+                "UPDATE sessions SET updated_at = ?2, last_seq = MAX(last_seq, ?3) WHERE id = ?1",
+                params![id.to_string(), now_rfc3339(), envelope.seq as i64],
+            )?;
+        }
         Write::FillEndpoint {
             id,
             expected,
@@ -647,7 +737,8 @@ fn migrate(path: &Path) -> Result<(), String> {
             variant TEXT,
             variant_override TEXT,
             checkpoint TEXT,
-            primary_agent TEXT
+            primary_agent TEXT,
+            reasoning_floor INTEGER
         );
         CREATE TABLE IF NOT EXISTS events (
             session_id TEXT NOT NULL,
@@ -702,6 +793,18 @@ fn migrate(path: &Path) -> Result<(), String> {
     if !has_primary_agent {
         conn.execute("ALTER TABLE sessions ADD COLUMN primary_agent TEXT", [])
             .map_err(|e| format!("migrate: {e}"))?;
+    }
+    // A database from before `reasoning_floor`: add the nullable column.
+    let has_floor = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'reasoning_floor'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| format!("migrate: {e}"))?;
+    if !has_floor {
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN reasoning_floor INTEGER",
+            [],
+        )
+        .map_err(|e| format!("migrate: {e}"))?;
     }
     Ok(())
 }

@@ -24,6 +24,9 @@ struct State {
     /// A compaction is preparing its summary: the agent and the variant it
     /// measures against must not change until it commits or gives up.
     compacting: bool,
+    /// A model switch is preparing its target: nothing that changes the agent,
+    /// the variant or the conversation may land until it commits or gives up.
+    switching: bool,
 }
 
 /// Why a switch did not happen.
@@ -35,6 +38,8 @@ pub enum SwitchError {
     AskPending,
     /// A compaction is preparing its summary.
     Compacting,
+    /// A model switch is preparing its target.
+    Switching,
     /// The choice could not be stored.
     Persist(String),
 }
@@ -48,6 +53,18 @@ pub struct CompactionGuard<'a> {
 impl Drop for CompactionGuard<'_> {
     fn drop(&mut self) {
         self.selection.state().compacting = false;
+    }
+}
+
+/// Clears the switching mark when dropped.
+#[derive(Debug)]
+pub struct SwitchGuard<'a> {
+    selection: &'a AgentSelection,
+}
+
+impl Drop for SwitchGuard<'_> {
+    fn drop(&mut self) {
+        self.selection.state().switching = false;
     }
 }
 
@@ -86,6 +103,7 @@ impl AgentSelection {
                 running: false,
                 ask_pending: false,
                 compacting: false,
+                switching: false,
             }),
             send_role: true,
         }
@@ -140,6 +158,25 @@ impl AgentSelection {
         CompactionGuard { selection: self }
     }
 
+    /// Marks a model switch as preparing, so no agent or variant change and no
+    /// compaction request lands while it measures and commits; the flag clears
+    /// when the returned guard drops.
+    pub async fn begin_switch(&self) -> SwitchGuard<'_> {
+        let _gate = self.gate.lock().await;
+        self.state().switching = true;
+        SwitchGuard { selection: self }
+    }
+
+    /// Whether a compaction is preparing its summary.
+    pub fn compacting(&self) -> bool {
+        self.state().compacting
+    }
+
+    /// Whether a model switch is preparing its target.
+    pub fn switching(&self) -> bool {
+        self.state().switching
+    }
+
     /// Holds the switch gate for a change that is not an agent switch (a
     /// variant), so no compaction starts while it applies. `Err` while one
     /// is preparing.
@@ -147,9 +184,14 @@ impl AgentSelection {
         &self,
     ) -> Result<tokio::sync::MutexGuard<'_, ()>, SwitchError> {
         let gate = self.gate.lock().await;
-        if self.state().compacting {
+        let state = self.state();
+        if state.compacting {
             return Err(SwitchError::Compacting);
         }
+        if state.switching {
+            return Err(SwitchError::Switching);
+        }
+        drop(state);
         Ok(gate)
     }
 
@@ -171,6 +213,8 @@ impl AgentSelection {
         let state = self.state();
         if state.compacting {
             Err(SwitchError::Compacting)
+        } else if state.switching {
+            Err(SwitchError::Switching)
         } else if state.running {
             Err(SwitchError::Busy)
         } else if state.ask_pending {
@@ -318,6 +362,26 @@ mod tests {
         assert!(selection.exclusive_unless_compacting().await.is_ok());
         selection.switch(plan(), async { Ok(()) }).await.unwrap();
         assert_eq!(selection.current().id.as_str(), "plan");
+    }
+
+    #[tokio::test]
+    async fn an_agent_switch_and_a_variant_change_are_refused_while_a_model_switch_prepares() {
+        let selection = AgentSelection::new(
+            Arc::new(Agents::builtin()),
+            Agents::builtin().get("build").cloned().unwrap(),
+        );
+        let guard = selection.begin_switch().await;
+        assert!(selection.switching());
+        let refused = selection.switch(plan(), async { Ok(()) }).await;
+        assert_eq!(refused.unwrap_err(), SwitchError::Switching);
+        assert_eq!(
+            selection.exclusive_unless_compacting().await.unwrap_err(),
+            SwitchError::Switching
+        );
+
+        drop(guard);
+        assert!(!selection.switching());
+        assert!(selection.exclusive_unless_compacting().await.is_ok());
     }
 
     #[tokio::test]

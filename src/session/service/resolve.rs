@@ -3,11 +3,14 @@
 //! resume, and the snapshot written for a row from before the column.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use ulid::Ulid;
 
-use super::{ResumedSession, Service};
+use super::{ResumedSession, SelectedModel, Service};
+use crate::bus::event::ModelIdentity;
 use crate::bus::runtime::SelectedVariant;
+use crate::bus::runtime::{ModelSwitch, ModelSwitcher, ModelTarget};
 use crate::error::ServerError;
 use crate::provider::auth;
 use crate::provider::catalog::ModelResolution;
@@ -405,5 +408,177 @@ impl Service {
             .set_model_resolution(session_id, snapshot)
             .await
             .map_err(ServerError::History)
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+impl Service {
+    /// How the runtime of session `id` resolves another alias and commits the
+    /// switch to it: the same resolution as a new session (window, variant
+    /// offer, the alias's default variant), and one store transaction for the
+    /// alias, its resolution and its variant.
+    pub(super) fn model_switcher(
+        &self,
+        id: Ulid,
+        workspace: PathBuf,
+        selected: Arc<Mutex<SelectedModel>>,
+    ) -> ModelSwitcher {
+        let current = {
+            let selected = selected.clone();
+            move || lock(&selected).alias.clone()
+        };
+        let resolver = {
+            let (service, selected) = (self.clone(), selected.clone());
+            move |alias: String| {
+                let (service, selected, workspace) =
+                    (service.clone(), selected.clone(), workspace.clone());
+                Box::pin(async move {
+                    let running = lock(&selected).resolution.clone();
+                    service
+                        .resolve_switch_target(id, &workspace, &alias, running.as_deref())
+                        .await
+                        .map_err(|e| e.to_string())
+                }) as crate::bus::runtime::BoxFuture<Result<ModelTarget, String>>
+            }
+        };
+        let next_revision = {
+            let selected = selected.clone();
+            move || lock(&selected).revision + 1
+        };
+        let committer = {
+            let (service, selected) = (self.clone(), selected);
+            move |target: ModelTarget,
+                  floor: usize,
+                  envelope: crate::bus::event::EventEnvelope,
+                  install: crate::bus::runtime::Install| {
+                let (service, selected) = (service.clone(), selected.clone());
+                Box::pin(async move {
+                    let revision = envelope.payload["revision"].as_u64().unwrap_or(0);
+                    service
+                        .history
+                        .switch_model(
+                            id,
+                            &target.alias,
+                            &target.resolution,
+                            target.variant.as_ref(),
+                            floor,
+                            envelope,
+                        )
+                        .await?;
+                    service.before_switch_install().await;
+                    // The model, its variant, its offer, the runtime's variant
+                    // slot and the context gauge change under one lock: a
+                    // reader sees the old selection or the new, never a mix.
+                    let mut guard = lock(&selected);
+                    install();
+                    guard.alias = target.alias.clone();
+                    guard.resolution = Some(Arc::new(target.resolution.clone()));
+                    guard.revision = revision;
+                    guard.variant = target.variant.clone();
+                    guard.offer = Arc::new(Offer {
+                        variants: target.offer.clone(),
+                        known: target.offer_known,
+                    });
+                    Ok(())
+                }) as crate::bus::runtime::BoxFuture<Result<(), String>>
+            }
+        };
+        Arc::new(ModelSwitch {
+            current_alias: Box::new(current),
+            next_revision: Box::new(next_revision),
+            resolve: Box::new(resolver),
+            commit: Box::new(committer),
+        })
+    }
+
+    /// Resolves `alias` as the target of a switch from the conversation that
+    /// runs on `running`: always from today's configuration and discovery, like
+    /// a new session, and starting on the alias's own default variant.
+    async fn resolve_switch_target(
+        &self,
+        id: Ulid,
+        workspace: &Path,
+        alias: &str,
+        running: Option<&ModelResolution>,
+    ) -> Result<ModelTarget, ServerError> {
+        let (mut resolved, models_file) = self.resolve_model(workspace, alias)?;
+        if resolved.model.api != crate::provider::config::ApiKind::Chat {
+            return Err(ServerError::Model(
+                crate::error::ProviderError::UnknownModelAlias(alias.to_string()),
+            ));
+        }
+        let api_key = auth::resolve_key(
+            &self.config.config_dir,
+            &resolved.provider_name,
+            resolved.provider.api_key_env.as_deref(),
+        )?;
+        let chat = crate::provider::catalog::resolve_chat(
+            &self.catalog,
+            &resolved,
+            &api_key,
+            &crate::provider::openai::ClientCache::new(),
+        )
+        .await
+        .map_err(|e| no_context_window(e, &models_file))?;
+        let snapshot = chat.snapshot;
+        resolved.model.context_window = Some(snapshot.bounds.context_window);
+        resolved.model.max_input_tokens = snapshot.bounds.max_input_tokens;
+        let (variant, offered) = self
+            .select_variant(
+                id,
+                alias,
+                &resolved,
+                &api_key,
+                &models_file,
+                VariantStart::Choice(&VariantChoice::Default),
+            )
+            .await?;
+        let limits = crate::agent::context::ContextLimits::from_resolution(
+            alias,
+            variant.as_ref().map(|(name, _)| name.as_str()),
+            &snapshot,
+            resolved.model.max_output_tokens,
+        )
+        .map_err(|e| ServerError::ImpossibleBudget {
+            alias: alias.to_string(),
+            reason: e.to_string(),
+        })?;
+        let previous = running
+            .map(|r| ModelIdentity {
+                alias: String::new(),
+                provider: r.provider.clone(),
+                model: r.model.clone(),
+            })
+            .unwrap_or(ModelIdentity {
+                alias: String::new(),
+                provider: String::new(),
+                model: String::new(),
+            });
+        Ok(ModelTarget {
+            alias: alias.to_string(),
+            provider: resolved.provider.clone(),
+            api_key,
+            model: resolved.model.model.clone(),
+            reasoning_history: resolved.model.reasoning_history,
+            max_tokens: resolved.model.max_output_tokens,
+            variant,
+            new: ModelIdentity {
+                alias: alias.to_string(),
+                provider: snapshot.provider.clone(),
+                model: snapshot.model.clone(),
+            },
+            same_identity: running.is_some_and(|r| r.same_identity(&snapshot)),
+            resolution: snapshot,
+            limits,
+            previous,
+            offer: offered.variants,
+            offer_known: offered.known,
+        })
     }
 }

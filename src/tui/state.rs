@@ -221,7 +221,7 @@ pub const PLAN_AGENT: &str = "plan";
 
 impl Tab {
     pub fn read_only(&self) -> bool {
-        self.parent_session_id.is_some()
+        self.parent_session_id.is_some() || self.session.as_ref().is_some_and(|m| !m.promptable)
     }
 
     /// The oldest permission request still open, if any.

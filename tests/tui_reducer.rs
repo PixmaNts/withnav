@@ -18,6 +18,27 @@ use ulid::Ulid;
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
 #[test]
+fn completion_keeps_the_child_terminal_after_its_parent_tab_closes() {
+    let mut s = subagent_parent();
+    spawn_subagent(&mut s, None);
+    let mut ui = UiState::default();
+    handle_action(&mut s, &mut ui, Action::OpenChild(Ulid(2).to_string()));
+    s.active = 0;
+    subagent_event(
+        &mut s,
+        2,
+        "subagent.done",
+        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"explore","outcome":"failed"}),
+    );
+    assert!(
+        matches!(&s.conversation.blocks.last().unwrap().kind, BlockKind::Notice(text) if text.contains("alt+s open transcript"))
+    );
+    handle_action(&mut s, &mut ui, Action::CloseTab);
+    assert!(s.read_only());
+    assert_eq!(s.active_child_status(), ChildStatus::Failed);
+}
+
+#[test]
 fn session_list_and_metadata_strip_terminal_controls_before_display() {
     let mut s = subagent_parent();
     let entry = serde_json::from_value(json!({"id":Ulid(2),"title":"\u{1b}[31mGoal\u{1b}[0m","created_at":"now","updated_at":"now","message_count":1,"live":true,"agent":"\u{1b}[31mexplore\u{1b}[0m","parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();

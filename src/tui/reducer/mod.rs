@@ -285,6 +285,25 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 }
             }
             envelope::apply_envelope(s, envelope)?;
+            let terminal = s
+                .children
+                .iter()
+                .filter(|c| c.status.terminal())
+                .map(|c| (c.session_id.clone(), c.status))
+                .collect::<Vec<_>>();
+            for (id, status) in terminal {
+                for tab in &mut s.tabs {
+                    if tab
+                        .session
+                        .as_ref()
+                        .map(|m| m.session_id.as_str())
+                        .or(tab.resuming.as_deref())
+                        == Some(id.as_str())
+                    {
+                        tab.child_status = status;
+                    }
+                }
+            }
             effects.extend(
                 s.children
                     .iter()

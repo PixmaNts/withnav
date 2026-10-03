@@ -115,7 +115,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         };
         if e.kind == "subagent.done" {
             let text = format!(
-                "subagent {} · {} · {}",
+                "subagent {} · {} · {} · alt+s open transcript",
                 child.name,
                 child.status.label(),
                 child

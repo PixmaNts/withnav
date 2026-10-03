@@ -258,7 +258,7 @@ async fn run_calls(
         }
         if let Some(request) = gate(actor, &call) {
             actor.pending = Some(PendingInteraction::Permission {
-                request: request.clone(),
+                request: Box::new(request.clone()),
                 call,
                 remaining_calls: calls.into(),
             });

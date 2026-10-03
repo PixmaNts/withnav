@@ -29,7 +29,7 @@ pub enum PendingInteraction {
     /// sibling calls of the same assistant message that follow it wait behind
     /// it. Only a typed decision resolves it, never user text.
     Permission {
-        request: PermissionRequest,
+        request: Box<PermissionRequest>,
         call: ToolCall,
         remaining_calls: Vec<ToolCall>,
     },

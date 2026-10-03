@@ -1103,6 +1103,7 @@ pub(crate) fn publish_resolved(
     let mut candidate = Candidate::new(
         EventKind::PermissionResolved,
         to_value(&PermissionResolved {
+            child_session_id: None,
             request_id: request.id,
             tool_call_id: request.tool_call_id.clone(),
             resolution,
@@ -1155,6 +1156,7 @@ fn permission_requested(
     request: &crate::agent::permissions::PermissionRequest,
 ) -> serde_json::Value {
     to_value(&crate::bus::event::PermissionRequested {
+        child_session_id: None,
         request_id: request.id,
         tool_call_id: request.tool_call_id.clone(),
         tool: request.tool.clone(),

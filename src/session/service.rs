@@ -941,7 +941,9 @@ impl Service {
             if envelope.kind == EventKind::PermissionRequested.as_str() {
                 if let Ok(request) = serde_json::from_value::<PermissionRequested>(envelope.payload)
                 {
-                    open.push((request.request_id, request.tool_call_id));
+                    if request.child_session_id.is_none() {
+                        open.push((request.request_id, request.tool_call_id));
+                    }
                 }
             } else if let Ok(done) = serde_json::from_value::<PermissionResolved>(envelope.payload)
             {
@@ -968,6 +970,31 @@ impl Service {
             return Err(ServerError::ChildReadOnly);
         }
         // Claimed at admission: a second answer for the same request is
+        let owned = {
+            self.lock_sessions()
+                .values()
+                .find(|child| {
+                    child.parent_session_id == Some(session_id)
+                        && child.lifecycle == Lifecycle::Active
+                        && child.status.pending_permission() == Some(request_id)
+                })
+                .cloned()
+        };
+        let handle = if handle.status.pending_permission() == Some(request_id) {
+            handle
+        } else if let Some(child) = owned {
+            child
+        } else {
+            let foreign = self.lock_sessions().values().any(|child| {
+                child.parent_session_id.is_some()
+                    && child.status.pending_permission() == Some(request_id)
+            });
+            return Err(if foreign {
+                ServerError::ChildReadOnly
+            } else {
+                ServerError::PermissionStale
+            });
+        };
         // refused at once, not after the resumed turn.
         if !handle.status.claim_permission(request_id) {
             return Err(ServerError::PermissionStale);
@@ -1704,14 +1731,15 @@ impl Service {
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(session_id);
         }
-        let sequencer = Sequencer::spawn(
-            session_id,
-            super::store::PersistingEmitter::new(session_id, bus, (*history).clone()),
-            next_seq,
-        );
+        let mut emitter = super::store::PersistingEmitter::new(session_id, bus, (*history).clone());
+        if let Some(parent) = child_parent.and_then(|id| self.handle(id)) {
+            emitter = emitter.with_permission_mirror(session_id, parent.sequencer);
+        }
+        let sequencer = Sequencer::spawn(session_id, emitter, next_seq);
 
         for (request_id, tool_call_id) in expired {
             let payload = serde_json::to_value(crate::bus::event::PermissionResolved {
+                child_session_id: None,
                 request_id,
                 tool_call_id,
                 resolution: crate::bus::event::PermissionResolution::Expired,

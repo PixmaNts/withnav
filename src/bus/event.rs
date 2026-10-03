@@ -559,6 +559,8 @@ pub struct ContextCompacted {
 /// `arguments` is the call's JSON text cut to 4 KiB, for review only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PermissionRequested {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_session_id: Option<Ulid>,
     pub request_id: Ulid,
     pub tool_call_id: String,
     pub tool: String,
@@ -602,6 +604,8 @@ impl From<&crate::agent::permissions::PermissionDecision> for PermissionResoluti
 /// exactly once per `permission.requested`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PermissionResolved {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_session_id: Option<Ulid>,
     pub request_id: Ulid,
     pub tool_call_id: String,
     #[serde(flatten)]
@@ -1050,6 +1054,7 @@ mod tests {
             (
                 "permission.requested",
                 serde_json::to_value(&PermissionRequested {
+                    child_session_id: None,
                     request_id: Ulid::new(),
                     tool_call_id: "call_1".into(),
                     tool: "bash".into(),
@@ -1063,6 +1068,7 @@ mod tests {
             (
                 "permission.resolved",
                 serde_json::to_value(&PermissionResolved {
+                    child_session_id: None,
                     request_id: Ulid::new(),
                     tool_call_id: "call_1".into(),
                     resolution: PermissionResolution::Expired,
@@ -1129,6 +1135,7 @@ mod tests {
     fn permission_events_wire_shape_roundtrips() {
         let request_id = Ulid::new();
         let requested = PermissionRequested {
+            child_session_id: None,
             request_id,
             tool_call_id: "call_1".into(),
             tool: "write".into(),
@@ -1169,6 +1176,7 @@ mod tests {
             ),
         ] {
             let resolved = PermissionResolved {
+                child_session_id: None,
                 request_id,
                 tool_call_id: "call_1".into(),
                 resolution,

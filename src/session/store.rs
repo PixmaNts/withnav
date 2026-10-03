@@ -1109,14 +1109,24 @@ use crate::bus::SubscribeReply;
 /// (`llm.delta`, `context.updated`; never stored), `session.end` included — to the writer thread, in seq order, synchronously inside the single sequencer task. The
 /// hand-off is a channel send: the sequencer never waits on SQLite.
 pub struct PersistingEmitter {
+    mirror: Option<(Ulid, crate::bus::sequencer::Sequencer)>,
     bus: crate::bus::SessionBus,
     session_id: Ulid,
     store: HistoryStore,
 }
 
 impl PersistingEmitter {
+    pub fn with_permission_mirror(
+        mut self,
+        child: Ulid,
+        parent: crate::bus::sequencer::Sequencer,
+    ) -> Self {
+        self.mirror = Some((child, parent));
+        self
+    }
     pub fn new(session_id: Ulid, bus: crate::bus::SessionBus, store: HistoryStore) -> Self {
         Self {
+            mirror: None,
             bus,
             session_id,
             store,
@@ -1126,6 +1136,18 @@ impl PersistingEmitter {
 
 impl Emitter for PersistingEmitter {
     fn emit(&mut self, envelope: EventEnvelope) {
+        if matches!(
+            envelope.kind.as_str(),
+            "permission.requested" | "permission.resolved"
+        ) {
+            if let Some((child, parent)) = &self.mirror {
+                let mut payload = envelope.payload.clone();
+                payload["child_session_id"] = serde_json::json!(child);
+                if let Some(kind) = EventKind::from_wire(&envelope.kind) {
+                    let _ = parent.publish(crate::bus::sequencer::Candidate::new(kind, payload));
+                }
+            }
+        }
         let kind = envelope.kind.as_str();
         // An unknown name is stored: only a catalog kind marked live-only is not.
         if EventKind::from_wire(kind).is_none_or(EventKind::is_durable) {

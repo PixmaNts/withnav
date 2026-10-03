@@ -239,6 +239,60 @@ fn pick_model(
     Some(effects)
 }
 
+/// Why the active conversation cannot switch model now: the server refuses while the agent
+/// waits for an answer or a decision. `None` when it can (a running turn only defers it).
+pub fn switch_blocked(tab: &Tab) -> Option<&'static str> {
+    if tab.open_permission().is_some() {
+        Some("a tool call is waiting for approval: answer it first, then switch model")
+    } else if tab.activity == Activity::AwaitingUser {
+        Some("the agent is waiting for your answer: reply first, then switch model")
+    } else {
+        None
+    }
+}
+
+/// Whether the active tab holds a conversation (live, starting or being resumed): the model
+/// picker then switches it rather than choosing the model a new one starts on.
+pub fn occupied(tab: &Tab) -> bool {
+    tab.session.is_some() || tab.resuming.is_some() || tab.pending_submit_text.is_some()
+}
+
+/// Moves the active conversation to `alias` through `/model`; a tab with no conversation yet
+/// starts on it instead. `variant` is what the picker's second step chose (`None` keeps the
+/// target's default); a different one is asked for with `/variant` once the switch is in.
+fn switch_model(
+    s: &mut State,
+    ui: &mut UiState,
+    alias: String,
+    variant: Option<Option<String>>,
+) -> Vec<Effect> {
+    if !occupied(s) {
+        return pick_model(s, ui, alias, variant).unwrap_or_default();
+    }
+    if let Some(why) = switch_blocked(s) {
+        push_local(
+            s,
+            BlockKind::Command {
+                name: "model".into(),
+                ok: false,
+                text: why.into(),
+            },
+        );
+        return vec![];
+    }
+    let default = s
+        .catalog
+        .iter()
+        .find(|m| m.alias == alias)
+        .and_then(|m| m.default_variant.clone());
+    s.variant_after_switch = variant
+        .filter(|chosen| *chosen != default)
+        .map(|chosen| (alias.clone(), chosen));
+    let effects = run_command(s, "model".into(), alias.clone(), None);
+    s.model_request = (!effects.is_empty()).then_some(alias);
+    effects
+}
+
 /// Opens the `/variant` list on `current` (the variant in use, `None` for none), unless another
 /// overlay took the screen.
 pub fn show_variants(s: &State, ui: &mut UiState, current: Option<&str>) {
@@ -317,6 +371,7 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
         Action::NewConversation => blank_tab(s, ui).unwrap_or_default(),
         Action::ResumeSession(id) => resume(s, ui, id),
         Action::PickModel(alias) => pick_model(s, ui, alias, None).unwrap_or_default(),
+        Action::SwitchModel(alias) => switch_model(s, ui, alias, None),
         Action::PickVariant(name) => {
             let pick = ui.variant_pick.take();
             ui.overlay = None;
@@ -325,6 +380,7 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                 Some(VariantPick::NewConversation(alias)) => {
                     pick_model(s, ui, alias, Some(chosen)).unwrap_or_default()
                 }
+                Some(VariantPick::Switch(alias)) => switch_model(s, ui, alias, Some(chosen)),
                 Some(VariantPick::Current) => run_command(
                     s,
                     "variant".into(),

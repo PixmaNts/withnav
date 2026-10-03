@@ -264,6 +264,9 @@ pub enum Action {
     NewConversation,
     ResumeSession(String),
     PickModel(String),
+    /// Moves the active conversation to `alias` (`/model <alias>`); on a tab with no
+    /// conversation yet, the conversation will start on it.
+    SwitchModel(String),
     Stop,
     Quit,
     Scroll(i32),

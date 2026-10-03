@@ -2891,10 +2891,18 @@ fn local_routing_follows_the_server_prefix_rule_and_checks_arguments() {
         Routed::Refused("/quit takes no arguments".into())
     );
     assert!(matches!(route("/sessions x", mode), Routed::Refused(_)));
-    // `/model <alias>` opens a new tab on it, like `/new <alias>`; one alias only
+    // `/model <alias>` switches this conversation; `/new <alias>` opens a tab; one alias only
     assert_eq!(
         route("/model", mode),
         Routed::Local(Action::OpenOverlay(Overlay::Models))
+    );
+    assert_eq!(
+        route("/model opus", mode),
+        Routed::Local(Action::SwitchModel("opus".into()))
+    );
+    assert_eq!(
+        route("/new opus", mode),
+        Routed::Local(Action::PickModel("opus".into()))
     );
     assert_eq!(
         route("/model opus high", mode),
@@ -3447,4 +3455,63 @@ fn a_git_result_reaches_the_tab_that_asked_and_a_stale_one_is_dropped() {
     )
     .unwrap();
     assert_eq!(s, before);
+}
+
+// ---------------------------------------------------------------- model switch
+
+fn model_command(alias: &str) -> Effect {
+    Effect::RunCommand {
+        session_id: "S1".into(),
+        request: CommandRequest {
+            name: "model".into(),
+            arguments: alias.into(),
+        },
+        revision: None,
+    }
+}
+
+#[test]
+fn switching_a_live_conversation_sends_model_and_opens_no_tab() {
+    let (mut s, mut ui) = (st(), ui());
+    models_now(&mut s, Some("a".into())).unwrap();
+    created_now(&mut s, "S1").unwrap();
+    let fx = handle_action(&mut s, &mut ui, Action::SwitchModel("b".into()));
+    assert_eq!(fx, vec![model_command("b")]);
+    assert_eq!(s.tabs.len(), 1, "no new tab");
+    assert_eq!(s.model_request.as_deref(), Some("b"));
+    assert_eq!(
+        s.selected_model_alias.as_deref(),
+        Some("a"),
+        "the committed model stays until the server says otherwise"
+    );
+    // an empty tab starts on the model instead
+    let mut fresh = st();
+    models_now(&mut fresh, None).unwrap();
+    assert!(handle_action(&mut fresh, &mut ui, Action::SwitchModel("b".into())).is_empty());
+    assert_eq!(fresh.selected_model_alias.as_deref(), Some("b"));
+    // `/new <alias>` (PickModel) still opens a tab
+    handle_action(&mut s, &mut ui, Action::PickModel("b".into()));
+    assert_eq!((s.tabs.len(), s.active), (2, 1));
+}
+
+#[test]
+fn no_switch_is_sent_while_the_agent_waits_for_the_driver() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    feed(&mut s, &permission_script(5).out);
+    assert!(handle_action(&mut s, &mut ui, Action::SwitchModel("b".into())).is_empty());
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Command { ok: false, text, .. } if text.contains("waiting for approval")
+    ));
+    assert_eq!(s.model_request, None);
+    // a question
+    let mut s = st();
+    created_now(&mut s, "S1").unwrap();
+    s.activity = Activity::AwaitingUser;
+    assert!(handle_action(&mut s, &mut ui, Action::SwitchModel("b".into())).is_empty());
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Command { ok: false, text, .. } if text.contains("waiting for your answer")
+    ));
 }

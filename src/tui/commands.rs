@@ -24,7 +24,7 @@ pub const CATALOG: &[Command] = &[
     },
     Command {
         name: "/model",
-        description: "choose model for a new conversation",
+        description: "switch this conversation's model",
         args_hint: "[alias]",
     },
     Command {
@@ -140,7 +140,8 @@ pub const KEYS: &[(&str, &str)] = &[
     ("alt+w", "close tab (the conversation is kept)"),
     ("alt+b", "hide / show the tab bar"),
     ("alt+r", "hide / show the side panel"),
-    ("f2", "models"),
+    ("f2", "models: switch this conversation"),
+    ("ctrl+n (in models)", "open that model in a new tab"),
     ("f1", "help"),
     ("tab", "build / plan (empty message)"),
     ("shift+tab", "switch focus"),
@@ -159,7 +160,7 @@ pub const KEYS: &[(&str, &str)] = &[
 /// `off` (always: a live conversation can drop its variant), starting on the variant in use.
 pub fn variant_choices(state: &State, pick: &VariantPick) -> (Vec<String>, usize) {
     let (mut rows, wanted) = match pick {
-        VariantPick::NewConversation(alias) => {
+        VariantPick::NewConversation(alias) | VariantPick::Switch(alias) => {
             let entry = state.catalog.iter().find(|m| &m.alias == alias);
             let rows: Vec<String> = entry.map(|m| m.variants.clone()).unwrap_or_default();
             if rows.is_empty() {
@@ -235,12 +236,17 @@ enum Local {
 fn local_action(name: &str, arguments: &str, mode: Mode) -> Local {
     let has_args = !arguments.is_empty();
     match name {
-        // `/new <alias>` and `/model <alias>` open a tab on that model, like the model list.
+        // `/new <alias>` opens a tab on that model; `/model <alias>` moves this conversation to it.
         "new" | "model" if has_args => {
             if arguments.contains(char::is_whitespace) {
                 return Local::Refuse(format!("usage: /{name} [alias]"));
             }
-            Local::Run(Action::PickModel(arguments.to_string()))
+            let alias = arguments.to_string();
+            Local::Run(if name == "new" {
+                Action::PickModel(alias)
+            } else {
+                Action::SwitchModel(alias)
+            })
         }
         // With arguments, `/variant` is the server's; alone it opens the list.
         "variant" if has_args => Local::Server,

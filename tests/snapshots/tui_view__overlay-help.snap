@@ -4,8 +4,7 @@ expression: snapshot
 ---
  Conversations       │ ◆ navai  …dev/project  ▌build  cognition · cc/claude-opus-5-5 · 12.4k / 200k 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
-▌  build · idle      │ │ YOU                                                                        
-            ┌─────────────────────────── Keyboard shortcuts ───────────────────────────┐            
+▌  build · i┌─────────────────────────── Keyboard shortcuts ───────────────────────────┐            
             │ enter                   send / choose                                    │            
             │ alt+enter / ctrl+j      newline                                          │            
             │ ctrl+p / /              commands                                         │            
@@ -15,7 +14,8 @@ expression: snapshot
             │ alt+w                   close tab (the conversation is kept)             │            
             │ alt+b                   hide / show the tab bar                          │            
             │ alt+r                   hide / show the side panel                       │            
-            │ f2                      models                                           │            
+            │ f2                      models: switch this conversation                 │            
+            │ ctrl+n (in models)      open that model in a new tab                     │            
             │ f1                      help                                             │            
             │ tab                     build / plan (empty message)                     │            
             │ shift+tab               switch focus                                     │            

@@ -341,7 +341,7 @@ fn overlay_precedence_and_empty_slash() {
             &mut ui,
             &mut editor
         ),
-        Some(Action::PickModel("cognition".into()))
+        Some(Action::SwitchModel("cognition".into()))
     );
     assert_eq!(editor.text(), "/abc");
 }
@@ -431,7 +431,7 @@ fn pickers_filter_and_keep_draft() {
     assert_eq!(ui.overlay, Some(Overlay::Variants));
     assert_eq!(
         route_key(enter, &s, &mut ui, &mut editor),
-        Some(Action::PickModel("fast".into()))
+        Some(Action::SwitchModel("fast".into()))
     );
     assert_eq!(editor.text(), "draft");
     ui.overlay = Some(Overlay::Sessions);
@@ -1334,7 +1334,7 @@ fn picking_a_model_with_variants_asks_which_one_default_first() {
     assert!(rows
         .iter()
         .any(|r| r.contains("off") && r.contains("no variant")));
-    assert!(rows.iter().any(|r| r.contains("Start on variant")));
+    assert!(rows.iter().any(|r| r.contains("Switch on variant")));
     // esc goes back to the models with the same one selected
     route_key(
         key(KeyCode::Esc, KeyModifiers::NONE),
@@ -1357,7 +1357,7 @@ fn picking_a_model_with_variants_asks_which_one_default_first() {
 }
 
 #[test]
-fn a_model_without_variants_shows_a_note_and_starts_without_one() {
+fn a_model_without_variants_shows_a_note_and_switches_without_one() {
     let s = big_catalog();
     let mut ui = UiState::default();
     let mut editor = Editor::new();
@@ -1377,7 +1377,7 @@ fn a_model_without_variants_shows_a_note_and_starts_without_one() {
     assert!(!all.contains("off "), "nothing to choose: {all}");
     assert_eq!(
         route_key(enter, &s, &mut ui, &mut editor),
-        Some(Action::PickModel("flash".into()))
+        Some(Action::SwitchModel("flash".into()))
     );
     assert_eq!(ui.overlay, None);
 }
@@ -1697,8 +1697,11 @@ fn a_typed_local_command_with_an_argument_is_refused_with_a_notice() {
     assert_eq!(editor.text(), "/stop now", "the line stays to fix");
     let mut editor = Editor::new();
     let actions = keys("/model fast⏎", &s, &mut ui, &mut editor);
-    assert_eq!(actions.last(), Some(&Action::PickModel("fast".into())));
+    assert_eq!(actions.last(), Some(&Action::SwitchModel("fast".into())));
     assert_eq!(editor.text(), "", "a client command clears its line");
+    // `/new <alias>` still opens a tab on it
+    let actions = keys("/new fast⏎", &s, &mut ui, &mut editor);
+    assert_eq!(actions.last(), Some(&Action::PickModel("fast".into())));
 }
 
 #[test]

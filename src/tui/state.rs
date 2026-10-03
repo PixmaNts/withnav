@@ -175,6 +175,11 @@ pub struct Tab {
     /// The variant chosen in the model picker for a conversation not created yet: `None` leaves
     /// the alias's default, `Some(None)` asks for none.
     pub start_variant: Option<Option<String>>,
+    /// The alias of the last `/model` this client sent, until the server answered it.
+    pub model_request: Option<String>,
+    /// A variant to ask for once the conversation is on `alias` (`None` inside: no variant): the
+    /// second step of a switch to a variant other than the target's default.
+    pub variant_after_switch: Option<(String, Option<String>)>,
     /// The request an answer was sent for, until `permission.resolved` ends it (or the answer
     /// did not reach the server): its keys are ignored meanwhile, another request's are not.
     pub answered_permission: Option<String>,
@@ -310,6 +315,9 @@ impl std::ops::DerefMut for State {
 pub enum VariantPick {
     /// The second step of the model picker: the variant a new conversation on `alias` starts on.
     NewConversation(String),
+    /// The second step of the model picker on a live conversation: the variant it switches to
+    /// along with `alias`.
+    Switch(String),
     /// `/variant`: the active conversation's variant, changed through the server.
     Current,
 }

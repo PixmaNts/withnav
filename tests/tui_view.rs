@@ -2405,8 +2405,6 @@ fn the_right_column_reads_the_snapshot_the_compaction_and_git() {
         "AGENTS",
         "● build  in use",
         "Implements the task, verifies",
-        "○ explore",
-        "○ review",
         "rules · 2 files",
         "messages                    ~27k",
         "next request          ~41k · 21%",
@@ -2415,12 +2413,14 @@ fn the_right_column_reads_the_snapshot_the_compaction_and_git() {
         "listed                        12",
         "omitted, no room               3",
         "M src/tui/view/file_0.rs",
-        "6 more",
+        "4 more",
     ] {
         assert!(shown.contains(want), "{want}: {shown}");
     }
     // nothing the server does not report
-    for absent in ["INTENT", "drift", "LAYERS", "MCP", "PLUGINS"] {
+    for absent in [
+        "INTENT", "drift", "LAYERS", "MCP", "PLUGINS", "explore", "review",
+    ] {
         assert!(!shown.contains(absent), "{absent}: {shown}");
     }
 }

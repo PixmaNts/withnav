@@ -87,7 +87,7 @@ one per tab; each tab streams its own session in the background.
 | `theme.rs` | the four themes (`ThemeId`, the `Theme` colour roles), the RGB `blend` for tints, and the semantic styles the views draw with |
 | `view/mod.rs` | `draw`: layout of header, sidebar, transcript, right column, status line, editor, key bar and overlays; the key bar lists the keys that apply now, the prompt's while one waits |
 | `view/header.rs` | the header row: `◆ navai`, workspace, git branch and change count, `▌agent` in its colour, alias · model · variant · context gauge; the path and the model give way first |
-| `view/panel.rs` | the right column (36 columns, hidden under 140 unless `alt+r` asks): Agents (the one in use with its role, `explore` and `review`), Context (the last snapshot's breakdown and the last compaction), Skills (listed and omitted), Changes (git); a section with no data shows `—`, none is invented |
+| `view/panel.rs` | the right column (36 columns, hidden under 140 unless `alt+r` asks): Agents (the one in use, with its role for build and plan), Context (the last snapshot's breakdown and the last compaction), Skills (listed and omitted), Changes (git); a section with no data shows `—`, none is invented |
 | `view/sidebar.rs` | the tab sidebar: number, title, `<agent> · <state>`, unread mark, active tint, tab keys; hidden under 80 columns |
 | `view/transcript.rs` | block layout and drawing: messages by origin, steps, tools, errors, permission prompts, scroll and selection |
 | `view/permission.rs` | the inline permission prompt: tool and scope, a short preview of the call (a write's first lines, an edit's change, a command, a URL), the answer keys or the outcome |

@@ -12,7 +12,7 @@ requests land in `develop`.
   the number of changed files, the agent in use (`build` in the accent colour, `plan` in blue) and
   the model, its variant and how full the context is. The branch and the changes are read when a
   conversation starts and after each turn. On a terminal 140 columns or wider a column on the right
-  shows the agent's role and the subagents it can start, what the next request is made of (system,
+  shows the agent in use and its role, what the next request is made of (system,
   rules, skills, tools, messages, the input budget and the last compaction), how many skills are
   listed or left out, and the changed files. `alt+r` hides or shows it. A part with nothing to show
   yet shows `—`. The bottom row lists the keys that apply now, with the permission keys while a

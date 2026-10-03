@@ -49,14 +49,12 @@ fn default_state_is_idle_without_cursor() {
 }
 
 #[test]
-fn the_panel_names_the_built_in_agents_as_the_server_defines_them() {
+fn the_panel_gives_the_primary_agents_the_roles_the_server_defines() {
     let server = navai::agent::definitions::Agents::builtin();
-    for (id, role) in navai::tui::view::panel::BUILTIN_AGENTS {
+    for (id, role) in navai::tui::view::panel::PRIMARY_ROLES {
         let definition = server.get(id).unwrap_or_else(|| panic!("{id} is built in"));
         assert_eq!(definition.description, role, "{id}");
+        // no agent file can take these names, so the role shown is the one in use
+        assert!(navai::agent::definitions::AgentId::parse(id).is_ok_and(|a| a.is_reserved()));
     }
-    assert_eq!(
-        server.all().count(),
-        navai::tui::view::panel::BUILTIN_AGENTS.len()
-    );
 }

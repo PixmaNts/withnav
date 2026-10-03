@@ -1,5 +1,5 @@
 //! The right column: what the conversation runs with, only from what the server and git report.
-//! Agents (the session's agent and the subagents it can start), Context (the breakdown of the
+//! Agents (the session's agent, its role, and the agents it started), Context (the breakdown of the
 //! last snapshot and the last compaction), Skills (the catalog counts) and Changes (the files git
 //! reports). A section with nothing reported yet shows `—`; none is made up.
 use crate::tui::{
@@ -19,22 +19,18 @@ use ratatui::{
 pub const WIDTH: u16 = 36;
 /// Below this terminal width the column hides itself, unless the driver asked for it.
 pub const MIN_TERMINAL_WIDTH: u16 = 140;
-/// The server's built-in agents and their roles. The TUI is a client and reads no agent code; a
-/// test keeps these equal to the server's definitions.
-pub const BUILTIN_AGENTS: [(&str, &str); 4] = [
+/// The roles of the two primary agents. Their names are reserved, so no agent file replaces them;
+/// the TUI is a client and reads no agent code, and a test keeps these equal to the server's.
+pub const PRIMARY_ROLES: [(&str, &str); 2] = [
     ("build", "Implements the task, verifies it and reports"),
     (
         "plan",
         "Researches, writes markdown plans and delegates; never changes code",
     ),
-    ("explore", "Read-only codebase exploration"),
-    ("review", "Read-only code review"),
 ];
-/// The subagents every session can start.
-const SUBAGENTS: [&str; 2] = ["explore", "review"];
 
 fn role(agent: &str) -> Option<&'static str> {
-    BUILTIN_AGENTS
+    PRIMARY_ROLES
         .iter()
         .find(|(id, _)| *id == agent)
         .map(|(_, role)| *role)
@@ -97,7 +93,8 @@ fn agents(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
             Span::styled("  in use", theme.muted()),
         ]),
     ];
-    // The role of a built-in agent; one from a file has its own, which the server has not sent.
+    // The role of build or plan; another agent's comes from its file, which the server does not
+    // send, so none is shown.
     if let Some(description) = role(agent) {
         for part in wrap(description, width.saturating_sub(3)) {
             lines.push(Line::styled(format!("   {part}"), theme.muted()));
@@ -110,21 +107,6 @@ fn agents(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
             Span::styled(fit(&child.name, width.saturating_sub(14)), theme.subagent()),
             Span::styled(if running { "  running" } else { "  done" }, theme.muted()),
         ]));
-    }
-    for name in SUBAGENTS {
-        if let Some(description) = role(name) {
-            lines.push(Line::from(vec![
-                Span::styled(" ○ ", theme.muted()),
-                Span::styled(name.to_string(), theme.subagent()),
-                Span::styled(
-                    fit(
-                        &format!("  {}", description.to_lowercase()),
-                        width.saturating_sub(3 + name.len()),
-                    ),
-                    theme.muted(),
-                ),
-            ]));
-        }
     }
     lines
 }

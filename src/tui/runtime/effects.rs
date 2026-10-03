@@ -132,12 +132,13 @@ impl Executor {
                     }
                 });
             }
-            Effect::FetchContext(id) => {
+            Effect::FetchContext { session_id, epoch } => {
                 let client = self.client.clone();
                 self.spawn_event(async move {
                     ClientEvent::Context {
                         generation,
-                        result: client.context(&id).await,
+                        epoch,
+                        result: client.context(&session_id).await,
                     }
                 });
             }

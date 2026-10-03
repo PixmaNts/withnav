@@ -107,9 +107,9 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
             // Keeps catalog, model, session list, pending submit, notice and the session itself.
             // The gauge is server state, not derived from the replay (`context.updated` is
             // live-only), so it stays; the reconnect that follows refreshes it.
-            let context = s.conversation.context.take();
+            let context = envelope::take_context(s);
             reset_projection(s);
-            s.conversation.context = context;
+            envelope::restore_context(s, context);
             effects.push(Effect::Subscribe {
                 session_id: s
                     .session
@@ -123,8 +123,12 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
             s.connection = ConnectionStatus::Connected;
             // `context.updated` is live-only: what was missed before this subscription (a
             // reconnect, or the gap since the session was created) is read back here.
+            s.conversation.context_epoch += 1;
             if let Some(m) = &s.session {
-                effects.push(Effect::FetchContext(m.session_id.clone()));
+                effects.push(Effect::FetchContext {
+                    session_id: m.session_id.clone(),
+                    epoch: s.conversation.context_epoch,
+                });
             }
         }
         ClientEvent::StreamDisconnected { .. } => s.connection = ConnectionStatus::Disconnected,
@@ -154,6 +158,8 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
         }
         ClientEvent::Created { result, .. } | ClientEvent::Resumed { result, .. } => match result {
             Ok(r) => {
+                // A fetch issued before this (re)start may describe the old runtime.
+                s.conversation.context_epoch += 1;
                 s.session = Some(SessionMetadata {
                     session_id: r.session_id.clone(),
                     actor_state: r.actor_state,
@@ -190,9 +196,11 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
             }
         }
         // An older server has no endpoint: the gauge stays on the provider's count.
-        ClientEvent::Context { result, .. } => {
+        ClientEvent::Context { epoch, result, .. } => {
             if let Ok(snapshot) = result {
-                envelope::keep_newer_context(s, snapshot);
+                if epoch == s.conversation.context_epoch {
+                    envelope::keep_newer_context(s, snapshot);
+                }
             }
         }
         ClientEvent::Submitted {

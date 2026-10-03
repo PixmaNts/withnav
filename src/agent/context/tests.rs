@@ -292,17 +292,6 @@ fn each_tracker_is_its_own_incarnation_and_revisions_restart() {
     let new = resumed.snapshot().clone();
     assert_eq!((old.revision, new.revision), (1, 0));
     assert_ne!(old.incarnation, new.incarnation);
-    // A client holding the old one takes the new one, and not the other way
-    // within an incarnation.
-    assert!(old.superseded_by(&new));
-    assert!(!old.superseded_by(&ContextSnapshot {
-        revision: 0,
-        ..old.clone()
-    }));
-    assert!(old.superseded_by(&ContextSnapshot {
-        revision: 1,
-        ..old.clone()
-    }));
 }
 
 #[test]

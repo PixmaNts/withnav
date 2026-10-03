@@ -45,7 +45,9 @@ use super::message::{accept, MessageAccepted};
 use super::sender::SessionSender;
 use crate::agent::actor::AgentActor;
 use crate::agent::context::{ContextLimits, ContextSnapshot, ContextTracker};
+use crate::agent::definitions::{AgentDefinition, AgentId, AgentRoots, Agents};
 use crate::agent::instructions::Instructions;
+use crate::agent::selection::AgentSelection;
 use crate::agent::skills::Skills;
 use crate::bus::command::Command;
 use crate::bus::event::ROOT_ACTOR_ID;
@@ -147,6 +149,8 @@ pub struct SessionSummary {
     pub actor_state: String,
     pub workspace: String,
     pub model: String,
+    /// The primary agent the session runs as.
+    pub agent: String,
     /// The model variant in use; `null` for none.
     pub variant: Option<String>,
     pub current_seq: u64,
@@ -277,7 +281,20 @@ impl Service {
         model: Option<&str>,
         profile: Option<&str>,
     ) -> Result<SessionId, ServerError> {
-        self.create_session_with_variant(workspace, model, profile, VariantChoice::Default)
+        self.create_session_as(workspace, model, profile, None)
+            .await
+    }
+
+    /// [`create_session`](Self::create_session) running as the primary agent
+    /// `agent` (`build` when `None`).
+    pub async fn create_session_as(
+        &self,
+        workspace: &Path,
+        model: Option<&str>,
+        profile: Option<&str>,
+        agent: Option<&str>,
+    ) -> Result<SessionId, ServerError> {
+        self.create_session_with(workspace, model, profile, VariantChoice::Default, agent)
             .await
     }
 
@@ -291,10 +308,22 @@ impl Service {
         profile: Option<&str>,
         variant: VariantChoice,
     ) -> Result<SessionId, ServerError> {
-        let id = self
-            .spawn_session(workspace, model, profile, None, workspace, &variant)
-            .await?;
-        Ok(id)
+        self.create_session_with(workspace, model, profile, variant, None)
+            .await
+    }
+
+    /// [`create_session_with_variant`](Self::create_session_with_variant)
+    /// running as the primary agent `agent` (`build` when `None`).
+    pub async fn create_session_with(
+        &self,
+        workspace: &Path,
+        model: Option<&str>,
+        profile: Option<&str>,
+        variant: VariantChoice,
+        agent: Option<&str>,
+    ) -> Result<SessionId, ServerError> {
+        self.spawn_session(workspace, model, profile, agent, None, workspace, &variant)
+            .await
     }
 
     /// [`create_session`] with an optional `resume` id (the POST
@@ -313,6 +342,21 @@ impl Service {
         workspace: &Path,
         model: Option<&str>,
         profile: Option<&str>,
+        resume: Option<SessionId>,
+    ) -> Result<(SessionId, bool), ServerError> {
+        self.create_or_resume_session_as(workspace, model, profile, None, resume)
+            .await
+    }
+
+    /// [`create_or_resume_session`](Self::create_or_resume_session) with the
+    /// primary agent a NEW session runs as. A resumed session keeps the agent
+    /// it was stored with: `agent` is ignored for it.
+    pub async fn create_or_resume_session_as(
+        &self,
+        workspace: &Path,
+        model: Option<&str>,
+        profile: Option<&str>,
+        agent: Option<&str>,
         resume: Option<SessionId>,
     ) -> Result<(SessionId, bool), ServerError> {
         if let Some(id) = resume {
@@ -344,6 +388,7 @@ impl Service {
                 workspace,
                 None,
                 None,
+                None,
                 Some(loaded),
                 workspace,
                 &VariantChoice::Default,
@@ -352,7 +397,7 @@ impl Service {
             return Ok((id, true));
         }
         let id = self
-            .create_session_with_variant(workspace, model, profile, VariantChoice::Default)
+            .create_session_with(workspace, model, profile, VariantChoice::Default, agent)
             .await?;
         Ok((id, false))
     }
@@ -389,6 +434,7 @@ impl Service {
             actor_state: handle.actor_state.clone(),
             workspace: handle.workspace.display().to_string(),
             model: handle.model.clone(),
+            agent: handle.status.selection.current().id.to_string(),
             variant: handle.status.selected_variant(),
             current_seq,
         })
@@ -408,6 +454,9 @@ impl Service {
             actor_state: "stopped".to_string(),
             workspace: meta.workspace,
             model: meta.model,
+            agent: meta
+                .primary_agent
+                .unwrap_or_else(|| AgentId::build().to_string()),
             variant: meta.variant,
             current_seq: meta.last_seq,
         })
@@ -464,16 +513,74 @@ impl Service {
         skills
     }
 
+    /// Finds the agents of a session once: the built-ins and every agent file.
+    async fn load_agents(&self, workspace: &Path, id: SessionId, resumed: bool) -> Arc<Agents> {
+        let roots = AgentRoots {
+            home: self.config.rules_roots.home.clone(),
+            config_dir: Some(self.config.config_dir.clone()),
+        };
+        let dir = workspace.to_path_buf();
+        let agents = tokio::task::spawn_blocking(move || Agents::load(&roots, &dir))
+            .await
+            .unwrap_or_default();
+        super::rules_log::log_agents(id, resumed, &agents);
+        Arc::new(agents)
+    }
+
+    /// The agent a session starts with. A new session takes the requested
+    /// one (`build` by default), which must be primary-capable. A resumed one
+    /// takes its stored agent (`build` for a row without one); one that no
+    /// longer exists or can no longer be selected is an error, never a
+    /// silent `build`.
+    fn pick_agent(
+        agents: &Agents,
+        session_id: SessionId,
+        requested: Option<&str>,
+        resumed: Option<&ResumedSession>,
+    ) -> Result<Arc<AgentDefinition>, ServerError> {
+        if let Some(loaded) = resumed {
+            let saved = loaded
+                .meta
+                .primary_agent
+                .as_deref()
+                .unwrap_or(crate::agent::definitions::BUILD);
+            let unavailable = |reason: &str| ServerError::SavedAgentUnavailable {
+                session: session_id.to_string(),
+                agent: saved.to_string(),
+                reason: reason.to_string(),
+            };
+            let definition = agents
+                .get(saved)
+                .ok_or_else(|| unavailable("no agent definition with this id was found"))?;
+            if !definition.mode.is_primary() {
+                return Err(unavailable("it is no longer a primary agent"));
+            }
+            return Ok(definition.clone());
+        }
+        let wanted = requested.unwrap_or(crate::agent::definitions::BUILD);
+        match agents.get(wanted) {
+            Some(definition) if definition.mode.is_primary() => Ok(definition.clone()),
+            _ => Err(ServerError::UnknownAgent {
+                agent: wanted.to_string(),
+                available: primary_list(agents),
+            }),
+        }
+    }
+
     /// The shared mint: resolves the model, builds the actor, spawns the
     /// sequencer (continuing at `last_seq + 1` when resuming),
     /// publishes `session.start` (fresh only), spawns the runtime with the
     /// history hooks, registers the handle. `resume_workspace` is the
     /// workspace a resume request named; the FRESH path passes its own.
+    // Private, with exactly two callers (fresh and resume) that pass every
+    // selection through unchanged; a parameter struct would only rename them.
+    #[allow(clippy::too_many_arguments)]
     async fn spawn_session(
         &self,
         workspace: &Path,
         model: Option<&str>,
         profile: Option<&str>,
+        agent: Option<&str>,
         resumed: Option<ResumedSession>,
         resume_workspace: &Path,
         variant: &VariantChoice,
@@ -499,6 +606,13 @@ impl Service {
                 (workspace.to_path_buf(), alias.to_string(), profile)
             }
         };
+        // The agent is chosen before anything is built or written: an unknown
+        // agent fails a fresh session, an unavailable saved one fails the
+        // resume, and neither leaves a row behind.
+        let agents = self
+            .load_agents(&workspace, session_id, resumed.is_some())
+            .await;
+        let role = Self::pick_agent(&agents, session_id, agent, resumed.as_ref())?;
         let (resolved, api_key, snapshot, save_late, models_file) = self
             .resolve_for_spawn(session_id, resume_workspace, &alias, resumed.as_ref())
             .await?;
@@ -591,6 +705,8 @@ impl Service {
                 profile,
                 Some(&snapshot),
                 selected.as_ref(),
+                // Written with the row: a resumed row already has its agent.
+                (!is_resume && !role.id.is_build()).then(|| role.id.as_str()),
             )
             .await
             .map_err(ServerError::History)?;
@@ -614,10 +730,18 @@ impl Service {
             Some(Box::new(move |transcript: &[ChatMessage]| {
                 history.save_transcript(session_id, transcript.to_vec());
             }));
-        let status = Arc::new(runtime::RuntimeStatus::default());
+        let status = Arc::new(runtime::RuntimeStatus::with_selection(AgentSelection::new(
+            agents, role,
+        )));
         status.init_variant(selected);
         let limits = limits.with_sources(&actor.rules, &actor.skills);
-        status.install_context(ContextTracker::new(limits, actor.context_breakdown()));
+        // The role is on the actor before the first estimate: a session that
+        // starts as `plan` counts plan's role before any turn runs.
+        actor.role = Some(status.selection.current());
+        status.install_context(
+            ContextTracker::new(limits, actor.context_breakdown()),
+            actor.system_prompt.clone(),
+        );
         let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn_with_status(
             session_id,
             actor,
@@ -662,6 +786,15 @@ impl Service {
         }
         Ok(session_id)
     }
+}
+
+/// The ids of the primary agents, comma separated, for an error text.
+pub(super) fn primary_list(agents: &Agents) -> String {
+    agents
+        .primary()
+        .map(|a| a.id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 mod resolve;

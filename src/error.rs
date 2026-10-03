@@ -145,6 +145,14 @@ pub enum ServerError {
     },
     #[error("Session {session} has an unreadable saved model resolution ({reason}); it cannot be resumed until the sessions.model_resolution column of that row is fixed or cleared.")]
     SavedResolutionInvalid { session: String, reason: String },
+    #[error("unknown agent '{agent}': the primary agents are {available}")]
+    UnknownAgent { agent: String, available: String },
+    #[error("Session {session} runs as agent '{agent}', which is not available ({reason}); add the agent back or fix its file to resume it. The conversation is kept as it is.")]
+    SavedAgentUnavailable {
+        session: String,
+        agent: String,
+        reason: String,
+    },
     #[error("model alias '{alias}' has no variant '{variant}'; {offered}")]
     UnknownVariant {
         alias: String,

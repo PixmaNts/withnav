@@ -65,6 +65,12 @@ impl Breakdown {
     }
 }
 
+/// The system category: the contract plus the role message, if any.
+pub fn system_tokens(role_message: Option<&str>) -> u64 {
+    let framed = |text: &str| text_tokens(text) + MESSAGE_FRAMING_TOKENS;
+    framed(SYSTEM_CONTRACT) + role_message.map_or(0, framed)
+}
+
 /// Estimates the request `prompt::build_request` assembles from these parts.
 pub fn estimate(
     system_prompt: Option<&str>,
@@ -75,7 +81,7 @@ pub fn estimate(
 ) -> Breakdown {
     let framed = |text: &str| text_tokens(text) + MESSAGE_FRAMING_TOKENS;
     Breakdown {
-        system: framed(SYSTEM_CONTRACT) + system_prompt.map_or(0, framed),
+        system: system_tokens(system_prompt),
         rules: rules.map_or(0, framed),
         skills_catalog: skills.map_or(0, framed),
         tools: tools_tokens(tools),

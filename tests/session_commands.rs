@@ -144,8 +144,8 @@ async fn stop_ends_the_session_after_publishing_its_result() {
 }
 
 // Given a session
-// When the command is unknown, or registered but not built yet
-// Then the outcome is an error that lists close names, or says "not available yet"
+// When the command is unknown
+// Then the outcome is an error that lists close names
 #[tokio::test]
 async fn unknown_and_unbuilt_commands_answer_clear_errors() {
     let (tmp, ws) = tmp_ws();
@@ -156,13 +156,8 @@ async fn unknown_and_unbuilt_commands_answer_clear_errors() {
     assert!(!out.ok);
     assert!(out.error.unwrap().contains("/help"));
 
-    for name in ["compact"] {
-        let out = state.run_command(id, name, "").await.expect("run");
-        assert!(!out.ok, "{name}");
-        assert_eq!(out.error.unwrap(), format!("/{name} is not available yet"));
-    }
     let events = results(&state, id).await;
-    assert_eq!(events.len(), 2, "failures are published too");
+    assert_eq!(events.len(), 1, "failures are published too");
     assert!(events.iter().all(|e| e.payload["ok"] == false));
 }
 
@@ -287,7 +282,13 @@ async fn http_endpoints_list_and_run_commands() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["ok"], false);
-    assert_eq!(body["error"], "/compact is not available yet");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("nothing to compact"),
+        "{body}"
+    );
     assert!(body.get("data").is_none());
 
     let (status, _) = request_json(&router, "POST", &path, Some(&json!({}))).await;

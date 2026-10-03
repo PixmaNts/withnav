@@ -124,13 +124,15 @@ impl AgentActor {
         self.skills = skills;
     }
 
-    /// The parts of the request besides the history.
+    /// The parts of the request besides the history. `role` is
+    /// [`AgentActor::role_message`], which the caller keeps alive.
     pub fn components<'a>(
         &'a self,
+        role: Option<&'a str>,
         tools: &'a [crate::provider::openai::ToolDef],
     ) -> Components<'a> {
         Components {
-            system_prompt: self.system_prompt.as_deref(),
+            system_prompt: role,
             rules: self.rules.message(),
             skills: self.skills.catalog(),
             tools,

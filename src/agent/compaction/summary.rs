@@ -54,6 +54,8 @@ pub struct PrepareInput<'a> {
     /// The input budget of the session's own model: the summary request must
     /// fit it.
     pub source_budget: u64,
+    /// What the user asked the summary to pay particular attention to.
+    pub focus: Option<&'a str>,
 }
 
 /// A checkpoint ready to persist and install. Nothing is saved yet.
@@ -144,7 +146,12 @@ pub fn build_summary_request(
         .map(|c| c.pruned_message_indices.iter().copied().collect())
         .unwrap_or_default();
     let system = ChatMessage::System {
-        content: SUMMARY_PROMPT.to_string(),
+        content: match input.focus.map(str::trim).filter(|f| !f.is_empty()) {
+            Some(focus) => format!(
+                "{SUMMARY_PROMPT}\n\nThe user asked you to pay particular attention to: {focus}"
+            ),
+            None => SUMMARY_PROMPT.to_string(),
+        },
     };
     let mut cut = planned.prefix_elidable.iter();
     loop {

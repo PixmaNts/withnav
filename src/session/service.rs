@@ -732,6 +732,7 @@ impl Service {
         // THEN the runtime task; the handle is retained so /stop can await
         // the interrupted turn's events before the session.end fence.
         let (inbox_tx, inbox) = ActorInbox::channel();
+        let saver_history = history.clone();
         let on_turn_end: Option<crate::bus::runtime::TurnEndHook> =
             Some(Box::new(move |transcript: &[ChatMessage]| {
                 history.save_transcript(session_id, transcript.to_vec());
@@ -740,6 +741,15 @@ impl Service {
             agents, role,
         )));
         status.init_variant(selected);
+        // A compaction is saved with the transcript, in one acknowledged write.
+        status.install_checkpoint_saver(Arc::new(move |transcript, compaction| {
+            let history = saver_history.clone();
+            Box::pin(async move {
+                history
+                    .save_checkpoint(session_id, transcript, &compaction)
+                    .await
+            })
+        }));
         let limits = limits.with_sources(&actor.rules, &actor.skills);
         // The role is on the actor before the first estimate: a session that
         // starts as `plan` counts plan's role before any turn runs.

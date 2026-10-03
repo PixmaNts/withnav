@@ -9,6 +9,7 @@ use super::commands::{self, CommandOutcome, CommandSpec};
 use super::service::{exact_variant, Service, SessionHandle, SessionId, VariantChoice, CLEAR_WORD};
 use crate::agent::selection::SwitchError;
 use crate::bus::event::{CommandResult, EventKind, SessionAgentChanged};
+use crate::bus::runtime::CompactReply;
 use crate::bus::sequencer::Candidate;
 use crate::error::ServerError;
 
@@ -147,12 +148,50 @@ impl Service {
             "variant" => self.variant_command(session_id, handle, arguments).await,
             "new" => self.new_conversation(session_id, handle, arguments).await,
             "agent" => self.agent_command(session_id, handle, arguments).await,
+            "compact" => self.compact_command(handle, arguments).await,
             // The stop itself is done by `run_command` after the result is
             // published: the stream ends with the session.
             "stop" => Ok(Done::data(json!({ "stopped": true }))),
             other => Err(CommandFailure::Refused(commands::not_available_error(
                 other,
             ))),
+        }
+    }
+
+    /// `/compact [focus]`: summarizes the older part of the conversation and
+    /// keeps the recent turns. The runtime does it between turns: at once when
+    /// the session is idle, after the running turn otherwise (the answer says
+    /// so). Refused while an `ask` waits (before this is reached).
+    async fn compact_command(
+        &self,
+        handle: &SessionHandle,
+        arguments: &str,
+    ) -> Result<Done, CommandFailure> {
+        let focus = (!arguments.is_empty()).then(|| arguments.to_string());
+        if focus
+            .as_deref()
+            .is_some_and(|f| f.chars().count() > crate::bus::runtime::FOCUS_MAX_CHARS)
+        {
+            return Err(CommandFailure::Refused(format!(
+                "the focus is longer than {} characters",
+                crate::bus::runtime::FOCUS_MAX_CHARS
+            )));
+        }
+        match handle.status.request_compact(focus).await {
+            Some(CompactReply::Done(done)) => Ok(Done::data(json!({
+                "generation": done.generation,
+                "through_message": done.through_message,
+                "pruned": done.pruned,
+                "estimate_before": done.estimate_before,
+                "estimate_after": done.estimate_after,
+                "applies": "now",
+            }))),
+            Some(CompactReply::Deferred) => Ok(Done::data(json!({
+                "accepted": true,
+                "applies": "after_turn",
+            }))),
+            Some(CompactReply::Refused(why)) => Err(CommandFailure::Refused(why)),
+            None => Err(CommandFailure::Server(ServerError::SessionStopping)),
         }
     }
 

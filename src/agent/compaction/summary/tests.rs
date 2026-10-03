@@ -136,6 +136,7 @@ fn input<'a>(
         },
         destination_budget: 100_000,
         source_budget: 100_000,
+        focus: None,
     }
 }
 
@@ -271,4 +272,20 @@ fn validation_rules() {
     let mut cut = msg("partial");
     cut.finish_reason = Some("length".into());
     assert!(validate_summary(&cut).is_err());
+}
+
+#[test]
+fn a_focus_is_added_to_the_summary_prompt() {
+    let t = five_turns(100);
+    let provider = provider("http://127.0.0.1:1/v1".into());
+    let mut i = input(&provider, &t, None);
+    let planned = plan(&t, None, &i.components, i.destination_budget).unwrap();
+    let text = |i: &PrepareInput<'_>| match &build_summary_request(i, &planned).unwrap().messages[0]
+    {
+        ChatMessage::System { content } => content.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(text(&i), SUMMARY_PROMPT);
+    i.focus = Some("  the migration  ");
+    assert!(text(&i).ends_with("pay particular attention to: the migration"));
 }

@@ -17,7 +17,7 @@ navai-lsp   (one process, two channels: ADR 0006)
    ├─ server/      session HTTP/SSE API, SQLite conversation history
    ├─ bus/         per-session sequencer, event envelopes, inboxes, the agent runtime task
    ├─ agent/       the coding-agent loop (the cognition runs on it)
-   ├─ tools/       read, write, edit, grep, glob, fetch, bash, ask
+   ├─ tools/       eight registry tools: read, write, edit, grep, glob, fetch, bash, ask; each session adds `skill`
    └─ provider/    model access: config, auth, one HTTP client, chat SSE, FIM, System One
 ```
 
@@ -33,7 +33,7 @@ Dependencies point down this list. A module never imports one above it.
 |---|---|---|
 | `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
 | `provider/` | `models.json` aliases (`config.rs`, `load_models`), keys (`auth.rs`), one `ModelClient` per endpoint (`client.rs`: auth header, deadline, cancellation, status errors), the chat SSE decoder (`sse.rs`, `mod.rs`), the FIM and System One wire clients | anything navigator-specific: no `crate::navigator` import |
-| `tools/` | the tool trait, the registry, path validation (`validate_path`), the eight tools (`glob.rs`: bounded, link-free file search; `fetch.rs`: HTTP(S) GET with its own credential-free client, same-origin redirects, a 5 MiB streamed cap; HTML is converted by a memory- and CPU-limited child, `navai internal-html-convert`, killed on cancel or timeout); `ToolContext` with the writable roots and the read-only ones (`read`/`grep`/`glob` accept both, `write`/`edit`/`bash` only the first) | which tools a session gets |
+| `tools/` | the tool trait, registry, path validation (`validate_path`), and eight registry tools; `glob.rs` provides bounded file search, `fetch.rs` provides bounded HTTP(S) GET, `nofollow.rs` opens reviewed write/edit destinations without following links; `ToolContext` holds writable and read-only roots (`read`/`grep`/`glob` accept both, `write`/`edit`/`bash` only the first) | which tools a session gets; the per-session `skill` tool is installed by `agent/` |
 | `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the session's folder grants, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission gate (`permissions.rs`: `needs_permission`, `Scope`, `Grants`, `PermissionRequest`, the `plan` exemption), the role guard (`guard.rs`: the `RoleGuard` trait, the `role_conformance` question, `consult`; `session/guard.rs` wires Jev from the `instinct` alias), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`explore`/`review` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events | HTTP, storage |
 | `session/` | the `Service` (registry and router, `service.rs`), teardown and close (`lifecycle.rs`), actor construction (`actor.rs`), subscriptions, the `SessionHooks` seam (`hooks.rs`: default model, actor setup, a `started` callback with a `SessionSender` that can only post) the SQLite history (`store.rs`), the primary agent of each session (`sessions.primary_agent`, `/agent`) and the session commands (`commands.rs`: the registry and line routing; `run_command.rs`: `Service::list_commands` / `run_command`, each run publishing a `command.result`; `Service::context`), and the session variant (saved in `sessions.variant`, chosen in `service/resolve.rs`, held by the runtime's `RuntimeStatus` and applied at each turn start) | HTTP, SSE, any profile by name |
@@ -62,8 +62,8 @@ Dependencies point down this list. A module never imports one above it.
 ### Inside `tui/`
 
 The terminal client of the session server: HTTP for commands, SSE for events, nothing else. It
-imports the serialized bus types and no runtime internals. Several conversations are open at once,
-one per tab; each tab streams its own session in the background.
+imports the serialized bus types and no runtime internals. Several conversations can be open at
+once; each is shown in the left sidebar and streams in the background.
 
 | File | Responsibility |
 |---|---|
@@ -85,14 +85,15 @@ one per tab; each tab streams its own session in the background.
 | `runtime/tests.rs` | executor and loop tests with no terminal and a dead server |
 | `terminal.rs` | raw mode and the alternate screen, restored on exit and on panic |
 | `theme.rs` | the four themes (`ThemeId`, the `Theme` colour roles), the RGB `blend` for tints, and the semantic styles the views draw with |
-| `view/mod.rs` | `draw`: layout of header, sidebar, transcript, right column, status line, editor, key bar and overlays; the key bar lists the keys that apply now, the prompt's while one waits |
-| `view/header.rs` | the header row: `◆ navai`, workspace, git branch and change count, `▌agent` in its colour, alias · model · variant · context gauge, then `→ alias (after this turn)` for a switch the server accepted for after the running turn; the path and the model give way first |
-| `view/panel.rs` | the right column (36 columns, hidden under 140 unless `alt+r` asks): Agents (the one in use, with its role for build and plan), Context (the last snapshot's breakdown and the last compaction), Skills (listed and omitted), Changes (git); a section with no data shows `—`, none is invented |
-| `view/sidebar.rs` | the tab sidebar: number, title, `<agent> · <state>`, unread mark, active tint, tab keys; hidden under 80 columns |
+| `view/mod.rs` | `draw`: layout of header, sidebar, transcript, right panel, status line, editor, key bar and overlays; the key bar lists the keys that apply now, the prompt's while one waits |
+| `view/header.rs` | the header row: `◆ navai`, workspace, git branch and change count, `▌agent` in its colour, alias · model · variant · context gauge, and an accepted model switch scheduled for after the turn; the path and model give way first |
+| `view/panel.rs` | the right panel (36 columns, hidden under 140 unless `alt+r` asks): Agents and role, Context breakdown and last compaction, Skills listed and omitted, and Changes from git; a section with no data shows `—` |
+| `view/sidebar.rs` | the left conversation sidebar: number, title, `<agent> · <state>`, unread mark, active tint and tab keys; hidden under 80 columns (`alt+b` also toggles it) |
 | `view/transcript.rs` | block layout and drawing: messages by origin, steps, tools, errors, permission prompts, scroll and selection |
 | `view/permission.rs` | the inline permission prompt: tool and scope, a short preview of the call (a write's first lines, an edit's change, a command, a URL), the answer keys or the outcome |
 | `view/tool.rs` | the one-line summary and the expanded output of a tool call |
 | `view/markdown.rs` | markdown to styled lines, cached per block revision |
+| `view/text.rs` | terminal-column measurement and grapheme-safe truncation and padding |
 | `view/status.rs` | the status line of the active tab: activity, connection, delivery warning, notice, session tokens; `context_gauge` and `shorten`, shared with the header |
 | `view/pickers.rs` | the model (alias, model, window, variants; on a live conversation enter switches the model only, `ctrl+n` opens a new tab, with a note saying so, when the switch waits for the turn, or why it is refused), variant, session, command, theme and help overlays: centred, accent border, the screen behind dimmed, a `❯` filter line and the keys at the foot; a long list scrolls to its selected row |
 
@@ -186,11 +187,14 @@ prompts, and every driver turn end triggers a `conversation` evaluation on the f
 
 | Path | What | Written by |
 |---|---|---|
-| `~/.config/navai/models.json`, `auth.json` | aliases and keys | the driver, `navai auth` |
-| `<workspace>/.navigator/pipeline.toml`, `prompts/*.md` | the project's pipeline | the driver |
+| `~/.config/navai/models.json`, `auth.json`, `config.json` | model aliases, provider keys and client settings | the driver, `navai auth`, the TUI |
+| `~/.config/navai/navigator/pipeline.toml`, `prompts/*.md` | the user's pipeline and prompts | the driver |
+| `~/.config/navai/agents/*.md` | user agent definitions | the driver |
+| `<workspace>/.navigator/pipeline.toml`, `prompts/*.md` | the project's pipeline and prompts, overriding the user and built-in defaults | the driver |
 | `<workspace>/.navigator/intent.md` | intent, plan, decisions | the cognition and the driver |
-| `~/.local/share/navai/navai.jsonl` | decision log, replay input | `navigator/log.rs` |
-| `~/.local/share/navai/navai.db` | conversations | `session/store.rs` |
+| `<workspace>/.navai/agents/*.md` | project agent definitions | the driver |
+| `~/.agents/AGENTS.md`, `~/.agents/rules.md`, `~/.agents/skills/` | user rules and skills included in agent sessions | the driver |
+| `~/.local/share/navai/navai.db`, `navai.jsonl`, `tui.log`, `model-catalog/` | conversations, decision log, TUI log and cached provider model lists | `session/store.rs`, `navigator/log.rs`, `tui/`, `provider/catalog.rs` |
 
 Data and config paths come from `paths.rs` and `provider/auth.rs`. On every start `paths::migrate_legacy`
 (`paths/migrate.rs`) moves what the former names left behind to the Navai dirs: `~/.local/share/navigator/*`

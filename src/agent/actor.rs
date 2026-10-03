@@ -87,8 +87,9 @@ pub struct AgentActor {
     /// What the driver last asked for: the text of their latest message, or
     /// their answer to an `ask`. Set only from a command whose source is the
     /// driver (`user:*`), never from a navigator wake. The role guard judges
-    /// calls against it. Memory only: a resumed session has none until the
-    /// driver speaks.
+    /// calls against it. Not stored on its own: a resumed session rebuilds it
+    /// from the stored `message.received` events (the newest from a `user:*`
+    /// source), so it is `None` only when the driver never spoke.
     pub driver_task: Option<String>,
     /// The second opinion a guarded agent's exceptions go through before the
     /// driver. `None` when the session has no guard: every exception then goes

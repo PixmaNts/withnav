@@ -749,6 +749,13 @@ impl Service {
         if let Some(loaded) = &resumed {
             actor.transcript = loaded.transcript.clone();
             actor.compaction = loaded.compaction.clone();
+            // The task the role guard judges against: the driver's latest
+            // stored words, not a navigator wake.
+            actor.driver_task = self
+                .history
+                .latest_driver_message(session_id)
+                .await
+                .map_err(ServerError::History)?;
         }
         actor.rules = self
             .load_rules(&workspace, session_id, resumed.is_some())

@@ -132,6 +132,30 @@ async fn wait_events(
     panic!("timed out waiting for {count} `{kind}` event(s)");
 }
 
+async fn wake(state: &AppState, id: ulid::Ulid, text: &str) {
+    state
+        .send(Command {
+            command_id: ulid::Ulid::new(),
+            session_id: id,
+            source_actor_id: navai::navigator::NAVIGATOR_ACTOR_ID.to_string(),
+            target_actor_id: "agent:main".to_string(),
+            mode: DeliveryMode::NextTurn,
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
+            created_at: std::time::SystemTime::now(),
+        })
+        .await
+        .expect("wake");
+}
+
+/// The task Jev was sent in its `n`th question (0-based).
+fn task_asked(provider: &CapturingProvider, n: usize) -> Value {
+    let body: Value = serde_json::from_str(&system_one_requests(provider)[n]).unwrap();
+    let state: Value = serde_json::from_str(body["state"].as_str().unwrap()).unwrap();
+    state["untrusted_evidence"]["task"].clone()
+}
+
 async fn plan_session(state: &AppState, env: &Env) -> ulid::Ulid {
     state
         .create_session_as(&env.ws, None, None, Some("plan"))
@@ -284,4 +308,67 @@ async fn build_is_not_guarded() {
         .unwrap()
         .starts_with("`write` acts in"));
     assert!(system_one_requests(&provider).is_empty());
+}
+
+// Given a plan conversation where the driver spoke, then stopped and resumed
+//       with a navigator wake as the only new message
+// Then Jev is sent the driver's stored words as the task, not the wake
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resumed_session_judges_against_the_drivers_stored_words() {
+    let env = env();
+    let target = env.ws.join("main.rs");
+    let provider = provider(
+        vec![write_call(&target), write_call(&target)],
+        vec![verdict("violates"), verdict("violates")],
+    )
+    .await;
+    let first = state(&env, &provider, true);
+    let id = plan_session(&first, &env).await;
+    say(&first, id, "write the stub").await;
+    wait_events(&first, id, "permission.requested", 1).await;
+    first.close_session(id).await.unwrap();
+    drop(first);
+
+    let second = state(&env, &provider, true);
+    second
+        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .await
+        .unwrap();
+    wake(&second, id, "drift: look at the lexer").await;
+    wait_events(&second, id, "permission.requested", 2).await;
+    assert_eq!(task_asked(&provider, 0), "write the stub");
+    assert_eq!(
+        task_asked(&provider, 1),
+        "write the stub",
+        "after a resume, and with a wake as the newest message"
+    );
+}
+
+// Given a plan conversation the driver never spoke in
+// Then Jev is sent `task: null`, before and after a resume
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_a_driver_message_the_task_is_null() {
+    let env = env();
+    let target = env.ws.join("main.rs");
+    let provider = provider(
+        vec![write_call(&target), write_call(&target)],
+        vec![verdict("violates"), verdict("violates")],
+    )
+    .await;
+    let first = state(&env, &provider, true);
+    let id = plan_session(&first, &env).await;
+    wake(&first, id, "drift: look at the lexer").await;
+    wait_events(&first, id, "permission.requested", 1).await;
+    first.close_session(id).await.unwrap();
+    drop(first);
+
+    let second = state(&env, &provider, true);
+    second
+        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .await
+        .unwrap();
+    wake(&second, id, "drift again").await;
+    wait_events(&second, id, "permission.requested", 2).await;
+    assert_eq!(task_asked(&provider, 0), Value::Null);
+    assert_eq!(task_asked(&provider, 1), Value::Null);
 }

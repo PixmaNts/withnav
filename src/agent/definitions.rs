@@ -414,7 +414,7 @@ fn read_file(path: &Path, source: AgentSource) -> Result<AgentDefinition, String
 fn parse(id: AgentId, text: &str, source: AgentSource) -> Result<AgentDefinition, String> {
     let (yaml, body) = frontmatter::split(text)?;
     let header: Header =
-        serde_norway::from_str(yaml).map_err(|e| format!("invalid YAML header: {e}"))?;
+        serde_saphyr::from_str(yaml).map_err(|e| format!("invalid YAML header: {e}"))?;
     let mode = header
         .mode
         .as_deref()

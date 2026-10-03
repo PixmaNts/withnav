@@ -1761,6 +1761,36 @@ impl Service {
             agents, role,
         )));
         status.init_variant(selected.clone());
+        if child_parent.is_none() {
+            let history = self.history.clone();
+            status.install_delivery(Arc::new(move |mut transcript| {
+                let history = history.clone();
+                Box::pin(async move {
+                    let notices = history.unconsumed_completions(session_id).await?;
+                    if notices.is_empty() {
+                        return Ok(None);
+                    }
+                    let mut children = Vec::new();
+                    for (child, payload, result) in notices {
+                        let result = crate::tools::bound_output(&result, 16 * 1024).0;
+                        let text = serde_json::json!({
+                            "untrusted_subagent_output": true,
+                            "child_session_id": child,
+                            "agent": payload["agent"],
+                            "outcome": payload["outcome"],
+                            "result": result,
+                        })
+                        .to_string();
+                        transcript.push(ChatMessage::User { content: text });
+                        children.push(child);
+                    }
+                    history
+                        .consume_completions(session_id, children, transcript.clone())
+                        .await?;
+                    Ok(Some(transcript))
+                })
+            }));
+        }
         // A compaction is saved with the transcript, in one acknowledged write.
         status.install_checkpoint_saver(Arc::new(move |transcript, compaction| {
             let history = saver_history.clone();

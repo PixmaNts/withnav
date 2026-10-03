@@ -11,6 +11,8 @@
 
 mod compact;
 mod deferred;
+mod delivery;
+pub use delivery::Delivery;
 mod model;
 
 use std::sync::{Arc, Mutex};
@@ -88,6 +90,7 @@ struct PermissionSlot {
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
+    delivery: Mutex<Option<delivery::DeliveryCell>>,
     variant: Mutex<VariantSlot>,
     /// The session's context gauge: written by the runtime at each boundary,
     /// read on demand by the service.
@@ -106,6 +109,10 @@ pub struct RuntimeStatus {
 }
 
 impl RuntimeStatus {
+    pub fn install_delivery(&self, delivery: Delivery) {
+        *self.delivery.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(delivery::DeliveryCell(delivery));
+    }
     /// A status that runs as the agent `selection` names.
     pub fn with_selection(selection: crate::agent::selection::AgentSelection) -> Self {
         Self {
@@ -703,6 +710,10 @@ async fn runtime_loop(
             }
         };
         // The turn runs as the agent and the variant selected now; a later
+        if let Err(error) = delivery::apply(&mut actor, &status).await {
+            tracing::error!(%error, "subagent transcript delivery failed");
+            break;
+        }
         // change waits for the turn to end.
         let (role, variant) = status.begin_turn().await;
         actor.role = role;

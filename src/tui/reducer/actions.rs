@@ -290,6 +290,7 @@ fn switch_model(s: &mut State, ui: &mut UiState, alias: String) -> Vec<Effect> {
     if !effects.is_empty() {
         s.model_switch = Some(crate::tui::state::ModelSwitch {
             alias,
+            token: s.command_token,
             operation_id: None,
             deferred: false,
         });
@@ -361,10 +362,12 @@ fn run_command(
         );
         return vec![];
     };
+    s.command_token += 1;
     vec![Effect::RunCommand {
         session_id,
         request: CommandRequest { name, arguments },
         revision,
+        token: s.command_token,
     }]
 }
 

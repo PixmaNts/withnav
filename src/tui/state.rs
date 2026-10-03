@@ -178,6 +178,8 @@ pub struct Tab {
     /// The last `/model` this client sent, from the send until the server settles it: the header
     /// shows `→ alias (after this turn)` once it is accepted for after the running turn.
     pub model_switch: Option<ModelSwitch>,
+    /// The last token given to a command request of this tab.
+    pub command_token: u64,
     /// The `/model` operations the stream reported as settled (done, refused, cancelled, or
     /// carried by a `model.changed`), the last few: an HTTP answer arriving after its own result
     /// does not mark a settled switch as waiting.
@@ -239,6 +241,8 @@ impl Tab {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ModelSwitch {
     pub alias: String,
+    /// The token of the request that asked for it: only its HTTP answer binds the operation.
+    pub token: u64,
     /// The operation the server gave the command; `None` until its HTTP answer.
     pub operation_id: Option<String>,
     /// The server accepted it for after the running turn.

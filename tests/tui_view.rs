@@ -2857,6 +2857,7 @@ fn the_header_shows_the_model_in_use_and_a_switch_waiting_for_the_turn() {
     s.activity = Activity::Running;
     s.model_switch = Some(navai::tui::state::ModelSwitch {
         alias: "luna".into(),
+        token: 1,
         operation_id: Some("op".into()),
         deferred: true,
     });

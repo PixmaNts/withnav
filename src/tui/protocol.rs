@@ -219,11 +219,13 @@ pub enum ClientEvent {
         generation: Generation,
         result: Result<CommandsBody, String>,
     },
-    /// A command request came back; `revision` is the editor revision it was typed at, if typed.
+    /// A command request came back; `revision` is the editor revision it was typed at, if typed;
+    /// `token` is the one its `Effect::RunCommand` carried.
     CommandRan {
         generation: Generation,
         name: String,
         revision: Option<u64>,
+        token: u64,
         result: Result<CommandResponse, String>,
     },
     Stopped {
@@ -332,11 +334,13 @@ pub enum Effect {
         request_id: String,
         answer: PermissionAnswer,
     },
-    /// Runs a command in a session; the outcome comes back as `ClientEvent::CommandRan`.
+    /// Runs a command in a session; the outcome comes back as `ClientEvent::CommandRan`, with
+    /// the same `token` (the tab's own number for the request, so an answer finds its request).
     RunCommand {
         session_id: String,
         request: CommandRequest,
         revision: Option<u64>,
+        token: u64,
     },
     Create(CreateSessionRequest),
     Resume(String),

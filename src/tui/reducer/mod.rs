@@ -95,10 +95,11 @@ pub(crate) fn settle_model_op(s: &mut State, id: &str) {
     }
 }
 
-/// The HTTP answer to this client's `/model`: it names the operation the switch waits on. An
-/// acceptance for after the turn waits for that operation to settle on the stream, unless it
-/// already did; anything else is settled now.
-fn model_answered(s: &mut State, response: &crate::tui::protocol::CommandResponse) {
+/// The HTTP answer to this client's `/model` request `token`: it names the operation the switch
+/// waits on. An acceptance for after the turn waits for that operation to settle on the stream,
+/// unless it already did; anything else is settled now. The answer to an older request, replaced
+/// since, changes nothing.
+fn model_answered(s: &mut State, token: u64, response: &crate::tui::protocol::CommandResponse) {
     let id = response.operation_id.clone();
     let deferred = response.ok
         && response
@@ -106,7 +107,11 @@ fn model_answered(s: &mut State, response: &crate::tui::protocol::CommandRespons
             .as_ref()
             .is_some_and(|d| d["accepted"].as_bool() == Some(true) && d["applies"] == "after_turn");
     let settled = s.settled_model_ops.contains(&id);
-    let Some(switch) = s.model_switch.as_mut().filter(|m| m.operation_id.is_none()) else {
+    let Some(switch) = s
+        .model_switch
+        .as_mut()
+        .filter(|m| m.token == token && m.operation_id.is_none())
+    else {
         return;
     };
     if deferred && !settled {
@@ -366,13 +371,14 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         ClientEvent::CommandRan {
             name,
             revision,
+            token,
             result,
             ..
         } => match result {
             // The outcome itself arrives as `command.result` on the stream.
             Ok(response) => {
                 if name == "model" {
-                    model_answered(s, &response);
+                    model_answered(s, token, &response);
                 }
                 if name == "variant" {
                     if let Some(data) = response.data.as_ref().filter(|_| response.ok) {
@@ -404,12 +410,8 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     s.variant_list_wanted = false;
                 }
                 // The command never reached the server, or its answer was lost: the switch it
-                // asked for is not waiting.
-                if name == "model"
-                    && s.model_switch
-                        .as_ref()
-                        .is_some_and(|m| m.operation_id.is_none())
-                {
+                // asked for is not waiting. An older request failing leaves a newer one alone.
+                if name == "model" && s.model_switch.as_ref().is_some_and(|m| m.token == token) {
                     s.model_switch = None;
                 }
                 push_local(

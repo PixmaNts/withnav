@@ -2359,12 +2359,14 @@ fn a_command_runs_in_the_active_conversation_and_clears_the_editor_once_taken() 
                 arguments: String::new(),
             },
             revision: Some(4),
+            token: 1,
         }]
     );
     let taken = ClientEvent::CommandRan {
         generation: s.generation.clone(),
         name: "context".into(),
         revision: Some(4),
+        token: 1,
         result: Ok(CommandResponse {
             operation_id: "op".into(),
             ok: true,
@@ -2381,6 +2383,7 @@ fn a_command_runs_in_the_active_conversation_and_clears_the_editor_once_taken() 
         generation: s.generation.clone(),
         name: "context".into(),
         revision: Some(5),
+        token: 1,
         result: Err("HTTP 503".into()),
     };
     assert!(update(&mut s, lost).unwrap().is_empty());
@@ -2522,6 +2525,7 @@ fn toggling_the_agent_of_a_conversation_goes_through_the_server() {
                 arguments: "plan".into(),
             },
             revision: None,
+            token: 1,
         }]
     );
     assert_eq!(
@@ -2722,6 +2726,7 @@ fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server
                 arguments: String::new(),
             },
             revision: None,
+            token: 1,
         }]
     );
     assert_eq!(ui.overlay, None);
@@ -2731,6 +2736,7 @@ fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server
         generation: s.generation.clone(),
         name: "variant".into(),
         revision: None,
+        token: 1,
         result: Ok(CommandResponse {
             operation_id: "op".into(),
             ok: true,
@@ -2769,6 +2775,7 @@ fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server
                 arguments: "off".into(),
             },
             revision: None,
+            token: 2,
         }]
     );
     assert_eq!(ui.overlay, None);
@@ -2941,6 +2948,7 @@ fn slash_variant_always_offers_off_even_with_an_empty_catalog() {
         generation: s.generation.clone(),
         name: "variant".into(),
         revision: None,
+        token: 1,
         result: Ok(CommandResponse {
             operation_id: "op".into(),
             ok: true,
@@ -2958,6 +2966,7 @@ fn slash_variant_always_offers_off_even_with_an_empty_catalog() {
         generation: s.generation.clone(),
         name: "variant".into(),
         revision: None,
+        token: 1,
         result: Err("HTTP 503".into()),
     };
     assert!(update(&mut s, failed).unwrap().is_empty());
@@ -3460,6 +3469,11 @@ fn a_git_result_reaches_the_tab_that_asked_and_a_stale_one_is_dropped() {
 // ---------------------------------------------------------------- model switch
 
 fn model_command(alias: &str) -> Effect {
+    model_command_at(alias, 1)
+}
+
+/// The `/model <alias>` request the tab sends as its `token`th command.
+fn model_command_at(alias: &str, token: u64) -> Effect {
     Effect::RunCommand {
         session_id: "S1".into(),
         request: CommandRequest {
@@ -3467,6 +3481,7 @@ fn model_command(alias: &str) -> Effect {
             arguments: alias.into(),
         },
         revision: None,
+        token,
     }
 }
 
@@ -3566,12 +3581,19 @@ fn deferred() -> Option<Value> {
     Some(json!({"accepted": true, "applies": "after_turn"}))
 }
 
-/// The HTTP answer to the tab's `/model`, carrying operation `op`.
+/// The HTTP answer to the tab's latest `/model`, carrying operation `op`.
 fn model_answered(s: &mut State, op: u128, result: Result<Option<Value>, &str>) {
+    let token = s.model_switch.as_ref().map_or(0, |m| m.token);
+    model_answered_to(s, token, op, result);
+}
+
+/// The HTTP answer to the tab's `/model` request `token`, carrying operation `op`.
+fn model_answered_to(s: &mut State, token: u64, op: u128, result: Result<Option<Value>, &str>) {
     let ev = ClientEvent::CommandRan {
         generation: s.generation.clone(),
         name: "model".into(),
         revision: None,
+        token,
         result: match result {
             Ok(data) => Ok(CommandResponse {
                 operation_id: Ulid(op).to_string(),
@@ -3746,7 +3768,10 @@ fn the_result_of_its_operation_settles_the_switch_whatever_the_order() {
 fn a_new_switch_replaces_the_waiting_one() {
     let (mut s, mut ui) = switching();
     model_answered(&mut s, 77, Ok(deferred()));
-    handle_action(&mut s, &mut ui, Action::SwitchModel("c".into()));
+    assert_eq!(
+        handle_action(&mut s, &mut ui, Action::SwitchModel("c".into())),
+        vec![model_command_at("c", 2)]
+    );
     assert_eq!(s.pending_model(), None, "the new one is not accepted yet");
     model_answered(&mut s, 88, Ok(deferred()));
     assert_eq!(s.pending_model(), Some("c"));
@@ -3755,6 +3780,69 @@ fn a_new_switch_replaces_the_waiting_one() {
     model_result(&mut script, 77, false, None, Some("superseded"));
     feed(&mut s, &script.out);
     assert_eq!(s.pending_model(), Some("c"));
+}
+
+/// A live conversation on `a`, its turn running, that asked for `b` (request 1) and then `c`
+/// (request 2) before either HTTP answer came back.
+fn switching_twice() -> (State, UiState) {
+    let (mut s, mut ui) = switching();
+    assert_eq!(
+        handle_action(&mut s, &mut ui, Action::SwitchModel("c".into())),
+        vec![model_command_at("c", 2)]
+    );
+    (s, ui)
+}
+
+#[test]
+fn only_the_answer_to_the_latest_request_binds_the_waiting_switch() {
+    // b's answer first, then c's
+    let (mut s, _) = switching_twice();
+    model_answered_to(&mut s, 1, 77, Ok(deferred()));
+    assert_eq!(
+        s.pending_model(),
+        None,
+        "b's answer does not take c's place"
+    );
+    assert_eq!(s.model_switch.as_ref().unwrap().operation_id, None);
+    model_answered_to(&mut s, 2, 88, Ok(deferred()));
+    assert_eq!(s.pending_model(), Some("c"));
+    // b settling does not clear c
+    let mut script = Script::new();
+    model_result(&mut script, 77, false, None, Some("refused"));
+    model_changed_op(&mut script, Some(77), Some("a"), "b", None, 1000);
+    feed(&mut s, &script.out);
+    assert_eq!(s.pending_model(), Some("c"));
+    // c's own selection does
+    let mut own = Script::new();
+    model_changed_op(&mut own, Some(88), Some("b"), "c", None, 1000);
+    after(&mut own, 50);
+    feed(&mut s, &own.out);
+    assert_eq!(s.pending_model(), None);
+
+    // c's answer first, then b's
+    let (mut s, _) = switching_twice();
+    model_answered_to(&mut s, 2, 88, Ok(deferred()));
+    assert_eq!(s.pending_model(), Some("c"));
+    model_answered_to(&mut s, 1, 77, Ok(deferred()));
+    assert_eq!(s.pending_model(), Some("c"));
+    assert_eq!(
+        s.model_switch.as_ref().unwrap().operation_id.as_deref(),
+        Some(Ulid(88).to_string().as_str()),
+        "still c's operation"
+    );
+}
+
+#[test]
+fn an_older_request_failing_leaves_the_newer_switch() {
+    let (mut s, _) = switching_twice();
+    model_answered_to(&mut s, 1, 0, Err("connection reset"));
+    assert_eq!(s.model_switch.as_ref().map(|m| m.alias.as_str()), Some("c"));
+    model_answered_to(&mut s, 2, 88, Ok(deferred()));
+    assert_eq!(s.pending_model(), Some("c"));
+    // and the newer one failing does end it
+    let (mut s, _) = switching_twice();
+    model_answered_to(&mut s, 2, 0, Err("connection reset"));
+    assert_eq!(s.model_switch, None);
 }
 
 #[test]
@@ -3889,7 +3977,7 @@ fn picking_the_model_in_use_sends_nothing_and_says_so() {
     model_answered(&mut s, 77, Ok(deferred()));
     assert_eq!(
         handle_action(&mut s, &mut ui, Action::SwitchModel("a".into())),
-        vec![model_command("a")]
+        vec![model_command_at("a", 2)]
     );
 }
 

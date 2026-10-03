@@ -697,3 +697,158 @@ async fn variant_errors_name_the_models_file_that_was_loaded() {
         "{text}"
     );
 }
+
+async fn serve_chat(server: &wiremock::MockServer) {
+    let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;
+    wiremock::Mock::given(wiremock::matchers::path("/v1/chat/completions"))
+        .respond_with(common::sse::sse_response(&[done]))
+        .mount(server)
+        .await;
+}
+
+fn chat_bodies(requests: Vec<wiremock::Request>) -> Vec<Value> {
+    requests
+        .into_iter()
+        .filter(|r| r.url.path() == "/v1/chat/completions")
+        .map(|r| serde_json::from_slice(&r.body).unwrap())
+        .collect()
+}
+
+// Given a session on an explicit models.json variant with several keys, whose
+//      map is later removed (the alias now generates its variants), and a
+//      provider that is down with nothing cached
+// When the session is resumed and takes a turn
+// Then it sends the keys it saved, not a rebuilt `reasoning_effort`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unknown_offer_resumes_with_the_saved_override() {
+    let server = wiremock::MockServer::start().await;
+    serve_chat(&server).await;
+    let (tmp, ws) = tmp_ws();
+    let url = format!("{}/v1", server.uri());
+    let explicit =
+        json!({"deep": {"reasoning_effort": "high", "thinking": {"budget_tokens": 8000}}});
+    let state = TestServerConfig::mock(tmp.path(), &url)
+        .omniroute()
+        .variants(explicit, None)
+        .state();
+    let id = state
+        .create_session_with_variant(&ws, None, None, VariantChoice::from_word(Some("deep")))
+        .await
+        .unwrap();
+    state.close_session(id).await.unwrap();
+    state.history().flush().await.unwrap();
+
+    // The explicit map is gone; the provider reports nothing.
+    TestServerConfig::mock(tmp.path(), &url)
+        .omniroute()
+        .config();
+    wiremock::Mock::given(wiremock::matchers::path("/v1/models"))
+        .respond_with(wiremock::ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    state
+        .create_or_resume_session(&ws, None, None, Some(id))
+        .await
+        .expect("resumes with the saved override");
+    assert_eq!(
+        state.session_summary(id).await.unwrap().variant.as_deref(),
+        Some("deep")
+    );
+    let sub = state.subscribe(id, None).await.unwrap();
+    send_text(&state, id, "go").await;
+    collect_until(sub, |e| {
+        e.kind == "turn.end" && e.payload["outcome"] == "done"
+    })
+    .await;
+
+    let bodies = chat_bodies(server.received_requests().await.unwrap());
+    let body = bodies.last().expect("a chat request");
+    assert_eq!(body["reasoning_effort"], "high");
+    assert_eq!(body["thinking"], json!({"budget_tokens": 8000}));
+}
+
+// Given a row saved before the override was kept, and an unreadable offer
+// When the session is resumed
+// Then it is the retryable 503, not a guessed override
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_legacy_row_without_an_override_waits_for_the_offer() {
+    let server = wiremock::MockServer::start().await;
+    let (tmp, ws) = tmp_ws();
+    let (state, id) = stopped_generated(&server, tmp.path(), &ws).await;
+    rusqlite::Connection::open(tmp.path().join("history.db"))
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET variant_override = NULL WHERE id = ?1",
+            [id.to_string()],
+        )
+        .unwrap();
+    std::fs::remove_dir_all(tmp.path().join("data/model-catalog")).unwrap();
+    serve_down(&server).await;
+
+    let err = state
+        .create_or_resume_session(&ws, None, None, Some(id))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ServerError::VariantOfferUnknown { .. }),
+        "{err:?}"
+    );
+    assert_eq!(saved(&state, id).await.as_deref(), Some("high"), "kept");
+}
+
+// Given a known offer on resume
+// Then the saved override is refreshed from the current definition
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_known_offer_refreshes_the_saved_override() {
+    let server = wiremock::MockServer::start().await;
+    let (tmp, ws) = tmp_ws();
+    let (state, id) = stopped_generated(&server, tmp.path(), &ws).await;
+    rusqlite::Connection::open(tmp.path().join("history.db"))
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET variant_override = NULL WHERE id = ?1",
+            [id.to_string()],
+        )
+        .unwrap();
+    state
+        .create_or_resume_session(&ws, None, None, Some(id))
+        .await
+        .expect("the offer is readable");
+    let meta = state.history().meta(id).await.unwrap().unwrap();
+    assert_eq!(
+        meta.variant_override.as_deref(),
+        Some(r#"{"reasoning_effort":"high"}"#)
+    );
+}
+
+// Given a session created during a provider outage (its offer unknown)
+// When the provider is back and `/variant high` runs in the same session
+// Then the offer is read again and the switch succeeds
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn variant_works_after_the_provider_recovers() {
+    let server = wiremock::MockServer::start().await;
+    let (tmp, ws) = tmp_ws();
+    serve_down(&server).await;
+    let state = TestServerConfig::mock(tmp.path(), &format!("{}/v1", server.uri()))
+        .omniroute()
+        .state();
+    let id = state.create_session(&ws, None, None).await.unwrap();
+
+    let out = state.run_command(id, "variant", "high").await.unwrap();
+    assert!(!out.ok, "{out:?}");
+    assert!(out.error.unwrap().contains("cannot confirm"));
+
+    serve_tiers(&server, &["low", "high"]).await;
+    // A failed lookup is not repeated for a few seconds.
+    tokio::time::sleep(std::time::Duration::from_millis(5300)).await;
+    let out = state.run_command(id, "variant", "high").await.unwrap();
+    assert!(out.ok, "{out:?}");
+    assert_eq!(saved(&state, id).await.as_deref(), Some("high"));
+    let meta = state.history().meta(id).await.unwrap().unwrap();
+    assert_eq!(
+        meta.variant_override.as_deref(),
+        Some(r#"{"reasoning_effort":"high"}"#)
+    );
+    let out = state.run_command(id, "variant", "").await.unwrap();
+    assert_eq!(out.data.unwrap()["offered"], json!(["high", "low"]));
+}

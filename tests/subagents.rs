@@ -514,6 +514,10 @@ async fn full_access_child_of_plan_parent_has_no_write_dispatch() {
     for tool in ["write", "edit", "bash"] {
         assert_eq!(policy[tool], false, "{tool}");
     }
+    assert_eq!(
+        fx.state.session_summary(child).await.unwrap().agent,
+        "writer"
+    );
 }
 
 #[tokio::test]

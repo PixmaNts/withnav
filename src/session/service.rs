@@ -371,10 +371,19 @@ impl Service {
                 Some(parent),
             )
             .await;
+        drop(_spawn_lock);
         let child = match child {
             Ok(id) => id,
             Err(error) => {
-                self.reset_child_slots_for_delete(parent).await?;
+                let active = self
+                    .history
+                    .active_child_count(parent)
+                    .await
+                    .map_err(ServerError::History)?;
+                self.subagent_slots
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(parent, active);
                 return Err(error);
             }
         };
@@ -395,7 +404,6 @@ impl Service {
             self.reset_child_slots_for_delete(parent).await?;
             return Err(ServerError::History(error));
         }
-        drop(_spawn_lock);
         if let Some(handle) = self.handle(child) {
             // The parent is immutable after publication; replacing the
             // registry handle is safe before exposing the returned id.

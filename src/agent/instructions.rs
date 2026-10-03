@@ -164,6 +164,19 @@ impl Instructions {
         &self.sources
     }
 
+    /// The files whose text is in the message, cut or whole.
+    pub fn contributing_files(&self) -> usize {
+        self.sources
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.status,
+                    SourceStatus::Loaded | SourceStatus::Truncated { .. }
+                )
+            })
+            .count()
+    }
+
     /// File bytes kept in the message.
     pub fn loaded_bytes(&self) -> usize {
         self.sources.iter().map(|s| s.loaded_bytes).sum()

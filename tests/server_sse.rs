@@ -45,7 +45,7 @@ fn durable(frames: &[SseFrame]) -> Vec<(u64, String)> {
     frames
         .iter()
         .filter_map(|f| Some((f.id?, f.kind()?)))
-        .filter(|(_, k)| k != "llm.delta")
+        .filter(|(_, k)| k != "llm.delta" && k != "context.updated")
         .collect()
 }
 
@@ -80,7 +80,7 @@ async fn sse_frames_carry_id_equal_to_seq_and_are_monotonic() {
 async fn reconnect_with_last_event_id_resumes_without_gap_or_dup() {
     let (server, id) = server_with_session().await;
     let live = live_turn(&server, &id).await;
-    // The ring retains only DURABLE kinds; `llm.delta` is live-only and
+    // The ring retains only DURABLE kinds; `llm.delta` and `context.updated` are live-only and
     // legitimately absent on replay, so the resume contract is over the
     // durable subsequence (a dropped-delta seq gap is expected + legal).
     let seqs = |fs: &[SseFrame]| -> Vec<u64> { durable(fs).into_iter().map(|(s, _)| s).collect() };

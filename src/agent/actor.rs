@@ -98,6 +98,18 @@ impl AgentActor {
         self.skills = skills;
     }
 
+    /// The estimated size of the request this actor would send now, by
+    /// category (see [`crate::agent::context`]).
+    pub fn context_breakdown(&self) -> crate::agent::context::Breakdown {
+        crate::agent::context::estimate(
+            self.system_prompt.as_deref(),
+            self.rules.message(),
+            self.skills.catalog(),
+            &self.transcript,
+            &self.registry.schemas(),
+        )
+    }
+
     /// Re-derives `pending_ask_id` from a restored transcript: the `ask` call
     /// of the last assistant message that has no `Tool` message after it. The
     /// transcript is used (not the stored `agent.yield` event) because that

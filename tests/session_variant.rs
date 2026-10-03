@@ -205,12 +205,47 @@ async fn variant_command_lists_sets_clears_and_refuses() {
     assert!(out.error.unwrap().contains("usage"));
     assert!(out.name == "variant");
     assert!(!state
-        .run_command(id, "context", "")
+        .run_command(id, "compact", "")
         .await
         .unwrap()
         .error
         .unwrap()
         .is_empty());
+}
+
+// Given a session with a default variant
+// When /variant changes it, then /context runs
+// Then the gauge shows the selected variant, and context.updated carried it
+#[tokio::test]
+async fn context_shows_the_selected_variant() {
+    let (tmp, ws) = tmp_ws();
+    let state = config(tmp.path(), "http://127.0.0.1:1/v1", Some("low")).state();
+    let id = state.create_session(&ws, None, None).await.unwrap();
+    let context = |state: AppState| async move {
+        state
+            .run_command(id, "context", "")
+            .await
+            .unwrap()
+            .data
+            .unwrap()
+    };
+    assert_eq!(context(state.clone()).await["variant"], "low");
+
+    let sub = state.subscribe(id, None).await.unwrap();
+    let out = state.run_command(id, "variant", "high").await.unwrap();
+    assert!(out.ok, "{out:?}");
+    assert_eq!(context(state.clone()).await["variant"], "high");
+    assert_eq!(
+        state.context(id).await.unwrap().variant.as_deref(),
+        Some("high")
+    );
+    let events = collect_until(sub, |e| e.kind == "context.updated").await;
+    let updated = events.iter().find(|e| e.kind == "context.updated").unwrap();
+    assert_eq!(updated.payload["variant"], "high");
+
+    let out = state.run_command(id, "variant", "off").await.unwrap();
+    assert!(out.ok);
+    assert_eq!(context(state.clone()).await["variant"], Value::Null);
 }
 
 // Given the HTTP surface

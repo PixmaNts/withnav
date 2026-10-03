@@ -231,6 +231,24 @@ fall back to next-turn delivery for pending human interactions; inbox commands a
 are checked before completion-only wakes. `subagent.spawned` and `subagent.done` payloads include
 `delivery`; no new event kind is introduced.
 
+**Child watchdog.** `session/subagents/watchdog.rs` owns the monotonic clock and judge seams,
+bounded evidence, separate `subagent_progress` System One choice and consecutive-failure rule.
+`supervisor.rs` owns one service task per published child, cancelled by lifetime stop or terminal
+completion. It sleeps a full configured interval between checks, never replays missed ticks,
+skips parked/idle children and awaits Jev outside lifecycle/admission. `bus/runtime/progress.rs`
+records only observable text, call/result and step activity; thinking is never evidence.
+
+`outcomes.rs` puts every verdict except the first failed check in the existing durable outbox.
+The parent's sequencer emits `subagent.watchdog`; only doubt notices need transcript consumption
+and a parent wake. Doubt is an ephemeral `RuntimeStatus.watchdog` hold at the existing safe boundary:
+no further provider request until resumed; the complete tool batch still settles. The boundary
+wait respects the renewable turn token as well as session stop. Stuck and model stop commit the
+terminal child CAS with reason `watchdog` and bounded partial text before cancelling/joining,
+without taking lifecycle. `tools/decide_subagent.rs` is installed beside root `task` only;
+`decision.rs` enforces owner and watchdog-doubt state, never answers permissions or budgets.
+The existing owner continue endpoint also resumes doubt. Recovery terminalizes unfinished links
+as before; no supervision state is restored. The event catalog has 22 kinds.
+
 | Path | What | Written by |
 |---|---|---|
 | `~/.config/navai/models.json`, `auth.json`, `config.json` | model aliases, provider keys and client settings | the driver, `navai auth`, the TUI |

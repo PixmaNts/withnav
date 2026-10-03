@@ -11,23 +11,6 @@ pub struct WatchdogPark {
     resumed: Notify,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[tokio::test]
-    async fn cancelled_turn_unwinds_a_doubt_boundary_without_resuming_it() {
-        let park = WatchdogPark::default();
-        assert!(park.park());
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        tokio::time::timeout(std::time::Duration::from_secs(1), park.boundary(&cancel))
-            .await
-            .unwrap();
-        assert!(park.is_doubt());
-        assert!(park.resume());
-        assert!(!park.resume());
-    }
-}
 impl WatchdogPark {
     pub fn is_doubt(&self) -> bool {
         self.doubt.load(Ordering::Acquire)
@@ -65,5 +48,23 @@ impl WatchdogPark {
             }
             tokio::select! { biased; _ = cancel.cancelled() => break, _ = notified => {} }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn cancelled_turn_unwinds_a_doubt_boundary_without_resuming_it() {
+        let park = WatchdogPark::default();
+        assert!(park.park());
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(1), park.boundary(&cancel))
+            .await
+            .unwrap();
+        assert!(park.is_doubt());
+        assert!(park.resume());
+        assert!(!park.resume());
     }
 }

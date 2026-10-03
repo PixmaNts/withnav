@@ -497,11 +497,32 @@ impl Service {
         agent: &str,
         prompt: &str,
     ) -> Result<SessionId, ServerError> {
+        self.create_child_with_delivery(parent, agent, prompt, "next_turn")
+            .await
+    }
+
+    pub async fn create_child_with_delivery(
+        &self,
+        parent: SessionId,
+        agent: &str,
+        prompt: &str,
+        delivery: &str,
+    ) -> Result<SessionId, ServerError> {
+        if !matches!(delivery, "next_turn" | "steer" | "interrupt") {
+            return Err(ServerError::MalformedBody(
+                "invalid child delivery mode".into(),
+            ));
+        }
         let service = self.clone();
         let (agent, prompt) = (agent.to_string(), prompt.to_string());
-        tokio::spawn(async move { service.admit_child(parent, &agent, &prompt).await })
-            .await
-            .map_err(|e| ServerError::History(e.to_string()))?
+        let delivery = delivery.to_string();
+        tokio::spawn(async move {
+            service
+                .admit_child(parent, &agent, &prompt, &delivery)
+                .await
+        })
+        .await
+        .map_err(|e| ServerError::History(e.to_string()))?
     }
 
     async fn child_admission<'a>(
@@ -520,6 +541,7 @@ impl Service {
         parent: SessionId,
         agent: &str,
         prompt: &str,
+        delivery: &str,
     ) -> Result<SessionId, ServerError> {
         let parent_handle = self.routable_handle(parent).await?;
         if parent_handle.parent_session_id.is_some() {
@@ -675,7 +697,7 @@ impl Service {
             return Err(error);
         }
         let frozen = serde_json::to_string(&policy).unwrap_or_else(|_| "{}".into());
-        let spawned_payload = serde_json::to_value(crate::bus::event::SubagentSpawned {
+        let mut spawned_payload = serde_json::to_value(crate::bus::event::SubagentSpawned {
             parent_session_id: parent,
             child_session_id: child,
             agent: agent.to_string(),
@@ -683,6 +705,7 @@ impl Service {
             tool_call_id: "server".into(),
         })
         .map_err(|e| ServerError::History(e.to_string()))?;
+        spawned_payload["delivery"] = serde_json::json!(delivery);
         let history = self.history.clone();
         let agent = agent.to_string();
         let goal = prompt.to_string();
@@ -840,7 +863,23 @@ impl Service {
         self.drain_completions(parent).await;
         if let Some(owner) = self.handle(parent) {
             if owner.lifecycle == Lifecycle::Active {
-                owner.status.wake_delivery();
+                let notices = self
+                    .history
+                    .unconsumed_completions(parent)
+                    .await
+                    .map_err(ServerError::History)?;
+                let mode = notices
+                    .iter()
+                    .map(|(_, p, _)| p["delivery"].as_str().unwrap_or("next_turn"))
+                    .find(|m| *m == "interrupt")
+                    .or_else(|| {
+                        notices
+                            .iter()
+                            .map(|(_, p, _)| p["delivery"].as_str().unwrap_or("next_turn"))
+                            .find(|m| *m == "steer")
+                    })
+                    .unwrap_or("next_turn");
+                owner.status.wake_delivery_mode(mode);
             }
         }
         Ok(())
@@ -1865,7 +1904,7 @@ impl Service {
         status.init_variant(selected.clone());
         if child_parent.is_none() {
             let history = self.history.clone();
-            status.install_delivery(Arc::new(move |mut transcript| {
+            status.install_delivery(Arc::new(move |mut transcript, mid_turn| {
                 let history = history.clone();
                 Box::pin(async move {
                     history.flush().await?;
@@ -1875,6 +1914,7 @@ impl Service {
                     }
                     let mut children = Vec::new();
                     for (child, payload, result) in notices {
+                        if mid_turn && payload["delivery"] != "steer" { continue; }
                         let mut result = crate::tools::bound_output(&result, 15 * 1024).0;
                         let mut text = serde_json::json!({
                             "untrusted_subagent_output": true,
@@ -1892,6 +1932,7 @@ impl Service {
                         transcript.push(ChatMessage::User { provenance: crate::provider::openai::UserProvenance::Subagent, content: text });
                         children.push(child);
                     }
+                    if children.is_empty() { return Ok(None); }
                     history
                         .consume_completions(session_id, children, transcript.clone())
                         .await?;

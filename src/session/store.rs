@@ -325,13 +325,13 @@ impl HistoryStore {
             conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
             let inserted = tx.execute(
-                "INSERT INTO child_links (parent_id, child_id, agent, goal, policy_snapshot, status, created_at, owner_instance)
-                 SELECT ?1, ?2, ?3, ?4, ?5, 'running', ?6, ?8
+                "INSERT INTO child_links (parent_id, child_id, agent, goal, policy_snapshot, status, created_at, owner_instance, delivery)
+                 SELECT ?1, ?2, ?3, ?4, ?5, 'running', ?6, ?8, ?9
                  WHERE (SELECT COUNT(*) FROM child_links WHERE parent_id=?1 AND status IN ('starting','running')) < ?7
                    AND EXISTS(SELECT 1 FROM sessions WHERE id=?1)
                    AND EXISTS(SELECT 1 FROM sessions WHERE id=?2)",
                 params![parent_id.to_string(), child_id.to_string(), agent, goal,
-                    policy_snapshot, now_rfc3339(), capacity as i64, owner],
+                    policy_snapshot, now_rfc3339(), capacity as i64, owner, envelope.payload["delivery"].as_str().unwrap_or("next_turn")],
             ).map_err(|e| e.to_string())?;
             if inserted == 0 { return Err("subagent capacity reached or parent/child session is missing".into()); }
             insert_committed_event(&tx, &envelope)?;
@@ -882,7 +882,7 @@ fn finish_child_link_sync(
         "failed" => crate::bus::event::SubagentOutcome::Failed,
         _ => crate::bus::event::SubagentOutcome::Stopped,
     };
-    let payload = serde_json::to_string(&crate::bus::event::SubagentDone {
+    let mut payload = serde_json::to_value(&crate::bus::event::SubagentDone {
         parent_session_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
         child_session_id: child_id,
         agent: row.2.clone(),
@@ -891,6 +891,15 @@ fn finish_child_link_sync(
         notification_id: Ulid::new(),
     })
     .map_err(|e| e.to_string())?;
+    let delivery: String = tx
+        .query_row(
+            "SELECT delivery FROM child_links WHERE child_id=?1",
+            [child_id.to_string()],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    payload["delivery"] = serde_json::json!(delivery);
+    let payload = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     tx.execute("INSERT INTO completion_outbox (child_id, parent_id, outcome, result_ref, payload, result_text) VALUES (?1, ?2, ?3, ?1, ?4, ?5)",
                 params![child_id.to_string(), row.0, status, payload, result]).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -1246,6 +1255,17 @@ fn migrate(path: &Path) -> Result<(), String> {
     if !has_owner {
         conn.execute("ALTER TABLE child_links ADD COLUMN owner_instance TEXT", [])
             .map_err(|e| e.to_string())?;
+    }
+    let has_delivery = conn
+        .prepare("SELECT 1 FROM pragma_table_info('child_links') WHERE name='delivery'")
+        .and_then(|mut s| s.exists([]))
+        .map_err(|e| e.to_string())?;
+    if !has_delivery {
+        conn.execute(
+            "ALTER TABLE child_links ADD COLUMN delivery TEXT NOT NULL DEFAULT 'next_turn'",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
     }
     let has_consumption = conn
         .prepare("SELECT 1 FROM pragma_table_info('completion_outbox') WHERE name='consumed'")

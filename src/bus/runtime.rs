@@ -145,6 +145,14 @@ impl RuntimeStatus {
     pub fn wake_delivery(&self) {
         let _ = self.controls.tx.send(Control::Delivery);
     }
+    pub fn wake_delivery_mode(&self, mode: &str) {
+        let control = match mode {
+            "steer" => Control::DeliverySteer,
+            "interrupt" => Control::DeliveryInterrupt,
+            _ => Control::Delivery,
+        };
+        let _ = self.controls.tx.send(control);
+    }
     pub fn install_delivery(&self, delivery: Delivery) {
         *self.delivery.lock().unwrap_or_else(|e| e.into_inner()) =
             Some(delivery::DeliveryCell(delivery));
@@ -646,7 +654,25 @@ async fn runtime_loop(
     let mut active_task_id: Option<Ulid> = None;
     let mut control = status.controls.take_receiver();
     let mut delivery_waiting = false;
-    actor.safe_boundary = Some(status.steering.boundary());
+    let boundary_status = status.clone();
+    actor.safe_boundary = Some(Arc::new(move |transcript| {
+        let status = boundary_status.clone();
+        Box::pin(async move {
+            let mut transcript = status.steering.apply(transcript);
+            let callback = status
+                .delivery
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .map(|c| c.0.clone());
+            if let Some(callback) = callback {
+                if let Some(updated) = callback(transcript.clone(), true).await? {
+                    transcript = updated;
+                }
+            }
+            Ok(transcript)
+        })
+    }));
 
     loop {
         let inbound = tokio::select! {
@@ -678,6 +704,7 @@ async fn runtime_loop(
                     }
                     Control::Continue => Some(Inbound::Continue),
                     Control::Delivery => { delivery_waiting = true; continue; }
+                    Control::DeliverySteer | Control::DeliveryInterrupt => { delivery_waiting=true; continue; }
                     Control::Compact(request) => {
                         let outcome = compact::run(
                             &mut actor,
@@ -870,6 +897,13 @@ async fn runtime_loop(
                             }
                             Control::Continue => {}
                             Control::Delivery => { delivery_waiting = true; }
+                            Control::DeliverySteer => { delivery_waiting=true; }
+                            Control::DeliveryInterrupt => {
+                                delivery_waiting=true;
+                                interrupted_for_input=true;
+                                actor_cancel.cancel();
+                                break (&mut turn_fut).await;
+                            }
                             Control::Compact(request) => {
                                 let (operation_id, focus) =
                                     (request.operation_id, request.focus.clone());

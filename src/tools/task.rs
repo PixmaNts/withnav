@@ -24,7 +24,7 @@ impl Tool for TaskTool {
         "task"
     }
     fn schema(&self) -> Value {
-        json!({"description":"Start a background subagent","parameters":{"type":"object","properties":{"agent":{"type":"string"},"prompt":{"type":"string"}},"required":["agent","prompt"]}})
+        json!({"description":"Start a background subagent","parameters":{"type":"object","properties":{"agent":{"type":"string"},"prompt":{"type":"string"},"delivery":{"type":"string","enum":["next_turn","steer","interrupt"]}},"required":["agent","prompt"]}})
     }
     fn call<'a>(
         &'a self,
@@ -50,7 +50,7 @@ impl Tool for TaskTool {
             let id = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => return Err(ToolError::Canceled),
-                result = self.service.create_child_session(self.parent, agent, prompt) => result,
+                result = self.service.create_child_with_delivery(self.parent, agent, prompt,args.get("delivery").and_then(Value::as_str).unwrap_or("next_turn")) => result,
             }
             .map_err(|e| ToolError::Denied {
                 code: "subagent_error".into(),

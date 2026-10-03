@@ -97,6 +97,8 @@ pub enum Control {
     Continue,
     Steer,
     Interrupt,
+    DeliverySteer,
+    DeliveryInterrupt,
     Compact(CompactRequest),
     Model(super::model::ModelRequest),
 }

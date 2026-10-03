@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use crate::provider::openai::{ChatMessage, UserProvenance};
 
@@ -22,12 +22,5 @@ impl Steering {
             });
         }
         transcript
-    }
-    pub fn boundary(self: &Arc<Self>) -> crate::agent::boundary::SafeBoundary {
-        let steering = self.clone();
-        Arc::new(move |transcript| {
-            let steering = steering.clone();
-            Box::pin(async move { Ok(steering.apply(transcript)) })
-        })
     }
 }

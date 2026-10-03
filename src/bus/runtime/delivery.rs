@@ -4,7 +4,7 @@ use crate::agent::actor::AgentActor;
 use crate::provider::openai::ChatMessage;
 
 pub type Delivery = Arc<
-    dyn Fn(Vec<ChatMessage>) -> super::BoxFuture<Result<Option<Vec<ChatMessage>>, String>>
+    dyn Fn(Vec<ChatMessage>, bool) -> super::BoxFuture<Result<Option<Vec<ChatMessage>>, String>>
         + Send
         + Sync,
 >;
@@ -40,7 +40,7 @@ pub(super) async fn apply(
         }))
         .map_err(|e| e.to_string())?;
     rx.await.map_err(|e| e.to_string())?;
-    if let Some(transcript) = callback(actor.transcript.clone()).await? {
+    if let Some(transcript) = callback(actor.transcript.clone(), false).await? {
         actor.transcript = transcript;
         Ok(true)
     } else {

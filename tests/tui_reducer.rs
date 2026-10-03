@@ -2642,7 +2642,7 @@ fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server
     created_now(&mut s, "S1").unwrap();
     s.variant = Some("high".into());
     let mut editor = Editor::new();
-    let mut press = |code, s: &mut State, ui: &mut UiState, editor: &mut Editor| {
+    let press = |code, s: &mut State, ui: &mut UiState, editor: &mut Editor| {
         route_key(KeyEvent::new(code, KeyModifiers::NONE), s, ui, editor)
             .map(|a| handle_action(s, ui, a))
     };

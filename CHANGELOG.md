@@ -6,6 +6,14 @@ requests land in `develop`.
 
 ### Added
 
+- **Terminal subagents**: real child sessions appear under their parent with the delegated goal
+  and reported state. `alt+s` opens a searchable subagent list, including below 80 columns;
+  transcripts open read-only with replay and live events, and `alt+w` returns to the parent.
+  Stop and `alt+c` continue (out of steps) ask for confirmation and show server refusals.
+  Child permissions use the parent's existing approval prompt and endpoint. Completion notices
+  are compact, delivered subagent messages are labelled as untrusted output, and optional delivery
+  and watchdog fields are accepted without requiring a newer server.
+
 - **Background subagents**: a conversation's agent can start a subagent with the `task`
   tool (`task(agent, prompt)`, for agents whose mode is `subagent` or `all`, such as `explore` and
   `review`). The subagent is a separate conversation that runs in the background: the tool answers at
@@ -39,8 +47,7 @@ requests land in `develop`.
   consecutive unavailable, timed-out or invalid answers also mean doubt. Root cognition gets
   `decide_subagent(child_id, decision: "continue" | "stop", note?)` for owned watchdog doubts
   only. Permission-, budget- and doubt-parked children are skipped, and missed ticks never pile up.
-  Watchdog verdict events are durable; the first unavailable/invalid answer is silent. Nested TUI
-  presentation remains a separate change.
+  Watchdog verdict events are durable; the first unavailable/invalid answer is silent. The event catalog has 22 kinds.
   A driver can renew a budget-parked child's step budget once through
   `POST /v1/sessions/{parent}/children/{child}/continue`; foreign owners are refused and a child
   that is neither budget-parked nor in watchdog doubt returns 409. It can also release a watchdog

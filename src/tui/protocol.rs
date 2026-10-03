@@ -110,6 +110,12 @@ pub struct SessionMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant: Option<String>,
     pub current_seq: u64,
+    #[serde(default)]
+    pub parent_session_id: Option<String>,
+    #[serde(default = "promptable_default")]
+    pub promptable: bool,
+    #[serde(default)]
+    pub child_status: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SubmitRequest {
@@ -176,6 +182,11 @@ pub struct CommandResponse {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientEvent {
+    ChildEnvelope {
+        generation: Generation,
+        child_session_id: String,
+        envelope: EventEnvelope,
+    },
     Envelope {
         generation: Generation,
         envelope: EventEnvelope,
@@ -247,6 +258,12 @@ pub enum ClientEvent {
         generation: Generation,
         result: Result<StopResponse, String>,
     },
+    ChildControlled {
+        generation: Generation,
+        child_session_id: String,
+        control: ChildControl,
+        result: Result<(), String>,
+    },
     DeliveryUncertain {
         generation: Generation,
     },
@@ -280,6 +297,10 @@ pub enum Action {
     Select(usize),
     NewConversation,
     ResumeSession(String),
+    OpenChild(String),
+    ContinueChild,
+    ConfirmChildControl,
+    CancelChildControl,
     PickModel(String),
     /// Moves the active conversation to `alias` (`/model <alias>`); on a tab with no
     /// conversation yet, the conversation will start on it.
@@ -335,9 +356,23 @@ pub enum Overlay {
     Themes,
     /// The variants of a model: the second step of the model picker, or `/variant`.
     Variants,
+    Children,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildControl {
+    Stop,
+    Continue,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
+    WatchChild {
+        parent_session_id: String,
+        tab_id: u64,
+        generation: Generation,
+        child_session_id: String,
+    },
+    UnwatchChild(String),
     FetchModels,
     ListSessions,
     /// Reads the server's command list.
@@ -360,6 +395,8 @@ pub enum Effect {
     Create(CreateSessionRequest),
     Resume(String),
     FetchMetadata(String),
+    /// Briefly retry the persisted outcome after a child's terminal stream event.
+    FetchChildTerminalMetadata(String),
     /// Reads the session's context snapshot; `epoch` is echoed in `ClientEvent::Context`.
     FetchContext {
         session_id: String,
@@ -372,6 +409,11 @@ pub enum Effect {
     Unsubscribe,
     Send(SubmitRequest),
     Stop(String),
+    ControlChild {
+        parent_session_id: String,
+        child_session_id: String,
+        control: ChildControl,
+    },
     Quit,
     /// Writes the theme id to the user settings.
     SaveTheme(crate::tui::theme::ThemeId),

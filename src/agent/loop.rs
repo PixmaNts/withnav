@@ -206,10 +206,18 @@ async fn run_steps(
                         return Ok(RunOutcome::PermissionRequired(request))
                     }
                 }
+                if actor.cancel.is_cancelled() {
+                    actor.state = AgentState::Idle;
+                    return Ok(RunOutcome::Interrupted);
+                }
             }
         }
     }
 
+    if actor.cancel.is_cancelled() {
+        actor.state = AgentState::Idle;
+        return Ok(RunOutcome::Interrupted);
+    }
     actor.state = AgentState::Yielded;
     Ok(RunOutcome::StepBudgetExhausted)
 }
@@ -948,6 +956,51 @@ mod tests {
         let mut noop = |_e: AgentEvent| {};
         let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
         assert!(matches!(outcome, RunOutcome::StepBudgetExhausted));
+    }
+
+    #[tokio::test]
+    async fn cancellation_on_last_budget_tool_returns_interrupted_with_paired_result() {
+        let toolcall = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"last","function":{"name":"bash","arguments":"{\"command\":\"true\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[toolcall])),
+            http_sse(&sse_body(&[&text_chunk("replacement done")])),
+        ])
+        .await;
+        let cancel = CancellationToken::new();
+        let mut actor = make_actor(server.url.clone(), registry_all(), cancel.clone());
+        actor.max_steps = 1;
+        actor.push_user("run one tool");
+        let mut observe = |event: AgentEvent| {
+            if matches!(event, AgentEvent::PostCall { .. }) {
+                cancel.cancel();
+            }
+        };
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            run_agent(&mut actor, &mut observe),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(outcome, RunOutcome::Interrupted));
+        assert_eq!(
+            actor
+                .transcript
+                .iter()
+                .filter(|m| matches!(m,ChatMessage::Tool {tool_call_id,..} if tool_call_id=="last"))
+                .count(),
+            1
+        );
+        actor.cancel = CancellationToken::new();
+        actor.push_user("replacement instruction");
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            run_agent(&mut actor, &mut |_| {}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(outcome, RunOutcome::Done(_)));
     }
 
     // Given an input budget the next request would exceed

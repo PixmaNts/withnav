@@ -98,6 +98,7 @@ pub enum Control {
     Steer,
     Interrupt(ulid::Ulid),
     Replace(ulid::Ulid),
+    Restart,
     DeliverySteer,
     DeliveryInterrupt(ulid::Ulid),
     Compact(CompactRequest),

@@ -727,6 +727,7 @@ async fn runtime_loop(
                         Some(Inbound::Continue)
                     }
                     Control::Continue => Some(Inbound::Continue),
+                    Control::Restart => { actor.cancel=session_cancel.child_token(); Some(Inbound::Continue) }
                     Control::Delivery => { delivery_waiting = true; continue; }
                     Control::DeliverySteer => { delivery_waiting=true; continue; }
                     Control::DeliveryInterrupt(id) => { if status.notice_pending(id).await { delivery_waiting=true; } continue; }
@@ -923,6 +924,7 @@ async fn runtime_loop(
                                 break (&mut turn_fut).await;
                             }
                             Control::Replace(_) => {}
+                            Control::Restart => {}
                             Control::Continue => {}
                             Control::Delivery => { delivery_waiting = true; }
                             Control::DeliverySteer => { delivery_waiting=true; }
@@ -1173,6 +1175,8 @@ async fn runtime_loop(
             actor.cancel = session_cancel.child_token();
             if let Some(id) = replacement {
                 let _ = status.controls.tx.send(Control::Replace(id));
+            } else if !delivery_waiting {
+                let _ = status.controls.tx.send(Control::Restart);
             }
         } else if !actor.has_pending()
             && !status

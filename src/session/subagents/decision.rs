@@ -33,10 +33,11 @@ impl Service {
             }
             self.stop_watchdog_child(parent, child).await
         } else {
-            if let Some(note) = note.filter(|note| !note.trim().is_empty()) {
-                handle.status.steer(note.to_string(), false);
-            }
-            if !handle.status.watchdog.resume() {
+            if !handle.status.watchdog.resume_with(|| {
+                if let Some(note) = note.filter(|note| !note.trim().is_empty()) {
+                    handle.status.steer(note.to_string(), false);
+                }
+            }) {
                 return Err(ServerError::MalformedBody(
                     "child is not parked by a watchdog doubt".into(),
                 ));

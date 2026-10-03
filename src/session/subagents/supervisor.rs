@@ -62,6 +62,11 @@ impl Service {
             Some(test) => (test.clock, Some(test.judge)),
             None => (clock, judge),
         };
+        let activity_clock = clock.clone();
+        handle
+            .status
+            .activity
+            .install_clock(Arc::new(move || activity_clock.now()));
         tokio::spawn(async move {
             let interval = Duration::from_secs(interval);
             let mut watchdog = Watchdog::new(clock.clone(), interval);
@@ -85,6 +90,7 @@ impl Service {
                     continue;
                 }
                 let evidence = {
+                    // Snapshot the turn identity before awaiting the judge.
                     let activity = handle
                         .status
                         .activity
@@ -107,12 +113,15 @@ impl Service {
                     }
                     .bounded()
                 };
+                let Some(generation) = handle.status.watchdog.generation() else {
+                    continue;
+                };
                 if let Some(checked) = watchdog
                     .check(judge.as_deref(), &evidence, &handle.session_cancel)
                     .await
                 {
                     if let Err(error) = service
-                        .apply_watchdog(link.parent_id, child, checked, evidence)
+                        .apply_watchdog(link.parent_id, child, generation, checked, evidence)
                         .await
                     {
                         tracing::error!(%child, %error, "child watchdog outcome failed");

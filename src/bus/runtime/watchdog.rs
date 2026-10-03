@@ -6,6 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Default)]
 pub struct WatchdogPark {
+    state: Mutex<(u64, bool)>,
     terminal_owner: Mutex<Option<TerminalOwner>>,
     pub supervisor_cancel: CancellationToken,
     pub stopped: AtomicBool,
@@ -20,6 +21,29 @@ pub enum TerminalOwner {
 }
 
 impl WatchdogPark {
+    pub fn transition(&self, running: bool) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.0 = state.0.wrapping_add(1);
+        state.1 = running;
+    }
+    pub fn generation(&self) -> Option<u64> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        (state.1 && !self.is_doubt() && !self.stopped.load(Ordering::Acquire)).then_some(state.0)
+    }
+    pub fn accept_verdict(&self, generation: u64, doubt: bool) -> bool {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.0 != generation
+            || !state.1
+            || self.is_doubt()
+            || self.stopped.load(Ordering::Acquire)
+        {
+            return false;
+        }
+        if doubt {
+            self.doubt.store(true, Ordering::Release);
+        }
+        true
+    }
     pub fn rollback_stop(&self, doubt: bool) {
         *self
             .terminal_owner
@@ -52,13 +76,22 @@ impl WatchdogPark {
             .is_ok()
     }
     pub fn resume(&self) -> bool {
+        self.resume_with(|| {})
+    }
+    pub fn resume_with(&self, apply: impl FnOnce()) -> bool {
+        let _state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if self.stopped.load(Ordering::Acquire) {
+            return false;
+        }
         if !self.doubt.swap(false, Ordering::AcqRel) {
             return false;
         }
+        apply();
         self.resumed.notify_waiters();
         true
     }
     pub fn claim_stop(&self) -> bool {
+        let _state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if !self.is_doubt() || self.stopped.swap(true, Ordering::AcqRel) {
             return false;
         }
@@ -92,5 +125,17 @@ mod tests {
         assert!(park.is_doubt());
         assert!(park.resume());
         assert!(!park.resume());
+    }
+
+    #[test]
+    fn verdict_generation_does_not_cross_a_park_or_replacement_turn() {
+        let park = WatchdogPark::default();
+        park.transition(true);
+        let old = park.generation().unwrap();
+        park.transition(false);
+        assert!(!park.accept_verdict(old, true));
+        park.transition(true);
+        assert!(!park.accept_verdict(old, true));
+        assert!(park.accept_verdict(park.generation().unwrap(), true));
     }
 }

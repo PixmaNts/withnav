@@ -32,6 +32,151 @@ struct FakeJudge {
     answers: Mutex<std::collections::VecDeque<Result<Verdict, JudgeError>>>,
     checked: mpsc::UnboundedSender<Evidence>,
 }
+
+struct HeldJudge {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+impl Judge for HeldJudge {
+    fn judge<'a>(
+        &'a self,
+        _: &'a Evidence,
+        _: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Verdict, JudgeError>> {
+        Box::pin(async move {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(Verdict::Doubt)
+        })
+    }
+}
+
+#[tokio::test]
+async fn verdict_for_a_turn_that_parked_on_permission_is_discarded() {
+    let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(ws.join(".navai/agents")).unwrap();
+    std::fs::write(
+        ws.join(".navai/agents/writer.md"),
+        "---\nmode: subagent\naccess: full\n---\nWrite.",
+    )
+    .unwrap();
+    let service = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(128000)
+        .state();
+    let (tx, mut sleeps) = mpsc::unbounded_channel();
+    let clock = Arc::new(FakeClock {
+        now: Mutex::new(Instant::now()),
+        sleeps: tx,
+    });
+    let judge = Arc::new(HeldJudge {
+        entered: Default::default(),
+        release: Default::default(),
+    });
+    service.install_watchdog_test(clock.clone(), judge.clone());
+    let parent = service
+        .create_session(&ws, None, None)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let child = service
+        .create_child_session(parent, "writer", "write")
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (_, stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let tick = sleeps.recv().bounded(file!(), line!()).await.unwrap();
+    *clock.now.lock().unwrap() += Duration::from_secs(300);
+    tick.send(()).unwrap();
+    judge.entered.notified().bounded(file!(), line!()).await;
+    stream
+        .send(tool_call_chunk("bash", "bash", &json!({"command":"true"})))
+        .unwrap();
+    drop(stream);
+    async {
+        loop {
+            service.history().flush().await.unwrap();
+            if service
+                .history()
+                .replay(child, None, u64::MAX)
+                .await
+                .unwrap()
+                .iter()
+                .any(|e| e.kind == "permission.requested")
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+    .bounded(file!(), line!())
+    .await;
+    judge.release.notify_one();
+    let _next = sleeps.recv().bounded(file!(), line!()).await.unwrap();
+    service
+        .history()
+        .flush()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(!service
+        .history()
+        .replay(parent, None, u64::MAX)
+        .bounded(file!(), line!())
+        .await
+        .unwrap()
+        .iter()
+        .any(|e| e.kind == "subagent.watchdog"));
+    assert!(service
+        .decide_subagent(parent, child, false, None)
+        .bounded(file!(), line!())
+        .await
+        .is_err());
+    service.close_all().bounded(file!(), line!()).await;
+}
+
+#[tokio::test]
+async fn concurrent_continue_decisions_inject_only_the_winning_note() {
+    let mut f = Fixture::new(vec![Ok(Verdict::Doubt)]).await;
+    f.tick(300).await;
+    f.wait_verdict("doubt").await;
+    let (_, parent_stream) = f
+        .provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (a, b) = tokio::join!(
+        f.service
+            .decide_subagent(f.parent, f.child, false, Some("winning candidate alpha")),
+        f.service
+            .decide_subagent(f.parent, f.child, false, Some("winning candidate beta"))
+    );
+    assert_ne!(a.is_ok(), b.is_ok());
+    f.stream
+        .send(tool_call_chunk("glob", "glob", &json!({"pattern":"*"})))
+        .unwrap();
+    drop(f.stream);
+    let (request, child_stream) = f
+        .provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert_eq!(request.contains("winning candidate alpha"), a.is_ok());
+    assert_eq!(request.contains("winning candidate beta"), b.is_ok());
+    drop(child_stream);
+    drop(parent_stream);
+    f.service.close_all().bounded(file!(), line!()).await;
+}
 impl Judge for FakeJudge {
     fn judge<'a>(
         &'a self,
@@ -439,6 +584,8 @@ async fn active_records_replayable_verdict_without_waking_or_stopping() {
     let evidence = f.checked.recv().bounded(file!(), line!()).await.unwrap();
     assert_eq!(evidence.goal, "inspect parser");
     assert_eq!(evidence.step_count, 1);
+    assert_eq!(evidence.since_last_message_secs, 900);
+    assert_eq!(evidence.since_last_tool_call_secs, 900);
     let payload = f.wait_verdict("active").await;
     assert_eq!(payload["child_session_id"], f.child.to_string());
     assert!(payload["checked_at"].as_str().unwrap().ends_with('Z'));

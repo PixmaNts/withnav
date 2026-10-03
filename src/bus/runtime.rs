@@ -337,6 +337,7 @@ impl RuntimeStatus {
         SelectedVariant,
     ) {
         let role = self.selection.begin_turn().await;
+        self.watchdog.transition(true);
         self.set_pending_permission(None);
         let mut slot = self.slot();
         if let Some(pending) = slot.pending.take() {
@@ -348,6 +349,7 @@ impl RuntimeStatus {
 
     /// The turn is over: an agent or variant change may apply.
     fn end_turn(&self, actor: &AgentActor) {
+        self.watchdog.transition(false);
         self.selection.end_turn(actor.has_pending());
         self.set_pending_permission(actor.pending_permission().map(|request| request.id));
         self.slot().running = false;

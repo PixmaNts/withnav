@@ -9,6 +9,7 @@ impl Service {
         &self,
         parent: SessionId,
         child: SessionId,
+        generation: u64,
         checked: Checked,
         evidence: Evidence,
     ) -> Result<(), ServerError> {
@@ -24,6 +25,14 @@ impl Service {
         if link.status != "running" {
             return Ok(());
         }
+        if !handle
+            .status
+            .watchdog
+            .accept_verdict(generation, checked.verdict == Verdict::Doubt)
+        {
+            tracing::debug!(%child, generation, "discarded stale watchdog verdict");
+            return Ok(());
+        }
         let payload = serde_json::json!({
             "notice_kind": "watchdog", "child_session_id": child,
             "agent": link.agent, "verdict": checked.verdict,
@@ -31,9 +40,6 @@ impl Service {
             "delivery": "next_turn", "evidence": evidence,
         });
         let notice = if checked.verdict == Verdict::Doubt {
-            if !handle.status.watchdog.park() {
-                return Ok(());
-            }
             format!(
                 "subagent @{} ({child}) may be stuck: continue or stop it?\n{}",
                 link.agent,

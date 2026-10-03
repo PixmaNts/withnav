@@ -10,7 +10,7 @@
 //! are only buffered per index until the step's `llm.response` replaces them.
 use super::{block, text::strip_controls};
 use crate::{
-    bus::event::{ContextSnapshot, EventEnvelope, EventKind},
+    bus::event::{ContextSnapshot, EventEnvelope, EventKind, ModelChangeReason, ModelChanged},
     provider::{StreamDelta, ToolCall, Usage},
     tools::ToolStatus,
     tui::{
@@ -68,6 +68,8 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         Some(EventKind::SessionStart) => s.activity = Activity::Idle,
         Some(EventKind::SessionEnd) => {
             s.activity = Activity::Stopped;
+            // A stopped session switches nothing after its turn.
+            s.model_switch = None;
             for b in &mut s.conversation.blocks {
                 interrupt_block(b);
             }
@@ -350,6 +352,35 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 )),
             ));
         }
+        Some(EventKind::ModelChanged) => {
+            let changed: ModelChanged = serde_json::from_value(e.payload).map_err(|_| bad())?;
+            let new = &changed.new;
+            s.selected_model_alias = Some(strip_controls(&new.alias));
+            s.selected_model_name = Some(strip_controls(&new.model));
+            s.context_window = Some(changed.window);
+            s.variant = changed.variant.as_deref().map(strip_controls);
+            s.model_seq = Some(e.seq);
+            s.variant_seq = Some(e.seq);
+            // Only the switch this selection came from stops waiting.
+            if let Some(op) = changed.operation_id {
+                super::settle_model_op(s, &op.to_string());
+            }
+            if changed.reason == ModelChangeReason::Switch {
+                let from = changed
+                    .previous
+                    .as_ref()
+                    .map(|p| strip_controls(&p.alias))
+                    .unwrap_or_else(|| "—".into());
+                let mut text = format!("model: {from} → {}", strip_controls(&new.alias));
+                if let Some(variant) = &s.variant {
+                    text.push_str(&format!(" · {variant}"));
+                }
+                text.push_str(&format!(" · {}", super::tokens(changed.window)));
+                s.conversation
+                    .blocks
+                    .push(block(format!("notice:{}", e.seq), BlockKind::Notice(text)));
+            }
+        }
         Some(EventKind::SessionAgentChanged) => {
             let agent = e.payload["agent"].as_str().ok_or_else(bad)?;
             s.agent = Some(strip_controls(agent));
@@ -359,6 +390,59 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             let v = e.payload;
             let name = v["name"].as_str().ok_or_else(bad)?.to_string();
             let ok = v["ok"].as_bool().ok_or_else(bad)?;
+            // `/model`: the result of an operation settles the switch waiting on it (a deferred
+            // acceptance excepted: that one keeps waiting). A switch already made shows as its
+            // `model.changed` notice; a refusal says why, in the block below.
+            if name == "model" {
+                let data = v.get("data").filter(|d| !d.is_null());
+                let deferred = ok
+                    && data.is_some_and(|d| {
+                        d["accepted"].as_bool() == Some(true) && d["applies"] == "after_turn"
+                    });
+                let made = ok && data.is_some_and(|d| d["changed"].as_bool() == Some(true));
+                let op = v["operation_id"].as_str().map(str::to_string);
+                if let (false, Some(op)) = (deferred, op.as_deref()) {
+                    super::settle_model_op(s, op);
+                }
+                if made {
+                    return Ok(());
+                }
+                if deferred {
+                    // This tab's own switch, accepted: it waits for its operation (a replay of
+                    // an acceptance already settled marks nothing).
+                    let settled = op.as_ref().is_some_and(|o| s.settled_model_ops.contains(o));
+                    if let Some(m) = s.model_switch.as_mut() {
+                        if op.is_some() && m.operation_id == op && !settled {
+                            m.deferred = true;
+                        }
+                    }
+                    // Named only when it is this tab's switch, known by its operation id, or
+                    // when the server names the alias; otherwise (another client's switch, or
+                    // one whose answer has not arrived) the line stays generic.
+                    let target = data
+                        .and_then(|d| d["alias"].as_str())
+                        .map(str::to_string)
+                        .or_else(|| {
+                            s.model_switch
+                                .as_ref()
+                                .filter(|m| op.is_some() && m.operation_id == op)
+                                .map(|m| m.alias.clone())
+                        });
+                    let text = match target {
+                        Some(alias) => format!("switches to {alias} after this turn"),
+                        None => "model switch accepted, applies after this turn".into(),
+                    };
+                    s.conversation.blocks.push(block(
+                        e.seq.to_string(),
+                        BlockKind::Command {
+                            name,
+                            ok,
+                            text: strip_controls(&text),
+                        },
+                    ));
+                    return Ok(());
+                }
+            }
             // `/variant` answers with the variant in use, after a change or not.
             if name == "variant" && ok {
                 if let Some(data) = v.get("data") {

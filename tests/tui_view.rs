@@ -333,15 +333,10 @@ fn overlay_precedence_and_empty_slash() {
     assert_eq!(editor.text(), "/abc");
     ui.overlay = Some(Overlay::Models);
     let enter = key(KeyCode::Enter, KeyModifiers::NONE);
-    assert_eq!(route_key(enter, &s, &mut ui, &mut editor), None);
+    // a live conversation switches the model, with no variant step
     assert_eq!(
-        route_key(
-            key(KeyCode::Enter, KeyModifiers::NONE),
-            &s,
-            &mut ui,
-            &mut editor
-        ),
-        Some(Action::PickModel("cognition".into()))
+        route_key(enter, &s, &mut ui, &mut editor),
+        Some(Action::SwitchModel("cognition".into()))
     );
     assert_eq!(editor.text(), "/abc");
 }
@@ -408,7 +403,9 @@ fn transcript_keys_select_expand_and_follow() {
 
 #[test]
 fn pickers_filter_and_keep_draft() {
-    let s = state();
+    // an empty tab: the model, then the variant it starts on
+    let mut s = state();
+    s.session = None;
     let mut ui = UiState {
         overlay: Some(Overlay::Models),
         ..UiState::default()
@@ -1309,7 +1306,9 @@ fn the_model_picker_filters_a_long_catalog_and_shows_window_and_variants() {
 
 #[test]
 fn picking_a_model_with_variants_asks_which_one_default_first() {
-    let s = big_catalog();
+    // an empty tab: the variant step chooses what the conversation starts on
+    let mut s = big_catalog();
+    s.session = None;
     let mut ui = UiState::default();
     let mut editor = Editor::new();
     route_key(
@@ -1358,7 +1357,8 @@ fn picking_a_model_with_variants_asks_which_one_default_first() {
 
 #[test]
 fn a_model_without_variants_shows_a_note_and_starts_without_one() {
-    let s = big_catalog();
+    let mut s = big_catalog();
+    s.session = None;
     let mut ui = UiState::default();
     let mut editor = Editor::new();
     route_key(
@@ -1697,8 +1697,11 @@ fn a_typed_local_command_with_an_argument_is_refused_with_a_notice() {
     assert_eq!(editor.text(), "/stop now", "the line stays to fix");
     let mut editor = Editor::new();
     let actions = keys("/model fast⏎", &s, &mut ui, &mut editor);
-    assert_eq!(actions.last(), Some(&Action::PickModel("fast".into())));
+    assert_eq!(actions.last(), Some(&Action::SwitchModel("fast".into())));
     assert_eq!(editor.text(), "", "a client command clears its line");
+    // `/new <alias>` still opens a tab on it
+    let actions = keys("/new fast⏎", &s, &mut ui, &mut editor);
+    assert_eq!(actions.last(), Some(&Action::PickModel("fast".into())));
 }
 
 #[test]
@@ -2844,4 +2847,137 @@ fn the_three_permission_choices_stay_on_a_narrow_key_bar() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------- model switch
+
+#[test]
+fn the_header_shows_the_model_in_use_and_a_switch_waiting_for_the_turn() {
+    let mut s = done();
+    s.activity = Activity::Running;
+    s.model_switch = Some(navai::tui::state::ModelSwitch {
+        alias: "luna".into(),
+        token: 1,
+        operation_id: Some("op".into()),
+        deferred: true,
+    });
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    render("model-pending", (140, 24), &s, &ui, &Editor::new());
+    let header = row_text(&cells(&s, &ui, (140, 24)), 0, 140);
+    assert!(
+        header.contains(
+            "▌build  cognition · cc/claude-opus-5-5 · 12.4k / 200k  → luna (after this turn)"
+        ),
+        "{header}"
+    );
+    // narrow: the switch stays, the model name gives way first
+    let header = row_text(&cells(&s, &ui, (80, 24)), 0, 80);
+    assert!(header.contains("→ luna (after this turn)"), "{header}");
+    // the picker on a running conversation says when it applies
+    let ui = UiState {
+        overlay: Some(Overlay::Models),
+        ..UiState::default()
+    };
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(shown.contains("Switch this conversation to…"), "{shown}");
+    assert!(
+        shown.contains("the model only, after this turn; /variant after the switch"),
+        "{shown}"
+    );
+    // and refuses while a permission request waits
+    let s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(shown.contains("waiting for approval"), "{shown}");
+}
+
+#[test]
+fn enter_in_the_model_list_switches_a_live_tab_and_ctrl_n_opens_a_new_one() {
+    let s = done();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    route_key(
+        key(KeyCode::F(2), KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    // ctrl+n: the variant step for a new tab
+    route_key(
+        key(KeyCode::Char('n'), KeyModifiers::CONTROL),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(
+        ui.variant_pick,
+        Some(navai::tui::state::VariantPick::NewConversation(
+            "cognition".into()
+        ))
+    );
+    let enter = key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(
+        route_key(enter, &s, &mut ui, &mut editor),
+        Some(Action::PickModel("cognition".into()))
+    );
+    // enter: the switch, the model only (no variant step)
+    route_key(
+        key(KeyCode::F(2), KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(
+        route_key(enter, &s, &mut ui, &mut editor),
+        Some(Action::SwitchModel("cognition".into()))
+    );
+    assert_eq!(ui.variant_pick, None);
+    assert_eq!(ui.overlay, None);
+    // while a question waits, enter says why and switches nothing
+    let mut waiting = done();
+    waiting.activity = Activity::AwaitingUser;
+    let mut ui = UiState::default();
+    route_key(
+        key(KeyCode::F(2), KeyModifiers::NONE),
+        &waiting,
+        &mut ui,
+        &mut editor,
+    );
+    let action = route_key(enter, &waiting, &mut ui, &mut editor);
+    assert!(
+        matches!(&action, Some(Action::ShowNotice(why)) if why.contains("waiting for your answer")),
+        "{action:?}"
+    );
+    assert_eq!(ui.variant_pick, None);
+}
+
+#[test]
+fn the_header_keeps_the_committed_model_when_the_catalog_says_otherwise() {
+    let mut s = done();
+    // committed by model.changed
+    s.selected_model_alias = Some("luna".into());
+    s.selected_model_name = Some("gpt-5.6-luna".into());
+    s.context_window = Some(872_000);
+    s.model_seq = Some(10);
+    s.conversation.context_tokens = Some(1_000);
+    let ev = navai::tui::protocol::ClientEvent::Models {
+        generation: s.generation.clone(),
+        result: Ok(navai::tui::protocol::ModelsBody {
+            models: vec![ModelEntry {
+                alias: "luna".into(),
+                model: "elsewhere/other".into(),
+                context_window: Some(32_000),
+                ..Default::default()
+            }],
+            default: None,
+        }),
+    };
+    navai::tui::reducer::update(&mut s, ev).unwrap();
+    let header = row_text(&cells(&s, &UiState::default(), (140, 20)), 0, 140);
+    assert!(
+        header.contains("luna · gpt-5.6-luna · 1k / 872k"),
+        "{header}"
+    );
 }

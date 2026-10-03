@@ -97,20 +97,10 @@ impl AgentActor {
     /// when both are empty, which is the case for the default `build` agent
     /// on a session without a profile.
     pub fn role_message(&self) -> Option<String> {
-        let agent = self
-            .role
-            .as_ref()
-            .map(|role| role.prompt.trim())
-            .filter(|prompt| !prompt.is_empty());
-        let profile = self
-            .system_prompt
-            .as_deref()
-            .filter(|prompt| !prompt.trim().is_empty());
-        match (agent, profile) {
-            (Some(agent), Some(profile)) => Some(format!("{agent}\n\n{profile}")),
-            (Some(only), None) | (None, Some(only)) => Some(only.to_string()),
-            (None, None) => None,
-        }
+        compose_role_message(
+            self.role.as_ref().map(|role| role.prompt.as_str()),
+            self.system_prompt.as_deref(),
+        )
     }
 
     /// Installs the skills snapshot: with at least one skill, the `skill` tool
@@ -182,3 +172,17 @@ impl AgentActor {
         }
     }
 }
+
+/// Composes the role system message from the agent's prompt and the
+/// profile's instructions (the profile has the last word); `None` when both
+/// are empty.
+pub fn compose_role_message(agent: Option<&str>, profile: Option<&str>) -> Option<String> {
+    let agent = agent.map(str::trim).filter(|prompt| !prompt.is_empty());
+    let profile = profile.filter(|prompt| !prompt.trim().is_empty());
+    match (agent, profile) {
+        (Some(agent), Some(profile)) => Some(format!("{agent}\n\n{profile}")),
+        (Some(only), None) | (None, Some(only)) => Some(only.to_string()),
+        (None, None) => None,
+    }
+}
+

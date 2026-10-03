@@ -739,7 +739,13 @@ impl Service {
         )));
         status.init_variant(selected);
         let limits = limits.with_sources(&actor.rules, &actor.skills);
-        status.install_context(ContextTracker::new(limits, actor.context_breakdown()));
+        // The role is on the actor before the first estimate: a session that
+        // starts as `plan` counts plan's role before any turn runs.
+        actor.role = Some(status.selection.current());
+        status.install_context(
+            ContextTracker::new(limits, actor.context_breakdown()),
+            actor.system_prompt.clone(),
+        );
         let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn_with_status(
             session_id,
             actor,

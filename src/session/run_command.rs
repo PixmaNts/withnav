@@ -212,6 +212,14 @@ impl Service {
                 ),
                 SwitchError::Persist(err) => CommandFailure::Server(ServerError::History(err)),
             })?;
+        // The gauge counts the new role at once, not at the next turn.
+        if let Some(snapshot) = handle.status.set_context_role(&target) {
+            if let Ok(payload) = serde_json::to_value(&snapshot) {
+                let _ = handle
+                    .sequencer
+                    .publish(Candidate::new(EventKind::ContextUpdated, payload));
+            }
+        }
         let payload = serde_json::to_value(SessionAgentChanged {
             agent: target.id.to_string(),
             previous: previous.id.to_string(),

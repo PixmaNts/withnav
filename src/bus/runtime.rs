@@ -59,6 +59,9 @@ pub struct RuntimeStatus {
     /// The session's context gauge: written by the runtime at each boundary,
     /// read on demand by the service.
     context: Mutex<Option<ContextTracker>>,
+    /// The profile's instructions, which the role message carries after the
+    /// agent's prompt; needed to re-estimate the role when the agent changes.
+    profile_prompt: Mutex<Option<String>>,
     /// The primary agent the session runs as, and the agents it may switch
     /// to. A turn reads it at its start.
     pub selection: crate::agent::selection::AgentSelection,
@@ -139,8 +142,33 @@ impl RuntimeStatus {
 
     /// Installs the session's context tracker before the runtime starts.
     /// Without one the runtime publishes no `context.updated`.
-    pub fn install_context(&self, tracker: ContextTracker) {
+    pub fn install_context(&self, tracker: ContextTracker, profile_prompt: Option<String>) {
         *self.lock_context() = Some(tracker);
+        *match self.profile_prompt.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        } = profile_prompt;
+    }
+
+    /// Re-estimates the system category for a session now running as `role`;
+    /// the new snapshot when the estimate changed. Only between turns: the
+    /// other categories stay as the last turn left them.
+    pub fn set_context_role(
+        &self,
+        role: &crate::agent::definitions::AgentDefinition,
+    ) -> Option<ContextSnapshot> {
+        let profile = match self.profile_prompt.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+        .clone();
+        let message =
+            crate::agent::actor::compose_role_message(Some(&role.prompt), profile.as_deref());
+        let mut tracker = self.lock_context();
+        let tracker = tracker.as_mut()?;
+        let mut breakdown = tracker.snapshot().breakdown;
+        breakdown.system = crate::agent::context::system_tokens(message.as_deref());
+        tracker.update(breakdown).cloned()
     }
 
     /// The latest context snapshot, `None` for a session without a tracker.

@@ -527,3 +527,53 @@ async fn navai_run_agent_selects_the_role() {
     let stderr = String::from_utf8_lossy(&bad.stderr);
     assert!(stderr.contains("unknown agent 'wizard'"), "{stderr}");
 }
+
+// Given a session created as plan, with no message sent
+// Then the gauge already counts plan's role
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fresh_plan_session_counts_its_role_before_any_turn() {
+    let env = env();
+    let provider = provider(1).await;
+    let state = state(&env, &provider);
+    let as_build = state.create_session(&env.ws, None, None).await.unwrap();
+    let as_plan = state
+        .create_session_as(&env.ws, None, None, Some("plan"))
+        .await
+        .unwrap();
+    let build = state.context(as_build).await.unwrap().breakdown.system;
+    let plan = state.context(as_plan).await.unwrap().breakdown.system;
+    assert!(plan > build, "plan's role is estimated: {build} vs {plan}");
+}
+
+// Given a session before its first turn
+// When /agent plan then /agent build run
+// Then the gauge grows with plan's role, publishes it live, and shrinks back
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn switching_agents_moves_the_gauge_without_a_turn() {
+    let env = env();
+    let provider = provider(1).await;
+    let state = state(&env, &provider);
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let before = state.context(id).await.unwrap();
+    let sub = state.subscribe(id, None).await.unwrap();
+
+    assert!(state.run_command(id, "agent", "plan").await.unwrap().ok);
+    let as_plan = state.context(id).await.unwrap();
+    assert!(as_plan.breakdown.system > before.breakdown.system);
+    assert!(as_plan.revision > before.revision);
+
+    assert!(state.run_command(id, "agent", "build").await.unwrap().ok);
+    let back = state.context(id).await.unwrap();
+    assert_eq!(back.breakdown.system, before.breakdown.system);
+
+    // `context.updated` is live-only: read it from the subscription.
+    let live = collect_until(sub, |e| {
+        e.kind == "session.agent_changed" && e.payload["agent"] == "build"
+    })
+    .await;
+    assert!(
+        live.iter().any(|e| e.kind == "context.updated"
+            && e.payload["breakdown"]["system"] == as_plan.breakdown.system),
+        "context.updated carries the plan estimate"
+    );
+}

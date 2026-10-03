@@ -69,6 +69,7 @@ globset = "0.4.20"
 htmd = "0.5.5"
 html2text = "0.17.1"
 encoding_rs = "0.8.42"
+serde_norway = "0.9.42"
 
 [dev-dependencies]
 tokio = { version = "1.53", features = ["test-util"] }

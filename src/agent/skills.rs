@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 use crate::agent::instructions::{directories_from_root, RulesRoots};
 
 mod catalog;
-mod frontmatter;
+pub(crate) mod frontmatter;
 mod tool;
 
 pub use catalog::{MAX_DESCRIPTION_CHARS, MAX_TOKENS};

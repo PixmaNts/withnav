@@ -215,16 +215,26 @@ pub fn route_key(
     }
     if key.code == KeyCode::Enter && !alt && !key.modifiers.contains(KeyModifiers::SHIFT) {
         let text = editor.text();
-        if let Some(action) = commands::command_action(text.trim(), ui.mode) {
-            if let Action::OpenOverlay(overlay) = action {
-                ui.overlay = Some(overlay);
-                ui.filter.clear();
-            }
-            return Some(action);
+        if text.trim().is_empty() {
+            return None;
         }
-        return (!text.trim().is_empty()).then(|| Action::SubmitAt {
-            text,
-            revision: editor.revision(),
+        return Some(match commands::route(&text, ui.mode) {
+            commands::Routed::Local(action) => {
+                if let Action::OpenOverlay(overlay) = action {
+                    ui.overlay = Some(overlay);
+                    ui.filter.clear();
+                }
+                action
+            }
+            commands::Routed::Server { name, arguments } => Action::RunCommand {
+                name,
+                arguments,
+                revision: Some(editor.revision()),
+            },
+            commands::Routed::Message(text) => Action::SubmitAt {
+                text,
+                revision: editor.revision(),
+            },
         });
     }
     let changed = if (key.code == KeyCode::Enter

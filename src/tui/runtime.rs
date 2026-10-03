@@ -88,7 +88,11 @@ impl Runtime {
     /// Asks for the model catalog and the session list, and resumes the
     /// session named on the command line, if any.
     pub fn start(&mut self, session: Option<String>) {
-        self.run_effects(vec![Effect::FetchModels, Effect::ListSessions]);
+        self.run_effects(vec![
+            Effect::FetchModels,
+            Effect::ListSessions,
+            Effect::FetchCommands,
+        ]);
         if let Some(id) = session {
             self.dispatch(Action::ResumeSession(id));
         }

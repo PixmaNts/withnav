@@ -17,10 +17,12 @@
 //!   the replayed envelopes carry the current generation and must be applied.
 //! - `Effect::SendAt { revision }` must be echoed in `ClientEvent::Submitted { revision }`.
 mod actions;
+mod command;
 mod envelope;
 mod text;
 
 pub use actions::{handle_action, short_id};
+pub use command::{outcome_text, tokens};
 pub use text::strip_controls;
 
 use super::{
@@ -43,6 +45,8 @@ pub fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::Metadata { generation, .. }
         | ClientEvent::Context { generation, .. }
         | ClientEvent::Submitted { generation, .. }
+        | ClientEvent::Commands { generation, .. }
+        | ClientEvent::CommandRan { generation, .. }
         | ClientEvent::Stopped { generation, .. }
         | ClientEvent::DeliveryUncertain { generation }
         | ClientEvent::ProtocolError { generation, .. }
@@ -123,6 +127,7 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
         e,
         ClientEvent::Models { .. }
             | ClientEvent::Sessions { .. }
+            | ClientEvent::Commands { .. }
             | ClientEvent::SettingsNotSaved { .. }
     );
     if shared {
@@ -205,6 +210,38 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 }
             }
         }
+        ClientEvent::Commands { result, .. } => {
+            if let Ok(body) = result {
+                s.server_commands = body.commands;
+            }
+        }
+        ClientEvent::CommandRan {
+            name,
+            revision,
+            result,
+            ..
+        } => match result {
+            // The outcome itself arrives as `command.result` on the stream.
+            Ok(_) => {
+                if let Some(revision) = revision {
+                    if background {
+                        if s.draft_revision == revision {
+                            s.draft.clear();
+                        }
+                    } else {
+                        effects.push(Effect::ClearEditor { revision });
+                    }
+                }
+            }
+            Err(error) => push_local(
+                s,
+                BlockKind::Command {
+                    name,
+                    ok: false,
+                    text: error,
+                },
+            ),
+        },
         ClientEvent::Sessions { result, .. } => {
             if let Ok(b) = result {
                 s.sessions = b.sessions

@@ -587,3 +587,75 @@ async fn two_tabs_stream_their_own_conversations_at_once() {
         .expect("session list");
     assert!(listed.sessions.iter().any(|s| s.id == second_id));
 }
+
+fn command_blocks(tab: &navai::tui::state::Tab) -> Vec<(String, bool, String)> {
+    tab.conversation
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.kind {
+            BlockKind::Command { name, ok, text } => Some((name.clone(), *ok, text.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+// Given a conversation that answered once
+// When the driver types `/context`, then an unknown `/contxt`, then `//context`
+// Then the first two run on the server and come back as command blocks (the editor cleared once
+//      the server took them), and the third is sent as the message "/context"
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn typed_server_commands_run_and_show_their_outcome() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let provider = spawn_capturing_provider(vec![
+        final_answer("Hi.", usage(10, 2)),
+        final_answer("A literal slash.", usage(12, 2)),
+    ])
+    .await;
+    let env = Env::start(root, &provider.url).await;
+    let mut rt = started(&env).await;
+    assert!(
+        rt.state.server_commands.iter().any(|c| c.name == "context"),
+        "the command list is read at start: {:?}",
+        rt.state.server_commands
+    );
+    pick_model(&mut rt, 0);
+    type_and_send(&mut rt, "hello");
+    until("the first answer", &mut rt, |_, rt| has_final(rt, "Hi.")).await;
+
+    type_and_send(&mut rt, "/context");
+    until("the context outcome", &mut rt, |_, rt| {
+        command_blocks(&rt.state)
+            .iter()
+            .any(|(n, _, _)| n == "context")
+    })
+    .await;
+    let (_, ok, text) = command_blocks(&rt.state).pop().unwrap();
+    assert!(ok, "{text}");
+    assert!(text.contains(" / ") && text.contains('%'), "{text}");
+    until("the editor to clear", &mut rt, |_, rt| {
+        rt.editor.text().is_empty()
+    })
+    .await;
+
+    type_and_send(&mut rt, "/contxt");
+    until("the unknown command's answer", &mut rt, |_, rt| {
+        command_blocks(&rt.state)
+            .iter()
+            .any(|(n, _, _)| n == "contxt")
+    })
+    .await;
+    let (_, ok, text) = command_blocks(&rt.state).pop().unwrap();
+    assert!(!ok);
+    assert!(text.contains("/context"), "names the close one: {text}");
+    let shown = screen(&mut rt);
+    assert!(shown.contains("/contxt · error"), "{shown}");
+
+    type_and_send(&mut rt, "//context");
+    until("the literal message's answer", &mut rt, |_, rt| {
+        has_final(rt, "A literal slash.")
+    })
+    .await;
+    assert!(user_messages(&rt)
+        .iter()
+        .any(|(_, text)| text == "/context"));
+}

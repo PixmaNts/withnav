@@ -1,7 +1,7 @@
 //! UI action → effects.
 use super::{push_local, refresh_model, send_effect, start_conversation};
 use crate::tui::{
-    protocol::{Action, CreateSessionRequest, Effect, Generation, Overlay},
+    protocol::{Action, CommandRequest, CreateSessionRequest, Effect, Generation, Overlay},
     state::{Activity, BlockKind, State, Tab, TabView, UiState, MAX_TABS},
     theme::ThemeId,
 };
@@ -206,6 +206,42 @@ fn resume(s: &mut State, ui: &mut UiState, id: String) -> Vec<Effect> {
     effects
 }
 
+/// Sends a server command to the active conversation. With no conversation yet (or one being
+/// started or resumed) there is nothing to run it in, and the driver is told so.
+fn run_command(
+    s: &mut State,
+    name: String,
+    arguments: String,
+    revision: Option<u64>,
+) -> Vec<Effect> {
+    let live = s
+        .session
+        .as_ref()
+        .filter(|_| s.resuming.is_none() && s.activity != Activity::Stopped)
+        .map(|m| m.session_id.clone());
+    let Some(session_id) = live else {
+        let why = if s.activity == Activity::Stopped {
+            "the conversation is stopped; send a message to resume it, then run the command"
+        } else {
+            "no conversation yet; send a message first, then run the command"
+        };
+        push_local(
+            s,
+            BlockKind::Command {
+                name,
+                ok: false,
+                text: why.into(),
+            },
+        );
+        return vec![];
+    };
+    vec![Effect::RunCommand {
+        session_id,
+        request: CommandRequest { name, arguments },
+        revision,
+    }]
+}
+
 pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> {
     match a {
         Action::Submit(text) => submit(s, text, 0),
@@ -227,6 +263,11 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                 vec![]
             }
         }
+        Action::RunCommand {
+            name,
+            arguments,
+            revision,
+        } => run_command(s, name, arguments, revision),
         Action::SwitchTab(index) => {
             if index < s.tabs.len() && index != s.active {
                 show(s, ui, index)

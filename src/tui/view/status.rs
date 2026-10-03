@@ -20,18 +20,7 @@ pub fn number(n: Option<u64>) -> String {
 
 /// A token count for the gauge: `842`, `42k`, `1M`, `1.5M`.
 pub fn gauge_number(n: u64) -> String {
-    if n >= 1_000_000 {
-        let tenths = (n + 50_000) / 100_000;
-        return if tenths.is_multiple_of(10) {
-            format!("{}M", tenths / 10)
-        } else {
-            format!("{}.{}M", tenths / 10, tenths % 10)
-        };
-    }
-    if n >= 1000 {
-        return format!("{}k", (n + 500) / 1000);
-    }
-    n.to_string()
+    crate::tui::reducer::tokens(n)
 }
 
 /// What the status line shows for the context: used, window, percent.

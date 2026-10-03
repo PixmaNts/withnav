@@ -44,6 +44,12 @@ pub enum BlockKind {
     YieldQuestion(String),
     Error(String),
     Notice(String),
+    /// The outcome of a server command: its name, whether it ran, and what it answered.
+    Command {
+        name: String,
+        ok: bool,
+        text: String,
+    },
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
@@ -156,6 +162,8 @@ pub struct State {
     pub issued: u64,
     pub catalog: Vec<ModelEntry>,
     pub sessions: Vec<SessionListEntry>,
+    /// The commands the server runs; empty until it answered (or for a server without them).
+    pub server_commands: Vec<super::protocol::ServerCommand>,
     pub last_protocol_error: Option<String>,
     pub notice: Option<String>,
     /// Workspace path sent in create requests; filled by the runtime at startup.
@@ -172,6 +180,7 @@ impl Default for State {
             issued: 0,
             catalog: Vec::new(),
             sessions: Vec::new(),
+            server_commands: Vec::new(),
             last_protocol_error: None,
             notice: None,
             workspace: String::new(),

@@ -61,6 +61,55 @@ pub const KEYS: &[(&str, &str)] = &[
     ("ctrl+q", "quit"),
 ];
 
+/// How a typed line is handled: the server's rule (`//text` sends the literal `/text`, `/name args`
+/// is a command, anything else a message), with the client's own commands kept local.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Routed {
+    /// A command this client runs itself.
+    Local(Action),
+    /// A command the server runs in the conversation.
+    Server { name: String, arguments: String },
+    /// A message, sent as this text.
+    Message(String),
+}
+
+/// Routes `line` (as typed, before trimming). Every `/name` that is not one of the client's
+/// commands goes to the server, which answers an unknown name with the close ones.
+pub fn route(line: &str, mode: Mode) -> Routed {
+    let trimmed = line.trim();
+    if let Some(rest) = trimmed.strip_prefix("//") {
+        return Routed::Message(format!("/{rest}"));
+    }
+    let Some(rest) = trimmed.strip_prefix('/') else {
+        return Routed::Message(line.to_string());
+    };
+    let (name, arguments) = match rest.split_once(char::is_whitespace) {
+        Some((name, arguments)) => (name, arguments.trim()),
+        None => (rest, ""),
+    };
+    if name.is_empty() {
+        return Routed::Message(line.to_string());
+    }
+    if let Some(action) = local_action(name, arguments, mode) {
+        return Routed::Local(action);
+    }
+    Routed::Server {
+        name: name.to_string(),
+        arguments: arguments.to_string(),
+    }
+}
+
+/// The client's own meaning of `/name arguments`, if it has one.
+fn local_action(name: &str, arguments: &str, mode: Mode) -> Option<Action> {
+    match (name, arguments.is_empty()) {
+        // `/new <alias>` opens a tab on that model, like picking it in the model list.
+        ("new", false) => Some(Action::PickModel(arguments.to_string())),
+        // With arguments, `/variant` is the server's; alone it opens the list.
+        ("variant", false) => None,
+        _ => command_action(&format!("/{name}"), mode),
+    }
+}
+
 pub fn command_action(name: &str, mode: Mode) -> Option<Action> {
     Some(match name {
         "/new" => Action::NewConversation,

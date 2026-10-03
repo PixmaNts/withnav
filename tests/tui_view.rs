@@ -1074,3 +1074,82 @@ fn a_short_sidebar_scrolls_to_keep_the_active_tab_in_view() {
         &Editor::new(),
     );
 }
+
+#[test]
+fn command_outcomes_render_as_compact_blocks() {
+    let mut s = done();
+    s.conversation.blocks.push(Block {
+        id: "c1".into(),
+        kind: BlockKind::Command {
+            name: "variant".into(),
+            ok: true,
+            text: "variant high; on offer: low, high".into(),
+        },
+    });
+    s.conversation.blocks.push(Block {
+        id: "c2".into(),
+        kind: BlockKind::Command {
+            name: "agent".into(),
+            ok: false,
+            text: "the agent is working: wait for the turn to end".into(),
+        },
+    });
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    let screen = render("command-results", (100, 30), &s, &ui, &Editor::new());
+    assert!(screen.contains("/variant · ok"), "{screen}");
+    assert!(screen.contains("/agent · error"), "{screen}");
+    let t = cells(&s, &ui, (100, 30));
+    let theme = Theme::ayu_dark();
+    let row = (0..30)
+        .find(|y| row_text(&t, *y, 100).contains("/agent · error"))
+        .unwrap();
+    let line = row_text(&t, row, 100);
+    let x = line[..line.find("error").unwrap()].chars().count() as u16;
+    assert_eq!(t.backend().buffer()[(x, row)].fg, theme.red);
+    let row = (0..30)
+        .find(|y| row_text(&t, *y, 100).contains("/variant · ok"))
+        .unwrap();
+    let line = row_text(&t, row, 100);
+    let x = line[..line.find("· ok").unwrap()].chars().count() as u16 + 2;
+    assert_eq!(t.backend().buffer()[(x, row)].fg, theme.green);
+}
+
+#[test]
+fn enter_on_a_server_command_runs_it_and_a_double_slash_sends_text() {
+    let s = state();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    editor.set_text("/context");
+    let action = route_key(
+        key(KeyCode::Enter, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(
+        action,
+        Some(Action::RunCommand {
+            name: "context".into(),
+            arguments: String::new(),
+            revision: Some(editor.revision()),
+        })
+    );
+    assert_eq!(editor.text(), "/context", "kept until the server took it");
+    editor.set_text("//context is a word");
+    let action = route_key(
+        key(KeyCode::Enter, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(
+        action,
+        Some(Action::SubmitAt {
+            text: "/context is a word".into(),
+            revision: editor.revision(),
+        })
+    );
+}

@@ -251,6 +251,25 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 settle_turn_tools(s, &actor, t, outcome);
             }
         }
+        Some(EventKind::CommandResult) => {
+            let v = e.payload;
+            let name = v["name"].as_str().ok_or_else(bad)?.to_string();
+            let ok = v["ok"].as_bool().ok_or_else(bad)?;
+            let text = super::command::outcome_text(
+                &name,
+                ok,
+                v.get("data").filter(|d| !d.is_null()),
+                v["error"].as_str(),
+            );
+            s.conversation.blocks.push(block(
+                e.seq.to_string(),
+                BlockKind::Command {
+                    name,
+                    ok,
+                    text: strip_controls(&text),
+                },
+            ));
+        }
         Some(EventKind::ContextUpdated) => {
             let snapshot = serde_json::from_value(e.payload).map_err(|_| bad())?;
             keep_newer_context(s, snapshot);

@@ -93,6 +93,35 @@ pub struct StopResponse {
     pub accepted: bool,
     pub actor_state: String,
 }
+/// One command the server runs for a session (`GET /v1/commands`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ServerCommand {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub args_hint: String,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommandsBody {
+    pub commands: Vec<ServerCommand>,
+}
+/// `POST /v1/sessions/{id}/commands` request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandRequest {
+    pub name: String,
+    pub arguments: String,
+}
+/// `POST /v1/sessions/{id}/commands` answer; the same outcome also arrives as `command.result`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommandResponse {
+    pub operation_id: String,
+    pub ok: bool,
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientEvent {
     Envelope {
@@ -142,6 +171,18 @@ pub enum ClientEvent {
         revision: u64,
         result: Result<SubmitResponse, String>,
     },
+    /// The server's command list.
+    Commands {
+        generation: Generation,
+        result: Result<CommandsBody, String>,
+    },
+    /// A command request came back; `revision` is the editor revision it was typed at, if typed.
+    CommandRan {
+        generation: Generation,
+        name: String,
+        revision: Option<u64>,
+        result: Result<CommandResponse, String>,
+    },
     Stopped {
         generation: Generation,
         result: Result<StopResponse, String>,
@@ -189,6 +230,13 @@ pub enum Action {
         text: String,
         revision: u64,
     },
+    /// Runs a server command in the active conversation; `revision` is the editor revision when
+    /// it was typed, so the editor is cleared once the server took it.
+    RunCommand {
+        name: String,
+        arguments: String,
+        revision: Option<u64>,
+    },
     /// Shows the tab at this index (0 is the first).
     SwitchTab(usize),
     /// Closes the active tab; its conversation stays on the server.
@@ -208,6 +256,14 @@ pub enum Overlay {
 pub enum Effect {
     FetchModels,
     ListSessions,
+    /// Reads the server's command list.
+    FetchCommands,
+    /// Runs a command in a session; the outcome comes back as `ClientEvent::CommandRan`.
+    RunCommand {
+        session_id: String,
+        request: CommandRequest,
+        revision: Option<u64>,
+    },
     Create(CreateSessionRequest),
     Resume(String),
     FetchMetadata(String),

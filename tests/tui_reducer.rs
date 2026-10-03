@@ -2241,3 +2241,200 @@ fn a_tab_holding_a_message_for_a_pending_resume_cannot_be_closed() {
             if matches!(&request.content[..], [navai::bus::command::ContentBlock::Text { text }] if text == "keep me")
     )));
 }
+
+// ---------------------------------------------------------------- server commands
+
+#[test]
+fn typed_lines_route_like_the_server_with_client_commands_kept_local() {
+    use navai::tui::commands::{route, Routed};
+    let server = |name: &str, arguments: &str| Routed::Server {
+        name: name.into(),
+        arguments: arguments.into(),
+    };
+    let mode = Mode::NextTurn;
+    assert_eq!(route("/context", mode), server("context", ""));
+    assert_eq!(route("  /agent plan ", mode), server("agent", "plan"));
+    assert_eq!(route("/variant high", mode), server("variant", "high"));
+    assert_eq!(
+        route("/compact keep the tests", mode),
+        server("compact", "keep the tests")
+    );
+    assert_eq!(
+        route("/nope", mode),
+        server("nope", ""),
+        "the server names close ones"
+    );
+    assert_eq!(route("//context", mode), Routed::Message("/context".into()));
+    assert_eq!(
+        route("hello /context", mode),
+        Routed::Message("hello /context".into())
+    );
+    assert_eq!(route("/", mode), Routed::Message("/".into()));
+    assert_eq!(
+        route("/sessions", mode),
+        Routed::Local(Action::OpenOverlay(Overlay::Sessions))
+    );
+    assert_eq!(
+        route("/theme", mode),
+        Routed::Local(Action::OpenOverlay(Overlay::Themes))
+    );
+    assert_eq!(
+        route("/help", mode),
+        Routed::Local(Action::OpenOverlay(Overlay::Help))
+    );
+    assert_eq!(route("/quit", mode), Routed::Local(Action::Quit));
+    assert_eq!(route("/new", mode), Routed::Local(Action::NewConversation));
+    assert_eq!(
+        route("/new fast", mode),
+        Routed::Local(Action::PickModel("fast".into()))
+    );
+}
+
+#[test]
+fn a_command_runs_in_the_active_conversation_and_clears_the_editor_once_taken() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    let action = Action::RunCommand {
+        name: "context".into(),
+        arguments: String::new(),
+        revision: Some(4),
+    };
+    let fx = handle_action(&mut s, &mut ui, action);
+    assert_eq!(
+        fx,
+        vec![Effect::RunCommand {
+            session_id: "S1".into(),
+            request: CommandRequest {
+                name: "context".into(),
+                arguments: String::new(),
+            },
+            revision: Some(4),
+        }]
+    );
+    let taken = ClientEvent::CommandRan {
+        generation: s.generation.clone(),
+        name: "context".into(),
+        revision: Some(4),
+        result: Ok(CommandResponse {
+            operation_id: "op".into(),
+            ok: true,
+            data: None,
+            error: None,
+        }),
+    };
+    assert_eq!(
+        update(&mut s, taken).unwrap(),
+        vec![Effect::ClearEditor { revision: 4 }]
+    );
+    // a request that never reached the server is shown and keeps the editor
+    let lost = ClientEvent::CommandRan {
+        generation: s.generation.clone(),
+        name: "context".into(),
+        revision: Some(5),
+        result: Err("HTTP 503".into()),
+    };
+    assert!(update(&mut s, lost).unwrap().is_empty());
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Command { name, ok: false, text } if name == "context" && text == "HTTP 503"
+    ));
+}
+
+#[test]
+fn a_command_without_a_live_conversation_is_answered_locally() {
+    let (mut s, mut ui) = (st(), ui());
+    let action = || Action::RunCommand {
+        name: "context".into(),
+        arguments: String::new(),
+        revision: None,
+    };
+    assert!(handle_action(&mut s, &mut ui, action()).is_empty());
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Command { ok: false, text, .. } if text.contains("send a message first")
+    ));
+    created_now(&mut s, "S1").unwrap();
+    s.activity = Activity::Stopped;
+    assert!(handle_action(&mut s, &mut ui, action()).is_empty());
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Command { ok: false, text, .. } if text.contains("stopped")
+    ));
+}
+
+#[test]
+fn command_results_show_as_compact_blocks_live_and_on_replay() {
+    let mut script = Script::new();
+    script.start();
+    script.raw(
+        "command.result",
+        json!({"operation_id": Ulid(7).to_string(), "name": "variant", "ok": true,
+               "data": {"variant": "high", "offered": ["low", "high"], "applies": "next_turn"}}),
+    );
+    script.raw(
+        "command.result",
+        json!({"operation_id": Ulid(8).to_string(), "name": "agent", "ok": false,
+               "error": "the agent is working: wait for the turn to end or stop it, then switch"}),
+    );
+    script.raw(
+        "command.result",
+        json!({"operation_id": Ulid(9).to_string(), "name": "context", "ok": true,
+               "data": {"estimate_total": 42_000, "window": 1_000_000, "percent": 4,
+                        "input_budget": 941_808,
+                        "breakdown": {"system": 3000, "rules": 0, "skills_catalog": 0,
+                                      "tools": 9000, "messages": 30_000}}}),
+    );
+    let mut s = st();
+    feed(&mut s, &script.out);
+    let shown: Vec<(String, bool, String)> = s
+        .conversation
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.kind {
+            BlockKind::Command { name, ok, text } => Some((name.clone(), *ok, text.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown.len(), 3, "{shown:?}");
+    assert_eq!(
+        shown[0],
+        (
+            "variant".into(),
+            true,
+            "variant high, applies next turn; on offer: low, high".into()
+        )
+    );
+    assert!(!shown[1].1);
+    assert!(shown[1].2.starts_with("the agent is working"));
+    assert!(
+        shown[2].2.starts_with("~42k / 1M · 4% · input budget 942k"),
+        "{}",
+        shown[2].2
+    );
+    assert!(shown[2].2.contains("messages"));
+    // replaying the same events gives the same blocks
+    let mut again = st();
+    feed(&mut again, &script.out);
+    assert_eq!(again.conversation.blocks, s.conversation.blocks);
+}
+
+#[test]
+fn the_server_command_list_is_kept() {
+    let mut s = st();
+    let ev = ClientEvent::Commands {
+        generation: Generation(12345),
+        result: Ok(CommandsBody {
+            commands: vec![ServerCommand {
+                name: "context".into(),
+                description: "Show how the context window is used".into(),
+                args_hint: String::new(),
+            }],
+        }),
+    };
+    update(&mut s, ev).unwrap();
+    assert_eq!(
+        s.server_commands.len(),
+        1,
+        "shared: kept whatever its generation"
+    );
+}

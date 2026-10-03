@@ -133,6 +133,21 @@ impl Client {
         })
     }
 
+    /// The commands the server runs for a session.
+    pub async fn commands(&self) -> Result<CommandsBody, String> {
+        self.json(self.get("/v1/commands")).await
+    }
+
+    /// Runs a session command. A command that could not run is still `Ok`, with `ok: false`.
+    pub async fn run_command(
+        &self,
+        id: &str,
+        request: CommandRequest,
+    ) -> Result<CommandResponse, String> {
+        let path = format!("/v1/sessions/{}/commands", encode_segment(id));
+        self.json(self.post(&path).json(&request)).await
+    }
+
     pub async fn stop(&self, id: &str) -> Result<StopResponse, String> {
         let request = self.post(&format!("/v1/sessions/{}/stop", encode_segment(id)));
         self.json(request).await

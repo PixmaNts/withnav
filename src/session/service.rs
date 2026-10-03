@@ -337,7 +337,6 @@ impl Service {
         let parent_alias = parent_handle.selected().alias;
         let alias = definition.model.as_deref().unwrap_or(&parent_alias);
         let mut policy = BTreeMap::new();
-        let parent_access = parent_role.access;
         policy.insert("read".into(), true);
         for tool in ["grep", "glob", "fetch", "skill"] {
             policy.insert(tool.into(), true);
@@ -346,15 +345,7 @@ impl Service {
         for tool in [
             "read", "write", "edit", "bash", "grep", "glob", "fetch", "skill", "ask", "task",
         ] {
-            let parent_allowed = (parent_access
-                != crate::agent::definitions::AgentAccess::ReadOnly
-                && (parent_role.id.as_str() != crate::agent::definitions::PLAN
-                    || !matches!(tool, "write" | "edit" | "bash")))
-                || !matches!(tool, "write" | "edit" | "bash" | "ask" | "task");
-            let child_allowed = definition.tools.get(tool).copied().unwrap_or(true)
-                && definition.access != crate::agent::definitions::AgentAccess::ReadOnly
-                || !matches!(tool, "write" | "edit" | "bash" | "ask" | "task");
-            let enabled = parent_allowed && child_allowed && tool != "ask" && tool != "task";
+            let enabled = child_tool_allowed(tool, &definition, &parent_role);
             policy.insert(tool.to_string(), enabled);
             allowed.insert(tool.to_string(), enabled);
         }
@@ -1311,6 +1302,69 @@ impl Service {
             );
         }
         Ok(session_id)
+    }
+}
+
+fn child_tool_allowed(tool: &str, child: &AgentDefinition, parent: &AgentDefinition) -> bool {
+    let declared = child.tools.get(tool).copied().unwrap_or(true);
+    let write_capability = matches!(tool, "write" | "edit" | "bash");
+    let parent_ceiling = !write_capability
+        || (parent.access != crate::agent::definitions::AgentAccess::ReadOnly
+            && parent.id.as_str() != crate::agent::definitions::PLAN);
+    let child_access =
+        !write_capability || child.access != crate::agent::definitions::AgentAccess::ReadOnly;
+    declared && parent_ceiling && child_access && !matches!(tool, "ask" | "task")
+}
+
+#[cfg(test)]
+mod child_policy_tests {
+    use super::*;
+    use crate::agent::definitions::{AgentAccess, AgentId, AgentMode, AgentSource};
+
+    fn definition(access: AgentAccess, tools: &[(&str, bool)]) -> AgentDefinition {
+        AgentDefinition {
+            id: AgentId::parse("agent").unwrap(),
+            description: String::new(),
+            mode: AgentMode::All,
+            prompt: String::new(),
+            model: None,
+            tools: tools
+                .iter()
+                .map(|(name, allowed)| ((*name).to_string(), *allowed))
+                .collect(),
+            access,
+            source: AgentSource::Builtin,
+            extra: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn child_tool_policy_is_intersected_with_definition_and_parent_ceiling() {
+        let child = definition(
+            AgentAccess::Full,
+            &[("read", false), ("grep", false), ("write", true)],
+        );
+        let build = definition(AgentAccess::Full, &[]);
+        let plan = AgentDefinition {
+            id: AgentId::parse("plan").unwrap(),
+            ..build.clone()
+        };
+        let readonly_parent = definition(AgentAccess::ReadOnly, &[]);
+        let readonly_child = definition(AgentAccess::ReadOnly, &[]);
+        for (tool, child, parent, expected) in [
+            ("read", &child, &build, false),
+            ("grep", &child, &build, false),
+            ("glob", &child, &build, true),
+            ("write", &child, &build, true),
+            ("write", &child, &readonly_parent, false),
+            ("bash", &child, &plan, false),
+            ("edit", &readonly_child, &build, false),
+            ("fetch", &readonly_child, &build, true),
+            ("ask", &build, &build, false),
+            ("task", &build, &build, false),
+        ] {
+            assert_eq!(child_tool_allowed(tool, child, parent), expected, "{tool}");
+        }
     }
 }
 

@@ -44,6 +44,8 @@ pub enum BlockKind {
     YieldQuestion(String),
     Error(String),
     Notice(String),
+    /// A gated tool call waiting for the driver's decision, then how it ended.
+    Permission(PermissionPrompt),
     /// The outcome of a server command: its name, whether it ran, and what it answered.
     Command {
         name: String,
@@ -51,6 +53,32 @@ pub enum BlockKind {
         text: String,
     },
 }
+/// What a permission request asks and, once it ended, how.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PermissionPrompt {
+    pub request_id: String,
+    pub tool_call_id: String,
+    pub tool: String,
+    /// The call's arguments as JSON text, cut by the server to 4 KiB.
+    pub arguments: String,
+    /// `folder` or `origin`.
+    pub scope_kind: String,
+    /// The folder path or the `scheme://host[:port]` origin.
+    pub scope: String,
+    pub agent: String,
+    pub reason: String,
+    /// `None` while open; then `allow_once`, `allow_folder`, `deny`, `cancelled` or `expired`.
+    pub resolution: Option<String>,
+    /// What a denial told the model.
+    pub message: Option<String>,
+}
+
+impl PermissionPrompt {
+    pub fn is_open(&self) -> bool {
+        self.resolution.is_none()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
     pub id: String,
@@ -83,6 +111,8 @@ pub struct Conversation {
     pub counted_steps: std::collections::HashSet<(String, String, String)>,
     pub pending_tools: HashMap<String, String>,
     pub pending_tool_fragments: HashMap<String, String>,
+    /// Block ids of the permission requests still open, oldest first.
+    pub open_permissions: Vec<String>,
     /// Key of the last `llm.response` seen (the turn-end usage fallback).
     pub last_response_step: Option<(String, String, String)>,
 }
@@ -156,6 +186,15 @@ pub const DEFAULT_AGENT: &str = "build";
 pub const PLAN_AGENT: &str = "plan";
 
 impl Tab {
+    /// The oldest permission request still open, if any.
+    pub fn open_permission(&self) -> Option<&PermissionPrompt> {
+        let id = self.conversation.open_permissions.first()?;
+        self.conversation.blocks.iter().find_map(|b| match &b.kind {
+            BlockKind::Permission(p) if &b.id == id => Some(p),
+            _ => None,
+        })
+    }
+
     /// The primary agent's name for display.
     pub fn agent_name(&self) -> &str {
         self.agent.as_deref().unwrap_or(DEFAULT_AGENT)
@@ -285,6 +324,8 @@ pub struct UiState {
     pub theme: crate::tui::theme::ThemeId,
     /// The theme in effect when the theme picker opened; `esc` goes back to it.
     pub theme_on_open: Option<crate::tui::theme::ThemeId>,
+    /// The message being typed after `n` on a permission prompt; `None` when not denying.
+    pub deny_message: Option<String>,
     /// The command palette was opened by typing `/` in the editor: the editor holds the line and
     /// the filter follows it.
     pub palette_typed: bool,

@@ -1,5 +1,6 @@
 //! Draws the terminal UI without mutating the conversation projection.
 mod markdown;
+mod permission;
 mod pickers;
 pub mod sidebar;
 mod status;

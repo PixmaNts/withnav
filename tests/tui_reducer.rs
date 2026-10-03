@@ -2944,3 +2944,145 @@ fn picking_a_model_while_a_conversation_is_being_created_opens_another_tab() {
     assert_eq!((s.tabs.len(), s.active), (2, 1));
     assert_eq!(s.tabs[0].resuming.as_deref(), Some("S9"));
 }
+
+// ---------------------------------------------------------------- permission requests
+
+/// A turn whose `write` call waits for a decision: llm.response with the call, then
+/// permission.requested and the yielded turn end, built from the server's own types.
+fn permission_script(request: u128) -> Script {
+    let mut s = Script::new();
+    s.start().user("write a.txt").turn_start(1);
+    s.response(
+        1,
+        1,
+        "",
+        "",
+        vec![call(
+            "w1",
+            "write",
+            json!({"path": "/ws/a.txt", "content": "one\ntwo"}),
+        )],
+        Some(usage(10, 2)),
+    );
+    s.push(
+        EventKind::PermissionRequested,
+        &PermissionRequested {
+            request_id: Ulid(request),
+            tool_call_id: "w1".into(),
+            tool: "write".into(),
+            arguments: json!({"path": "/ws/a.txt", "content": "one\ntwo"}).to_string(),
+            scope: navai::agent::permissions::Scope::Folder("/ws".into()),
+            agent: "build".into(),
+            reason: "write changes a file".into(),
+        },
+    );
+    s.turn_end(1, TurnEndOutcome::Yielded, None);
+    s
+}
+
+fn resolved(s: &mut Script, request: u128, resolution: PermissionResolution) {
+    s.push(
+        EventKind::PermissionResolved,
+        &PermissionResolved {
+            request_id: Ulid(request),
+            tool_call_id: "w1".into(),
+            resolution,
+        },
+    );
+}
+
+#[test]
+fn a_permission_request_is_open_until_resolved_live_and_on_replay() {
+    let script = permission_script(77);
+    let mut s = st();
+    feed(&mut s, &script.out);
+    let open = s.open_permission().expect("an open request");
+    assert_eq!(open.request_id, Ulid(77).to_string());
+    assert_eq!(
+        (
+            open.tool.as_str(),
+            open.scope_kind.as_str(),
+            open.scope.as_str()
+        ),
+        ("write", "folder", "/ws")
+    );
+    assert_eq!(s.activity, Activity::AwaitingUser);
+    assert_eq!(
+        tool(&s, "w1").status,
+        None,
+        "the held call is not settled by the yield"
+    );
+    // replay from the start gives the same open request
+    let mut again = st();
+    feed(&mut again, &script.out);
+    assert_eq!(again.conversation.blocks, s.conversation.blocks);
+    assert_eq!(again.open_permission(), s.open_permission());
+    // the same event twice adds nothing
+    let mut twice = st();
+    let mut dup = script.out.clone();
+    let mut copy = dup[dup.len() - 2].clone();
+    copy.seq = 999;
+    dup.push(copy);
+    feed(&mut twice, &dup);
+    assert_eq!(twice.conversation.open_permissions.len(), 1);
+
+    // resolved: no longer open, and the block says how
+    let mut script = permission_script(77);
+    resolved(&mut script, 77, PermissionResolution::AllowOnce);
+    let mut s = st();
+    feed(&mut s, &script.out);
+    assert!(s.open_permission().is_none());
+    assert!(s.conversation.blocks.iter().any(|b| matches!(
+        &b.kind,
+        BlockKind::Permission(p) if p.resolution.as_deref() == Some("allow_once")
+    )));
+}
+
+#[test]
+fn a_denial_or_a_cancel_settles_the_held_call() {
+    let mut script = permission_script(5);
+    resolved(
+        &mut script,
+        5,
+        PermissionResolution::Deny {
+            message: "not that file".into(),
+        },
+    );
+    let mut s = st();
+    feed(&mut s, &script.out);
+    assert_eq!(tool(&s, "w1").status, Some(ToolStatus::Denied));
+    assert!(s.conversation.blocks.iter().any(|b| matches!(
+        &b.kind,
+        BlockKind::Permission(p) if p.resolution.as_deref() == Some("deny")
+            && p.message.as_deref() == Some("not that file")
+    )));
+    let mut script = permission_script(6);
+    resolved(&mut script, 6, PermissionResolution::Cancelled);
+    let mut s = st();
+    feed(&mut s, &script.out);
+    assert_eq!(tool(&s, "w1").status, Some(ToolStatus::Interrupted));
+    assert!(s.open_permission().is_none());
+}
+
+#[test]
+fn a_background_tab_with_an_open_request_waits_and_is_unread() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    let first = s.generation.clone();
+    handle_action(&mut s, &mut ui, Action::NewConversation);
+    for e in permission_script(9).out {
+        update(
+            &mut s,
+            ClientEvent::Envelope {
+                generation: first.clone(),
+                envelope: e,
+            },
+        )
+        .unwrap();
+    }
+    let background = &s.tabs[0];
+    assert!(background.open_permission().is_some());
+    assert!(background.unread);
+    assert_eq!(navai::tui::view::sidebar::tab_state(background), "waiting");
+    assert!(s.open_permission().is_none(), "the tab on screen has none");
+}

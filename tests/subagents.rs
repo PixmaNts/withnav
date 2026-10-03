@@ -193,6 +193,49 @@ async fn capacity_error_has_clear_machine_and_model_message() {
 }
 
 #[tokio::test]
+async fn child_slot_is_released_after_terminal_result() {
+    let response = http_sse(&sse_body(&[&text_chunk("completed")]));
+    let provider = common::sse::spawn_capturing_provider(vec![response]).await;
+    let fx = fixture_at(&provider.url);
+    install_agents(&fx.root, &fx.ws);
+    std::fs::write(
+        fx.root.join("cfg/config.json"),
+        json!({"subagents":{"max_concurrent":1}}).to_string(),
+    )
+    .unwrap();
+    let parent = fx
+        .state
+        .create_session(&fx.ws, Some("default"), None)
+        .await
+        .unwrap();
+    let child = fx
+        .state
+        .create_child_session(parent, "explore", "finish")
+        .await
+        .unwrap();
+    for _ in 0..100 {
+        if fx
+            .state
+            .child_metadata(child)
+            .await
+            .unwrap()
+            .is_some_and(|link| link.status == "done" || link.status == "failed")
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let link = fx.state.child_metadata(child).await.unwrap().unwrap();
+    assert!(matches!(link.status.as_str(), "done" | "failed"));
+    let next = fx
+        .state
+        .create_child_session(parent, "explore", "second task")
+        .await
+        .unwrap();
+    fx.state.close_session(next).await.unwrap();
+}
+
+#[tokio::test]
 async fn child_stop_http_is_allowed_but_chat_command_and_resume_are_forbidden() {
     let fx = fixture();
     install_agents(&fx.root, &fx.ws);

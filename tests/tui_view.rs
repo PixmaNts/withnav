@@ -241,12 +241,12 @@ fn unicode_paste_paths_and_unclosed_fence() {
         message("u", "user:http", "你好 e\u{301} 👩‍💻 café"),
         step("```rust\nfn main() { println!(\"hi\"); }", ""),
     ];
-    let ui = UiState {
+    let mut ui = UiState {
         follow_bottom: true,
         ..UiState::default()
     };
     let mut editor = Editor::new();
-    route_paste("line one\nline two".into(), &ui, &mut editor);
+    route_paste("line one\nline two".into(), &s, &mut ui, &mut editor);
     assert_eq!(editor.text(), "line one\nline two");
     render("unicode-paste-fence", (60, 20), &s, &ui, &editor);
     render("tiny", (20, 6), &s, &ui, &editor);
@@ -1698,4 +1698,47 @@ fn a_typed_local_command_with_an_argument_is_refused_with_a_notice() {
     let actions = keys("/model fast⏎", &s, &mut ui, &mut editor);
     assert_eq!(actions.last(), Some(&Action::PickModel("fast".into())));
     assert_eq!(editor.text(), "", "a client command clears its line");
+}
+
+#[test]
+fn a_paste_after_a_typed_slash_edits_the_line_the_palette_follows() {
+    let s = with_server_commands();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    keys("/", &s, &mut ui, &mut editor);
+    assert_eq!(
+        route_paste("context".into(), &s, &mut ui, &mut editor),
+        None
+    );
+    assert_eq!(editor.text(), "/context");
+    assert_eq!(
+        (ui.overlay, ui.filter.as_str()),
+        (Some(Overlay::Commands), "context")
+    );
+    let actions = keys("⏎", &s, &mut ui, &mut editor);
+    assert_eq!(
+        actions,
+        [Action::RunCommand {
+            name: "context".into(),
+            arguments: String::new(),
+            revision: Some(editor.revision()),
+        }]
+    );
+    // a pasted path is not a command name: the list goes away, the whole line stays
+    let (mut ui, mut editor) = (UiState::default(), Editor::new());
+    keys("/", &s, &mut ui, &mut editor);
+    let action = route_paste("etc/hosts is wrong".into(), &s, &mut ui, &mut editor);
+    assert_eq!(action, Some(Action::CloseOverlay));
+    assert_eq!(ui.overlay, None);
+    assert_eq!(editor.text(), "/etc/hosts is wrong");
+    // another overlay still keeps pastes out
+    let (mut ui, mut editor) = (UiState::default(), Editor::new());
+    route_key(
+        key(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    route_paste("context".into(), &s, &mut ui, &mut editor);
+    assert_eq!(editor.text(), "");
 }

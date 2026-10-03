@@ -171,7 +171,10 @@ impl Runtime {
             }
             Event::Paste(text) => {
                 self.dirty = true;
-                route_paste(text, &self.ui, &mut self.editor);
+                if let Some(action) = route_paste(text, &self.state, &mut self.ui, &mut self.editor)
+                {
+                    self.dispatch(action);
+                }
             }
             Event::Resize(..) => {
                 self.dirty = true;

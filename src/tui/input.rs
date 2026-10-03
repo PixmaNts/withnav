@@ -374,6 +374,13 @@ fn typed_palette_key(
     if editor.area_mut().input_without_shortcuts(key) {
         editor.bump();
     }
+    follow_typed_line(state, ui, editor)
+}
+
+/// After an edit of the line the palette follows: narrows the palette to the name typed so far,
+/// or puts it away when the line is no longer a command name being typed (a space or an argument
+/// after it, a name no row starts with, `//`, an empty line), leaving the line for enter.
+fn follow_typed_line(state: &State, ui: &mut UiState, editor: &Editor) -> Option<Action> {
     let text = editor.text();
     let name = text.strip_prefix('/').unwrap_or_default();
     let still_a_name = text.starts_with('/')
@@ -444,10 +451,24 @@ fn overlay_names(overlay: Overlay, state: &State, ui: &UiState) -> Vec<String> {
     }
 }
 
-/// Inserts pasted text into the editor (newlines kept), unless an overlay
-/// has the focus.
-pub fn route_paste(text: String, ui: &UiState, editor: &mut Editor) {
-    if ui.overlay.is_none() && ui.focus == Focus::Editor && editor.area_mut().insert_str(text) {
+/// Inserts pasted text into the editor (newlines kept), unless an overlay other than the typed
+/// slash palette has the focus.
+pub fn route_paste(
+    text: String,
+    state: &State,
+    ui: &mut UiState,
+    editor: &mut Editor,
+) -> Option<Action> {
+    // The palette opened by typing `/` follows the line: a paste edits it like typed keys.
+    let typed_palette = ui.overlay == Some(Overlay::Commands) && ui.palette_typed;
+    if (ui.overlay.is_some() && !typed_palette) || ui.focus != Focus::Editor {
+        return None;
+    }
+    if editor.area_mut().insert_str(text) {
         editor.bump();
     }
+    if typed_palette {
+        return follow_typed_line(state, ui, editor);
+    }
+    None
 }

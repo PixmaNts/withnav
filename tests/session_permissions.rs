@@ -14,7 +14,10 @@ use navai::server::{app, AppState};
 
 mod common;
 use common::server::{request_json, TestServerConfig};
-use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_chunk, CapturingProvider};
+use common::sse::{
+    http_sse, spawn_capturing_provider, spawn_streaming_provider, sse_body, text_chunk,
+    tool_call_chunk, CapturingProvider,
+};
 
 struct Env {
     _tmp: tempfile::TempDir,
@@ -522,4 +525,51 @@ async fn navai_run_stops_on_a_permission_request_unless_yes() {
     .unwrap();
     assert_eq!(approved.status.code(), Some(0), "{approved:?}");
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "from w2");
+}
+
+// Given a decision already taken in while the resumed turn stalls
+// When a second decision arrives for the same request
+// Then it is refused at once, not after the turn
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_answer_is_refused_at_once_while_the_resumed_turn_runs() {
+    let env = env();
+    let target = env.ws.join("a.txt");
+    let mut provider = spawn_streaming_provider().await;
+    let state = TestServerConfig::mock(&env.root, &provider.url)
+        .rules_home(&env.root.join("home"))
+        .state();
+    let router = app(state.clone());
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+
+    say(&state, id, "write it").await;
+    let (_, first) = provider.requests.recv().await.expect("first request");
+    first
+        .send(tool_call_chunk(
+            "w1",
+            "write",
+            &json!({"path": target, "content": "x"}),
+        ))
+        .unwrap();
+    drop(first);
+    let requested = wait_events(&state, id, "permission.requested", 1).await;
+    let request = request_id(&requested[0]);
+
+    let (status, body) = answer(&router, id, &request, json!({"decision": "allow_once"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The continuation asks the model and stalls there.
+    let (_, stalled) = provider.requests.recv().await.expect("continuation");
+
+    let second = tokio::time::timeout(
+        Duration::from_secs(2),
+        answer(&router, id, &request, json!({"decision": "deny"})),
+    )
+    .await
+    .expect("the duplicate must not wait for the resumed turn");
+    assert_eq!(second.0, StatusCode::CONFLICT, "{}", second.1);
+    assert_eq!(second.1["reason"], "permission_stale");
+
+    stalled.send(text_chunk("done")).unwrap();
+    drop(stalled);
+    wait_events(&state, id, "task.done", 1).await;
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
 }

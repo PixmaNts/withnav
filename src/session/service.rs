@@ -313,21 +313,30 @@ impl Service {
         decision: crate::agent::permissions::PermissionDecision,
     ) -> Result<(), ServerError> {
         let handle = self.routable_handle(session_id).await?;
-        if handle.status.pending_permission() != Some(request_id) {
+        // Claimed at admission: a second answer for the same request is
+        // refused at once, not after the resumed turn.
+        if !handle.status.claim_permission(request_id) {
             return Err(ServerError::PermissionStale);
         }
         let (reply, accepted) = tokio::sync::oneshot::channel();
-        handle
+        if handle
             .permissions
             .try_send(crate::bus::inbox::PermissionAnswer {
                 request_id,
                 decision,
                 reply,
             })
-            .map_err(|_| ServerError::PermissionStale)?;
+            .is_err()
+        {
+            handle.status.release_permission(request_id);
+            return Err(ServerError::PermissionStale);
+        }
         match accepted.await {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(_)) => Err(ServerError::PermissionStale),
+            Ok(Err(_)) => {
+                handle.status.release_permission(request_id);
+                Err(ServerError::PermissionStale)
+            }
             // The runtime ended before it read the decision.
             Err(_) => Err(ServerError::SessionStopping),
         }

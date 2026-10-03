@@ -52,6 +52,14 @@ struct VariantSlot {
     running: bool,
 }
 
+/// The permission request the actor waits on, and whether a decision for it
+/// was already taken in.
+#[derive(Debug, Default)]
+struct PermissionSlot {
+    id: Option<Ulid>,
+    claimed: bool,
+}
+
 /// What the runtime shares with the session service about its actor, so the
 /// service can decide whether a session command may run without reaching
 /// into the actor.
@@ -66,7 +74,7 @@ pub struct RuntimeStatus {
     profile_prompt: Mutex<Option<String>>,
     /// The id of the permission request the actor waits on, if any, so the
     /// service can refuse a stale decision without waiting for the runtime.
-    pending_permission: Mutex<Option<Ulid>>,
+    pending_permission: Mutex<PermissionSlot>,
     /// The primary agent the session runs as, and the agents it may switch
     /// to. A turn reads it at its start.
     pub selection: crate::agent::selection::AgentSelection,
@@ -88,16 +96,38 @@ impl RuntimeStatus {
 
     /// The id of the permission request waiting for a decision.
     pub fn pending_permission(&self) -> Option<Ulid> {
-        match self.pending_permission.lock() {
-            Ok(guard) => *guard,
-            Err(poisoned) => *poisoned.into_inner(),
+        self.permission_slot().id
+    }
+
+    /// Takes the right to answer the request `id`: true for the first caller
+    /// while that request waits, false for any other, whether the request is
+    /// gone or another answer already holds it. Check and claim happen under
+    /// one lock, so two concurrent answers cannot both win.
+    pub fn claim_permission(&self, id: Ulid) -> bool {
+        let mut slot = self.permission_slot();
+        if slot.id == Some(id) && !slot.claimed {
+            slot.claimed = true;
+            return true;
+        }
+        false
+    }
+
+    /// Gives a claim back, for an answer the runtime did not take.
+    pub fn release_permission(&self, id: Ulid) {
+        let mut slot = self.permission_slot();
+        if slot.id == Some(id) {
+            slot.claimed = false;
         }
     }
 
     fn set_pending_permission(&self, id: Option<Ulid>) {
+        *self.permission_slot() = PermissionSlot { id, claimed: false };
+    }
+
+    fn permission_slot(&self) -> std::sync::MutexGuard<'_, PermissionSlot> {
         match self.pending_permission.lock() {
-            Ok(mut guard) => *guard = id,
-            Err(poisoned) => *poisoned.into_inner() = id,
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
         }
     }
 

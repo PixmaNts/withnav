@@ -167,6 +167,22 @@ impl Executor {
             // Legacy variant (never emitted by the reducer): no editor revision to echo.
             Effect::Send(request) => self.send(request, 0, ctx),
             Effect::SendAt { request, revision } => self.send(request, revision, ctx),
+            Effect::AnswerPermission {
+                session_id,
+                request_id,
+                answer,
+            } => {
+                let client = self.client.clone();
+                self.spawn_event(async move {
+                    ClientEvent::PermissionAnswered {
+                        generation,
+                        result: client
+                            .answer_permission(&session_id, &request_id, answer)
+                            .await,
+                        request_id,
+                    }
+                });
+            }
             Effect::FetchCommands => {
                 let client = self.client.clone();
                 self.spawn_event(async move {

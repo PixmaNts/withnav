@@ -10,6 +10,7 @@ use navai::{
     },
 };
 use ratatui::{backend::TestBackend, Terminal};
+use serde_json::json;
 
 fn message(id: &str, source: &str, text: &str) -> Block {
     Block {
@@ -1741,4 +1742,555 @@ fn a_paste_after_a_typed_slash_edits_the_line_the_palette_follows() {
     );
     route_paste("context".into(), &s, &mut ui, &mut editor);
     assert_eq!(editor.text(), "");
+}
+
+// ---------------------------------------------------------------- permission prompt
+
+fn prompt(tool: &str, arguments: serde_json::Value, scope: (&str, &str)) -> Block {
+    Block {
+        id: "permission:R1".into(),
+        kind: BlockKind::Permission(navai::tui::state::PermissionPrompt {
+            request_id: "R1".into(),
+            tool_call_id: "c1".into(),
+            tool: tool.into(),
+            arguments: arguments.to_string(),
+            scope_kind: scope.0.into(),
+            scope: scope.1.into(),
+            agent: "build".into(),
+            reason: "it changes files".into(),
+            resolution: None,
+            message: None,
+            stale: false,
+        }),
+    }
+}
+
+/// `done()` with an open request for `block` at the end.
+fn asking(block: Block) -> State {
+    let mut s = done();
+    s.activity = Activity::AwaitingUser;
+    s.conversation.open_permissions = vec![block.id.clone()];
+    s.conversation.blocks.push(block);
+    s
+}
+
+fn screen_text(s: &State, ui: &UiState, size: (u16, u16)) -> String {
+    let t = cells(s, ui, size);
+    (0..size.1)
+        .map(|y| row_text(&t, y, size.0))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn a_write_prompt_shows_the_path_the_first_lines_and_the_keys() {
+    let content = (1..=9)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let s = asking(prompt(
+        "write",
+        json!({"path": "/home/pixma/dev/project/src/a.rs", "content": content}),
+        ("folder", "/home/pixma/dev/project/src"),
+    ));
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    let shown = render("permission-write", (100, 36), &s, &ui, &Editor::new());
+    for want in [
+        "PERMISSION · build wants to run write in /home/pixma/dev/project/src",
+        "/home/pixma/dev/project/src/a.rs",
+        "+ line 1",
+        "+ line 6",
+        "… 3 more lines",
+        "y allow once   a always for this folder   n deny",
+    ] {
+        assert!(shown.contains(want), "{want}: {shown}");
+    }
+    assert!(!shown.contains("+ line 7"), "{shown}");
+    // the open prompt has the accent rule
+    let t = cells(&s, &ui, (100, 36));
+    let theme = Theme::ayu_dark();
+    let row = (0..36)
+        .find(|y| row_text(&t, *y, 100).contains("PERMISSION"))
+        .unwrap();
+    assert_eq!(t.backend().buffer()[(23, row)].symbol(), "│");
+    assert_eq!(t.backend().buffer()[(23, row)].fg, theme.accent);
+    let x = row_text(&t, row, 100).find("PERMISSION").unwrap();
+    let x = row_text(&t, row, 100)[..x].chars().count() as u16;
+    assert_eq!(t.backend().buffer()[(x, row)].fg, theme.accent_text);
+}
+
+#[test]
+fn bash_edit_and_fetch_prompts_show_what_they_would_do() {
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    let s = asking(prompt(
+        "bash",
+        json!({"command": "cargo test -p navai"}),
+        ("folder", "/ws"),
+    ));
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(shown.contains("wants to run bash in /ws"), "{shown}");
+    assert!(shown.contains("$ cargo test -p navai"), "{shown}");
+    let s = asking(prompt(
+        "edit",
+        json!({"path": "/ws/a.rs", "old_string": "let x = 1;", "new_string": "let x = 2;"}),
+        ("folder", "/ws"),
+    ));
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(
+        shown.contains("- let x = 1;") && shown.contains("+ let x = 2;"),
+        "{shown}"
+    );
+    let s = asking(prompt(
+        "fetch",
+        json!({"url": "https://docs.rs/ratatui"}),
+        ("origin", "https://docs.rs"),
+    ));
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(
+        shown.contains("wants to run fetch to https://docs.rs"),
+        "{shown}"
+    );
+    assert!(shown.contains("https://docs.rs/ratatui"), "{shown}");
+    assert!(shown.contains("a always for this site"), "{shown}");
+}
+
+/// An open prompt for `args` as the server sends it (its copy of the arguments cut to 4 KiB),
+/// with the tool call itself in the transcript when `with_call`.
+fn asking_for(tool: &str, args: serde_json::Value, with_call: bool) -> State {
+    let call = navai::provider::ToolCall {
+        id: "c1".into(),
+        name: tool.into(),
+        args: args.clone(),
+        args_valid: true,
+    };
+    let request = navai::agent::permissions::PermissionRequest::new(
+        &call,
+        navai::agent::permissions::Scope::Folder("/ws".into()),
+        "build",
+    );
+    let mut block = prompt(tool, json!({}), ("folder", "/ws"));
+    if let BlockKind::Permission(p) = &mut block.kind {
+        p.arguments = request.arguments;
+    }
+    let mut s = asking(block);
+    if with_call {
+        let at = s.conversation.blocks.len() - 1;
+        s.conversation.blocks.insert(
+            at,
+            Block {
+                id: "tool:c1".into(),
+                kind: BlockKind::ToolCall {
+                    id: "c1".into(),
+                    name: tool.into(),
+                    args,
+                    status: None,
+                    output: String::new(),
+                    metadata: serde_json::Value::Null,
+                    duration_ms: None,
+                    exit_code: None,
+                },
+            },
+        );
+    }
+    s
+}
+
+#[test]
+fn a_large_write_shows_its_path_and_first_lines() {
+    let content = (0..2_100)
+        .map(|n| format!("line {n:04} {}", "x".repeat(40)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(content.len() > 100 * 1024);
+    let args = json!({"content": content, "path": "/ws/big.txt"});
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    // from the call in the transcript: the whole preview
+    let s = asking_for("write", args.clone(), true);
+    render("permission-write-large", (100, 36), &s, &ui, &Editor::new());
+    let shown = screen_text(&s, &ui, (100, 36));
+    for want in [
+        "/ws/big.txt",
+        "+ line 0000",
+        "+ line 0005",
+        "… 2094 more lines",
+    ] {
+        assert!(shown.contains(want), "{want}: {shown}");
+    }
+    // from the server's cut copy only: the path still on its own line, the rest labelled
+    let s = asking_for("write", args, false);
+    let shown = screen_text(&s, &ui, (100, 36));
+    assert!(shown.contains("│  /ws/big.txt"), "{shown}");
+    assert!(shown.contains("(content too long to show here)"), "{shown}");
+    assert!(!shown.contains("\\n"), "no raw JSON: {shown}");
+}
+
+#[test]
+fn a_long_command_and_control_characters_are_shown_safely() {
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    let command = format!("echo {} && echo done", "a".repeat(20_000));
+    let s = asking_for("bash", json!({"command": command}), true);
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(shown.contains("$ echo aaaa"), "{shown}");
+    let s = asking_for("bash", json!({"command": command}), false);
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(shown.contains("(command too long to show here)"), "{shown}");
+    // escape sequences and other controls are written out, never sent to the terminal
+    let s = asking_for(
+        "write",
+        json!({"path": "/ws/a\u{1b}[2J.txt", "content": "ok\u{7}\u{1b}]0;title\u{7}\tend"}),
+        true,
+    );
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(shown.contains("/ws/a\\u{1b}[2J.txt"), "{shown}");
+    assert!(
+        shown.contains("+ ok\\u{7}\\u{1b}]0;title\\u{7}    end"),
+        "{shown}"
+    );
+    assert!(!shown.contains('\u{1b}'), "{shown}");
+}
+
+#[test]
+fn n_asks_for_a_message_then_enter_denies_with_it() {
+    let s = asking(prompt(
+        "bash",
+        json!({"command": "rm -rf target"}),
+        ("folder", "/ws"),
+    ));
+    let mut ui = UiState {
+        follow_bottom: true,
+        prompt_shown: Some("R1".into()),
+        ..UiState::default()
+    };
+    let mut editor = Editor::new();
+    let answer = |decision: &str, message: Option<&str>| Action::AnswerPermission {
+        request_id: "R1".into(),
+        answer: navai::tui::protocol::PermissionAnswer {
+            decision: decision.into(),
+            message: message.map(str::to_string),
+        },
+    };
+    assert_eq!(
+        keys("y", &s, &mut ui, &mut editor),
+        [answer("allow_once", None)]
+    );
+    assert_eq!(
+        keys("a", &s, &mut ui, &mut editor),
+        [answer("allow_folder", None)]
+    );
+    assert!(keys("n", &s, &mut ui, &mut editor).is_empty());
+    assert_eq!(ui.deny_draft("R1"), Some(""));
+    keys("use cargo clean", &s, &mut ui, &mut editor);
+    assert_eq!(
+        editor.text(),
+        "",
+        "the message is not typed into the editor"
+    );
+    render("permission-deny-message", (100, 30), &s, &ui, &editor);
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(
+        shown.contains("deny with a message: use cargo clean"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("enter send · esc deny without a message"),
+        "{shown}"
+    );
+    assert_eq!(
+        keys("⏎", &s, &mut ui, &mut editor),
+        [answer("deny", Some("use cargo clean"))]
+    );
+    assert_eq!(ui.deny_message, None);
+    // esc denies without one
+    keys("n", &s, &mut ui, &mut editor);
+    let esc = route_key(
+        key(KeyCode::Esc, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(esc, Some(answer("deny", None)));
+}
+
+/// `s` with its open request `R1` replaced by `R2` (R1 ended elsewhere).
+fn next_request(s: &State) -> State {
+    let mut s = s.clone();
+    let mut second = prompt("bash", json!({"command": "rm -rf /"}), ("folder", "/"));
+    second.id = "permission:R2".into();
+    if let BlockKind::Permission(p) = &mut second.kind {
+        p.request_id = "R2".into();
+    }
+    if let BlockKind::Permission(p) = &mut s.conversation.blocks.last_mut().unwrap().kind {
+        p.resolution = Some("cancelled".into());
+    }
+    s.conversation.open_permissions = vec![second.id.clone()];
+    s.conversation.blocks.push(second);
+    s
+}
+
+#[test]
+fn a_deny_message_does_not_carry_over_to_the_next_request() {
+    let s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
+    let mut ui = UiState {
+        follow_bottom: true,
+        prompt_shown: Some("R1".into()),
+        ..UiState::default()
+    };
+    let mut editor = Editor::new();
+    keys("nnot here", &s, &mut ui, &mut editor);
+    assert_eq!(ui.deny_draft("R1"), Some("not here"));
+    let s2 = next_request(&s);
+    // the message is not shown on R2, and enter does not deny R2 with it
+    let shown = screen_text(&s2, &ui, (100, 30));
+    assert!(!shown.contains("not here"), "{shown}");
+    assert!(shown.contains("y allow once"), "{shown}");
+    let enter = keys("⏎", &s2, &mut ui, &mut editor);
+    assert!(
+        !enter
+            .iter()
+            .any(|a| matches!(a, Action::AnswerPermission { .. })),
+        "{enter:?}"
+    );
+    assert_eq!(ui.deny_message, None);
+    // a paste is not added to R1's message either
+    let mut ui = UiState {
+        prompt_shown: Some("R1".into()),
+        ..UiState::default()
+    };
+    let mut editor = Editor::new();
+    keys("nold", &s, &mut ui, &mut editor);
+    route_paste("pasted".into(), &s2, &mut ui, &mut editor);
+    assert_eq!(ui.deny_message, None);
+    assert_eq!(editor.text(), "pasted", "it goes to the editor");
+    // on R2, n starts a message of its own
+    let mut ui = UiState {
+        prompt_shown: Some("R1".into()),
+        ..UiState::default()
+    };
+    let mut editor = Editor::new();
+    keys("nold", &s, &mut ui, &mut editor);
+    ui.prompt_shown = Some("R2".into());
+    keys("nnew", &s2, &mut ui, &mut editor);
+    assert_eq!(ui.deny_draft("R2"), Some("new"));
+    assert_eq!(
+        keys("⏎", &s2, &mut ui, &mut editor),
+        [Action::AnswerPermission {
+            request_id: "R2".into(),
+            answer: navai::tui::protocol::PermissionAnswer {
+                decision: "deny".into(),
+                message: Some("new".into()),
+            },
+        }]
+    );
+}
+
+/// Draws `s` like the runtime does, and keeps what the keys need to know of the screen.
+fn draw_into(s: &State, ui: &mut UiState, size: (u16, u16)) {
+    let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
+    let mut cache = RenderCache::default();
+    terminal
+        .draw(|f| view::draw(f, s, ui, &Editor::new(), &mut cache))
+        .unwrap();
+    ui.prompt_shown = cache.prompt_shown.clone();
+}
+
+#[test]
+fn a_key_on_a_prompt_scrolled_out_of_view_first_brings_it_back() {
+    let s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
+    let mut ui = UiState {
+        follow_bottom: false,
+        scroll: 200,
+        ..UiState::default()
+    };
+    let mut editor = Editor::new();
+    draw_into(&s, &mut ui, (100, 16));
+    assert_eq!(ui.prompt_shown, None, "scrolled to the top");
+    assert!(keys("a", &s, &mut ui, &mut editor).is_empty(), "no grant");
+    assert_eq!(editor.text(), "");
+    assert_eq!(ui.selected_block.as_deref(), Some("permission:R1"));
+    // keys queued before the next frame never answer an unseen prompt
+    assert!(keys("aay", &s, &mut ui, &mut editor).is_empty(), "no grant");
+    assert_eq!(ui.prompt_shown, None, "only a drawn frame marks it shown");
+    draw_into(&s, &mut ui, (100, 16));
+    assert_eq!(ui.prompt_shown.as_deref(), Some("R1"), "now in view");
+    assert_eq!(
+        keys("a", &s, &mut ui, &mut editor),
+        [Action::AnswerPermission {
+            request_id: "R1".into(),
+            answer: navai::tui::protocol::PermissionAnswer {
+                decision: "allow_folder".into(),
+                message: None,
+            },
+        }]
+    );
+    // in view from the start: the first key answers
+    let mut ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    draw_into(&s, &mut ui, (100, 30));
+    assert_eq!(keys("y", &s, &mut ui, &mut editor).len(), 1);
+}
+
+#[test]
+fn an_answered_prompt_says_it_was_sent_and_takes_no_more_keys() {
+    let mut s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
+    s.answered_permission = Some("R1".into());
+    let mut ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    let mut editor = Editor::new();
+    assert!(keys("yyan", &s, &mut ui, &mut editor).is_empty());
+    assert_eq!(editor.text(), "", "the keys are not typed either");
+    assert_eq!(ui.deny_message, None);
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(shown.contains("sent, waiting for the server"), "{shown}");
+    assert!(!shown.contains("y allow once"), "{shown}");
+}
+
+#[test]
+fn a_prompt_the_server_no_longer_waits_on_is_muted_until_it_says_how_it_ended() {
+    let mut s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
+    s.conversation.open_permissions.clear();
+    if let BlockKind::Permission(p) = &mut s.conversation.blocks.last_mut().unwrap().kind {
+        p.stale = true;
+    }
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    render("permission-stale", (100, 30), &s, &ui, &Editor::new());
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(shown.contains("no longer waiting"), "{shown}");
+    assert!(!shown.contains("waiting for your answer"), "{shown}");
+    assert!(!shown.contains("y allow once"), "{shown}");
+    let t = cells(&s, &ui, (100, 30));
+    let theme = Theme::ayu_dark();
+    let row = (0..30)
+        .find(|y| row_text(&t, *y, 100).contains("PERMISSION"))
+        .unwrap();
+    assert_eq!(
+        t.backend().buffer()[(23, row)].fg,
+        theme.border,
+        "no accent rule"
+    );
+    let line = row_text(&t, row, 100);
+    let x = line[..line.find("PERMISSION").unwrap()].chars().count() as u16;
+    assert_ne!(t.backend().buffer()[(x, row)].fg, theme.accent_text);
+    let mut editor = Editor::new();
+    let mut keys_ui = UiState::default();
+    assert!(keys("y", &s, &mut keys_ui, &mut editor).is_empty());
+    assert_eq!(editor.text(), "y", "the key types: nothing is open");
+    // then the server's resolution
+    if let BlockKind::Permission(p) = &mut s.conversation.blocks.last_mut().unwrap().kind {
+        p.resolution = Some("allow_once".into());
+    }
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(shown.contains("allowed once"), "{shown}");
+    assert!(!shown.contains("no longer waiting"), "{shown}");
+}
+
+#[test]
+fn prompt_keys_type_normally_when_the_message_has_text_or_nothing_is_open() {
+    let s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    editor.set_text("why ");
+    assert!(keys("yan", &s, &mut ui, &mut editor).is_empty());
+    assert_eq!(editor.text(), "yanwhy ", "typed at the cursor");
+    // a resolved request takes no keys
+    let mut s = s;
+    if let BlockKind::Permission(p) = &mut s.conversation.blocks.last_mut().unwrap().kind {
+        p.resolution = Some("allow_once".into());
+    }
+    s.conversation.open_permissions.clear();
+    let mut editor = Editor::new();
+    assert!(keys("y", &s, &mut ui, &mut editor).is_empty());
+    assert_eq!(editor.text(), "y");
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(shown.contains("allowed once"), "{shown}");
+    assert!(!shown.contains("y allow once"), "{shown}");
+}
+
+#[test]
+fn the_prompt_reads_on_a_light_theme() {
+    let s = asking(prompt(
+        "write",
+        json!({"path": "/ws/a.txt", "content": "hello"}),
+        ("folder", "/ws"),
+    ));
+    let ui = UiState {
+        follow_bottom: true,
+        theme: ThemeId::AyuLight,
+        ..UiState::default()
+    };
+    render("permission-light", (100, 30), &s, &ui, &Editor::new());
+    let t = cells(&s, &ui, (100, 30));
+    let theme = Theme::ayu_light();
+    let row = (0..30)
+        .find(|y| row_text(&t, *y, 100).contains("PERMISSION"))
+        .unwrap();
+    let line = row_text(&t, row, 100);
+    let x = line[..line.find("PERMISSION").unwrap()].chars().count() as u16;
+    let cell = &t.backend().buffer()[(x, row)];
+    assert_eq!(cell.fg, theme.accent_text, "the readable accent on light");
+    assert_eq!(cell.bg, theme.bg);
+    let keys_row = (0..30)
+        .find(|y| row_text(&t, *y, 100).contains("y allow once"))
+        .unwrap();
+    let line = row_text(&t, keys_row, 100);
+    let x = line[..line.find("y allow").unwrap()].chars().count() as u16;
+    assert_eq!(t.backend().buffer()[(x, keys_row)].fg, theme.text);
+}
+
+#[test]
+fn sending_text_over_an_open_request_asks_for_a_second_enter() {
+    let s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    editor.set_text("no, list src instead");
+    let warn = keys("⏎", &s, &mut ui, &mut editor);
+    assert_eq!(
+        warn,
+        [Action::ShowNotice(
+            "sending text cancels the pending permission; press enter again to send".into()
+        )]
+    );
+    assert_eq!(editor.text(), "no, list src instead");
+    let send = keys("⏎", &s, &mut ui, &mut editor);
+    assert_eq!(
+        send,
+        [Action::SubmitAt {
+            text: "no, list src instead".into(),
+            revision: editor.revision(),
+        }]
+    );
+    // an edit in between asks again
+    let mut ui = UiState::default();
+    keys("⏎", &s, &mut ui, &mut editor);
+    keys("!", &s, &mut ui, &mut editor);
+    assert!(matches!(
+        keys("⏎", &s, &mut ui, &mut editor).as_slice(),
+        [Action::ShowNotice(_)]
+    ));
+    // with nothing open, enter sends at once
+    let mut plain = s.clone();
+    plain.conversation.open_permissions.clear();
+    let mut ui = UiState::default();
+    assert!(matches!(
+        keys("⏎", &plain, &mut ui, &mut editor).as_slice(),
+        [Action::SubmitAt { .. }]
+    ));
 }

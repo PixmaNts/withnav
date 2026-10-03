@@ -2,8 +2,8 @@
 //! editor changes or `Action`s. No networking, and no change to `State`.
 use super::{
     commands,
-    protocol::{Action, Overlay},
-    state::{Activity, Focus, State, UiState, VariantPick},
+    protocol::{Action, Overlay, PermissionAnswer},
+    state::{Activity, DenyDraft, Focus, State, UiState, VariantPick},
     theme::ThemeId,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -186,6 +186,9 @@ pub fn route_key(
         }
         return None;
     }
+    if let Some(action) = permission_key(key, state, ui, editor) {
+        return action;
+    }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     // tab on an empty message switches build/plan; with text in it, or as shift+tab, it moves the
@@ -299,10 +302,25 @@ pub fn route_key(
                 arguments,
                 revision: Some(editor.revision()),
             },
-            commands::Routed::Message(text) => Action::SubmitAt {
-                text,
-                revision: editor.revision(),
-            },
+            commands::Routed::Message(text) => {
+                // Text sent while a permission request waits cancels it: the first enter warns,
+                // a second one on the same text sends.
+                if let Some(open) = state.open_permission() {
+                    let pending = (open.request_id.clone(), editor.revision());
+                    if ui.send_over_permission.as_ref() != Some(&pending) {
+                        ui.send_over_permission = Some(pending);
+                        return Some(Action::ShowNotice(
+                            "sending text cancels the pending permission; press enter again to send"
+                                .into(),
+                        ));
+                    }
+                }
+                ui.send_over_permission = None;
+                Action::SubmitAt {
+                    text,
+                    revision: editor.revision(),
+                }
+            }
             commands::Routed::Refused(why) => Action::ShowNotice(why),
         });
     }
@@ -375,6 +393,90 @@ fn typed_palette_key(
         editor.bump();
     }
     follow_typed_line(state, ui, editor)
+}
+
+/// Keys for the open permission request of the tab on screen. `y`, `a` and `n` answer it while the
+/// message is empty (with text in it they type); after `n` every key types the deny message until
+/// enter sends it or esc denies without one. `Some(action)` when the key was the prompt's.
+fn permission_key(
+    key: KeyEvent,
+    state: &State,
+    ui: &mut UiState,
+    editor: &Editor,
+) -> Option<Option<Action>> {
+    let Some(open) = state.open_permission() else {
+        ui.deny_message = None;
+        return None;
+    };
+    let request_id = open.request_id.clone();
+    let answer = |decision: &str, message: Option<String>| Action::AnswerPermission {
+        request_id: request_id.clone(),
+        answer: PermissionAnswer {
+            decision: decision.into(),
+            message,
+        },
+    };
+    let plain = !key
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+    // A message started on a request that ended (or was replaced) does not carry over.
+    if ui.deny_draft(&request_id).is_none() {
+        ui.deny_message = None;
+    }
+    if let Some(DenyDraft { text: message, .. }) = ui.deny_message.as_mut() {
+        return Some(match key.code {
+            KeyCode::Enter => {
+                let message = std::mem::take(message);
+                ui.deny_message = None;
+                let message = Some(message.trim().to_string()).filter(|m| !m.is_empty());
+                Some(answer("deny", message))
+            }
+            KeyCode::Esc => {
+                ui.deny_message = None;
+                Some(answer("deny", None))
+            }
+            KeyCode::Backspace => {
+                message.pop();
+                None
+            }
+            KeyCode::Char(c) if plain || key.modifiers == KeyModifiers::SHIFT => {
+                message.push(c);
+                None
+            }
+            // Other keys (tab switches, scrolling…) keep working; the message waits.
+            _ => return None,
+        });
+    }
+    if !editor.text().is_empty() || !plain {
+        return None;
+    }
+    // Answered already: the prompt's keys wait for the server to end it.
+    if state.answered_permission.as_deref() == Some(request_id.as_str()) {
+        return matches!(key.code, KeyCode::Char('y' | 'a' | 'n')).then_some(None);
+    }
+    // Not on screen at the last frame: a key only scrolls to the prompt. Only a
+    // frame that actually draws the prompt's keys marks it shown (the render
+    // sets `prompt_shown`), so keys queued before that frame, or a terminal too
+    // small to show the prompt, never answer an unseen request.
+    if matches!(key.code, KeyCode::Char('y' | 'a' | 'n'))
+        && ui.prompt_shown.as_deref() != Some(request_id.as_str())
+    {
+        ui.selected_block = Some(format!("permission:{request_id}"));
+        ui.follow_bottom = false;
+        return Some(None);
+    }
+    match key.code {
+        KeyCode::Char('y') => Some(Some(answer("allow_once", None))),
+        KeyCode::Char('a') => Some(Some(answer("allow_folder", None))),
+        KeyCode::Char('n') => {
+            ui.deny_message = Some(DenyDraft {
+                request_id: request_id.clone(),
+                text: String::new(),
+            });
+            Some(None)
+        }
+        _ => None,
+    }
 }
 
 /// After an edit of the line the palette follows: narrows the palette to the name typed so far,
@@ -459,6 +561,18 @@ pub fn route_paste(
     ui: &mut UiState,
     editor: &mut Editor,
 ) -> Option<Action> {
+    // While a deny message is typed, a paste goes into it (one line); a message left from a
+    // request that is no longer the open one is dropped.
+    let open = state.open_permission().map(|p| p.request_id.as_str());
+    if ui.deny_message.is_some() && open.is_none_or(|id| ui.deny_draft(id).is_none()) {
+        ui.deny_message = None;
+    }
+    if let Some(DenyDraft { text: message, .. }) = ui.deny_message.as_mut() {
+        if ui.overlay.is_none() {
+            message.push_str(&text.replace(['\n', '\r'], " "));
+            return None;
+        }
+    }
     // The palette opened by typing `/` follows the line: a paste edits it like typed keys.
     let typed_palette = ui.overlay == Some(Overlay::Commands) && ui.palette_typed;
     if (ui.overlay.is_some() && !typed_palette) || ui.focus != Focus::Editor {

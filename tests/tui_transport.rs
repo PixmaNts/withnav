@@ -593,3 +593,70 @@ async fn create_without_a_known_window_shows_the_refusal() {
         )
     );
 }
+
+/// A server that answers every request with `status` and `body`, and keeps the request lines.
+async fn answering(status: &'static str, body: &'static str) -> (String, Arc<Mutex<Vec<String>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            let mut buf = vec![0u8; 8192];
+            let n = sock.read(&mut buf).await.unwrap_or(0);
+            log.lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(&buf[..n]).into_owned());
+            let reply = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(reply.as_bytes()).await;
+        }
+    });
+    (format!("http://{addr}"), seen)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_permission_answer_posts_the_decision_and_reads_a_stale_reply() {
+    use navai::tui::protocol::{AnswerError, PermissionAnswer};
+    let deny = PermissionAnswer {
+        decision: "deny".into(),
+        message: Some("not now".into()),
+    };
+    let (base, seen) = answering("200 OK", r#"{"accepted":true}"#).await;
+    let client = Client::new(base, None);
+    client
+        .answer_permission("S1", "R1", deny.clone())
+        .await
+        .expect("taken");
+    let request = seen.lock().unwrap()[0].clone();
+    assert!(
+        request.starts_with("POST /v1/sessions/S1/permissions/R1 "),
+        "{request}"
+    );
+    assert!(
+        request.contains(r#"{"decision":"deny","message":"not now"}"#),
+        "{request}"
+    );
+    let (base, _) = answering(
+        "409 Conflict",
+        r#"{"error":"no such permission request is waiting","reason":"permission_stale"}"#,
+    )
+    .await;
+    assert_eq!(
+        Client::new(base, None)
+            .answer_permission("S1", "R1", deny.clone())
+            .await,
+        Err(AnswerError::Stale)
+    );
+    let (base, _) = answering(
+        "409 Conflict",
+        r#"{"error":"stopping","reason":"resume_required"}"#,
+    )
+    .await;
+    assert!(matches!(
+        Client::new(base, None).answer_permission("S1", "R1", deny).await,
+        Err(AnswerError::Other(m)) if m.contains("409")
+    ));
+}

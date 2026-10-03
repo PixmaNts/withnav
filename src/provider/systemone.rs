@@ -161,6 +161,7 @@ impl SystemOneClient {
             headers: provider.headers.clone(),
             connect_timeout_ms: deadline_ms,
             request_timeout_ms: deadline_ms,
+            catalog_format: None,
         };
         Ok(Self {
             base_url,
@@ -280,6 +281,7 @@ mod tests {
                     headers: Default::default(),
                     connect_timeout_ms: 1_000,
                     request_timeout_ms: 1_000,
+                    catalog_format: None,
                 },
                 "sk-SUPERSECRET".to_string(),
                 &ClientCache::new(),

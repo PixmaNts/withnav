@@ -55,6 +55,8 @@ fn build_registry() -> Registry {
     registry.register(Box::new(crate::tools::native::EditTool));
     registry.register(Box::new(crate::tools::bash::BashTool));
     registry.register(Box::new(crate::tools::native::GrepTool));
+    registry.register(Box::new(crate::tools::glob::GlobTool));
+    registry.register(Box::new(crate::tools::fetch::FetchTool::new()));
     registry.register(Box::new(crate::tools::control::AskTool));
     registry
 }

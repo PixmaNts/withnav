@@ -10,7 +10,7 @@
 //! are only buffered per index until the step's `llm.response` replaces them.
 use super::{block, text::strip_controls};
 use crate::{
-    bus::event::{EventEnvelope, EventKind},
+    bus::event::{ContextSnapshot, EventEnvelope, EventKind},
     provider::{StreamDelta, ToolCall, Usage},
     tools::ToolStatus,
     tui::{
@@ -251,6 +251,10 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 settle_turn_tools(s, &actor, t, outcome);
             }
         }
+        Some(EventKind::ContextUpdated) => {
+            let snapshot = serde_json::from_value(e.payload).map_err(|_| bad())?;
+            keep_newer_context(s, snapshot);
+        }
         Some(EventKind::AgentState) => {
             s.activity = match e.payload["to"].as_str().unwrap_or("") {
                 "running" => Activity::Running,
@@ -300,6 +304,60 @@ fn upsert(v: &mut Vec<Block>, id: String, kind: BlockKind) {
     } else {
         v.push(block(id, kind))
     }
+}
+
+/// How many retired incarnations the conversation remembers.
+const RETIRED_INCARNATIONS: usize = 8;
+
+/// What a resync keeps of the gauge.
+pub(super) struct ContextKept {
+    snapshot: Option<ContextSnapshot>,
+    epoch: u64,
+    retired: std::collections::VecDeque<ulid::Ulid>,
+}
+
+pub(super) fn take_context(s: &mut State) -> ContextKept {
+    ContextKept {
+        snapshot: s.conversation.context.take(),
+        epoch: s.conversation.context_epoch,
+        retired: std::mem::take(&mut s.conversation.retired_incarnations),
+    }
+}
+
+pub(super) fn restore_context(s: &mut State, kept: ContextKept) {
+    s.conversation.context = kept.snapshot;
+    s.conversation.context_epoch = kept.epoch;
+    s.conversation.retired_incarnations = kept.retired;
+}
+
+/// Shows `snapshot` unless it is stale. Incarnation ids carry no order, so staleness is
+/// decided here: within the incarnation shown, a lower revision is stale; a snapshot of a
+/// new incarnation replaces the one shown, which is then retired; a snapshot of one of the
+/// last eight retired incarnations is never shown again, however late it arrives (an older
+/// HTTP answer is also dropped by its fetch epoch).
+pub(super) fn keep_newer_context(s: &mut State, snapshot: ContextSnapshot) {
+    let conversation = &mut s.conversation;
+    if conversation
+        .retired_incarnations
+        .contains(&snapshot.incarnation)
+    {
+        return;
+    }
+    if let Some(held) = &conversation.context {
+        if held.incarnation == snapshot.incarnation {
+            if snapshot.revision < held.revision {
+                return;
+            }
+        } else {
+            conversation
+                .retired_incarnations
+                .push_back(held.incarnation);
+            while conversation.retired_incarnations.len() > RETIRED_INCARNATIONS {
+                conversation.retired_incarnations.pop_front();
+            }
+        }
+    }
+    conversation.context = Some(snapshot);
 }
 
 fn count_usage(s: &mut State, key: StepKey, u: Usage) {

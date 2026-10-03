@@ -441,6 +441,34 @@ fn pickers_filter_and_keep_draft() {
     assert_eq!(editor.text(), "draft");
 }
 
+#[test]
+fn the_status_gauge_shows_the_server_estimate_with_its_percent() {
+    let mut s = done();
+    // Before any snapshot: the provider's last prompt count over the window.
+    assert!(buffer_text(&s).contains("ctx 12.4k / 200k"));
+    s.conversation.context = Some(navai::bus::event::ContextSnapshot {
+        alias: "cognition".into(),
+        variant: None,
+        window: 1_000_000,
+        window_source: "models.json".into(),
+        estimated: true,
+        estimate_total: 42_000,
+        breakdown: Default::default(),
+        output_reserve: 8192,
+        margin: 50_000,
+        input_budget: 941_808,
+        percent: 4,
+        last_usage: None,
+        skills: Default::default(),
+        rule_files: 0,
+        incarnation: ulid::Ulid::new(),
+        revision: 1,
+    });
+    let text = buffer_text(&s);
+    assert!(text.contains("ctx ~42k / 1M · 4%"), "{text}");
+    assert!(!text.contains("12.4k"), "{text}");
+}
+
 fn buffer_text(s: &State) -> String {
     let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
     let ui = UiState {

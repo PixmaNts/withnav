@@ -1,4 +1,5 @@
 use crate::agent::actor::{AgentActor, AgentState};
+use crate::agent::context::Breakdown;
 use crate::agent::prompt::{assistant_history_message, build_request};
 use crate::agent::response::{classify, HumanRequest, StepOutcome};
 use crate::error::{AgentError, ProviderError};
@@ -33,10 +34,14 @@ pub enum RunOutcome {
 /// fires immediately AFTER the normalized model response is appended to the
 /// transcript (the message already carries `usage` + `finish_reason`).
 /// `PreCall` / `PostCall` fire immediately around each `registry.dispatch`.
+/// `ContextEstimated` follows `Response` and the end of a step's tool calls.
 pub enum AgentEvent<'a> {
     Delta(StreamDelta),
     StepStarted,
     Response(&'a AssistantMessage),
+    /// The estimated size of the next request, right after the history
+    /// changed: a response was appended, or a step's tool results were.
+    ContextEstimated(Breakdown),
     PreCall {
         tool_call_id: &'a str,
         name: &'a str,
@@ -81,9 +86,12 @@ pub async fn run_agent(
         );
 
         let message = match client
-            .chat(&request, &actor.cancel, &mut |delta| {
-                observe(AgentEvent::Delta(delta))
-            })
+            .chat(
+                request,
+                actor.variant.as_ref(),
+                &actor.cancel,
+                &mut |delta| observe(AgentEvent::Delta(delta)),
+            )
             .await
         {
             Ok(m) => m,
@@ -98,6 +106,7 @@ pub async fn run_agent(
             .transcript
             .push(assistant_history_message(&message, actor.reasoning_history));
         observe(AgentEvent::Response(&message));
+        observe(AgentEvent::ContextEstimated(actor.context_breakdown()));
 
         let sibling_ids: Vec<String> = message.tool_calls.iter().map(|tc| tc.id.clone()).collect();
 
@@ -145,6 +154,7 @@ pub async fn run_agent(
                     });
                     append_tool_result(actor, &call.id, &result);
                 }
+                observe(AgentEvent::ContextEstimated(actor.context_breakdown()));
             }
         }
     }
@@ -259,6 +269,7 @@ mod tests {
                 headers: BTreeMap::new(),
                 connect_timeout_ms: 2000,
                 request_timeout_ms: 600_000,
+                catalog_format: None,
             },
             "test-key".to_string(),
             "test-model".to_string(),

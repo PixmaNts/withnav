@@ -18,6 +18,40 @@ pub fn number(n: Option<u64>) -> String {
     }
 }
 
+/// A token count for the gauge: `842`, `42k`, `1M`, `1.5M`.
+pub fn gauge_number(n: u64) -> String {
+    if n >= 1_000_000 {
+        let tenths = (n + 50_000) / 100_000;
+        return if tenths.is_multiple_of(10) {
+            format!("{}M", tenths / 10)
+        } else {
+            format!("{}.{}M", tenths / 10, tenths % 10)
+        };
+    }
+    if n >= 1000 {
+        return format!("{}k", (n + 500) / 1000);
+    }
+    n.to_string()
+}
+
+/// What the status line shows for the context: used, window, percent.
+/// The server's estimate of the next request when known (`~42k / 1M · 4%`);
+/// until then the provider's last prompt count over the catalog window.
+fn context_gauge(state: &State) -> (String, String, Option<String>) {
+    match &state.conversation.context {
+        Some(c) => (
+            format!("~{}", gauge_number(c.estimate_total)),
+            gauge_number(c.window),
+            Some(format!(" · {}%", c.percent)),
+        ),
+        None => (
+            number(state.conversation.context_tokens),
+            number(state.context_window),
+            None,
+        ),
+    }
+}
+
 pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, theme: &Theme) {
     if area.height == 0 {
         return;
@@ -52,11 +86,9 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
     } else {
         ""
     };
-    let (context, window) = (
-        number(state.conversation.context_tokens),
-        number(state.context_window),
-    );
-    let metrics = format!("   ctx {context} / {window}");
+    let (context, window, percent) = context_gauge(state);
+    let percent_text = percent.clone().unwrap_or_default();
+    let metrics = format!("   ctx {context} / {window}{percent_text}");
     let session_tokens = number(state.conversation.session_tokens);
     let session = format!("   session {session_tokens} tok");
     let fixed = format!("   {connection}   {activity}{warning}")
@@ -88,6 +120,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
             Span::styled(context, theme.number()),
             Span::styled(" / ", theme.muted()),
             Span::styled(window, theme.text()),
+            Span::styled(percent_text, theme.muted()),
         ]);
     }
     if area.width >= 90 && used + session.chars().count() <= available {

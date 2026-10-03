@@ -365,3 +365,23 @@ async fn an_unknown_skill_is_a_structured_error_for_the_model() {
     assert_eq!(role, "tool");
     assert!(content.contains("skill_unknown"), "{content}");
 }
+
+// Given a home with one rules file and a workspace with two skills
+// When the session's context is read
+// Then it counts the rule file and the skills the catalog lists, and says it is an estimate
+#[tokio::test]
+async fn the_context_snapshot_counts_the_rule_files_and_listed_skills() {
+    let env = env();
+    let provider = spawn_capturing_provider(vec![]).await;
+    let state = state(&env, &provider, "default", false);
+    let id = state
+        .create_session(&env.ws, None, None)
+        .await
+        .expect("create");
+    let snap = serde_json::to_value(state.context(id).await.expect("context")).unwrap();
+    assert_eq!(snap["estimated"], true);
+    assert_eq!(snap["rule_files"], 1);
+    assert_eq!(snap["skills"], json!({"listed": 2, "omitted": 0}));
+    assert!(snap["breakdown"]["rules"].as_u64().unwrap() > 0);
+    assert!(snap["breakdown"]["skills_catalog"].as_u64().unwrap() > 0);
+}

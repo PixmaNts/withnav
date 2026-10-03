@@ -171,6 +171,7 @@ mod tests {
                 headers: BTreeMap::new(),
                 connect_timeout_ms: 100,
                 request_timeout_ms: 100,
+                catalog_format: None,
             },
             "test-key".into(),
             "test-model".into(),
@@ -200,6 +201,9 @@ mod tests {
             actor_state: "idle".to_string(),
             workspace: PathBuf::from("/w"),
             model: "fast".to_string(),
+            status: Arc::default(),
+            offer: Arc::default(),
+            resolution: None,
         }
     }
 

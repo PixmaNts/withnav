@@ -74,6 +74,8 @@ pub enum ConfigError {
     ParseToml(#[from] toml::de::Error),
     #[error("missing provider in config: {0}")]
     MissingProvider(String),
+    #[error("invalid models.json: {0}")]
+    Invalid(String),
 }
 
 #[derive(Debug, Error)]
@@ -143,6 +145,30 @@ pub enum ServerError {
     },
     #[error("Session {session} has an unreadable saved model resolution ({reason}); it cannot be resumed until the sessions.model_resolution column of that row is fixed or cleared.")]
     SavedResolutionInvalid { session: String, reason: String },
+    #[error("model alias '{alias}' has no variant '{variant}'; {offered}")]
+    UnknownVariant {
+        alias: String,
+        variant: String,
+        /// What the alias offers, worded for the reader.
+        offered: String,
+    },
+    #[error("alias '{alias}' has default_variant '{variant}', which it does not offer now (a generated variant comes from the provider's reported effort tiers). Fix `default_variant` for '{alias}' in {models_path}, or name a variant when creating the session.")]
+    DefaultVariantUnavailable {
+        alias: String,
+        variant: String,
+        models_path: String,
+    },
+    #[error("Session {session} runs with variant '{variant}', but alias '{alias}' no longer offers it. A conversation never changes variant on its own: add the variant back to '{alias}' in {models_path} (or make the provider report that effort tier again), or start a new session.")]
+    VariantUnavailable {
+        session: String,
+        alias: String,
+        variant: String,
+        models_path: String,
+    },
+    #[error("cannot confirm that alias '{alias}' offers variant '{variant}': its list of variants comes from the provider's model list, which is not available and has no earlier copy. Try again when the provider is reachable.")]
+    VariantOfferUnknown { alias: String, variant: String },
+    #[error("Chat alias '{alias}' cannot be used: {reason}")]
+    ImpossibleBudget { alias: String, reason: String },
     #[error("history store error: {0}")]
     History(String),
 }

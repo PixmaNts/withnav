@@ -32,6 +32,16 @@ pub enum Commands {
     Serve(ServeArgs),
     Auth(AuthArgs),
     Tui(TuiArgs),
+    /// Converts HTML from stdin to text on stdout; run by the `fetch` tool in
+    /// a resource-limited child process.
+    #[command(name = "internal-html-convert", hide = true)]
+    InternalHtmlConvert(HtmlConvertArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct HtmlConvertArgs {
+    #[arg(long, value_enum)]
+    pub format: crate::tools::fetch::ConvertFormat,
 }
 
 pub mod tui;
@@ -92,6 +102,11 @@ pub struct RunArgs {
 
     #[arg(long)]
     pub show_thinking: bool,
+
+    /// Model variant to run with: the exact name of one the alias offers, or
+    /// `off` for no variant. Default: the alias's default variant.
+    #[arg(long)]
+    pub variant: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -119,6 +134,7 @@ pub async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
         Commands::Serve(args) => serve_command(args).await,
         Commands::Auth(args) => auth_command(args),
         Commands::Tui(args) => tui::run(args).await,
+        Commands::InternalHtmlConvert(args) => Ok(crate::tools::fetch::convert_stdio(args.format)),
     }
 }
 
@@ -198,7 +214,12 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
     // A session that cannot start (no window, unknown alias, no key) ends the
     // run the way a failed turn does: the `error:` line, exit 1.
     let session_id = match state
-        .create_session(&workspace, args.model.as_deref(), None)
+        .create_session_with_variant(
+            &workspace,
+            args.model.as_deref(),
+            None,
+            crate::session::VariantChoice::from_word(args.variant.as_deref()),
+        )
         .await
     {
         Ok(id) => id,
@@ -223,6 +244,30 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
         .subscribe(session_id, None)
         .await
         .map_err(|e| anyhow::anyhow!("subscribe failed: {e}"))?;
+
+    // A leading `/name` runs a session command and prints its result; `//text`
+    // sends the literal message `/text`.
+    let prompt = match crate::session::route_line(&prompt) {
+        crate::session::Routed::Command { name, arguments } => {
+            let exit = match state.run_command(session_id, &name, &arguments).await {
+                Ok(outcome) if outcome.ok => {
+                    println!("{}", outcome.render_text());
+                    EXIT_DONE
+                }
+                Ok(outcome) => {
+                    eprintln!("error: {}", outcome.render_text());
+                    EXIT_ERROR
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    EXIT_ERROR
+                }
+            };
+            let _ = state.close_session(session_id).await;
+            return Ok(exit);
+        }
+        crate::session::Routed::Message(text) => text,
+    };
 
     post_prompt(&state, session_id, &prompt).await?;
 
@@ -410,7 +455,9 @@ pub fn event_to_ui(envelope: &EventEnvelope) -> Option<UiEvent> {
         | EventKind::ToolPreCall
         | EventKind::ToolPostCall
         | EventKind::AgentState
-        | EventKind::TaskDone => None,
+        | EventKind::TaskDone
+        | EventKind::CommandResult
+        | EventKind::ContextUpdated => None,
     }
 }
 

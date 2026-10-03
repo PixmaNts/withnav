@@ -238,6 +238,20 @@ fn pick_model(
     Some(effects)
 }
 
+/// Opens the `/variant` list on the variant in use, unless another overlay took the screen.
+pub fn show_variants(s: &State, ui: &mut UiState) {
+    if ui.overlay.is_some() {
+        return;
+    }
+    let pick = VariantPick::Current;
+    let (_, start) = commands::variant_choices(s, &pick);
+    ui.overlay = Some(Overlay::Variants);
+    ui.filter.clear();
+    ui.selection
+        .insert(format!("{:?}", Overlay::Variants), start);
+    ui.variant_pick = Some(pick);
+}
+
 /// Build to plan and back. A conversation switches through `/agent` (the server may refuse, and
 /// says why in its `command.result`); one not created yet just starts as the other agent.
 fn toggle_agent(s: &mut State) -> Vec<Effect> {
@@ -349,18 +363,12 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                     vec![Effect::FetchModels]
                 }
                 Overlay::Variants => {
-                    // `/variant` lists the variants of the conversation's model; with no live
-                    // conversation there is nothing to change.
-                    let live = s.session.is_some() && s.resuming.is_none();
-                    if !live {
-                        ui.overlay = None;
-                        return run_command(s, "variant".into(), String::new(), None);
-                    }
-                    let pick = VariantPick::Current;
-                    let (_, start) = commands::variant_choices(s, &pick);
-                    ui.selection.insert(format!("{o:?}"), start);
-                    ui.variant_pick = Some(pick);
-                    vec![]
+                    // `/variant` asks the server what this conversation offers; its answer opens
+                    // the list. With no live conversation `run_command` says why.
+                    ui.overlay = None;
+                    let effects = run_command(s, "variant".into(), String::new(), None);
+                    s.variant_list_wanted = !effects.is_empty();
+                    effects
                 }
                 Overlay::Sessions => vec![Effect::ListSessions],
                 Overlay::Themes => {

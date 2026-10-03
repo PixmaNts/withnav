@@ -223,6 +223,8 @@ impl Executor {
                     }
                 }
             }
+            // Applied by the runtime before it reaches here.
+            Effect::ShowVariants => {}
             Effect::Quit => return Flow::Quit,
         }
         Flow::Continue

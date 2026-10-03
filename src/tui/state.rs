@@ -127,6 +127,11 @@ pub struct Tab {
     pub agent: Option<String>,
     /// The model variant the conversation runs with, or starts with; `None` is none.
     pub variant: Option<String>,
+    /// The variants the conversation's server offers (`/variant` answered `offered`); `None` until
+    /// asked. The `/variant` list shows these, not the catalog's.
+    pub variant_offer: Option<Vec<String>>,
+    /// `/variant` was asked to open its list: the server's answer opens it.
+    pub variant_list_wanted: bool,
     /// The seq of the last event that set `agent` / `variant`: a session summary read at an
     /// older seq does not overwrite them.
     pub agent_seq: Option<u64>,

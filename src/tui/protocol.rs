@@ -323,6 +323,8 @@ pub enum Effect {
         request: SubmitRequest,
         revision: u64,
     },
+    /// Opens the variant list of the active conversation, from the offer the server just gave.
+    ShowVariants,
     /// Puts the draft of the tab that came forward in the editor, at the revision it was kept at,
     /// so a send still in flight from that tab can clear it.
     SetEditor {

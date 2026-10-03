@@ -800,6 +800,15 @@ async fn variant_step_and_slash_variant_drive_the_server() {
         press(&mut rt, KeyCode::Char(c));
     }
     press(&mut rt, KeyCode::Enter);
+    // the list opens on the server's answer: what this conversation offers
+    until("the variant list", &mut rt, |_, rt| {
+        rt.ui.overlay == Some(navai::tui::protocol::Overlay::Variants)
+    })
+    .await;
+    assert_eq!(
+        navai::tui::commands::variant_choices(&rt.state, &navai::tui::state::VariantPick::Current),
+        (vec!["high".into(), "low".into(), "off".into()], 1)
+    );
     press(&mut rt, KeyCode::Up);
     press(&mut rt, KeyCode::Enter);
     until("the switch to high", &mut rt, |_, rt| {

@@ -21,7 +21,7 @@ mod command;
 mod envelope;
 mod text;
 
-pub use actions::{handle_action, short_id};
+pub use actions::{handle_action, short_id, show_variants};
 pub use command::{outcome_text, tokens};
 pub use text::strip_controls;
 
@@ -85,12 +85,27 @@ pub(crate) fn start_conversation(s: &mut State) {
     s.resuming = None;
     s.agent_seq = None;
     s.variant_seq = None;
+    s.variant_offer = None;
+    s.variant_list_wanted = false;
     s.pending_submit_text = None;
     s.pending_submit = None;
     s.delivery_uncertain = false;
     s.unread = false;
     let generation = Generation(s.issue());
     s.generation = generation;
+}
+
+/// Keeps what a `/variant` answer says the conversation offers.
+pub(crate) fn set_variant_offer(s: &mut State, data: &serde_json::Value) {
+    if let Some(offered) = data["offered"].as_array() {
+        s.variant_offer = Some(
+            offered
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(text::strip_controls)
+                .collect(),
+        );
+    }
 }
 
 /// Refreshes the display name and context window from the catalog for the selected alias.
@@ -224,7 +239,15 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             ..
         } => match result {
             // The outcome itself arrives as `command.result` on the stream.
-            Ok(_) => {
+            Ok(response) => {
+                if name == "variant" {
+                    if let Some(data) = response.data.as_ref().filter(|_| response.ok) {
+                        set_variant_offer(s, data);
+                    }
+                    if std::mem::take(&mut s.variant_list_wanted) && response.ok && !background {
+                        effects.push(Effect::ShowVariants);
+                    }
+                }
                 if let Some(revision) = revision {
                     if background {
                         if s.draft_revision == revision {
@@ -235,14 +258,19 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     }
                 }
             }
-            Err(error) => push_local(
-                s,
-                BlockKind::Command {
-                    name,
-                    ok: false,
-                    text: error,
-                },
-            ),
+            Err(error) => {
+                if name == "variant" {
+                    s.variant_list_wanted = false;
+                }
+                push_local(
+                    s,
+                    BlockKind::Command {
+                        name,
+                        ok: false,
+                        text: error,
+                    },
+                )
+            }
         },
         ClientEvent::Sessions { result, .. } => {
             if let Ok(b) = result {

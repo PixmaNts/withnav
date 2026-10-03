@@ -2652,12 +2652,42 @@ fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server
     for c in "variant".chars() {
         press(KeyCode::Char(c), &mut s, &mut ui, &mut editor);
     }
-    press(KeyCode::Enter, &mut s, &mut ui, &mut editor);
+    let fx = press(KeyCode::Enter, &mut s, &mut ui, &mut editor).unwrap();
+    // the list waits for the server: a bare `/variant` says what this conversation offers
+    assert_eq!(
+        fx,
+        vec![Effect::RunCommand {
+            session_id: "S1".into(),
+            request: CommandRequest {
+                name: "variant".into(),
+                arguments: String::new(),
+            },
+            revision: None,
+        }]
+    );
+    assert_eq!(ui.overlay, None);
+    // the server offers `low` and `max`: not the catalog's `low` and `high`
+    let answer = ClientEvent::CommandRan {
+        generation: s.generation.clone(),
+        name: "variant".into(),
+        revision: None,
+        result: Ok(CommandResponse {
+            operation_id: "op".into(),
+            ok: true,
+            data: Some(json!({"variant": "max", "offered": ["low", "max"]})),
+            error: None,
+        }),
+    };
+    let fx = update(&mut s, answer).unwrap();
+    assert_eq!(fx, vec![Effect::ShowVariants]);
+    navai::tui::reducer::show_variants(&s, &mut ui);
     assert_eq!(ui.overlay, Some(Overlay::Variants));
     assert_eq!(ui.variant_pick, Some(VariantPick::Current));
+    s.variant = Some("max".into());
     let (rows, start) = navai::tui::commands::variant_choices(&s, &VariantPick::Current);
-    assert_eq!(rows, ["low", "high", "off"]);
-    assert_eq!(rows[start], "high", "starts on the variant in use");
+    assert_eq!(rows, ["low", "max", "off"]);
+    assert_eq!(rows[start], "max", "starts on the variant in use");
+    ui.selection.insert("Variants".into(), start);
     press(KeyCode::Down, &mut s, &mut ui, &mut editor);
     let fx = press(KeyCode::Enter, &mut s, &mut ui, &mut editor).unwrap();
     assert_eq!(
@@ -2816,4 +2846,42 @@ fn a_refused_local_command_shows_why_and_sends_nothing() {
         &s.conversation.blocks.last().unwrap().kind,
         BlockKind::Notice(n) if n == "/stop takes no arguments"
     ));
+}
+
+#[test]
+fn slash_variant_always_offers_off_even_with_an_empty_catalog() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    s.variant = Some("high".into());
+    assert!(s.catalog.is_empty());
+    // before any answer, and with an offer of nothing: `off` is still there
+    assert_eq!(
+        navai::tui::commands::variant_choices(&s, &VariantPick::Current),
+        (vec!["off".to_string()], 0)
+    );
+    let answer = ClientEvent::CommandRan {
+        generation: s.generation.clone(),
+        name: "variant".into(),
+        revision: None,
+        result: Ok(CommandResponse {
+            operation_id: "op".into(),
+            ok: true,
+            data: Some(json!({"variant": "high", "offered": ["high"]})),
+            error: None,
+        }),
+    };
+    handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Variants));
+    update(&mut s, answer).unwrap();
+    let (rows, start) = navai::tui::commands::variant_choices(&s, &VariantPick::Current);
+    assert_eq!((rows, start), (vec!["high".into(), "off".into()], 0));
+    // a failed answer opens nothing
+    handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Variants));
+    let failed = ClientEvent::CommandRan {
+        generation: s.generation.clone(),
+        name: "variant".into(),
+        revision: None,
+        result: Err("HTTP 503".into()),
+    };
+    assert!(update(&mut s, failed).unwrap().is_empty());
+    assert!(!s.variant_list_wanted);
 }

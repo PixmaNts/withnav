@@ -262,9 +262,12 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             let ok = v["ok"].as_bool().ok_or_else(bad)?;
             // `/variant` answers with the variant in use, after a change or not.
             if name == "variant" && ok {
-                if let Some(v) = v.get("data").and_then(|d| d.get("variant")) {
-                    s.variant = v.as_str().map(strip_controls);
-                    s.variant_seq = Some(e.seq);
+                if let Some(data) = v.get("data") {
+                    if let Some(variant) = data.get("variant") {
+                        s.variant = variant.as_str().map(strip_controls);
+                        s.variant_seq = Some(e.seq);
+                    }
+                    super::set_variant_offer(s, data);
                 }
             }
             let text = super::command::outcome_text(

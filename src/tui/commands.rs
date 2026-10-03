@@ -151,24 +151,28 @@ pub const KEYS: &[(&str, &str)] = &[
     ("ctrl+q", "quit"),
 ];
 
-/// The rows of the variant list for `pick` (the model's variants, then `off`; none when the model
-/// has no variants) and the row to start on: the default variant for a new conversation, the variant in use for `/variant`.
+/// The rows of the variant list for `pick` and the row to start on.
+///
+/// For a new conversation: the catalog's variants of that model then `off` (no row when it has
+/// none), starting on its default. For `/variant`: what the server offers this conversation then
+/// `off` (always: a live conversation can drop its variant), starting on the variant in use.
 pub fn variant_choices(state: &State, pick: &VariantPick) -> (Vec<String>, usize) {
-    let alias = match pick {
-        VariantPick::NewConversation(alias) => Some(alias.as_str()),
-        VariantPick::Current => state.selected_model_alias.as_deref(),
+    let (mut rows, wanted) = match pick {
+        VariantPick::NewConversation(alias) => {
+            let entry = state.catalog.iter().find(|m| &m.alias == alias);
+            let rows: Vec<String> = entry.map(|m| m.variants.clone()).unwrap_or_default();
+            if rows.is_empty() {
+                // Nothing to choose: the list shows a note instead.
+                return (rows, 0);
+            }
+            (rows, entry.and_then(|m| m.default_variant.clone()))
+        }
+        VariantPick::Current => (
+            state.variant_offer.clone().unwrap_or_default(),
+            state.variant.clone(),
+        ),
     };
-    let entry = alias.and_then(|a| state.catalog.iter().find(|m| m.alias == a));
-    let mut rows: Vec<String> = entry.map(|m| m.variants.clone()).unwrap_or_default();
-    if rows.is_empty() {
-        // Nothing to choose: the list shows a note instead.
-        return (rows, 0);
-    }
     rows.push(NO_VARIANT.to_string());
-    let wanted = match pick {
-        VariantPick::NewConversation(_) => entry.and_then(|m| m.default_variant.clone()),
-        VariantPick::Current => state.variant.clone(),
-    };
     let start = wanted
         .and_then(|w| rows.iter().position(|r| *r == w))
         .unwrap_or(rows.len() - 1);

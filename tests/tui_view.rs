@@ -1386,6 +1386,7 @@ fn the_variant_list_of_a_running_conversation_says_it_applies_next_turn() {
     let mut s = big_catalog();
     s.selected_model_alias = Some("opus".into());
     s.variant = Some("high".into());
+    s.variant_offer = Some(vec!["low".into(), "high".into(), "max".into()]);
     s.activity = Activity::Running;
     let mut ui = UiState {
         overlay: Some(Overlay::Variants),

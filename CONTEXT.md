@@ -70,6 +70,37 @@ A role described in a built-in or a markdown file: description, mode (primary, s
 role prompt, optional model, tool allow/deny map and access level. `build` and `plan` are reserved.
 _Avoid_: profile (a profile is the kind of session, such as the navigator)
 
+**Subagent**:
+An agent definition whose mode is `subagent` or `all`, meant to be given a task by another agent
+(`explore` and `review` are built in and read-only). The definitions exist and load; **a subagent
+cannot be started yet**, so only primary agents run today.
+_Avoid_: worker, child agent
+
+## Models and commands
+
+**Model alias**:
+A name in `models.json` (`cognition`, `fast`, your own) that stands for one provider, model, API and
+set of limits. Sessions, agents and the navigator layers refer to aliases, never to raw model ids. A
+conversation saves what its alias resolved to and keeps it, until `/model <alias>` moves it to
+another alias between turns (the history goes with it, and the switch is announced by `model.changed`).
+_Avoid_: model name, preset
+
+**Variant**:
+A named set of request overrides that an alias offers, such as a reasoning effort (`low`, `high`).
+One variant is in use per conversation: it starts on the alias's default, `/variant <name>` changes
+it from the next turn, and `/variant off` clears it. Variants come from `models.json` or from the
+tiers the provider reports.
+_Avoid_: thinking level, mode, profile
+
+**Session command**:
+A `/name` the server runs on a conversation: `/help`, `/model`, `/new`, `/stop`, `/context`,
+`/variant`, `/compact`, `/agent`. A command has a result, shown in the conversation. While a permission request is pending, `/stop`
+runs (and cancels the request) and every other command is refused. While an `ask` is pending, every
+command is refused, `/stop` included; the stop endpoint (`POST /v1/sessions/{id}/stop`) still works. `//text` sends the literal text `/text`. The
+terminal client also has its own commands (`/sessions`, `/theme`, `/quit`), and it opens a new tab
+for `/model <alias>` and `/new <alias>` instead of running them on the open conversation.
+_Avoid_: tool, action (an action is what a pipeline branch decides)
+
 ## Permissions
 
 **Permission request**:
@@ -96,7 +127,10 @@ _Avoid_: filter, sandbox, policy
 
 **Pending interaction**:
 What a yielded actor waits for: the answer to an `ask`, or the decision on a permission request (with
-the held call and the calls behind it).
+the held call and the calls behind it). While a permission request is pending, session commands are
+refused, except `/stop`, which runs and cancels the request. While an `ask` is pending, all session
+commands are refused, `/stop` included, until it is answered. The stop endpoint
+(`POST /v1/sessions/{id}/stop`) works in both cases.
 
 ## Shared context
 
@@ -119,6 +153,12 @@ _Avoid_: session state, cache
 The metacognition bringing something to the cognition's attention, turning a fast observation into a
 deliberate discussion.
 _Avoid_: escalate, trigger (a trigger is an instinct input)
+
+**Wake hold**:
+The rule that, while a conversation waits for an answer to an `ask` or for a permission decision, a
+wake from the navigator is kept back instead of delivered. Only the latest held wake is kept, and it
+is delivered once nothing is pending. Driver text, unlike a wake, still cancels a permission request.
+_Avoid_: mute, queue
 
 **Trigger**:
 An event (save, idle, diagnostic change, conversation turn) that makes the instinct evaluate whether

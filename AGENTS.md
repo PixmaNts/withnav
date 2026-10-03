@@ -8,14 +8,14 @@ Guidance for AI agents working in Navai (formerly `rust-agent`).
 new code goes. Check its "Where new code goes" list before writing a helper or a test harness: the
 one you need probably exists.
 
-## Branches and merge requests
+## Branches and pull requests
 
 - `main`: releases only, each one tagged `vX.Y.Z`. Never commit to it directly.
-- `develop`: the integration branch. Every change reaches it through a merge request.
+- `develop`: the integration branch. Every change reaches it through a pull request.
 - Work happens on a branch off `develop`: `feat/<name>` for a feature, `fix/<name>` for a bug,
   `refactor/<name>`, `docs/<name>` or `test/<name>` otherwise. One topic per branch; short names in
   kebab-case.
-- A merge request into `develop` is ready when `cargo build --bins`, `cargo test`,
+- A pull request into `develop` is ready when `cargo build --bins`, `cargo test`,
   `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` and, if the extension changed,
   `npm run compile` in `vscode-navigator/` all pass. Its description says what changed for the
   driver, and how it was verified.

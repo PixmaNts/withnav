@@ -17,7 +17,7 @@ say what the agent may execute.
   interaction that suspends the turn and resumes it: the same yield-and-resume path the `ask` tool uses.
   The approved call runs once, before another model request, and its real result enters the transcript;
   a denial enters it as a denied result. Approval text is never a tool result, and nothing the model or a
-  chat message says can grant. This part of the work comes after the agents themselves.
+  chat message says can grant. This is built: see the permission gate in `agent/permissions.rs`.
 - **Jev only evaluates the exceptions of `plan`.** The fast decision layer is asked, within a short
   deadline, whether a `write`, `edit` or `bash` of the `plan` agent conforms to its role (a write of a
   `*.md` file is exempt). Only a clear "conforms" lets the call run without the driver; anything else,
@@ -42,4 +42,4 @@ say what the agent may execute.
   are enforced in different places and fail separately.
 - The permission gate and the role guard have landed: `build` asks for every effect, and `plan` asks
   Jev first about the ones its prompt does not allow.
-- The event catalog grows by one kind (`session.agent_changed`), and later by the permission events.
+- The event catalog grew by `session.agent_changed`, and then by `permission.requested` and `permission.resolved`.

@@ -300,12 +300,6 @@ pub enum ChildStatus {
 impl ChildStatus {
     pub fn terminal_event(event: &EventEnvelope) -> Option<Self> {
         match event.kind.as_str() {
-            "turn.end" => match event.payload["outcome"].as_str() {
-                Some("done") => Some(Self::Done),
-                Some("error") => Some(Self::Failed),
-                Some("interrupted") => Some(Self::Stopped),
-                _ => None,
-            },
             "session.end" => Some(Self::Stopped),
             _ => None,
         }

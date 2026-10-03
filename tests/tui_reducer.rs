@@ -18,6 +18,94 @@ use ulid::Ulid;
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
 #[test]
+fn interrupted_steering_keeps_watched_and_open_children_running_then_parked() {
+    for opened in [false, true] {
+        for close_parent in [false, true] {
+            if !opened && close_parent {
+                continue;
+            }
+            let mut s = subagent_parent();
+            spawn_subagent(&mut s, None);
+            let mut ui = UiState::default();
+            if opened {
+                handle_action(&mut s, &mut ui, Action::OpenChild(Ulid(2).to_string()));
+                let metadata = serde_json::from_value(json!({"session_id":Ulid(2),"workspace":"/ws","model":"fast","actor_state":"active","agent":"explore","current_seq":0,"parent_session_id":Ulid(1),"promptable":false,"child_status":"running"})).unwrap();
+                let generation = s.generation.clone();
+                update(
+                    &mut s,
+                    ClientEvent::Metadata {
+                        generation,
+                        result: Ok(metadata),
+                    },
+                )
+                .unwrap();
+                if close_parent {
+                    s.active = 0;
+                    handle_action(&mut s, &mut ui, Action::CloseTab);
+                }
+            }
+            let mut script = Script::new();
+            script.seq = 10;
+            script.raw("turn.end", json!({"outcome":"interrupted"}));
+            script.raw("turn.start", json!({"turn_id":"steered-turn"}));
+            script.raw(
+                "agent.yield",
+                json!({"kind":"budget","question":"step budget exhausted"}),
+            );
+            for replay in [false, true] {
+                if replay && opened {
+                    let generation = s.generation.clone();
+                    update(&mut s, ClientEvent::Resync { generation }).unwrap();
+                }
+                for (index, envelope) in script.out.iter().enumerate() {
+                    let generation = s.generation.clone();
+                    let event = if opened {
+                        ClientEvent::Envelope {
+                            generation,
+                            envelope: envelope.clone(),
+                        }
+                    } else {
+                        ClientEvent::ChildEnvelope {
+                            generation,
+                            child_session_id: Ulid(2).to_string(),
+                            envelope: envelope.clone(),
+                        }
+                    };
+                    let effects = update(&mut s, event).unwrap();
+                    assert!(!effects.iter().any(|e| matches!(
+                        e,
+                        Effect::FetchChildTerminalMetadata(_) | Effect::UnwatchChild(_)
+                    )));
+                    let status = if opened {
+                        s.active_child_status()
+                    } else {
+                        s.children[0].status
+                    };
+                    assert!(!status.terminal());
+                    if !replay {
+                        assert_eq!(
+                            status,
+                            if index == 2 {
+                                ChildStatus::OutOfSteps
+                            } else {
+                                ChildStatus::Running
+                            }
+                        );
+                    }
+                }
+                if opened {
+                    handle_action(&mut s, &mut ui, Action::ContinueChild);
+                    assert!(ui.child_confirm.is_some());
+                    handle_action(&mut s, &mut ui, Action::CancelChildControl);
+                } else {
+                    assert_eq!(s.children[0].status, ChildStatus::OutOfSteps);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn a_child_finishes_after_its_parent_closes_and_refreshes_its_outcome() {
     for (kind, payload, expected) in [
         ("turn.end", json!({"outcome":"done"}), ChildStatus::Done),
@@ -36,15 +124,20 @@ fn a_child_finishes_after_its_parent_closes_and_refreshes_its_outcome() {
         handle_action(&mut s, &mut ui, Action::CloseTab);
         assert_eq!(s.tabs.len(), 1);
         let effects = subagent_event(&mut s, 10, kind, payload);
-        assert_eq!(s.active_child_status(), expected);
+        let projected = if kind == "session.end" {
+            expected
+        } else {
+            ChildStatus::Running
+        };
+        assert_eq!(s.active_child_status(), projected);
         assert!(effects.contains(&Effect::FetchChildTerminalMetadata(Ulid(2).to_string())));
         assert!(
             !subagent_event(&mut s, 10, "turn.start", json!({"turn_id":"late"}))
                 .contains(&Effect::FetchChildTerminalMetadata(Ulid(2).to_string()))
         );
-        assert_eq!(s.active_child_status(), expected);
+        assert_eq!(s.active_child_status(), projected);
         subagent_event(&mut s, 11, "turn.start", json!({"turn_id":"late"}));
-        assert_eq!(s.active_child_status(), expected);
+        assert_eq!(s.active_child_status(), projected);
         let metadata: SessionMetadata = serde_json::from_value(json!({"session_id":Ulid(2),"workspace":"/ws","model":"fast","agent":"explore","actor_state":"stopped","current_seq":11,"parent_session_id":Ulid(1),"promptable":false,"child_status":expected.label()})).unwrap();
         let generation = s.generation.clone();
         update(

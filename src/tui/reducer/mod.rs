@@ -281,7 +281,13 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     .map(|m| m.session_id.clone())
                     .or(s.resuming.clone())
                 {
-                    if super::state::ChildStatus::terminal_event(&envelope).is_some() {
+                    if super::state::ChildStatus::terminal_event(&envelope).is_some()
+                        || (envelope.kind == "turn.end"
+                            && matches!(
+                                envelope.payload["outcome"].as_str(),
+                                Some("done" | "error")
+                            ))
+                    {
                         effects.push(Effect::FetchChildTerminalMetadata(id.clone()));
                     }
                     project_child(s, &id, &envelope);

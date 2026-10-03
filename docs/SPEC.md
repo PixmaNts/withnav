@@ -1707,7 +1707,7 @@ OmniRoute works directly because it exposes an OpenAI-compatible endpoint. A mod
 
 ### 21.2 `models.json`
 
-Where it is read, first found wins: the explicit `--models` path, `<workspace>/models.json`, then `~/.config/navai/models.json`. The repository's `models.json` is an example with the role aliases. Shape:
+Where it is read, first found wins: the explicit `--models` path, `<workspace>/models.json`, then `~/.config/navai/models.json`. The repository ships `models.example.json`, an example with the role aliases; a `models.json` at the root of a checkout is git-ignored, since it would shadow your own config for sessions started there. Shape:
 
 ```json
 {

@@ -117,6 +117,8 @@ pub enum BusError {
 
 #[derive(Debug, Error)]
 pub enum ServerError {
+    #[error("child sessions are read-only to clients")]
+    ChildReadOnly,
     #[error("server bind error: {0}")]
     Bind(#[from] std::io::Error),
     #[error("session not found: {0}")]

@@ -708,6 +708,7 @@ async fn stop_session(State(state): State<AppState>, Path(id): Path<String>) -> 
 /// body; every other failure shares `{"error": ...}`.
 pub(crate) fn error_response(err: ServerError) -> Response {
     let status = match &err {
+        ServerError::ChildReadOnly => StatusCode::FORBIDDEN,
         ServerError::SessionNotFound(_) => StatusCode::NOT_FOUND,
         ServerError::SessionStopping
         | ServerError::ResumeRequired
@@ -741,6 +742,13 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         return (
             status,
             Json(json!({ "error": err.to_string(), "reason": "resume_required" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::ChildReadOnly) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "child_read_only" })),
         )
             .into_response();
     }

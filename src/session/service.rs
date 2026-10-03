@@ -29,7 +29,7 @@
 //! `mpsc::Sender` and [`Sequencer`] are `Clone`), release the lock, THEN
 //! await. clippy's `await_holding_lock` lint enforces this.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -38,7 +38,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
-use super::actor::{build_actor, start_candidate};
+use super::actor::{build_actor, build_child_actor, start_candidate};
 use super::config::SessionConfig;
 use super::hooks::{NoHooks, SessionHooks, StartedSession};
 use super::message::{accept, MessageAccepted};
@@ -102,6 +102,8 @@ pub struct SessionHandle {
     pub permissions: mpsc::Sender<crate::bus::inbox::PermissionAnswer>,
     /// The runtime's view of its actor: pending `ask`, running turn.
     pub status: Arc<runtime::RuntimeStatus>,
+    /// Owner of this session when it is a background child.
+    pub parent_session_id: Option<SessionId>,
 }
 
 /// The model selection of a live session, as the service sees it: the alias,
@@ -185,6 +187,11 @@ pub struct SessionSummary {
     /// The model variant in use; `null` for none.
     pub variant: Option<String>,
     pub current_seq: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_status: Option<String>,
+    pub promptable: bool,
 }
 
 /// The session service: the registry plus the immutable config. Cheap to
@@ -263,6 +270,120 @@ impl Service {
         self.lock_sessions().len()
     }
 
+    /// Builds and registers a fresh background session owned by `parent`.
+    /// It shares discovery inputs and workspace, but not transcript or root
+    /// tools; the caller commits its child link before starting a turn.
+    pub(crate) async fn create_child_session(
+        &self,
+        parent: SessionId,
+        agent: &str,
+        prompt: &str,
+    ) -> Result<SessionId, ServerError> {
+        let parent_handle = self.routable_handle(parent).await?;
+        if parent_handle.parent_session_id.is_some() {
+            return Err(ServerError::ChildReadOnly);
+        }
+        let parent_role = parent_handle.status.selection.current();
+        let agents = self
+            .load_agents(&parent_handle.workspace, parent, false)
+            .await;
+        let definition = agents
+            .get(agent)
+            .filter(|d| d.mode.is_subagent())
+            .cloned()
+            .ok_or_else(|| ServerError::UnknownAgent {
+                agent: agent.to_string(),
+                available: agents
+                    .all()
+                    .filter(|d| d.mode.is_subagent())
+                    .map(|d| d.id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            })?;
+        let parent_alias = parent_handle.selected().alias;
+        let alias = definition.model.as_deref().unwrap_or(&parent_alias);
+        let mut policy = BTreeMap::new();
+        let parent_access = parent_role.access;
+        policy.insert("read".into(), true);
+        for tool in ["grep", "glob", "fetch", "skill"] {
+            policy.insert(tool.into(), true);
+        }
+        let mut allowed = BTreeMap::new();
+        for tool in [
+            "read", "write", "edit", "bash", "grep", "glob", "fetch", "skill", "ask", "task",
+        ] {
+            let parent_allowed = parent_access != crate::agent::definitions::AgentAccess::ReadOnly
+                || !matches!(tool, "write" | "edit" | "bash" | "ask" | "task");
+            let child_allowed = definition.tools.get(tool).copied().unwrap_or(true)
+                && definition.access != crate::agent::definitions::AgentAccess::ReadOnly
+                || !matches!(tool, "write" | "edit" | "bash" | "ask" | "task");
+            let enabled = parent_allowed && child_allowed && tool != "ask" && tool != "task";
+            policy.insert(tool.to_string(), enabled);
+            allowed.insert(tool.to_string(), enabled);
+        }
+        let child = self
+            .spawn_session_kind(
+                &parent_handle.workspace,
+                Some(alias),
+                None,
+                Some(agent),
+                None,
+                &parent_handle.workspace,
+                &VariantChoice::Default,
+                Some((
+                    allowed,
+                    definition.access == crate::agent::definitions::AgentAccess::ReadOnly,
+                )),
+            )
+            .await?;
+        let frozen = serde_json::to_string(&policy).unwrap_or_else(|_| "{}".into());
+        if let Err(error) = self
+            .history
+            .create_child_link(parent, child, agent.to_string(), prompt.to_string(), frozen)
+            .await
+        {
+            let _ = self.close_session(child).await;
+            return Err(ServerError::History(error));
+        }
+        if let Some(handle) = self.handle(child) {
+            // The parent is immutable after publication; replacing the
+            // registry handle is safe before exposing the returned id.
+            self.lock_sessions().insert(
+                child,
+                SessionHandle {
+                    parent_session_id: Some(parent),
+                    ..handle
+                },
+            );
+        }
+        if let Some(handle) = self.handle(child) {
+            let _ = accept(&handle, Command::child_prompt(child, prompt.to_string())).await;
+        }
+        let parent_candidate = Candidate::new(
+            EventKind::SubagentSpawned,
+            serde_json::to_value(crate::bus::event::SubagentSpawned {
+                parent_session_id: parent,
+                child_session_id: child,
+                agent: agent.to_string(),
+                goal: crate::tools::bound_output(prompt, 1024).0,
+                tool_call_id: "server".into(),
+            })
+            .unwrap_or(serde_json::Value::Null),
+        );
+        let _ = parent_handle.sequencer.publish(parent_candidate);
+        Ok(child)
+    }
+
+    pub async fn child_metadata(
+        &self,
+        id: SessionId,
+    ) -> Result<Option<super::store::ChildLink>, ServerError> {
+        self.history
+            .child_link(id)
+            .await
+            .map_err(ServerError::History)
+    }
+
     /// A clone of the session's handle, for routing without holding the
     /// lock. `None` for a closed or unknown id.
     pub(crate) fn handle(&self, id: SessionId) -> Option<SessionHandle> {
@@ -303,6 +424,9 @@ impl Service {
     /// the command reaches the inbox, and only for an accepted command.
     pub async fn send(&self, command: Command) -> Result<MessageAccepted, ServerError> {
         let handle = self.routable_handle(command.session_id).await?;
+        if handle.parent_session_id.is_some() {
+            return Err(ServerError::ChildReadOnly);
+        }
         accept(&handle, command).await
     }
 
@@ -534,7 +658,18 @@ impl Service {
         // Clone out of the guard; the head query below is a plain sequencer
         // round-trip (the manager reads no events).
         let Some(handle) = self.handle(id) else {
-            return self.stored_summary(id).await;
+            let mut summary = self.stored_summary(id).await?;
+            if let Some(link) = self
+                .history
+                .child_link(id)
+                .await
+                .map_err(ServerError::History)?
+            {
+                summary.parent_session_id = Some(link.parent_id.to_string());
+                summary.child_status = Some(link.status);
+                summary.promptable = false;
+            }
+            return Ok(summary);
         };
         let current_seq = handle
             .sequencer
@@ -551,6 +686,17 @@ impl Service {
             model: selected.alias,
             agent: handle.status.selection.current().id.to_string(),
             current_seq,
+            parent_session_id: handle.parent_session_id.map(|id| id.to_string()),
+            child_status: if handle.parent_session_id.is_some() {
+                self.history
+                    .child_link(id)
+                    .await
+                    .map_err(ServerError::History)?
+                    .map(|link| link.status)
+            } else {
+                None
+            },
+            promptable: handle.parent_session_id.is_none(),
         })
     }
 
@@ -573,6 +719,9 @@ impl Service {
                 .unwrap_or_else(|| AgentId::build().to_string()),
             variant: meta.variant,
             current_seq: meta.last_seq,
+            parent_session_id: None,
+            child_status: None,
+            promptable: true,
         })
     }
 
@@ -699,6 +848,31 @@ impl Service {
         resume_workspace: &Path,
         variant: &VariantChoice,
     ) -> Result<SessionId, ServerError> {
+        self.spawn_session_kind(
+            workspace,
+            model,
+            profile,
+            agent,
+            resumed,
+            resume_workspace,
+            variant,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn spawn_session_kind(
+        &self,
+        workspace: &Path,
+        model: Option<&str>,
+        profile: Option<&str>,
+        agent: Option<&str>,
+        resumed: Option<ResumedSession>,
+        resume_workspace: &Path,
+        variant: &VariantChoice,
+        child_policy: Option<(BTreeMap<String, bool>, bool)>,
+    ) -> Result<SessionId, ServerError> {
         // Resume keeps the stored model/profile/workspace (the stored row is
         // the authority); a fresh session honors the request's.
         let session_id = match &resumed {
@@ -775,13 +949,24 @@ impl Service {
             reason: e.to_string(),
         })?;
         let session_cancel = CancellationToken::new();
-        let mut actor = build_actor(
-            &workspace,
-            &self.config.config_dir,
-            resolved,
-            api_key,
-            session_cancel.child_token(),
-        );
+        let mut actor = match child_policy {
+            Some((allowed, read_only)) => build_child_actor(
+                &workspace,
+                &self.config.config_dir,
+                resolved,
+                api_key,
+                session_cancel.child_token(),
+                allowed,
+                read_only,
+            ),
+            None => build_actor(
+                &workspace,
+                &self.config.config_dir,
+                resolved,
+                api_key,
+                session_cancel.child_token(),
+            ),
+        };
         if let Some(loaded) = &resumed {
             actor.transcript = loaded.transcript.clone();
             actor.compaction = loaded.compaction.clone();
@@ -951,6 +1136,7 @@ impl Service {
             workspace: workspace.clone(),
             selected: selected_model,
             status,
+            parent_session_id: None,
         };
         let sender = SessionSender::new(session_id, handle.clone());
         let cancel = handle.session_cancel.clone();

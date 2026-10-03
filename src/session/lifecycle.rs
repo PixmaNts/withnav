@@ -211,6 +211,7 @@ mod tests {
                 },
             )),
             status: Arc::default(),
+            parent_session_id: None,
         }
     }
 

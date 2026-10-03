@@ -79,6 +79,20 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
         ]
     });
 
+    // A switch the server accepted for after this turn, beside the model still in use.
+    let pending = state.model_pending.as_deref().map(|alias| {
+        let target = if alias.is_empty() {
+            "→ new model".to_string()
+        } else {
+            format!("→ {}", fit_end(alias, (total / 6).max(4)))
+        };
+        vec![
+            Span::raw("  "),
+            Span::styled(target, theme.warning()),
+            Span::styled(" (after this turn)", theme.muted()),
+        ]
+    });
+
     let mut room = total.saturating_sub(width(&logo) + width(&lead) + 3);
     let mut take = |spans: Option<Vec<Span<'static>>>| match spans {
         Some(spans) if width(&spans) <= room => {
@@ -87,6 +101,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
         }
         _ => None,
     };
+    let pending = take(pending);
     let gauge = take(Some(gauge));
     let branch = take(branch);
     let variant = take(variant);
@@ -112,6 +127,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     right.extend(model.unwrap_or_default());
     right.extend(variant.unwrap_or_default());
     right.extend(gauge.unwrap_or_default());
+    right.extend(pending.unwrap_or_default());
     right.push(Span::raw(" "));
     let gap = total.saturating_sub(width(&left) + width(&right));
     left.push(Span::raw(" ".repeat(gap)));

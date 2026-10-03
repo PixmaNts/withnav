@@ -2848,3 +2848,101 @@ fn the_three_permission_choices_stay_on_a_narrow_key_bar() {
         }
     }
 }
+
+// ---------------------------------------------------------------- model switch
+
+#[test]
+fn the_header_shows_the_model_in_use_and_a_switch_waiting_for_the_turn() {
+    let mut s = done();
+    s.activity = Activity::Running;
+    s.model_pending = Some("luna".into());
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    render("model-pending", (140, 24), &s, &ui, &Editor::new());
+    let header = row_text(&cells(&s, &ui, (140, 24)), 0, 140);
+    assert!(
+        header.contains(
+            "▌build  cognition · cc/claude-opus-5-5 · 12.4k / 200k  → luna (after this turn)"
+        ),
+        "{header}"
+    );
+    // narrow: the switch stays, the model name gives way first
+    let header = row_text(&cells(&s, &ui, (80, 24)), 0, 80);
+    assert!(header.contains("→ luna (after this turn)"), "{header}");
+    // the picker on a running conversation says when it applies
+    let ui = UiState {
+        overlay: Some(Overlay::Models),
+        ..UiState::default()
+    };
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(shown.contains("Switch this conversation to…"), "{shown}");
+    assert!(
+        shown.contains("applies after this turn · ctrl+n new tab on it"),
+        "{shown}"
+    );
+    // and refuses while a permission request waits
+    let s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(shown.contains("waiting for approval"), "{shown}");
+}
+
+#[test]
+fn enter_in_the_model_list_switches_a_live_tab_and_ctrl_n_opens_a_new_one() {
+    let s = done();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    route_key(
+        key(KeyCode::F(2), KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    // ctrl+n: the variant step for a new tab
+    route_key(
+        key(KeyCode::Char('n'), KeyModifiers::CONTROL),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(
+        ui.variant_pick,
+        Some(navai::tui::state::VariantPick::NewConversation(
+            "cognition".into()
+        ))
+    );
+    let enter = key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(
+        route_key(enter, &s, &mut ui, &mut editor),
+        Some(Action::PickModel("cognition".into()))
+    );
+    // enter: the switch
+    route_key(
+        key(KeyCode::F(2), KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    route_key(enter, &s, &mut ui, &mut editor);
+    assert_eq!(
+        ui.variant_pick,
+        Some(navai::tui::state::VariantPick::Switch("cognition".into()))
+    );
+    // while a question waits, enter says why and switches nothing
+    let mut waiting = done();
+    waiting.activity = Activity::AwaitingUser;
+    let mut ui = UiState::default();
+    route_key(
+        key(KeyCode::F(2), KeyModifiers::NONE),
+        &waiting,
+        &mut ui,
+        &mut editor,
+    );
+    let action = route_key(enter, &waiting, &mut ui, &mut editor);
+    assert!(
+        matches!(&action, Some(Action::ShowNotice(why)) if why.contains("waiting for your answer")),
+        "{action:?}"
+    );
+    assert_eq!(ui.variant_pick, None);
+}

@@ -10,7 +10,7 @@
 //! are only buffered per index until the step's `llm.response` replaces them.
 use super::{block, text::strip_controls};
 use crate::{
-    bus::event::{ContextSnapshot, EventEnvelope, EventKind},
+    bus::event::{ContextSnapshot, EventEnvelope, EventKind, ModelChangeReason, ModelChanged},
     provider::{StreamDelta, ToolCall, Usage},
     tools::ToolStatus,
     tui::{
@@ -350,6 +350,34 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 )),
             ));
         }
+        Some(EventKind::ModelChanged) => {
+            let changed: ModelChanged = serde_json::from_value(e.payload).map_err(|_| bad())?;
+            let new = &changed.new;
+            s.selected_model_alias = Some(strip_controls(&new.alias));
+            s.selected_model_name = Some(strip_controls(&new.model));
+            s.context_window = Some(changed.window);
+            s.variant = changed.variant.as_deref().map(strip_controls);
+            s.model_seq = Some(e.seq);
+            s.variant_seq = Some(e.seq);
+            // The selection is committed: nothing waits any more.
+            s.model_pending = None;
+            if changed.reason == ModelChangeReason::Switch {
+                s.model_request = None;
+                let from = changed
+                    .previous
+                    .as_ref()
+                    .map(|p| strip_controls(&p.alias))
+                    .unwrap_or_else(|| "—".into());
+                let mut text = format!("model: {from} → {}", strip_controls(&new.alias));
+                if let Some(variant) = &s.variant {
+                    text.push_str(&format!(" · {variant}"));
+                }
+                text.push_str(&format!(" · {}", super::tokens(changed.window)));
+                s.conversation
+                    .blocks
+                    .push(block(format!("notice:{}", e.seq), BlockKind::Notice(text)));
+            }
+        }
         Some(EventKind::SessionAgentChanged) => {
             let agent = e.payload["agent"].as_str().ok_or_else(bad)?;
             s.agent = Some(strip_controls(agent));
@@ -359,6 +387,44 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             let v = e.payload;
             let name = v["name"].as_str().ok_or_else(bad)?.to_string();
             let ok = v["ok"].as_bool().ok_or_else(bad)?;
+            // `/model`: a switch that was made already shows as its `model.changed` notice; an
+            // acceptance for after the turn is kept for the header; a refusal says why.
+            if name == "model" {
+                let data = v.get("data").filter(|d| !d.is_null());
+                let deferred = ok
+                    && data.is_some_and(|d| {
+                        d["accepted"].as_bool() == Some(true) && d["applies"] == "after_turn"
+                    });
+                let made = ok && data.is_some_and(|d| d["changed"].as_bool() == Some(true));
+                if deferred {
+                    s.model_pending = Some(s.model_request.take().unwrap_or_default());
+                } else {
+                    s.model_request = None;
+                    s.model_pending = None;
+                    if !ok {
+                        s.variant_after_switch = None;
+                    }
+                }
+                if made {
+                    return Ok(());
+                }
+                if deferred {
+                    let target = s.model_pending.clone().filter(|a| !a.is_empty());
+                    let text = match target {
+                        Some(alias) => format!("switches to {alias} after this turn"),
+                        None => "the switch applies after this turn".into(),
+                    };
+                    s.conversation.blocks.push(block(
+                        e.seq.to_string(),
+                        BlockKind::Command {
+                            name,
+                            ok,
+                            text: strip_controls(&text),
+                        },
+                    ));
+                    return Ok(());
+                }
+            }
             // `/variant` answers with the variant in use, after a change or not.
             if name == "variant" && ok {
                 if let Some(data) = v.get("data") {

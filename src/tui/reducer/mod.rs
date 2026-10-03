@@ -107,6 +107,10 @@ pub(crate) fn start_conversation(s: &mut State) {
     s.resuming = None;
     s.agent_seq = None;
     s.variant_seq = None;
+    s.model_seq = None;
+    s.model_request = None;
+    s.model_pending = None;
+    s.variant_after_switch = None;
     s.variant_offer = None;
     s.variant_list_wanted = false;
     s.pending_submit_text = None;
@@ -436,8 +440,10 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 if newer(s.variant_seq) {
                     s.variant = m.variant.clone();
                 }
-                s.selected_model_alias = Some(m.model.clone());
-                refresh_model(s);
+                if newer(s.model_seq) {
+                    s.selected_model_alias = Some(m.model.clone());
+                    refresh_model(s);
+                }
                 s.session = Some(m)
             }
         }

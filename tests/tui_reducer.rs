@@ -3515,3 +3515,229 @@ fn no_switch_is_sent_while_the_agent_waits_for_the_driver() {
         BlockKind::Command { ok: false, text, .. } if text.contains("waiting for your answer")
     ));
 }
+
+fn model_changed(
+    s: &mut Script,
+    revision: u64,
+    reason: ModelChangeReason,
+    from: Option<&str>,
+    to: &str,
+    variant: Option<&str>,
+    window: u64,
+) {
+    let identity = |alias: &str| ModelIdentity {
+        alias: alias.into(),
+        provider: "p".into(),
+        model: format!("vendor/{alias}"),
+    };
+    s.push(
+        EventKind::ModelChanged,
+        &ModelChanged {
+            operation_id: None,
+            revision,
+            reason,
+            previous: from.map(identity),
+            new: identity(to),
+            variant: variant.map(str::to_string),
+            window,
+            input_budget: window / 2,
+            from_message: 0,
+        },
+    );
+}
+
+fn command_result(s: &mut Script, ok: bool, data: Option<Value>, error: Option<&str>) {
+    s.push(
+        EventKind::CommandResult,
+        &CommandResult {
+            operation_id: Ulid(77),
+            name: "model".into(),
+            ok,
+            data,
+            error: error.map(str::to_string),
+        },
+    );
+}
+
+#[test]
+fn model_changed_moves_the_tab_to_the_new_model_live_and_on_replay() {
+    let mut script = Script::new();
+    script.start();
+    model_changed(
+        &mut script,
+        1,
+        ModelChangeReason::Initial,
+        None,
+        "opus",
+        None,
+        200_000,
+    );
+    model_changed(
+        &mut script,
+        2,
+        ModelChangeReason::Switch,
+        Some("opus"),
+        "luna",
+        Some("high"),
+        872_000,
+    );
+    command_result(
+        &mut script,
+        true,
+        Some(json!({"alias": "luna", "changed": true, "applies": "now"})),
+        None,
+    );
+    let mut s = st();
+    feed(&mut s, &script.out);
+    assert_eq!(s.selected_model_alias.as_deref(), Some("luna"));
+    assert_eq!(s.selected_model_name.as_deref(), Some("vendor/luna"));
+    assert_eq!(s.variant.as_deref(), Some("high"));
+    assert_eq!(s.context_window, Some(872_000));
+    let notices: Vec<String> = s
+        .conversation
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.kind {
+            BlockKind::Notice(n) => Some(n.clone()),
+            BlockKind::Command { name, text, .. } if name == "model" => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        notices,
+        ["model: opus → luna · high · 872k"],
+        "one compact notice; the start and the done result add none"
+    );
+    // replay gives the same tab
+    let mut again = st();
+    feed(&mut again, &script.out);
+    assert_eq!(again.conversation.blocks, s.conversation.blocks);
+    assert_eq!(again.selected_model_alias, s.selected_model_alias);
+    // a session summary read before the switch does not undo it
+    let old = ClientEvent::Metadata {
+        generation: s.generation.clone(),
+        result: Ok(SessionMetadata {
+            session_id: "S1".into(),
+            actor_state: "idle".into(),
+            workspace: "/ws".into(),
+            model: "opus".into(),
+            agent: None,
+            variant: None,
+            current_seq: 1,
+        }),
+    };
+    update(&mut s, old).unwrap();
+    assert_eq!(s.selected_model_alias.as_deref(), Some("luna"));
+    assert_eq!(s.variant.as_deref(), Some("high"));
+}
+
+#[test]
+fn an_accepted_switch_waits_beside_the_model_in_use_until_it_is_made() {
+    let (mut s, mut ui) = (st(), ui());
+    models_now(&mut s, Some("a".into())).unwrap();
+    created_now(&mut s, "S1").unwrap();
+    s.activity = Activity::Running;
+    handle_action(&mut s, &mut ui, Action::SwitchModel("b".into()));
+    let mut script = Script::new();
+    command_result(
+        &mut script,
+        true,
+        Some(json!({"accepted": true, "applies": "after_turn"})),
+        None,
+    );
+    feed(&mut s, &script.out);
+    assert_eq!(s.model_pending.as_deref(), Some("b"));
+    assert_eq!(
+        s.selected_model_alias.as_deref(),
+        Some("a"),
+        "still the one in use"
+    );
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Command { text, .. } if text == "switches to b after this turn"
+    ));
+    let mut script = Script::new();
+    model_changed(
+        &mut script,
+        2,
+        ModelChangeReason::Switch,
+        Some("a"),
+        "b",
+        None,
+        1000,
+    );
+    for e in &mut script.out {
+        e.seq += 50;
+    }
+    feed(&mut s, &script.out);
+    assert_eq!(s.model_pending, None);
+    assert_eq!(s.selected_model_alias.as_deref(), Some("b"));
+}
+
+#[test]
+fn a_refused_switch_shows_the_servers_reason_and_changes_nothing() {
+    let (mut s, mut ui) = (st(), ui());
+    models_now(&mut s, Some("a".into())).unwrap();
+    created_now(&mut s, "S1").unwrap();
+    handle_action(&mut s, &mut ui, Action::SwitchModel("b".into()));
+    let mut script = Script::new();
+    command_result(
+        &mut script,
+        false,
+        None,
+        Some("the conversation does not fit b's window: /compact first"),
+    );
+    feed(&mut s, &script.out);
+    assert_eq!(s.selected_model_alias.as_deref(), Some("a"));
+    assert_eq!(
+        (s.model_request.clone(), s.model_pending.clone()),
+        (None, None)
+    );
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Command { ok: false, text, .. }
+            if text == "the conversation does not fit b's window: /compact first"
+    ));
+}
+
+#[test]
+fn a_variant_chosen_with_the_switch_is_asked_for_once_the_switch_is_made() {
+    let (mut s, mut ui) = (st(), ui());
+    models_now(&mut s, Some("a".into())).unwrap();
+    created_now(&mut s, "S1").unwrap();
+    // the picker's second step on a live tab
+    ui.variant_pick = Some(VariantPick::Switch("b".into()));
+    let fx = handle_action(&mut s, &mut ui, Action::PickVariant("low".into()));
+    assert_eq!(fx, vec![model_command("b")]);
+    let mut script = Script::new();
+    model_changed(
+        &mut script,
+        2,
+        ModelChangeReason::Switch,
+        Some("a"),
+        "b",
+        Some("high"),
+        1000,
+    );
+    let ev = envelope(&s, &script.out[0]);
+    let fx = update(&mut s, ev).unwrap();
+    assert_eq!(
+        fx,
+        vec![Effect::RunCommand {
+            session_id: "S1".into(),
+            request: CommandRequest {
+                name: "variant".into(),
+                arguments: "low".into(),
+            },
+            revision: None,
+        }]
+    );
+    assert_eq!(s.variant_after_switch, None);
+    // keeping the target's default asks for nothing more
+    ui.variant_pick = Some(VariantPick::Switch("a".into()));
+    handle_action(&mut s, &mut ui, Action::PickVariant("off".into()));
+    assert_eq!(
+        s.variant_after_switch, None,
+        "a has no default variant: off is its default"
+    );
+}

@@ -177,6 +177,12 @@ pub struct Tab {
     pub start_variant: Option<Option<String>>,
     /// The alias of the last `/model` this client sent, until the server answered it.
     pub model_request: Option<String>,
+    /// A switch the server accepted for after the running turn: the alias when this client asked
+    /// for it, else empty. The header shows it beside the committed model until `model.changed`.
+    pub model_pending: Option<String>,
+    /// The seq of the last `model.changed`: a session summary read at an older seq does not
+    /// overwrite the model.
+    pub model_seq: Option<u64>,
     /// A variant to ask for once the conversation is on `alias` (`None` inside: no variant): the
     /// second step of a switch to a variant other than the target's default.
     pub variant_after_switch: Option<(String, Option<String>)>,

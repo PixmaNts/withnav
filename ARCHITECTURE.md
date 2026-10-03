@@ -247,8 +247,10 @@ it is and that run keeps using it.
   plan that cannot fit costs no provider call; the turn then ends with a `compaction` error that
   says `/compact` cannot help and to use a larger window. A model switch reuses `summarize` and
   `install` (`bus/runtime/model.rs::compact_for_target`): the old model compacts, aiming at the
-  target's budget, in an acknowledged commit that precedes the switch's own; if the switch then
-  fails the conversation stays on the old model with its checkpoint.
+  target's budget, in an acknowledged commit that precedes the switch's own. These are two
+  commits, not one transaction: if the switch then fails (or a stop cancels it) the conversation
+  stays on the old model WITH the new checkpoint, and a resume restores exactly that. The
+  checkpoint is sized for the target's budget, not the old model's.
 - Model switching (`/model <alias>` inside a conversation): `bus/runtime/model.rs`, run like
   `/compact` through the same control channel (`RuntimeStatus::request_model_switch`), between turns
   or after the running turn, from one ordered queue of deferred controls (`bus/runtime/deferred.rs`;

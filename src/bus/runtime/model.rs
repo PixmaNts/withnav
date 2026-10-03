@@ -146,11 +146,22 @@ fn identity_json(identity: &ModelIdentity) -> Value {
 /// A conversation that is larger than the target's input budget is compacted
 /// first, by the model it is on now (the target may be too small to read it),
 /// aiming at the target's budget and writing the checkpoint under the target's
-/// terms. The checkpoint and the switch are two acknowledged commits, in that
-/// order: if the switch then fails (the store refuses it, or a stop cancels
-/// it), the conversation stays on the old model WITH its new checkpoint, which
-/// fits the old model too. When even the recent turns that must stay verbatim
-/// do not fit the target, nothing is compacted and the switch is refused.
+/// terms.
+///
+/// Two acknowledged commits, in this order, never one transaction:
+///
+/// 1. the checkpoint (transcript and `sessions.checkpoint`, with its
+///    `context.compacted` of reason `switch`), installed on the actor;
+/// 2. the switch (selection, floor and `model.changed`).
+///
+/// If the second fails (the store refuses it, or a stop cancels it) the first
+/// stands: the conversation stays on the OLD model WITH the new checkpoint,
+/// which a resume restores. The checkpoint is a smaller prompt than before,
+/// measured for the target's budget; it is a valid prompt for the old model
+/// as well (the same transcript, summarized), but is not sized for it, so
+/// nothing is promised about how much room it leaves there. When even the
+/// recent turns that must stay verbatim do not fit the target, nothing is
+/// compacted and the switch is refused.
 pub(super) async fn run(
     actor: &mut AgentActor,
     status: &StdArc<RuntimeStatus>,

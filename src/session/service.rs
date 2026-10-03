@@ -123,6 +123,7 @@ pub struct SessionHandle {
 /// variant of another. A model switch installs all of it under one lock.
 #[derive(Debug, Clone)]
 pub struct SelectedModel {
+    pub(crate) execution: Option<Arc<EffectiveExecution>>,
     pub alias: String,
     /// The saved resolution (identity, window, where the window came from)
     /// the session runs on.
@@ -135,6 +136,17 @@ pub struct SelectedModel {
     /// What the alias offers as variants; replaced when an offer that was
     /// unknown at the start becomes known.
     pub(crate) offer: Arc<resolve::Offer>,
+}
+
+#[derive(Clone)]
+pub(crate) struct EffectiveExecution {
+    pub(crate) resolved: crate::provider::config::ResolvedModel,
+    pub(crate) api_key: String,
+}
+impl std::fmt::Debug for EffectiveExecution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EffectiveExecution { .. }")
+    }
 }
 
 impl SelectedModel {
@@ -210,6 +222,7 @@ impl Drop for ChildReservation {
 }
 
 struct PreparedSession {
+    execution: Arc<EffectiveExecution>,
     session_id: SessionId,
     workspace: PathBuf,
     alias: String,
@@ -1346,22 +1359,23 @@ impl Service {
         };
         let (resolved, api_key, snapshot, save_late, models_file) =
             if let Some(selection) = &inherited {
-                let (mut resolved, models_file) = self.resolve_model(resume_workspace, &alias)?;
+                let execution = selection
+                    .execution
+                    .as_ref()
+                    .expect("live parent has execution configuration");
+                let resolved = execution.resolved.clone();
+                let models_file = self
+                    .config
+                    .models_path
+                    .clone()
+                    .unwrap_or_else(|| resume_workspace.join("models.json"));
                 let snapshot = selection
                     .resolution
                     .as_ref()
                     .expect("live parent has a resolution")
                     .as_ref()
                     .clone();
-                resolved.model.model = snapshot.model.clone();
-                resolved.provider.base_url = snapshot.endpoint.clone();
-                resolved.model.context_window = Some(snapshot.bounds.context_window);
-                resolved.model.max_input_tokens = snapshot.bounds.max_input_tokens;
-                let api_key = crate::provider::auth::resolve_key(
-                    &self.config.config_dir,
-                    &snapshot.provider,
-                    resolved.provider.api_key_env.as_deref(),
-                )?;
+                let api_key = execution.api_key.clone();
                 (resolved, api_key, snapshot, false, models_file)
             } else {
                 self.resolve_for_spawn(session_id, resume_workspace, &alias, resumed.as_ref())
@@ -1415,6 +1429,10 @@ impl Service {
             reason: e.to_string(),
         })?;
         let session_cancel = CancellationToken::new();
+        let execution = Arc::new(EffectiveExecution {
+            resolved: resolved.clone(),
+            api_key: api_key.clone(),
+        });
         let root_tools_enabled =
             child_policy.is_none() && profile.is_none() && role.mode.is_primary();
         let mut actor = match &child_policy {
@@ -1491,6 +1509,7 @@ impl Service {
         };
 
         Ok(PreparedSession {
+            execution,
             session_id,
             workspace,
             alias,
@@ -1533,6 +1552,7 @@ impl Service {
 
     async fn publish_session(&self, prepared: PreparedSession) -> Result<SessionId, ServerError> {
         let PreparedSession {
+            execution,
             session_id,
             workspace,
             alias,
@@ -1666,6 +1686,7 @@ impl Service {
             1
         };
         let selected_model = Arc::new(Mutex::new(SelectedModel {
+            execution: Some(execution),
             alias: alias.clone(),
             resolution: Some(Arc::new(snapshot.clone())),
             revision,

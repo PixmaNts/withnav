@@ -117,6 +117,54 @@ async fn committed_child_is_terminalized_when_publication_or_start_fails() {
 }
 
 #[tokio::test]
+async fn inherited_child_keeps_parent_headers_and_output_limit_after_alias_edit() {
+    let mut provider = common::sse::spawn_streaming_provider().await;
+    let fx = fixture_at(&provider.url);
+    install_agents(&fx.root, &fx.ws);
+    let path = fx.root.join("models.json");
+    let mut config: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    config["providers"]["mock"]["headers"] = json!({"x-inherited":"parent"});
+    config["models"]["default"]["max_output_tokens"] = json!(4321);
+    std::fs::write(&path, config.to_string()).unwrap();
+    let parent = fx
+        .state
+        .create_session(&fx.ws, Some("default"), None)
+        .await
+        .unwrap();
+    fx.state
+        .send(navai::bus::command::Command::child_prompt(
+            parent,
+            "parent request".into(),
+        ))
+        .await
+        .unwrap();
+    let (parent_body, parent_stream) = provider.requests.recv().await.unwrap();
+    config["providers"]["mock"]["headers"] = json!({"x-inherited":"changed"});
+    config["providers"]["mock"]["base_url"] = json!(common::server::UNREACHABLE_PROVIDER_URL);
+    config["models"]["default"]["max_output_tokens"] = json!(8765);
+    std::fs::write(&path, config.to_string()).unwrap();
+    let child = fx
+        .state
+        .create_child_session(parent, "explore", "child request")
+        .await
+        .unwrap();
+    let (child_body, child_stream) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), provider.requests.recv())
+            .await
+            .unwrap()
+            .unwrap();
+    assert!(parent_body.to_lowercase().contains("x-inherited: parent"));
+    assert!(child_body.to_lowercase().contains("x-inherited: parent"));
+    for request in [parent_body, child_body] {
+        let body: Value = serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(body["max_tokens"], 4321);
+    }
+    fx.state.close_session(child).await.unwrap();
+    fx.state.close_all().await;
+    drop((parent_stream, child_stream));
+}
+
+#[tokio::test]
 async fn child_completion_after_parent_close_is_pending_until_resume() {
     let mut provider = common::sse::spawn_streaming_provider().await;
     let fx = fixture_at(&provider.url);
@@ -744,6 +792,17 @@ async fn parent_sse_replay_contains_spawned_and_done_after_completion() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !events(&fx, parent)
+            .await
+            .iter()
+            .any(|e| e.kind == "subagent.done")
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
     let replay = events(&fx, parent).await;
     let kinds: Vec<&str> = replay.iter().map(|event| event.kind.as_str()).collect();
     assert!(kinds.contains(&EventKind::SubagentSpawned.as_str()));

@@ -21,6 +21,7 @@ mod service;
 #[doc(hidden)]
 pub use service::ChildPreparationBarrier;
 pub mod store;
+pub mod subagents;
 mod subscription;
 
 pub use catalog::SessionListing;

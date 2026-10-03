@@ -17,6 +17,58 @@ use ulid::Ulid;
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
+#[tokio::test]
+async fn child_controls_and_permission_answers_use_the_owner_routes() {
+    use navai::tui::client::Client;
+    use wiremock::{
+        matchers::{body_json, method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/sessions/child/stop"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"accepted":true,"actor_state":"stopped"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/sessions/parent/children/child/continue"))
+        .respond_with(ResponseTemplate::new(409).set_body_json(json!({"error":"child_not_parked"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/sessions/parent/permissions/request"))
+        .and(body_json(
+            json!({"decision":"deny","message":"Stay in the workspace"}),
+        ))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri(), None);
+    assert!(client.stop("child").await.unwrap().accepted);
+    assert!(client
+        .continue_child("parent", "child")
+        .await
+        .unwrap_err()
+        .contains("child_not_parked"));
+    client
+        .answer_permission(
+            "parent",
+            "request",
+            PermissionAnswer {
+                decision: "deny".into(),
+                message: Some("Stay in the workspace".into()),
+            },
+        )
+        .await
+        .unwrap();
+}
+
 fn subagent_parent() -> State {
     let tab = Tab {
         session: Some(SessionMetadata {

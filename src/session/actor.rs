@@ -31,13 +31,47 @@ pub(super) fn build_actor(
     api_key: String,
     cancel: CancellationToken,
 ) -> AgentActor {
+    build_actor_with_policy(
+        workspace, config_dir, resolved, api_key, cancel, None, false,
+    )
+}
+
+pub(super) fn build_child_actor(
+    workspace: &Path,
+    config_dir: &Path,
+    resolved: ResolvedModel,
+    api_key: String,
+    cancel: CancellationToken,
+    allowed_tools: std::collections::BTreeMap<String, bool>,
+    read_only: bool,
+) -> AgentActor {
+    build_actor_with_policy(
+        workspace,
+        config_dir,
+        resolved,
+        api_key,
+        cancel,
+        Some(allowed_tools),
+        read_only,
+    )
+}
+
+fn build_actor_with_policy(
+    workspace: &Path,
+    config_dir: &Path,
+    resolved: ResolvedModel,
+    api_key: String,
+    cancel: CancellationToken,
+    allowed_tools: Option<std::collections::BTreeMap<String, bool>>,
+    read_only: bool,
+) -> AgentActor {
     let tool_context = ToolContext {
         workspace: workspace.to_path_buf(),
         writable_roots: vec![workspace.to_path_buf(), config_dir.to_path_buf()],
         readable_roots: Vec::new(),
     };
     AgentActor::new(
-        build_registry(),
+        build_registry(allowed_tools, read_only),
         tool_context,
         resolved.provider,
         api_key,
@@ -48,7 +82,10 @@ pub(super) fn build_actor(
     )
 }
 
-fn build_registry() -> Registry {
+fn build_registry(
+    allowed_tools: Option<std::collections::BTreeMap<String, bool>>,
+    read_only: bool,
+) -> Registry {
     let mut registry = Registry::new();
     registry.register(Box::new(crate::tools::native::ReadTool));
     registry.register(Box::new(crate::tools::native::WriteTool));
@@ -57,6 +94,14 @@ fn build_registry() -> Registry {
     registry.register(Box::new(crate::tools::native::GrepTool));
     registry.register(Box::new(crate::tools::glob::GlobTool));
     registry.register(Box::new(crate::tools::fetch::FetchTool::new()));
-    registry.register(Box::new(crate::tools::control::AskTool));
+    if !read_only {
+        registry.register(Box::new(crate::tools::control::AskTool));
+    }
+    if read_only {
+        registry.retain(|name| !matches!(name, "write" | "edit" | "bash" | "ask" | "task"));
+    }
+    if let Some(allowed) = allowed_tools {
+        registry.retain(|name| allowed.get(name).copied().unwrap_or(true));
+    }
     registry
 }

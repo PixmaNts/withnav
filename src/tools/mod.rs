@@ -213,6 +213,13 @@ impl Registry {
         self.tools.keys().cloned().collect()
     }
 
+    /// Removes tools outside a session's frozen capability ceiling. Both
+    /// schemas and dispatch use this registry, so a model cannot bypass a
+    /// hidden tool by naming it directly.
+    pub fn retain(&mut self, mut allowed: impl FnMut(&str) -> bool) {
+        self.tools.retain(|name, _| allowed(name));
+    }
+
     pub fn schemas(&self) -> Vec<ToolDef> {
         self.tools
             .values()

@@ -125,6 +125,7 @@ impl Service {
         };
         drop(admission);
         for (id, handle) in targets {
+            self.wait_child_operation(id).await;
             let parent = handle.parent_session_id;
             self.fence_and_remove(id, handle, "shutdown").await;
             if let Some(parent) = parent {

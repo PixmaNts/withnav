@@ -19,6 +19,7 @@ impl std::fmt::Debug for DeliveryCell {
 pub(super) async fn apply(
     actor: &mut AgentActor,
     status: &super::RuntimeStatus,
+    sequencer: &crate::bus::sequencer::Sequencer,
 ) -> Result<bool, String> {
     if actor.has_pending() {
         return Ok(false);
@@ -32,6 +33,13 @@ pub(super) async fn apply(
     let Some(callback) = callback else {
         return Ok(false);
     };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    sequencer
+        .after_events(Box::new(move || {
+            let _ = tx.send(());
+        }))
+        .map_err(|e| e.to_string())?;
+    rx.await.map_err(|e| e.to_string())?;
     if let Some(transcript) = callback(actor.transcript.clone()).await? {
         actor.transcript = transcript;
         Ok(true)

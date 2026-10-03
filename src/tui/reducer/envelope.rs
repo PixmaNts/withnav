@@ -255,6 +255,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         }
         Some(EventKind::PermissionRequested) => {
             let v = e.payload;
+            let child = v["child_session_id"].as_str();
             let text = |key: &str| -> Result<String, ProtocolError> {
                 Ok(strip_controls(v[key].as_str().ok_or_else(bad)?))
             };
@@ -271,7 +272,13 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 scope_kind: strip_controls(v["scope"]["kind"].as_str().ok_or_else(bad)?),
                 scope: strip_controls(v["scope"]["value"].as_str().ok_or_else(bad)?),
                 agent: strip_controls(v["agent"].as_str().unwrap_or_default()),
-                reason: strip_controls(v["reason"].as_str().unwrap_or_default()),
+                reason: strip_controls(&match child {
+                    Some(child) => format!(
+                        "child {child}: {}",
+                        v["reason"].as_str().unwrap_or_default()
+                    ),
+                    None => v["reason"].as_str().unwrap_or_default().to_string(),
+                }),
                 resolution: None,
                 message: None,
                 stale: false,
@@ -290,6 +297,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                             && old.resolution.as_deref().is_none_or(|r| r.starts_with("allow"))
                     )
                 })
+                .filter(|_| child.is_none())
                 .filter(|_| {
                     let tool_id = format!("tool:{}", prompt.tool_call_id);
                     !s.conversation.blocks.iter().any(|b| {
@@ -319,7 +327,9 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                     .blocks
                     .push(block(id, BlockKind::Permission(prompt))),
             }
-            s.activity = Activity::AwaitingUser;
+            if child.is_none() {
+                s.activity = Activity::AwaitingUser;
+            }
         }
         Some(EventKind::PermissionResolved) => {
             let v = e.payload;
@@ -337,7 +347,9 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 prompt.resolution = Some(resolution.clone());
             }
             let call_id = strip_controls(v["tool_call_id"].as_str().unwrap_or_default());
-            settle_held_tools(s, &call_id, &resolution);
+            if v["child_session_id"].is_null() {
+                settle_held_tools(s, &call_id, &resolution);
+            }
         }
         Some(EventKind::ContextCompacted) => {
             let v = e.payload;

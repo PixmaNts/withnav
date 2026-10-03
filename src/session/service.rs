@@ -1800,14 +1800,15 @@ impl Service {
             status.install_delivery(Arc::new(move |mut transcript| {
                 let history = history.clone();
                 Box::pin(async move {
+                    history.flush().await?;
                     let notices = history.unconsumed_completions(session_id).await?;
                     if notices.is_empty() {
                         return Ok(None);
                     }
                     let mut children = Vec::new();
                     for (child, payload, result) in notices {
-                        let result = crate::tools::bound_output(&result, 16 * 1024).0;
-                        let text = serde_json::json!({
+                        let mut result = crate::tools::bound_output(&result, 15 * 1024).0;
+                        let mut text = serde_json::json!({
                             "untrusted_subagent_output": true,
                             "child_session_id": child,
                             "agent": payload["agent"],
@@ -1815,6 +1816,11 @@ impl Service {
                             "result": result,
                         })
                         .to_string();
+                        while text.len() > 16 * 1024 {
+                            result = crate::tools::bound_output(&result, result.len() / 2).0;
+                            text = serde_json::json!({"untrusted_subagent_output":true,"child_session_id":child,
+                                "agent":payload["agent"],"outcome":payload["outcome"],"result":result}).to_string();
+                        }
                         transcript.push(ChatMessage::User { content: text });
                         children.push(child);
                     }

@@ -1009,6 +1009,14 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
         }
         Write::Delete { id } => {
             tx.execute(
+                "DELETE FROM completion_outbox WHERE parent_id=?1",
+                [id.to_string()],
+            )?;
+            tx.execute(
+                "DELETE FROM child_links WHERE child_id=?1 OR parent_id=?1",
+                [id.to_string()],
+            )?;
+            tx.execute(
                 "DELETE FROM events WHERE session_id = ?1",
                 params![id.to_string()],
             )?;

@@ -91,7 +91,6 @@ struct PermissionSlot {
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
     delivery: Mutex<Option<delivery::DeliveryCell>>,
-    delivery_wake: tokio::sync::Notify,
     variant: Mutex<VariantSlot>,
     /// The session's context gauge: written by the runtime at each boundary,
     /// read on demand by the service.
@@ -111,7 +110,7 @@ pub struct RuntimeStatus {
 
 impl RuntimeStatus {
     pub fn wake_delivery(&self) {
-        self.delivery_wake.notify_one();
+        let _ = self.controls.tx.send(Control::Delivery);
     }
     pub fn install_delivery(&self, delivery: Delivery) {
         *self.delivery.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -624,12 +623,12 @@ async fn runtime_loop(
             }
             _ = async {
                 if delivery_waiting && !actor.has_pending() { return; }
-                status.delivery_wake.notified().await;
+                std::future::pending::<()>().await;
             } => {
                 delivery_waiting = true;
                 if actor.has_pending() { continue; }
                 delivery_waiting = false;
-                match delivery::apply(&mut actor, &status).await {
+                match delivery::apply(&mut actor, &status, &sequencer).await {
                     Ok(true) => Some(Inbound::Completion),
                     Ok(false) => continue,
                     Err(error) => { tracing::error!(%error, "subagent wake delivery failed"); break; }
@@ -638,6 +637,7 @@ async fn runtime_loop(
             Some(control) = recv_control(&mut control) => {
                 // Between turns: run it now, publish its result, then answer.
                 match control {
+                    Control::Delivery => { delivery_waiting = true; }
                     Control::Compact(request) => {
                         let outcome = compact::run(
                             &mut actor,
@@ -732,7 +732,7 @@ async fn runtime_loop(
             }
         };
         // The turn runs as the agent and the variant selected now; a later
-        if let Err(error) = delivery::apply(&mut actor, &status).await {
+        if let Err(error) = delivery::apply(&mut actor, &status, &sequencer).await {
             tracing::error!(%error, "subagent transcript delivery failed");
             break;
         }
@@ -802,6 +802,7 @@ async fn runtime_loop(
                     Some(control) = recv_control(&mut control) => {
                         // A turn is running: accept now, run it at its end.
                         match control {
+                            Control::Delivery => { delivery_waiting = true; }
                             Control::Compact(request) => {
                                 let (operation_id, focus) =
                                     (request.operation_id, request.focus.clone());

@@ -10,6 +10,24 @@ pub struct WatchdogPark {
     doubt: AtomicBool,
     resumed: Notify,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn cancelled_turn_unwinds_a_doubt_boundary_without_resuming_it() {
+        let park = WatchdogPark::default();
+        assert!(park.park());
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(1), park.boundary(&cancel))
+            .await
+            .unwrap();
+        assert!(park.is_doubt());
+        assert!(park.resume());
+        assert!(!park.resume());
+    }
+}
 impl WatchdogPark {
     pub fn is_doubt(&self) -> bool {
         self.doubt.load(Ordering::Acquire)
@@ -24,6 +42,17 @@ impl WatchdogPark {
             return false;
         }
         self.resumed.notify_waiters();
+        true
+    }
+    pub fn claim_stop(&self) -> bool {
+        if self
+            .doubt
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        self.stopped.store(true, Ordering::Release);
         true
     }
     pub(super) async fn boundary(&self, cancel: &CancellationToken) {

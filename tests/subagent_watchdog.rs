@@ -55,6 +55,7 @@ struct Fixture {
     child: SessionId,
     provider: common::sse::StreamingProvider,
     stream: mpsc::UnboundedSender<String>,
+    initial_request: String,
     clock: Arc<FakeClock>,
     sleeps: mpsc::UnboundedReceiver<oneshot::Sender<()>>,
     checked: mpsc::UnboundedReceiver<Evidence>,
@@ -91,7 +92,7 @@ impl Fixture {
             .bounded(file!(), line!())
             .await
             .unwrap();
-        let (_, stream) = provider
+        let (initial_request, stream) = provider
             .requests
             .recv()
             .bounded(file!(), line!())
@@ -104,6 +105,7 @@ impl Fixture {
             child,
             provider,
             stream,
+            initial_request,
             clock,
             sleeps,
             checked,
@@ -339,6 +341,7 @@ async fn one_failure_is_silent_two_failures_park_and_stop_decision_delivers_part
 #[tokio::test]
 async fn ownership_wrong_state_and_root_only_schema_are_enforced() {
     let f = Fixture::new(vec![]).await;
+    assert!(!f.initial_request.contains("decide_subagent"));
     let foreign = f
         .service
         .create_session(&f._tmp.path().join("ws"), None, None)
@@ -375,4 +378,95 @@ async fn ownership_wrong_state_and_root_only_schema_are_enforced() {
         .await
         .is_err());
     f.close().await;
+}
+
+#[tokio::test]
+async fn doubt_is_skipped_on_later_ticks_and_driver_continue_resumes() {
+    let mut f = Fixture::new(vec![Ok(Verdict::Doubt)]).await;
+    f.tick(300).await;
+    f.wait_verdict("doubt").await;
+    f.checked.recv().bounded(file!(), line!()).await.unwrap();
+    let (_, parent_stream) = f
+        .provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    f.tick(300).await;
+    let _waiter = f.sleeps.recv().bounded(file!(), line!()).await.unwrap();
+    assert!(f.checked.try_recv().is_err());
+    f.stream
+        .send(tool_call_chunk("glob", "glob", &json!({"pattern":"*"})))
+        .unwrap();
+    drop(f.stream);
+    f.service
+        .continue_child(f.parent, f.child)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (_, child_stream) = f
+        .provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(f
+        .service
+        .decide_subagent(f.parent, f.child, false, None)
+        .bounded(file!(), line!())
+        .await
+        .is_err());
+    drop(child_stream);
+    drop(parent_stream);
+    f.service.close_all().bounded(file!(), line!()).await;
+}
+
+#[tokio::test]
+async fn interval_zero_starts_no_supervisor_and_navigator_profile_has_no_decision_tool() {
+    let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let service = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(128000)
+        .state();
+    std::fs::write(
+        tmp.path().join("cfg/config.json"),
+        r#"{"subagents":{"watchdog_interval_secs":0}}"#,
+    )
+    .unwrap();
+    let (tx, mut sleeps) = mpsc::unbounded_channel();
+    let (checked, _) = mpsc::unbounded_channel();
+    service.install_watchdog_test(
+        Arc::new(FakeClock {
+            now: Mutex::new(Instant::now()),
+            sleeps: tx,
+        }),
+        Arc::new(FakeJudge {
+            answers: Mutex::new(Default::default()),
+            checked,
+        }),
+    );
+    let parent = service
+        .create_session(&ws, None, None)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    service
+        .create_child_session(parent, "explore", "inspect")
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (request, stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(!request.contains("decide_subagent"));
+    assert!(sleeps.try_recv().is_err());
+    drop(stream);
+    service.close_all().bounded(file!(), line!()).await;
 }

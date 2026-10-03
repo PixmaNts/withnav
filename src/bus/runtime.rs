@@ -123,6 +123,7 @@ impl RuntimeStatus {
                 .load(std::sync::atomic::Ordering::Acquire)
             && self.pending_permission().is_none()
             && !self.selection.ask_pending()
+            && self.selection.is_running()
     }
     pub fn steer(&self, text: String, interrupt: bool) -> bool {
         self.steering

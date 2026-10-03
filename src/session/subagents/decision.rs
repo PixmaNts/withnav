@@ -26,6 +26,11 @@ impl Service {
             ));
         }
         if stop {
+            if !handle.status.watchdog.claim_stop() {
+                return Err(ServerError::MalformedBody(
+                    "child is not parked by a watchdog doubt".into(),
+                ));
+            }
             self.stop_watchdog_child(parent, child).await
         } else {
             if let Some(note) = note.filter(|note| !note.trim().is_empty()) {

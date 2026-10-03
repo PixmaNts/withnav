@@ -11,6 +11,23 @@ pub struct Progress {
     pub partial_output: String,
     pub steps: u64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn reasoning_is_not_progress_evidence() {
+        let activity = Activity::default();
+        activity.observe(&crate::agent::run_loop::AgentEvent::Delta(
+            crate::provider::StreamDelta::Thinking {
+                text: "private reasoning".into(),
+            },
+        ));
+        let progress = activity.0.lock().unwrap();
+        assert!(progress.partial_output.is_empty());
+        assert!(progress.last_tool_call.is_none());
+    }
+}
 impl Default for Progress {
     fn default() -> Self {
         Self {

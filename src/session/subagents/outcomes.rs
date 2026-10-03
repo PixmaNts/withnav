@@ -43,10 +43,15 @@ impl Service {
         } else {
             String::new()
         };
-        self.history()
+        if let Err(error) = self
+            .history()
             .enqueue_watchdog(parent, payload, notice, checked.verdict == Verdict::Doubt)
             .await
-            .map_err(ServerError::History)?;
+            .map_err(ServerError::History)
+        {
+            handle.status.watchdog.resume();
+            return Err(error);
+        }
         self.drain_completions(parent).await;
         match checked.verdict {
             Verdict::Active => {}

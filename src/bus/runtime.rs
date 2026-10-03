@@ -1125,6 +1125,15 @@ async fn runtime_loop(
         if interrupted_for_input && !session_cancel.is_cancelled() {
             actor.cancel = session_cancel.child_token();
             let _ = status.controls.tx.send(Control::Steer);
+        } else if !actor.has_pending()
+            && !status
+                .steering
+                .queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty()
+        {
+            let _ = status.controls.tx.send(Control::Steer);
         }
 
         if actor.cancel.is_cancelled() || session_cancel.is_cancelled() {

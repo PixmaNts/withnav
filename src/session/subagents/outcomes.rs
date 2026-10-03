@@ -74,7 +74,8 @@ impl Service {
             return Err(ServerError::ChildNotParked);
         };
         self.wait_child_operation(child).await;
-        let (_operation, target) = {
+        let was_doubt = handle.status.watchdog.is_doubt();
+        let _operation = {
             let _admission = self.admission_gate.lock().await;
             if !handle
                 .status
@@ -83,10 +84,29 @@ impl Service {
             {
                 return Ok(());
             }
-            let Some(target) = self.mark_stopping(child) else {
+            if handle.session_cancel.is_cancelled() {
                 return Ok(());
-            };
-            (self.own_child_operation(child), target)
+            }
+            self.own_child_operation(child)
+        };
+        let claim = async {
+            #[cfg(debug_assertions)]
+            if self.watchdog_stop_failure.swap(false, Ordering::AcqRel) {
+                return Err("injected watchdog terminal write failure".into());
+            }
+            self.history().claim_watchdog_stop(child).await
+        }
+        .await;
+        if let Err(error) = claim {
+            handle.status.watchdog.rollback_stop(was_doubt);
+            return Err(ServerError::History(error));
+        }
+        let target = {
+            let _admission = self.admission_gate.lock().await;
+            self.mark_stopping(child)
+        };
+        let Some(target) = target else {
+            return Ok(());
         };
         handle
             .status

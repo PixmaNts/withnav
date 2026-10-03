@@ -20,6 +20,15 @@ pub enum TerminalOwner {
 }
 
 impl WatchdogPark {
+    pub fn rollback_stop(&self, doubt: bool) {
+        *self
+            .terminal_owner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        self.doubt.store(doubt, Ordering::Release);
+        self.stopped.store(false, Ordering::Release);
+        self.resumed.notify_waiters();
+    }
     pub fn claim_terminal(&self, owner: TerminalOwner) -> bool {
         let mut claimed = self
             .terminal_owner
@@ -50,14 +59,9 @@ impl WatchdogPark {
         true
     }
     pub fn claim_stop(&self) -> bool {
-        if self
-            .doubt
-            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
+        if !self.is_doubt() || self.stopped.swap(true, Ordering::AcqRel) {
             return false;
         }
-        self.stopped.store(true, Ordering::Release);
         true
     }
     pub(super) async fn boundary(&self, cancel: &CancellationToken) {

@@ -287,6 +287,8 @@ fn is_promptable(value: &bool) -> bool {
 #[derive(Clone, Debug)]
 pub struct Service {
     #[cfg(debug_assertions)]
+    pub(crate) watchdog_stop_failure: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(debug_assertions)]
     pub(crate) watchdog_teardown_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
     pub(crate) watchdog_test: Arc<Mutex<Option<super::subagents::supervisor::TestWatchdog>>>,
@@ -330,6 +332,12 @@ pub struct Service {
 }
 
 impl Service {
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn fail_watchdog_stop_write(&self) {
+        self.watchdog_stop_failure
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn pause_watchdog_teardown(&self, barrier: ChildPreparationBarrier) {
@@ -467,6 +475,8 @@ impl Service {
             .map_err(ServerError::History)?;
         let catalog = crate::provider::catalog::ModelCatalog::new(Some(config.data_dir.clone()));
         Ok(Self {
+            #[cfg(debug_assertions)]
+            watchdog_stop_failure: Arc::default(),
             #[cfg(debug_assertions)]
             watchdog_teardown_barrier: Arc::default(),
             #[cfg(debug_assertions)]

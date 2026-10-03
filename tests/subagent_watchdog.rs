@@ -104,6 +104,78 @@ async fn watchdog_stop_owns_child_until_concurrent_parent_delete_can_finish() {
     watchdog_teardown_blocks_delete(true).await;
 }
 
+#[tokio::test]
+async fn failed_stop_write_restores_doubt_and_driver_continue_releases_waiter() {
+    let mut f = Fixture::new(vec![Ok(Verdict::Doubt)]).await;
+    f.tick(300).await;
+    f.wait_verdict("doubt").await;
+    let (_, parent_stream) = f
+        .provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    f.stream
+        .send(tool_call_chunk("glob", "glob", &json!({"pattern":"*"})))
+        .unwrap();
+    drop(f.stream);
+    async {
+        loop {
+            f.service.history().flush().await.unwrap();
+            if f.service
+                .history()
+                .replay(f.child, None, u64::MAX)
+                .await
+                .unwrap()
+                .iter()
+                .any(|e| e.kind == "tool.post_call")
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+    .bounded(file!(), line!())
+    .await;
+    f.service.fail_watchdog_stop_write();
+    let error = f
+        .service
+        .decide_subagent(f.parent, f.child, true, None)
+        .bounded(file!(), line!())
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("injected watchdog terminal write failure"));
+    assert!(f.provider.requests.try_recv().is_err());
+    f.service
+        .continue_child(f.parent, f.child)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (_, child_stream) = f
+        .provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert_eq!(
+        f.service
+            .child_metadata(f.child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "running"
+    );
+    drop(child_stream);
+    drop(parent_stream);
+    f.service.close_all().bounded(file!(), line!()).await;
+}
+
 #[derive(Debug, Default)]
 struct HeldTool {
     entered: tokio::sync::Notify,

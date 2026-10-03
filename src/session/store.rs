@@ -394,6 +394,18 @@ impl HistoryStore {
         .map_err(|e| e.to_string())?
     }
 
+    /// Persists the claimed stop reason without freeing capacity or delivering output.
+    pub async fn claim_watchdog_stop(&self, child: Ulid) -> Result<(), String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
+            let changed = conn.execute("UPDATE child_links SET terminal_reason='watchdog' WHERE child_id=?1 AND status IN ('starting','running')", [child.to_string()]).map_err(|e| e.to_string())?;
+            if changed != 1 { return Err("child already terminal".into()); }
+            Ok(())
+        }).await.map_err(|e| e.to_string())?
+    }
+
     pub(super) fn set_owner(&mut self, owner: Ulid) {
         self.owner = Some(owner);
     }

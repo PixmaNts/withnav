@@ -345,6 +345,16 @@ impl HistoryStore {
         }).await.map_err(|e| e.to_string())?
     }
 
+    pub async fn child_ids(&self, parent: Ulid) -> Result<Vec<Ulid>, String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare("SELECT child_id FROM child_links WHERE parent_id=?1 ORDER BY created_at, child_id").map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([parent.to_string()], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
+            rows.map(|row| row.map_err(|e| e.to_string())?.parse().map_err(|e| format!("child id: {e}"))).collect()
+        }).await.map_err(|e| e.to_string())?
+    }
+
     pub fn active_child_counts(&self) -> Result<std::collections::HashMap<Ulid, usize>, String> {
         let conn = Connection::open(&*self.path).map_err(|e| e.to_string())?;
         let mut statement = conn.prepare("SELECT parent_id, COUNT(*) FROM child_links WHERE status IN ('starting','running') GROUP BY parent_id").map_err(|e| e.to_string())?;

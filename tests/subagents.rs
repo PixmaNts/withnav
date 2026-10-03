@@ -289,7 +289,7 @@ async fn inherited_child_keeps_parent_headers_and_output_limit_after_alias_edit(
 }
 
 #[tokio::test]
-async fn child_completion_after_parent_close_is_pending_until_resume() {
+async fn cascaded_child_stop_is_pending_until_parent_resume() {
     let mut provider = common::sse::spawn_streaming_provider().await;
     let fx = fixture_at(&provider.url);
     install_agents(&fx.root, &fx.ws);
@@ -321,7 +321,7 @@ async fn child_completion_after_parent_close_is_pending_until_resume() {
             .unwrap()
             .unwrap()
             .status,
-        "done"
+        "stopped"
     );
     assert_eq!(
         fx.state
@@ -368,7 +368,7 @@ async fn child_completion_after_parent_close_is_pending_until_resume() {
 }
 
 #[tokio::test]
-async fn completion_between_resume_snapshot_and_registration_has_no_sequence_collision() {
+async fn pending_completion_at_resume_snapshot_has_no_sequence_collision() {
     let mut provider = common::sse::spawn_streaming_provider().await;
     let fx = fixture_at(&provider.url);
     install_agents(&fx.root, &fx.ws);
@@ -418,7 +418,7 @@ async fn completion_between_resume_snapshot_and_registration_has_no_sequence_col
             .unwrap()
             .unwrap()
             .status,
-        "done"
+        "stopped"
     );
     assert_eq!(
         fx.state

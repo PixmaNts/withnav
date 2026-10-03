@@ -90,6 +90,18 @@ impl Service {
             .await?;
         }
         self.discard(id);
+        for child in self
+            .history()
+            .child_ids(id)
+            .await
+            .map_err(ServerError::History)?
+        {
+            self.discard(child);
+            self.history()
+                .delete(child)
+                .await
+                .map_err(ServerError::History)?;
+        }
         self.history()
             .delete(id)
             .await

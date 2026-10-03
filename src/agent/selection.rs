@@ -204,6 +204,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_switch_is_refused_while_an_ask_waits_until_the_answer_starts_a_turn() {
+        let selection = AgentSelection::new(
+            Arc::new(Agents::builtin()),
+            Agents::builtin().get("build").cloned().unwrap(),
+        );
+        selection.begin_turn().await;
+        selection.end_turn(true);
+        let refused = selection.switch(plan(), async { Ok(()) }).await;
+        assert_eq!(refused.unwrap_err(), SwitchError::AskPending);
+        assert_eq!(selection.current().id.as_str(), "build");
+
+        selection.begin_turn().await;
+        selection.end_turn(false);
+        selection.switch(plan(), async { Ok(()) }).await.unwrap();
+        assert_eq!(selection.current().id.as_str(), "plan");
+    }
+
+    // A turn that ends by asking races a switch: whichever the scheduler runs
+    // first, the switch is refused (turn still running, or ask now pending)
+    // and the agent does not change.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_turn_ending_in_an_ask_races_a_switch_and_the_switch_never_wins() {
+        for _ in 0..50 {
+            let selection = Arc::new(AgentSelection::new(
+                Arc::new(Agents::builtin()),
+                Agents::builtin().get("build").cloned().unwrap(),
+            ));
+            selection.begin_turn().await;
+            let barrier = Arc::new(tokio::sync::Barrier::new(2));
+            let ender = {
+                let (selection, barrier) = (selection.clone(), barrier.clone());
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    selection.end_turn(true);
+                })
+            };
+            let switcher = {
+                let (selection, barrier) = (selection.clone(), barrier.clone());
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    selection.switch(plan(), async { Ok(()) }).await
+                })
+            };
+            ender.await.unwrap();
+            let result = switcher.await.unwrap();
+            assert!(
+                matches!(result, Err(SwitchError::Busy | SwitchError::AskPending)),
+                "{result:?}"
+            );
+            assert_eq!(selection.current().id.as_str(), "build");
+        }
+    }
+
+    #[tokio::test]
     async fn the_default_selection_sends_no_role() {
         let selection = AgentSelection::default();
         assert!(selection.begin_turn().await.is_none());

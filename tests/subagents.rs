@@ -312,6 +312,42 @@ async fn child_slot_is_released_after_terminal_result() {
 }
 
 #[tokio::test]
+async fn child_prompt_is_not_attributed_as_driver_task_or_transcript_inherited() {
+    let fx = fixture();
+    install_agents(&fx.root, &fx.ws);
+    let parent = fx
+        .state
+        .create_session(&fx.ws, Some("default"), None)
+        .await
+        .unwrap();
+    fx.state
+        .send(navai::bus::command::Command::child_prompt(
+            parent,
+            "parent history".into(),
+        ))
+        .await
+        .unwrap();
+    let child = fx
+        .state
+        .create_child_session(parent, "explore", "only child prompt")
+        .await
+        .unwrap();
+    let loaded = fx.state.history().load(child).await.unwrap().unwrap();
+    assert!(loaded.transcript.iter().all(|message| {
+        !serde_json::to_string(message)
+            .unwrap()
+            .contains("parent history")
+    }));
+    let child_events = events(&fx, child).await;
+    let received = child_events
+        .iter()
+        .find(|event| event.kind == "message.received")
+        .unwrap();
+    assert_eq!(received.payload["source"], "user:subagent");
+    assert_eq!(received.payload["content"], "only child prompt");
+}
+
+#[tokio::test]
 async fn task_ack_returns_before_child_turn_finishes() {
     let release = std::sync::Arc::new(tokio::sync::Notify::new());
     let provider = spawn_holding_provider(

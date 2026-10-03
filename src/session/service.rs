@@ -1098,7 +1098,8 @@ impl Service {
             reason: e.to_string(),
         })?;
         let session_cancel = CancellationToken::new();
-        let root_tools_enabled = child_policy.is_none() && profile.is_none();
+        let root_tools_enabled =
+            child_policy.is_none() && profile.is_none() && role.mode.is_primary();
         let mut actor = match child_policy {
             Some((allowed, read_only)) => build_child_actor(
                 &workspace,

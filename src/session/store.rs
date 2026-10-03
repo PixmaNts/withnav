@@ -80,7 +80,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use tokio::sync::oneshot;
 use ulid::Ulid;
 
@@ -126,6 +126,21 @@ pub struct LoadedSession {
     pub transcript: Vec<ChatMessage>,
     /// The installed compaction, validated against `transcript`.
     pub compaction: Option<Compaction>,
+}
+
+/// Durable ownership and completion metadata for one background child.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ChildLink {
+    pub parent_id: Ulid,
+    pub child_id: Ulid,
+    pub agent: String,
+    pub goal: String,
+    pub policy_snapshot: String,
+    pub status: String,
+    pub created_at: String,
+    pub terminal_at: Option<String>,
+    pub terminal_reason: Option<String>,
+    pub result_text: Option<String>,
 }
 
 /// The result channel of an acknowledged write.
@@ -288,6 +303,87 @@ impl HistoryStore {
             .send(Msg::Flush(reply))
             .map_err(|_| WRITER_GONE.to_string())?;
         outcome.await.map_err(|_| WRITER_GONE.to_string())?
+    }
+
+    /// Commits the parent/child relationship after both sessions are stored.
+    pub async fn create_child_link(
+        &self,
+        parent_id: Ulid,
+        child_id: Ulid,
+        agent: String,
+        goal: String,
+        policy_snapshot: String,
+    ) -> Result<(), String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO child_links (parent_id, child_id, agent, goal, policy_snapshot, status, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6)",
+                params![parent_id.to_string(), child_id.to_string(), agent, goal,
+                    policy_snapshot, now_rfc3339()],
+            ).map_err(|e| e.to_string())?;
+            Ok(())
+        }).await.map_err(|e| e.to_string())?
+    }
+
+    /// Performs the single terminal compare-and-set for a child. Only the
+    /// first completion wins; callers publish the matching notice afterward.
+    pub async fn finish_child_link(
+        &self,
+        child_id: Ulid,
+        status: String,
+        reason: Option<String>,
+        result: String,
+    ) -> Result<Option<ChildLink>, String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            let terminal_at = now_rfc3339();
+            let changed = tx.execute(
+                "UPDATE child_links SET status=?2, terminal_at=?3, terminal_reason=?4, result_text=?5
+                 WHERE child_id=?1 AND status='running'",
+                params![child_id.to_string(), status, terminal_at, reason, result],
+            ).map_err(|e| e.to_string())?;
+            if changed == 0 { tx.rollback().map_err(|e| e.to_string())?; return Ok(None); }
+            let row = tx.query_row(
+                "SELECT parent_id, child_id, agent, goal, policy_snapshot, status, created_at, terminal_at, terminal_reason, result_text
+                 FROM child_links WHERE child_id=?1",
+                [child_id.to_string()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?, row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?, row.get::<_, Option<String>>(9)?)),
+            ).map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(Some(ChildLink {
+                parent_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
+                child_id: row.1.parse().map_err(|e| format!("child id: {e}"))?,
+                agent: row.2, goal: row.3, policy_snapshot: row.4, status: row.5,
+                created_at: row.6, terminal_at: row.7, terminal_reason: row.8, result_text: row.9,
+            }))
+        }).await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn child_link(&self, child_id: Ulid) -> Result<Option<ChildLink>, String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            conn.query_row(
+                "SELECT parent_id, child_id, agent, goal, policy_snapshot, status, created_at, terminal_at, terminal_reason, result_text
+                 FROM child_links WHERE child_id=?1", [child_id.to_string()], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?, row.get::<_, Option<String>>(8)?,
+                        row.get::<_, Option<String>>(9)?))
+                }
+            ).optional().map_err(|e| e.to_string())?.map(|row| Ok(ChildLink {
+                parent_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
+                child_id: row.1.parse().map_err(|e| format!("child id: {e}"))?,
+                agent: row.2, goal: row.3, policy_snapshot: row.4, status: row.5,
+                created_at: row.6, terminal_at: row.7, terminal_reason: row.8, result_text: row.9,
+            })).transpose()
+        }).await.map_err(|e| e.to_string())?
     }
 
     /// Registers a session row (INSERT OR IGNORE: a resumed id already has
@@ -746,7 +842,22 @@ fn migrate(path: &Path) -> Result<(), String> {
             kind TEXT NOT NULL,
             envelope TEXT NOT NULL,
             PRIMARY KEY (session_id, seq)
-        );",
+        );
+        CREATE TABLE IF NOT EXISTS child_links (
+            parent_id TEXT NOT NULL,
+            child_id TEXT PRIMARY KEY,
+            agent TEXT NOT NULL,
+            goal TEXT NOT NULL,
+            policy_snapshot TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            terminal_at TEXT,
+            terminal_reason TEXT,
+            result_text TEXT,
+            FOREIGN KEY(parent_id) REFERENCES sessions(id) ON DELETE CASCADE,
+            FOREIGN KEY(child_id) REFERENCES sessions(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS child_links_parent ON child_links(parent_id, created_at);",
     )
     .map_err(|e| format!("migrate: {e}"))?;
     // A database from before `model_resolution`: add the nullable column.

@@ -750,6 +750,7 @@ impl Service {
                 if handle.lifecycle == Lifecycle::Active {
                     return Ok((id, true));
                 }
+                return Err(ServerError::SessionStopping);
             }
             // Stopped, or only on disk: rebuild under the same id from the
             // stored row.

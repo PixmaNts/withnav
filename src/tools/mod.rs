@@ -12,6 +12,8 @@ use crate::provider::openai::ToolDef;
 
 pub mod bash;
 pub mod control;
+pub mod fetch;
+pub mod glob;
 pub mod native;
 
 pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 64 * 1024;

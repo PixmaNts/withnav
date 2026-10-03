@@ -32,6 +32,16 @@ pub enum Commands {
     Serve(ServeArgs),
     Auth(AuthArgs),
     Tui(TuiArgs),
+    /// Converts HTML from stdin to text on stdout; run by the `fetch` tool in
+    /// a resource-limited child process.
+    #[command(name = "internal-html-convert", hide = true)]
+    InternalHtmlConvert(HtmlConvertArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct HtmlConvertArgs {
+    #[arg(long, value_enum)]
+    pub format: crate::tools::fetch::ConvertFormat,
 }
 
 pub mod tui;
@@ -119,6 +129,7 @@ pub async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
         Commands::Serve(args) => serve_command(args).await,
         Commands::Auth(args) => auth_command(args),
         Commands::Tui(args) => tui::run(args).await,
+        Commands::InternalHtmlConvert(args) => Ok(crate::tools::fetch::convert_stdio(args.format)),
     }
 }
 

@@ -8,6 +8,17 @@ requests land in `develop`.
 
 ### Added
 
+- **Role guard for the `plan` agent**: `plan` keeps every tool, and writes markdown freely: a `write`
+  or `edit` whose resolved destination is a regular `.md` file (a `.md` name that is a link to another
+  file does not count) runs with no request. Every other `write` or `edit`, and every `bash` and
+  `fetch`, is first put to Jev, the model behind the `instinct` alias, as one `role_conformance`
+  question (`conforms`, `violates`, `uncertain`) with the role instructions, your latest message, the
+  workspace, the resolved target, the tool and its exact arguments (at most 16 KiB). Only a valid
+  `conforms` runs the call without you, and the verdict shows as `guard` in the metadata of its
+  `tool.post_call`. Anything else (`violates`, `uncertain`, an unusable answer, no `instinct` alias or
+  key, no answer within 2 s, a call too large to send) becomes a permission request whose reason says
+  why; for `plan` you can allow it once or deny it, and "allow folder" counts as once. `build` is
+  unchanged, and its folder grants never reach `plan`. The guard is advisory, not a sandbox.
 - **Permission gate**: a session that runs as an agent asks before it runs `write`, `edit`, `bash`
   or `fetch`; `read`, `grep`, `glob`, `skill` and `ask` never ask. The call does not run: the turn
   yields with a durable `permission.requested` `{request_id, tool_call_id, tool, arguments (at most

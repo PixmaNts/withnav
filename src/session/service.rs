@@ -177,6 +177,22 @@ struct ResumedSession {
     compaction: Option<crate::agent::compaction::Compaction>,
 }
 
+struct ChildReservation {
+    slots: Arc<Mutex<HashMap<SessionId, usize>>>,
+    parent: SessionId,
+    committed: bool,
+}
+impl Drop for ChildReservation {
+    fn drop(&mut self) {
+        if !self.committed {
+            let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(count) = slots.get_mut(&self.parent) {
+                *count = count.saturating_sub(1);
+            }
+        }
+    }
+}
+
 struct PreparedSession {
     session_id: SessionId,
     workspace: PathBuf,
@@ -311,6 +327,30 @@ impl Service {
         agent: &str,
         prompt: &str,
     ) -> Result<SessionId, ServerError> {
+        let service = self.clone();
+        let (agent, prompt) = (agent.to_string(), prompt.to_string());
+        tokio::spawn(async move { service.admit_child(parent, &agent, &prompt).await })
+            .await
+            .map_err(|e| ServerError::History(e.to_string()))?
+    }
+
+    async fn child_admission<'a>(
+        &'a self,
+        cancel: &CancellationToken,
+    ) -> Result<tokio::sync::MutexGuard<'a, ()>, ServerError> {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(ServerError::SessionStopping),
+            guard = self.admission_gate.lock() => Ok(guard),
+        }
+    }
+
+    async fn admit_child(
+        &self,
+        parent: SessionId,
+        agent: &str,
+        prompt: &str,
+    ) -> Result<SessionId, ServerError> {
         let parent_handle = self.routable_handle(parent).await?;
         if parent_handle.parent_session_id.is_some() {
             return Err(ServerError::ChildReadOnly);
@@ -336,11 +376,7 @@ impl Service {
             .map_err(|e| ServerError::SubagentSettings(e.to_string()))?
             .subagents_max_concurrent()
             .map_err(ServerError::SubagentSettings)?;
-        let _spawn_lock = tokio::select! {
-            biased;
-            _ = parent_handle.session_cancel.cancelled() => return Err(ServerError::SessionStopping),
-            guard = self.gate.clone().lock_owned() => guard,
-        };
+        let _spawn_lock = self.child_admission(&parent_handle.session_cancel).await?;
         let parent_handle = self.routable_handle(parent).await?;
         let persisted_active = self
             .history
@@ -385,8 +421,15 @@ impl Service {
             policy.insert(tool.to_string(), enabled);
             allowed.insert(tool.to_string(), enabled);
         }
-        let child = self
-            .spawn_session_kind(
+        let incarnation = parent_handle.incarnation;
+        drop(_spawn_lock);
+        let reservation = ChildReservation {
+            slots: self.subagent_slots.clone(),
+            parent,
+            committed: false,
+        };
+        let prepared = self
+            .prepare_session_kind(
                 &parent_handle.workspace,
                 Some(alias),
                 None,
@@ -403,22 +446,24 @@ impl Service {
                 definition.model.is_none().then_some(inherited),
             )
             .await;
-        drop(_spawn_lock);
-        let child = match child {
-            Ok(id) => id,
-            Err(error) => {
-                let active = self
-                    .history
-                    .active_child_count(parent)
-                    .await
-                    .map_err(ServerError::History)?;
-                self.subagent_slots
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(parent, active);
-                return Err(error);
-            }
-        };
+        let prepared = prepared?;
+        let _admission = self.child_admission(&parent_handle.session_cancel).await?;
+        let current = self.routable_handle(parent).await?;
+        if current.incarnation != incarnation || current.session_cancel.is_cancelled() {
+            return Err(ServerError::SessionStopping);
+        }
+        let child = prepared.session_id;
+        self.unpublished_children
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(child);
+        if let Err(error) = self.store_prepared(&prepared).await {
+            self.unpublished_children
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&child);
+            return Err(error);
+        }
         let frozen = serde_json::to_string(&policy).unwrap_or_else(|_| "{}".into());
         if let Err(error) = self
             .history
@@ -432,10 +477,19 @@ impl Service {
             )
             .await
         {
-            let _ = self.close_session(child).await;
-            self.reset_child_slots_for_delete(parent).await?;
+            self.history
+                .delete(child)
+                .await
+                .map_err(ServerError::History)?;
+            self.unpublished_children
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&child);
             return Err(ServerError::History(error));
         }
+        let mut reservation = reservation;
+        reservation.committed = true;
+        self.publish_session(prepared).await?;
         self.unpublished_children
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -448,7 +502,6 @@ impl Service {
             Err(ServerError::SessionStopping)
         };
         if let Err(error) = start_result {
-            self.close_session(child).await?;
             return Err(error);
         }
         let spawned_payload = serde_json::to_value(crate::bus::event::SubagentSpawned {
@@ -1063,6 +1116,7 @@ impl Service {
                 inherited,
             )
             .await?;
+        self.store_prepared(&prepared).await?;
         self.publish_session(prepared).await
     }
 
@@ -1291,6 +1345,27 @@ impl Service {
         })
     }
 
+    async fn store_prepared(&self, prepared: &PreparedSession) -> Result<(), ServerError> {
+        self.history
+            .record_session_resolved(
+                prepared.session_id,
+                &prepared.workspace.display().to_string(),
+                &prepared.alias,
+                prepared.profile.as_deref(),
+                Some(&prepared.snapshot),
+                prepared.selected.as_ref(),
+                (prepared.resumed.is_none() && !prepared.role.id.is_build())
+                    .then(|| prepared.role.id.as_str()),
+            )
+            .await
+            .map_err(ServerError::History)?;
+        if prepared.save_late {
+            self.save_legacy_snapshot(prepared.session_id, &prepared.snapshot)
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn publish_session(&self, prepared: PreparedSession) -> Result<SessionId, ServerError> {
         let PreparedSession {
             session_id,
@@ -1307,7 +1382,7 @@ impl Service {
             limits,
             session_cancel,
             expired,
-            save_late,
+            save_late: _,
             child_parent,
         } = prepared;
         let profile = profile.as_deref();
@@ -1328,24 +1403,6 @@ impl Service {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(session_id);
-        }
-        // Acknowledged: a session whose row cannot be written would
-        // silently lose every later event and snapshot.
-        history
-            .record_session_resolved(
-                session_id,
-                &workspace.display().to_string(),
-                &alias,
-                profile,
-                Some(&snapshot),
-                selected.as_ref(),
-                // Written with the row: a resumed row already has its agent.
-                (!is_resume && !role.id.is_build()).then(|| role.id.as_str()),
-            )
-            .await
-            .map_err(ServerError::History)?;
-        if save_late {
-            self.save_legacy_snapshot(session_id, &snapshot).await?;
         }
         let sequencer = Sequencer::spawn(
             session_id,
@@ -1480,7 +1537,11 @@ impl Service {
         let sender = SessionSender::new(session_id, handle.clone());
         let cancel = handle.session_cancel.clone();
         {
-            let _admission = self.admission_gate.lock().await;
+            let _admission = if child_parent.is_none() {
+                Some(self.admission_gate.lock().await)
+            } else {
+                None
+            };
             self.lock_sessions().insert(session_id, handle);
         }
         // The host learns of the session once it is routable. A session

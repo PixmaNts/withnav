@@ -16,6 +16,24 @@ pub(crate) fn test_service() -> (tempfile::TempDir, Service) {
 }
 
 #[tokio::test]
+async fn admission_wait_is_cancelled_without_acquiring_the_gate() {
+    let (_dir, service) = test_service();
+    let cancel = CancellationToken::new();
+    let gate = service.admission_gate.clone().lock_owned().await;
+    let release = cancel.clone();
+    let holder = tokio::spawn(async move {
+        release.cancelled().await;
+        drop(gate);
+    });
+    cancel.cancel();
+    assert!(matches!(
+        service.child_admission(&cancel).await,
+        Err(ServerError::SessionStopping)
+    ));
+    holder.await.unwrap();
+}
+
+#[tokio::test]
 async fn listing_hides_child_until_relationship_commits() {
     let (_dir, service) = test_service();
     let parent = Ulid::new();

@@ -1542,4 +1542,342 @@ mod tests {
             .await;
         assert!(bad.is_err() && !called);
     }
+
+    // --- the role guard of the plan agent ---
+
+    use crate::agent::guard::{GuardError, GuardInput, RoleGuard, Verdict};
+
+    /// A guard that answers what it was told and counts its questions.
+    struct FakeJev {
+        answer: Result<Verdict, GuardError>,
+        asked: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FakeJev {
+        fn new(answer: Result<Verdict, GuardError>) -> Arc<Self> {
+            Arc::new(Self {
+                answer,
+                asked: std::sync::atomic::AtomicUsize::new(0),
+            })
+        }
+
+        fn asked(&self) -> usize {
+            self.asked.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl RoleGuard for FakeJev {
+        fn judge<'a>(
+            &'a self,
+            _input: &'a GuardInput,
+            _cancel: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<'a, Result<Verdict, GuardError>> {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let answer = self.answer.clone();
+            Box::pin(async move { answer })
+        }
+    }
+
+    fn as_plan(actor: &mut AgentActor, guard: Option<Arc<FakeJev>>) {
+        actor.role = Some(
+            crate::agent::definitions::Agents::builtin()
+                .get("plan")
+                .unwrap()
+                .clone(),
+        );
+        actor.guard = guard.map(|g| g as Arc<dyn RoleGuard>);
+    }
+
+    fn plan_actor(guard: Option<Arc<FakeJev>>, base_url: &str) -> AgentActor {
+        let mut actor = make_actor(base_url.into(), registry_gated(), CancellationToken::new());
+        as_plan(&mut actor, guard);
+        actor.tool_context.workspace = actor.tool_context.workspace.canonicalize().unwrap();
+        actor.tool_context.writable_roots = vec![actor.tool_context.workspace.clone()];
+        actor
+    }
+
+    fn write_script(path: &Path) -> Vec<Vec<u8>> {
+        vec![
+            http_sse(&sse_body(&[&calls_chunk(&[(
+                "w1",
+                "write",
+                serde_json::json!({"path": path, "content": "x"}),
+            )])])),
+            http_sse(&sse_body(&[&text_chunk("done")])),
+        ]
+    }
+
+    /// The `guard` note of every post-call the observer saw.
+    #[derive(Default)]
+    struct Notes(Vec<serde_json::Value>);
+
+    async fn run_plan(actor: &mut AgentActor, notes: &mut Notes) -> Result<RunOutcome, AgentError> {
+        actor.push_user("plan it");
+        let mut observe = |event: AgentEvent| {
+            if let AgentEvent::PostCall { result, .. } = event {
+                notes.0.push(result.metadata["guard"].clone());
+            }
+        };
+        run_agent(actor, &mut observe).await
+    }
+
+    #[tokio::test]
+    async fn plan_writes_markdown_without_a_request_or_a_question() {
+        let jev = FakeJev::new(Ok(Verdict::Violates));
+        let mut actor = plan_actor(Some(jev.clone()), "http://127.0.0.1:1/v1");
+        let target = actor.tool_context.workspace.join("notes.md");
+        let server = spawn_mock(write_script(&target)).await;
+        actor.provider.base_url = server.url.clone();
+        let outcome = run_plan(&mut actor, &mut Notes::default()).await.unwrap();
+        assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
+        assert_eq!(jev.asked(), 0, "a markdown write is not an exception");
+    }
+
+    #[tokio::test]
+    async fn a_conforming_exception_runs_and_leaves_a_note_on_the_result() {
+        let jev = FakeJev::new(Ok(Verdict::Conforms));
+        let mut actor = plan_actor(Some(jev.clone()), "http://127.0.0.1:1/v1");
+        let target = actor.tool_context.workspace.join("src_main.rs");
+        let server = spawn_mock(write_script(&target)).await;
+        actor.provider.base_url = server.url.clone();
+        let mut notes = Notes::default();
+        let outcome = run_plan(&mut actor, &mut notes).await.unwrap();
+        assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
+        assert_eq!(jev.asked(), 1);
+        assert_eq!(
+            notes.0,
+            vec![serde_json::json!({"by": "jev", "verdict": "conforms", "role": "plan"})]
+        );
+    }
+
+    #[tokio::test]
+    async fn anything_but_a_valid_conforms_asks_the_driver_with_the_reason() {
+        let cases: [(Option<Result<Verdict, GuardError>>, &str); 6] = [
+            (Some(Ok(Verdict::Violates)), "outside the plan role"),
+            (Some(Ok(Verdict::Uncertain)), "could not tell"),
+            (Some(Err(GuardError::TimedOut)), "did not answer"),
+            (
+                Some(Err(GuardError::Unavailable("no key".into()))),
+                "not available (no key)",
+            ),
+            (
+                Some(Err(GuardError::Malformed("maybe".into()))),
+                "cannot be used (maybe)",
+            ),
+            (None, "Jev is not available"),
+        ];
+        for (answer, reason) in cases {
+            let jev = answer.map(FakeJev::new);
+            let mut actor = plan_actor(jev.clone(), "http://127.0.0.1:1/v1");
+            let target = actor.tool_context.workspace.join("main.rs");
+            let server = spawn_mock(write_script(&target)).await;
+            actor.provider.base_url = server.url.clone();
+            let outcome = run_plan(&mut actor, &mut Notes::default()).await.unwrap();
+            let RunOutcome::PermissionRequired(request) = outcome else {
+                panic!("{reason}: expected a request, got {outcome:?}");
+            };
+            assert!(request.reason.contains(reason), "{}", request.reason);
+            assert_eq!(request.agent, "plan");
+            assert!(!target.exists(), "{reason}: nothing ran");
+            assert_eq!(tool_result_of(&actor, "w1"), None);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_oversized_call_goes_to_the_driver_and_jev_is_never_asked() {
+        let jev = FakeJev::new(Ok(Verdict::Conforms));
+        let mut actor = plan_actor(Some(jev.clone()), "http://127.0.0.1:1/v1");
+        let target = actor.tool_context.workspace.join("big.rs");
+        let big = "x".repeat(crate::agent::guard::MAX_INPUT_BYTES);
+        let server = spawn_mock(vec![http_sse(&sse_body(&[&calls_chunk(&[(
+            "w1",
+            "write",
+            serde_json::json!({"path": target, "content": big}),
+        )])]))])
+        .await;
+        actor.provider.base_url = server.url.clone();
+        let outcome = run_plan(&mut actor, &mut Notes::default()).await.unwrap();
+        let RunOutcome::PermissionRequired(request) = outcome else {
+            panic!("expected a request, got {outcome:?}");
+        };
+        assert!(request.reason.contains("too large"), "{}", request.reason);
+        assert_eq!(jev.asked(), 0);
+        assert!(!target.exists());
+    }
+
+    #[tokio::test]
+    async fn bash_and_fetch_are_always_exceptions_of_plan() {
+        for (tool, args) in [
+            ("bash", serde_json::json!({"command": "echo hi"})),
+            ("fetch", serde_json::json!({"url": "https://example.com/"})),
+        ] {
+            let jev = FakeJev::new(Ok(Verdict::Violates));
+            let mut actor = plan_actor(Some(jev.clone()), "http://127.0.0.1:1/v1");
+            actor
+                .registry
+                .register(Box::new(crate::tools::fetch::FetchTool::new()));
+            let server = spawn_mock(vec![http_sse(&sse_body(&[&calls_chunk(&[(
+                "c1", tool, args,
+            )])]))])
+            .await;
+            actor.provider.base_url = server.url.clone();
+            let outcome = run_plan(&mut actor, &mut Notes::default()).await.unwrap();
+            assert!(
+                matches!(outcome, RunOutcome::PermissionRequired(_)),
+                "{tool}: {outcome:?}"
+            );
+            assert_eq!(jev.asked(), 1, "{tool}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_markdown_name_that_is_a_link_to_another_file_is_guarded() {
+        let jev = FakeJev::new(Ok(Verdict::Violates));
+        let mut actor = plan_actor(Some(jev.clone()), "http://127.0.0.1:1/v1");
+        let ws = actor.tool_context.workspace.clone();
+        let code = ws.join("main.rs");
+        std::fs::write(&code, "fn main() {}").unwrap();
+        let link = ws.join("plan.md");
+        std::os::unix::fs::symlink(&code, &link).unwrap();
+        let server = spawn_mock(write_script(&link)).await;
+        actor.provider.base_url = server.url.clone();
+        let outcome = run_plan(&mut actor, &mut Notes::default()).await.unwrap();
+        let RunOutcome::PermissionRequired(request) = outcome else {
+            panic!("expected a request, got {outcome:?}");
+        };
+        assert_eq!(jev.asked(), 1, "the link is not the plan's markdown");
+        assert_eq!(
+            std::fs::read_to_string(&code).unwrap(),
+            "fn main() {}",
+            "nothing was written through the link"
+        );
+        assert_eq!(request.tool, "write");
+    }
+
+    #[tokio::test]
+    async fn allow_folder_on_a_plan_exception_is_one_approval_not_a_grant() {
+        let jev = FakeJev::new(Ok(Verdict::Violates));
+        let mut actor = plan_actor(Some(jev.clone()), "http://127.0.0.1:1/v1");
+        let ws = actor.tool_context.workspace.clone();
+        let (first, second) = (ws.join("a.rs"), ws.join("b.rs"));
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[&calls_chunk(&[
+                (
+                    "w1",
+                    "write",
+                    serde_json::json!({"path": first, "content": "1"}),
+                ),
+                (
+                    "w2",
+                    "write",
+                    serde_json::json!({"path": second, "content": "2"}),
+                ),
+            ])])),
+            http_sse(&sse_body(&[&text_chunk("done")])),
+        ])
+        .await;
+        actor.provider.base_url = server.url.clone();
+        let mut noop = |_e: AgentEvent| {};
+        actor.push_user("plan it");
+        let RunOutcome::PermissionRequired(one) = run_agent(&mut actor, &mut noop).await.unwrap()
+        else {
+            panic!("expected a request");
+        };
+        let outcome = resolve_permission(
+            &mut actor,
+            one.id,
+            PermissionDecision::AllowFolder,
+            &mut noop,
+        )
+        .await
+        .unwrap();
+        let RunOutcome::PermissionRequired(two) = outcome else {
+            panic!("the sibling in the same folder asks again: {outcome:?}");
+        };
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "1");
+        assert!(!second.exists());
+        assert_eq!(jev.asked(), 2);
+        assert!(
+            !actor
+                .grants
+                .covers("plan", "write", &two.scope, &actor.tool_context),
+            "no grant was recorded"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stop_while_jev_is_asked_interrupts_the_call() {
+        struct Hangs;
+        impl RoleGuard for Hangs {
+            fn judge<'a>(
+                &'a self,
+                _input: &'a GuardInput,
+                cancel: &'a CancellationToken,
+            ) -> futures::future::BoxFuture<'a, Result<Verdict, GuardError>> {
+                Box::pin(async move {
+                    cancel.cancelled().await;
+                    Err(GuardError::Cancelled)
+                })
+            }
+        }
+        let mut actor = plan_actor(None, "http://127.0.0.1:1/v1");
+        actor.guard = Some(Arc::new(Hangs));
+        let target = actor.tool_context.workspace.join("main.rs");
+        let server = spawn_mock(write_script(&target)).await;
+        actor.provider.base_url = server.url.clone();
+        let cancel = actor.cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            cancel.cancel();
+        });
+        let outcome = run_plan(&mut actor, &mut Notes::default()).await.unwrap();
+        assert!(matches!(outcome, RunOutcome::Interrupted), "{outcome:?}");
+        assert!(!target.exists());
+        assert!(
+            tool_result_of(&actor, "w1").is_some(),
+            "the call is settled"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_build_agent_never_meets_the_guard() {
+        let jev = FakeJev::new(Ok(Verdict::Violates));
+        let mut actor = make_actor(
+            "http://127.0.0.1:1/v1".into(),
+            registry_gated(),
+            CancellationToken::new(),
+        );
+        as_build(&mut actor);
+        actor.guard = Some(jev.clone() as Arc<dyn RoleGuard>);
+        let target = actor.tool_context.workspace.join("main.rs");
+        let server = spawn_mock(write_script(&target)).await;
+        actor.provider.base_url = server.url.clone();
+        let mut noop = |_e: AgentEvent| {};
+        actor.push_user("go");
+        let RunOutcome::PermissionRequired(request) =
+            run_agent(&mut actor, &mut noop).await.unwrap()
+        else {
+            panic!("build asks the driver");
+        };
+        assert!(
+            request.reason.starts_with("`write` acts in"),
+            "{}",
+            request.reason
+        );
+        assert_eq!(jev.asked(), 0);
+        // And its folder grants still work.
+        resolve_permission(
+            &mut actor,
+            request.id,
+            PermissionDecision::AllowFolder,
+            &mut noop,
+        )
+        .await
+        .unwrap();
+        assert!(actor
+            .grants
+            .covers("build", "write", &request.scope, &actor.tool_context));
+    }
 }

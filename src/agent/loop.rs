@@ -6,7 +6,7 @@ use crate::agent::permissions::{
     PermissionDecision, PermissionError, PermissionRequest,
 };
 use crate::agent::prompt::{assistant_history_message, build_request};
-use crate::agent::response::{classify, HumanRequest, StepOutcome};
+use crate::agent::response::{HumanRequest, StepOutcome};
 use crate::error::{AgentError, ProviderError, ToolError};
 use crate::provider::client::ModelClient;
 use crate::provider::openai::{ChatMessage, ClientCache};

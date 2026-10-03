@@ -8,6 +8,12 @@ requests land in `develop`.
 
 ### Added
 
+- **Background subagents (first half)**: cognition sessions can start real, non-promptable child
+  sessions with `task(agent, prompt)`. Child definitions and policy are snapshotted, tool access is
+  intersected with the parent's ceiling, links and bounded terminal results are persisted, and
+  `subagent.spawned` / `subagent.done` are durable parent-stream events. Results are not yet
+  delivered into the parent's transcript; that arrives in the next increment.
+
 - **Automatic compaction**: when the next request would not fit the model's input budget, the agent
   compacts the conversation before sending it, at a step boundary, and carries the same turn on: no
   `turn.end` in between, and the steps it had left are not renewed. The summary is written by the

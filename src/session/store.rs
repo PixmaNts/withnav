@@ -317,13 +317,16 @@ impl HistoryStore {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
             let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
-            conn.execute(
+            let inserted = conn.execute(
                 "INSERT INTO child_links (parent_id, child_id, agent, goal, policy_snapshot, status, created_at)
                  SELECT ?1, ?2, ?3, ?4, ?5, 'running', ?6
-                 WHERE (SELECT COUNT(*) FROM child_links WHERE parent_id=?1 AND status IN ('starting','running')) < ?7",
+                 WHERE (SELECT COUNT(*) FROM child_links WHERE parent_id=?1 AND status IN ('starting','running')) < ?7
+                   AND EXISTS(SELECT 1 FROM sessions WHERE id=?1)
+                   AND EXISTS(SELECT 1 FROM sessions WHERE id=?2)",
                 params![parent_id.to_string(), child_id.to_string(), agent, goal,
                     policy_snapshot, now_rfc3339(), crate::settings::DEFAULT_MAX_SUBAGENTS as i64],
             ).map_err(|e| e.to_string())?;
+            if inserted == 0 { return Err("subagent capacity reached or parent/child session is missing".into()); }
             Ok(())
         }).await.map_err(|e| e.to_string())?
     }
@@ -1283,6 +1286,42 @@ mod tests {
             .await
             .expect("resume")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn child_link_terminal_write_is_a_compare_and_set() {
+        let (_dir, store) = temp_store();
+        let parent = Ulid::new();
+        let child = Ulid::new();
+        store.record_session(parent, "/w", "m", None).await.unwrap();
+        store.record_session(child, "/w", "m", None).await.unwrap();
+        store
+            .create_child_link(parent, child, "explore".into(), "goal".into(), "{}".into())
+            .await
+            .unwrap();
+        let first = store
+            .finish_child_link(child, "done".into(), None, "answer".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            first.as_ref().map(|link| link.status.as_str()),
+            Some("done")
+        );
+        assert!(store
+            .finish_child_link(child, "failed".into(), Some("late".into()), "wrong".into())
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store
+                .child_link(child)
+                .await
+                .unwrap()
+                .unwrap()
+                .result_text
+                .as_deref(),
+            Some("answer")
+        );
     }
 
     // Given a store whose events table has been destroyed underneath it

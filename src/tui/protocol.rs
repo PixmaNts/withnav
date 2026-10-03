@@ -56,6 +56,16 @@ pub struct SessionListEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     pub live: bool,
+    #[serde(default)]
+    pub parent_session_id: Option<String>,
+    #[serde(default)]
+    pub child_status: Option<String>,
+    #[serde(default = "promptable_default")]
+    pub promptable: bool,
+}
+
+fn promptable_default() -> bool {
+    true
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionListBody {

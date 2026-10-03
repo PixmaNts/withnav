@@ -327,9 +327,8 @@ impl Service {
             }
             *current += 1;
         }
-        // The slot reservation and one child commit are serialized across
-        // concurrent model tool calls. This lane is released after the link
-        // exists; terminal children release their reservation separately.
+        // Concurrent calls in this process reserve capacity atomically; the
+        // persistent active count includes children from other processes.
         let parent_alias = parent_handle.selected().alias;
         let alias = definition.model.as_deref().unwrap_or(&parent_alias);
         let mut policy = BTreeMap::new();
@@ -384,7 +383,6 @@ impl Service {
                 return Err(error);
             }
         };
-        drop(_spawn_lock);
         let frozen = serde_json::to_string(&policy).unwrap_or_else(|_| "{}".into());
         if let Err(error) = self
             .history
@@ -402,6 +400,7 @@ impl Service {
             }
             return Err(ServerError::History(error));
         }
+        drop(_spawn_lock);
         if let Some(handle) = self.handle(child) {
             // The parent is immutable after publication; replacing the
             // registry handle is safe before exposing the returned id.

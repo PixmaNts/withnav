@@ -145,6 +145,10 @@ pub struct Service {
     /// being stopped or deleted. One client, so one gate for the service.
     gate: Arc<tokio::sync::Mutex<()>>,
     catalog: crate::provider::catalog::ModelCatalog,
+    /// Test seam: parks a command run between its work and the publication
+    /// of its result, to interleave lifecycle changes deterministically.
+    #[cfg(test)]
+    pub(super) publish_barrier: Arc<Mutex<Option<Arc<super::run_command::Barrier>>>>,
 }
 
 impl Service {
@@ -171,6 +175,8 @@ impl Service {
             hooks,
             gate: Arc::new(tokio::sync::Mutex::new(())),
             catalog,
+            #[cfg(test)]
+            publish_barrier: Arc::default(),
         })
     }
 

@@ -302,6 +302,144 @@ async fn http_endpoints_list_and_run_commands() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+// Given a session
+// When a command is sent over HTTP as `stop`, `/stop`, `//stop`, ` /stop` or `STOP`
+// Then only the first two (after one slash and trimming) stop it; the others
+//      are unknown commands that stop nothing
+#[tokio::test]
+async fn command_names_are_normalised_once() {
+    let (tmp, ws) = tmp_ws();
+    let state = state(tmp.path());
+    let router = app(state.clone());
+    let id = state.create_session(&ws, None, None).await.expect("create");
+    let path = format!("/v1/sessions/{id}/commands");
+
+    for name in ["//stop", "STOP", "/ stop", "//", ""] {
+        let (status, body) =
+            request_json(&router, "POST", &path, Some(&json!({ "name": name }))).await;
+        assert_eq!(status, StatusCode::OK, "{name:?}");
+        assert_eq!(body["ok"], false, "{name:?}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("unknown command"),
+            "{name:?}: {body}"
+        );
+    }
+    assert_eq!(
+        state.session_summary(id).await.unwrap().actor_state,
+        "idle",
+        "no unknown form stopped the session"
+    );
+
+    let (_, body) = request_json(&router, "POST", &path, Some(&json!({"name": " /stop "}))).await;
+    assert_eq!(body["ok"], true);
+    assert_eq!(
+        state.session_summary(id).await.unwrap().actor_state,
+        "stopped"
+    );
+    let events = results(&state, id).await;
+    assert_eq!(events.last().unwrap().payload["name"], "stop");
+
+    let id = state.create_session(&ws, None, None).await.expect("create");
+    let path = format!("/v1/sessions/{id}/commands");
+    let (_, body) = request_json(&router, "POST", &path, Some(&json!({"name": "stop"}))).await;
+    assert_eq!(body["ok"], true);
+    assert_eq!(
+        state.session_summary(id).await.unwrap().actor_state,
+        "stopped"
+    );
+}
+
+// Given a session
+// When an argument-free command gets arguments
+// Then it fails with a usage error and does nothing
+#[tokio::test]
+async fn arguments_to_argument_free_commands_are_rejected() {
+    let (tmp, ws) = tmp_ws();
+    let state = state(tmp.path());
+    let id = state.create_session(&ws, None, None).await.expect("create");
+
+    let out = state.run_command(id, "model", "other").await.expect("run");
+    assert!(!out.ok);
+    assert_eq!(
+        out.error.unwrap(),
+        "switching model inside a conversation is not available yet: use /new <alias>"
+    );
+    let out = state
+        .run_command(id, "stop", "anything")
+        .await
+        .expect("run");
+    assert!(!out.ok);
+    assert_eq!(out.error.unwrap(), "usage: /stop");
+    let out = state.run_command(id, "help", "x").await.expect("run");
+    assert_eq!(out.error.unwrap(), "usage: /help");
+    assert_eq!(state.session_summary(id).await.unwrap().actor_state, "idle");
+    assert_eq!(results(&state, id).await.len(), 3, "failures are durable");
+}
+
+// Given aliases in models.json
+// When /model runs
+// Then it counts the chat aliases and lists their names, sorted
+#[tokio::test]
+async fn model_lists_a_bounded_alias_catalog() {
+    let (tmp, ws) = tmp_ws();
+    let state = TestServerConfig::unreachable(tmp.path())
+        .chat_tools(128_000)
+        .extra_alias("other", "other-model")
+        .state();
+    let id = state.create_session(&ws, None, None).await.expect("create");
+    let out = state.run_command(id, "model", "").await.expect("run");
+    let catalog = &out.data.unwrap()["catalog"];
+    assert_eq!(catalog["count"], 2);
+    assert_eq!(catalog["aliases"], json!(["default", "other"]));
+    assert!(catalog["more"].as_str().unwrap().contains("/v1/models"));
+}
+
+// Given a session saved while the agent waited on an `ask`
+// When it is resumed and a command arrives at once
+// Then the command is refused: the status knew of the ask from the start
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resumed_pending_ask_refuses_an_immediate_command() {
+    let ask = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"ask_1","function":{"name":"ask","arguments":"{\"question\":\"which scope?\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+    let provider = spawn_capturing_provider(vec![http_sse(&sse_body(&[ask]))]).await;
+    let (tmp, ws) = tmp_ws();
+    let config = TestServerConfig::mock(tmp.path(), &provider.url);
+    let first = config.state();
+    let (addr, task) = spawn_server(first.clone()).await;
+    let id = first.create_session(&ws, None, None).await.expect("create");
+    let sub = first.subscribe(id, None).await.expect("sub");
+    post_message_ok(&format!("http://{addr}"), &id.to_string(), "go").await;
+    collect_until(sub, |e| {
+        e.kind == "agent.state" && e.payload["to"] == "yielded"
+    })
+    .await;
+    // The turn-end transcript snapshot is saved asynchronously.
+    let mut saved = false;
+    for _ in 0..100 {
+        first.history().flush().await.expect("flush");
+        let loaded = first.history().load(id).await.expect("load").expect("row");
+        if !loaded.transcript.is_empty() {
+            saved = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(saved, "transcript snapshot stored");
+    first.close_session(id).await.expect("close");
+    task.abort();
+
+    let second = config.state();
+    let (resumed, _) = second
+        .create_or_resume_session(&ws, None, None, Some(id))
+        .await
+        .expect("resume");
+    let out = second.run_command(resumed, "help", "").await.expect("run");
+    assert!(!out.ok, "{out:?}");
+    assert!(out.error.unwrap().contains("waiting for an answer"));
+}
+
 // Given an oversized data payload
 // When it is bounded for command.result
 // Then a marker replaces it

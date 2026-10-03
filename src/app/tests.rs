@@ -231,3 +231,11 @@ fn event_to_ui_maps_interrupted_and_error_turn_ends_to_none() {
         );
     }
 }
+
+#[test]
+fn the_html_converter_subcommand_is_hidden_but_parses() {
+    let help = Cli::command().render_long_help().to_string();
+    assert!(!help.contains("internal-html-convert"));
+    assert!(Cli::try_parse_from(["navai", "internal-html-convert", "--format", "text"]).is_ok());
+    assert!(Cli::try_parse_from(["navai", "internal-html-convert", "--format", "html"]).is_err());
+}

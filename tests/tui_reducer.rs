@@ -4014,3 +4014,47 @@ fn a_catalog_refresh_leaves_the_committed_model_and_window_alone() {
         "the header keeps what the server committed"
     );
 }
+
+#[test]
+fn an_acceptance_of_an_unknown_operation_is_not_labelled_with_this_tabs_alias() {
+    let last_text = |s: &State| match &s.conversation.blocks.last().unwrap().kind {
+        BlockKind::Command { text, .. } => text.clone(),
+        other => panic!("{other:?}"),
+    };
+    // this tab asked for b; another client's switch (operation 99) is accepted
+    let (mut s, _) = switching();
+    model_answered(&mut s, 77, Ok(deferred()));
+    let mut script = Script::new();
+    model_result(&mut script, 99, true, deferred(), None);
+    feed(&mut s, &script.out);
+    assert_eq!(
+        last_text(&s),
+        "model switch accepted, applies after this turn"
+    );
+    assert_eq!(
+        s.pending_model(),
+        Some("b"),
+        "this tab's switch still waits"
+    );
+    // before this tab's HTTP answer, its own acceptance is not named either
+    let (mut s, _) = switching();
+    let mut script = Script::new();
+    model_result(&mut script, 77, true, deferred(), None);
+    feed(&mut s, &script.out);
+    assert_eq!(
+        last_text(&s),
+        "model switch accepted, applies after this turn"
+    );
+    // the alias the server names is used
+    let mut s = st();
+    let mut script = Script::new();
+    model_result(
+        &mut script,
+        99,
+        true,
+        Some(json!({"accepted": true, "applies": "after_turn", "alias": "luna"})),
+        None,
+    );
+    feed(&mut s, &script.out);
+    assert_eq!(last_text(&s), "switches to luna after this turn");
+}

@@ -416,14 +416,21 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                             m.deferred = true;
                         }
                     }
-                    let target = s
-                        .model_switch
-                        .as_ref()
-                        .filter(|m| m.operation_id.is_none() || m.operation_id == op)
-                        .map(|m| m.alias.clone());
+                    // Named only when it is this tab's switch, known by its operation id, or
+                    // when the server names the alias; otherwise (another client's switch, or
+                    // one whose answer has not arrived) the line stays generic.
+                    let target = data
+                        .and_then(|d| d["alias"].as_str())
+                        .map(str::to_string)
+                        .or_else(|| {
+                            s.model_switch
+                                .as_ref()
+                                .filter(|m| op.is_some() && m.operation_id == op)
+                                .map(|m| m.alias.clone())
+                        });
                     let text = match target {
                         Some(alias) => format!("switches to {alias} after this turn"),
-                        None => "the switch applies after this turn".into(),
+                        None => "model switch accepted, applies after this turn".into(),
                     };
                     s.conversation.blocks.push(block(
                         e.seq.to_string(),

@@ -69,20 +69,29 @@ pub fn not_available_error(name: &str) -> String {
 pub const ASK_PENDING_ERROR: &str =
     "the agent is waiting for an answer: reply to its question first, then run the command";
 
-/// The registered command called `name` (a leading `/` is ignored).
+/// The name as typed, without surrounding whitespace and without ONE leading
+/// `/`: the single normalisation every lookup, error and result goes through.
+pub fn normalize_name(name: &str) -> &str {
+    let name = name.trim();
+    name.strip_prefix('/').unwrap_or(name)
+}
+
+/// The registered command called `name`: its [`normalize_name`] form must
+/// equal a registered name exactly (`//stop` and `STOP` are unknown).
 pub fn find(name: &str) -> Option<&'static CommandSpec> {
-    let name = name.strip_prefix('/').unwrap_or(name);
+    let name = normalize_name(name);
     COMMANDS.iter().find(|c| c.name == name)
 }
 
 /// The error text for an unknown name: it lists the close names, or every
 /// name when none is close.
 pub fn unknown_error(name: &str) -> String {
-    let name = name.strip_prefix('/').unwrap_or(name);
+    let name = normalize_name(name);
+    let lower = name.to_lowercase();
     let mut close: Vec<&str> = COMMANDS
         .iter()
         .map(|c| c.name)
-        .filter(|c| c.starts_with(name) || name.starts_with(c) || edit_distance(c, name) <= 2)
+        .filter(|c| c.starts_with(&lower) || lower.starts_with(c) || edit_distance(c, &lower) <= 2)
         .collect();
     let all = close.is_empty();
     if all {
@@ -246,13 +255,18 @@ mod tests {
         );
         assert!(NOT_AVAILABLE.iter().all(|n| find(n).is_some()));
         assert_eq!(find("/help").map(|c| c.name), Some("help"));
+        assert_eq!(find(" /help ").map(|c| c.name), Some("help"));
         assert!(find("nope").is_none());
+        assert!(find("//help").is_none());
+        assert!(find("HELP").is_none());
+        assert!(find("").is_none());
     }
 
     #[test]
     fn unknown_names_list_close_ones_or_all() {
         assert!(unknown_error("hlep").contains("/help"));
         assert!(unknown_error("mod").contains("/model"));
+        assert!(unknown_error("STOP").contains("did you mean /stop"));
         let all = unknown_error("zzzzzzzz");
         assert!(all.contains("/help") && all.contains("/compact"));
     }

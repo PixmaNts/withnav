@@ -56,7 +56,6 @@ struct VariantSlot {
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
     pending_ask: AtomicBool,
-    running: AtomicBool,
     variant: Mutex<VariantSlot>,
 }
 
@@ -64,11 +63,6 @@ impl RuntimeStatus {
     /// The agent asked the human something and waits for the answer.
     pub fn pending_ask(&self) -> bool {
         self.pending_ask.load(Ordering::SeqCst)
-    }
-
-    /// A turn is in flight.
-    pub fn running(&self) -> bool {
-        self.running.load(Ordering::SeqCst)
     }
 
     fn slot(&self) -> std::sync::MutexGuard<'_, VariantSlot> {
@@ -281,7 +275,8 @@ pub fn spawn(
 }
 
 /// [`spawn`] with a status the caller keeps to read the actor's pending
-/// `ask` and running flags.
+/// `ask` flag. The status reflects the actor as soon as this returns, before
+/// the runtime task has run.
 pub fn spawn_with_status(
     session_id: Ulid,
     actor: AgentActor,
@@ -291,6 +286,7 @@ pub fn spawn_with_status(
     on_turn_end: Option<TurnEndHook>,
     status: Arc<RuntimeStatus>,
 ) -> tokio::task::JoinHandle<AgentActor> {
+    status.sync_ask(&actor);
     tokio::spawn(runtime_loop(
         session_id,
         actor,
@@ -313,7 +309,6 @@ async fn runtime_loop(
 ) -> AgentActor {
     let on_turn_end: SharedHook = Arc::new(Mutex::new(on_turn_end));
     let mut active_task_id: Option<Ulid> = None;
-    status.sync_ask(&actor);
 
     loop {
         let batch = tokio::select! {
@@ -335,7 +330,6 @@ async fn runtime_loop(
 
         inbox.apply_batch_to_actor(&mut actor);
         status.sync_ask(&actor);
-        status.running.store(true, Ordering::SeqCst);
         actor.variant = status.begin_turn().map(|(_, variant)| variant);
 
         let task_id = active_task_id.unwrap_or_default();
@@ -376,7 +370,6 @@ async fn runtime_loop(
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let result_message_id = turn.message_id;
         status.sync_ask(&actor);
-        status.running.store(false, Ordering::SeqCst);
         status.end_turn();
 
         // A collapsed session surfaces its first publish failure as the turn

@@ -154,6 +154,27 @@ fn block_text(
                     .map(|s| Line::styled(format!(" {s}"), theme.error())),
             );
         }
+        BlockKind::Command { name, ok, text } => {
+            let (mark, style) = if *ok {
+                ("ok", theme.success())
+            } else {
+                ("error", theme.error())
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("/{name}"),
+                    theme.muted().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" · ", theme.muted()),
+                Span::styled(mark, style),
+            ]));
+            let body = if *ok { theme.text() } else { theme.error() };
+            lines.extend(
+                clean(text)
+                    .lines()
+                    .map(|s| Line::styled(format!(" {s}"), body)),
+            );
+        }
         BlockKind::Notice(notice) => {
             lines.push(Line::styled(
                 "NOTICE",
@@ -244,7 +265,10 @@ pub fn draw(
                     }
                 }
                 BlockKind::Message { .. } => 2,
-                BlockKind::YieldQuestion(s) | BlockKind::Error(s) | BlockKind::Notice(s) => {
+                BlockKind::YieldQuestion(s)
+                | BlockKind::Error(s)
+                | BlockKind::Notice(s)
+                | BlockKind::Command { text: s, .. } => {
                     2 + s
                         .lines()
                         .map(|line| {
@@ -310,7 +334,10 @@ pub fn draw(
                 Origin::Assistant => theme.accent_line(),
                 Origin::Other => theme.subagent(),
             },
-            BlockKind::Notice(_) | BlockKind::ToolCall { .. } => theme.border(),
+            BlockKind::Command { ok: false, .. } => theme.error(),
+            BlockKind::Notice(_) | BlockKind::Command { .. } | BlockKind::ToolCall { .. } => {
+                theme.border()
+            }
             BlockKind::AssistantStep { .. } => theme.accent_line(),
         };
         if selected {

@@ -51,6 +51,8 @@ async fn http_effects_report_back_tagged_with_the_context_generation() {
             workspace: String::new(),
             model: None,
             resume: None,
+            agent: None,
+            variant: None,
         }),
         Effect::Resume("s1".into()),
         Effect::FetchMetadata("s1".into()),

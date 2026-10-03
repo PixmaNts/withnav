@@ -88,7 +88,11 @@ impl Runtime {
     /// Asks for the model catalog and the session list, and resumes the
     /// session named on the command line, if any.
     pub fn start(&mut self, session: Option<String>) {
-        self.run_effects(vec![Effect::FetchModels, Effect::ListSessions]);
+        self.run_effects(vec![
+            Effect::FetchModels,
+            Effect::ListSessions,
+            Effect::FetchCommands,
+        ]);
         if let Some(id) = session {
             self.dispatch(Action::ResumeSession(id));
         }
@@ -167,7 +171,10 @@ impl Runtime {
             }
             Event::Paste(text) => {
                 self.dirty = true;
-                route_paste(text, &self.ui, &mut self.editor);
+                if let Some(action) = route_paste(text, &self.state, &mut self.ui, &mut self.editor)
+                {
+                    self.dispatch(action);
+                }
             }
             Event::Resize(..) => {
                 self.dirty = true;
@@ -224,6 +231,11 @@ impl Runtime {
             config_dir: self.config_dir.clone(),
         };
         for effect in effects {
+            if let Effect::ShowVariants { current } = &effect {
+                // A screen change, not I/O: it needs the `UiState` the reducer's `update` lacks.
+                reducer::show_variants(&self.state, &mut self.ui, current.as_deref());
+                continue;
+            }
             if self.exec.execute(effect, &ctx, &mut self.editor) == Flow::Quit {
                 self.quit = true;
             }

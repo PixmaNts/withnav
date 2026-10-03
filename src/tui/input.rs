@@ -3,7 +3,7 @@
 use super::{
     commands,
     protocol::{Action, Overlay},
-    state::{Activity, Focus, State, UiState},
+    state::{Activity, Focus, State, UiState, VariantPick},
     theme::ThemeId,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -83,25 +83,76 @@ pub fn route_key(
     if matches!(key.kind, KeyEventKind::Release) {
         return None;
     }
+    if ui.overlay == Some(Overlay::Commands) && ui.palette_typed {
+        return typed_palette_key(key, state, ui, editor);
+    }
     if let Some(overlay) = ui.overlay {
         let names = overlay_names(overlay, state, ui);
         let selected = ui.selection.entry(format!("{overlay:?}")).or_default();
         match key.code {
             KeyCode::Esc => {
-                ui.overlay = None;
                 ui.filter.clear();
+                // esc in the second step of the model picker goes back to the models.
+                if let Some(VariantPick::NewConversation(alias)) = ui.variant_pick.take() {
+                    ui.overlay = Some(Overlay::Models);
+                    let back = overlay_names(Overlay::Models, state, ui)
+                        .iter()
+                        .position(|a| *a == alias)
+                        .unwrap_or(0);
+                    ui.selection.insert(format!("{:?}", Overlay::Models), back);
+                    return None;
+                }
+                ui.overlay = None;
                 return Some(Action::CloseOverlay);
             }
             KeyCode::Up => *selected = selected.saturating_sub(1),
             KeyCode::Down => *selected = (*selected + 1).min(names.len().saturating_sub(1)),
             KeyCode::PageUp => *selected = selected.saturating_sub(8),
             KeyCode::PageDown => *selected = (*selected + 8).min(names.len().saturating_sub(1)),
+            KeyCode::Enter if overlay == Overlay::Variants && names.is_empty() => {
+                // No variant to choose: a new conversation starts as it is; `/variant` closes.
+                if !ui.filter.is_empty() {
+                    return None;
+                }
+                let pick = ui.variant_pick.take();
+                ui.overlay = None;
+                return Some(match pick {
+                    Some(VariantPick::NewConversation(alias)) => Action::PickModel(alias),
+                    _ => Action::CloseOverlay,
+                });
+            }
             KeyCode::Enter => {
                 let name = names.get(*selected)?;
                 let action = match overlay {
-                    Overlay::Models => Action::PickModel(name.clone()),
+                    Overlay::Models => {
+                        // The second step: which variant to start on (a note when there is none).
+                        let pick = VariantPick::NewConversation(name.clone());
+                        let (_, start) = commands::variant_choices(state, &pick);
+                        ui.overlay = Some(Overlay::Variants);
+                        ui.variant_pick = Some(pick);
+                        ui.filter.clear();
+                        ui.selection
+                            .insert(format!("{:?}", Overlay::Variants), start);
+                        return None;
+                    }
+                    Overlay::Variants => Action::PickVariant(name.clone()),
                     Overlay::Sessions => Action::ResumeSession(name.clone()),
-                    Overlay::Commands => commands::command_action(name, ui.mode)?,
+                    Overlay::Commands => {
+                        let row = commands::palette_rows(state, &ui.filter, false)
+                            .into_iter()
+                            .find(|r| &r.name == name)?;
+                        if !row.runs_bare() {
+                            // It needs an argument: the name goes to the editor to finish.
+                            editor.set_text(&format!("{} ", row.name));
+                            editor
+                                .area_mut()
+                                .move_cursor(ratatui_textarea::CursorMove::End);
+                            ui.overlay = None;
+                            ui.filter.clear();
+                            return None;
+                        }
+                        commands::palette_action(&row, ui.mode, None)?
+                    }
                     Overlay::Themes => Action::PickTheme(ThemeId::from_id(name)?),
                     Overlay::Help => return None,
                 };
@@ -137,6 +188,15 @@ pub fn route_key(
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
+    // tab on an empty message switches build/plan; with text in it, or as shift+tab, it moves the
+    // focus between the editor and the transcript.
+    if key.code == KeyCode::Tab
+        && !key.modifiers.contains(KeyModifiers::SHIFT)
+        && ui.focus == Focus::Editor
+        && editor.text().is_empty()
+    {
+        return Some(Action::ToggleAgent);
+    }
     if key.code == KeyCode::Tab || key.code == KeyCode::BackTab {
         ui.focus = if ui.focus == Focus::Editor {
             Focus::Transcript
@@ -208,23 +268,42 @@ pub fn route_key(
         }
     }
     if key.code == KeyCode::Char('/') && editor.text().is_empty() {
+        // The slash is typed into the editor; the palette follows what comes after it.
+        editor.set_text("/");
+        editor
+            .area_mut()
+            .move_cursor(ratatui_textarea::CursorMove::End);
         ui.overlay = Some(Overlay::Commands);
+        ui.palette_typed = true;
         ui.filter.clear();
         ui.selection.insert("Commands".into(), 0);
         return Some(Action::OpenOverlay(Overlay::Commands));
     }
     if key.code == KeyCode::Enter && !alt && !key.modifiers.contains(KeyModifiers::SHIFT) {
         let text = editor.text();
-        if let Some(action) = commands::command_action(text.trim(), ui.mode) {
-            if let Action::OpenOverlay(overlay) = action {
-                ui.overlay = Some(overlay);
-                ui.filter.clear();
-            }
-            return Some(action);
+        if text.trim().is_empty() {
+            return None;
         }
-        return (!text.trim().is_empty()).then(|| Action::SubmitAt {
-            text,
-            revision: editor.revision(),
+        return Some(match commands::route(&text, ui.mode) {
+            commands::Routed::Local(action) => {
+                // The client runs it now: the line has done its job.
+                editor.clear_if_revision(editor.revision());
+                if let Action::OpenOverlay(overlay) = action {
+                    ui.overlay = Some(overlay);
+                    ui.filter.clear();
+                }
+                action
+            }
+            commands::Routed::Server { name, arguments } => Action::RunCommand {
+                name,
+                arguments,
+                revision: Some(editor.revision()),
+            },
+            commands::Routed::Message(text) => Action::SubmitAt {
+                text,
+                revision: editor.revision(),
+            },
+            commands::Routed::Refused(why) => Action::ShowNotice(why),
         });
     }
     let changed = if (key.code == KeyCode::Enter
@@ -240,6 +319,87 @@ pub fn route_key(
         editor.bump();
     }
     None
+}
+
+/// A key while the palette follows the editor. Every printable key and backspace edit the line;
+/// the palette then closes when the line is no longer a command name being typed (a space or an
+/// argument after it, a name no row starts with, `//`, an empty line), leaving the line for enter.
+fn typed_palette_key(
+    key: KeyEvent,
+    state: &State,
+    ui: &mut UiState,
+    editor: &mut Editor,
+) -> Option<Action> {
+    let rows = commands::palette_rows(state, &ui.filter, true);
+    let selected = ui.selection.entry("Commands".into()).or_default();
+    match key.code {
+        KeyCode::Esc => {
+            // The line stays; esc only puts the list away.
+            close_palette(ui);
+            return Some(Action::CloseOverlay);
+        }
+        KeyCode::Up => {
+            *selected = selected.saturating_sub(1);
+            return None;
+        }
+        KeyCode::Down => {
+            *selected = (*selected + 1).min(rows.len().saturating_sub(1));
+            return None;
+        }
+        KeyCode::Tab | KeyCode::Enter => {
+            let row = rows.get(*selected)?.clone();
+            let complete = key.code == KeyCode::Tab || !row.runs_bare();
+            close_palette(ui);
+            if complete {
+                // Fills in the name; the driver types the argument and sends it with enter.
+                editor.set_text(&format!("{} ", row.name));
+                editor
+                    .area_mut()
+                    .move_cursor(ratatui_textarea::CursorMove::End);
+                return Some(Action::CloseOverlay);
+            }
+            let revision = editor.revision();
+            let action = commands::palette_action(&row, ui.mode, Some(revision));
+            if !row.server {
+                // A client command runs now; nothing waits for a server to take the line.
+                editor.clear_if_revision(revision);
+            }
+            return action;
+        }
+        _ => {}
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    if editor.area_mut().input_without_shortcuts(key) {
+        editor.bump();
+    }
+    follow_typed_line(state, ui, editor)
+}
+
+/// After an edit of the line the palette follows: narrows the palette to the name typed so far,
+/// or puts it away when the line is no longer a command name being typed (a space or an argument
+/// after it, a name no row starts with, `//`, an empty line), leaving the line for enter.
+fn follow_typed_line(state: &State, ui: &mut UiState, editor: &Editor) -> Option<Action> {
+    let text = editor.text();
+    let name = text.strip_prefix('/').unwrap_or_default();
+    let still_a_name = text.starts_with('/')
+        && !name.starts_with('/')
+        && !name.contains(char::is_whitespace)
+        && !commands::palette_rows(state, name, true).is_empty();
+    if !still_a_name {
+        close_palette(ui);
+        return Some(Action::CloseOverlay);
+    }
+    ui.filter = name.to_string();
+    ui.selection.insert("Commands".into(), 0);
+    None
+}
+
+fn close_palette(ui: &mut UiState) {
+    ui.overlay = None;
+    ui.palette_typed = false;
+    ui.filter.clear();
 }
 
 /// The keys of the rows an overlay lists under the current filter, in display order.
@@ -267,13 +427,9 @@ fn overlay_names(overlay: Overlay, state: &State, ui: &UiState) -> Vec<String> {
             })
             .map(|x| x.id.clone())
             .collect(),
-        Overlay::Commands => commands::CATALOG
-            .iter()
-            .filter(|x| {
-                x.name.contains(&ui.filter.to_lowercase())
-                    || x.description.contains(&ui.filter.to_lowercase())
-            })
-            .map(|x| x.name.to_string())
+        Overlay::Commands => commands::palette_rows(state, &ui.filter, ui.palette_typed)
+            .into_iter()
+            .map(|r| r.name)
             .collect(),
         Overlay::Themes => ThemeId::ALL
             .iter()
@@ -284,13 +440,35 @@ fn overlay_names(overlay: Overlay, state: &State, ui: &UiState) -> Vec<String> {
             .map(|x| x.id().to_string())
             .collect(),
         Overlay::Help => Vec::new(),
+        Overlay::Variants => ui
+            .variant_pick
+            .as_ref()
+            .map(|pick| commands::variant_choices(state, pick).0)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|v| v.to_lowercase().contains(&ui.filter.to_lowercase()))
+            .collect(),
     }
 }
 
-/// Inserts pasted text into the editor (newlines kept), unless an overlay
-/// has the focus.
-pub fn route_paste(text: String, ui: &UiState, editor: &mut Editor) {
-    if ui.overlay.is_none() && ui.focus == Focus::Editor && editor.area_mut().insert_str(text) {
+/// Inserts pasted text into the editor (newlines kept), unless an overlay other than the typed
+/// slash palette has the focus.
+pub fn route_paste(
+    text: String,
+    state: &State,
+    ui: &mut UiState,
+    editor: &mut Editor,
+) -> Option<Action> {
+    // The palette opened by typing `/` follows the line: a paste edits it like typed keys.
+    let typed_palette = ui.overlay == Some(Overlay::Commands) && ui.palette_typed;
+    if (ui.overlay.is_some() && !typed_palette) || ui.focus != Focus::Editor {
+        return None;
+    }
+    if editor.area_mut().insert_str(text) {
         editor.bump();
     }
+    if typed_palette {
+        return follow_typed_line(state, ui, editor);
+    }
+    None
 }

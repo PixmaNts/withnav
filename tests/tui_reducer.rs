@@ -608,6 +608,8 @@ fn with_session(s: &mut State, id: &str) {
         actor_state: "idle".into(),
         workspace: "/ws".into(),
         model: "a".into(),
+        agent: None,
+        variant: None,
         current_seq: 0,
     });
 }
@@ -1049,6 +1051,7 @@ fn bug2_resync_keeps_catalog_model_sessions_pending_submit_and_notice() {
         created_at: "t".into(),
         updated_at: "t".into(),
         message_count: 1,
+        agent: None,
         live: false,
     }];
     s.pending_submit_text = Some("draft".into());
@@ -1291,6 +1294,8 @@ fn bug9_metadata_refreshes_display_and_stale_metadata_cannot_clobber_a_pick() {
             actor_state: "idle".into(),
             workspace: "/ws".into(),
             model: model.into(),
+            agent: None,
+            variant: None,
             current_seq: 3,
         }),
     };
@@ -2240,4 +2245,702 @@ fn a_tab_holding_a_message_for_a_pending_resume_cannot_be_closed() {
         Effect::SendAt { request, .. }
             if matches!(&request.content[..], [navai::bus::command::ContentBlock::Text { text }] if text == "keep me")
     )));
+}
+
+// ---------------------------------------------------------------- server commands
+
+#[test]
+fn typed_lines_route_like_the_server_with_client_commands_kept_local() {
+    use navai::tui::commands::{route, Routed};
+    let server = |name: &str, arguments: &str| Routed::Server {
+        name: name.into(),
+        arguments: arguments.into(),
+    };
+    let mode = Mode::NextTurn;
+    assert_eq!(route("/context", mode), server("context", ""));
+    assert_eq!(route("/agent plan ", mode), server("agent", "plan"));
+    assert_eq!(route("/variant high", mode), server("variant", "high"));
+    assert_eq!(
+        route("/compact keep the tests", mode),
+        server("compact", "keep the tests")
+    );
+    assert_eq!(
+        route("/nope", mode),
+        server("nope", ""),
+        "the server names close ones"
+    );
+    assert_eq!(route("//context", mode), Routed::Message("/context".into()));
+    assert_eq!(
+        route("hello /context", mode),
+        Routed::Message("hello /context".into())
+    );
+    assert_eq!(route("/", mode), Routed::Message("/".into()));
+    assert_eq!(
+        route("/sessions", mode),
+        Routed::Local(Action::OpenOverlay(Overlay::Sessions))
+    );
+    assert_eq!(
+        route("/theme", mode),
+        Routed::Local(Action::OpenOverlay(Overlay::Themes))
+    );
+    assert_eq!(
+        route("/help", mode),
+        Routed::Local(Action::OpenOverlay(Overlay::Help))
+    );
+    assert_eq!(route("/quit", mode), Routed::Local(Action::Quit));
+    assert_eq!(route("/new", mode), Routed::Local(Action::NewConversation));
+    assert_eq!(
+        route("/new fast", mode),
+        Routed::Local(Action::PickModel("fast".into()))
+    );
+}
+
+#[test]
+fn a_command_runs_in_the_active_conversation_and_clears_the_editor_once_taken() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    let action = Action::RunCommand {
+        name: "context".into(),
+        arguments: String::new(),
+        revision: Some(4),
+    };
+    let fx = handle_action(&mut s, &mut ui, action);
+    assert_eq!(
+        fx,
+        vec![Effect::RunCommand {
+            session_id: "S1".into(),
+            request: CommandRequest {
+                name: "context".into(),
+                arguments: String::new(),
+            },
+            revision: Some(4),
+        }]
+    );
+    let taken = ClientEvent::CommandRan {
+        generation: s.generation.clone(),
+        name: "context".into(),
+        revision: Some(4),
+        result: Ok(CommandResponse {
+            operation_id: "op".into(),
+            ok: true,
+            data: None,
+            error: None,
+        }),
+    };
+    assert_eq!(
+        update(&mut s, taken).unwrap(),
+        vec![Effect::ClearEditor { revision: 4 }]
+    );
+    // a request that never reached the server is shown and keeps the editor
+    let lost = ClientEvent::CommandRan {
+        generation: s.generation.clone(),
+        name: "context".into(),
+        revision: Some(5),
+        result: Err("HTTP 503".into()),
+    };
+    assert!(update(&mut s, lost).unwrap().is_empty());
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Command { name, ok: false, text } if name == "context" && text == "HTTP 503"
+    ));
+}
+
+#[test]
+fn a_command_without_a_live_conversation_is_answered_locally() {
+    let (mut s, mut ui) = (st(), ui());
+    let action = || Action::RunCommand {
+        name: "context".into(),
+        arguments: String::new(),
+        revision: None,
+    };
+    assert!(handle_action(&mut s, &mut ui, action()).is_empty());
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Command { ok: false, text, .. } if text.contains("send a message first")
+    ));
+    created_now(&mut s, "S1").unwrap();
+    s.activity = Activity::Stopped;
+    assert!(handle_action(&mut s, &mut ui, action()).is_empty());
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Command { ok: false, text, .. } if text.contains("stopped")
+    ));
+}
+
+#[test]
+fn command_results_show_as_compact_blocks_live_and_on_replay() {
+    let mut script = Script::new();
+    script.start();
+    script.raw(
+        "command.result",
+        json!({"operation_id": Ulid(7).to_string(), "name": "variant", "ok": true,
+               "data": {"variant": "high", "offered": ["low", "high"], "applies": "next_turn"}}),
+    );
+    script.raw(
+        "command.result",
+        json!({"operation_id": Ulid(8).to_string(), "name": "agent", "ok": false,
+               "error": "the agent is working: wait for the turn to end or stop it, then switch"}),
+    );
+    script.raw(
+        "command.result",
+        json!({"operation_id": Ulid(9).to_string(), "name": "context", "ok": true,
+               "data": {"estimate_total": 42_000, "window": 1_000_000, "percent": 4,
+                        "input_budget": 941_808,
+                        "breakdown": {"system": 3000, "rules": 0, "skills_catalog": 0,
+                                      "tools": 9000, "messages": 30_000}}}),
+    );
+    let mut s = st();
+    feed(&mut s, &script.out);
+    let shown: Vec<(String, bool, String)> = s
+        .conversation
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.kind {
+            BlockKind::Command { name, ok, text } => Some((name.clone(), *ok, text.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown.len(), 3, "{shown:?}");
+    assert_eq!(
+        shown[0],
+        (
+            "variant".into(),
+            true,
+            "variant high, applies next turn; on offer: low, high".into()
+        )
+    );
+    assert!(!shown[1].1);
+    assert!(shown[1].2.starts_with("the agent is working"));
+    assert!(
+        shown[2].2.starts_with("~42k / 1M · 4% · input budget 942k"),
+        "{}",
+        shown[2].2
+    );
+    assert!(shown[2].2.contains("messages"));
+    // replaying the same events gives the same blocks
+    let mut again = st();
+    feed(&mut again, &script.out);
+    assert_eq!(again.conversation.blocks, s.conversation.blocks);
+}
+
+#[test]
+fn the_server_command_list_is_kept() {
+    let mut s = st();
+    let ev = ClientEvent::Commands {
+        generation: Generation(12345),
+        result: Ok(CommandsBody {
+            commands: vec![ServerCommand {
+                name: "context".into(),
+                description: "Show how the context window is used".into(),
+                args_hint: String::new(),
+            }],
+        }),
+    };
+    update(&mut s, ev).unwrap();
+    assert_eq!(
+        s.server_commands.len(),
+        1,
+        "shared: kept whatever its generation"
+    );
+}
+
+// ---------------------------------------------------------------- build / plan
+
+#[test]
+fn toggling_the_agent_before_a_conversation_sets_the_one_it_starts_as() {
+    let (mut s, mut ui) = (st(), ui());
+    assert_eq!(s.agent_name(), "build");
+    assert!(handle_action(&mut s, &mut ui, Action::ToggleAgent).is_empty());
+    assert_eq!(s.agent_name(), "plan");
+    let fx = handle_action(&mut s, &mut ui, Action::Submit("hi".into()));
+    assert!(
+        matches!(&fx[0], Effect::Create(r) if r.agent.as_deref() == Some("plan")),
+        "{fx:?}"
+    );
+    let mut back = st();
+    handle_action(&mut back, &mut ui, Action::ToggleAgent);
+    handle_action(&mut back, &mut ui, Action::ToggleAgent);
+    assert_eq!(back.agent, None, "build is the server's default: not sent");
+}
+
+#[test]
+fn toggling_the_agent_of_a_conversation_goes_through_the_server() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    let fx = handle_action(&mut s, &mut ui, Action::ToggleAgent);
+    assert_eq!(
+        fx,
+        vec![Effect::RunCommand {
+            session_id: "S1".into(),
+            request: CommandRequest {
+                name: "agent".into(),
+                arguments: "plan".into(),
+            },
+            revision: None,
+        }]
+    );
+    assert_eq!(
+        s.agent_name(),
+        "build",
+        "nothing changes until the server says so"
+    );
+    let mut script = Script::new();
+    script.raw(
+        "session.agent_changed",
+        json!({"agent": "plan", "previous": "build"}),
+    );
+    feed(&mut s, &script.out);
+    assert_eq!(s.agent_name(), "plan");
+    // a refusal arrives as a failed command.result and leaves the agent as it was
+    script.raw(
+        "command.result",
+        json!({"operation_id": Ulid(3).to_string(), "name": "agent", "ok": false,
+               "error": "the agent is working: wait for the turn to end or stop it, then switch"}),
+    );
+    feed(&mut s, &script.out);
+    assert_eq!(s.agent_name(), "plan");
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Command { ok: false, text, .. } if text.starts_with("the agent is working")
+    ));
+    // the next toggle asks for build
+    let fx = handle_action(&mut s, &mut ui, Action::ToggleAgent);
+    assert!(matches!(
+        &fx[0],
+        Effect::RunCommand { request, .. } if request.arguments == "build"
+    ));
+}
+
+#[test]
+fn the_session_summary_and_a_background_change_set_each_tabs_agent() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    let first = s.generation.clone();
+    let meta = ClientEvent::Metadata {
+        generation: first.clone(),
+        result: Ok(SessionMetadata {
+            session_id: "S1".into(),
+            actor_state: "idle".into(),
+            workspace: "/ws".into(),
+            model: "a".into(),
+            agent: Some("plan".into()),
+            variant: Some("high".into()),
+            current_seq: 0,
+        }),
+    };
+    update(&mut s, meta).unwrap();
+    assert_eq!(s.agent_name(), "plan");
+    handle_action(&mut s, &mut ui, Action::NewConversation);
+    assert_eq!(s.agent_name(), "build", "a new tab starts as build");
+    let mut script = Script::new();
+    script.raw(
+        "session.agent_changed",
+        json!({"agent": "build", "previous": "plan"}),
+    );
+    update(
+        &mut s,
+        ClientEvent::Envelope {
+            generation: first,
+            envelope: script.out[0].clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.tabs[0].agent_name(), "build");
+}
+
+// ---------------------------------------------------------------- model and variant pick
+
+fn variant_catalog() -> Vec<ModelEntry> {
+    vec![
+        ModelEntry {
+            alias: "opus".into(),
+            model: "vendor/opus".into(),
+            context_window: Some(1_000_000),
+            variants: vec!["low".into(), "high".into()],
+            default_variant: Some("high".into()),
+            ..Default::default()
+        },
+        ModelEntry {
+            alias: "flash".into(),
+            model: "vendor/flash".into(),
+            context_window: Some(100_000),
+            ..Default::default()
+        },
+    ]
+}
+
+fn with_variants() -> State {
+    let mut s = st();
+    s.catalog = variant_catalog();
+    s
+}
+
+#[test]
+fn the_variant_picked_with_a_model_is_sent_when_the_conversation_starts() {
+    let (mut s, mut ui) = (with_variants(), ui());
+    ui.variant_pick = Some(VariantPick::NewConversation("opus".into()));
+    handle_action(&mut s, &mut ui, Action::PickVariant("low".into()));
+    assert_eq!(ui.variant_pick, None);
+    assert_eq!(s.selected_model_alias.as_deref(), Some("opus"));
+    assert_eq!(
+        s.variant.as_deref(),
+        Some("low"),
+        "shown before the conversation exists"
+    );
+    let fx = handle_action(&mut s, &mut ui, Action::Submit("hi".into()));
+    let Effect::Create(request) = &fx[0] else {
+        panic!("{fx:?}")
+    };
+    assert_eq!(request.variant, Some(Some("low".into())));
+    assert_eq!(
+        serde_json::to_value(request).unwrap()["variant"],
+        json!("low")
+    );
+    // `off` asks for none: an explicit null
+    let (mut s, mut ui) = (with_variants(), self::ui());
+    ui.variant_pick = Some(VariantPick::NewConversation("opus".into()));
+    handle_action(&mut s, &mut ui, Action::PickVariant("off".into()));
+    assert_eq!(s.variant, None);
+    let fx = handle_action(&mut s, &mut ui, Action::Submit("hi".into()));
+    let Effect::Create(request) = &fx[0] else {
+        panic!("{fx:?}")
+    };
+    let body = serde_json::to_value(request).unwrap();
+    assert!(body.get("variant").is_some_and(Value::is_null), "{body}");
+    // a model picked without the step leaves the server's default: no field
+    let (mut s, mut ui) = (with_variants(), self::ui());
+    handle_action(&mut s, &mut ui, Action::PickModel("opus".into()));
+    assert_eq!(s.variant.as_deref(), Some("high"), "the default is shown");
+    let fx = handle_action(&mut s, &mut ui, Action::Submit("hi".into()));
+    let Effect::Create(request) = &fx[0] else {
+        panic!("{fx:?}")
+    };
+    assert!(serde_json::to_value(request)
+        .unwrap()
+        .get("variant")
+        .is_none());
+}
+
+#[test]
+fn picking_a_model_in_a_conversation_still_opens_a_new_tab() {
+    let (mut s, mut ui) = (with_variants(), ui());
+    s.selected_model_alias = Some("flash".into());
+    created_now(&mut s, "S1").unwrap();
+    ui.variant_pick = Some(VariantPick::NewConversation("opus".into()));
+    handle_action(&mut s, &mut ui, Action::PickVariant("high".into()));
+    assert_eq!((s.tabs.len(), s.active), (2, 1));
+    assert_eq!(s.selected_model_alias.as_deref(), Some("opus"));
+    assert_eq!(s.tabs[0].selected_model_alias.as_deref(), Some("flash"));
+}
+
+#[test]
+fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use navai::tui::input::{route_key, Editor};
+    let (mut s, mut ui) = (with_variants(), ui());
+    s.selected_model_alias = Some("opus".into());
+    created_now(&mut s, "S1").unwrap();
+    // the tab last heard the conversation runs on `high`
+    let summary = ClientEvent::Metadata {
+        generation: s.generation.clone(),
+        result: Ok(SessionMetadata {
+            session_id: "S1".into(),
+            actor_state: "idle".into(),
+            workspace: "/ws".into(),
+            model: "opus".into(),
+            agent: None,
+            variant: Some("high".into()),
+            current_seq: 0,
+        }),
+    };
+    update(&mut s, summary).unwrap();
+    assert_eq!(s.variant.as_deref(), Some("high"));
+    let mut editor = Editor::new();
+    let press = |code, s: &mut State, ui: &mut UiState, editor: &mut Editor| {
+        route_key(KeyEvent::new(code, KeyModifiers::NONE), s, ui, editor)
+            .map(|a| handle_action(s, ui, a))
+    };
+    // from the palette: ctrl+p, type "variant", enter
+    let fx = handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Commands));
+    assert!(fx.is_empty());
+    for c in "variant".chars() {
+        press(KeyCode::Char(c), &mut s, &mut ui, &mut editor);
+    }
+    let fx = press(KeyCode::Enter, &mut s, &mut ui, &mut editor).unwrap();
+    // the list waits for the server: a bare `/variant` says what this conversation offers
+    assert_eq!(
+        fx,
+        vec![Effect::RunCommand {
+            session_id: "S1".into(),
+            request: CommandRequest {
+                name: "variant".into(),
+                arguments: String::new(),
+            },
+            revision: None,
+        }]
+    );
+    assert_eq!(ui.overlay, None);
+    // the HTTP answer comes before its `command.result` on the stream: the server offers `low`
+    // and `max` (not the catalog's `low` and `high`) and runs on `max`
+    let answer = ClientEvent::CommandRan {
+        generation: s.generation.clone(),
+        name: "variant".into(),
+        revision: None,
+        result: Ok(CommandResponse {
+            operation_id: "op".into(),
+            ok: true,
+            data: Some(json!({"variant": "max", "offered": ["low", "max"]})),
+            error: None,
+        }),
+    };
+    let fx = update(&mut s, answer).unwrap();
+    assert_eq!(
+        fx,
+        vec![Effect::ShowVariants {
+            current: Some("max".into())
+        }]
+    );
+    // what the runtime does with that effect
+    let Effect::ShowVariants { current } = &fx[0] else {
+        unreachable!()
+    };
+    navai::tui::reducer::show_variants(&s, &mut ui, current.as_deref());
+    assert_eq!(ui.overlay, Some(Overlay::Variants));
+    assert_eq!(ui.variant_pick, Some(VariantPick::Current));
+    let (rows, _) = navai::tui::commands::variant_choices(&s, &VariantPick::Current);
+    assert_eq!(rows, ["low", "max", "off"]);
+    assert_eq!(
+        rows[ui.selection["Variants"]], "max",
+        "starts on the variant the answer names, not the tab's older `high`"
+    );
+    press(KeyCode::Down, &mut s, &mut ui, &mut editor);
+    let fx = press(KeyCode::Enter, &mut s, &mut ui, &mut editor).unwrap();
+    assert_eq!(
+        fx,
+        vec![Effect::RunCommand {
+            session_id: "S1".into(),
+            request: CommandRequest {
+                name: "variant".into(),
+                arguments: "off".into(),
+            },
+            revision: None,
+        }]
+    );
+    assert_eq!(ui.overlay, None);
+    // the server's answer sets what the status line shows
+    let mut script = Script::new();
+    script.seq = 100;
+    script.raw(
+        "command.result",
+        json!({"operation_id": Ulid(4).to_string(), "name": "variant", "ok": true,
+               "data": {"variant": null, "offered": ["low", "high"]}}),
+    );
+    script.raw(
+        "command.result",
+        json!({"operation_id": Ulid(5).to_string(), "name": "variant", "ok": true,
+               "data": {"variant": "low", "offered": ["low", "high"], "applies": "next_turn"}}),
+    );
+    let ev = envelope(&s, &script.out[0]);
+    update(&mut s, ev).unwrap();
+    assert_eq!(s.variant, None);
+    let ev = envelope(&s, &script.out[1]);
+    update(&mut s, ev).unwrap();
+    assert_eq!(s.variant.as_deref(), Some("low"));
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Command { text, .. } if text.contains("applies next turn")
+    ));
+}
+
+#[test]
+fn slash_variant_without_a_conversation_asks_the_server_nothing() {
+    let (mut s, mut ui) = (with_variants(), ui());
+    let fx = handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Variants));
+    assert!(fx.is_empty());
+    assert_eq!(ui.overlay, None);
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Command { ok: false, text, .. } if text.contains("send a message first")
+    ));
+}
+
+#[test]
+fn a_summary_read_before_a_confirmed_change_does_not_undo_it() {
+    let (mut s, _) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    let summary = |s: &State, seq: u64, agent: &str, variant: Option<&str>| ClientEvent::Metadata {
+        generation: s.generation.clone(),
+        result: Ok(SessionMetadata {
+            session_id: "S1".into(),
+            actor_state: "idle".into(),
+            workspace: "/ws".into(),
+            model: "a".into(),
+            agent: Some(agent.into()),
+            variant: variant.map(str::to_string),
+            current_seq: seq,
+        }),
+    };
+    let mut script = Script::new();
+    script.seq = 10;
+    script.raw(
+        "session.agent_changed",
+        json!({"agent": "plan", "previous": "build"}),
+    );
+    script.raw(
+        "command.result",
+        json!({"operation_id": Ulid(1).to_string(), "name": "variant", "ok": true,
+               "data": {"variant": "high", "offered": ["low", "high"]}}),
+    );
+    feed(&mut s, &script.out);
+    let (agent_seq, variant_seq) = (script.out[0].seq, script.out[1].seq);
+    assert_eq!(
+        (s.agent_name(), s.variant.as_deref()),
+        ("plan", Some("high"))
+    );
+    // a summary fetched before both, answered after them
+    let stale = summary(&s, agent_seq - 1, "build", None);
+    update(&mut s, stale).unwrap();
+    assert_eq!(
+        (s.agent_name(), s.variant.as_deref()),
+        ("plan", Some("high"))
+    );
+    // one read between the two: the agent is current, the variant is not
+    let between = summary(&s, agent_seq, "plan", Some("low"));
+    update(&mut s, between).unwrap();
+    assert_eq!(
+        (s.agent_name(), s.variant.as_deref()),
+        ("plan", Some("high"))
+    );
+    // one read after both is applied
+    let fresh = summary(&s, variant_seq, "build", Some("low"));
+    update(&mut s, fresh).unwrap();
+    assert_eq!(
+        (s.agent_name(), s.variant.as_deref()),
+        ("build", Some("low"))
+    );
+}
+
+#[test]
+fn local_routing_follows_the_server_prefix_rule_and_checks_arguments() {
+    use navai::tui::commands::{route, Routed};
+    let mode = Mode::NextTurn;
+    // only a slash in the first column makes a command
+    assert_eq!(route("  /stop", mode), Routed::Message("  /stop".into()));
+    assert_eq!(
+        route("\t/context", mode),
+        Routed::Message("\t/context".into())
+    );
+    // the escape keeps everything after it, whitespace included
+    assert_eq!(
+        route("//  spaced ", mode),
+        Routed::Message("/  spaced ".into())
+    );
+    // client commands that take no argument refuse one
+    assert_eq!(route("/stop", mode), Routed::Local(Action::Stop));
+    assert_eq!(
+        route("/stop now please", mode),
+        Routed::Refused("/stop takes no arguments".into())
+    );
+    assert_eq!(
+        route("/quit later", mode),
+        Routed::Refused("/quit takes no arguments".into())
+    );
+    assert!(matches!(route("/sessions x", mode), Routed::Refused(_)));
+    // `/model <alias>` opens a new tab on it, like `/new <alias>`; one alias only
+    assert_eq!(
+        route("/model", mode),
+        Routed::Local(Action::OpenOverlay(Overlay::Models))
+    );
+    assert_eq!(
+        route("/model opus high", mode),
+        Routed::Refused("usage: /model [alias]".into())
+    );
+}
+
+#[test]
+fn a_refused_local_command_shows_why_and_sends_nothing() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    let fx = handle_action(
+        &mut s,
+        &mut ui,
+        Action::ShowNotice("/stop takes no arguments".into()),
+    );
+    assert!(fx.is_empty());
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Notice(n) if n == "/stop takes no arguments"
+    ));
+}
+
+#[test]
+fn slash_variant_always_offers_off_even_with_an_empty_catalog() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    s.variant = Some("high".into());
+    assert!(s.catalog.is_empty());
+    // before any answer, and with an offer of nothing: `off` is still there
+    assert_eq!(
+        navai::tui::commands::variant_choices(&s, &VariantPick::Current),
+        (vec!["off".to_string()], 0)
+    );
+    let answer = ClientEvent::CommandRan {
+        generation: s.generation.clone(),
+        name: "variant".into(),
+        revision: None,
+        result: Ok(CommandResponse {
+            operation_id: "op".into(),
+            ok: true,
+            data: Some(json!({"variant": "high", "offered": ["high"]})),
+            error: None,
+        }),
+    };
+    handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Variants));
+    update(&mut s, answer).unwrap();
+    let (rows, start) = navai::tui::commands::variant_choices(&s, &VariantPick::Current);
+    assert_eq!((rows, start), (vec!["high".into(), "off".into()], 0));
+    // a failed answer opens nothing
+    handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Variants));
+    let failed = ClientEvent::CommandRan {
+        generation: s.generation.clone(),
+        name: "variant".into(),
+        revision: None,
+        result: Err("HTTP 503".into()),
+    };
+    assert!(update(&mut s, failed).unwrap().is_empty());
+    assert!(!s.variant_list_wanted);
+}
+
+#[test]
+fn picking_a_model_while_a_conversation_is_being_created_opens_another_tab() {
+    let (mut s, mut ui) = (with_variants(), ui());
+    handle_action(&mut s, &mut ui, Action::PickModel("flash".into()));
+    let fx = handle_action(&mut s, &mut ui, Action::Submit("hi".into()));
+    assert!(matches!(&fx[0], Effect::Create(r) if r.model.as_deref() == Some("flash")));
+    let creating = s.generation.clone();
+    // before the server answers, another model is picked
+    handle_action(&mut s, &mut ui, Action::PickModel("opus".into()));
+    assert_eq!((s.tabs.len(), s.active), (2, 1));
+    assert_eq!(s.selected_model_alias.as_deref(), Some("opus"));
+    assert_eq!(s.tabs[0].selected_model_alias.as_deref(), Some("flash"));
+    // the creation lands on its own tab, with its own model
+    update(
+        &mut s,
+        ClientEvent::Created {
+            generation: creating,
+            result: Ok(CreateSessionResponse {
+                session_id: "S1".into(),
+                root_actor_id: "agent:main".into(),
+                actor_state: "idle".into(),
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.tabs[0].session.as_ref().unwrap().model, "flash");
+    // the same while a resume is in flight
+    let (mut s, mut ui) = (with_variants(), self::ui());
+    handle_action(&mut s, &mut ui, Action::ResumeSession("S9".into()));
+    handle_action(&mut s, &mut ui, Action::PickModel("opus".into()));
+    assert_eq!((s.tabs.len(), s.active), (2, 1));
+    assert_eq!(s.tabs[0].resuming.as_deref(), Some("S9"));
 }

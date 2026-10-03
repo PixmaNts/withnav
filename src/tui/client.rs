@@ -91,6 +91,8 @@ impl Client {
             workspace: workspace.to_string(),
             model: None,
             resume: Some(id.to_string()),
+            agent: None,
+            variant: None,
         })
         .await
     }
@@ -131,6 +133,21 @@ impl Client {
                 describe(&e)
             ))
         })
+    }
+
+    /// The commands the server runs for a session.
+    pub async fn commands(&self) -> Result<CommandsBody, String> {
+        self.json(self.get("/v1/commands")).await
+    }
+
+    /// Runs a session command. A command that could not run is still `Ok`, with `ok: false`.
+    pub async fn run_command(
+        &self,
+        id: &str,
+        request: CommandRequest,
+    ) -> Result<CommandResponse, String> {
+        let path = format!("/v1/sessions/{}/commands", encode_segment(id));
+        self.json(self.post(&path).json(&request)).await
     }
 
     pub async fn stop(&self, id: &str) -> Result<StopResponse, String> {

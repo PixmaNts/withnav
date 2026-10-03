@@ -17,10 +17,12 @@
 //!   the replayed envelopes carry the current generation and must be applied.
 //! - `Effect::SendAt { revision }` must be echoed in `ClientEvent::Submitted { revision }`.
 mod actions;
+mod command;
 mod envelope;
 mod text;
 
-pub use actions::{handle_action, short_id};
+pub use actions::{handle_action, short_id, show_variants};
+pub use command::{outcome_text, tokens};
 pub use text::strip_controls;
 
 use super::{
@@ -43,6 +45,8 @@ pub fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::Metadata { generation, .. }
         | ClientEvent::Context { generation, .. }
         | ClientEvent::Submitted { generation, .. }
+        | ClientEvent::Commands { generation, .. }
+        | ClientEvent::CommandRan { generation, .. }
         | ClientEvent::Stopped { generation, .. }
         | ClientEvent::DeliveryUncertain { generation }
         | ClientEvent::ProtocolError { generation, .. }
@@ -79,12 +83,29 @@ pub(crate) fn start_conversation(s: &mut State) {
     reset_projection(s);
     s.session = None;
     s.resuming = None;
+    s.agent_seq = None;
+    s.variant_seq = None;
+    s.variant_offer = None;
+    s.variant_list_wanted = false;
     s.pending_submit_text = None;
     s.pending_submit = None;
     s.delivery_uncertain = false;
     s.unread = false;
     let generation = Generation(s.issue());
     s.generation = generation;
+}
+
+/// Keeps what a `/variant` answer says the conversation offers.
+pub(crate) fn set_variant_offer(s: &mut State, data: &serde_json::Value) {
+    if let Some(offered) = data["offered"].as_array() {
+        s.variant_offer = Some(
+            offered
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(text::strip_controls)
+                .collect(),
+        );
+    }
 }
 
 /// Refreshes the display name and context window from the catalog for the selected alias.
@@ -123,6 +144,7 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
         e,
         ClientEvent::Models { .. }
             | ClientEvent::Sessions { .. }
+            | ClientEvent::Commands { .. }
             | ClientEvent::SettingsNotSaved { .. }
     );
     if shared {
@@ -205,6 +227,58 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 }
             }
         }
+        ClientEvent::Commands { result, .. } => {
+            if let Ok(body) = result {
+                s.server_commands = body.commands;
+            }
+        }
+        ClientEvent::CommandRan {
+            name,
+            revision,
+            result,
+            ..
+        } => match result {
+            // The outcome itself arrives as `command.result` on the stream.
+            Ok(response) => {
+                if name == "variant" {
+                    if let Some(data) = response.data.as_ref().filter(|_| response.ok) {
+                        set_variant_offer(s, data);
+                    }
+                    if std::mem::take(&mut s.variant_list_wanted) && response.ok && !background {
+                        // The offer and the variant in use come from the same answer, which may
+                        // arrive before its `command.result` on the stream.
+                        let current = response
+                            .data
+                            .as_ref()
+                            .and_then(|d| d["variant"].as_str())
+                            .map(text::strip_controls);
+                        effects.push(Effect::ShowVariants { current });
+                    }
+                }
+                if let Some(revision) = revision {
+                    if background {
+                        if s.draft_revision == revision {
+                            s.draft.clear();
+                        }
+                    } else {
+                        effects.push(Effect::ClearEditor { revision });
+                    }
+                }
+            }
+            Err(error) => {
+                if name == "variant" {
+                    s.variant_list_wanted = false;
+                }
+                push_local(
+                    s,
+                    BlockKind::Command {
+                        name,
+                        ok: false,
+                        text: error,
+                    },
+                )
+            }
+        },
         ClientEvent::Sessions { result, .. } => {
             if let Ok(b) = result {
                 s.sessions = b.sessions
@@ -220,6 +294,8 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     actor_state: r.actor_state,
                     workspace: s.workspace.clone(),
                     model: s.selected_model_alias.clone().unwrap_or_default(),
+                    agent: s.agent.clone(),
+                    variant: None,
                     current_seq: s.last_applied_seq.unwrap_or(0),
                 });
                 if s.activity == Activity::Stopped {
@@ -246,6 +322,14 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         ClientEvent::Metadata { result, .. } => {
             if let Ok(m) = result {
                 // Only reached for the current generation, so `m` describes this conversation.
+                // A summary read before a change the stream already confirmed is older than it.
+                let newer = |seq: Option<u64>| seq.is_none_or(|seq| m.current_seq >= seq);
+                if m.agent.is_some() && newer(s.agent_seq) {
+                    s.agent = m.agent.clone();
+                }
+                if newer(s.variant_seq) {
+                    s.variant = m.variant.clone();
+                }
                 s.selected_model_alias = Some(m.model.clone());
                 refresh_model(s);
                 s.session = Some(m)

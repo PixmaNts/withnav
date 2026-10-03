@@ -859,6 +859,58 @@ async fn parent_stop_joins_its_preclaimed_child_before_releasing_capacity() {
 }
 
 #[tokio::test]
+async fn shutdown_reclaims_the_child_after_a_provisional_watchdog_stop_rolls_back() {
+    let mut f = Fixture::new(vec![Ok(Verdict::Stuck)]).await;
+    let claim = navai::session::ChildPreparationBarrier::default();
+    f.service.pause_watchdog_claim_write(claim.clone());
+    f.service.fail_watchdog_stop_write();
+    f.tick(300).await;
+    claim.reached.notified().bounded(file!(), line!()).await;
+    let stopping = f.service.clone();
+    let mut shutdown = tokio::spawn(async move { stopping.close_all().await });
+    // Shutdown must wait for ownership to end rather than omit the owned child.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), &mut shutdown)
+            .await
+            .is_err()
+    );
+    claim.release.notify_one();
+    shutdown.bounded(file!(), line!()).await.unwrap();
+    assert_eq!(f.service.session_count(), 0);
+    assert_eq!(f.service.reserved_child_count(f.parent), 0);
+    let link = f
+        .service
+        .child_metadata(f.child)
+        .bounded(file!(), line!())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(link.status, "stopped");
+    f.service
+        .history()
+        .flush()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let events = f
+        .service
+        .history()
+        .replay(f.child, None, u64::MAX)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert_eq!(events.iter().filter(|e| e.kind == "session.end").count(), 1);
+    let notices = f
+        .service
+        .history()
+        .unconsumed_completions(f.parent)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert_eq!(notices.len(), 1);
+}
+
+#[tokio::test]
 async fn running_tool_keeps_capacity_and_completion_until_it_has_ended() {
     let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
     let tmp = tempfile::tempdir().unwrap();

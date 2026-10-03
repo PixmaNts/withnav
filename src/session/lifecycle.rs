@@ -159,51 +159,56 @@ impl Service {
     /// its `session.end`), then return so axum finishes draining.
     pub async fn close_all(&self) {
         let _gate = self.lifecycle_gate().await;
-        let admission = self.admission_gate.lock().await;
-        let targets: Vec<(SessionId, SessionHandle)> = {
-            let mut guard = self.lock_sessions();
-            guard
-                .iter_mut()
-                .filter(|(_, handle)| handle.lifecycle == Lifecycle::Active)
-                .filter(|(id, _)| {
-                    !self
-                        .child_operations
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .contains_key(id)
-                })
-                .map(|(id, handle)| {
-                    handle.lifecycle = Lifecycle::Stopping;
-                    handle.session_cancel.cancel();
-                    (*id, handle.clone())
-                })
-                .collect()
-        };
-        drop(admission);
-        let owned = self
-            .child_operations
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for operation in owned {
-            operation.cancelled().await;
-        }
-        for (id, handle) in targets {
-            self.wait_child_operation(id).await;
-            let parent = handle.parent_session_id;
-            self.fence_and_remove(id, handle, "shutdown").await;
-            if let Some(parent) = parent {
-                let _ = self
-                    .finish_child(
-                        parent,
-                        id,
-                        "stopped",
-                        Some("shutdown".into()),
-                        String::new(),
-                    )
-                    .await;
+        loop {
+            let admission = self.admission_gate.lock().await;
+            let targets: Vec<(SessionId, SessionHandle)> = {
+                let mut guard = self.lock_sessions();
+                guard
+                    .iter_mut()
+                    .filter(|(_, handle)| handle.lifecycle == Lifecycle::Active)
+                    .filter(|(id, _)| {
+                        !self
+                            .child_operations
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .contains_key(id)
+                    })
+                    .map(|(id, handle)| {
+                        handle.lifecycle = Lifecycle::Stopping;
+                        handle.session_cancel.cancel();
+                        (*id, handle.clone())
+                    })
+                    .collect()
+            };
+            drop(admission);
+            let owned = self
+                .child_operations
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .cloned()
+                .collect::<Vec<_>>();
+            if targets.is_empty() && owned.is_empty() {
+                break;
+            }
+            for operation in owned {
+                operation.cancelled().await;
+            }
+            for (id, handle) in targets {
+                self.wait_child_operation(id).await;
+                let parent = handle.parent_session_id;
+                self.fence_and_remove(id, handle, "shutdown").await;
+                if let Some(parent) = parent {
+                    let _ = self
+                        .finish_child(
+                            parent,
+                            id,
+                            "stopped",
+                            Some("shutdown".into()),
+                            String::new(),
+                        )
+                        .await;
+                }
             }
         }
     }

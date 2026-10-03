@@ -434,6 +434,53 @@ impl Service {
             .map_err(ServerError::History)
     }
 
+    pub(super) async fn finish_child(
+        &self,
+        parent: SessionId,
+        child: SessionId,
+        status: &str,
+        reason: Option<String>,
+        result: String,
+    ) -> Result<(), ServerError> {
+        let Some(link) = self
+            .history
+            .finish_child_link(child, status.to_string(), reason, result)
+            .await
+            .map_err(ServerError::History)?
+        else {
+            return Ok(());
+        };
+        let outcome = match status {
+            "done" => crate::bus::event::SubagentOutcome::Done,
+            "failed" => crate::bus::event::SubagentOutcome::Failed,
+            _ => crate::bus::event::SubagentOutcome::Stopped,
+        };
+        if let Some(owner) = self.handle(parent) {
+            let payload = serde_json::to_value(crate::bus::event::SubagentDone {
+                parent_session_id: parent,
+                child_session_id: child,
+                agent: link.agent,
+                outcome,
+                reason: link.terminal_reason,
+                notification_id: Ulid::new(),
+            })
+            .unwrap_or(serde_json::Value::Null);
+            let _ = owner
+                .sequencer
+                .publish(Candidate::new(EventKind::SubagentDone, payload));
+        }
+        let active = self
+            .history
+            .active_child_count(parent)
+            .await
+            .map_err(ServerError::History)?;
+        self.subagent_slots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(parent, active);
+        Ok(())
+    }
+
     /// A clone of the session's handle, for routing without holding the
     /// lock. `None` for a closed or unknown id.
     pub(crate) fn handle(&self, id: SessionId) -> Option<SessionHandle> {
@@ -1158,58 +1205,28 @@ impl Service {
             Some(Box::new(move |transcript: &[ChatMessage]| {
                 history.save_transcript(session_id, transcript.to_vec());
             }));
-        let completion: Option<crate::bus::runtime::CompletionHook> = if let Some(parent) =
-            child_parent
-        {
-            let history = self.history.clone();
-            let service = self.clone();
-            Some(Box::new(move |message, success| {
-                let history = history.clone();
-                let service = service.clone();
-                tokio::spawn(async move {
-                    let result = message.text.clone();
-                    let (text, _) = crate::tools::bound_output(&result, 16 * 1024);
-                    if let Ok(Some(link)) = history
-                        .finish_child_link(
-                            session_id,
-                            if success { "done" } else { "failed" }.into(),
-                            (!success).then(|| result.clone()),
-                            text.clone(),
-                        )
-                        .await
-                    {
-                        if let Some(owner) = service.handle(parent) {
-                            let payload = serde_json::to_value(crate::bus::event::SubagentDone {
-                                parent_session_id: parent,
-                                child_session_id: session_id,
-                                agent: link.agent,
-                                outcome: if success {
-                                    crate::bus::event::SubagentOutcome::Done
-                                } else {
-                                    crate::bus::event::SubagentOutcome::Failed
-                                },
-                                reason: link.terminal_reason,
-                                notification_id: Ulid::new(),
-                            })
-                            .unwrap_or(serde_json::Value::Null);
-                            let _ = owner
-                                .sequencer
-                                .publish(Candidate::new(EventKind::SubagentDone, payload));
-                        }
-                        if let Some(count) = service
-                            .subagent_slots
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .get_mut(&parent)
-                        {
-                            *count = count.saturating_sub(1);
-                        }
-                    }
-                });
-            }))
-        } else {
-            None
-        };
+        let completion: Option<crate::bus::runtime::CompletionHook> =
+            if let Some(parent) = child_parent {
+                let service = self.clone();
+                Some(Box::new(move |message, success| {
+                    let service = service.clone();
+                    tokio::spawn(async move {
+                        let result = message.text.clone();
+                        let (text, _) = crate::tools::bound_output(&result, 16 * 1024);
+                        let _ = service
+                            .finish_child(
+                                parent,
+                                session_id,
+                                if success { "done" } else { "failed" },
+                                (!success).then(|| result.clone()),
+                                text,
+                            )
+                            .await;
+                    });
+                }))
+            } else {
+                None
+            };
         let status = Arc::new(runtime::RuntimeStatus::with_selection(AgentSelection::new(
             agents, role,
         )));

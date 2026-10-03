@@ -32,6 +32,11 @@ pub enum PendingInteraction {
         request: Box<PermissionRequest>,
         call: ToolCall,
         remaining_calls: Vec<ToolCall>,
+        /// For `write` and `edit`: the canonical file the request was made
+        /// for. The call runs on an approval only if it still resolves there.
+        destination: Option<std::path::PathBuf>,
+        /// The model steps left in the turn when the call was held.
+        steps_left: usize,
     },
 }
 

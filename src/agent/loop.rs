@@ -1,7 +1,7 @@
 use crate::agent::actor::{AgentActor, AgentState, PendingInteraction};
 use crate::agent::context::Breakdown;
 use crate::agent::permissions::{
-    needs_permission, PermissionDecision, PermissionError, PermissionRequest,
+    needs_permission, Gate, PermissionDecision, PermissionError, PermissionRequest,
 };
 use crate::agent::prompt::{assistant_history_message, build_request};
 use crate::agent::response::{classify, HumanRequest, StepOutcome};
@@ -9,6 +9,8 @@ use crate::error::{AgentError, ProviderError};
 use crate::provider::client::ModelClient;
 use crate::provider::openai::{ChatMessage, ClientCache};
 use crate::provider::{AssistantMessage, StreamDelta, ToolCall};
+use std::path::{Path, PathBuf};
+
 use crate::tools::{ToolResult, ToolStatus};
 
 pub const DEFAULT_MAX_STEPS: usize = 50;
@@ -65,6 +67,17 @@ pub async fn run_agent(
     actor: &mut AgentActor,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> Result<RunOutcome, AgentError> {
+    let budget = actor.max_steps;
+    run_steps(actor, observe, budget).await
+}
+
+/// [`run_agent`] with at most `budget` more model steps. A run resumed after a
+/// permission decision gets what is left of its turn, not a fresh budget.
+async fn run_steps(
+    actor: &mut AgentActor,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+    budget: usize,
+) -> Result<RunOutcome, AgentError> {
     actor.state = AgentState::Running;
     // One client (one connection pool) for every step of this run.
     let client = ModelClient::new(
@@ -74,7 +87,7 @@ pub async fn run_agent(
         &ClientCache::new(),
     )?;
 
-    for _step in 0..actor.max_steps {
+    for step in 0..budget {
         if actor.cancel.is_cancelled() {
             actor.state = AgentState::Idle;
             return Ok(RunOutcome::Interrupted);
@@ -136,7 +149,7 @@ pub async fn run_agent(
                 return Ok(RunOutcome::Yielded(request));
             }
             StepOutcome::Continue { tool_calls } => {
-                match run_calls(actor, tool_calls, observe).await {
+                match run_calls(actor, tool_calls, budget - step - 1, observe).await {
                     Calls::Finished => {}
                     Calls::Interrupted => return Ok(RunOutcome::Interrupted),
                     Calls::Permission(request) => {
@@ -193,6 +206,8 @@ pub async fn resolve_permission(
         request,
         call,
         remaining_calls,
+        destination,
+        steps_left,
     }) = actor.pending.take()
     else {
         return Err(PermissionError::Stale.into());
@@ -209,24 +224,53 @@ pub async fn resolve_permission(
     }
     match decision {
         PermissionDecision::AllowOnce | PermissionDecision::AllowFolder => {
-            if decision == PermissionDecision::AllowFolder {
-                actor
-                    .grants
-                    .grant(&request.agent, &request.tool, request.scope.clone());
+            // The approval is for the destination the driver reviewed. Resolve
+            // it again: a call that now lands elsewhere, or is refused, does
+            // not run on this approval.
+            match gate(actor, &call) {
+                Gated::Run => {
+                    let result = execute_call(actor, &call, None, observe).await;
+                    append_tool_result(actor, &call.id, &result);
+                }
+                Gated::Rejected(message) => {
+                    reject_call(actor, &call, message, observe);
+                }
+                Gated::Ask(fresh, fresh_destination) => {
+                    if fresh_destination == destination && fresh.scope == request.scope {
+                        if decision == PermissionDecision::AllowFolder {
+                            actor.grants.grant(
+                                &request.agent,
+                                &request.tool,
+                                request.scope.clone(),
+                            );
+                        }
+                        let result =
+                            execute_call(actor, &call, destination.as_deref(), observe).await;
+                        append_tool_result(actor, &call.id, &result);
+                    } else {
+                        actor.pending = Some(PendingInteraction::Permission {
+                            request: Box::new(fresh.clone()),
+                            call,
+                            remaining_calls,
+                            destination: fresh_destination,
+                            steps_left,
+                        });
+                        actor.state = AgentState::Yielded;
+                        return Ok(RunOutcome::PermissionRequired(fresh));
+                    }
+                }
             }
-            let result = execute_call(actor, &call, observe).await;
-            append_tool_result(actor, &call.id, &result);
         }
         PermissionDecision::Deny { message } => {
             append_tool_result(actor, &call.id, &ToolResult::permission_denied(message));
         }
     }
-    match run_calls(actor, remaining_calls, observe).await {
+    match run_calls(actor, remaining_calls, steps_left, observe).await {
         Calls::Finished => {}
         Calls::Interrupted => return Ok(RunOutcome::Interrupted),
         Calls::Permission(request) => return Ok(RunOutcome::PermissionRequired(request)),
     }
-    Ok(run_agent(actor, observe).await?)
+    Ok(run_steps(actor, observe, steps_left).await?)
 }
 
 /// How a pass over a message's tool calls ended.
@@ -240,10 +284,11 @@ enum Calls {
 
 /// Runs `calls` in order. A call that needs approval and has none stops the
 /// pass BEFORE it executes: it and the calls behind it are kept in the
-/// actor's pending interaction.
+/// actor's pending interaction, with the `steps_left` of the turn.
 async fn run_calls(
     actor: &mut AgentActor,
     calls: Vec<ToolCall>,
+    steps_left: usize,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> Calls {
     let mut calls = std::collections::VecDeque::from(calls);
@@ -256,40 +301,91 @@ async fn run_calls(
             actor.state = AgentState::Idle;
             return Calls::Interrupted;
         }
-        if let Some(request) = gate(actor, &call) {
-            actor.pending = Some(PendingInteraction::Permission {
-                request: Box::new(request.clone()),
-                call,
-                remaining_calls: calls.into(),
-            });
-            actor.state = AgentState::Yielded;
-            return Calls::Permission(request);
+        match gate(actor, &call) {
+            Gated::Run => {
+                let result = execute_call(actor, &call, None, observe).await;
+                append_tool_result(actor, &call.id, &result);
+            }
+            Gated::Rejected(message) => reject_call(actor, &call, message, observe),
+            Gated::Ask(request, destination) => {
+                actor.pending = Some(PendingInteraction::Permission {
+                    request: Box::new(request.clone()),
+                    call,
+                    remaining_calls: calls.into(),
+                    destination,
+                    steps_left,
+                });
+                actor.state = AgentState::Yielded;
+                return Calls::Permission(request);
+            }
         }
-        let result = execute_call(actor, &call, observe).await;
-        append_tool_result(actor, &call.id, &result);
     }
     observe(AgentEvent::ContextEstimated(actor.context_breakdown()));
     Calls::Finished
 }
 
-/// The request `call` needs a decision for, or `None` when it may run: a bare
-/// runtime has no role and gates nothing, and a grant may already cover it.
-fn gate(actor: &AgentActor, call: &ToolCall) -> Option<PermissionRequest> {
-    let role = actor.role.as_deref()?;
-    let scope = needs_permission(Some(role), &call.name, &call.args, &actor.tool_context)?;
+/// What the gate decided about a call.
+enum Gated {
+    /// Runs now: no role, not gated, or already covered by a grant.
+    Run,
+    /// Refused before it runs; the string is the tool error.
+    Rejected(String),
+    /// Waits for a decision; the path is the canonical file a `write` or
+    /// `edit` was resolved to.
+    Ask(PermissionRequest, Option<PathBuf>),
+}
+
+fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
+    let Some(role) = actor.role.as_deref() else {
+        return Gated::Run;
+    };
+    let needed = match needs_permission(Some(role), &call.name, &call.args, &actor.tool_context) {
+        Gate::Ungated => return Gated::Run,
+        Gate::Rejected(message) => return Gated::Rejected(message),
+        Gate::Needs(needed) => needed,
+    };
     let agent = role.id.as_str();
     if actor
         .grants
-        .covers(agent, &call.name, &scope, &actor.tool_context)
+        .covers(agent, &call.name, &needed.scope, &actor.tool_context)
     {
-        return None;
+        return Gated::Run;
     }
-    Some(PermissionRequest::new(call, scope, agent))
+    Gated::Ask(
+        PermissionRequest::new(call, needed.scope, agent),
+        needed.destination,
+    )
 }
 
+/// Settles a call the gate refused: it is never dispatched, and the model
+/// reads the tool error.
+fn reject_call(
+    actor: &mut AgentActor,
+    call: &ToolCall,
+    message: String,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+) {
+    observe(AgentEvent::PreCall {
+        tool_call_id: &call.id,
+        name: &call.name,
+        args: &call.args,
+    });
+    let result = ToolResult::error("tool_error", message);
+    observe(AgentEvent::PostCall {
+        tool_call_id: &call.id,
+        name: &call.name,
+        result: &result,
+    });
+    append_tool_result(actor, &call.id, &result);
+}
+
+/// Dispatches `call`. With a `destination` (the canonical file an approved
+/// `write` or `edit` was reviewed for) the tool is handed that path, so the
+/// file written is the one approved.
 async fn execute_call(
     actor: &AgentActor,
     call: &ToolCall,
+    destination: Option<&Path>,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> ToolResult {
     observe(AgentEvent::PreCall {
@@ -297,11 +393,18 @@ async fn execute_call(
         name: &call.name,
         args: &call.args,
     });
+    let mut args = call.args.clone();
+    if let (Some(destination), Some(object)) = (destination, args.as_object_mut()) {
+        object.insert(
+            "path".into(),
+            serde_json::Value::String(destination.to_string_lossy().into_owned()),
+        );
+    }
     let result = actor
         .registry
         .dispatch(
             &call.name,
-            call.args.clone(),
+            args,
             actor.cancel.child_token(),
             &actor.tool_context,
         )
@@ -334,6 +437,7 @@ fn append_interrupted(actor: &mut AgentActor, tool_call_id: &str) {
 mod tests {
     use super::*;
     use crate::agent::actor::AgentActor;
+    use crate::agent::permissions::Scope;
     use crate::provider::config::{ProviderConfig, ReasoningHistory};
     use crate::provider::test_support::{http_sse, sse_body};
     use crate::tools::bash::BashTool;
@@ -1026,5 +1130,157 @@ mod tests {
         assert!(!a.exists() && !b.exists());
         assert!(tool_result_of(&actor, "w1").is_some());
         assert!(tool_result_of(&actor, "w2").is_some());
+    }
+
+    #[tokio::test]
+    async fn a_write_outside_the_roots_is_refused_without_asking_or_creating_anything() {
+        let mut actor = make_actor(
+            "http://127.0.0.1:1/v1".into(),
+            registry_gated(),
+            CancellationToken::new(),
+        );
+        as_build(&mut actor);
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("new/deeper/a.txt");
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[&calls_chunk(&[(
+                "w1",
+                "write",
+                serde_json::json!({"path": target, "content": "x"}),
+            )])])),
+            http_sse(&sse_body(&[&text_chunk("done")])),
+        ])
+        .await;
+        actor.provider.base_url = server.url.clone();
+        actor.push_user("go");
+        let mut noop = |_e: AgentEvent| {};
+        let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
+        assert!(matches!(outcome, RunOutcome::Done(_)));
+        assert!(!actor.has_pending());
+        assert!(!outside.path().join("new").exists(), "nothing was created");
+        let result: serde_json::Value =
+            serde_json::from_str(&tool_result_of(&actor, "w1").unwrap()).unwrap();
+        assert_eq!(result["status"], "error");
+    }
+
+    #[tokio::test]
+    async fn a_symlink_retargeted_while_approval_waits_needs_a_fresh_approval() {
+        let mut actor = make_actor(
+            "http://127.0.0.1:1/v1".into(),
+            registry_gated(),
+            CancellationToken::new(),
+        );
+        as_build(&mut actor);
+        let ws = actor.tool_context.workspace.canonicalize().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let config = config.keep().canonicalize().unwrap();
+        actor.tool_context.writable_roots = vec![ws.clone(), config.clone()];
+        let reviewed = ws.join("reviewed");
+        std::fs::create_dir_all(&reviewed).unwrap();
+        let link = ws.join("link");
+        std::os::unix::fs::symlink(&reviewed, &link).unwrap();
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[&calls_chunk(&[(
+                "w1",
+                "write",
+                serde_json::json!({"path": link.join("f.txt"), "content": "x"}),
+            )])])),
+            http_sse(&sse_body(&[&text_chunk("done")])),
+        ])
+        .await;
+        actor.provider.base_url = server.url.clone();
+        actor.push_user("go");
+        let mut noop = |_e: AgentEvent| {};
+        let RunOutcome::PermissionRequired(first) = run_agent(&mut actor, &mut noop).await.unwrap()
+        else {
+            panic!("expected a request");
+        };
+        assert_eq!(first.scope, Scope::Folder(reviewed.clone()));
+
+        // The link moves to the config directory while the request waits.
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&config, &link).unwrap();
+
+        let outcome = resolve_permission(
+            &mut actor,
+            first.id,
+            PermissionDecision::AllowFolder,
+            &mut noop,
+        )
+        .await
+        .unwrap();
+        let RunOutcome::PermissionRequired(second) = outcome else {
+            panic!("a retargeted destination must ask again");
+        };
+        assert_ne!(second.id, first.id);
+        assert_eq!(second.scope, Scope::Folder(config.clone()));
+        assert!(!config.join("f.txt").exists());
+        assert!(!reviewed.join("f.txt").exists());
+        assert_eq!(tool_result_of(&actor, "w1"), None);
+        assert!(
+            !actor.grants.covers(
+                "build",
+                "write",
+                &Scope::Folder(reviewed.clone()),
+                &actor.tool_context
+            ),
+            "a request that did not run leaves no grant"
+        );
+
+        // Approving the fresh request runs it, on the destination it names.
+        resolve_permission(
+            &mut actor,
+            second.id,
+            PermissionDecision::AllowOnce,
+            &mut noop,
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(config.join("f.txt")).unwrap(), "x");
+    }
+
+    #[tokio::test]
+    async fn repeated_approvals_share_one_step_budget() {
+        let mut actor = make_actor(
+            "http://127.0.0.1:1/v1".into(),
+            registry_gated(),
+            CancellationToken::new(),
+        );
+        as_build(&mut actor);
+        actor.max_steps = 2;
+        let ws = actor.tool_context.workspace.canonicalize().unwrap();
+        let write = |id: &str, name: &str| {
+            http_sse(&sse_body(&[&calls_chunk(&[(
+                id,
+                "write",
+                serde_json::json!({"path": ws.join(name), "content": "x"}),
+            )])]))
+        };
+        let server = spawn_mock(vec![
+            write("w1", "a.txt"),
+            write("w2", "b.txt"),
+            write("w3", "c.txt"),
+        ])
+        .await;
+        actor.provider.base_url = server.url.clone();
+        actor.push_user("go");
+        let mut noop = |_e: AgentEvent| {};
+        let mut outcome = run_agent(&mut actor, &mut noop).await.unwrap();
+        let mut approvals = 0;
+        while let RunOutcome::PermissionRequired(request) = outcome {
+            approvals += 1;
+            assert!(approvals <= 2, "the budget bounds the approvals");
+            outcome = resolve_permission(
+                &mut actor,
+                request.id,
+                PermissionDecision::AllowOnce,
+                &mut noop,
+            )
+            .await
+            .unwrap();
+        }
+        assert!(matches!(outcome, RunOutcome::StepBudgetExhausted));
+        assert_eq!(approvals, 2);
+        assert_eq!(server.requests.lock().await.len(), 2);
     }
 }

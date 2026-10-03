@@ -336,7 +336,10 @@ impl Service {
         for tool in [
             "read", "write", "edit", "bash", "grep", "glob", "fetch", "skill", "ask", "task",
         ] {
-            let parent_allowed = parent_access != crate::agent::definitions::AgentAccess::ReadOnly
+            let parent_allowed = (parent_access
+                != crate::agent::definitions::AgentAccess::ReadOnly
+                && (parent_role.id.as_str() != crate::agent::definitions::PLAN
+                    || !matches!(tool, "write" | "edit" | "bash")))
                 || !matches!(tool, "write" | "edit" | "bash" | "ask" | "task");
             let child_allowed = definition.tools.get(tool).copied().unwrap_or(true)
                 && definition.access != crate::agent::definitions::AgentAccess::ReadOnly
@@ -509,6 +512,9 @@ impl Service {
         decision: crate::agent::permissions::PermissionDecision,
     ) -> Result<(), ServerError> {
         let handle = self.routable_handle(session_id).await?;
+        if handle.parent_session_id.is_some() {
+            return Err(ServerError::ChildReadOnly);
+        }
         // Claimed at admission: a second answer for the same request is
         // refused at once, not after the resumed turn.
         if !handle.status.claim_permission(request_id) {
@@ -629,6 +635,15 @@ impl Service {
         resume: Option<SessionId>,
     ) -> Result<(SessionId, bool), ServerError> {
         if let Some(id) = resume {
+            if self
+                .history
+                .child_link(id)
+                .await
+                .map_err(ServerError::History)?
+                .is_some()
+            {
+                return Err(ServerError::ChildReadOnly);
+            }
             // A resume waits for any stop or delete of this id to finish,
             // and holds the gate until the new runtime is registered.
             let _gate = self.lifecycle_gate().await;

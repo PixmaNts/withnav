@@ -16,6 +16,9 @@ mod rules_log;
 mod run_command;
 mod sender;
 mod service;
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub use service::ChildPreparationBarrier;
 pub mod store;
 mod subscription;
 

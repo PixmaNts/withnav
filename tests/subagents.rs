@@ -14,6 +14,82 @@ use common::sse::{
     text_chunk, tool_call_chunk,
 };
 
+#[tokio::test]
+async fn stopping_parent_during_task_preparation_does_not_wait_or_leak() {
+    paused_child_admission(false).await;
+}
+
+#[tokio::test]
+async fn resumed_parent_rejects_spawn_from_previous_incarnation() {
+    paused_child_admission(true).await;
+}
+
+async fn paused_child_admission(resume: bool) {
+    let provider = spawn_capturing_provider(vec![http_sse(&sse_body(&[&tool_call_chunk(
+        "paused-task",
+        "task",
+        &json!({"agent":"explore","prompt":"inspect"}),
+    )]))])
+    .await;
+    let fx = fixture_at(&provider.url);
+    install_agents(&fx.root, &fx.ws);
+    add_cognition_model(&fx.root);
+    let parent = fx
+        .state
+        .create_session(&fx.ws, Some("cognition"), None)
+        .await
+        .unwrap();
+    let barrier = navai::session::ChildPreparationBarrier::default();
+    fx.state.pause_child_preparation(barrier.clone());
+    fx.state
+        .send(navai::bus::command::Command::child_prompt(
+            parent,
+            "spawn a child".into(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        barrier.reached.notified(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(fx.state.reserved_child_count(parent), 1);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        fx.state.close_session(parent),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    if resume {
+        fx.state
+            .create_or_resume_session(&fx.ws, None, None, Some(parent))
+            .await
+            .unwrap();
+    }
+    barrier.release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while fx.state.reserved_child_count(parent) != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        fx.state.history().active_child_count(parent).await.unwrap(),
+        0
+    );
+    let listed = fx.state.list(&fx.ws.display().to_string()).await.unwrap();
+    assert_eq!(listed.len(), 1, "no prepared child row was stored");
+    assert_eq!(listed[0].id, parent);
+    assert!(!events(&fx, parent)
+        .await
+        .iter()
+        .any(|event| event.kind == "subagent.spawned"));
+    fx.state.close_all().await;
+}
+
 struct Fx {
     _tmp: tempfile::TempDir,
     root: PathBuf,

@@ -64,6 +64,15 @@ use crate::provider::openai::ChatMessage;
 /// A session id on the wire and in the registry.
 pub type SessionId = Ulid;
 
+/// Debug-build seam for deterministic child admission integration tests.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+#[derive(Clone, Debug, Default)]
+pub struct ChildPreparationBarrier {
+    pub reached: Arc<tokio::sync::Notify>,
+    pub release: Arc<tokio::sync::Notify>,
+}
+
 /// Synchronously-readable lifecycle state of a LIVE registry entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lifecycle {
@@ -255,6 +264,8 @@ pub struct Service {
     pub(super) subagent_slots: Arc<Mutex<HashMap<SessionId, usize>>>,
     pub(super) unpublished_children: Arc<Mutex<std::collections::HashSet<SessionId>>>,
     catalog: crate::provider::catalog::ModelCatalog,
+    #[cfg(debug_assertions)]
+    child_preparation_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     /// Test seam: parks a command run between its work and the publication
     /// of its result, to interleave lifecycle changes deterministically.
     /// Test seam: parks a model switch after its store write and before its
@@ -266,6 +277,26 @@ pub struct Service {
 }
 
 impl Service {
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_child_preparation(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .child_preparation_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn reserved_child_count(&self, parent: SessionId) -> usize {
+        self.subagent_slots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&parent)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// A service without any profile behaviour ([`NoHooks`]). Fails when
     /// the history database cannot be opened.
     pub fn new(config: SessionConfig) -> Result<Self, ServerError> {
@@ -295,6 +326,8 @@ impl Service {
             subagent_slots: Arc::new(Mutex::new(seeded_slots)),
             unpublished_children: Arc::default(),
             catalog,
+            #[cfg(debug_assertions)]
+            child_preparation_barrier: Arc::default(),
             #[cfg(test)]
             install_barrier: Arc::default(),
             #[cfg(test)]
@@ -441,6 +474,18 @@ impl Service {
             )
             .await;
         let prepared = prepared?;
+        #[cfg(debug_assertions)]
+        {
+            let barrier = self
+                .child_preparation_barrier
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(barrier) = barrier {
+                barrier.reached.notify_one();
+                barrier.release.notified().await;
+            }
+        }
         let _admission = self.child_admission(&parent_handle.session_cancel).await?;
         let current = self.routable_handle(parent).await?;
         if current.incarnation != incarnation || current.session_cancel.is_cancelled() {

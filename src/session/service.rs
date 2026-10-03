@@ -1024,7 +1024,7 @@ impl Service {
             ));
         }
         if !handle.status.steer(message.to_string(), interrupt) {
-            return Err(ServerError::SessionStopping);
+            return Err(ServerError::ChildNotParked);
         }
         Ok(())
     }

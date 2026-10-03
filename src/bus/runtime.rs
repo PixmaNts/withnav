@@ -134,15 +134,13 @@ impl RuntimeStatus {
     }
     pub fn steer(&self, text: String, interrupt: bool) -> bool {
         let id = Ulid::new();
-        self.steering
-            .queue
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push_back(steering::Operation {
-                id,
-                content: text,
-                interrupt,
-            });
+        if !self.steering.admit(steering::Operation {
+            id,
+            content: text,
+            interrupt,
+        }) {
+            return false;
+        }
         self.controls
             .tx
             .send(if interrupt {
@@ -884,7 +882,7 @@ async fn runtime_loop(
         let actor_cancel = actor.cancel.clone();
         let mut interrupted_for_input = false;
         let mut replacement = None;
-        let outcome = {
+        let mut outcome = {
             let mut observe = |event: AgentEvent<'_>| turn.observe(event);
             let turn_fut = async {
                 let first = match resume {
@@ -960,6 +958,24 @@ async fn runtime_loop(
                 }
             }
         };
+        if completion.is_some() && matches!(outcome, Ok(RunOutcome::Done(_)) | Err(_)) {
+            if !status.steering.finish() {
+                // Admission and the terminal decision share the queue lock.
+                // Accepted guidance must run before publishing a terminal result.
+                outcome = Ok(RunOutcome::Interrupted);
+                interrupted_for_input = true;
+                let queued = status
+                    .steering
+                    .queue
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                replacement = queued.iter().find(|op| op.interrupt).map(|op| op.id);
+                drop(queued);
+                if replacement.is_none() {
+                    let _ = status.controls.tx.send(Control::Steer);
+                }
+            }
+        }
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let result_message_id = turn.message_id;
         // The turn's last word on the gauge: it also covers a cancelled turn

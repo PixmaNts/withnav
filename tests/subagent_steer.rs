@@ -10,6 +10,84 @@ fn body(request: &str) -> Value {
 }
 
 #[tokio::test]
+async fn accepted_guidance_prevents_obsolete_final_response_terminalization() {
+    let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let state = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(128000)
+        .state();
+    let parent = state
+        .create_session(&ws, None, None)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let child = state
+        .create_child_session(parent, "explore", "inspect")
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (_, stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    state
+        .steer_child(parent, child, "follow up before finishing", false)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    stream.send(text_chunk("obsolete final")).unwrap();
+    drop(stream);
+    let (request, stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(request.contains("follow up before finishing"));
+    assert_eq!(
+        state
+            .child_metadata(child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "running"
+    );
+    assert_eq!(state.reserved_child_count(parent), 1);
+    stream.send(text_chunk("revised final")).unwrap();
+    drop(stream);
+    let (_, stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert_eq!(
+        state
+            .child_metadata(child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .unwrap()
+            .result_text
+            .as_deref(),
+        Some("revised final")
+    );
+    assert!(state
+        .steer_child(parent, child, "late", false)
+        .bounded(file!(), line!())
+        .await
+        .is_err());
+    state.close_all().bounded(file!(), line!()).await;
+    drop(stream);
+}
+
+#[tokio::test]
 async fn steer_during_provider_request_lands_after_the_complete_tool_batch() {
     let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
     let tmp = tempfile::tempdir().unwrap();

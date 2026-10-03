@@ -9,6 +9,7 @@ pub(super) struct Steering {
     // Volatile parent guidance: crashes may lose it. Child results instead
     // remain in the durable completion outbox until transcript consumption.
     pub queue: Mutex<VecDeque<Operation>>,
+    terminal: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(test)]
@@ -46,6 +47,23 @@ pub(super) struct Operation {
 }
 
 impl Steering {
+    pub fn admit(&self, operation: Operation) -> bool {
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        if self.terminal.load(std::sync::atomic::Ordering::Acquire) {
+            return false;
+        }
+        queue.push_back(operation);
+        true
+    }
+    pub fn finish(&self) -> bool {
+        let queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        if !queue.is_empty() {
+            return false;
+        }
+        self.terminal
+            .store(true, std::sync::atomic::Ordering::Release);
+        true
+    }
     pub fn apply(&self, mut transcript: Vec<ChatMessage>) -> Vec<ChatMessage> {
         let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         let mut kept = VecDeque::new();

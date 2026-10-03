@@ -879,7 +879,12 @@ impl Service {
                             .find(|m| *m == "steer")
                     })
                     .unwrap_or("next_turn");
-                owner.status.wake_delivery_mode(mode);
+                let notice = notices
+                    .iter()
+                    .find(|(_, p, _)| p["delivery"] == mode)
+                    .map(|(id, _, _)| *id)
+                    .unwrap_or(child);
+                owner.status.wake_delivery_mode(mode, notice);
             }
         }
         Ok(())
@@ -1903,6 +1908,17 @@ impl Service {
         )));
         status.init_variant(selected.clone());
         if child_parent.is_none() {
+            let pending_history = self.history.clone();
+            status.install_pending_notice(Arc::new(move |id| {
+                let history = pending_history.clone();
+                Box::pin(async move {
+                    Ok(history
+                        .unconsumed_completions(session_id)
+                        .await?
+                        .iter()
+                        .any(|(child, _, _)| *child == id))
+                })
+            }));
             let history = self.history.clone();
             status.install_delivery(Arc::new(move |mut transcript, mid_turn| {
                 let history = history.clone();

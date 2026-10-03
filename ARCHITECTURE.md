@@ -215,6 +215,8 @@ the same CAS with reason `restart`, queues their notices, then seeds capacity; n
 **Steering and turn interrupts.** `agent/boundary.rs` exposes the single injection seam, called by
 `run_steps` before a provider request once the whole previous tool batch has settled. Runtime
 steering (`bus/runtime/steering.rs`) applies queued parent instructions with `Parent` provenance,
+using identified operations that reserve interrupt input for its replacement turn. The guidance
+queue is in memory and can be lost on a crash; results remain durable in the completion outbox.
 then the durable delivery callback consumes eligible mid-turn results. Both precede the request's
 budget check. A renewable actor turn token is separate from `session_cancel`: an input interrupt
 unwinds the current provider/tool work, pairs interrupted calls with results, records the old

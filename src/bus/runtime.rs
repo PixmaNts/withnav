@@ -14,6 +14,7 @@ mod deferred;
 mod delivery;
 mod steering;
 pub use delivery::Delivery;
+pub use delivery::PendingNotice;
 mod model;
 
 use std::sync::{Arc, Mutex};
@@ -91,6 +92,7 @@ struct PermissionSlot {
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
+    pending_notice: Mutex<Option<delivery::NoticeCell>>,
     steering: Arc<steering::Steering>,
     budget_parked: std::sync::atomic::AtomicBool,
     delivery: Mutex<Option<delivery::DeliveryCell>>,
@@ -112,16 +114,39 @@ pub struct RuntimeStatus {
 }
 
 impl RuntimeStatus {
+    pub fn install_pending_notice(&self, callback: PendingNotice) {
+        *self
+            .pending_notice
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(delivery::NoticeCell(callback));
+    }
+    async fn notice_pending(&self, id: Ulid) -> bool {
+        let callback = self
+            .pending_notice
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|c| c.0.clone());
+        match callback {
+            Some(callback) => callback(id).await.unwrap_or(false),
+            None => false,
+        }
+    }
     pub fn steer(&self, text: String, interrupt: bool) -> bool {
+        let id = Ulid::new();
         self.steering
             .queue
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push_back(text);
+            .push_back(steering::Operation {
+                id,
+                content: text,
+                interrupt,
+            });
         self.controls
             .tx
             .send(if interrupt {
-                Control::Interrupt
+                Control::Interrupt(id)
             } else {
                 Control::Steer
             })
@@ -145,10 +170,10 @@ impl RuntimeStatus {
     pub fn wake_delivery(&self) {
         let _ = self.controls.tx.send(Control::Delivery);
     }
-    pub fn wake_delivery_mode(&self, mode: &str) {
+    pub fn wake_delivery_mode(&self, mode: &str, notice: Ulid) {
         let control = match mode {
             "steer" => Control::DeliverySteer,
-            "interrupt" => Control::DeliveryInterrupt,
+            "interrupt" => Control::DeliveryInterrupt(notice),
             _ => Control::Delivery,
         };
         let _ = self.controls.tx.send(control);
@@ -690,7 +715,7 @@ async fn runtime_loop(
                         actor.transcript = status.steering.apply(actor.transcript.clone());
                         Some(Inbound::Continue)
                     }
-                    Control::Interrupt => {
+                    Control::Interrupt(id) | Control::Replace(id) => {
                         if let Some(request) = actor.pending_permission().cloned() {
                             actor.interrupt_pending_permission();
                             publish_resolved(&sequencer, active_task_id, &request, PermissionResolution::Cancelled);
@@ -699,12 +724,14 @@ async fn runtime_loop(
                             actor.settle_unanswered_calls();
                         }
                         actor.cancel = session_cancel.child_token();
-                        actor.transcript = status.steering.apply(actor.transcript.clone());
+                        let Some(transcript) = status.steering.replacement(id,actor.transcript.clone()) else { continue; };
+                        actor.transcript = status.steering.apply(transcript);
                         Some(Inbound::Continue)
                     }
                     Control::Continue => Some(Inbound::Continue),
                     Control::Delivery => { delivery_waiting = true; continue; }
-                    Control::DeliverySteer | Control::DeliveryInterrupt => { delivery_waiting=true; continue; }
+                    Control::DeliverySteer => { delivery_waiting=true; continue; }
+                    Control::DeliveryInterrupt(id) => { if status.notice_pending(id).await { delivery_waiting=true; } continue; }
                     Control::Compact(request) => {
                         let outcome = compact::run(
                             &mut actor,
@@ -856,6 +883,7 @@ async fn runtime_loop(
         // outcome handling below assigns actor.state.
         let actor_cancel = actor.cancel.clone();
         let mut interrupted_for_input = false;
+        let mut replacement = None;
         let outcome = {
             let mut observe = |event: AgentEvent<'_>| turn.observe(event);
             let turn_fut = async {
@@ -890,15 +918,18 @@ async fn runtime_loop(
                         // A turn is running: accept now, run it at its end.
                         match control {
                             Control::Steer => {}
-                            Control::Interrupt => {
+                            Control::Interrupt(id) => {
+                                replacement = Some(id);
                                 interrupted_for_input = true;
                                 actor_cancel.cancel();
                                 break (&mut turn_fut).await;
                             }
+                            Control::Replace(_) => {}
                             Control::Continue => {}
                             Control::Delivery => { delivery_waiting = true; }
                             Control::DeliverySteer => { delivery_waiting=true; }
-                            Control::DeliveryInterrupt => {
+                            Control::DeliveryInterrupt(id) => {
+                                if !status.notice_pending(id).await { continue; }
                                 delivery_waiting=true;
                                 interrupted_for_input=true;
                                 actor_cancel.cancel();
@@ -1124,7 +1155,9 @@ async fn runtime_loop(
 
         if interrupted_for_input && !session_cancel.is_cancelled() {
             actor.cancel = session_cancel.child_token();
-            let _ = status.controls.tx.send(Control::Steer);
+            if let Some(id) = replacement {
+                let _ = status.controls.tx.send(Control::Replace(id));
+            }
         } else if !actor.has_pending()
             && !status
                 .steering

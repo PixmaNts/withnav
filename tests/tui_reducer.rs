@@ -18,6 +18,55 @@ use ulid::Ulid;
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
 #[test]
+fn old_initialization_never_overwrites_ordered_or_terminal_child_facts() {
+    let mut s = subagent_parent();
+    let entry: SessionListEntry = serde_json::from_value(json!({"id":Ulid(2),"created_at":"now","updated_at":"now","message_count":0,"live":true,"agent":"explore","parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
+    let list = ClientEvent::Sessions {
+        generation: Generation(0),
+        result: Ok(SessionListBody {
+            sessions: vec![entry.clone()],
+        }),
+    };
+    update(&mut s, list.clone()).unwrap();
+    let mut script = Script::new();
+    script.seq = 10;
+    script.raw("agent.yield", json!({"kind":"budget"}));
+    update(
+        &mut s,
+        ClientEvent::ChildEnvelope {
+            generation: Generation(0),
+            child_session_id: Ulid(2).to_string(),
+            envelope: script.out[0].clone(),
+        },
+    )
+    .unwrap();
+    update(&mut s, list.clone()).unwrap();
+    assert_eq!(s.children[0].status, ChildStatus::OutOfSteps);
+    spawn_subagent(&mut s, None);
+    assert_eq!(s.children[0].status, ChildStatus::OutOfSteps);
+    let mut terminal = entry;
+    terminal.child_status = Some("done".into());
+    update(
+        &mut s,
+        ClientEvent::Sessions {
+            generation: Generation(0),
+            result: Ok(SessionListBody {
+                sessions: vec![terminal],
+            }),
+        },
+    )
+    .unwrap();
+    update(&mut s, list).unwrap();
+    subagent_event(
+        &mut s,
+        2,
+        "subagent.spawned",
+        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"explore","goal":"Read tests"}),
+    );
+    assert_eq!(s.children[0].status, ChildStatus::Done);
+}
+
+#[test]
 fn parent_resync_keeps_a_parked_child_and_its_continue_control() {
     let mut s = subagent_parent();
     spawn_subagent(&mut s, None);

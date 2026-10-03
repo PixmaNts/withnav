@@ -765,7 +765,9 @@ fn seed_children(s: &mut State) {
             .filter(|e| e.parent_session_id.as_ref() == Some(parent))
         {
             if let Some(child) = tab.children.iter_mut().find(|c| c.session_id == entry.id) {
-                if child.event_seq.is_none()
+                if (child.event_seq.is_none()
+                    && child.child_seq.is_none()
+                    && !child.status.terminal())
                     || super::state::ChildStatus::from_wire(
                         entry.child_status.as_deref().unwrap_or(""),
                     )

@@ -113,7 +113,7 @@ async fn child_policy_depth_metadata_and_terminal_notices() {
         summary.parent_session_id.as_deref(),
         Some(parent.to_string().as_str())
     );
-    assert_eq!(summary.promptable, false);
+    assert!(!summary.promptable);
     let child_events = events(&fx, child).await;
     assert!(child_events
         .iter()
@@ -449,7 +449,7 @@ async fn task_ack_returns_before_child_turn_finishes() {
         )
         .await
         .unwrap();
-    assert_eq!(result.output.contains("\"status\":\"running\""), true);
+    assert!(result.output.contains("\"status\":\"running\""));
     for _ in 0..100 {
         if events(&fx, parent)
             .await
@@ -473,10 +473,7 @@ async fn task_ack_returns_before_child_turn_finishes() {
     let meta = fx.state.child_metadata(child_id).await.unwrap().unwrap();
     assert_eq!(meta.status, "running");
     assert_eq!(meta.goal, "inspect");
-    assert_eq!(
-        fx.state.session_summary(child_id).await.unwrap().promptable,
-        false
-    );
+    assert!(!fx.state.session_summary(child_id).await.unwrap().promptable);
     release.notify_one();
     for _ in 0..100 {
         if fx

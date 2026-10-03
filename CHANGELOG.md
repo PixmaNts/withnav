@@ -6,6 +6,24 @@ requests land in `develop`.
 
 ### Added
 
+- **Background subagents (first part)**: a conversation's agent can start a subagent with the `task`
+  tool (`task(agent, prompt)`, for agents whose mode is `subagent` or `all`, such as `explore` and
+  `review`). The subagent is a separate conversation that runs in the background: the tool answers at
+  once with its id, and at most 4 run per conversation (`subagents.max_concurrent`). It gets the
+  workspace, rules and skills but not the parent's history, never gets `ask` or `task`, and cannot
+  write when it or its parent is read-only or `plan`. Session lists show `parent_session_id`,
+  `child_status` and `promptable: false`; you can read and stop a subagent but not write to it (403
+  `child_read_only`). `subagent.spawned` and `subagent.done` are stored on the parent's stream (the event catalog now has 21 kinds). The
+  subagent's result is not yet handed back to the parent conversation.
+
+## [0.3.0] - 2026-10-03
+
+Navai becomes a terminal coding agent as well as a navigator: a chat client with tabs, tool
+permissions you answer from the terminal, a guarded `plan` agent, model switching inside a
+conversation, and automatic compaction. Background subagents are planned for 0.4.0.
+
+### Added
+
 - **Terminal chat client**: `navai tui` starts a private server, or `--url` connects to a running
   server (set `NAVAI_SERVER_TOKEN` when it requires a bearer token). Open up to nine conversations;
   each keeps its draft and scroll position and continues streaming in the background. The left
@@ -17,7 +35,7 @@ requests land in `develop`.
   `shift+tab` changes focus, and `ctrl+q` quits.
 - **Session commands**: `/help`, `/model [alias]`, `/new [alias]`, `/stop`, `/context`,
   `/variant [name|off]`, `/compact [focus]` and `/agent [id]`. The TUI command palette combines
-  these with local commands. The event catalog has 21 kinds. A line beginning `//` sends a literal
+  these with local commands. The event catalog has 19 kinds. A line beginning `//` sends a literal
   slash, so `//help` sends `/help`.
 - **Model switching and variants**: `/model <alias>` switches the current conversation; `/new <alias>`
   starts another. A switch uses the target model's default variant and waits until the current turn
@@ -44,15 +62,6 @@ requests land in `develop`.
   and follows only same-origin redirects.
 - **Terminal themes**: Ayu Dark, Ayu Light, Nord Dark and Nord Light. `/theme` opens the picker; the
   choice is saved in `~/.config/navai/config.json`.
-- **Background subagents (first part)**: a conversation's agent can start a subagent with the `task`
-  tool (`task(agent, prompt)`, for agents whose mode is `subagent` or `all`, such as `explore` and
-  `review`). The subagent is a separate conversation that runs in the background: the tool answers at
-  once with its id, and at most 4 run per conversation (`subagents.max_concurrent`). It gets the
-  workspace, rules and skills but not the parent's history, never gets `ask` or `task`, and cannot
-  write when it or its parent is read-only or `plan`. Session lists show `parent_session_id`,
-  `child_status` and `promptable: false`; you can read and stop a subagent but not write to it (403
-  `child_read_only`). `subagent.spawned` and `subagent.done` are stored on the parent's stream. The
-  subagent's result is not yet handed back to the parent conversation.
 
 ### Changed
 

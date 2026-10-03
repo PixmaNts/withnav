@@ -206,6 +206,289 @@ struct Fixture {
     checked: mpsc::UnboundedReceiver<Evidence>,
 }
 
+impl Fixture {
+    async fn reach_doubt_boundary(&mut self) -> mpsc::UnboundedSender<String> {
+        self.tick(300).await;
+        self.wait_verdict("doubt").await;
+        let (_, parent_stream) = self
+            .provider
+            .requests
+            .recv()
+            .bounded(file!(), line!())
+            .await
+            .unwrap();
+        self.stream
+            .send(tool_call_chunk("boundary", "glob", &json!({"pattern":"*"})))
+            .unwrap();
+        // Closing the response, but retaining a harmless sender for fixture cleanup.
+        let (unused, _) = mpsc::unbounded_channel();
+        drop(std::mem::replace(&mut self.stream, unused));
+        async {
+            loop {
+                self.service.history().flush().await.unwrap();
+                if self
+                    .service
+                    .history()
+                    .replay(self.child, None, u64::MAX)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|e| e.kind == "tool.post_call" && e.payload["tool_call_id"] == "boundary")
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        }
+        .bounded(file!(), line!())
+        .await;
+        assert!(self.provider.requests.try_recv().is_err());
+        parent_stream
+    }
+}
+
+#[tokio::test]
+async fn doubt_boundary_keeps_steer_queued_until_the_decision() {
+    let mut f = Fixture::new(vec![Ok(Verdict::Doubt)]).await;
+    let parent_stream = f.reach_doubt_boundary().await;
+    f.service
+        .steer_child(f.parent, f.child, "queued after doubt", false)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(f.provider.requests.try_recv().is_err());
+    let transcript = f
+        .service
+        .history()
+        .load(f.child)
+        .bounded(file!(), line!())
+        .await
+        .unwrap()
+        .unwrap()
+        .transcript;
+    assert!(!serde_json::to_string(&transcript)
+        .unwrap()
+        .contains("queued after doubt"));
+    f.service
+        .decide_subagent(f.parent, f.child, false, None)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (request, child_stream) = f
+        .provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(request.contains("queued after doubt"));
+    assert!(request.contains("\"role\":\"tool\""));
+    drop(child_stream);
+    drop(parent_stream);
+    f.close().await;
+}
+
+#[tokio::test]
+async fn doubt_boundary_interrupt_cancels_hold_and_runs_replacement_without_pending_decision() {
+    let mut f = Fixture::new(vec![Ok(Verdict::Doubt)]).await;
+    let parent_stream = f.reach_doubt_boundary().await;
+    f.service
+        .steer_child(f.parent, f.child, "replacement after doubt", true)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (request, child_stream) = f
+        .provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(request.contains("replacement after doubt"));
+    assert!(f
+        .service
+        .decide_subagent(f.parent, f.child, false, None)
+        .bounded(file!(), line!())
+        .await
+        .is_err());
+    f.service
+        .history()
+        .flush()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let events = f
+        .service
+        .history()
+        .replay(f.child, None, u64::MAX)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.kind == "turn.end" && e.payload["outcome"] == "interrupted")
+            .count(),
+        1
+    );
+    assert_eq!(events.iter().filter(|e| e.kind == "turn.start").count(), 2);
+    assert_eq!(
+        f.service
+            .child_metadata(f.child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "running"
+    );
+    drop(child_stream);
+    drop(parent_stream);
+    f.close().await;
+}
+
+#[tokio::test]
+async fn doubt_boundary_model_stop_delivers_one_terminal_notice_and_releases_capacity_once() {
+    let mut f = Fixture::new(vec![Ok(Verdict::Doubt)]).await;
+    let parent_stream = f.reach_doubt_boundary().await;
+    parent_stream
+        .send(tool_call_chunk(
+            "decision",
+            "decide_subagent",
+            &json!({"child_id":f.child,"decision":"stop"}),
+        ))
+        .unwrap();
+    drop(parent_stream);
+    let (request, model_stream) = f
+        .provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(request.contains("\"role\":\"tool\""));
+    async {
+        loop {
+            if !f
+                .service
+                .list(f._tmp.path().join("ws").to_str().unwrap())
+                .await
+                .unwrap()
+                .iter()
+                .any(|s| s.id == f.child && s.live)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+    .bounded(file!(), line!())
+    .await;
+    assert_eq!(
+        f.service
+            .child_metadata(f.child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .unwrap()
+            .terminal_reason
+            .as_deref(),
+        Some("watchdog")
+    );
+    assert_eq!(f.service.reserved_child_count(f.parent), 0);
+    assert_eq!(
+        f.events()
+            .await
+            .iter()
+            .filter(|e| e.kind == "subagent.done"
+                && e.payload["child_session_id"] == f.child.to_string())
+            .count(),
+        1
+    );
+    drop(model_stream);
+    f.close().await;
+}
+
+#[tokio::test]
+async fn doubt_boundary_driver_stop_finishes_promptly_with_one_notice_and_one_slot_release() {
+    let mut f = Fixture::new(vec![Ok(Verdict::Doubt)]).await;
+    let parent_stream = f.reach_doubt_boundary().await;
+    f.service
+        .close_session(f.child)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    f.service
+        .close_session(f.child)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert_eq!(f.service.reserved_child_count(f.parent), 0);
+    assert_eq!(
+        f.service
+            .child_metadata(f.child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "stopped"
+    );
+    assert_eq!(
+        f.events()
+            .await
+            .iter()
+            .filter(|e| e.kind == "subagent.done"
+                && e.payload["child_session_id"] == f.child.to_string())
+            .count(),
+        1
+    );
+    drop(parent_stream);
+    f.close().await;
+}
+
+#[tokio::test]
+async fn doubt_boundary_driver_continue_releases_the_same_turn() {
+    let mut f = Fixture::new(vec![Ok(Verdict::Doubt)]).await;
+    let parent_stream = f.reach_doubt_boundary().await;
+    f.service
+        .continue_child(f.parent, f.child)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (request, child_stream) = f
+        .provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(request.contains("\"role\":\"tool\""));
+    f.service
+        .history()
+        .flush()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let events = f
+        .service
+        .history()
+        .replay(f.child, None, u64::MAX)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert_eq!(events.iter().filter(|e| e.kind == "turn.start").count(), 1);
+    assert!(f
+        .service
+        .decide_subagent(f.parent, f.child, false, None)
+        .bounded(file!(), line!())
+        .await
+        .is_err());
+    drop(child_stream);
+    drop(parent_stream);
+    f.close().await;
+}
+
 async fn watchdog_teardown_blocks_delete(delete_parent: bool) {
     let mut f = Fixture::new(vec![Ok(Verdict::Stuck)]).await;
     let barrier = navai::session::ChildPreparationBarrier::default();

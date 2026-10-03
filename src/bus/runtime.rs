@@ -802,6 +802,8 @@ async fn runtime_loop(
                 let (transcript,claimed)=status.steering.claim_replacements(actor.transcript.clone());
                 if !claimed && !restart { continue; }
                 if claimed {
+                    // A claimed replacement supersedes the old turn's progress doubt.
+                    status.watchdog.resume();
                     if let Some(request)=actor.pending_permission().cloned() {
                         actor.interrupt_pending_permission();
                         publish_resolved(&sequencer,active_task_id,&request,PermissionResolution::Cancelled);

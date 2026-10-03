@@ -51,6 +51,11 @@ fn no_context_window(
     }
 }
 
+/// The word that clears the variant in text interfaces (`/variant off`,
+/// `navai run --variant off`). Config loading refuses a variant of that name,
+/// so it never collides with an offered one.
+pub const CLEAR_WORD: &str = "off";
+
 /// What a new session asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VariantChoice {
@@ -58,15 +63,20 @@ pub enum VariantChoice {
     Default,
     /// No variant, whatever the alias default is.
     Clear,
-    /// A variant of the alias by name, or `none` for no variant (a variant
-    /// the alias really calls `none` wins over the word).
-    Word(String),
+    /// This variant of the alias, by its exact name. Never a keyword: a
+    /// variant really called `none` is selected by `Exact("none")`.
+    Exact(String),
 }
 
 impl VariantChoice {
-    /// A client's optional word: absent is the default.
-    pub fn from_request(word: Option<&str>) -> Self {
-        word.map_or(Self::Default, |w| Self::Word(w.to_string()))
+    /// A text interface's optional word: absent is the default, [`CLEAR_WORD`]
+    /// clears, anything else is an exact name.
+    pub fn from_word(word: Option<&str>) -> Self {
+        match word {
+            None => Self::Default,
+            Some(CLEAR_WORD) => Self::Clear,
+            Some(name) => Self::Exact(name.to_string()),
+        }
     }
 }
 
@@ -76,18 +86,15 @@ pub(super) enum VariantStart<'a> {
     Saved(Option<&'a str>),
 }
 
-/// Turns a client's word into the selection: an offered name selects it,
-/// `none` clears, anything else is an error listing what the alias offers.
-pub(crate) fn pick_variant(
+/// The offered variant called exactly `name`, or an error listing what the
+/// alias offers.
+pub(crate) fn exact_variant(
     alias: &str,
-    word: &str,
+    name: &str,
     offered: &Variants,
 ) -> Result<SelectedVariant, ServerError> {
-    if let Some(v) = offered.get(word) {
-        return Ok(Some((word.to_string(), v.clone())));
-    }
-    if word.eq_ignore_ascii_case("none") {
-        return Ok(None);
+    if let Some(v) = offered.get(name) {
+        return Ok(Some((name.to_string(), v.clone())));
     }
     let list = if offered.is_empty() {
         "it offers no variants".to_string()
@@ -99,9 +106,20 @@ pub(crate) fn pick_variant(
     };
     Err(ServerError::UnknownVariant {
         alias: alias.to_string(),
-        variant: word.to_string(),
+        variant: name.to_string(),
         offered: list,
     })
+}
+
+/// What a model offers as variants, and whether that is known right now.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Offer {
+    pub variants: Variants,
+    /// False when the offer is generated from the provider's reported effort
+    /// tiers and they cannot be confirmed (none cached, or only an old copy
+    /// whose refresh failed): the names in `variants` are then not a verdict
+    /// on what the model offers.
+    pub known: bool,
 }
 
 impl Service {
@@ -142,22 +160,23 @@ impl Service {
     /// The alias's model, its key and its bounds. A conversation that has a
     /// saved resolution keeps it: no discovery, no refresh, and never another
     /// identity. A fresh session, or a legacy row without one, resolves now.
-    /// Returns the model with the bounds applied, the key, the snapshot, and
-    /// whether the snapshot must still be saved to an existing row.
+    /// Returns the model with the bounds applied, the key, the snapshot,
+    /// whether the snapshot must still be saved to an existing row, and the
+    /// models.json the alias was read from.
     pub(super) async fn resolve_for_spawn(
         &self,
         session_id: Ulid,
         workspace: &Path,
         alias: &str,
         resumed: Option<&ResumedSession>,
-    ) -> Result<(ResolvedModel, String, ModelResolution, bool), ServerError> {
-        let (resolved, models_path) = self.resolve_model(workspace, alias)?;
+    ) -> Result<(ResolvedModel, String, ModelResolution, bool, PathBuf), ServerError> {
+        let (resolved, models_file) = self.resolve_model(workspace, alias)?;
         let api_key = auth::resolve_key(
             &self.config.config_dir,
             &resolved.provider_name,
             resolved.provider.api_key_env.as_deref(),
         )?;
-        let models_path = models_path.as_path();
+        let models_path = models_file.as_path();
         let saved = match resumed {
             Some(loaded) => loaded
                 .meta
@@ -219,34 +238,16 @@ impl Service {
         let mut resolved = resolved;
         resolved.model.context_window = Some(snapshot.bounds.context_window);
         resolved.model.max_input_tokens = snapshot.bounds.max_input_tokens;
-        Ok((resolved, api_key, snapshot, save_late))
+        Ok((resolved, api_key, snapshot, save_late, models_file))
     }
 
-    /// The variant a session starts with, and the variants its alias offers.
-    /// A fresh session takes the choice made at creation, else the alias
-    /// default; a resumed one takes the variant it saved. A named variant
-    /// the alias does not offer is an error, never a fallback.
-    pub(super) async fn select_variant(
-        &self,
-        session_id: Ulid,
-        alias: &str,
-        resolved: &ResolvedModel,
-        api_key: &str,
-        start: VariantStart<'_>,
-    ) -> Result<(SelectedVariant, Variants), ServerError> {
-        let models_path = || {
-            self.config
-                .models_path
-                .clone()
-                .unwrap_or_else(|| self.config.config_dir.join("models.json"))
-                .display()
-                .to_string()
-        };
-        // Only the offer is needed here, not the window: a resume must work
-        // with discovery down, so a missing window is not an error.
-        let needs_tiers =
+    /// What the alias offers as variants. Only the offer is needed, not the
+    /// window: a resume must work with discovery down, so a missing window
+    /// is not an error here.
+    pub(crate) async fn variant_offer(&self, resolved: &ResolvedModel, api_key: &str) -> Offer {
+        let generated =
             resolved.model.variants.is_none() && resolved.provider.catalog_format.is_some();
-        let limits = if needs_tiers {
+        let data = if generated {
             self.catalog
                 .lookup(
                     resolved,
@@ -256,42 +257,85 @@ impl Service {
                 .await
         } else {
             self.catalog.cached(resolved)
+        };
+        // Tiers that are past their age and could not be refreshed do not
+        // prove a name is gone, so they do not count as a known offer.
+        let refresh_failed = data.stale && data.error.is_some();
+        let limits = data.limits.unwrap_or_default();
+        let known = !generated || (limits.effort_tiers.is_some() && !refresh_failed);
+        Offer {
+            variants: effective_variants(resolved, limits.effort_tiers.as_deref().unwrap_or(&[])),
+            known,
         }
-        .limits
-        .unwrap_or_default();
-        let offered = effective_variants(resolved, limits.effort_tiers.as_deref().unwrap_or(&[]));
+    }
+
+    /// The variant a session starts with, and what its alias offers. A fresh
+    /// session takes the choice made at creation, else the alias default; a
+    /// resumed one takes the variant it saved.
+    ///
+    /// A variant the alias confirmably does not offer is an error, never a
+    /// fallback. When the offer cannot be known (generated from the
+    /// provider's tiers, none cached, discovery down) a saved variant is kept
+    /// as it was generated, since nothing says it is gone, while a choice
+    /// made now is refused as retryable.
+    pub(super) async fn select_variant(
+        &self,
+        session_id: Ulid,
+        alias: &str,
+        resolved: &ResolvedModel,
+        api_key: &str,
+        models_path: &Path,
+        start: VariantStart<'_>,
+    ) -> Result<(SelectedVariant, Offer), ServerError> {
+        let offer = self.variant_offer(resolved, api_key).await;
+        let path = models_path.display().to_string();
+        let cannot_confirm = |name: &str| ServerError::VariantOfferUnknown {
+            alias: alias.to_string(),
+            variant: name.to_string(),
+        };
         let selected = match start {
-            VariantStart::Saved(None) => None,
-            VariantStart::Saved(Some(name)) => match offered.get(name) {
+            VariantStart::Saved(None) | VariantStart::Choice(VariantChoice::Clear) => None,
+            VariantStart::Saved(Some(name)) => match offer.variants.get(name) {
                 Some(v) => Some((name.to_string(), v.clone())),
+                None if !offer.known => {
+                    tracing::warn!(session = %session_id, alias, variant = name, "the provider's variants are not known; keeping the saved variant");
+                    effective_variants(resolved, &[name.to_string()])
+                        .remove(name)
+                        .map(|v| (name.to_string(), v))
+                }
                 None => {
                     return Err(ServerError::VariantUnavailable {
                         session: session_id.to_string(),
                         alias: alias.to_string(),
                         variant: name.to_string(),
-                        models_path: models_path(),
+                        models_path: path,
                     })
                 }
             },
-            VariantStart::Choice(VariantChoice::Clear) => None,
-            VariantStart::Choice(VariantChoice::Word(word)) => pick_variant(alias, word, &offered)?,
+            VariantStart::Choice(VariantChoice::Exact(name)) => {
+                if !offer.known {
+                    return Err(cannot_confirm(name));
+                }
+                exact_variant(alias, name, &offer.variants)?
+            }
             VariantStart::Choice(VariantChoice::Default) => {
                 match resolved.model.default_variant.as_deref() {
                     None => None,
-                    Some(name) => match offered.get(name) {
+                    Some(name) => match offer.variants.get(name) {
                         Some(v) => Some((name.to_string(), v.clone())),
+                        None if !offer.known => return Err(cannot_confirm(name)),
                         None => {
                             return Err(ServerError::DefaultVariantUnavailable {
                                 alias: alias.to_string(),
                                 variant: name.to_string(),
-                                models_path: models_path(),
+                                models_path: path,
                             })
                         }
                     },
                 }
             }
         };
-        Ok((selected, offered))
+        Ok((selected, offer))
     }
 
     /// First activation of a row from before the column: it gets its

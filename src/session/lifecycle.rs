@@ -202,7 +202,7 @@ mod tests {
             workspace: PathBuf::from("/w"),
             model: "fast".to_string(),
             status: Arc::default(),
-            variants: Arc::default(),
+            offer: Arc::default(),
             resolution: None,
         }
     }

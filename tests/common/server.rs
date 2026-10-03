@@ -62,6 +62,7 @@ pub struct TestServerConfig {
     extra_aliases: Vec<(String, String)>,
     variants: Option<Value>,
     default_variant: Option<String>,
+    omniroute: bool,
 }
 
 impl TestServerConfig {
@@ -91,6 +92,7 @@ impl TestServerConfig {
             extra_aliases: Vec::new(),
             variants: None,
             default_variant: None,
+            omniroute: false,
         }
     }
 
@@ -133,6 +135,19 @@ impl TestServerConfig {
     pub fn variants(mut self, variants: Value, default: Option<&str>) -> Self {
         self.variants = Some(variants);
         self.default_variant = default.map(str::to_string);
+        self
+    }
+
+    /// Marks the provider as an OmniRoute one: an alias without `variants`
+    /// then offers one variant per effort tier its model list reports.
+    pub fn omniroute(mut self) -> Self {
+        self.omniroute = true;
+        self
+    }
+
+    /// A `default_variant` on an alias with no `variants` of its own.
+    pub fn default_variant(mut self, name: &str) -> Self {
+        self.default_variant = Some(name.to_string());
         self
     }
 
@@ -186,18 +201,20 @@ impl TestServerConfig {
             entry["model"] = json!(model);
             models.insert(alias.clone(), entry);
         }
+        let mut provider = json!({
+            "base_url": self.base_url,
+            "api_key_env": "NAVAI_TEST_KEY",
+            "headers": {},
+            "connect_timeout_ms": self.connect_timeout_ms,
+            "request_timeout_ms": self.request_timeout_ms
+        });
+        if self.omniroute {
+            provider["catalog_format"] = json!("omniroute");
+        }
         std::fs::write(
             &models_path,
             json!({
-                "providers": {
-                    PROVIDER: {
-                        "base_url": self.base_url,
-                        "api_key_env": "NAVAI_TEST_KEY",
-                        "headers": {},
-                        "connect_timeout_ms": self.connect_timeout_ms,
-                        "request_timeout_ms": self.request_timeout_ms
-                    }
-                },
+                "providers": { PROVIDER: provider },
                 "models": models
             })
             .to_string(),

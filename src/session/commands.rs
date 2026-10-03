@@ -47,8 +47,8 @@ pub const COMMANDS: [CommandSpec; 7] = [
     },
     CommandSpec {
         name: "variant",
-        description: "Show the model variant and the ones on offer, or switch (none clears it)",
-        args_hint: "[name]",
+        description: "Show the model variant and the ones on offer, or switch (off clears it)",
+        args_hint: "[name|off]",
     },
     CommandSpec {
         name: "compact",
@@ -220,7 +220,10 @@ impl CommandOutcome {
             }
             "stop" => "stopped".to_string(),
             "variant" => {
-                let current = data["variant"].as_str().unwrap_or("none");
+                let current = match data["variant"].as_str() {
+                    Some(name) => format!("variant: {name}"),
+                    None => "variant: (none set)".to_string(),
+                };
                 let offered = data["offered"]
                     .as_array()
                     .map(|l| l.iter().filter_map(Value::as_str).collect::<Vec<_>>())
@@ -232,9 +235,9 @@ impl CommandOutcome {
                 };
                 match data["applies"].as_str() {
                     Some("next_turn") => {
-                        format!("variant {current} from the next turn; {offer}")
+                        format!("{current} from the next turn; {offer}")
                     }
-                    _ => format!("variant {current}; {offer}"),
+                    _ => format!("{current}; {offer}"),
                 }
             }
             _ => data.to_string(),

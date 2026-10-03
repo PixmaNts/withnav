@@ -165,6 +165,8 @@ pub enum ServerError {
         variant: String,
         models_path: String,
     },
+    #[error("cannot confirm that alias '{alias}' offers variant '{variant}': its list of variants comes from the provider's model list, which is not available and has no earlier copy. Try again when the provider is reachable.")]
+    VariantOfferUnknown { alias: String, variant: String },
     #[error("history store error: {0}")]
     History(String),
 }

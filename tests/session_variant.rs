@@ -58,13 +58,13 @@ async fn creation_picks_default_named_none_or_fails() {
     );
 
     let id = state
-        .create_session_with_variant(&ws, None, None, VariantChoice::from_request(Some("low")))
+        .create_session_with_variant(&ws, None, None, VariantChoice::from_word(Some("low")))
         .await
         .unwrap();
     assert_eq!(saved(&state, id).await.as_deref(), Some("low"));
 
     let id = state
-        .create_session_with_variant(&ws, None, None, VariantChoice::from_request(Some("none")))
+        .create_session_with_variant(&ws, None, None, VariantChoice::from_word(Some("off")))
         .await
         .unwrap();
     assert_eq!(saved(&state, id).await, None);
@@ -72,7 +72,12 @@ async fn creation_picks_default_named_none_or_fails() {
 
     let before = state.session_count();
     let err = state
-        .create_session_with_variant(&ws, None, None, VariantChoice::from_request(Some("max")))
+        .create_session_with_variant(&ws, None, None, VariantChoice::from_word(Some("none")))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ServerError::UnknownVariant { .. }), "{err:?}");
+    let err = state
+        .create_session_with_variant(&ws, None, None, VariantChoice::from_word(Some("max")))
         .await
         .unwrap_err();
     assert!(matches!(err, ServerError::UnknownVariant { .. }), "{err:?}");
@@ -105,7 +110,7 @@ async fn resume_keeps_the_variant_and_a_missing_one_is_an_error() {
     let cfg = config(tmp.path(), "http://127.0.0.1:1/v1", None);
     let state = cfg.state();
     let id = state
-        .create_session_with_variant(&ws, None, None, VariantChoice::from_request(Some("low")))
+        .create_session_with_variant(&ws, None, None, VariantChoice::from_word(Some("low")))
         .await
         .unwrap();
     state.close_session(id).await.unwrap();
@@ -142,7 +147,7 @@ async fn resume_keeps_the_variant_and_a_missing_one_is_an_error() {
 }
 
 // Given a session with a variant
-// When /variant runs bare, with a name, with `none`, and with an unknown name
+// When /variant runs bare, with a name, with `off`, and with an unknown name
 // Then it lists, switches (saved before it answers), clears, and refuses
 #[tokio::test]
 async fn variant_command_lists_sets_clears_and_refuses() {
@@ -166,10 +171,21 @@ async fn variant_command_lists_sets_clears_and_refuses() {
         Some("low")
     );
 
-    let out = state.run_command(id, "variant", "none").await.unwrap();
+    let out = state.run_command(id, "variant", "off").await.unwrap();
     assert!(out.ok);
+    assert_eq!(
+        out.render_text(),
+        "variant: (none set); on offer: high, low"
+    );
     assert_eq!(out.data.unwrap()["variant"], Value::Null);
     assert_eq!(saved(&state, id).await, None);
+
+    // `none` is an ordinary name here: not offered, so refused, not a clear.
+    state.run_command(id, "variant", "low").await.unwrap();
+    let out = state.run_command(id, "variant", "none").await.unwrap();
+    assert!(!out.ok);
+    assert!(out.error.unwrap().contains("'none'"));
+    assert_eq!(saved(&state, id).await.as_deref(), Some("low"), "kept");
 
     let out = state.run_command(id, "variant", "max").await.unwrap();
     assert!(!out.ok);
@@ -178,7 +194,11 @@ async fn variant_command_lists_sets_clears_and_refuses() {
         error.contains("'max'") && error.contains("high, low"),
         "{error}"
     );
-    assert_eq!(saved(&state, id).await, None, "a refusal saves nothing");
+    assert_eq!(
+        saved(&state, id).await.as_deref(),
+        Some("low"),
+        "a refusal saves nothing"
+    );
 
     let out = state.run_command(id, "variant", "low high").await.unwrap();
     assert!(!out.ok);
@@ -195,7 +215,8 @@ async fn variant_command_lists_sets_clears_and_refuses() {
 
 // Given the HTTP surface
 // When a session is created with a variant, and read back
-// Then GET shows it; an unknown variant is a 422; a resume with one is a 400
+// Then GET shows it; null clears, omitted is the default; an unknown name
+//      (`none` included) is a 422; a resume with one is a 400
 #[tokio::test]
 async fn http_create_and_get_carry_the_variant() {
     let (tmp, ws) = tmp_ws();
@@ -226,6 +247,28 @@ async fn http_create_and_get_carry_the_variant() {
     let id = body["session_id"].as_str().unwrap().to_string();
     let (_, got) = request_json(&router, "GET", &format!("/v1/sessions/{id}"), None).await;
     assert_eq!(got["variant"], "high");
+
+    // An explicit null clears the variant; a string is always an exact name.
+    let (status, body) = request_json(
+        &router,
+        "POST",
+        "/v1/sessions",
+        Some(&json!({"workspace": ws_str, "variant": null})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let id = body["session_id"].as_str().unwrap().to_string();
+    let (_, got) = request_json(&router, "GET", &format!("/v1/sessions/{id}"), None).await;
+    assert_eq!(got["variant"], Value::Null);
+    let (status, body) = request_json(
+        &router,
+        "POST",
+        "/v1/sessions",
+        Some(&json!({"workspace": ws_str, "variant": "none"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["reason"], "unknown_variant");
 
     let (status, body) = request_json(
         &router,
@@ -310,7 +353,7 @@ async fn a_cleared_variant_sends_no_override() {
     let (tmp, ws) = tmp_ws();
     let state = config(tmp.path(), &provider.url, Some("high")).state();
     let id = state.create_session(&ws, None, None).await.unwrap();
-    assert!(state.run_command(id, "variant", "none").await.unwrap().ok);
+    assert!(state.run_command(id, "variant", "off").await.unwrap().ok);
     let sub = state.subscribe(id, None).await.unwrap();
     send_text(&state, id, "go").await;
     collect_until(sub, |e| {

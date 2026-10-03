@@ -94,9 +94,8 @@ pub struct SessionHandle {
     pub model: String,
     /// The runtime's view of its actor: pending `ask`, running turn.
     pub status: Arc<runtime::RuntimeStatus>,
-    /// The variants the session's model offers, by name (fixed for the
-    /// session's life).
-    pub variants: Arc<crate::provider::config::Variants>,
+    /// What the session's model offered as variants when it started.
+    pub offer: Arc<resolve::Offer>,
     /// The saved model resolution (identity, window, where the window came
     /// from) the session runs on.
     pub resolution: Option<Arc<crate::provider::catalog::ModelResolution>>,
@@ -469,7 +468,7 @@ impl Service {
                 (workspace.to_path_buf(), alias.to_string(), profile)
             }
         };
-        let (resolved, api_key, snapshot, save_late) = self
+        let (resolved, api_key, snapshot, save_late, models_file) = self
             .resolve_for_spawn(session_id, resume_workspace, &alias, resumed.as_ref())
             .await?;
         // A resume keeps the variant the row saved; a fresh session takes the
@@ -481,6 +480,7 @@ impl Service {
                 &alias,
                 &resolved,
                 &api_key,
+                &models_file,
                 match &resumed {
                     Some(loaded) => VariantStart::Saved(loaded.meta.variant.as_deref()),
                     None => VariantStart::Choice(variant),
@@ -578,7 +578,7 @@ impl Service {
             workspace: workspace.clone(),
             model: alias,
             status,
-            variants: Arc::new(offered),
+            offer: Arc::new(offered),
             resolution: Some(Arc::new(snapshot)),
         };
         let sender = SessionSender::new(session_id, handle.clone());
@@ -604,9 +604,10 @@ impl Service {
 }
 
 mod resolve;
-pub(crate) use resolve::pick_variant;
+pub(crate) use resolve::exact_variant;
 pub use resolve::VariantChoice;
 use resolve::VariantStart;
+pub use resolve::CLEAR_WORD;
 
 #[cfg(test)]
 pub(crate) mod tests;

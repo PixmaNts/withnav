@@ -43,6 +43,15 @@ pub struct HealthBody {
     pub status: &'static str,
 }
 
+/// Distinguishes an omitted field (`None`, by `serde(default)`) from an
+/// explicit `null` (`Some(None)`).
+fn present_or_null<'de, D>(d: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(d).map(Some)
+}
+
 /// Frozen create-session request.
 #[derive(Debug, Deserialize)]
 pub struct CreateSessionRequest {
@@ -51,10 +60,11 @@ pub struct CreateSessionRequest {
     pub model: Option<String>,
     #[serde(default)]
     pub profile: Option<String>,
-    /// The model variant to start on: a name the alias offers, or `none`
-    /// for no variant. Absent: the alias's default variant.
-    #[serde(default)]
-    pub variant: Option<String>,
+    /// The model variant to start on: a string is the exact name of a
+    /// variant the alias offers, `null` means no variant, and an omitted
+    /// field means the alias's default variant.
+    #[serde(default, deserialize_with = "present_or_null")]
+    pub variant: Option<Option<String>>,
     /// Optional id of a past conversation to resume (same id returned; the
     /// conversation continues with its stored events and transcript).
     #[serde(default)]
@@ -263,7 +273,11 @@ async fn create_session(
                 std::path::Path::new(&request.workspace),
                 request.model.as_deref(),
                 request.profile.as_deref(),
-                crate::session::VariantChoice::from_request(request.variant.as_deref()),
+                match request.variant {
+                    None => crate::session::VariantChoice::Default,
+                    Some(None) => crate::session::VariantChoice::Clear,
+                    Some(Some(name)) => crate::session::VariantChoice::Exact(name),
+                },
             )
             .await
             .map(|id| (id, false)),
@@ -616,6 +630,7 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         }
         ServerError::UnknownVariant { .. } => StatusCode::UNPROCESSABLE_ENTITY,
         ServerError::DefaultVariantUnavailable { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+        ServerError::VariantOfferUnknown { .. } => StatusCode::SERVICE_UNAVAILABLE,
         ServerError::SavedResolutionInvalid { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::History(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::Config(_) | ServerError::Model(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -652,6 +667,13 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         return (
             status,
             Json(json!({ "error": err.to_string(), "reason": "variant_unavailable" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::VariantOfferUnknown { .. }) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "variant_offer_unknown" })),
         )
             .into_response();
     }

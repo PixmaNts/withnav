@@ -447,6 +447,7 @@ fn effort_tiers(entry: &serde_json::Value) -> Option<Vec<String>> {
     let reported = source.iter().filter_map(|v| v.as_str());
     for tier in reported {
         let plain = !tier.is_empty()
+            && tier != crate::session::CLEAR_WORD
             && tier.len() <= 32
             && tier
                 .chars()

@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use ulid::Ulid;
 
 use super::commands::{self, CommandOutcome, CommandSpec};
-use super::service::{pick_variant, Service, SessionHandle, SessionId, VariantChoice};
+use super::service::{exact_variant, Service, SessionHandle, SessionId, VariantChoice, CLEAR_WORD};
 use crate::bus::event::{CommandResult, EventKind};
 use crate::bus::sequencer::Candidate;
 use crate::error::ServerError;
@@ -148,16 +148,18 @@ impl Service {
         }
     }
 
-    /// `/variant [name]`: shows the variant and the names on offer, or
-    /// switches. A switch is checked against the offer, saved, and only then
-    /// handed to the runtime, which applies it at the next turn boundary.
+    /// `/variant [name|off]`: shows the variant and the names on offer, or
+    /// switches. `off` clears the variant; any other word is the exact name
+    /// of an offered variant (`none` included, when the model offers it). A
+    /// switch is checked against the offer, saved, and only then handed to
+    /// the runtime, which applies it at the next turn boundary.
     async fn variant_command(
         &self,
         session_id: SessionId,
         handle: &SessionHandle,
         arguments: &str,
     ) -> Result<Done, CommandFailure> {
-        let offered: Vec<&String> = handle.variants.keys().collect();
+        let offered: Vec<&String> = handle.offer.variants.keys().collect();
         let mut words = arguments.split_whitespace();
         let Some(word) = words.next() else {
             return Ok(Done::data(json!({
@@ -167,11 +169,23 @@ impl Service {
         };
         if words.next().is_some() {
             return Err(CommandFailure::Refused(
-                "usage: /variant [name]".to_string(),
+                "usage: /variant [name|off]".to_string(),
             ));
         }
-        let chosen = pick_variant(&handle.model, word, &handle.variants)
-            .map_err(|e| CommandFailure::Refused(e.to_string()))?;
+        let chosen = if word == CLEAR_WORD {
+            None
+        } else if !handle.offer.known && !handle.offer.variants.contains_key(word) {
+            return Err(CommandFailure::Refused(
+                ServerError::VariantOfferUnknown {
+                    alias: handle.model.clone(),
+                    variant: word.to_string(),
+                }
+                .to_string(),
+            ));
+        } else {
+            exact_variant(&handle.model, word, &handle.offer.variants)
+                .map_err(|e| CommandFailure::Refused(e.to_string()))?
+        };
         let name = chosen.as_ref().map(|(name, _)| name.clone());
         self.history()
             .set_variant(session_id, name.as_deref())
@@ -203,7 +217,7 @@ impl Service {
         // on its own default.
         let variant = if alias == handle.model {
             match handle.status.selected_variant() {
-                Some(name) => VariantChoice::Word(name),
+                Some(name) => VariantChoice::Exact(name),
                 None => VariantChoice::Clear,
             }
         } else {

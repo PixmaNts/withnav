@@ -103,8 +103,8 @@ pub struct RunArgs {
     #[arg(long)]
     pub show_thinking: bool,
 
-    /// Model variant to run with: a name the alias offers, or `none`. Default:
-    /// the alias's default variant.
+    /// Model variant to run with: the exact name of one the alias offers, or
+    /// `off` for no variant. Default: the alias's default variant.
     #[arg(long)]
     pub variant: Option<String>,
 }
@@ -218,7 +218,7 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
             &workspace,
             args.model.as_deref(),
             None,
-            crate::session::VariantChoice::from_request(args.variant.as_deref()),
+            crate::session::VariantChoice::from_word(args.variant.as_deref()),
         )
         .await
     {

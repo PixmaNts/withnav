@@ -5,6 +5,7 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Default)]
 pub struct WatchdogPark {
+    pub supervisor_cancel: CancellationToken,
     pub stopped: AtomicBool,
     doubt: AtomicBool,
     resumed: Notify,

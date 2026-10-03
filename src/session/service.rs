@@ -286,6 +286,8 @@ fn is_promptable(value: &bool) -> bool {
 /// clone (all fields are `Arc`).
 #[derive(Clone, Debug)]
 pub struct Service {
+    #[cfg(debug_assertions)]
+    pub(crate) watchdog_test: Arc<Mutex<Option<super::subagents::supervisor::TestWatchdog>>>,
     _instance: Arc<super::instance::Instance>,
     /// The live sessions of this process; a closed session is removed.
     pub(super) sessions: Arc<Mutex<HashMap<SessionId, SessionHandle>>>,
@@ -439,6 +441,8 @@ impl Service {
             .map_err(ServerError::History)?;
         let catalog = crate::provider::catalog::ModelCatalog::new(Some(config.data_dir.clone()));
         Ok(Self {
+            #[cfg(debug_assertions)]
+            watchdog_test: Arc::default(),
             _instance: instance,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             config: Arc::new(config),
@@ -564,8 +568,12 @@ impl Service {
                     .collect::<Vec<_>>()
                     .join(", "),
             })?;
-        let cap = crate::settings::load(&self.config.config_dir)
-            .map_err(|e| ServerError::SubagentSettings(e.to_string()))?
+        let settings = crate::settings::load(&self.config.config_dir)
+            .map_err(|e| ServerError::SubagentSettings(e.to_string()))?;
+        let watchdog_interval = settings
+            .subagents_watchdog_interval_secs()
+            .map_err(ServerError::SubagentSettings)?;
+        let cap = settings
             .subagents_max_concurrent()
             .map_err(ServerError::SubagentSettings)?;
         let _spawn_lock = self.child_admission(&parent_handle.session_cancel).await?;
@@ -657,10 +665,6 @@ impl Service {
             pending.push(publication.clone());
         }
         let _publication = Publication(publication);
-        let watchdog_interval = crate::settings::load(&self.config.config_dir)
-            .map_err(|error| ServerError::MalformedBody(error.to_string()))?
-            .subagents_watchdog_interval_secs()
-            .map_err(ServerError::MalformedBody)?;
         let child = prepared.session_id;
         let done = CancellationToken::new();
         self.child_operations
@@ -1895,6 +1899,9 @@ impl Service {
                     };
                     let service = service.clone();
                     tokio::spawn(async move {
+                        if let Some(handle) = service.handle(session_id) {
+                            handle.status.watchdog.supervisor_cancel.cancel();
+                        }
                         if service.handle(session_id).is_some_and(|h| {
                             h.status
                                 .watchdog

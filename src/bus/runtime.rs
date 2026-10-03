@@ -668,10 +668,8 @@ async fn runtime_loop(
     let mut control = status.controls.take_receiver();
     let mut delivery_waiting = false;
     let boundary_status = status.clone();
-    let boundary_cancel = session_cancel.clone();
-    actor.safe_boundary = Some(Arc::new(move |transcript| {
+    actor.safe_boundary = Some(Arc::new(move |transcript, cancel| {
         let status = boundary_status.clone();
-        let cancel = boundary_cancel.clone();
         Box::pin(async move {
             status.watchdog.boundary(&cancel).await;
             let mut transcript = status.steering.apply(transcript);

@@ -2,12 +2,31 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::watchdog::{Clock, Evidence, JevJudge, Judge, RealClock, Watchdog};
+
+#[cfg(debug_assertions)]
+#[derive(Clone)]
+pub(crate) struct TestWatchdog {
+    clock: Arc<dyn Clock>,
+    judge: Arc<dyn Judge>,
+}
+#[cfg(debug_assertions)]
+impl std::fmt::Debug for TestWatchdog {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TestWatchdog")
+    }
+}
 use crate::provider::config::load_models;
 use crate::provider::openai::ClientCache;
 use crate::provider::systemone::SystemOneClient;
 use crate::session::service::{Lifecycle, Service, SessionId};
 
 impl Service {
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn install_watchdog_test(&self, clock: Arc<dyn Clock>, judge: Arc<dyn Judge>) {
+        *self.watchdog_test.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(TestWatchdog { clock, judge });
+    }
     pub(crate) fn start_child_watchdog(&self, child: SessionId, interval: u64) {
         if interval == 0 {
             return;
@@ -32,14 +51,25 @@ impl Service {
         })
         .map(|client| Arc::new(JevJudge(client)) as Arc<dyn Judge>);
         let service = self.clone();
+        let clock: Arc<dyn Clock> = Arc::new(RealClock);
+        #[cfg(debug_assertions)]
+        let (clock, judge) = match self
+            .watchdog_test
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            Some(test) => (test.clock, Some(test.judge)),
+            None => (clock, judge),
+        };
         tokio::spawn(async move {
-            let clock: Arc<dyn Clock> = Arc::new(RealClock);
             let interval = Duration::from_secs(interval);
             let mut watchdog = Watchdog::new(clock.clone(), interval);
             loop {
                 tokio::select! {
                     biased;
                     _ = handle.session_cancel.cancelled() => break,
+                    _ = handle.status.watchdog.supervisor_cancel.cancelled() => break,
                     _ = clock.sleep(interval) => {}
                 }
                 let Ok(Some(link)) = service.child_metadata(child).await else {

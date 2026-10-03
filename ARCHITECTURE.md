@@ -215,6 +215,8 @@ the same CAS with reason `restart`, queues their notices, then seeds capacity; n
 **Steering and turn interrupts.** `agent/boundary.rs` exposes the single injection seam, called by
 `run_steps` before a provider request once the whole previous tool batch has settled. Runtime
 steering (`bus/runtime/steering.rs`) applies queued parent instructions with `Parent` provenance,
+using identified operations that reserve interrupt input for its replacement turn. The guidance
+queue is in memory and can be lost on a crash; results remain durable in the completion outbox.
 then the durable delivery callback consumes eligible mid-turn results. Both precede the request's
 budget check. A renewable actor turn token is separate from `session_cancel`: an input interrupt
 unwinds the current provider/tool work, pairs interrupted calls with results, records the old
@@ -242,9 +244,10 @@ records only observable text, call/result and step activity; thinking is never e
 The parent's sequencer emits `subagent.watchdog`; only doubt notices need transcript consumption
 and a parent wake. Doubt is an ephemeral `RuntimeStatus.watchdog` hold at the existing safe boundary:
 no further provider request until resumed; the complete tool batch still settles. The boundary
-wait respects the renewable turn token as well as session stop. Stuck and model stop commit the
-terminal child CAS with reason `watchdog` and bounded partial text before cancelling/joining,
-without taking lifecycle. `tools/decide_subagent.rs` is installed beside root `task` only;
+wait respects the renewable turn token as well as session stop. Stuck and model stop claim the
+terminal reason, cancel and join under child-scoped operation ownership, then commit the terminal
+child CAS and bounded partial text before releasing capacity, without taking lifecycle.
+`tools/decide_subagent.rs` is installed beside root `task` only;
 `decision.rs` enforces owner and watchdog-doubt state, never answers permissions or budgets.
 The existing owner continue endpoint also resumes doubt. Recovery terminalizes unfinished links
 as before; no supervision state is restored. The event catalog has 22 kinds.

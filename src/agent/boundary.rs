@@ -8,7 +8,7 @@ pub type SafeBoundary = Arc<
     dyn Fn(
             Vec<ChatMessage>,
             tokio_util::sync::CancellationToken,
-        ) -> futures::future::BoxFuture<'static, Result<Vec<ChatMessage>, String>>
+        ) -> futures::future::BoxFuture<'static, Result<Option<Vec<ChatMessage>>, String>>
         + Send
         + Sync,
 >;

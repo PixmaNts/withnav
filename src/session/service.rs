@@ -362,6 +362,21 @@ impl Service {
             done,
         }
     }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_negative_result_eligibility(
+        &self,
+        id: SessionId,
+        barrier: ChildPreparationBarrier,
+    ) -> Result<(), ServerError> {
+        let handle = self
+            .handle(id)
+            .ok_or_else(|| ServerError::SessionNotFound(id.to_string()))?;
+        handle
+            .status
+            .pause_negative_eligibility(barrier.reached, barrier.release);
+        Ok(())
+    }
     pub(super) async fn wait_child_operation(&self, id: SessionId) {
         let pending = {
             let _admission = self.admission_gate.lock().await;
@@ -926,7 +941,12 @@ impl Service {
                             .find(|m| *m == "steer")
                     })
                     .unwrap_or("next_turn");
-                owner.status.wake_delivery_mode(mode);
+                let notice = notices
+                    .iter()
+                    .find(|(_, p, _)| p["delivery"] == mode)
+                    .map(|(id, _, _)| *id)
+                    .unwrap_or(child);
+                owner.status.wake_delivery_mode(mode, notice);
             }
         }
         Ok(())
@@ -1071,7 +1091,7 @@ impl Service {
             ));
         }
         if !handle.status.steer(message.to_string(), interrupt) {
-            return Err(ServerError::SessionStopping);
+            return Err(ServerError::ChildNotParked);
         }
         Ok(())
     }
@@ -1968,6 +1988,28 @@ impl Service {
         )));
         status.init_variant(selected.clone());
         if child_parent.is_none() {
+            let pending_history = self.history.clone();
+            let eligible_history = self.history.clone();
+            status.install_boundary_eligible(Arc::new(move || {
+                let history = eligible_history.clone();
+                Box::pin(async move {
+                    Ok(history
+                        .unconsumed_completions(session_id)
+                        .await?
+                        .iter()
+                        .any(|(_, payload, _)| payload["delivery"] == "steer"))
+                })
+            }));
+            status.install_pending_notice(Arc::new(move |id| {
+                let history = pending_history.clone();
+                Box::pin(async move {
+                    Ok(history
+                        .unconsumed_completions(session_id)
+                        .await?
+                        .iter()
+                        .any(|(child, _, _)| *child == id))
+                })
+            }));
             let history = self.history.clone();
             status.install_delivery(Arc::new(move |mut transcript, mid_turn| {
                 let history = history.clone();

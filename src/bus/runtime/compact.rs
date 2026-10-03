@@ -96,9 +96,9 @@ pub enum Control {
     Delivery,
     Continue,
     Steer,
-    Interrupt,
+    Interrupt(ulid::Ulid),
     DeliverySteer,
-    DeliveryInterrupt,
+    DeliveryInterrupt(ulid::Ulid),
     Compact(CompactRequest),
     Model(super::model::ModelRequest),
 }

@@ -8,6 +8,21 @@ pub type Delivery = Arc<
         + Send
         + Sync,
 >;
+pub type PendingNotice =
+    Arc<dyn Fn(ulid::Ulid) -> super::BoxFuture<Result<bool, String>> + Send + Sync>;
+pub(super) struct NoticeCell(pub PendingNotice);
+pub type BoundaryEligible = Arc<dyn Fn() -> super::BoxFuture<Result<bool, String>> + Send + Sync>;
+pub(super) struct EligibleCell(pub BoundaryEligible);
+impl std::fmt::Debug for EligibleCell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BoundaryEligible")
+    }
+}
+impl std::fmt::Debug for NoticeCell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PendingNotice")
+    }
+}
 
 pub(super) struct DeliveryCell(pub Delivery);
 impl std::fmt::Debug for DeliveryCell {

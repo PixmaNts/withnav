@@ -1,0 +1,209 @@
+//! The session command registry: which `/commands` exist, how a typed line
+//! is routed (command, literal slash, or plain message) and how an unknown
+//! name is answered. Execution lives in `Service::run_command`.
+
+use serde::Serialize;
+use serde_json::Value;
+use ulid::Ulid;
+
+/// One command a client can list and run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct CommandSpec {
+    /// The name without its leading slash.
+    pub name: &'static str,
+    pub description: &'static str,
+    /// Argument synopsis, empty when the command takes none (`[alias]`).
+    pub args_hint: &'static str,
+}
+
+/// Every registered command, in listing order. A command that is listed but
+/// not built answers [`NOT_AVAILABLE`].
+pub const COMMANDS: [CommandSpec; 7] = [
+    CommandSpec {
+        name: "help",
+        description: "List the available commands",
+        args_hint: "",
+    },
+    CommandSpec {
+        name: "model",
+        description:
+            "Show the session's model alias, its context window and where the window comes from",
+        args_hint: "",
+    },
+    CommandSpec {
+        name: "new",
+        description: "Start a fresh conversation; this one is kept",
+        args_hint: "[alias]",
+    },
+    CommandSpec {
+        name: "stop",
+        description: "Stop this session",
+        args_hint: "",
+    },
+    CommandSpec {
+        name: "context",
+        description: "Show how the context window is used",
+        args_hint: "",
+    },
+    CommandSpec {
+        name: "variant",
+        description: "Show or change the model variant",
+        args_hint: "[name]",
+    },
+    CommandSpec {
+        name: "compact",
+        description: "Compact the conversation",
+        args_hint: "[focus]",
+    },
+];
+
+/// Commands that are registered but have no implementation yet.
+pub const NOT_AVAILABLE: [&str; 3] = ["context", "variant", "compact"];
+
+/// The error text of a registered command with no implementation.
+pub fn not_available_error(name: &str) -> String {
+    format!("/{name} is not available yet")
+}
+
+/// The error text of a command sent while the agent waits for an answer.
+pub const ASK_PENDING_ERROR: &str =
+    "the agent is waiting for an answer: reply to its question first, then run the command";
+
+/// The registered command called `name` (a leading `/` is ignored).
+pub fn find(name: &str) -> Option<&'static CommandSpec> {
+    let name = name.strip_prefix('/').unwrap_or(name);
+    COMMANDS.iter().find(|c| c.name == name)
+}
+
+/// The error text for an unknown name: it lists the close names, or every
+/// name when none is close.
+pub fn unknown_error(name: &str) -> String {
+    let name = name.strip_prefix('/').unwrap_or(name);
+    let mut close: Vec<&str> = COMMANDS
+        .iter()
+        .map(|c| c.name)
+        .filter(|c| c.starts_with(name) || name.starts_with(c) || edit_distance(c, name) <= 2)
+        .collect();
+    let all = close.is_empty();
+    if all {
+        close = COMMANDS.iter().map(|c| c.name).collect();
+    }
+    let list = close
+        .iter()
+        .map(|c| format!("/{c}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if all {
+        format!("unknown command /{name}; available: {list}")
+    } else {
+        format!("unknown command /{name}; did you mean {list}?")
+    }
+}
+
+/// Levenshtein distance over chars; names are short.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut cur = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let sub = prev[j] + usize::from(ca != cb);
+            cur.push(sub.min(prev[j + 1] + 1).min(cur[j] + 1));
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+/// How a client routes one typed line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Routed {
+    /// `/name arguments`: run through the command endpoint.
+    Command { name: String, arguments: String },
+    /// A plain message to send as written. `//text` gives `/text`.
+    Message(String),
+}
+
+/// Routes a typed line: a leading `//` is the escape for a literal slash, a
+/// leading `/` followed by a name is a command, anything else is a message.
+pub fn route_line(line: &str) -> Routed {
+    if let Some(rest) = line.strip_prefix("//") {
+        return Routed::Message(format!("/{rest}"));
+    }
+    if let Some(rest) = line.strip_prefix('/') {
+        let (name, arguments) = match rest.split_once(char::is_whitespace) {
+            Some((name, arguments)) => (name, arguments.trim()),
+            None => (rest, ""),
+        };
+        if !name.is_empty() {
+            return Routed::Command {
+                name: name.to_string(),
+                arguments: arguments.to_string(),
+            };
+        }
+    }
+    Routed::Message(line.to_string())
+}
+
+/// What one command run answered, the shape of the `command.result` event
+/// and of the HTTP response.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CommandOutcome {
+    pub operation_id: Ulid,
+    #[serde(skip)]
+    pub name: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_lists_the_seven_commands_with_unique_names() {
+        let names: Vec<&str> = COMMANDS.iter().map(|c| c.name).collect();
+        assert_eq!(
+            names,
+            ["help", "model", "new", "stop", "context", "variant", "compact"]
+        );
+        assert!(NOT_AVAILABLE.iter().all(|n| find(n).is_some()));
+        assert_eq!(find("/help").map(|c| c.name), Some("help"));
+        assert!(find("nope").is_none());
+    }
+
+    #[test]
+    fn unknown_names_list_close_ones_or_all() {
+        assert!(unknown_error("hlep").contains("/help"));
+        assert!(unknown_error("mod").contains("/model"));
+        let all = unknown_error("zzzzzzzz");
+        assert!(all.contains("/help") && all.contains("/compact"));
+    }
+
+    #[test]
+    fn lines_route_to_commands_literals_and_messages() {
+        assert_eq!(
+            route_line("/new fast"),
+            Routed::Command {
+                name: "new".into(),
+                arguments: "fast".into()
+            }
+        );
+        assert_eq!(
+            route_line("/help"),
+            Routed::Command {
+                name: "help".into(),
+                arguments: String::new()
+            }
+        );
+        assert_eq!(route_line("//text"), Routed::Message("/text".into()));
+        assert_eq!(route_line("//"), Routed::Message("/".into()));
+        assert_eq!(route_line("hello"), Routed::Message("hello".into()));
+        assert_eq!(route_line("/"), Routed::Message("/".into()));
+        assert_eq!(route_line("/ x"), Routed::Message("/ x".into()));
+    }
+}

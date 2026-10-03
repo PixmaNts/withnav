@@ -697,3 +697,45 @@ async fn deferred_controls_are_cancelled_in_order_before_session_end() {
     );
     assert!(b.bodies().is_empty());
 }
+
+// Given a history whose reasoning alone overruns the target's budget
+// When /model moves it to another model, which never sees that reasoning
+// Then the switch is judged on what the target would receive: it goes through,
+//      and the gauge afterwards counts the stripped history
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_fit_check_measures_the_projection_the_target_will_receive() {
+    let env = env();
+    let a = spawn_capturing_provider(vec![]).await;
+    let b = spawn_capturing_provider(vec![]).await;
+    let state = state(&env, &a, &b, 128_000, 20_000);
+    let heavy: Vec<ChatMessage> = (0..4)
+        .flat_map(|n| {
+            [
+                ChatMessage::User {
+                    content: format!("request {n}"),
+                },
+                ChatMessage::Assistant {
+                    content: Some(format!("answer {n}")),
+                    reasoning_content: Some("think ".repeat(2000)),
+                    tool_calls: vec![],
+                },
+            ]
+        })
+        .collect();
+    let id = seeded_with(&state, &env.ws, heavy).await;
+    let before = serde_json::to_value(state.context(id).await.unwrap()).unwrap();
+    let budget_b = 20_000 - 5_000 - 4_096;
+    assert!(
+        before["estimate_total"].as_u64().unwrap() > budget_b,
+        "the source projection must not fit: {before}"
+    );
+
+    let out = state.run_command(id, "model", "other").await.unwrap();
+    assert!(out.ok, "{out:?}");
+    let after = serde_json::to_value(state.context(id).await.unwrap()).unwrap();
+    assert!(
+        after["estimate_total"].as_u64().unwrap() <= budget_b,
+        "{after}"
+    );
+    assert_eq!(after["alias"], "other");
+}

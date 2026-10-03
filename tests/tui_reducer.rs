@@ -926,13 +926,13 @@ fn stop_then_resume() {
     assert_eq!(fx, vec![Effect::Resume("S1".into())]);
     let fx = resumed_now(&mut s, "S1").unwrap();
     assert_eq!(
-        fx[2],
+        fx[1],
         Effect::Subscribe {
             session_id: "S1".into(),
             cursor: Some(5)
         }
     );
-    assert!(matches!(&fx[3], Effect::SendAt { revision: 4, .. }));
+    assert!(matches!(&fx[2], Effect::SendAt { revision: 4, .. }));
     feed(&mut s, &load("resumed"));
     assert_eq!(s.activity, Activity::Idle);
     assert_eq!(steps(&s).len(), 2);

@@ -74,6 +74,8 @@ pub enum ConfigError {
     ParseToml(#[from] toml::de::Error),
     #[error("missing provider in config: {0}")]
     MissingProvider(String),
+    #[error("invalid models.json: {0}")]
+    Invalid(String),
 }
 
 #[derive(Debug, Error)]

@@ -33,6 +33,7 @@ fn resolved(base_url: String) -> ResolvedModel {
             headers: Default::default(),
             connect_timeout_ms: 1_000,
             request_timeout_ms: 600_000,
+            catalog_format: None,
         },
         model: ModelConfig {
             provider: "mock".to_string(),
@@ -44,6 +45,8 @@ fn resolved(base_url: String) -> ResolvedModel {
             supports_tools: true,
             supports_parallel_tool_calls: None,
             thinking: None,
+            default_variant: None,
+            variants: None,
             reasoning_history: ReasoningHistory::Preserve,
         },
     }

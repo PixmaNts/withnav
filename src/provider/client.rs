@@ -9,7 +9,7 @@ use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ProviderError;
-use crate::provider::config::ProviderConfig;
+use crate::provider::config::{ProviderConfig, Variant};
 use crate::provider::openai::{ChatRequest, ClientCache};
 use crate::provider::{extract_error_message, start_and_consume, AssistantMessage, StreamDelta};
 
@@ -173,16 +173,21 @@ impl ModelClient {
         }
     }
 
-    /// The streaming chat call: sends under `cancel`, then streams the
-    /// answer through `on_delta` until `[DONE]`.
+    /// The streaming chat call: sends `request` with `variant` (the selected
+    /// variant's overrides, if any) merged into the body under `cancel`, then
+    /// streams the answer through `on_delta` until `[DONE]`.
     pub async fn chat(
         &self,
-        request: &ChatRequest,
+        mut request: ChatRequest,
+        variant: Option<&Variant>,
         cancel: &CancellationToken,
         on_delta: &mut (dyn FnMut(StreamDelta) + Send),
     ) -> Result<AssistantMessage, ProviderError> {
+        if let Some(variant) = variant {
+            request.apply_variant(variant);
+        }
         let response =
-            cancellable(cancel, self.post("chat/completions").json(request).send()).await??;
+            cancellable(cancel, self.post("chat/completions").json(&request).send()).await??;
         start_and_consume(response, cancel, on_delta).await
     }
 }
@@ -214,6 +219,7 @@ mod tests {
             connect_timeout_ms: 1_000,
             // Far above every budget below: only the call's own deadline can fire.
             request_timeout_ms: 600_000,
+            catalog_format: None,
         };
         ModelClient::new("p", &provider, "key".into(), &ClientCache::new()).unwrap()
     }
@@ -302,10 +308,11 @@ mod tests {
             stream_options: None,
             max_tokens: None,
             temperature: None,
+            extra: Default::default(),
         };
         let started = Instant::now();
         let err = client_at(addr)
-            .chat(&request, &cancel, &mut |_| {})
+            .chat(request, None, &cancel, &mut |_| {})
             .await
             .unwrap_err();
         assert!(started.elapsed() < Duration::from_secs(3));

@@ -147,7 +147,9 @@ async fn collect_bus_render(sub: navai::bus::SubscribeReply) -> (Vec<Ui>, i32) {
 fn phase1_exit(outcome: &RunOutcome) -> i32 {
     match outcome {
         RunOutcome::Done(_) => 0,
-        RunOutcome::Yielded(_) | RunOutcome::StepBudgetExhausted => 2,
+        RunOutcome::Yielded(_)
+        | RunOutcome::PermissionRequired(_)
+        | RunOutcome::StepBudgetExhausted => 2,
         RunOutcome::Interrupted => 130,
     }
 }

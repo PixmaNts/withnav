@@ -547,6 +547,27 @@ async fn runtime_loop(
                 );
                 emit_agent_state(&mut turn, "yielded");
             }
+            Ok(RunOutcome::PermissionRequired(request)) => {
+                turn.publish(
+                    EventKind::AgentYield,
+                    to_value(&AgentYield {
+                        actor_id: ROOT_ACTOR_ID.to_string(),
+                        turn_id,
+                        question: request.reason.clone(),
+                        kind: Some("permission".to_string()),
+                        details: serde_json::to_value(&request).ok(),
+                    }),
+                );
+                emit_turn_end(
+                    &mut turn,
+                    turn_id,
+                    TurnEndOutcome::Yielded,
+                    None,
+                    duration_ms,
+                    None,
+                );
+                emit_agent_state(&mut turn, "yielded");
+            }
             Ok(RunOutcome::Interrupted) => {
                 emit_turn_end(
                     &mut turn,

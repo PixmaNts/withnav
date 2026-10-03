@@ -1,11 +1,12 @@
 use crate::agent::actor::{AgentActor, AgentState, PendingInteraction};
 use crate::agent::context::Breakdown;
+use crate::agent::permissions::{needs_permission, PermissionRequest};
 use crate::agent::prompt::{assistant_history_message, build_request};
 use crate::agent::response::{classify, HumanRequest, StepOutcome};
 use crate::error::{AgentError, ProviderError};
 use crate::provider::client::ModelClient;
 use crate::provider::openai::{ChatMessage, ClientCache};
-use crate::provider::{AssistantMessage, StreamDelta};
+use crate::provider::{AssistantMessage, StreamDelta, ToolCall};
 use crate::tools::{ToolResult, ToolStatus};
 
 pub const DEFAULT_MAX_STEPS: usize = 50;
@@ -21,6 +22,10 @@ pub fn max_steps() -> usize {
 pub enum RunOutcome {
     Done(AssistantMessage),
     Yielded(HumanRequest),
+    /// A gated tool call has not run: it waits for a decision, given to
+    /// [`resolve_permission`]. The actor holds the same request in its
+    /// pending interaction.
+    PermissionRequired(PermissionRequest),
     Interrupted,
     StepBudgetExhausted,
 }
@@ -129,41 +134,105 @@ pub async fn run_agent(
                 return Ok(RunOutcome::Yielded(request));
             }
             StepOutcome::Continue { tool_calls } => {
-                for call in tool_calls {
-                    if actor.cancel.is_cancelled() {
-                        append_interrupted(actor, &call.id);
-                        actor.state = AgentState::Idle;
-                        return Ok(RunOutcome::Interrupted);
+                match run_calls(actor, tool_calls, observe).await {
+                    Calls::Finished => {}
+                    Calls::Interrupted => return Ok(RunOutcome::Interrupted),
+                    Calls::Permission(request) => {
+                        return Ok(RunOutcome::PermissionRequired(request))
                     }
-                    observe(AgentEvent::PreCall {
-                        tool_call_id: &call.id,
-                        name: &call.name,
-                        args: &call.args,
-                    });
-                    let result = actor
-                        .registry
-                        .dispatch(
-                            &call.name,
-                            call.args.clone(),
-                            actor.cancel.child_token(),
-                            &actor.tool_context,
-                        )
-                        .await
-                        .unwrap_or_else(|e| ToolResult::error("tool_error", e.to_string()));
-                    observe(AgentEvent::PostCall {
-                        tool_call_id: &call.id,
-                        name: &call.name,
-                        result: &result,
-                    });
-                    append_tool_result(actor, &call.id, &result);
                 }
-                observe(AgentEvent::ContextEstimated(actor.context_breakdown()));
             }
         }
     }
 
     actor.state = AgentState::Yielded;
     Ok(RunOutcome::StepBudgetExhausted)
+}
+
+/// How a pass over a message's tool calls ended.
+enum Calls {
+    Finished,
+    Interrupted,
+    /// The call at hand needs a decision; the actor holds it, and the calls
+    /// behind it, as its pending interaction.
+    Permission(PermissionRequest),
+}
+
+/// Runs `calls` in order. A call that needs approval and has none stops the
+/// pass BEFORE it executes: it and the calls behind it are kept in the
+/// actor's pending interaction.
+async fn run_calls(
+    actor: &mut AgentActor,
+    calls: Vec<ToolCall>,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+) -> Calls {
+    let mut calls = std::collections::VecDeque::from(calls);
+    while let Some(call) = calls.pop_front() {
+        if actor.cancel.is_cancelled() {
+            append_interrupted(actor, &call.id);
+            for rest in &calls {
+                append_interrupted(actor, &rest.id);
+            }
+            actor.state = AgentState::Idle;
+            return Calls::Interrupted;
+        }
+        if let Some(request) = gate(actor, &call) {
+            actor.pending = Some(PendingInteraction::Permission {
+                request: request.clone(),
+                call,
+                remaining_calls: calls.into(),
+            });
+            actor.state = AgentState::Yielded;
+            return Calls::Permission(request);
+        }
+        let result = execute_call(actor, &call, observe).await;
+        append_tool_result(actor, &call.id, &result);
+    }
+    observe(AgentEvent::ContextEstimated(actor.context_breakdown()));
+    Calls::Finished
+}
+
+/// The request `call` needs a decision for, or `None` when it may run: a bare
+/// runtime has no role and gates nothing, and a grant may already cover it.
+fn gate(actor: &AgentActor, call: &ToolCall) -> Option<PermissionRequest> {
+    let role = actor.role.as_deref()?;
+    let scope = needs_permission(Some(role), &call.name, &call.args, &actor.tool_context)?;
+    let agent = role.id.as_str();
+    if actor
+        .grants
+        .covers(agent, &call.name, &scope, &actor.tool_context)
+    {
+        return None;
+    }
+    Some(PermissionRequest::new(call, scope, agent))
+}
+
+async fn execute_call(
+    actor: &AgentActor,
+    call: &ToolCall,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+) -> ToolResult {
+    observe(AgentEvent::PreCall {
+        tool_call_id: &call.id,
+        name: &call.name,
+        args: &call.args,
+    });
+    let result = actor
+        .registry
+        .dispatch(
+            &call.name,
+            call.args.clone(),
+            actor.cancel.child_token(),
+            &actor.tool_context,
+        )
+        .await
+        .unwrap_or_else(|e| ToolResult::error("tool_error", e.to_string()));
+    observe(AgentEvent::PostCall {
+        tool_call_id: &call.id,
+        name: &call.name,
+        result: &result,
+    });
+    result
 }
 
 fn append_tool_result(actor: &mut AgentActor, tool_call_id: &str, result: &ToolResult) {
@@ -189,7 +258,7 @@ mod tests {
     use crate::provider::test_support::{http_sse, sse_body};
     use crate::tools::bash::BashTool;
     use crate::tools::control::AskTool;
-    use crate::tools::native::ReadTool;
+    use crate::tools::native::{GrepTool, ReadTool, WriteTool};
     use crate::tools::{Registry, ToolContext};
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -456,5 +525,199 @@ mod tests {
         let mut noop = |_e: AgentEvent| {};
         let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
         assert!(matches!(outcome, RunOutcome::StepBudgetExhausted));
+    }
+
+    /// One assistant message holding the given `(id, tool, arguments)` calls.
+    fn calls_chunk(calls: &[(&str, &str, serde_json::Value)]) -> String {
+        let calls: Vec<serde_json::Value> = calls
+            .iter()
+            .enumerate()
+            .map(|(index, (id, name, args))| {
+                serde_json::json!({
+                    "index": index,
+                    "id": id,
+                    "function": {"name": name, "arguments": args.to_string()},
+                })
+            })
+            .collect();
+        serde_json::json!({"choices": [{
+            "index": 0,
+            "delta": {"tool_calls": calls},
+            "finish_reason": "tool_calls",
+        }]})
+        .to_string()
+    }
+
+    fn text_chunk(text: &str) -> String {
+        serde_json::json!({"choices": [{
+            "index": 0,
+            "delta": {"content": text},
+            "finish_reason": "stop",
+        }]})
+        .to_string()
+    }
+
+    fn registry_gated() -> Registry {
+        let mut r = registry_all();
+        r.register(Box::new(WriteTool));
+        r.register(Box::new(GrepTool));
+        r
+    }
+
+    fn as_build(actor: &mut AgentActor) {
+        actor.role = Some(
+            crate::agent::definitions::Agents::builtin()
+                .get("build")
+                .unwrap()
+                .clone(),
+        );
+    }
+
+    fn tool_result_of(actor: &AgentActor, id: &str) -> Option<String> {
+        actor.transcript.iter().find_map(|m| match m {
+            ChatMessage::Tool {
+                tool_call_id,
+                content,
+            } if tool_call_id == id => Some(content.clone()),
+            _ => None,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_write_is_not_executed_and_the_turn_yields_with_a_pending_permission() {
+        let mut actor = make_actor(
+            "http://127.0.0.1:1/v1".into(),
+            registry_gated(),
+            CancellationToken::new(),
+        );
+        as_build(&mut actor);
+        let target = actor.tool_context.workspace.join("a.txt");
+        let server = spawn_mock(vec![http_sse(&sse_body(&[&calls_chunk(&[(
+            "w1",
+            "write",
+            serde_json::json!({"path": target, "content": "hello"}),
+        )])]))])
+        .await;
+        actor.provider.base_url = server.url.clone();
+        actor.push_user("write it");
+        let mut events = Vec::new();
+        let mut observe = |e: AgentEvent| {
+            if let AgentEvent::PreCall { name, .. } = e {
+                events.push(name.to_string());
+            }
+        };
+        let outcome = run_agent(&mut actor, &mut observe).await.unwrap();
+        let RunOutcome::PermissionRequired(request) = outcome else {
+            panic!("expected a permission request");
+        };
+        assert_eq!(request.tool, "write");
+        assert_eq!(request.tool_call_id, "w1");
+        assert_eq!(request.agent, "build");
+        assert!(!target.exists(), "the write must not have run");
+        assert!(events.is_empty(), "no pre-call for a gated call");
+        assert_eq!(actor.state, AgentState::Yielded);
+        assert!(actor.has_pending());
+        assert_eq!(actor.pending_permission(), Some(&request));
+        assert_eq!(tool_result_of(&actor, "w1"), None);
+    }
+
+    #[tokio::test]
+    async fn reads_still_run_and_the_siblings_of_a_gated_call_wait_behind_it() {
+        let mut actor = make_actor(
+            "http://127.0.0.1:1/v1".into(),
+            registry_gated(),
+            CancellationToken::new(),
+        );
+        as_build(&mut actor);
+        let ws = actor.tool_context.workspace.clone();
+        std::fs::write(ws.join("r.txt"), "needle").unwrap();
+        let target = ws.join("b.txt");
+        let server = spawn_mock(vec![http_sse(&sse_body(&[&calls_chunk(&[
+            ("g1", "grep", serde_json::json!({"pattern": "needle"})),
+            (
+                "w1",
+                "write",
+                serde_json::json!({"path": target, "content": "x"}),
+            ),
+            ("r1", "read", serde_json::json!({"path": ws.join("r.txt")})),
+        ])]))])
+        .await;
+        actor.provider.base_url = server.url.clone();
+        actor.push_user("go");
+        let mut noop = |_e: AgentEvent| {};
+        let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
+        assert!(matches!(outcome, RunOutcome::PermissionRequired(_)));
+        assert!(tool_result_of(&actor, "g1").unwrap().contains("needle"));
+        assert_eq!(tool_result_of(&actor, "w1"), None);
+        assert_eq!(tool_result_of(&actor, "r1"), None);
+        let Some(PendingInteraction::Permission {
+            call,
+            remaining_calls,
+            ..
+        }) = &actor.pending
+        else {
+            panic!("expected a pending permission");
+        };
+        assert_eq!(call.id, "w1");
+        assert_eq!(remaining_calls.len(), 1);
+        assert_eq!(remaining_calls[0].id, "r1");
+    }
+
+    #[tokio::test]
+    async fn a_bare_runtime_without_a_role_gates_nothing() {
+        let mut actor = make_actor(
+            "http://127.0.0.1:1/v1".into(),
+            registry_gated(),
+            CancellationToken::new(),
+        );
+        let target = actor.tool_context.workspace.join("c.txt");
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[&calls_chunk(&[(
+                "w1",
+                "write",
+                serde_json::json!({"path": target, "content": "x"}),
+            )])])),
+            http_sse(&sse_body(&[&text_chunk("done")])),
+        ])
+        .await;
+        actor.provider.base_url = server.url.clone();
+        actor.push_user("go");
+        let mut noop = |_e: AgentEvent| {};
+        let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
+        assert!(matches!(outcome, RunOutcome::Done(_)));
+        assert!(target.exists());
+    }
+
+    #[tokio::test]
+    async fn a_granted_folder_lets_a_second_write_through_without_yielding() {
+        let mut actor = make_actor(
+            "http://127.0.0.1:1/v1".into(),
+            registry_gated(),
+            CancellationToken::new(),
+        );
+        as_build(&mut actor);
+        let ws = actor.tool_context.workspace.canonicalize().unwrap();
+        actor.grants.grant(
+            "build",
+            "write",
+            crate::agent::permissions::Scope::Folder(ws.clone()),
+        );
+        let target = ws.join("sub").join("d.txt");
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[&calls_chunk(&[(
+                "w1",
+                "write",
+                serde_json::json!({"path": target, "content": "x"}),
+            )])])),
+            http_sse(&sse_body(&[&text_chunk("done")])),
+        ])
+        .await;
+        actor.provider.base_url = server.url.clone();
+        actor.push_user("go");
+        let mut noop = |_e: AgentEvent| {};
+        let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
+        assert!(matches!(outcome, RunOutcome::Done(_)));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
+        assert!(!actor.has_pending());
     }
 }

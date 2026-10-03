@@ -122,11 +122,16 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     let first = first_shown(state, rows_bottom.saturating_sub(y));
     for (index, tab) in state.tabs.iter().enumerate().skip(first) {
         let children = tab.children.len() as u16 * 3;
-        if y + 2 + children > rows_bottom {
+        if y + 2 > rows_bottom {
             break;
         }
         let active = index == state.active;
-        let rows = Rect::new(inner.x, y, inner.width, 2 + children);
+        let rows = Rect::new(
+            inner.x,
+            y,
+            inner.width,
+            (2 + children).min(rows_bottom.saturating_sub(y)),
+        );
         if active {
             frame
                 .buffer_mut()
@@ -170,6 +175,9 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
             Rect::new(inner.x, y + 1, inner.width, 1),
         );
         for (n, child) in tab.children.iter().enumerate() {
+            if y + 2 + n as u16 * 3 >= rows_bottom {
+                break;
+            }
             frame.render_widget(
                 Paragraph::new(Span::styled(
                     fit(&format!("   └ {}", child.name), usize::from(inner.width)),
@@ -181,9 +189,18 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
                 .iter()
                 .enumerate()
             {
+                if y + 3 + n as u16 * 3 + offset as u16 >= rows_bottom {
+                    break;
+                }
                 frame.render_widget(
                     Paragraph::new(Span::styled(
-                        fit(&format!("     {text}"), usize::from(inner.width)),
+                        fit(
+                            &format!(
+                                "     {}",
+                                text.split_whitespace().collect::<Vec<_>>().join(" ")
+                            ),
+                            usize::from(inner.width),
+                        ),
                         theme.muted(),
                     )),
                     Rect::new(

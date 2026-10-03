@@ -75,6 +75,11 @@ fn show(s: &mut State, ui: &mut UiState, index: usize) -> Vec<Effect> {
     // A deny message belongs to the request on screen.
     ui.deny_message = None;
     s.active = index;
+    ui.focus = if s.read_only() {
+        crate::tui::state::Focus::Transcript
+    } else {
+        crate::tui::state::Focus::Editor
+    };
     s.unread = false;
     let view = s.view.clone();
     ui.scroll = view.scroll;
@@ -183,6 +188,11 @@ fn close_tab(s: &mut State, ui: &mut UiState) -> Vec<Effect> {
             .and_then(|id| s.tab_of_session(id))
             .unwrap_or_else(|| s.active.min(s.tabs.len() - 1));
         s.active = next;
+        ui.focus = if s.read_only() {
+            crate::tui::state::Focus::Transcript
+        } else {
+            crate::tui::state::Focus::Editor
+        };
         s.unread = false;
         let view = s.view.clone();
         ui.scroll = view.scroll;
@@ -265,11 +275,24 @@ fn open_child(s: &mut State, ui: &mut UiState, id: String) -> Vec<Effect> {
     let Some((parent, agent)) = link else {
         return vec![];
     };
+    let status = s
+        .tabs
+        .iter()
+        .flat_map(|t| &t.children)
+        .find(|c| c.session_id == id)
+        .map(|c| c.status)
+        .or_else(|| {
+            s.sessions.iter().find(|e| e.id == id).map(|e| {
+                crate::tui::state::ChildStatus::from_wire(e.child_status.as_deref().unwrap_or(""))
+            })
+        })
+        .unwrap_or_default();
     let Some(mut effects) = blank_tab(s, ui) else {
         return vec![];
     };
     start_conversation(s);
     s.parent_session_id = Some(parent);
+    s.child_status = status;
     s.agent = Some(agent);
     s.resuming = Some(id.clone());
     s.selected_model_alias = None;

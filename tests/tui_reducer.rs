@@ -18,17 +18,22 @@ use ulid::Ulid;
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
 fn subagent_parent() -> State {
-    let mut state = State::default();
-    state.session = Some(SessionMetadata {
-        session_id: Ulid(1).to_string(),
-        actor_state: "idle".into(),
-        workspace: "/ws".into(),
-        model: "fast".into(),
-        agent: Some("build".into()),
-        variant: None,
-        current_seq: 0,
-    });
-    state
+    let tab = Tab {
+        session: Some(SessionMetadata {
+            session_id: Ulid(1).to_string(),
+            actor_state: "idle".into(),
+            workspace: "/ws".into(),
+            model: "fast".into(),
+            agent: Some("build".into()),
+            variant: None,
+            current_seq: 0,
+        }),
+        ..Default::default()
+    };
+    State {
+        tabs: vec![tab],
+        ..Default::default()
+    }
 }
 
 fn subagent_event(s: &mut State, seq: u64, kind: &str, payload: Value) -> Vec<Effect> {

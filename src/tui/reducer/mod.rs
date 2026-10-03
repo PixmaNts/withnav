@@ -565,6 +565,12 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 }
                 s.session = Some(m);
                 seed_children(s);
+                effects.extend(
+                    s.children
+                        .iter()
+                        .filter(|c| !c.status.terminal())
+                        .map(|c| Effect::WatchChild(c.session_id.clone())),
+                );
             } else if s.read_only() {
                 if let Err(error) = result {
                     push_local(s, BlockKind::Error(error));

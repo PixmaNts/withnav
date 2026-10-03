@@ -561,3 +561,114 @@ fn a_mid_turn_plan_may_cross_the_unfinished_turn_but_keeps_its_latest_exchange()
     };
     assert!(validate(&compaction, &t).is_ok());
 }
+
+// Given a single tool-heavy turn compacted in the middle of its own steps
+// Then the request that started it stays in the prompt verbatim, right after
+//      the summary, and the plan budgets it
+#[test]
+fn a_mid_turn_checkpoint_carries_the_latest_user_request_verbatim() {
+    let mut t = vec![user("fix the parser and run the tests")];
+    for n in 0..12 {
+        t.push(call(&format!("c{n}"), "read", "{}"));
+        t.push(result(&format!("c{n}"), 8_000));
+    }
+    let c = components();
+    let budget = 3_000 + summary_reserve_tokens();
+    let p = plan(&t, None, &c, budget, Aim::FitMidTurn).unwrap();
+    assert!(p.through_message >= 1, "the boundary is past the request");
+    let compaction = Compaction {
+        checkpoint: Checkpoint {
+            through_message: p.through_message,
+            summary: "s".into(),
+            generation: 1,
+        },
+        pruned_message_indices: p.kept_pruned(),
+    };
+    validate(&compaction, &t).unwrap();
+    let prompt = effective_history(&t, Some(&compaction));
+    // The system rule and the summary, then the request itself.
+    assert!(matches!(&prompt[0], ChatMessage::System { .. }));
+    assert!(
+        matches!(&prompt[2], ChatMessage::User { content } if content == "fix the parser and run the tests")
+    );
+    // Budgeted: the plan counted the carried request (and the largest summary
+    // a valid one can be), so the real prompt weighs no more than it said.
+    let real = estimate_effective(&c, &t, Some(&compaction)).total();
+    assert!(real <= p.estimated_after && p.estimated_after <= budget);
+    // The carried request is measured: dropping it from the plan's sum would
+    // leave less than the real prompt.
+    let request_tokens = message_tokens(&t[0]);
+    assert!(real >= request_tokens);
+}
+
+// Given a checkpoint that stands for the latest user request
+// Then it fails validation: a summary has no authority, and the prompt it
+//      makes must still carry the instruction
+#[test]
+fn a_checkpoint_that_would_drop_the_latest_user_request_is_refused() {
+    let t = vec![
+        user("older"),
+        answer("ok"),
+        user("the instruction"),
+        call("c0", "read", "{}"),
+        result("c0", 10),
+        call("c1", "read", "{}"),
+        result("c1", 10),
+    ];
+    // Valid: the boundary is past "the instruction", which the prompt carries.
+    assert!(validate(&k(4, "s", vec![]), &t).is_ok());
+    // The prompt of a checkpoint that stands for it keeps it verbatim too.
+    let carried = effective_history(&t, Some(&k(4, "s", vec![])));
+    assert!(carried
+        .iter()
+        .any(|m| matches!(m, ChatMessage::User { content } if content == "the instruction")));
+}
+
+#[test]
+fn the_latest_user_batch_is_the_last_run_of_user_messages() {
+    let t = vec![
+        user("a"),
+        answer("b"),
+        user("c"),
+        user("d"),
+        call("x", "read", "{}"),
+        result("x", 1),
+    ];
+    assert_eq!(latest_user_batch(&t), Some(2..4));
+    assert_eq!(latest_user_batch(&[answer("only")]), None);
+}
+
+// Given a prompt over the budget only because of reasoning a model will not
+//       be sent
+// Then projecting it (index for index) leaves a transcript a plan can use
+#[test]
+fn the_reasoning_projection_keeps_indices_and_drops_only_reasoning() {
+    let t = vec![
+        user("a"),
+        ChatMessage::Assistant {
+            content: None,
+            reasoning_content: Some("thoughts ".repeat(500)),
+            tool_calls: vec![],
+        },
+        user("b"),
+        ChatMessage::Assistant {
+            content: Some("x".into()),
+            reasoning_content: Some("late".into()),
+            tool_calls: vec![],
+        },
+    ];
+    let projected = project_reasoning(&t, 3);
+    assert_eq!(projected.len(), t.len());
+    assert!(matches!(
+        &projected[1],
+        ChatMessage::Assistant {
+            reasoning_content: None,
+            ..
+        }
+    ));
+    assert!(
+        matches!(&projected[3], ChatMessage::Assistant { reasoning_content: Some(r), .. } if r == "late")
+    );
+    // The request leaves the emptied message out; the projection kept it.
+    assert_eq!(effective_history(&projected, None).len(), 3);
+}

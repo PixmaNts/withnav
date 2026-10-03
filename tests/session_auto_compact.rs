@@ -181,6 +181,15 @@ async fn a_tool_heavy_turn_that_crosses_the_budget_is_compacted_and_goes_on() {
     let next = body(&provider, 3);
     let text = all_text(&next);
     assert!(text.contains("Goal: finish the parser."), "the summary");
+    // The request that started the turn is never only in the summary: it is
+    // sent verbatim, as a user message, right after it.
+    let messages = next["messages"].as_array().unwrap();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m["role"] == "user" && m["content"] == "look at big.txt a few times"),
+        "the original request is sent verbatim: {text:.400}"
+    );
     // The latest exchange (the second read) stays verbatim; the first read's
     // output went into the summarized part.
     let tool_outputs: Vec<&Value> = next["messages"]

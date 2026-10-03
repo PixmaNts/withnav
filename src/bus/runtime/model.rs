@@ -295,23 +295,13 @@ async fn compact_for_target(
     use super::compact::{install, summarize, Failure, Goal};
     use crate::agent::compaction::{Aim, CompactionError};
     use crate::bus::event::CompactionReason;
-    use crate::provider::openai::ChatMessage;
 
     let source_budget = status
         .context_snapshot()
         .map(|snapshot| snapshot.input_budget)
         .ok_or_else(|| "this session has no context budget".to_string())?;
-    // The transcript as the destination reads it: the reasoning of the models
-    // before the floor left out, every index where it was.
-    let mut seen_by_target = actor.transcript.clone();
-    for message in seen_by_target.iter_mut().take(floor) {
-        if let ChatMessage::Assistant {
-            reasoning_content, ..
-        } = message
-        {
-            *reasoning_content = None;
-        }
-    }
+    // The transcript as the destination reads it.
+    let seen_by_target = actor.planning_transcript(floor);
     let goal = Goal {
         focus: None,
         aim: Aim::Fit,

@@ -346,7 +346,7 @@ pub(super) async fn run(
     if actor.role.is_some() {
         actor.role = Some(status.selection.current());
     }
-    let transcript = actor.transcript.clone();
+    let transcript = actor.planning_transcript(actor.reasoning_floor);
     let summarized = summarize(
         actor,
         status,
@@ -442,7 +442,8 @@ pub(super) async fn run_automatic(
     // The turn's error is cut short on the wire: the advice goes first.
     let capacity = |why: String| Some(format!("{CAPACITY_HINT} ({why})"));
     let _preparing = status.selection.begin_compaction().await;
-    let transcript = actor.transcript.clone();
+    // The prompt as it is really sent: the reasoning of earlier models left out.
+    let transcript = actor.planning_transcript(actor.reasoning_floor);
     // Cheapest first: keep the recent turns verbatim and aim below 70% of the
     // budget, then take the whole budget; only then give up the recent turns
     // and keep just the latest exchange, again below 70%, then the whole

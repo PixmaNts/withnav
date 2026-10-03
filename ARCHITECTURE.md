@@ -69,7 +69,8 @@ one per tab; each tab streams its own session in the background.
 |---|---|
 | `mod.rs` | `TuiOptions`, `TuiError`, `run` |
 | `protocol.rs` | the wire bodies the client sends and receives, and the three message types of the loop: `Action` (what the user asked), `Effect` (I/O the reducer wants), `ClientEvent` (what came back, tagged with a `Generation`) |
-| `state.rs` | `State`: the open `Tab`s (each with its conversation projection, session, model, variant, agent, activity, generation, draft, transcript position and unread mark) and what they share (catalog, session list, server commands, workspace); it derefs to the active tab. `UiState` (overlay, scroll, selection, what the variant list is for, sidebar shown); data only |
+| `state.rs` | `State`: the open `Tab`s (each with its conversation projection, session, model, variant, agent, activity, generation, draft, transcript position and unread mark) and what they share (catalog, session list, server commands, workspace); it derefs to the active tab. `UiState` (overlay, scroll, selection, what the variant list is for, sidebar and right column shown); data only |
+| `git.rs` | the workspace's branch and changed files: `read` runs `git status` (with a timeout, never on the reducer), `parse` reads its output; `None` outside a repository |
 | `client.rs` | the HTTP client: models, sessions, create/resume, send, stop, the command list and a command run, a permission answer (409 `permission_stale` read as stale), open the event stream; send failures split into rejected and uncertain |
 | `stream.rs` | one SSE subscription: decoding, reconnect with backoff, resume after the last seq, cancellation |
 | `reducer/mod.rs` | `update`: `ClientEvent` to `State` changes and new `Effect`s; routes each event to the tab holding its generation, marks a background tab unread, drops events no tab holds |
@@ -84,14 +85,16 @@ one per tab; each tab streams its own session in the background.
 | `runtime/tests.rs` | executor and loop tests with no terminal and a dead server |
 | `terminal.rs` | raw mode and the alternate screen, restored on exit and on panic |
 | `theme.rs` | the four themes (`ThemeId`, the `Theme` colour roles), the RGB `blend` for tints, and the semantic styles the views draw with |
-| `view/mod.rs` | `draw`: layout of sidebar, transcript, editor, status line and overlays |
+| `view/mod.rs` | `draw`: layout of header, sidebar, transcript, right column, status line, editor, key bar and overlays; the key bar lists the keys that apply now, the prompt's while one waits |
+| `view/header.rs` | the header row: `◆ navai`, workspace, git branch and change count, `▌agent` in its colour, alias · model · variant · context gauge; the path and the model give way first |
+| `view/panel.rs` | the right column (36 columns, hidden under 140 unless `alt+r` asks): Agents (the one in use with its role, `explore` and `review`), Context (the last snapshot's breakdown and the last compaction), Skills (listed and omitted), Changes (git); a section with no data shows `—`, none is invented |
 | `view/sidebar.rs` | the tab sidebar: number, title, `<agent> · <state>`, unread mark, active tint, tab keys; hidden under 80 columns |
 | `view/transcript.rs` | block layout and drawing: messages by origin, steps, tools, errors, permission prompts, scroll and selection |
 | `view/permission.rs` | the inline permission prompt: tool and scope, a short preview of the call (a write's first lines, an edit's change, a command, a URL), the answer keys or the outcome |
 | `view/tool.rs` | the one-line summary and the expanded output of a tool call |
 | `view/markdown.rs` | markdown to styled lines, cached per block revision |
-| `view/status.rs` | the status line of the active tab: `▌agent`, alias, model, variant, context (the server's estimate, else the last prompt count), session tokens, connection and activity; the model name gives way first |
-| `view/pickers.rs` | the model (alias, model, window, variants), variant, session, command, theme and help overlays; a long list scrolls to its selected row |
+| `view/status.rs` | the status line of the active tab: activity, connection, delivery warning, notice, session tokens; `context_gauge` and `shorten`, shared with the header |
+| `view/pickers.rs` | the model (alias, model, window, variants), variant, session, command, theme and help overlays: centred, accent border, the screen behind dimmed, a `❯` filter line and the keys at the foot; a long list scrolls to its selected row |
 
 ## Data flows
 

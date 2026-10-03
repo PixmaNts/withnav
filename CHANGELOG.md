@@ -8,6 +8,16 @@ requests land in `develop`.
 
 ### Added
 
+- **A new layout for the terminal client**: the top row shows the workspace, its git branch with
+  the number of changed files, the agent in use (`build` in the accent colour, `plan` in blue) and
+  the model, its variant and how full the context is. The branch and the changes are read when a
+  conversation starts and after each turn. On a terminal 140 columns or wider a column on the right
+  shows the agent's role and the subagents it can start, what the next request is made of (system,
+  rules, skills, tools, messages, the input budget and the last compaction), how many skills are
+  listed or left out, and the changed files. `alt+r` hides or shows it. A part with nothing to show
+  yet shows `—`. The bottom row lists the keys that apply now, with the permission keys while a
+  prompt waits. Popups dim the screen behind them and show their keys at the bottom.
+
 - **Permission prompts in the terminal client**: when the agent asks before running `write`,
   `edit`, `bash` or `fetch`, the conversation shows what it would do (the file and its first lines,
   the change, the command or the URL) and where (in a folder, or to a site). Press `y` to allow it

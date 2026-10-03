@@ -2570,3 +2570,51 @@ fn every_popup_is_centred_with_an_accent_border_over_a_dimmed_screen() {
         assert_ne!(buffer[(30, 0)].fg, theme.text, "{overlay:?} backdrop");
     }
 }
+
+// ---------------------------------------------------------------- full layout
+
+#[test]
+fn the_layout_at_100_140_and_200_columns_in_dark_and_light() {
+    let s = with_panel_data();
+    for (theme, name) in [(ThemeId::AyuDark, "dark"), (ThemeId::AyuLight, "light")] {
+        let ui = UiState {
+            follow_bottom: true,
+            theme,
+            ..UiState::default()
+        };
+        for width in [100u16, 140, 200] {
+            // The text is the same in both themes: one snapshot per width, the colours below.
+            let shown = if name == "dark" {
+                render(
+                    &format!("layout-{width}"),
+                    (width, 40),
+                    &s,
+                    &ui,
+                    &Editor::new(),
+                )
+            } else {
+                screen_text(&s, &ui, (width, 40))
+            };
+            assert!(shown.contains("feat/tui-design ●14"), "{width}: {shown}");
+            assert_eq!(shown.contains("AGENTS"), width >= 140, "{width}: {shown}");
+            // the theme paints the header panel and the transcript background
+            let t = cells(&s, &ui, (width, 40));
+            let palette = theme.palette();
+            assert_eq!(t.backend().buffer()[(width - 1, 0)].bg, palette.panel);
+            assert_eq!(t.backend().buffer()[(30, 10)].bg, palette.bg);
+            let header = row_text(&t, 0, width);
+            let x = header[..header.find('◆').unwrap()].chars().count() as u16;
+            assert_eq!(
+                t.backend().buffer()[(x, 0)].fg,
+                palette.accent_text,
+                "{name}"
+            );
+            if width >= 140 {
+                let row = (0..40)
+                    .find(|y| row_text(&t, *y, width).contains("AGENTS"))
+                    .unwrap();
+                assert_eq!(t.backend().buffer()[(width - 2, row)].bg, palette.panel);
+            }
+        }
+    }
+}

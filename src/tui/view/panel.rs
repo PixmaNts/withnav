@@ -2,13 +2,10 @@
 //! Agents (the session's agent and the subagents it can start), Context (the breakdown of the
 //! last snapshot and the last compaction), Skills (the catalog counts) and Changes (the files git
 //! reports). A section with nothing reported yet shows `—`; none is made up.
-use crate::{
-    agent::definitions::Agents,
-    tui::{
-        reducer::tokens,
-        state::{Activity, State, UiState},
-        theme::Theme,
-    },
+use crate::tui::{
+    reducer::tokens,
+    state::{Activity, State, UiState},
+    theme::Theme,
 };
 use ratatui::{
     layout::Rect,
@@ -22,8 +19,26 @@ use ratatui::{
 pub const WIDTH: u16 = 36;
 /// Below this terminal width the column hides itself, unless the driver asked for it.
 pub const MIN_TERMINAL_WIDTH: u16 = 140;
+/// The server's built-in agents and their roles. The TUI is a client and reads no agent code; a
+/// test keeps these equal to the server's definitions.
+pub const BUILTIN_AGENTS: [(&str, &str); 4] = [
+    ("build", "Implements the task, verifies it and reports"),
+    (
+        "plan",
+        "Researches, writes markdown plans and delegates; never changes code",
+    ),
+    ("explore", "Read-only codebase exploration"),
+    ("review", "Read-only code review"),
+];
 /// The subagents every session can start.
 const SUBAGENTS: [&str; 2] = ["explore", "review"];
+
+fn role(agent: &str) -> Option<&'static str> {
+    BUILTIN_AGENTS
+        .iter()
+        .find(|(id, _)| *id == agent)
+        .map(|(_, role)| *role)
+}
 
 /// Whether the column is drawn on a terminal `width` columns wide.
 pub fn shown(ui: &UiState, width: u16) -> bool {
@@ -72,7 +87,6 @@ fn fit(text: &str, width: usize) -> String {
 }
 
 fn agents(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let builtin = Agents::builtin();
     let agent = state.agent_name();
     let style = super::sidebar::agent_style(agent, theme);
     let mut lines = vec![
@@ -84,8 +98,8 @@ fn agents(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         ]),
     ];
     // The role of a built-in agent; one from a file has its own, which the server has not sent.
-    if let Some(definition) = builtin.get(agent) {
-        for part in wrap(&definition.description, width.saturating_sub(3)) {
+    if let Some(description) = role(agent) {
+        for part in wrap(description, width.saturating_sub(3)) {
             lines.push(Line::styled(format!("   {part}"), theme.muted()));
         }
     }
@@ -98,13 +112,13 @@ fn agents(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         ]));
     }
     for name in SUBAGENTS {
-        if let Some(definition) = builtin.get(name) {
+        if let Some(description) = role(name) {
             lines.push(Line::from(vec![
                 Span::styled(" ○ ", theme.muted()),
                 Span::styled(name.to_string(), theme.subagent()),
                 Span::styled(
                     fit(
-                        &format!("  {}", definition.description.to_lowercase()),
+                        &format!("  {}", description.to_lowercase()),
                         width.saturating_sub(3 + name.len()),
                     ),
                     theme.muted(),

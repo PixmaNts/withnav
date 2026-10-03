@@ -17,6 +17,43 @@ use crate::error::ServerError;
 const TEARDOWN_AWAIT_CAP: Duration = Duration::from_secs(10);
 
 impl Service {
+    /// Ownership inspection and lifecycle claim share admission; waits always retry.
+    async fn claim_lifecycle_stop(&self, id: SessionId) -> Option<SessionHandle> {
+        #[cfg(debug_assertions)]
+        {
+            let barrier = self
+                .lifecycle_claim_barrier
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(barrier) = barrier {
+                barrier.reached.notify_one();
+                barrier.release.notified().await;
+            }
+        }
+        loop {
+            let pending = {
+                let _admission = self.admission_gate.lock().await;
+                let pending = self
+                    .child_operations
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&id)
+                    .cloned();
+                if pending.is_none() {
+                    let target = self.mark_stopping(id);
+                    if let Some(handle) = &target {
+                        handle.session_cancel.cancel();
+                    }
+                    return target;
+                }
+                pending
+            };
+            if let Some(pending) = pending {
+                pending.cancelled().await;
+            }
+        }
+    }
     /// Ordered teardown of ONE session (`/stop`): `Stopping` FIRST (so
     /// concurrent requests see it), cancel the session token, wait for the
     /// runtime to unwind, fence the sequencer (`session.end` is the LAST
@@ -44,8 +81,8 @@ impl Service {
     /// [`Service::close_session`] for a caller that already holds the
     /// lifecycle gate.
     pub(super) async fn close_session_gated(&self, id: SessionId) -> Result<(), ServerError> {
-        self.wait_child_operation(id).await;
-        let target = {
+        let target = self.claim_lifecycle_stop(id).await;
+        {
             let _admission = self.admission_gate.lock().await;
             let children = self
                 .lock_sessions()
@@ -54,16 +91,19 @@ impl Service {
                 .map(|(id, _)| *id)
                 .collect::<Vec<_>>();
             for child in children {
+                if self
+                    .child_operations
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains_key(&child)
+                {
+                    continue;
+                }
                 if let Some(handle) = self.mark_stopping(child) {
                     handle.session_cancel.cancel();
                 }
             }
-            let target = self.mark_stopping(id);
-            if let Some(handle) = &target {
-                handle.session_cancel.cancel();
-            }
-            target
-        };
+        }
         if let Some(handle) = target {
             self.fence_and_remove(id, handle, "stop requested").await;
             self.close_children(id).await?;
@@ -89,9 +129,7 @@ impl Service {
             .await
             .map_err(ServerError::History)?
         {
-            self.wait_child_operation(child).await;
-            if let Some(handle) = self.handle(child) {
-                handle.session_cancel.cancel();
+            if let Some(handle) = self.claim_lifecycle_stop(child).await {
                 self.fence_and_remove(child, handle, "parent stopped").await;
             }
             self.finish_child(
@@ -116,6 +154,13 @@ impl Service {
             guard
                 .iter_mut()
                 .filter(|(_, handle)| handle.lifecycle == Lifecycle::Active)
+                .filter(|(id, _)| {
+                    !self
+                        .child_operations
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .contains_key(id)
+                })
                 .map(|(id, handle)| {
                     handle.lifecycle = Lifecycle::Stopping;
                     handle.session_cancel.cancel();
@@ -124,6 +169,16 @@ impl Service {
                 .collect()
         };
         drop(admission);
+        let owned = self
+            .child_operations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for operation in owned {
+            operation.cancelled().await;
+        }
         for (id, handle) in targets {
             self.wait_child_operation(id).await;
             let parent = handle.parent_session_id;

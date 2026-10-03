@@ -287,6 +287,8 @@ fn is_promptable(value: &bool) -> bool {
 #[derive(Clone, Debug)]
 pub struct Service {
     #[cfg(debug_assertions)]
+    pub(crate) lifecycle_claim_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
     pub(crate) watchdog_stop_failure: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(debug_assertions)]
     pub(crate) watchdog_teardown_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
@@ -307,7 +309,7 @@ pub struct Service {
     pub(super) admission_gate: Arc<tokio::sync::Mutex<()>>,
     pub(super) subagent_slots: Arc<Mutex<HashMap<SessionId, usize>>>,
     pub(super) unpublished_children: Arc<Mutex<std::collections::HashSet<SessionId>>>,
-    child_operations: Arc<Mutex<HashMap<SessionId, CancellationToken>>>,
+    pub(crate) child_operations: Arc<Mutex<HashMap<SessionId, CancellationToken>>>,
     #[cfg(debug_assertions)]
     child_registration_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
@@ -332,6 +334,14 @@ pub struct Service {
 }
 
 impl Service {
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_lifecycle_claim(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .lifecycle_claim_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn fail_watchdog_stop_write(&self) {
@@ -490,6 +500,8 @@ impl Service {
             .map_err(ServerError::History)?;
         let catalog = crate::provider::catalog::ModelCatalog::new(Some(config.data_dir.clone()));
         Ok(Self {
+            #[cfg(debug_assertions)]
+            lifecycle_claim_barrier: Arc::default(),
             #[cfg(debug_assertions)]
             watchdog_stop_failure: Arc::default(),
             #[cfg(debug_assertions)]

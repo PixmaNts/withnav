@@ -83,6 +83,17 @@ impl Service {
         let was_doubt = handle.status.watchdog.is_doubt();
         let _operation = {
             let _admission = self.admission_gate.lock().await;
+            if self
+                .child_operations
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(&child)
+                || self
+                    .handle(child)
+                    .is_none_or(|h| h.lifecycle != crate::session::service::Lifecycle::Active)
+            {
+                return Ok(());
+            }
             if !handle
                 .status
                 .watchdog

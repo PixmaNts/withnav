@@ -533,6 +533,40 @@ async fn watchdog_stop_owns_child_until_concurrent_parent_delete_can_finish() {
 }
 
 #[tokio::test]
+async fn delete_rechecks_owned_teardown_before_claiming_stopping() {
+    let mut f = Fixture::new(vec![Ok(Verdict::Stuck)]).await;
+    let claim = navai::session::ChildPreparationBarrier::default();
+    let teardown = navai::session::ChildPreparationBarrier::default();
+    f.service.pause_lifecycle_claim(claim.clone());
+    f.service.pause_watchdog_teardown(teardown.clone());
+    let service = f.service.clone();
+    let child = f.child;
+    let mut deletion = tokio::spawn(async move { service.delete(child).await });
+    claim.reached.notified().bounded(file!(), line!()).await;
+    f.tick(300).await;
+    teardown.reached.notified().bounded(file!(), line!()).await;
+    claim.release.notify_one();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), &mut deletion)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        f.service
+            .child_metadata(child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "running"
+    );
+    teardown.release.notify_one();
+    deletion.bounded(file!(), line!()).await.unwrap().unwrap();
+    f.close().await;
+}
+
+#[tokio::test]
 async fn failed_stop_write_restores_doubt_and_driver_continue_releases_waiter() {
     let mut f = Fixture::new(vec![Ok(Verdict::Doubt)]).await;
     f.tick(300).await;

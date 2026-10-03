@@ -455,7 +455,7 @@ async fn runtime_loop(
             Some(request) = recv_control(&mut control) => {
                 // Between turns: run it now and answer with the result.
                 let focus = request.focus.as_deref();
-                let reply = match compact::run(&mut actor, &status, &session_cancel, focus).await {
+                let reply = match compact::run(&mut actor, &status, &sequencer, &session_cancel, focus).await {
                     Ok(done) => CompactReply::Done(done),
                     Err(why) => CompactReply::Refused(why),
                 };
@@ -658,8 +658,14 @@ async fn runtime_loop(
         // A `/compact` that arrived during the turn runs now, between turns.
         if !deferred.is_empty() {
             let focus = compact::merge_focus(&deferred);
-            if let Err(why) =
-                compact::run(&mut actor, &status, &session_cancel, focus.as_deref()).await
+            if let Err(why) = compact::run(
+                &mut actor,
+                &status,
+                &sequencer,
+                &session_cancel,
+                focus.as_deref(),
+            )
+            .await
             {
                 compact::report_failure(&sequencer, why);
             }

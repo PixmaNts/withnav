@@ -17,6 +17,8 @@ use tokio_util::sync::CancellationToken;
 use super::RuntimeStatus;
 use crate::agent::actor::AgentActor;
 use crate::agent::compaction::{self, Compaction, PrepareInput};
+use crate::bus::event::{ContextCompacted, EventKind};
+use crate::bus::sequencer::{Candidate, Sequencer};
 use crate::provider::openai::ChatMessage;
 
 /// Longest focus text `/compact` accepts, in characters.
@@ -116,10 +118,13 @@ pub(super) fn merge_focus(waiting: &[Option<String>]) -> Option<String> {
 }
 
 /// Summarizes the conversation of `actor` and installs the result. Nothing
-/// is installed unless the checkpoint was saved.
+/// is installed unless the checkpoint was saved. Once it is, the stream gets
+/// a durable `context.compacted` and a live `context.updated` with the
+/// recomputed breakdown.
 pub(super) async fn run(
     actor: &mut AgentActor,
     status: &RuntimeStatus,
+    sequencer: &Sequencer,
     cancel: &CancellationToken,
     focus: Option<&str>,
 ) -> Result<Compacted, String> {
@@ -179,11 +184,34 @@ pub(super) async fn run(
         })
         .await
         .map_err(|e| format!("the compaction could not be saved: {e}"))?;
+    publish_compacted(actor, status, sequencer, &done);
     Ok(done)
 }
 
+fn publish_compacted(
+    actor: &AgentActor,
+    status: &RuntimeStatus,
+    sequencer: &Sequencer,
+    done: &Compacted,
+) {
+    let notice = serde_json::to_value(ContextCompacted {
+        generation: done.generation,
+        through_message: done.through_message as u64,
+        pruned: done.pruned as u64,
+        estimate_before: done.estimate_before,
+        estimate_after: done.estimate_after,
+    })
+    .unwrap_or(serde_json::Value::Null);
+    let _ = sequencer.publish(Candidate::new(EventKind::ContextCompacted, notice));
+    if let Some(snapshot) = status.update_context(actor.context_breakdown()) {
+        if let Ok(payload) = serde_json::to_value(&snapshot) {
+            let _ = sequencer.publish(Candidate::new(EventKind::ContextUpdated, payload));
+        }
+    }
+}
+
 /// Tells the stream that a compaction that waited for a turn could not run.
-pub(super) fn report_failure(sequencer: &crate::bus::sequencer::Sequencer, why: String) {
+pub(super) fn report_failure(sequencer: &Sequencer, why: String) {
     use crate::bus::event::{CommandResult, EventKind};
     let payload = serde_json::to_value(CommandResult {
         operation_id: ulid::Ulid::new(),

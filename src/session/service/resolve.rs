@@ -11,7 +11,7 @@ use crate::bus::runtime::SelectedVariant;
 use crate::error::ServerError;
 use crate::provider::auth;
 use crate::provider::catalog::ModelResolution;
-use crate::provider::config::{effective_variants, load_models, ResolvedModel, Variants};
+use crate::provider::config::{effective_variants, load_models, ResolvedModel, Variant, Variants};
 
 /// The identity half of a resolution (provider, model, api, endpoint) of a
 /// configured alias, for comparison with a saved one.
@@ -80,10 +80,19 @@ impl VariantChoice {
     }
 }
 
+/// The variant a saved session row holds.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct SavedVariant<'a> {
+    pub name: &'a str,
+    /// The override object saved with it, as JSON; absent for a row from
+    /// before it was kept.
+    pub override_json: Option<&'a str>,
+}
+
 /// Where a session's variant comes from.
 pub(super) enum VariantStart<'a> {
     Choice(&'a VariantChoice),
-    Saved(Option<&'a str>),
+    Saved(Option<SavedVariant<'a>>),
 }
 
 /// The offered variant called exactly `name`, or an error listing what the
@@ -241,6 +250,22 @@ impl Service {
         Ok((resolved, api_key, snapshot, save_late, models_file))
     }
 
+    /// Reads the offer of a live session's alias again, for a session that
+    /// started while it was unknown.
+    pub(crate) async fn reread_offer(
+        &self,
+        workspace: &Path,
+        alias: &str,
+    ) -> Result<Offer, ServerError> {
+        let (resolved, _) = self.resolve_model(workspace, alias)?;
+        let api_key = auth::resolve_key(
+            &self.config.config_dir,
+            &resolved.provider_name,
+            resolved.provider.api_key_env.as_deref(),
+        )?;
+        Ok(self.variant_offer(&resolved, &api_key).await)
+    }
+
     /// What the alias offers as variants. Only the offer is needed, not the
     /// window: a resume must work with discovery down, so a missing window
     /// is not an error here.
@@ -276,8 +301,9 @@ impl Service {
     /// A variant the alias confirmably does not offer is an error, never a
     /// fallback. When the offer cannot be known (generated from the
     /// provider's tiers, none cached, discovery down) a saved variant is kept
-    /// as it was generated, since nothing says it is gone, while a choice
-    /// made now is refused as retryable.
+    /// with the override object saved with it, since nothing says it is gone
+    /// (a row saved without one waits for the offer), while a choice made now
+    /// is refused as retryable.
     pub(super) async fn select_variant(
         &self,
         session_id: Ulid,
@@ -295,23 +321,36 @@ impl Service {
         };
         let selected = match start {
             VariantStart::Saved(None) | VariantStart::Choice(VariantChoice::Clear) => None,
-            VariantStart::Saved(Some(name)) => match offer.variants.get(name) {
-                Some(v) => Some((name.to_string(), v.clone())),
-                None if !offer.known => {
-                    tracing::warn!(session = %session_id, alias, variant = name, "the provider's variants are not known; keeping the saved variant");
-                    effective_variants(resolved, &[name.to_string()])
-                        .remove(name)
-                        .map(|v| (name.to_string(), v))
+            VariantStart::Saved(Some(saved)) => {
+                let name = saved.name;
+                match offer.variants.get(name) {
+                    // A known offer is the authority: the saved override is
+                    // refreshed from the current definition.
+                    Some(v) if offer.known => Some((name.to_string(), v.clone())),
+                    None if offer.known => {
+                        return Err(ServerError::VariantUnavailable {
+                            session: session_id.to_string(),
+                            alias: alias.to_string(),
+                            variant: name.to_string(),
+                            models_path: path,
+                        })
+                    }
+                    // The offer cannot be read: the session sends what it
+                    // saved, or, with nothing saved, the resume waits.
+                    _ => {
+                        let saved_override = saved
+                            .override_json
+                            .and_then(|raw| serde_json::from_str::<Variant>(raw).ok());
+                        match saved_override {
+                            Some(object) => {
+                                tracing::warn!(session = %session_id, alias, variant = name, "the provider's variants are not known; using the saved variant");
+                                Some((name.to_string(), object))
+                            }
+                            None => return Err(cannot_confirm(name)),
+                        }
+                    }
                 }
-                None => {
-                    return Err(ServerError::VariantUnavailable {
-                        session: session_id.to_string(),
-                        alias: alias.to_string(),
-                        variant: name.to_string(),
-                        models_path: path,
-                    })
-                }
-            },
+            }
             VariantStart::Choice(VariantChoice::Exact(name)) => {
                 if !offer.known {
                     return Err(cannot_confirm(name));

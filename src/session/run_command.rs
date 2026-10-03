@@ -159,9 +159,10 @@ impl Service {
         handle: &SessionHandle,
         arguments: &str,
     ) -> Result<Done, CommandFailure> {
-        let offered: Vec<&String> = handle.offer.variants.keys().collect();
+        let mut offer = handle.current_offer();
         let mut words = arguments.split_whitespace();
         let Some(word) = words.next() else {
+            let offered: Vec<&String> = offer.variants.keys().collect();
             return Ok(Done::data(json!({
                 "variant": handle.status.selected_variant(),
                 "offered": offered,
@@ -172,9 +173,19 @@ impl Service {
                 "usage: /variant [name|off]".to_string(),
             ));
         }
+        // An offer that was unknown when the session started is read again
+        // now: the provider may be back.
+        if word != CLEAR_WORD && !offer.known {
+            if let Ok(fresh) = self.reread_offer(&handle.workspace, &handle.model).await {
+                if fresh.known {
+                    handle.replace_offer(fresh);
+                    offer = handle.current_offer();
+                }
+            }
+        }
         let chosen = if word == CLEAR_WORD {
             None
-        } else if !handle.offer.known && !handle.offer.variants.contains_key(word) {
+        } else if !offer.known && !offer.variants.contains_key(word) {
             return Err(CommandFailure::Refused(
                 ServerError::VariantOfferUnknown {
                     alias: handle.model.clone(),
@@ -183,14 +194,15 @@ impl Service {
                 .to_string(),
             ));
         } else {
-            exact_variant(&handle.model, word, &handle.offer.variants)
+            exact_variant(&handle.model, word, &offer.variants)
                 .map_err(|e| CommandFailure::Refused(e.to_string()))?
         };
         let name = chosen.as_ref().map(|(name, _)| name.clone());
         self.history()
-            .set_variant(session_id, name.as_deref())
+            .set_variant(session_id, chosen.as_ref())
             .await
             .map_err(|e| CommandFailure::Server(ServerError::History(e)))?;
+        let offered: Vec<&String> = offer.variants.keys().collect();
         let now = handle.status.select_variant(chosen);
         Ok(Done::data(json!({
             "variant": name,

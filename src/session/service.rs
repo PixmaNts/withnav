@@ -94,11 +94,30 @@ pub struct SessionHandle {
     pub model: String,
     /// The runtime's view of its actor: pending `ask`, running turn.
     pub status: Arc<runtime::RuntimeStatus>,
-    /// What the session's model offered as variants when it started.
-    pub offer: Arc<resolve::Offer>,
+    /// What the session's model offers as variants; replaced when an offer
+    /// that was unknown at the start becomes known.
+    pub offer: Arc<Mutex<Arc<resolve::Offer>>>,
     /// The saved model resolution (identity, window, where the window came
     /// from) the session runs on.
     pub resolution: Option<Arc<crate::provider::catalog::ModelResolution>>,
+}
+
+impl SessionHandle {
+    /// The session's current variant offer.
+    pub(crate) fn current_offer(&self) -> Arc<resolve::Offer> {
+        match self.offer.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    pub(crate) fn replace_offer(&self, offer: resolve::Offer) {
+        let mut guard = match self.offer.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *guard = Arc::new(offer);
+    }
 }
 
 impl std::fmt::Debug for SessionHandle {
@@ -482,11 +501,29 @@ impl Service {
                 &api_key,
                 &models_file,
                 match &resumed {
-                    Some(loaded) => VariantStart::Saved(loaded.meta.variant.as_deref()),
+                    Some(loaded) => {
+                        VariantStart::Saved(loaded.meta.variant.as_deref().map(|name| {
+                            resolve::SavedVariant {
+                                name,
+                                override_json: loaded.meta.variant_override.as_deref(),
+                            }
+                        }))
+                    }
                     None => VariantStart::Choice(variant),
                 },
             )
             .await?;
+        // A resume with a readable offer keeps the saved override current
+        // with the definition it now has.
+        if let (Some(loaded), Some(chosen)) = (&resumed, &selected) {
+            let current = serde_json::to_string(&chosen.1).ok();
+            if offered.known && current != loaded.meta.variant_override {
+                self.history
+                    .set_variant(session_id, Some(chosen))
+                    .await
+                    .map_err(ServerError::History)?;
+            }
+        }
         let session_cancel = CancellationToken::new();
         let mut actor = build_actor(
             &workspace,
@@ -531,7 +568,7 @@ impl Service {
                 &alias,
                 profile,
                 Some(&snapshot),
-                selected.as_ref().map(|(name, _)| name.as_str()),
+                selected.as_ref(),
             )
             .await
             .map_err(ServerError::History)?;
@@ -578,7 +615,7 @@ impl Service {
             workspace: workspace.clone(),
             model: alias,
             status,
-            offer: Arc::new(offered),
+            offer: Arc::new(Mutex::new(Arc::new(offered))),
             resolution: Some(Arc::new(snapshot)),
         };
         let sender = SessionSender::new(session_id, handle.clone());

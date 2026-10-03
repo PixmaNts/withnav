@@ -1,5 +1,39 @@
 # Handoff: Navigator — TUI, VS Code extension, WebUI
 
+> **Design handoff, not as-built.** This file is the design brief the screens were drawn from. It is
+> kept as written. The terminal client was built from it and differs in places; the VS Code
+> extension and the WebUI mostly follow later. Where the code differs, **the code is right**:
+> [`ARCHITECTURE.md`](../../ARCHITECTURE.md) maps the terminal client, [`CONTEXT.md`](../../CONTEXT.md)
+> holds the vocabulary.
+>
+> Where the code differs from this design today:
+>
+> - **The plan agent keeps all its tools.** It is not read-only. With the navigator profile it keeps
+>   the `intent` tool too, so it can update the intent record, and it writes markdown files freely; every other write, edit, `bash` and `fetch` is checked
+>   by Jev (the role guard) and, if not cleared, asked to the driver as **allow once or deny** (no
+>   "always"). The build agent asks for every write, edit, `bash` and `fetch`.
+> - **Header** reads `◆ navai`, not `◆ navigator`.
+> - **Right column** (36 columns, from 140 columns, `alt+r`) shows Agents (the one in use and its
+>   role), Context (the breakdown of the next request and the last compaction), Skills (listed and
+>   omitted) and Changes (git). There is no intent record, drift bar, layer status, MCP or plugins
+>   section yet; a section with no data shows `—`.
+> - **Key bar** lists the keys that apply now (`tab build/plan`, `ctrl+p palette`, `alt+1…9 tabs`,
+>   `esc stop`, `alt+r panel`, `f1 help`) and the permission keys while a prompt waits. There is no
+>   `ctrl+l` pipeline or `ctrl+t` subagents key.
+> - **Model switching** is `/model <alias>` on the open conversation (server side). The terminal
+>   client's picker and `/model <alias>` still open a new tab on the chosen model.
+> - **Subagent view, pipeline editor, MCP, plugins, `@file` and `!shell`:** not built.
+> - **Agent files** are read from `~/.config/navai/agents/` and the project's `.navai/agents/` (and
+>   read-only from `~/.config/opencode/agents/`), not from `.navigator/agents/`.
+> - **VS Code ids** are `navai.*`: `navai.markUseful`, `navai.markNoise`, `navai.dismiss`,
+>   `navai.setIntent`, `navai.focusChat`. The icon is `media/navai.svg`.
+> - **Variants** are named request overrides in `models.json` (or provider effort tiers), not a fixed
+>   `off · low · medium · high` scale, and a model without variants simply offers none.
+> - **Tabs** are in a left sidebar 22 columns wide (hidden under 80 columns), up to nine, as designed;
+>   subagents are not nested because they cannot start yet.
+> - **Themes** and their colours match the table below. The choice is saved in
+>   `~/.config/navai/config.json` (`tui.theme`).
+
 ## Overview
 Navigator is the pair-programming system built on Navai (repo `PixmaNts/Navai`). The human (Driver) keeps the keyboard; four layers assist: **Reflex** (ghost-text suggestions), **Instinct** (typed decisions), **Metacognition** (line-anchored Remarks, can Wake the cognition) and **Cognition** (the agentic chat, with build/plan agents, subagents, tools, skills, MCP, plugins).
 

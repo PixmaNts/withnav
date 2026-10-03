@@ -2062,4 +2062,120 @@ mod tests {
         assert!(seen[0].contains("write the stub"), "{}", seen[0]);
         assert!(!seen[0].contains("look at the lexer"), "{}", seen[0]);
     }
+
+    #[tokio::test]
+    async fn markdown_swapped_for_a_link_after_the_final_check_is_never_written_through() {
+        for tool in ["write", "edit"] {
+            let jev = FakeJev::new(Ok(Verdict::Violates));
+            let mut actor = plan_actor(Some(jev.clone()), "http://127.0.0.1:1/v1");
+            actor
+                .registry
+                .register(Box::new(crate::tools::native::EditTool));
+            let ws = actor.tool_context.workspace.clone();
+            let (notes, code) = (ws.join("notes.md"), ws.join("main.rs"));
+            std::fs::write(&notes, "old notes").unwrap();
+            std::fs::write(&code, "fn main() {}").unwrap();
+            let args = if tool == "write" {
+                serde_json::json!({"path": notes, "content": "x"})
+            } else {
+                serde_json::json!({"path": notes, "old_string": "old", "new_string": "new"})
+            };
+            let server = spawn_mock(vec![
+                http_sse(&sse_body(&[&calls_chunk(&[("w1", tool, args)])])),
+                http_sse(&sse_body(&[&text_chunk("done")])),
+            ])
+            .await;
+            actor.provider.base_url = server.url.clone();
+            {
+                // After `still_resolves`, at the tool's own open.
+                let (notes, code) = (notes.clone(), code.clone());
+                crate::tools::nofollow::on_next_open(move || {
+                    std::fs::remove_file(&notes).unwrap();
+                    std::os::unix::fs::symlink(&code, &notes).unwrap();
+                });
+            }
+            let outcome = run_plan(&mut actor, &mut Notes::default()).await.unwrap();
+            let RunOutcome::PermissionRequired(_) = outcome else {
+                panic!("{tool}: the moved target is checked again: {outcome:?}");
+            };
+            assert_eq!(jev.asked(), 1, "{tool}: the guard saw the new target");
+            assert_eq!(
+                std::fs::read_to_string(&code).unwrap(),
+                "fn main() {}",
+                "{tool}: the redirected file is untouched"
+            );
+            assert_eq!(tool_result_of(&actor, "w1"), None, "{tool}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_approved_write_swapped_for_a_link_after_the_final_check_asks_again() {
+        let mut actor = make_actor(
+            "http://127.0.0.1:1/v1".into(),
+            registry_gated(),
+            CancellationToken::new(),
+        );
+        as_build(&mut actor);
+        let ws = actor.tool_context.workspace.canonicalize().unwrap();
+        actor.tool_context.workspace = ws.clone();
+        actor.tool_context.writable_roots = vec![ws.clone()];
+        let (target, secret) = (ws.join("a.txt"), ws.join("secret.toml"));
+        std::fs::write(&secret, "keep").unwrap();
+        let server = spawn_mock(write_script(&target)).await;
+        actor.provider.base_url = server.url.clone();
+        actor.push_user("go");
+        let mut noop = |_e: AgentEvent| {};
+        let RunOutcome::PermissionRequired(first) = run_agent(&mut actor, &mut noop).await.unwrap()
+        else {
+            panic!("build asks first");
+        };
+        {
+            let (target, secret) = (target.clone(), secret.clone());
+            crate::tools::nofollow::on_next_open(move || {
+                std::os::unix::fs::symlink(&secret, &target).unwrap();
+            });
+        }
+        let outcome = resolve_permission(
+            &mut actor,
+            first.id,
+            PermissionDecision::AllowOnce,
+            &mut noop,
+        )
+        .await
+        .unwrap();
+        let RunOutcome::PermissionRequired(second) = outcome else {
+            panic!("the approval was for the old destination: {outcome:?}");
+        };
+        assert_ne!(first.id, second.id);
+        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "keep");
+        assert_eq!(tool_result_of(&actor, "w1"), None);
+    }
+
+    #[tokio::test]
+    async fn a_model_cannot_bind_a_call_to_a_destination_itself() {
+        let mut actor = make_actor(
+            "http://127.0.0.1:1/v1".into(),
+            registry_gated(),
+            CancellationToken::new(),
+        );
+        let ws = actor.tool_context.workspace.canonicalize().unwrap();
+        actor.tool_context.writable_roots = vec![ws.clone()];
+        let target = ws.join("a.txt");
+        let call = ToolCall {
+            id: "w1".into(),
+            name: "write".into(),
+            args: serde_json::json!({
+                "path": target, "content": "x", crate::tools::BOUND_ARG: true
+            }),
+            args_valid: true,
+        };
+        let mut noop = |_e: AgentEvent| {};
+        // No destination from the loop: the argument is stripped, the plain
+        // tool path runs.
+        let result = execute_call(&actor, &call, None, None, &mut noop)
+            .await
+            .unwrap();
+        assert_eq!(result.status, ToolStatus::Ok);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
+    }
 }

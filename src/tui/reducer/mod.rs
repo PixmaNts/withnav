@@ -185,18 +185,24 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         ClientEvent::Models { result, .. } => {
             if let Ok(body) = result {
                 s.catalog = body.models;
-                if s.selected_model_alias.is_none() {
-                    s.selected_model_alias = body
-                        .default
-                        .filter(|a| s.catalog.iter().any(|m| &m.alias == a))
-                        .or_else(|| {
-                            s.catalog
-                                .iter()
-                                .find(|m| m.alias == "default")
-                                .map(|m| m.alias.clone())
-                        });
+                let default = body
+                    .default
+                    .filter(|a| s.catalog.iter().any(|m| &m.alias == a))
+                    .or_else(|| {
+                        s.catalog
+                            .iter()
+                            .find(|m| m.alias == "default")
+                            .map(|m| m.alias.clone())
+                    });
+                // Every tab, on screen or not: a default where none is chosen, and the display
+                // name and window refreshed from the new catalog.
+                let State { tabs, catalog, .. } = s;
+                for tab in tabs {
+                    if tab.selected_model_alias.is_none() {
+                        tab.selected_model_alias = default.clone();
+                    }
+                    refresh_tab_model(catalog, tab);
                 }
-                refresh_model(s);
             }
         }
         ClientEvent::Sessions { result, .. } => {

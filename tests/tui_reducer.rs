@@ -2163,3 +2163,45 @@ fn a_failed_resume_frees_the_tab() {
     assert!(s.resuming.is_none());
     assert!(s.is_blank());
 }
+
+#[test]
+fn a_catalog_answer_reaches_every_tab() {
+    let (mut s, mut ui) = (st(), ui());
+    // tab 1 chose `a` before any catalog (no name, no window yet); tab 2 chose nothing
+    s.selected_model_alias = Some("a".into());
+    created_now(&mut s, "S1").unwrap();
+    handle_action(&mut s, &mut ui, Action::NewConversation);
+    s.selected_model_alias = None;
+    s.selected_model_name = None;
+    handle_action(&mut s, &mut ui, Action::SwitchTab(0));
+    assert_eq!(s.selected_model_name, None);
+    models_now(&mut s, Some("b".into())).unwrap();
+    let background = &s.tabs[1];
+    assert_eq!(background.selected_model_alias.as_deref(), Some("b"));
+    assert_eq!(background.selected_model_name.as_deref(), Some("vendor/b"));
+    assert_eq!(
+        s.selected_model_alias.as_deref(),
+        Some("a"),
+        "a choice is kept"
+    );
+    assert_eq!(
+        (s.selected_model_name.as_deref(), s.context_window),
+        (Some("vendor/a"), Some(1000))
+    );
+    // a later catalog refreshes the background tab's window too
+    let mut models = catalog();
+    models[1].context_window = Some(2000);
+    let generation = s.generation.clone();
+    update(
+        &mut s,
+        ClientEvent::Models {
+            generation,
+            result: Ok(ModelsBody {
+                models,
+                default: None,
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.tabs[1].context_window, Some(2000));
+}

@@ -287,27 +287,6 @@ impl Service {
         }
         let parent_role = parent_handle.status.selection.current();
         let parent_policy = parent_role.clone();
-        if parent_role.id.as_str() == crate::agent::definitions::PLAN {
-            // The role guard remains the parent's policy ceiling; a child
-            // cannot inherit writes merely because its definition is full.
-        }
-        let cap = crate::settings::load(&self.config.config_dir)
-            .map_err(|e| ServerError::MalformedBody(e.to_string()))?
-            .subagents_max_concurrent()
-            .map_err(ServerError::MalformedBody)?;
-        {
-            let mut slots = self
-                .subagent_slots
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let current = slots.entry(parent).or_default();
-            if *current >= cap {
-                return Err(ServerError::MalformedBody(format!(
-                    "subagent capacity reached ({cap} concurrent children)"
-                )));
-            }
-            *current += 1;
-        }
         let agents = self
             .load_agents(&parent_handle.workspace, parent, false)
             .await;
@@ -324,6 +303,33 @@ impl Service {
                     .collect::<Vec<_>>()
                     .join(", "),
             })?;
+        let cap = crate::settings::load(&self.config.config_dir)
+            .map_err(|e| ServerError::MalformedBody(e.to_string()))?
+            .subagents_max_concurrent()
+            .map_err(ServerError::MalformedBody)?;
+        let _spawn_lock = self.gate.clone().lock_owned().await;
+        let persisted_active = self
+            .history
+            .active_child_count(parent)
+            .await
+            .map_err(ServerError::History)?;
+        {
+            let mut slots = self
+                .subagent_slots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let current = slots.entry(parent).or_default();
+            *current = (*current).max(persisted_active);
+            if *current >= cap {
+                return Err(ServerError::MalformedBody(format!(
+                    "subagent capacity reached ({cap} concurrent children)"
+                )));
+            }
+            *current += 1;
+        }
+        // The slot reservation and one child commit are serialized across
+        // concurrent model tool calls. This lane is released after the link
+        // exists; terminal children release their reservation separately.
         let parent_alias = parent_handle.selected().alias;
         let alias = definition.model.as_deref().unwrap_or(&parent_alias);
         let mut policy = BTreeMap::new();
@@ -378,6 +384,7 @@ impl Service {
                 return Err(error);
             }
         };
+        drop(_spawn_lock);
         let frozen = serde_json::to_string(&policy).unwrap_or_else(|_| "{}".into());
         if let Err(error) = self
             .history
@@ -385,6 +392,14 @@ impl Service {
             .await
         {
             let _ = self.close_session(child).await;
+            if let Some(count) = self
+                .subagent_slots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_mut(&parent)
+            {
+                *count = count.saturating_sub(1);
+            }
             return Err(ServerError::History(error));
         }
         if let Some(handle) = self.handle(child) {

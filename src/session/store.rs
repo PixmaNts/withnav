@@ -319,11 +319,21 @@ impl HistoryStore {
             let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
             conn.execute(
                 "INSERT INTO child_links (parent_id, child_id, agent, goal, policy_snapshot, status, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6)",
+                 SELECT ?1, ?2, ?3, ?4, ?5, 'running', ?6
+                 WHERE (SELECT COUNT(*) FROM child_links WHERE parent_id=?1 AND status IN ('starting','running')) < ?7",
                 params![parent_id.to_string(), child_id.to_string(), agent, goal,
-                    policy_snapshot, now_rfc3339()],
+                    policy_snapshot, now_rfc3339(), crate::settings::DEFAULT_MAX_SUBAGENTS as i64],
             ).map_err(|e| e.to_string())?;
             Ok(())
+        }).await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn active_child_count(&self, parent_id: Ulid) -> Result<usize, String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            let count: i64 = conn.query_row("SELECT COUNT(*) FROM child_links WHERE parent_id=?1 AND status IN ('starting','running')", [parent_id.to_string()], |row| row.get(0)).map_err(|e| e.to_string())?;
+            usize::try_from(count).map_err(|e| e.to_string())
         }).await.map_err(|e| e.to_string())?
     }
 

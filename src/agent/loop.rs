@@ -164,7 +164,13 @@ async fn run_steps(
 
         let sibling_ids: Vec<String> = message.tool_calls.iter().map(|tc| tc.id.clone()).collect();
 
-        match classify(message) {
+        match crate::agent::response::classify_with_ask(
+            message,
+            actor
+                .registry
+                .get(crate::agent::response::ASK_TOOL)
+                .is_some(),
+        ) {
             StepOutcome::Done { response } => {
                 actor.state = AgentState::Idle;
                 return Ok(RunOutcome::Done(response));

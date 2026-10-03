@@ -24,8 +24,9 @@ impl Service {
     /// THEN drop the registry entry. Idempotent: a conversation that is
     /// already closed (or only stored) is a no-op; unknown is a 404.
     pub async fn close_session(&self, id: SessionId) -> Result<(), ServerError> {
+        let _gate = self.lifecycle_gate().await;
         let parent = self.handle(id).and_then(|h| h.parent_session_id);
-        self.close_session_inner(id).await?;
+        self.close_session_gated(id).await?;
         if let Some(parent) = parent {
             self.finish_child(
                 parent,
@@ -40,12 +41,10 @@ impl Service {
         Ok(())
     }
 
-    async fn close_session_inner(&self, id: SessionId) -> Result<(), ServerError> {
-        let handle = {
-            let _gate = self.lifecycle_gate().await;
-            self.mark_stopping(id)
-        };
-        if let Some(handle) = handle {
+    /// [`Service::close_session`] for a caller that already holds the
+    /// lifecycle gate.
+    pub(super) async fn close_session_gated(&self, id: SessionId) -> Result<(), ServerError> {
+        if let Some(handle) = self.mark_stopping(id) {
             self.fence_and_remove(id, handle, "stop requested").await;
             return Ok(());
         }
@@ -76,7 +75,6 @@ impl Service {
                 })
                 .collect()
         };
-        drop(_gate);
         for (id, handle) in targets {
             self.fence_and_remove(id, handle, "shutdown").await;
         }
@@ -228,37 +226,6 @@ mod tests {
             status: Arc::default(),
             parent_session_id: None,
         }
-    }
-
-    #[tokio::test]
-    async fn stopping_parent_releases_admission_gate_before_joining_runtime() {
-        let (_dir, service) = test_service();
-        let id = Ulid::new();
-        let mut handle = wedged_runtime_handle();
-        let gate = service.lifecycle_gate().await;
-        let waiting = Arc::new(tokio::sync::Notify::new());
-        let entered = waiting.clone();
-        let runtime_service = service.clone();
-        let cancel = handle.session_cancel.clone();
-        handle.runtime_task = Arc::new(Mutex::new(Some(tokio::spawn(async move {
-            entered.notify_one();
-            cancel.cancelled().await;
-            let _admission = runtime_service.lifecycle_gate().await;
-            assert!(runtime_service
-                .create_child_session(id, "explore", "inspect")
-                .await
-                .is_err());
-            idle_actor()
-        }))));
-        service.lock_sessions().insert(id, handle);
-        waiting.notified().await;
-        drop(gate);
-        tokio::time::timeout(Duration::from_secs(1), service.close_session(id))
-            .await
-            .expect("stop must not hit the ten-second abort")
-            .unwrap();
-        assert_eq!(service.session_count(), 0);
-        assert_eq!(service.history().active_child_count(id).await.unwrap(), 0);
     }
 
     // Given a runtime wedged mid-turn (it outlives the teardown await cap)

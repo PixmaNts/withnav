@@ -144,16 +144,14 @@ impl Service {
             .is_err()
         {
             if let Some(id) = created {
-                drop(gate.take());
-                if let Err(err) = self.close_session(id).await {
+                if let Err(err) = self.close_session_gated(id).await {
                     tracing::warn!(session_id = %id, error = %err, "closing the session of a failed /new");
                 }
             }
             return Err(ServerError::SessionStopping);
         }
         if ok && name == "stop" {
-            drop(gate.take());
-            self.close_session(session_id).await?;
+            self.close_session_gated(session_id).await?;
         }
         Ok(CommandOutcome {
             operation_id,

@@ -449,21 +449,30 @@ fn pruning_a_skill_body_or_an_ask_answer_is_refused() {
 }
 
 #[test]
-fn pruning_inside_the_protected_recent_turns_is_refused() {
-    let t = five_turns(10);
-    // Messages 12.. are the last two turns; message 14 is a tool output there.
-    assert!(invalid(&k(3, "s", vec![14]), &t).contains("stay verbatim"));
+fn pruning_inside_the_latest_exchange_is_refused() {
+    // An unfinished turn: the last assistant step called a tool and its output
+    // (message 18) is the latest exchange.
+    let mut t = five_turns(10);
+    t.push(user("one more"));
+    t.push(call("c9", "read", "{}"));
+    t.push(result("c9", 10));
+    let last_result = t.len() - 1;
+    assert!(invalid(&k(3, "s", vec![last_result]), &t).contains("stays verbatim"));
+    // Earlier outputs, even of the recent turns, may be cut down by a plan
+    // that had to cross them (a turn that outgrew the budget on its own).
+    assert!(validate(&k(3, "s", vec![14]), &t).is_ok());
     assert!(validate(&k(3, "s", vec![6]), &t).is_ok());
 }
 
 #[test]
-fn a_boundary_inside_the_protected_tail_is_refused() {
+fn a_boundary_inside_the_latest_exchange_is_refused() {
     let t = five_turns(10);
-    // The tail starts at message 12; a boundary right before it is fine,
-    // one after it is a clean turn boundary but reaches into the tail.
+    // The latest exchange is the last answer (message 19). A boundary that
+    // leaves it is fine, one that leaves nothing is not.
     assert!(validate(&k(11, "s", vec![]), &t).is_ok());
-    assert!(invalid(&k(15, "s", vec![]), &t).contains("stay verbatim"));
-    assert!(invalid(&k(18, "s", vec![]), &t).contains("stay verbatim"));
+    assert!(validate(&k(15, "s", vec![]), &t).is_ok());
+    assert!(validate(&k(18, "s", vec![]), &t).is_ok());
+    assert!(invalid(&k(19, "s", vec![]), &t).contains("leaves nothing"));
 }
 
 #[test]
@@ -519,4 +528,148 @@ fn a_plan_always_validates() {
         pruned_message_indices: p.kept_pruned(),
     };
     validate(&k, &t).unwrap();
+}
+
+// Given one long unfinished turn: a request, then many read exchanges
+// When a plan must fit a budget the recent-turns rule cannot meet
+// Then `Fit` refuses (the unfinished turn is protected whole) and
+//      `FitMidTurn` summarizes its earlier steps, keeping only the latest one
+#[test]
+fn a_mid_turn_plan_may_cross_the_unfinished_turn_but_keeps_its_latest_exchange() {
+    let mut t = vec![user("do a long task")];
+    for n in 0..12 {
+        t.push(call(&format!("c{n}"), "read", "{}"));
+        t.push(result(&format!("c{n}"), 8_000));
+    }
+    let c = components();
+    let budget = 3_000 + summary_reserve_tokens();
+    assert!(matches!(
+        plan(&t, None, &c, budget, Aim::Fit),
+        Err(CompactionError::NothingToCompact | CompactionError::Capacity { .. })
+    ));
+    let p = plan(&t, None, &c, budget, Aim::FitMidTurn).unwrap();
+    // Everything before the last assistant step (message 23) can go.
+    assert!(p.through_message < 23);
+    assert!(p.estimated_after <= budget);
+    let compaction = Compaction {
+        checkpoint: Checkpoint {
+            through_message: p.through_message,
+            summary: "s".into(),
+            generation: 1,
+        },
+        pruned_message_indices: p.kept_pruned(),
+    };
+    assert!(validate(&compaction, &t).is_ok());
+}
+
+// Given a single tool-heavy turn compacted in the middle of its own steps
+// Then the request that started it stays in the prompt verbatim, right after
+//      the summary, and the plan budgets it
+#[test]
+fn a_mid_turn_checkpoint_carries_the_latest_user_request_verbatim() {
+    let mut t = vec![user("fix the parser and run the tests")];
+    for n in 0..12 {
+        t.push(call(&format!("c{n}"), "read", "{}"));
+        t.push(result(&format!("c{n}"), 8_000));
+    }
+    let c = components();
+    let budget = 3_000 + summary_reserve_tokens();
+    let p = plan(&t, None, &c, budget, Aim::FitMidTurn).unwrap();
+    assert!(p.through_message >= 1, "the boundary is past the request");
+    let compaction = Compaction {
+        checkpoint: Checkpoint {
+            through_message: p.through_message,
+            summary: "s".into(),
+            generation: 1,
+        },
+        pruned_message_indices: p.kept_pruned(),
+    };
+    validate(&compaction, &t).unwrap();
+    let prompt = effective_history(&t, Some(&compaction));
+    // The system rule and the summary, then the request itself.
+    assert!(matches!(&prompt[0], ChatMessage::System { .. }));
+    assert!(
+        matches!(&prompt[2], ChatMessage::User { content } if content == "fix the parser and run the tests")
+    );
+    // Budgeted: the plan counted the carried request (and the largest summary
+    // a valid one can be), so the real prompt weighs no more than it said.
+    let real = estimate_effective(&c, &t, Some(&compaction)).total();
+    assert!(real <= p.estimated_after && p.estimated_after <= budget);
+    // The carried request is measured: dropping it from the plan's sum would
+    // leave less than the real prompt.
+    let request_tokens = message_tokens(&t[0]);
+    assert!(real >= request_tokens);
+}
+
+// Given a checkpoint whose boundary is past the latest user request
+// Then it is valid, because the prompt it makes still carries that request
+//      verbatim: a summary has no authority, so the instruction is never left
+//      to the summary alone
+#[test]
+fn a_checkpoint_past_the_latest_user_request_still_carries_it_verbatim() {
+    let t = vec![
+        user("older"),
+        answer("ok"),
+        user("the instruction"),
+        call("c0", "read", "{}"),
+        result("c0", 10),
+        call("c1", "read", "{}"),
+        result("c1", 10),
+    ];
+    // Valid: the boundary is past "the instruction", which the prompt carries.
+    assert!(validate(&k(4, "s", vec![]), &t).is_ok());
+    // The prompt of a checkpoint that stands for it keeps it verbatim too.
+    let carried = effective_history(&t, Some(&k(4, "s", vec![])));
+    assert!(carried
+        .iter()
+        .any(|m| matches!(m, ChatMessage::User { content } if content == "the instruction")));
+}
+
+#[test]
+fn the_latest_user_batch_is_the_last_run_of_user_messages() {
+    let t = vec![
+        user("a"),
+        answer("b"),
+        user("c"),
+        user("d"),
+        call("x", "read", "{}"),
+        result("x", 1),
+    ];
+    assert_eq!(latest_user_batch(&t), Some(2..4));
+    assert_eq!(latest_user_batch(&[answer("only")]), None);
+}
+
+// Given a prompt over the budget only because of reasoning a model will not
+//       be sent
+// Then projecting it (index for index) leaves a transcript a plan can use
+#[test]
+fn the_reasoning_projection_keeps_indices_and_drops_only_reasoning() {
+    let t = vec![
+        user("a"),
+        ChatMessage::Assistant {
+            content: None,
+            reasoning_content: Some("thoughts ".repeat(500)),
+            tool_calls: vec![],
+        },
+        user("b"),
+        ChatMessage::Assistant {
+            content: Some("x".into()),
+            reasoning_content: Some("late".into()),
+            tool_calls: vec![],
+        },
+    ];
+    let projected = project_reasoning(&t, 3);
+    assert_eq!(projected.len(), t.len());
+    assert!(matches!(
+        &projected[1],
+        ChatMessage::Assistant {
+            reasoning_content: None,
+            ..
+        }
+    ));
+    assert!(
+        matches!(&projected[3], ChatMessage::Assistant { reasoning_content: Some(r), .. } if r == "late")
+    );
+    // The request leaves the emptied message out; the projection kept it.
+    assert_eq!(effective_history(&projected, None).len(), 3);
 }

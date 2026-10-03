@@ -178,19 +178,29 @@ pub fn summary_within_cap(summary: &str) -> bool {
     summary.len() <= SUMMARY_MAX_BYTES && neutralize(summary).len() <= SUMMARY_MAX_BYTES
 }
 
-/// The history a request carries: the summary (when installed) then the
-/// transcript after the boundary, with the pruned outputs as markers.
+/// The history a request carries: the summary (when installed), the latest
+/// user request when the summary stands for it, then the transcript after the
+/// boundary with the pruned outputs as markers.
+///
+/// The latest user batch (the user messages that started the turn the
+/// conversation is in) is never only in the summary: a summary is data, with
+/// no authority, so the instruction the agent is working on stays verbatim.
+/// When the boundary is past it (a turn compacted in the middle of its own
+/// steps) it is carried right after the summary.
 pub fn effective_history(
     transcript: &[ChatMessage],
     compaction: Option<&Compaction>,
 ) -> Vec<ChatMessage> {
     let Some(compaction) = compaction else {
-        return transcript.to_vec();
+        return drop_empty_assistants(transcript.to_vec());
     };
     let first = compaction.checkpoint.through_message + 1;
     let pruned: HashSet<usize> = compaction.pruned_message_indices.iter().copied().collect();
     let mut out = Vec::with_capacity(transcript.len().saturating_sub(first) + 2);
     out.extend(summary_messages(&compaction.checkpoint.summary));
+    if let Some(batch) = latest_user_batch(transcript).filter(|b| b.start < first) {
+        out.extend(transcript[batch].iter().cloned());
+    }
     for (i, message) in transcript.iter().enumerate().skip(first) {
         out.push(if pruned.contains(&i) {
             elided(message)
@@ -198,7 +208,60 @@ pub fn effective_history(
             message.clone()
         });
     }
-    out
+    drop_empty_assistants(out)
+}
+
+/// The transcript as a model that did not write it receives it: the reasoning
+/// of the messages before `floor` left out. Index for index the same as the
+/// transcript (no message is removed), so a plan and a checkpoint made against
+/// it hold for the transcript itself. The one projection shared by request
+/// building, the context gauge and every compaction, so they measure the same
+/// prompt.
+pub fn project_reasoning(transcript: &[ChatMessage], floor: usize) -> Vec<ChatMessage> {
+    let mut projected = transcript.to_vec();
+    for message in projected.iter_mut().take(floor) {
+        if let ChatMessage::Assistant {
+            reasoning_content, ..
+        } = message
+        {
+            *reasoning_content = None;
+        }
+    }
+    projected
+}
+
+/// Leaves out an assistant message that holds nothing (no text, no reasoning,
+/// no tool call): what is left of one whose only content was reasoning that
+/// was projected away.
+fn drop_empty_assistants(mut history: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    history.retain(|message| match message {
+        ChatMessage::Assistant {
+            content,
+            reasoning_content,
+            tool_calls,
+        } => {
+            content.as_deref().is_some_and(|c| !c.is_empty())
+                || reasoning_content.is_some()
+                || !tool_calls.is_empty()
+        }
+        _ => true,
+    });
+    history
+}
+
+/// The user messages that started the turn the conversation is in: the last
+/// run of consecutive user messages (the inbox hands them to the runtime as
+/// one batch). `None` for a transcript without a user message.
+pub fn latest_user_batch(transcript: &[ChatMessage]) -> Option<std::ops::Range<usize>> {
+    let end = transcript
+        .iter()
+        .rposition(|m| matches!(m, ChatMessage::User { .. }))?
+        + 1;
+    let start = transcript[..end]
+        .iter()
+        .rposition(|m| !matches!(m, ChatMessage::User { .. }))
+        .map_or(0, |i| i + 1);
+    Some(start..end)
 }
 
 fn elided(message: &ChatMessage) -> ChatMessage {
@@ -241,10 +304,28 @@ pub fn validate(
             "the boundary {through} separates the tool call {id} from its result"
         ));
     }
-    if next > protected_start(transcript) {
+    // Planning keeps the recent turns verbatim (`/compact`, a switch) or, for a
+    // turn that outgrew the budget on its own, the latest exchange only
+    // (`Aim::FitMidTurn`). A saved checkpoint must restore whichever made it,
+    // also after that turn has been answered: the check is the weaker bound.
+    if next > latest_exchange_start(transcript) {
         return invalid(format!(
-            "the boundary {through} reaches into the recent turns that stay verbatim"
+            "the boundary {through} reaches into the latest exchange, which stays verbatim"
         ));
+    }
+    // The latest user request is never only in the summary: the prompt this
+    // checkpoint makes must carry it verbatim.
+    if let Some(batch) = latest_user_batch(transcript) {
+        let prompt = effective_history(transcript, Some(compaction));
+        let wanted = &transcript[batch];
+        let kept = prompt
+            .windows(wanted.len())
+            .any(|window| window.iter().zip(wanted).all(|(a, b)| same_user_text(a, b)));
+        if !kept {
+            return invalid(
+                "the checkpoint would drop the latest user request from the prompt".into(),
+            );
+        }
     }
     if compaction.checkpoint.generation == 0 {
         return invalid("generation 0".into());
@@ -258,7 +339,7 @@ pub fn validate(
             "the summary is over the {SUMMARY_MAX_BYTES} byte cap"
         ));
     }
-    let protected = protected_start(transcript);
+    let protected = latest_exchange_start(transcript);
     let kept = never_elided(transcript);
     let mut last = None;
     for &i in &compaction.pruned_message_indices {
@@ -272,7 +353,7 @@ pub fn validate(
         };
         if i >= protected {
             return invalid(format!(
-                "pruned index {i} is in the recent turns that stay verbatim"
+                "pruned index {i} is in the latest exchange, which stays verbatim"
             ));
         }
         if kept.contains(tool_call_id.as_str()) {
@@ -286,6 +367,10 @@ pub fn validate(
         last = Some(i);
     }
     Ok(())
+}
+
+fn same_user_text(a: &ChatMessage, b: &ChatMessage) -> bool {
+    matches!((a, b), (ChatMessage::User { content: x }, ChatMessage::User { content: y }) if x == y)
 }
 
 /// The id of a tool call before `at` whose result is not also before `at`,
@@ -372,6 +457,14 @@ pub enum Aim {
     /// Everything the protected recent turns allow: what the user asks for
     /// with `/compact`, whether or not the prompt already fits.
     Shrink,
+    /// As [`Aim::Fit`], for a turn that outgrew the budget on its own: the
+    /// recent turns are not protected any more, only the latest exchange (the
+    /// last assistant step and its tool results) stays verbatim, so older
+    /// tool outputs of the unfinished turn can be cut down to markers, and its
+    /// earlier steps summarized. The latest user request is never left to the
+    /// summary: it is carried verbatim after it, and when it cannot fit the
+    /// plan fails with a capacity error.
+    FitMidTurn,
 }
 
 /// Plans a compaction of `transcript` for a prompt that must fit `budget`.
@@ -389,7 +482,10 @@ pub fn plan(
     aim: Aim,
 ) -> Result<Plan, CompactionError> {
     let floor = current.map_or(0, |c| c.checkpoint.through_message + 1);
-    let tail_start = protected_start(transcript);
+    let tail_start = match aim {
+        Aim::FitMidTurn => latest_exchange_start(transcript),
+        Aim::Fit | Aim::Shrink => protected_start(transcript),
+    };
     if tail_start <= floor {
         return Err(CompactionError::NothingToCompact);
     }
@@ -418,7 +514,15 @@ pub fn plan(
         .collect();
 
     let fixed = components.fixed_tokens() + summary_reserve_tokens();
-    let suffix = |cost: &[u64], from: usize| fixed + cost[from..].iter().sum::<u64>();
+    // The latest user batch is carried verbatim when the boundary is past it.
+    let batch = latest_user_batch(transcript);
+    let suffix = |cost: &[u64], from: usize| {
+        let carried: u64 = batch
+            .as_ref()
+            .filter(|b| b.start < from)
+            .map_or(0, |b| cost[b.clone()].iter().sum());
+        fixed + carried + cost[from..].iter().sum::<u64>()
+    };
 
     let needed = suffix(&cost, latest_cut);
     if needed > budget {
@@ -440,7 +544,7 @@ pub fn plan(
     // The latest cut always fits (checked above).
     let boundary = match aim {
         Aim::Shrink => latest_cut,
-        Aim::Fit => cuts
+        Aim::Fit | Aim::FitMidTurn => cuts
             .iter()
             .copied()
             .find(|&c| suffix(&cost, c) <= budget)
@@ -502,6 +606,16 @@ pub fn protected_start(transcript: &[ChatMessage]) -> usize {
         }
     }
     0
+}
+
+/// Index of the last assistant step, which stays with its tool results: the
+/// work the model has just done and is about to continue from. Zero when the
+/// transcript holds none.
+fn latest_exchange_start(transcript: &[ChatMessage]) -> usize {
+    transcript
+        .iter()
+        .rposition(|m| matches!(m, ChatMessage::Assistant { .. }))
+        .unwrap_or(0)
 }
 
 /// Whether a summary may end just before message `at`: the next message

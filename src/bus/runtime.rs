@@ -31,7 +31,9 @@ use ulid::Ulid;
 use crate::agent::actor::{AgentActor, AgentState};
 use crate::agent::context::{Breakdown, ContextSnapshot, ContextTracker};
 use crate::agent::permissions::PermissionDecision;
-use crate::agent::run_loop::{resolve_permission, run_agent, AgentEvent, ResolveError, RunOutcome};
+use crate::agent::run_loop::{
+    continue_run, resolve_permission, run_agent, AgentEvent, ResolveError, RunOutcome,
+};
 use crate::bus::event::{
     AgentStateChanged, AgentYield, EventKind, PermissionResolution, PermissionResolved, TaskDone,
     TaskStatus, ToolPostCall, ToolPreCall, ToolSource, TurnEnd, TurnEndOutcome, TurnError,
@@ -671,6 +673,8 @@ async fn runtime_loop(
         let (role, variant) = status.begin_turn().await;
         actor.role = role;
         actor.variant = variant.map(|(_, variant)| variant);
+        // A request that would not fit this budget is compacted first.
+        actor.input_budget = status.context_snapshot().map(|s| s.input_budget);
 
         let task_id = active_task_id.unwrap_or_default();
         let turn_id = Ulid::new();
@@ -701,7 +705,7 @@ async fn runtime_loop(
         let outcome = {
             let mut observe = |event: AgentEvent<'_>| turn.observe(event);
             let turn_fut = async {
-                match resume {
+                let first = match resume {
                     None => run_agent(&mut actor, &mut observe).await,
                     Some((request_id, decision)) => {
                         match resolve_permission(&mut actor, request_id, decision, &mut observe)
@@ -716,7 +720,8 @@ async fn runtime_loop(
                             }
                         }
                     }
-                }
+                };
+                compact_when_full(&mut actor, &status, &sequencer, &mut observe, first).await
             };
             tokio::pin!(turn_fut);
             loop {
@@ -852,7 +857,8 @@ async fn runtime_loop(
                 );
                 emit_agent_state(&mut turn, "idle");
             }
-            Ok(RunOutcome::StepBudgetExhausted) => {
+            // `compact_when_full` consumes it before the run ends.
+            Ok(RunOutcome::NeedsCompaction { .. }) | Ok(RunOutcome::StepBudgetExhausted) => {
                 // The internal variant NEVER leaks: the wire sees a yield of
                 // kind "budget" and the actor stays Yielded.
                 turn.publish(
@@ -929,6 +935,47 @@ async fn runtime_loop(
     }
     teardown(&mut actor, &sequencer);
     actor
+}
+
+/// Carries a turn through the automatic compactions it needs: each time the
+/// run stops at a safe boundary because the next request would not fit, the
+/// conversation is compacted and the SAME turn goes on with the steps it had
+/// left. A compaction that cannot make room ends the turn with an error; one
+/// that a stop cancelled ends it as interrupted.
+async fn compact_when_full(
+    actor: &mut AgentActor,
+    status: &RuntimeStatus,
+    sequencer: &Sequencer,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+    first: Result<RunOutcome, crate::error::AgentError>,
+) -> Result<RunOutcome, crate::error::AgentError> {
+    let mut outcome = first;
+    // The step budget a compaction was last asked at: two in a row at the
+    // same budget mean the prompt still does not fit, and no step was taken.
+    let mut last_asked = None;
+    while let Ok(RunOutcome::NeedsCompaction { steps_left }) = outcome {
+        if last_asked == Some(steps_left) {
+            actor.state = AgentState::Idle;
+            return Err(crate::error::AgentError::Compaction(format!(
+                "{} (the prompt still does not fit after a compaction)",
+                compact::CAPACITY_HINT
+            )));
+        }
+        last_asked = Some(steps_left);
+        let cancel = actor.cancel.clone();
+        match compact::run_automatic(actor, status, sequencer, &cancel).await {
+            Ok(_) => outcome = continue_run(actor, observe, steps_left).await,
+            Err(None) => {
+                actor.state = AgentState::Idle;
+                return Ok(RunOutcome::Interrupted);
+            }
+            Err(Some(why)) => {
+                actor.state = AgentState::Idle;
+                return Err(crate::error::AgentError::Compaction(why));
+            }
+        }
+    }
+    outcome
 }
 
 /// Publishes the end of a permission request, correlated to the task.
@@ -1059,6 +1106,7 @@ fn error_code(err: &AgentError) -> String {
         AgentError::Sse(_) => "sse".to_string(),
         AgentError::Bus(_) => "bus".to_string(),
         AgentError::Server(_) => "server".to_string(),
+        AgentError::Compaction(_) => "compaction".to_string(),
     }
 }
 

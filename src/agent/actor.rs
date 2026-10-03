@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::compaction::{
-    effective_history, validate as validate_compaction, Compaction, Components,
+    effective_history, project_reasoning, validate as validate_compaction, Compaction, Components,
 };
 use crate::agent::definitions::AgentDefinition;
 use crate::agent::guard::RoleGuard;
@@ -62,6 +62,11 @@ pub struct AgentActor {
     /// transcript itself keeps it.
     pub reasoning_floor: usize,
     pub max_tokens: Option<u64>,
+    /// The input budget a request must fit, in tokens, set by the session
+    /// runtime at each turn start. With one, a run stops before a request
+    /// that would exceed it ([`crate::agent::run_loop::RunOutcome::NeedsCompaction`]);
+    /// without one (a run outside a session) requests are never held back.
+    pub input_budget: Option<u64>,
     /// The variant merged into every chat request of the next run; `None`
     /// sends the request as built. The session runtime sets it at each turn
     /// start.
@@ -125,6 +130,7 @@ impl AgentActor {
             reasoning_history,
             reasoning_floor: 0,
             max_tokens,
+            input_budget: None,
             variant: None,
             max_steps: crate::agent::run_loop::max_steps(),
             system_prompt: None,
@@ -199,32 +205,16 @@ impl AgentActor {
     /// floor at `floor`, without changing the actor: the history a switch to
     /// another model would send.
     pub fn effective_history_at(&self, floor: usize) -> Vec<ChatMessage> {
-        if floor == 0 {
-            return effective_history(&self.transcript, self.compaction.as_ref());
-        }
-        let mut projected = self.transcript.clone();
-        for message in projected.iter_mut().take(floor) {
-            if let ChatMessage::Assistant {
-                reasoning_content, ..
-            } = message
-            {
-                *reasoning_content = None;
-            }
-        }
-        let mut history = effective_history(&projected, self.compaction.as_ref());
-        history.retain(|message| match message {
-            ChatMessage::Assistant {
-                content,
-                reasoning_content,
-                tool_calls,
-            } => {
-                content.as_deref().is_some_and(|c| !c.is_empty())
-                    || reasoning_content.is_some()
-                    || !tool_calls.is_empty()
-            }
-            _ => true,
-        });
-        history
+        effective_history(
+            &project_reasoning(&self.transcript, floor),
+            self.compaction.as_ref(),
+        )
+    }
+
+    /// The transcript the compaction machinery plans against: the same
+    /// projection the request is built from, index for index the transcript.
+    pub fn planning_transcript(&self, floor: usize) -> Vec<ChatMessage> {
+        project_reasoning(&self.transcript, floor)
     }
 
     /// The estimated size of the request this actor would send now, by

@@ -408,10 +408,13 @@ async fn a_target_too_small_for_the_conversation_is_refused_and_nothing_changes(
 
     let out = state.run_command(id, "model", "other").await.unwrap();
     assert!(!out.ok);
-    assert_eq!(
-        out.error.unwrap(),
-        "the conversation does not fit other's window: /compact first"
+    let error = out.error.unwrap();
+    assert!(
+        error.contains("does not fit other's window and cannot be compacted to fit it"),
+        "{error}"
     );
+    assert!(error.contains("larger context window"), "{error}");
+    assert!(a.bodies().is_empty(), "no summary was asked for");
     let meta = state.history().meta(id).await.unwrap().unwrap();
     assert_eq!(meta.model, "default");
     assert!(!meta.model_resolution.unwrap().contains("model-b"));

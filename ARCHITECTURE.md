@@ -233,8 +233,24 @@ it is and that run keeps using it.
   column in one transaction), then installs. `AgentActor::effective_history` and
   `context_breakdown` are what `run_agent` sends and what the gauge measures. A resume validates the
   stored checkpoint against the transcript and fails clearly when it does not fit. The durable
-  `context.compacted` notice is explanatory; the stored checkpoint is the recovery source. Automatic
-  compaction reuses `plan` and `prepare` with `Aim::Fit` and the same commit path.
+  `context.compacted` notice (with `reason`: `manual`, `automatic` or `switch`; absent in an old
+  event) is explanatory; the stored checkpoint is the recovery source.
+- Automatic compaction: before every provider request `run_agent` compares the estimate of the next
+  request (`context_breakdown`) with `AgentActor::input_budget`, which the runtime sets at each turn
+  start, and at that safe boundary (every tool result of the last step is in, nothing pending)
+  returns `RunOutcome::NeedsCompaction { steps_left }` instead of sending. The runtime
+  (`compact_when_full` in `bus/runtime.rs`, `compact::run_automatic`) summarizes with the session's
+  own model and variant and installs through the same commit path as `/compact`, then `continue_run`
+  carries the SAME turn on with `steps_left`: no `turn.end`, no step reset. The plan tries `Aim::Fit`
+  below ~0.7 B, then B, and only then `Aim::FitMidTurn`, which gives up the recent-turns protection
+  and keeps just the latest exchange so a single long turn can summarize its own earlier steps. A
+  plan that cannot fit costs no provider call; the turn then ends with a `compaction` error that
+  says `/compact` cannot help and to use a larger window. A model switch reuses `summarize` and
+  `install` (`bus/runtime/model.rs::compact_for_target`): the old model compacts, aiming at the
+  target's budget, in an acknowledged commit that precedes the switch's own. These are two
+  commits, not one transaction: if the switch then fails (or a stop cancels it) the conversation
+  stays on the old model WITH the new checkpoint, and a resume restores exactly that. The
+  checkpoint is sized for the target's budget, not the old model's.
 - Model switching (`/model <alias>` inside a conversation): `bus/runtime/model.rs`, run like
   `/compact` through the same control channel (`RuntimeStatus::request_model_switch`), between turns
   or after the running turn, from one ordered queue of deferred controls (`bus/runtime/deferred.rs`;

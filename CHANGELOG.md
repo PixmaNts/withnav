@@ -8,6 +8,18 @@ requests land in `develop`.
 
 ### Added
 
+- **Automatic compaction**: when the next request would not fit the model's input budget, the agent
+  compacts the conversation before sending it, at a step boundary, and carries the same turn on: no
+  `turn.end` in between, and the steps it had left are not renewed. The summary is written by the
+  session's own model and variant and aims below about 70% of the budget. A turn that outgrows the
+  window on its own may summarize its own earlier steps, keeping the latest exchange. It never runs
+  while a question or a permission request waits. If even the part that must stay verbatim does not
+  fit, the turn ends with an error saying that `/compact` cannot help either and that a model with a
+  larger window is needed. `/model` to a smaller window now compacts first, with the model the
+  conversation is on (the new one is never asked to read what it cannot hold), then switches; the
+  answer carries a `compacted` summary. If it still cannot fit, the switch is refused and nothing
+  changes. `context.compacted` gains a `reason` (`manual`, `automatic`, `switch`); events stored
+  before it have none.
 - **Switching model from the terminal client**: in a conversation, the model list (`f2` or
   `/model`) now moves that conversation to the model you pick, and `/model <alias>` typed in the
   message box does the same. Only the model changes: the conversation takes that model's default

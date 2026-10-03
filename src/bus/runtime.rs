@@ -549,14 +549,8 @@ async fn runtime_loop(
             }
             Ok(RunOutcome::PermissionRequired(request)) => {
                 turn.publish(
-                    EventKind::AgentYield,
-                    to_value(&AgentYield {
-                        actor_id: ROOT_ACTOR_ID.to_string(),
-                        turn_id,
-                        question: request.reason.clone(),
-                        kind: Some("permission".to_string()),
-                        details: serde_json::to_value(&request).ok(),
-                    }),
+                    EventKind::PermissionRequested,
+                    permission_requested(&request),
                 );
                 emit_turn_end(
                     &mut turn,
@@ -657,6 +651,20 @@ fn snapshot_transcript(
     if queued.is_err() {
         run(hook, transcript);
     }
+}
+
+fn permission_requested(
+    request: &crate::agent::permissions::PermissionRequest,
+) -> serde_json::Value {
+    to_value(&crate::bus::event::PermissionRequested {
+        request_id: request.id,
+        tool_call_id: request.tool_call_id.clone(),
+        tool: request.tool.clone(),
+        arguments: request.arguments.clone(),
+        scope: request.scope.clone(),
+        agent: request.agent.clone(),
+        reason: request.reason.clone(),
+    })
 }
 
 fn emit_turn_end(

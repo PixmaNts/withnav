@@ -1,6 +1,7 @@
-//! Frozen `EventEnvelope` shape and the 15-kind `EventKind`
-//! catalog (the twelve original kinds plus `command.result` and
-//! `context.updated` and `session.agent_changed`).
+//! Frozen `EventEnvelope` shape and the 17-kind `EventKind`
+//! catalog (the twelve original kinds plus `command.result`,
+//! `context.updated`, `session.agent_changed`, `permission.requested` and
+//! `permission.resolved`).
 //!
 //! Reserved-but-deferred kind names (NOT in the enum, never emitted this slice):
 //! `prompt.pre_llm`, `tool.progress`, `context.pre_compact` (Phase 3),
@@ -22,12 +23,13 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// The single root actor id for this slice (all events are published by it).
 pub const ROOT_ACTOR_ID: &str = "agent:main";
 
-/// The catalog emits EXACTLY 15 kinds: 2 session +
+/// The catalog emits EXACTLY 17 kinds: 2 session +
 /// message + 2 turn + 2 llm + 2 tool + 2 agent + task + command result +
-/// context update + agent change = 15. The first twelve are frozen; `command.result`,
-/// `context.updated` and `session.agent_changed` were added without changing the
-/// envelope version.
-pub const EVENT_KIND_COUNT: usize = 15;
+/// context update + agent change + 2 permission = 17. The first twelve are
+/// frozen; `command.result`, `context.updated`, `session.agent_changed`,
+/// `permission.requested` and `permission.resolved` were added without
+/// changing the envelope version.
+pub const EVENT_KIND_COUNT: usize = 17;
 
 /// Durable kinds are retained in the reconnect ring and the history store;
 /// `llm.delta` and `context.updated` are live-only (the latter is a
@@ -39,9 +41,9 @@ const fn is_durable(kind: EventKind) -> bool {
 
 /// DRIFT GUARD (compile-authoritative): `ALL` is DERIVED from
 /// [`EventKind::all_variants`], an exhaustive match whose single or-pattern
-/// arms name EVERY variant with no `_` wildcard — so adding a 15th variant
+/// arms name EVERY variant with no `_` wildcard — so adding a variant
 /// without editing that match is error[E0004] (non-exhaustive patterns) and
-/// the crate does not compile. The array's type `[EventKind; 15]` plus the
+/// the crate does not compile. The array's type `[EventKind; EVENT_KIND_COUNT]` plus the
 /// `const _` assert below additionally pin the frozen catalog size, so the
 /// list itself cannot silently grow or shrink either. A runtime name/order
 /// test still guards the wire spellings, but completeness is enforced HERE,
@@ -63,7 +65,9 @@ impl EventKind {
             | Self::TaskDone
             | Self::CommandResult
             | Self::ContextUpdated
-            | Self::SessionAgentChanged => [
+            | Self::SessionAgentChanged
+            | Self::PermissionRequested
+            | Self::PermissionResolved => [
                 Self::SessionStart,
                 Self::SessionEnd,
                 Self::MessageReceived,
@@ -79,18 +83,20 @@ impl EventKind {
                 Self::CommandResult,
                 Self::ContextUpdated,
                 Self::SessionAgentChanged,
+                Self::PermissionRequested,
+                Self::PermissionResolved,
             ],
         }
     }
 
-    /// The 15 emitted kinds, in catalog order. The bus iterates this to seed
+    /// The 17 emitted kinds, in catalog order. The bus iterates this to seed
     /// the ring/fan-out.
     pub const ALL: [EventKind; EVENT_KIND_COUNT] = Self::all_variants();
 }
 
 const _: () = assert!(EventKind::ALL.len() == EVENT_KIND_COUNT);
 
-/// Typed catalog of the 15 emitted event kinds; the wire name is the dotted
+/// Typed catalog of the 17 emitted event kinds; the wire name is the dotted
 /// string (serialized verbatim, e.g. `"llm.delta"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventKind {
@@ -124,6 +130,10 @@ pub enum EventKind {
     ContextUpdated,
     #[serde(rename = "session.agent_changed")]
     SessionAgentChanged,
+    #[serde(rename = "permission.requested")]
+    PermissionRequested,
+    #[serde(rename = "permission.resolved")]
+    PermissionResolved,
 }
 
 impl EventKind {
@@ -145,6 +155,8 @@ impl EventKind {
             EventKind::CommandResult => "command.result",
             EventKind::ContextUpdated => "context.updated",
             EventKind::SessionAgentChanged => "session.agent_changed",
+            EventKind::PermissionRequested => "permission.requested",
+            EventKind::PermissionResolved => "permission.resolved",
         }
     }
 
@@ -166,6 +178,8 @@ impl EventKind {
             "command.result" => Some(EventKind::CommandResult),
             "context.updated" => Some(EventKind::ContextUpdated),
             "session.agent_changed" => Some(EventKind::SessionAgentChanged),
+            "permission.requested" => Some(EventKind::PermissionRequested),
+            "permission.resolved" => Some(EventKind::PermissionResolved),
             _ => None,
         }
     }
@@ -380,6 +394,46 @@ pub struct SessionAgentChanged {
     pub previous: String,
 }
 
+/// A gated tool call waits for a driver's decision. The call has not run.
+/// `arguments` is the call's JSON text cut to 4 KiB, for review only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PermissionRequested {
+    pub request_id: Ulid,
+    pub tool_call_id: String,
+    pub tool: String,
+    pub arguments: String,
+    pub scope: crate::agent::permissions::Scope,
+    pub agent: String,
+    pub reason: String,
+}
+
+/// How a permission request ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "resolution", rename_all = "snake_case")]
+pub enum PermissionResolution {
+    AllowOnce,
+    AllowFolder,
+    /// A driver refused; `message` is what the model reads back.
+    Deny {
+        message: String,
+    },
+    /// The turn was stopped while the request waited, or a new message
+    /// replaced it.
+    Cancelled,
+    /// The session restarted while the request waited.
+    Expired,
+}
+
+/// A permission request ended, by a decision, a stop or a restart. Published
+/// exactly once per `permission.requested`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PermissionResolved {
+    pub request_id: Ulid,
+    pub tool_call_id: String,
+    #[serde(flatten)]
+    pub resolution: PermissionResolution,
+}
+
 /// Largest serialized `data` a `command.result` carries.
 pub const COMMAND_RESULT_DATA_MAX_BYTES: usize = 16 * 1024;
 
@@ -539,7 +593,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const KIND_NAMES: [&str; 15] = [
+    const KIND_NAMES: [&str; 17] = [
         "session.start",
         "session.end",
         "message.received",
@@ -555,13 +609,15 @@ mod tests {
         "command.result",
         "context.updated",
         "session.agent_changed",
+        "permission.requested",
+        "permission.resolved",
     ];
 
     #[test]
-    fn event_kind_catalog_is_exactly_the_fifteen() {
+    fn event_kind_catalog_is_exactly_the_seventeen() {
         let kinds = EventKind::ALL;
-        assert_eq!(EVENT_KIND_COUNT, 15);
-        assert_eq!(kinds.len(), 15);
+        assert_eq!(EVENT_KIND_COUNT, 17);
+        assert_eq!(kinds.len(), 17);
         assert_eq!(SCHEMA_VERSION, 1);
         let names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
         assert_eq!(names, KIND_NAMES);
@@ -801,6 +857,28 @@ mod tests {
                 })
                 .unwrap(),
             ),
+            (
+                "permission.requested",
+                serde_json::to_value(&PermissionRequested {
+                    request_id: Ulid::new(),
+                    tool_call_id: "call_1".into(),
+                    tool: "bash".into(),
+                    arguments: "{\"command\":\"ls\"}".into(),
+                    scope: crate::agent::permissions::Scope::Folder("/w".into()),
+                    agent: "build".into(),
+                    reason: "`bash` acts in /w".into(),
+                })
+                .unwrap(),
+            ),
+            (
+                "permission.resolved",
+                serde_json::to_value(&PermissionResolved {
+                    request_id: Ulid::new(),
+                    tool_call_id: "call_1".into(),
+                    resolution: PermissionResolution::Expired,
+                })
+                .unwrap(),
+            ),
         ];
         assert_eq!(cases.len(), EVENT_KIND_COUNT);
 
@@ -808,6 +886,66 @@ mod tests {
             let wire = serde_json::to_string(&payload).unwrap();
             let back: Value = serde_json::from_str(&wire).unwrap();
             assert_eq!(back, payload, "payload roundtrip failed for {kind}");
+        }
+    }
+
+    #[test]
+    fn permission_events_wire_shape_roundtrips() {
+        let request_id = Ulid::new();
+        let requested = PermissionRequested {
+            request_id,
+            tool_call_id: "call_1".into(),
+            tool: "write".into(),
+            arguments: "{\"path\":\"/w/a\"}".into(),
+            scope: crate::agent::permissions::Scope::Folder("/w".into()),
+            agent: "build".into(),
+            reason: "`write` acts in /w".into(),
+        };
+        let wire = serde_json::to_value(&requested).unwrap();
+        assert_eq!(wire["scope"], json!({"kind": "folder", "value": "/w"}));
+        assert_eq!(
+            serde_json::from_value::<PermissionRequested>(wire).unwrap(),
+            requested
+        );
+
+        for (resolution, expected) in [
+            (
+                PermissionResolution::AllowOnce,
+                json!({"resolution": "allow_once"}),
+            ),
+            (
+                PermissionResolution::AllowFolder,
+                json!({"resolution": "allow_folder"}),
+            ),
+            (
+                PermissionResolution::Deny {
+                    message: "no".into(),
+                },
+                json!({"resolution": "deny", "message": "no"}),
+            ),
+            (
+                PermissionResolution::Cancelled,
+                json!({"resolution": "cancelled"}),
+            ),
+            (
+                PermissionResolution::Expired,
+                json!({"resolution": "expired"}),
+            ),
+        ] {
+            let resolved = PermissionResolved {
+                request_id,
+                tool_call_id: "call_1".into(),
+                resolution,
+            };
+            let mut wire = serde_json::to_value(&resolved).unwrap();
+            assert_eq!(wire["request_id"], json!(request_id));
+            assert_eq!(wire["tool_call_id"], "call_1");
+            wire.as_object_mut().unwrap().remove("request_id");
+            wire.as_object_mut().unwrap().remove("tool_call_id");
+            assert_eq!(wire, expected);
+            let back: PermissionResolved =
+                serde_json::from_value(serde_json::to_value(&resolved).unwrap()).unwrap();
+            assert_eq!(back, resolved);
         }
     }
 

@@ -129,8 +129,11 @@ impl AgentActor {
     /// The estimated size of the request this actor would send now, by
     /// category (see [`crate::agent::context`]).
     pub fn context_breakdown(&self) -> crate::agent::context::Breakdown {
+        // The same role message `build_request` sends: the selected agent's
+        // prompt composed with the profile's.
+        let role = self.role_message();
         crate::agent::context::estimate(
-            self.system_prompt.as_deref(),
+            role.as_deref(),
             self.rules.message(),
             self.skills.catalog(),
             &self.transcript,

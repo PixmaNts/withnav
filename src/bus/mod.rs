@@ -351,7 +351,8 @@ mod tests {
             .copied()
             .filter(|k| k.is_durable())
             .collect();
-        assert_eq!(durable_kinds.len(), super::event::EVENT_KIND_COUNT - 1);
+        // Only `llm.delta` and `context.updated` are live-only.
+        assert_eq!(durable_kinds.len(), super::event::EVENT_KIND_COUNT - 2);
 
         let mut bus = SessionBus::default();
         let mut seq: u64 = 0;
@@ -370,7 +371,8 @@ mod tests {
                 seq += 1;
             }
         }
-        // 13 * (1 + 833) = 10_842 events emitted; 10_829 are llm.delta.
+        // 13 * (1 + 833) = 10_842 events emitted; the 833 after each durable
+        // one are llm.delta.
         assert_eq!(seq, 10_842);
         assert_eq!(bus.last_evicted_durable_seq(), None);
 

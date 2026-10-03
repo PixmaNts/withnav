@@ -286,6 +286,7 @@ async fn switching_changes_the_next_request_and_nothing_in_the_transcript() {
     let state = state(&env, &provider);
     let id = state.create_session(&env.ws, None, None).await.unwrap();
     converse(&state, id, "first").await;
+    let system_as_build = state.context(id).await.unwrap().breakdown.system;
 
     let out = state.run_command(id, "agent", "plan").await.unwrap();
     assert!(out.ok, "{out:?}");
@@ -300,6 +301,12 @@ async fn switching_changes_the_next_request_and_nothing_in_the_transcript() {
     assert_eq!(state.session_summary(id).await.unwrap().agent, "plan");
 
     converse(&state, id, "second").await;
+    // The estimate counts the role message the request carries.
+    let system_as_plan = state.context(id).await.unwrap().breakdown.system;
+    assert!(
+        system_as_plan > system_as_build,
+        "plan's role text is estimated: {system_as_build} -> {system_as_plan}"
+    );
     let request = sent(&provider, 1);
     assert!(request[1].1.contains("plan mode"), "{request:?}");
     let roles: Vec<&str> = request.iter().map(|(r, _)| r.as_str()).collect();

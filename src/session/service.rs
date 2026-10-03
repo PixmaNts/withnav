@@ -44,8 +44,8 @@ use super::hooks::{NoHooks, SessionHooks, StartedSession};
 use super::message::{accept, MessageAccepted};
 use super::sender::SessionSender;
 use crate::agent::actor::AgentActor;
-use crate::agent::definitions::{AgentDefinition, AgentId, AgentRoots, Agents};
 use crate::agent::context::{ContextLimits, ContextSnapshot, ContextTracker};
+use crate::agent::definitions::{AgentDefinition, AgentId, AgentRoots, Agents};
 use crate::agent::instructions::Instructions;
 use crate::agent::selection::AgentSelection;
 use crate::agent::skills::Skills;
@@ -572,6 +572,9 @@ impl Service {
     /// publishes `session.start` (fresh only), spawns the runtime with the
     /// history hooks, registers the handle. `resume_workspace` is the
     /// workspace a resume request named; the FRESH path passes its own.
+    // Private, with exactly two callers (fresh and resume) that pass every
+    // selection through unchanged; a parameter struct would only rename them.
+    #[allow(clippy::too_many_arguments)]
     async fn spawn_session(
         &self,
         workspace: &Path,

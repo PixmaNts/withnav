@@ -463,7 +463,7 @@ pub fn event_to_ui(envelope: &EventEnvelope) -> Option<UiEvent> {
         | EventKind::TaskDone
         | EventKind::CommandResult
         | EventKind::SessionAgentChanged => None,
-        | EventKind::ContextUpdated => None,
+        EventKind::ContextUpdated => None,
     }
 }
 

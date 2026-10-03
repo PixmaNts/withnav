@@ -1392,6 +1392,7 @@ fn snapshot(revision: u64, estimate_total: u64) -> ContextSnapshot {
         variant: None,
         window: 1_000_000,
         window_source: "models.json".into(),
+        estimated: true,
         estimate_total,
         breakdown: Default::default(),
         output_reserve: 8192,
@@ -1399,6 +1400,8 @@ fn snapshot(revision: u64, estimate_total: u64) -> ContextSnapshot {
         input_budget: 941_808,
         percent: estimate_total * 100 / 1_000_000,
         last_usage: None,
+        skills: Default::default(),
+        rule_files: 0,
         incarnation: Ulid(1),
         revision,
     }

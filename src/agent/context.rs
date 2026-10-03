@@ -7,7 +7,7 @@
 //! provider's own usage numbers.
 
 use crate::agent::prompt::SYSTEM_CONTRACT;
-pub use crate::bus::event::{Breakdown, ContextSnapshot, LastUsage};
+pub use crate::bus::event::{Breakdown, ContextSnapshot, LastUsage, SkillCounts};
 use crate::provider::openai::{ChatMessage, ToolDef};
 
 /// Tokens added to every message for its role and delimiters.
@@ -195,7 +195,24 @@ impl ContextLimits {
                 configured_output,
                 bounds.reported_output,
             )?,
+            skills: SkillCounts::default(),
+            rule_files: 0,
         })
+    }
+
+    /// Adds what the session's rules and skills snapshots hold.
+    pub fn with_sources(
+        mut self,
+        rules: &crate::agent::instructions::Instructions,
+        skills: &crate::agent::skills::Skills,
+    ) -> Self {
+        let (listed, omitted) = skills.catalog_counts();
+        self.skills = SkillCounts {
+            listed: listed as u64,
+            omitted: omitted as u64,
+        };
+        self.rule_files = rules.contributing_files() as u64;
+        self
     }
 }
 
@@ -213,6 +230,7 @@ impl ContextSnapshot {
             variant: limits.variant.clone(),
             window: limits.budget.window,
             window_source: limits.window_source.clone(),
+            estimated: true,
             estimate_total,
             breakdown,
             output_reserve: limits.budget.output_reserve,
@@ -220,6 +238,8 @@ impl ContextSnapshot {
             input_budget: limits.budget.input_budget,
             percent: percent(estimate_total, limits.budget.window),
             last_usage,
+            skills: limits.skills,
+            rule_files: limits.rule_files,
             incarnation,
             revision,
         }
@@ -235,6 +255,10 @@ pub struct ContextLimits {
     /// Where the window came from: `models.json` or a `discovered.*` field.
     pub window_source: String,
     pub budget: Budget,
+    /// What the skills catalog holds; fixed with the session's skills snapshot.
+    pub skills: SkillCounts,
+    /// The rule files in the rules message; fixed with the rules snapshot.
+    pub rule_files: u64,
 }
 
 /// The estimate as a share of the window, rounded to a whole percent.
@@ -279,6 +303,7 @@ impl ContextTracker {
     /// the next snapshot [`ContextTracker::update`] produces.
     pub fn record_usage(&mut self, step: ulid::Ulid, usage: crate::provider::Usage) {
         self.last_usage = Some(LastUsage {
+            alias: self.limits.alias.clone(),
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
             step,
@@ -294,7 +319,7 @@ impl ContextTracker {
         self.current = ContextSnapshot::new(
             &self.limits,
             breakdown,
-            self.last_usage,
+            self.last_usage.clone(),
             self.incarnation,
             self.current.revision + 1,
         );

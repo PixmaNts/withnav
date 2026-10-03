@@ -411,12 +411,25 @@ pub struct Breakdown {
 
 /// The provider usage of the last step that reported one: the input the
 /// provider actually counted for that request, never the estimate of the next.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LastUsage {
+    /// The alias the step ran on.
+    pub alias: String,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     /// The `step_id` of the `llm.response` that reported it.
     pub step: Ulid,
+}
+
+/// What the skills catalog holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SkillCounts {
+    pub listed: u64,
+    pub omitted: u64,
+}
+
+fn always_true() -> bool {
+    true
 }
 
 /// How full the context window is: the payload of `context.updated` and the
@@ -424,6 +437,11 @@ pub struct LastUsage {
 /// `estimate_total` sizes the NEXT request (an estimate, bytes / 4), `last_usage`
 /// is what the provider counted for the LAST one, and cumulative session usage
 /// lives in the `llm.response` and `turn.end` events, not here.
+///
+/// `estimated` is always true: no figure here but `last_usage` comes from a
+/// tokenizer or the provider. Rule diagnostics (which files were cut or
+/// skipped) and compaction metadata are not part of the snapshot yet; they
+/// join it as optional fields when those features land.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextSnapshot {
     pub alias: String,
@@ -432,6 +450,9 @@ pub struct ContextSnapshot {
     pub window: u64,
     /// `models.json` or a `discovered.*` field.
     pub window_source: String,
+    /// Marks the sizes as estimates (bytes / 4), never a provider count.
+    #[serde(default = "always_true")]
+    pub estimated: bool,
     pub estimate_total: u64,
     pub breakdown: Breakdown,
     pub output_reserve: u64,
@@ -441,6 +462,12 @@ pub struct ContextSnapshot {
     pub percent: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_usage: Option<LastUsage>,
+    /// The skills the catalog lists and the ones it had no room for.
+    #[serde(default)]
+    pub skills: SkillCounts,
+    /// How many local rule files are in the rules message.
+    #[serde(default)]
+    pub rule_files: u64,
     /// The runtime incarnation that produced this snapshot: a session that is
     /// stopped and resumed gets a fresh actor, whose revisions start again.
     pub incarnation: Ulid,
@@ -740,6 +767,7 @@ mod tests {
                     variant: None,
                     window: 200_000,
                     window_source: "models.json".into(),
+                    estimated: true,
                     estimate_total: 42_000,
                     breakdown: Default::default(),
                     output_reserve: 8192,
@@ -747,6 +775,8 @@ mod tests {
                     input_budget: 181_808,
                     percent: 21,
                     last_usage: None,
+                    skills: Default::default(),
+                    rule_files: 0,
                     incarnation: Ulid::new(),
                     revision: 3,
                 })

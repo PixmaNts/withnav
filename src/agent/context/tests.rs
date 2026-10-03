@@ -207,6 +207,8 @@ fn limits() -> ContextLimits {
         variant: None,
         window_source: "models.json".into(),
         budget: Budget::compute(1_000_000, None, None, None).unwrap(),
+        skills: SkillCounts::default(),
+        rule_files: 0,
     }
 }
 
@@ -301,4 +303,38 @@ fn each_tracker_is_its_own_incarnation_and_revisions_restart() {
         revision: 1,
         ..old.clone()
     }));
+}
+
+#[test]
+fn a_snapshot_is_marked_estimated_and_names_the_sources_behind_the_estimate() {
+    let mut l = limits();
+    l.skills = SkillCounts {
+        listed: 7,
+        omitted: 2,
+    };
+    l.rule_files = 3;
+    let b = estimate(None, None, None, &[], &[]);
+    let mut tracker = ContextTracker::new(l, b);
+    let snap = tracker.snapshot().clone();
+    assert!(snap.estimated);
+    assert_eq!((snap.skills.listed, snap.skills.omitted), (7, 2));
+    assert_eq!(snap.rule_files, 3);
+    tracker.record_usage(ulid::Ulid::new(), crate::provider::Usage::default());
+    let snap = tracker.update(b).expect("usage changed").clone();
+    assert_eq!(snap.last_usage.expect("usage").alias, "default");
+    assert_eq!(snap.skills.listed, 7);
+}
+
+#[test]
+fn a_snapshot_without_the_newer_fields_still_reads() {
+    let wire = serde_json::json!({
+        "alias": "a", "window": 100000, "window_source": "models.json",
+        "estimate_total": 10, "breakdown": {"system": 10, "rules": 0, "skills_catalog": 0, "tools": 0, "messages": 0},
+        "output_reserve": 1, "margin": 1, "input_budget": 98, "percent": 0,
+        "incarnation": ulid::Ulid::new().to_string(), "revision": 1,
+    });
+    let snap: ContextSnapshot = serde_json::from_value(wire).unwrap();
+    assert!(snap.estimated);
+    assert_eq!(snap.skills, SkillCounts::default());
+    assert_eq!(snap.rule_files, 0);
 }

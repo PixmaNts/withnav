@@ -532,6 +532,7 @@ impl Service {
                 history.save_transcript(session_id, transcript.to_vec());
             }));
         let status = Arc::new(runtime::RuntimeStatus::default());
+        let limits = limits.with_sources(&actor.rules, &actor.skills);
         status.install_context(ContextTracker::new(limits, actor.context_breakdown()));
         let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn_with_status(
             session_id,

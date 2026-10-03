@@ -447,6 +447,7 @@ fn the_status_gauge_shows_the_server_estimate_with_its_percent() {
         variant: None,
         window: 1_000_000,
         window_source: "models.json".into(),
+        estimated: true,
         estimate_total: 42_000,
         breakdown: Default::default(),
         output_reserve: 8192,
@@ -454,6 +455,8 @@ fn the_status_gauge_shows_the_server_estimate_with_its_percent() {
         input_budget: 941_808,
         percent: 4,
         last_usage: None,
+        skills: Default::default(),
+        rule_files: 0,
         incarnation: ulid::Ulid::new(),
         revision: 1,
     });

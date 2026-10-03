@@ -15,11 +15,12 @@ requests land in `develop`.
   provider reports; M is 5% of the window, at least 4096. A window too small to leave any input
   budget is refused when the session is created (422, `impossible_context_budget`), naming
   models.json. `GET /v1/sessions/{id}/context` returns the snapshot (alias, variant, window and its
-  source, estimate and breakdown, output reserve, margin, input budget, percent, the provider's count
-  for the last request with its step, a revision), `/context` renders it (`~42k / 1,000k · 4% · input
+  source, estimate and breakdown, `estimated`, output reserve, margin, input budget, percent, skills
+  listed and omitted, rule file count, the provider's count for the last request with its alias and
+  step, a runtime incarnation and a revision that counts within it), `/context` renders it (`~42k / 1,000k · 4% · input
   budget 942k` and the breakdown), and a new `context.updated` event carries it after each provider
   response, each step's tool results and at turn start and end. The event is live-only: it is not
-  stored or replayed, so the catalog has 14 kinds; the envelope version, the other kinds and the
+  stored or replayed, so the TUI reads the snapshot back after every stream connection; the catalog has 14 kinds; the envelope version, the other kinds and the
   stored history are unchanged. The TUI status line shows the estimate (`ctx ~42k / 1M · 4%`)
   instead of the last prompt count, and keeps the old display against a server that has no endpoint.
 

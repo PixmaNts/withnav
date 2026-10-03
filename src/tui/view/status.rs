@@ -40,20 +40,10 @@ pub fn context_gauge(state: &State) -> (String, String, Option<String>) {
     }
 }
 
-/// `path` with the home folder as `~`, cut from its start to `width` characters.
+/// `path` with the home folder as `~`, cut from its start to `width` columns.
 pub fn shorten(path: &str, width: usize) -> String {
     let path = path.replace(std::env::var("HOME").as_deref().unwrap_or("\0"), "~");
-    let chars: Vec<char> = path.chars().collect();
-    if chars.len() <= width {
-        path
-    } else {
-        format!(
-            "…{}",
-            chars[chars.len() - width.saturating_sub(1)..]
-                .iter()
-                .collect::<String>()
-        )
-    }
+    super::text::fit_start(&path, width)
 }
 
 /// The status line: what the conversation is doing (connection, activity, a notice), then what

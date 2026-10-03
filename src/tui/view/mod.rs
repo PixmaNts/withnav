@@ -6,6 +6,7 @@ mod permission;
 mod pickers;
 pub mod sidebar;
 mod status;
+pub mod text;
 pub mod tool;
 mod transcript;
 use crate::tui::{
@@ -38,7 +39,7 @@ fn key_bar(hints: &[&str], width: usize, theme: &Theme) -> Vec<Span<'static>> {
     let mut used = 1;
     for (index, hint) in hints.iter().enumerate() {
         let sep = if index == 0 { "" } else { " · " };
-        let wanted = sep.chars().count() + hint.chars().count();
+        let wanted = text::columns(sep) + text::columns(hint);
         if used + wanted > width {
             break;
         }

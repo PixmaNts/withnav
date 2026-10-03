@@ -1,5 +1,6 @@
 //! The tab sidebar: one row pair per open conversation, the active one tinted, with the tab keys at
 //! the bottom.
+use super::text::fit_end as fit;
 use crate::tui::{
     reducer::short_id,
     state::{Activity, BlockKind, State, Tab, UiState},
@@ -62,25 +63,6 @@ pub fn tab_title(state: &State, tab: &Tab) -> String {
             .filter(|t| !t.trim().is_empty())
             .unwrap_or_else(|| short_id(&m.session_id)),
     }
-}
-
-/// `text` cut to `width` columns, with `…` when cut.
-fn fit(text: &str, width: usize) -> String {
-    let columns = |t: &str| Span::raw(t.to_string()).width();
-    if columns(text) <= width {
-        return text.to_string();
-    }
-    let mut out = String::new();
-    for c in text.chars() {
-        let mut next = out.clone();
-        next.push(c);
-        if columns(&next) + 1 > width {
-            break;
-        }
-        out = next;
-    }
-    out.push('…');
-    out
 }
 
 /// Rows one tab takes: title, state, one per nested agent.

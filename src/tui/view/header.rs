@@ -1,7 +1,10 @@
 //! The header row: `◆ navai`, the workspace, the git branch and its changes on the left; the
 //! agent and the model in use (alias · model · variant · context gauge) on the right. What does
 //! not fit is dropped, least useful first.
-use super::status::{context_gauge, shorten};
+use super::{
+    status::{context_gauge, shorten},
+    text::{columns, fit_end},
+};
 use crate::tui::{state::State, theme::Theme};
 use ratatui::{
     layout::Rect,
@@ -32,12 +35,10 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
         theme.accent().add_modifier(Modifier::BOLD),
     )];
     let branch = state.git.as_ref().map(|git| {
+        let name = git.branch.as_deref().unwrap_or("detached");
         let mut spans = vec![
             Span::raw("  "),
-            Span::styled(
-                git.branch.clone().unwrap_or_else(|| "detached".into()),
-                theme.code_ref(),
-            ),
+            Span::styled(fit_end(name, 32), theme.code_ref()),
         ];
         if git.dirty > 0 {
             spans.push(Span::styled(format!(" ●{}", git.dirty), theme.warning()));
@@ -50,11 +51,19 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
         .map(|s| s.workspace.as_str())
         .unwrap_or(state.workspace.as_str());
 
-    // Right: the agent and the alias always; then the gauge, the variant and the model.
+    // Right: the agent and the alias always (each cut to a share of the row); then the gauge,
+    // the variant and the model.
+    let total = usize::from(area.width);
     let lead = vec![
         Span::styled("▌", agent_style),
-        Span::styled(agent.to_string(), agent_style.add_modifier(Modifier::BOLD)),
-        Span::styled(format!("  {alias}"), theme.title()),
+        Span::styled(
+            fit_end(agent, (total / 6).max(4)),
+            agent_style.add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  {}", fit_end(alias, (total / 5).max(4))),
+            theme.title(),
+        ),
     ];
     let gauge = vec![
         Span::styled(" · ", theme.muted()),
@@ -66,11 +75,10 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     let variant = state.variant.as_deref().map(|v| {
         vec![
             Span::styled(" · ", theme.muted()),
-            Span::styled(v.to_string(), theme.text()),
+            Span::styled(fit_end(v, 16), theme.text()),
         ]
     });
 
-    let total = usize::from(area.width);
     let mut room = total.saturating_sub(width(&logo) + width(&lead) + 3);
     let mut take = |spans: Option<Vec<Span<'static>>>| match spans {
         Some(spans) if width(&spans) <= room => {
@@ -84,8 +92,8 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     let variant = take(variant);
     // The model takes up to 30 columns, then the path what is left (cut from its start).
     let model = (room >= 8).then(|| {
-        let shown = shorten_end(model, room.min(33) - 3);
-        room -= shown.chars().count() + 3;
+        let shown = fit_end(model, room.min(33) - 3);
+        room -= columns(&shown) + 3;
         vec![
             Span::styled(" · ", theme.muted()),
             Span::styled(shown, theme.muted()),
@@ -93,7 +101,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     });
     let path = (room >= 8).then(|| {
         let shown = shorten(path, room - 2);
-        room -= shown.chars().count() + 2;
+        room -= columns(&shown) + 2;
         vec![Span::raw("  "), Span::styled(shown, theme.muted())]
     });
 
@@ -109,14 +117,4 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     left.push(Span::raw(" ".repeat(gap)));
     left.extend(right);
     frame.render_widget(Paragraph::new(Line::from(left)), area);
-}
-
-/// `text` cut to `max` characters at its end, with `…` when cut.
-fn shorten_end(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let mut cut: String = text.chars().take(max.saturating_sub(1)).collect();
-    cut.push('…');
-    cut
 }

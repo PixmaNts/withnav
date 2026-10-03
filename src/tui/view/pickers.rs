@@ -1,3 +1,4 @@
+use super::text::{columns, fit_end as fit, pad};
 use crate::tui::{
     commands,
     protocol::{ModelEntry, Overlay},
@@ -281,11 +282,11 @@ fn model_row(entry: &ModelEntry, width: usize, theme: &Theme) -> Line<'static> {
         format!("  {}", entry.variants.join(" "))
     };
     // alias (18) + model + "  " + window + variants; the model gives way first, then variants.
-    let alias = format!("{:<18}", fit(&entry.alias, 17));
-    let fixed = alias.chars().count() + 2 + window.chars().count();
+    let alias = format!("{} ", pad(&entry.alias, 17));
+    let fixed = columns(&alias) + 2 + columns(&window);
     let variants = fit(&variants, width.saturating_sub(fixed + 12));
-    let model_room = width.saturating_sub(fixed + variants.chars().count());
-    let model = format!("{:<model_room$}", fit(&entry.model, model_room));
+    let model_room = width.saturating_sub(fixed + columns(&variants));
+    let model = pad(&entry.model, model_room);
     let mut spans = vec![
         Span::styled(alias, theme.accent()),
         Span::styled(model, theme.text()),
@@ -299,18 +300,6 @@ fn model_row(entry: &ModelEntry, width: usize, theme: &Theme) -> Line<'static> {
         }
     }
     Line::from(spans)
-}
-
-/// `text` cut to `width` characters, with `…` when cut.
-fn fit(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        return text.to_string();
-    }
-    let mut cut: String = text.chars().take(width.saturating_sub(1)).collect();
-    if width > 0 {
-        cut.push('…');
-    }
-    cut
 }
 
 /// One theme in the picker: a mark for the one in effect, its name and id, and swatches of its

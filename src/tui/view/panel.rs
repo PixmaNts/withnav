@@ -2,6 +2,7 @@
 //! Agents (the session's agent, its role, and the agents it started), Context (the breakdown of the
 //! last snapshot and the last compaction), Skills (the catalog counts) and Changes (the files git
 //! reports). A section with nothing reported yet shows `—`; none is made up.
+use super::text::{columns, fit_end as fit, fit_start};
 use crate::tui::{
     reducer::tokens,
     state::{Activity, State, UiState},
@@ -60,7 +61,7 @@ fn styled_row(
     label_style: Style,
     value_style: Style,
 ) -> Line<'static> {
-    let gap = width.saturating_sub(label.chars().count() + value.chars().count() + 1);
+    let gap = width.saturating_sub(columns(label) + columns(&value) + 1);
     Line::from(vec![
         Span::styled(format!(" {label}"), label_style),
         Span::raw(" ".repeat(gap)),
@@ -70,16 +71,6 @@ fn styled_row(
 
 fn none(theme: &Theme) -> Line<'static> {
     Line::styled(" —", theme.muted())
-}
-
-/// `text` cut to `width` characters with `…`.
-fn fit(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        return text.to_string();
-    }
-    let mut cut: String = text.chars().take(width.saturating_sub(1)).collect();
-    cut.push('…');
-    cut
 }
 
 fn agents(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
@@ -212,24 +203,12 @@ fn changes(state: &State, width: usize, rows: usize, theme: &Theme) -> Option<Ve
     Some(lines)
 }
 
-/// `path` cut from its start, keeping the file name.
-fn fit_start(path: &str, width: usize) -> String {
-    let chars: Vec<char> = path.chars().collect();
-    if chars.len() <= width {
-        return path.to_string();
-    }
-    let tail: String = chars[chars.len() - width.saturating_sub(1)..]
-        .iter()
-        .collect();
-    format!("…{tail}")
-}
-
 /// `text` broken into lines of at most `width` characters, at spaces.
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for word in text.split_whitespace() {
         match lines.last_mut() {
-            Some(line) if line.chars().count() + 1 + word.chars().count() <= width => {
+            Some(line) if columns(line) + 1 + columns(word) <= width => {
                 line.push(' ');
                 line.push_str(word);
             }

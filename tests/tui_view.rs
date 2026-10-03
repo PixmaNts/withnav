@@ -2618,3 +2618,66 @@ fn the_layout_at_100_140_and_200_columns_in_dark_and_light() {
         }
     }
 }
+
+// ---------------------------------------------------------------- wide and combining text
+
+#[test]
+fn wide_and_combining_names_never_push_the_gauge_off_the_header() {
+    let mut s = with_panel_data();
+    let workspace = "/home/pixma/開発/プロジェクト/とても長いフォルダの名前/ソース";
+    if let Some(m) = s.session.as_mut() {
+        m.workspace = workspace.into();
+    }
+    s.selected_model_name = Some("ベンダー/とても長いモデルの名前-e\u{301}-v2".into());
+    s.git = Some(navai::tui::git::GitStatus {
+        branch: Some("機能/端末の配置-e\u{301}".into()),
+        dirty: 2,
+        files: vec![
+            navai::tui::git::Change {
+                mark: 'M',
+                path: "源/表示/とても長いファイルの名前です.rs".into(),
+            },
+            navai::tui::git::Change {
+                mark: 'A',
+                path: "cafe\u{301}/re\u{301}sume\u{301}.md".into(),
+            },
+        ],
+    });
+    let ui = UiState::default();
+    for width in [80u16, 100, 140, 200] {
+        let t = cells(&s, &ui, (width, 40));
+        let header = row_text(&t, 0, width);
+        assert!(
+            header.contains("200k"),
+            "{width}: the gauge stays: {header}"
+        );
+        assert!(header.contains("▌build"), "{width}: {header}");
+        // the header ends with the gauge and its trailing space: nothing was cut at the edge
+        assert!(
+            header.trim_end().ends_with("200k · 21%"),
+            "{width}: {header}"
+        );
+    }
+    // Wide characters take two cells, the second one blank: read the text without those.
+    let t = cells(&s, &ui, (160, 40));
+    let buffer = t.backend().buffer();
+    let shown: String = (0..40u16)
+        .map(|y| {
+            let mut row = String::new();
+            let mut x = 0u16;
+            while x < 160 {
+                let symbol = buffer[(x, y)].symbol();
+                row.push_str(symbol);
+                x += navai::tui::view::text::columns(symbol).max(1) as u16;
+            }
+            row
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        shown.contains("A cafe\u{301}/re\u{301}sume\u{301}.md"),
+        "{shown}"
+    );
+    assert!(shown.contains("M …も長いファイルの名前です.rs"), "{shown}");
+    assert!(shown.contains("機能/端末の配置-e\u{301} ●2"), "{shown}");
+}

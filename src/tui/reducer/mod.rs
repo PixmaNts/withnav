@@ -152,6 +152,7 @@ pub(crate) fn start_conversation(s: &mut State) {
     reset_projection(s);
     s.session = None;
     s.resuming = None;
+    s.parent_session_id = None;
     s.agent_seq = None;
     s.variant_seq = None;
     s.model_seq = None;
@@ -471,6 +472,9 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         },
         ClientEvent::Metadata { result, .. } => {
             if let Ok(m) = result {
+                if s.read_only() {
+                    s.resuming = None;
+                }
                 // Only reached for the current generation, so `m` describes this conversation.
                 // A summary read before a change the stream already confirmed is older than it.
                 let newer = |seq: Option<u64>| seq.is_none_or(|seq| m.current_seq >= seq);
@@ -486,6 +490,10 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 }
                 s.session = Some(m);
                 seed_children(s);
+            } else if s.read_only() {
+                if let Err(error) = result {
+                    push_local(s, BlockKind::Error(error));
+                }
             }
         }
         // An older server has no endpoint: the gauge stays on the provider's count.

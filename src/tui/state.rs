@@ -199,6 +199,8 @@ pub struct Tab {
     pub view: TabView,
     /// Agents started by this conversation, shown under it; empty until the server reports them.
     pub children: Vec<ChildAgent>,
+    /// Read-only transcript opened from a parent's reported child link.
+    pub parent_session_id: Option<String>,
     /// The workspace's branch and changes at the last read; `None` until read, or when the
     /// workspace is not a git repository.
     pub git: Option<super::git::GitStatus>,
@@ -213,6 +215,10 @@ pub const DEFAULT_AGENT: &str = "build";
 pub const PLAN_AGENT: &str = "plan";
 
 impl Tab {
+    pub fn read_only(&self) -> bool {
+        self.parent_session_id.is_some()
+    }
+
     /// The oldest permission request still open, if any.
     pub fn open_permission(&self) -> Option<&PermissionPrompt> {
         self.conversation.open_permissions.iter().find_map(|id| {
@@ -356,6 +362,23 @@ impl Default for State {
 }
 
 impl State {
+    pub fn child_rows(&self, filter: &str) -> Vec<&ChildAgent> {
+        let parent = self.parent_session_id.as_deref();
+        let tab = parent
+            .and_then(|id| self.tab_of_session(id))
+            .map(|i| &self.tabs[i])
+            .unwrap_or(self);
+        let filter = filter.to_lowercase();
+        tab.children
+            .iter()
+            .filter(|c| {
+                format!("{} {} {}", c.name, c.goal, c.session_id)
+                    .to_lowercase()
+                    .contains(&filter)
+            })
+            .collect()
+    }
+
     /// A number never handed out before, for a generation or a tab id.
     pub fn issue(&mut self) -> u64 {
         self.issued += 1;

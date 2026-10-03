@@ -96,7 +96,16 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
             .set_symbol("│")
             .set_style(theme.border());
     }
-    let keys = ["alt+1…9 switch", "alt+w close", "alt+b hide bar"];
+    let keys: &[&str] = if state.tabs.iter().any(|t| !t.children.is_empty()) {
+        &[
+            "alt+1…9 switch",
+            "alt+s subagents",
+            "alt+w close",
+            "alt+b hide bar",
+        ]
+    } else {
+        &["alt+1…9 switch", "alt+w close", "alt+b hide bar"]
+    };
     let keys_height = if inner.height >= 8 {
         keys.len() as u16 + 1
     } else {

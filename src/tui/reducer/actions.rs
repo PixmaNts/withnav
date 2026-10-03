@@ -11,6 +11,15 @@ use crate::tui::{
 };
 
 fn submit(s: &mut State, text: String, revision: u64) -> Vec<Effect> {
+    if s.read_only() {
+        push_local(
+            s,
+            BlockKind::Notice(
+                "this subagent is read-only; return to its parent to send a message".into(),
+            ),
+        );
+        return vec![];
+    }
     if s.pending_submit_text.is_some() {
         // One message waits for the conversation to be ready; a second one is not queued.
         push_local(
@@ -167,7 +176,11 @@ fn close_tab(s: &mut State, ui: &mut UiState) -> Vec<Effect> {
             revision: 0,
         }]
     } else {
-        let next = s.active.min(s.tabs.len() - 1);
+        let next = closed
+            .parent_session_id
+            .as_deref()
+            .and_then(|id| s.tab_of_session(id))
+            .unwrap_or_else(|| s.active.min(s.tabs.len() - 1));
         s.active = next;
         s.unread = false;
         let view = s.view.clone();
@@ -192,6 +205,15 @@ pub fn short_id(id: &str) -> String {
 }
 
 fn resume(s: &mut State, ui: &mut UiState, id: String) -> Vec<Effect> {
+    if s.sessions
+        .iter()
+        .any(|e| e.id == id && (!e.promptable || e.parent_session_id.is_some()))
+        || s.tabs
+            .iter()
+            .any(|t| t.children.iter().any(|c| c.session_id == id))
+    {
+        return open_child(s, ui, id);
+    }
     if let Some(index) = s.tab_of_session(&id) {
         let mut effects = if index == s.active {
             vec![]
@@ -212,6 +234,52 @@ fn resume(s: &mut State, ui: &mut UiState, id: String) -> Vec<Effect> {
     start_conversation(s);
     s.resuming = Some(id.clone());
     effects.push(Effect::Resume(id));
+    effects
+}
+
+fn open_child(s: &mut State, ui: &mut UiState, id: String) -> Vec<Effect> {
+    if let Some(index) = s.tab_of_session(&id) {
+        return show(s, ui, index);
+    }
+    let link = s
+        .tabs
+        .iter()
+        .find_map(|t| {
+            t.children
+                .iter()
+                .find(|c| c.session_id == id)
+                .and_then(|c| {
+                    t.session
+                        .as_ref()
+                        .map(|m| (m.session_id.clone(), c.name.clone()))
+                })
+        })
+        .or_else(|| {
+            s.sessions.iter().find(|e| e.id == id).and_then(|e| {
+                e.parent_session_id
+                    .clone()
+                    .map(|parent| (parent, e.agent.clone().unwrap_or_default()))
+            })
+        });
+    let Some((parent, agent)) = link else {
+        return vec![];
+    };
+    let Some(mut effects) = blank_tab(s, ui) else {
+        return vec![];
+    };
+    start_conversation(s);
+    s.parent_session_id = Some(parent);
+    s.agent = Some(agent);
+    s.resuming = Some(id.clone());
+    s.selected_model_alias = None;
+    s.selected_model_name = None;
+    s.context_window = None;
+    ui.focus = crate::tui::state::Focus::Transcript;
+    effects.push(Effect::FetchMetadata(id.clone()));
+    effects.push(Effect::Subscribe {
+        session_id: id,
+        cursor: None,
+    });
     effects
 }
 
@@ -242,7 +310,9 @@ fn pick_model(
 /// Why the active conversation cannot switch model now: the server refuses while the agent
 /// waits for an answer or a decision. `None` when it can (a running turn only defers it).
 pub fn switch_blocked(tab: &Tab) -> Option<&'static str> {
-    if tab.open_permission().is_some() {
+    if tab.read_only() {
+        Some("this subagent is read-only; its parent chooses its model")
+    } else if tab.open_permission().is_some() {
         Some("a tool call is waiting for approval: answer it first, then switch model")
     } else if tab.activity == Activity::AwaitingUser {
         Some("the agent is waiting for your answer: reply first, then switch model")
@@ -341,6 +411,13 @@ fn run_command(
     arguments: String,
     revision: Option<u64>,
 ) -> Vec<Effect> {
+    if s.read_only() {
+        push_local(
+            s,
+            BlockKind::Notice("this subagent is read-only; run commands in its parent".into()),
+        );
+        return vec![];
+    }
     let live = s
         .session
         .as_ref()
@@ -377,6 +454,7 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
         Action::SubmitAt { text, revision } => submit(s, text, revision),
         Action::NewConversation => blank_tab(s, ui).unwrap_or_default(),
         Action::ResumeSession(id) => resume(s, ui, id),
+        Action::OpenChild(id) => open_child(s, ui, id),
         Action::PickModel(alias) => pick_model(s, ui, alias, None).unwrap_or_default(),
         Action::SwitchModel(alias) => switch_model(s, ui, alias),
         Action::PickVariant(name) => {
@@ -404,7 +482,11 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
         Action::ToggleAgent => toggle_agent(s),
         Action::AnswerPermission { request_id, answer } => {
             let open = s.open_permission().map(|p| p.request_id.clone());
-            let session = s.session.as_ref().map(|m| m.session_id.clone());
+            let session = if s.read_only() {
+                None
+            } else {
+                s.session.as_ref().map(|m| m.session_id.clone())
+            };
             match (open, session) {
                 (Some(open), Some(session_id))
                     if open == request_id

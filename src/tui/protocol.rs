@@ -280,6 +280,7 @@ pub enum Action {
     Select(usize),
     NewConversation,
     ResumeSession(String),
+    OpenChild(String),
     PickModel(String),
     /// Moves the active conversation to `alias` (`/model <alias>`); on a tab with no
     /// conversation yet, the conversation will start on it.
@@ -335,6 +336,7 @@ pub enum Overlay {
     Themes,
     /// The variants of a model: the second step of the model picker, or `/variant`.
     Variants,
+    Children,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {

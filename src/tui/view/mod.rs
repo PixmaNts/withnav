@@ -77,6 +77,31 @@ fn key_bar(choices: &[Hints], width: usize, theme: &Theme) -> Vec<Span<'static>>
 /// choices always shown, shorter when the row is narrow), the deny message's while one is typed,
 /// else the everyday ones.
 fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
+    if state.read_only() {
+        return &[Hints {
+            hints: &[
+                "alt+w parent",
+                "alt+s subagents",
+                "page↑/↓ scroll",
+                "esc stop",
+                "f1 help",
+            ],
+            required: 0,
+        }];
+    }
+    if !state.children.is_empty() && state.open_permission().is_none() && editor.text().is_empty() {
+        return &[Hints {
+            hints: &[
+                "alt+s subagents",
+                "tab build/plan",
+                "ctrl+p palette",
+                "alt+1…9 tabs",
+                "esc stop",
+                "f1 help",
+            ],
+            required: 1,
+        }];
+    }
     // An answered request takes no keys: the usual hints come back.
     let answerable = state
         .open_permission()
@@ -260,7 +285,15 @@ pub fn draw(
         });
     let inner = border.inner(input);
     frame.render_widget(border, input);
-    frame.render_widget(editor.area(), inner);
+    if state.read_only() {
+        frame.render_widget(
+            Paragraph::new("This subagent can't be written to · alt+w returns to its parent")
+                .style(theme.muted()),
+            inner,
+        );
+    } else {
+        frame.render_widget(editor.area(), inner);
+    }
     frame.buffer_mut().set_style(hints, theme.panel());
     if ui.quit_confirm {
         frame.render_widget(

@@ -225,6 +225,27 @@ answers claim and use the child's existing permission channel. A foreign parent 
 and child `ask` stays unavailable. Startup terminalizes persisted starting/running children through
 the same CAS with reason `restart`, queues their notices, then seeds capacity; no tool is replayed.
 
+**Steering and turn interrupts.** `agent/boundary.rs` exposes the single injection seam, called by
+`run_steps` before a provider request once the whole previous tool batch has settled. Runtime
+steering (`bus/runtime/steering.rs`) applies queued parent instructions with `Parent` provenance,
+using identified operations that reserve interrupt input for its replacement turn. The guidance
+queue is in memory and can be lost on a crash; results remain durable in the completion outbox.
+then the durable delivery callback consumes eligible mid-turn results. Both precede the request's
+budget check. A renewable actor turn token is separate from `session_cancel`: an input interrupt
+unwinds the current provider/tool work, pairs interrupted calls with results, records the old
+turn's interruption, then renews the token without terminalizing the child. Session stop still
+cancels the lifetime token and tears down the tree.
+
+`tools/steer_subagent.rs` is installed only alongside root `task`, never in child or metacognition
+registries. `Service::steer_child` validates ownership and active child-link state; it queues input
+through the runtime's existing control channel, without taking lifecycle. Explicit child interrupts
+settle pending permissions through the existing cancellation and durable mirror path. Parked steer
+does not answer any interaction. `child_links.delivery` stores `next_turn`, `steer` or `interrupt`;
+the self-contained completion outbox retains it after child deletion. Parent result interrupts
+fall back to next-turn delivery for pending human interactions; inbox commands and queued controls
+are checked before completion-only wakes. `subagent.spawned` and `subagent.done` payloads include
+`delivery`; no new event kind is introduced.
+
 | Path | What | Written by |
 |---|---|---|
 | `~/.config/navai/models.json`, `auth.json`, `config.json` | model aliases, provider keys and client settings | the driver, `navai auth`, the TUI |

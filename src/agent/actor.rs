@@ -45,6 +45,7 @@ pub enum PendingInteraction {
 }
 
 pub struct AgentActor {
+    pub safe_boundary: Option<super::boundary::SafeBoundary>,
     pub transcript: Vec<ChatMessage>,
     /// The installed compaction: what stands for the start of `transcript`
     /// and which tool outputs the prompt shows as markers. `transcript`
@@ -123,6 +124,7 @@ impl AgentActor {
             transcript: Vec::new(),
             compaction: None,
             registry,
+            safe_boundary: None,
             tool_context,
             provider,
             api_key,

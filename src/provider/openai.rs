@@ -78,6 +78,7 @@ pub enum UserProvenance {
     #[default]
     Driver,
     Navigator,
+    Parent,
     Subagent,
 }
 impl UserProvenance {

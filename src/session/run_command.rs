@@ -20,6 +20,9 @@ const MODEL_CATALOG_CAP: usize = 50;
 const COMPACTING_ERROR: &str =
     "a compaction is running: wait for it to finish, then change the agent or variant";
 
+/// Why an agent, variant, compaction or model change waits for a model switch.
+const SWITCHING_ERROR: &str = "a model switch is running: wait for it to finish, then retry";
+
 /// Longest unknown command name echoed into the result.
 const UNKNOWN_NAME_CAP: usize = 64;
 
@@ -289,6 +292,7 @@ impl Service {
                     CommandFailure::Refused(commands::ASK_PENDING_ERROR.to_string())
                 }
                 SwitchError::Compacting => CommandFailure::Refused(COMPACTING_ERROR.to_string()),
+                SwitchError::Switching => CommandFailure::Refused(SWITCHING_ERROR.to_string()),
                 SwitchError::Busy => CommandFailure::Refused(
                     "the agent is working: wait for the turn to end or stop it, then switch"
                         .to_string(),
@@ -392,7 +396,10 @@ impl Service {
             .selection
             .exclusive_unless_compacting()
             .await
-            .map_err(|_| CommandFailure::Refused(COMPACTING_ERROR.to_string()))?;
+            .map_err(|err| match err {
+                SwitchError::Switching => CommandFailure::Refused(SWITCHING_ERROR.to_string()),
+                _ => CommandFailure::Refused(COMPACTING_ERROR.to_string()),
+            })?;
         self.history()
             .set_variant(session_id, chosen.as_ref())
             .await

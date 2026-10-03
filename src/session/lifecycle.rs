@@ -44,7 +44,15 @@ impl Service {
     /// [`Service::close_session`] for a caller that already holds the
     /// lifecycle gate.
     pub(super) async fn close_session_gated(&self, id: SessionId) -> Result<(), ServerError> {
-        if let Some(handle) = self.mark_stopping(id) {
+        let target = {
+            let _admission = self.admission_gate.lock().await;
+            let target = self.mark_stopping(id);
+            if let Some(handle) = &target {
+                handle.session_cancel.cancel();
+            }
+            target
+        };
+        if let Some(handle) = target {
             self.fence_and_remove(id, handle, "stop requested").await;
             return Ok(());
         }
@@ -64,6 +72,7 @@ impl Service {
     /// its `session.end`), then return so axum finishes draining.
     pub async fn close_all(&self) {
         let _gate = self.lifecycle_gate().await;
+        let admission = self.admission_gate.lock().await;
         let targets: Vec<(SessionId, SessionHandle)> = {
             let mut guard = self.lock_sessions();
             guard
@@ -71,10 +80,12 @@ impl Service {
                 .filter(|(_, handle)| handle.lifecycle == Lifecycle::Active)
                 .map(|(id, handle)| {
                     handle.lifecycle = Lifecycle::Stopping;
+                    handle.session_cancel.cancel();
                     (*id, handle.clone())
                 })
                 .collect()
         };
+        drop(admission);
         for (id, handle) in targets {
             self.fence_and_remove(id, handle, "shutdown").await;
         }
@@ -201,6 +212,7 @@ mod tests {
     /// exists for.
     fn wedged_runtime_handle() -> SessionHandle {
         SessionHandle {
+            incarnation: Ulid::new(),
             inbox_tx: mpsc::channel(1).0,
             permissions: mpsc::channel(1).0,
             sequencer: Sequencer::spawn(Ulid::new(), SessionBus::default(), 0),

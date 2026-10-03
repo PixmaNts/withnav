@@ -78,6 +78,7 @@ pub enum Lifecycle {
 /// so no lock is ever held across an await.
 #[derive(Clone)]
 pub struct SessionHandle {
+    pub incarnation: Ulid,
     /// Bounded per-actor command transport (message routes post here).
     pub inbox_tx: mpsc::Sender<Command>,
     /// The session's ONE authoritative event sequencer.
@@ -158,6 +159,7 @@ impl SessionHandle {
 impl std::fmt::Debug for SessionHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SessionHandle")
+            .field("incarnation", &self.incarnation)
             .field("actor_id", &self.actor_id)
             .field("lifecycle", &self.lifecycle)
             .field("actor_state", &self.actor_state)
@@ -233,6 +235,7 @@ pub struct Service {
     /// session id never has two runtimes and is never resumed while it is
     /// being stopped or deleted. One client, so one gate for the service.
     gate: Arc<tokio::sync::Mutex<()>>,
+    pub(super) admission_gate: Arc<tokio::sync::Mutex<()>>,
     pub(super) subagent_slots: Arc<Mutex<HashMap<SessionId, usize>>>,
     pub(super) unpublished_children: Arc<Mutex<std::collections::HashSet<SessionId>>>,
     catalog: crate::provider::catalog::ModelCatalog,
@@ -269,6 +272,7 @@ impl Service {
             history: Arc::new(history),
             hooks,
             gate: Arc::new(tokio::sync::Mutex::new(())),
+            admission_gate: Arc::new(tokio::sync::Mutex::new(())),
             subagent_slots: Arc::default(),
             unpublished_children: Arc::default(),
             catalog,
@@ -1459,6 +1463,7 @@ impl Service {
         ))));
 
         let handle = SessionHandle {
+            incarnation: Ulid::new(),
             inbox_tx,
             permissions,
             sequencer,
@@ -1474,7 +1479,10 @@ impl Service {
         };
         let sender = SessionSender::new(session_id, handle.clone());
         let cancel = handle.session_cancel.clone();
-        self.lock_sessions().insert(session_id, handle);
+        {
+            let _admission = self.admission_gate.lock().await;
+            self.lock_sessions().insert(session_id, handle);
+        }
         // The host learns of the session once it is routable. A session
         // already closing hands back a subscription that ends at once.
         if child_parent.is_none() {

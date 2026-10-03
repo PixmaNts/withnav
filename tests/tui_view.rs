@@ -1860,6 +1860,107 @@ fn bash_edit_and_fetch_prompts_show_what_they_would_do() {
     assert!(shown.contains("a always for this site"), "{shown}");
 }
 
+/// An open prompt for `args` as the server sends it (its copy of the arguments cut to 4 KiB),
+/// with the tool call itself in the transcript when `with_call`.
+fn asking_for(tool: &str, args: serde_json::Value, with_call: bool) -> State {
+    let call = navai::provider::ToolCall {
+        id: "c1".into(),
+        name: tool.into(),
+        args: args.clone(),
+        args_valid: true,
+    };
+    let request = navai::agent::permissions::PermissionRequest::new(
+        &call,
+        navai::agent::permissions::Scope::Folder("/ws".into()),
+        "build",
+    );
+    let mut block = prompt(tool, json!({}), ("folder", "/ws"));
+    if let BlockKind::Permission(p) = &mut block.kind {
+        p.arguments = request.arguments;
+    }
+    let mut s = asking(block);
+    if with_call {
+        let at = s.conversation.blocks.len() - 1;
+        s.conversation.blocks.insert(
+            at,
+            Block {
+                id: "tool:c1".into(),
+                kind: BlockKind::ToolCall {
+                    id: "c1".into(),
+                    name: tool.into(),
+                    args,
+                    status: None,
+                    output: String::new(),
+                    metadata: serde_json::Value::Null,
+                    duration_ms: None,
+                    exit_code: None,
+                },
+            },
+        );
+    }
+    s
+}
+
+#[test]
+fn a_large_write_shows_its_path_and_first_lines() {
+    let content = (0..2_100)
+        .map(|n| format!("line {n:04} {}", "x".repeat(40)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(content.len() > 100 * 1024);
+    let args = json!({"content": content, "path": "/ws/big.txt"});
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    // from the call in the transcript: the whole preview
+    let s = asking_for("write", args.clone(), true);
+    render("permission-write-large", (100, 36), &s, &ui, &Editor::new());
+    let shown = screen_text(&s, &ui, (100, 36));
+    for want in [
+        "/ws/big.txt",
+        "+ line 0000",
+        "+ line 0005",
+        "… 2094 more lines",
+    ] {
+        assert!(shown.contains(want), "{want}: {shown}");
+    }
+    // from the server's cut copy only: the path still on its own line, the rest labelled
+    let s = asking_for("write", args, false);
+    let shown = screen_text(&s, &ui, (100, 36));
+    assert!(shown.contains("│  /ws/big.txt"), "{shown}");
+    assert!(shown.contains("(content too long to show here)"), "{shown}");
+    assert!(!shown.contains("\\n"), "no raw JSON: {shown}");
+}
+
+#[test]
+fn a_long_command_and_control_characters_are_shown_safely() {
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    let command = format!("echo {} && echo done", "a".repeat(20_000));
+    let s = asking_for("bash", json!({"command": command}), true);
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(shown.contains("$ echo aaaa"), "{shown}");
+    let s = asking_for("bash", json!({"command": command}), false);
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(shown.contains("(command too long to show here)"), "{shown}");
+    // escape sequences and other controls are written out, never sent to the terminal
+    let s = asking_for(
+        "write",
+        json!({"path": "/ws/a\u{1b}[2J.txt", "content": "ok\u{7}\u{1b}]0;title\u{7}\tend"}),
+        true,
+    );
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(shown.contains("/ws/a\\u{1b}[2J.txt"), "{shown}");
+    assert!(
+        shown.contains("+ ok\\u{7}\\u{1b}]0;title\\u{7}    end"),
+        "{shown}"
+    );
+    assert!(!shown.contains('\u{1b}'), "{shown}");
+}
+
 #[test]
 fn n_asks_for_a_message_then_enter_denies_with_it() {
     let s = asking(prompt(

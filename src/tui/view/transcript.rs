@@ -189,8 +189,18 @@ fn block_text(
             } else {
                 Keys::Ready
             };
+            let tool_id = format!("tool:{}", prompt.tool_call_id);
+            let call = state
+                .conversation
+                .blocks
+                .iter()
+                .find_map(|b| match &b.kind {
+                    BlockKind::ToolCall { args, .. } if b.id == tool_id => Some(args),
+                    _ => None,
+                });
             lines.extend(super::permission::lines(
                 prompt,
+                call,
                 keys,
                 theme,
                 usize::from(width.saturating_sub(2)),

@@ -57,8 +57,10 @@ pub struct SessionListEntry {
     pub agent: Option<String>,
     pub live: bool,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub child_status: Option<String>,
     #[serde(default = "promptable_default")]
     pub promptable: bool,

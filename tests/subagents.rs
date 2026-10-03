@@ -529,15 +529,8 @@ async fn child_slot_is_released_after_terminal_result() {
 }
 
 #[tokio::test]
-async fn five_concurrent_children_are_refused_then_slot_frees_on_finish() {
-    let release = std::sync::Arc::new(tokio::sync::Notify::new());
-    let provider = spawn_gated_provider(
-        (0..5)
-            .map(|_| http_sse(&sse_body(&[&text_chunk("complete")])))
-            .collect(),
-        release.clone(),
-    )
-    .await;
+async fn concurrent_children_reuse_exactly_two_completed_capacity_slots() {
+    let mut provider = common::sse::spawn_streaming_provider().await;
     let fx = fixture_at(&provider.url);
     install_agents(&fx.root, &fx.ws);
     std::fs::write(
@@ -550,37 +543,68 @@ async fn five_concurrent_children_are_refused_then_slot_frees_on_finish() {
         .create_session(&fx.ws, Some("default"), None)
         .await
         .unwrap();
-    let mut children = Vec::new();
-    for index in 0..4 {
-        children.push(
-            fx.state
-                .create_child_session(parent, "explore", &format!("child {index}"))
+    let children = futures::future::join_all(
+        (0..4).map(|_| fx.state.create_child_session(parent, "explore", "inspect")),
+    )
+    .await
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap();
+    assert_eq!(children.len(), 4);
+    let mut streams = Vec::new();
+    for _ in 0..4 {
+        let (_, stream) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), provider.requests.recv())
                 .await
-                .unwrap(),
-        );
+                .unwrap()
+                .unwrap();
+        streams.push(stream);
     }
-    let fifth = fx
-        .state
-        .create_child_session(parent, "explore", "fifth")
-        .await
-        .unwrap_err();
-    release.notify_waiters();
     assert!(matches!(
-        fifth,
-        navai::error::ServerError::SubagentCapacity { capacity: 4 }
+        fx.state
+            .create_child_session(parent, "explore", "fifth")
+            .await,
+        Err(navai::error::ServerError::SubagentCapacity { capacity: 4 })
     ));
-    for _ in 0..100 {
-        let active = fx.state.history().active_child_count(parent).await.unwrap();
-        if active < 4 {
-            break;
+    let finished = streams.drain(..2).collect::<Vec<_>>();
+    futures::future::join_all(finished.into_iter().map(|stream| async move {
+        stream.send(text_chunk("complete")).unwrap();
+        drop(stream);
+    }))
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if fx.state.history().active_child_count(parent).await.unwrap() == 2
+                && fx.state.reserved_child_count(parent) == 2
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert!(fx
-        .state
-        .create_child_session(parent, "explore", "replacement")
-        .await
-        .is_ok());
+    })
+    .await
+    .unwrap();
+    let replacements = futures::future::join_all((0..2).map(|_| {
+        fx.state
+            .create_child_session(parent, "explore", "replacement")
+    }))
+    .await
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap();
+    assert_eq!(replacements.len(), 2);
+    assert_eq!(
+        fx.state.history().active_child_count(parent).await.unwrap(),
+        4
+    );
+    assert_eq!(fx.state.reserved_child_count(parent), 4);
+    assert!(matches!(
+        fx.state
+            .create_child_session(parent, "explore", "fifth again")
+            .await,
+        Err(navai::error::ServerError::SubagentCapacity { capacity: 4 })
+    ));
+    fx.state.close_all().await;
 }
 
 #[tokio::test]

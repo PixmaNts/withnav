@@ -87,14 +87,24 @@ impl Service {
             .partial_output
             .clone();
         // Commit the outcome before cancelling so the natural interruption callback cannot win the CAS.
-        self.finish_child(
-            parent,
-            child,
-            "stopped",
-            Some("watchdog".into()),
-            format!("stopped by watchdog\n{partial}"),
-        )
-        .await?;
+        if let Err(error) = self
+            .finish_child(
+                parent,
+                child,
+                "stopped",
+                Some("watchdog".into()),
+                format!("stopped by watchdog\n{partial}"),
+            )
+            .await
+        {
+            handle
+                .status
+                .watchdog
+                .stopped
+                .store(false, Ordering::Release);
+            handle.status.watchdog.resume();
+            return Err(error);
+        }
         let target = {
             let _admission = self.admission_gate.lock().await;
             let target = self.mark_stopping(child);

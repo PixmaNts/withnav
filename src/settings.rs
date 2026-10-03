@@ -156,6 +156,31 @@ pub fn save_tui_theme(config_dir: &Path, id: &str) -> Result<(), SettingsError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn watchdog_interval_defaults_disables_and_rejects_invalid_values() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.subagents_watchdog_interval_secs(), Ok(300));
+        for n in [0, 1, 300, 31536000] {
+            settings.root.insert(
+                "subagents".into(),
+                serde_json::json!({"watchdog_interval_secs":n}),
+            );
+            assert_eq!(settings.subagents_watchdog_interval_secs(), Ok(n));
+        }
+        for value in [
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("300"),
+            serde_json::Value::Null,
+            serde_json::json!(31536001),
+        ] {
+            settings.root.insert(
+                "subagents".into(),
+                serde_json::json!({"watchdog_interval_secs":value}),
+            );
+            assert!(settings.subagents_watchdog_interval_secs().is_err());
+        }
+    }
 
     #[test]
     fn a_missing_file_gives_the_defaults() {

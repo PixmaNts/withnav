@@ -1955,8 +1955,10 @@ impl Service {
                         .to_string();
                         while text.len() > 16 * 1024 {
                             result = crate::tools::bound_output(&result, result.len() / 2).0;
-                            text = serde_json::json!({"untrusted_subagent_output":true,"child_session_id":child,
-                                "agent":payload["agent"],"outcome":payload["outcome"],"result":result}).to_string();
+                            text = serde_json::json!({"untrusted_subagent_output":true,
+                                "child_session_id":payload.get("child_session_id").cloned().unwrap_or(serde_json::json!(child)),
+                                "agent":payload["agent"],"outcome":payload["outcome"],"result":result,
+                                "reason":payload.get("reason")}).to_string();
                         }
                         transcript.push(ChatMessage::User { provenance: crate::provider::openai::UserProvenance::Subagent, content: text });
                         children.push(child);

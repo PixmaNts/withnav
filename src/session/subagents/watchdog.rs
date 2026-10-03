@@ -311,6 +311,25 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn two_unreachable_answers_become_doubt_and_cancellation_is_not_a_failure() {
+        let mut watchdog = Watchdog::new(Arc::new(RealClock), Duration::from_secs(300));
+        let cancel = CancellationToken::new();
+        assert_eq!(watchdog.check(None, &evidence(), &cancel).await, None);
+        let cancelled = FakeJudge(Err(JudgeError::Cancelled));
+        assert_eq!(
+            watchdog.check(Some(&cancelled), &evidence(), &cancel).await,
+            None
+        );
+        assert_eq!(
+            watchdog.check(None, &evidence(), &cancel).await,
+            Some(Checked {
+                verdict: Verdict::Doubt,
+                reason: Some(JudgeError::Unavailable)
+            })
+        );
+    }
+
     #[test]
     fn question_is_separate_and_evidence_is_bounded_untrusted_json() {
         let mut evidence = evidence();

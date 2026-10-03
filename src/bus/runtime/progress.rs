@@ -48,7 +48,10 @@ impl Activity {
         use crate::agent::run_loop::AgentEvent;
         let mut progress = self.0.lock().unwrap_or_else(|e| e.into_inner());
         match event {
-            AgentEvent::StepStarted => progress.steps = progress.steps.saturating_add(1),
+            AgentEvent::StepStarted => {
+                progress.steps = progress.steps.saturating_add(1);
+                progress.partial_output.clear();
+            }
             AgentEvent::Response(message) => {
                 progress.last_message = Instant::now();
                 progress.partial_output = crate::tools::bound_output(&message.text, 15 * 1024).0;

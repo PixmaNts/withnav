@@ -17,10 +17,10 @@ expression: snapshot
                      │ │  I found the failing test. The empty argument is discarded.                
                      │ │                                                                            
                      │ │ PERMISSION · build wants to run bash in /ws                                
+                     │ │  it changes files                                                          
                      │ │  $ ls                                                                      
                      │ │  no longer waiting                                                         
                      │ │                                                                            
-                     │                                                                              
                      │                                                                              
                      │                                                                              
                      │                                                                              

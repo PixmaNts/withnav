@@ -99,6 +99,11 @@ fn build(
         Span::styled(p.tool.clone(), theme.strong()),
         Span::styled(format!(" {}", scope_text(p)), theme.code_ref()),
     ])];
+    // Why the server asks, one muted line (the width cut in `lines` bounds it).
+    let reason = p.reason.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !reason.is_empty() {
+        lines.push(Line::styled(format!(" {reason}"), theme.muted()));
+    }
     for line in preview(p, call) {
         let style = if line.starts_with('(') {
             theme.muted()
@@ -120,6 +125,12 @@ fn build(
                 theme.muted(),
             ));
         }
+        (None, Keys::Ready) if !offers_always(p) => lines.push(Line::from(vec![
+            Span::styled(" y", theme.strong()),
+            Span::styled(" allow once · ", theme.muted()),
+            Span::styled("n", theme.strong()),
+            Span::styled(" deny", theme.muted()),
+        ])),
         (None, Keys::Ready) => lines.push(Line::from(vec![
             Span::styled(" y", theme.strong()),
             Span::styled(" allow once   ", theme.muted()),
@@ -137,6 +148,21 @@ fn build(
         (Some(resolution), _) => lines.push(outcome(p, resolution, theme)),
     }
     lines
+}
+
+/// Whether the request can be allowed "always" for its folder or site. The `plan` agent's
+/// exceptions cannot: each one is allowed once or denied.
+fn offers_always(p: &PermissionPrompt) -> bool {
+    p.agent != "plan"
+}
+
+/// The footer's keys for an open request.
+pub fn hint(p: &PermissionPrompt) -> &'static str {
+    if offers_always(p) {
+        " y allow once  a always  n deny  esc stop  ctrl+p commands"
+    } else {
+        " y allow once  n deny  esc stop  ctrl+p commands"
+    }
 }
 
 /// `in /path` for a folder, `to https://host` for an origin.

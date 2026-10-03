@@ -201,9 +201,7 @@ pub fn draw(
         let draft = answerable.and_then(|p| ui.deny_draft(&p.request_id));
         let hint = match (answerable, draft) {
             (Some(_), Some(_)) => " enter deny with this message  esc deny without one",
-            (Some(_), None) if editor.text().is_empty() => {
-                " y allow once  a always  n deny  esc stop  ctrl+p commands"
-            }
+            (Some(open), None) if editor.text().is_empty() => permission::hint(open),
             _ => " enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help",
         };
         frame.render_widget(Paragraph::new(Line::from(hint_spans(hint, &theme))), hints);

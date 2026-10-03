@@ -23,6 +23,50 @@ fn message(id: &str, source: &str, text: &str) -> Block {
 }
 
 #[test]
+fn a_child_permission_preview_never_uses_a_colliding_parent_call() {
+    let mut s = state();
+    let mut parent = tool_block(None);
+    parent.id = "tool:call-1".into();
+    if let BlockKind::ToolCall { args, .. } = &mut parent.kind {
+        *args = json!({"command":"rm parent-file"});
+    }
+    let mut child = prompt(
+        "bash",
+        json!({"command":"cat child-file"}),
+        ("folder", "/ws"),
+    );
+    if let BlockKind::Permission(p) = &mut child.kind {
+        p.tool_call_id = "call-1".into();
+        p.child_session_id = Some("child".into());
+    }
+    s.conversation.blocks = vec![parent, child];
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal
+        .draw(|f| {
+            view::draw(
+                f,
+                &s,
+                &UiState::default(),
+                &Editor::new(),
+                &mut RenderCache::default(),
+            )
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let text = (0..30)
+        .map(|y| {
+            (0..100)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("cat child-file"));
+    let preview = text.split("PERMISSION").last().unwrap();
+    assert!(!preview.contains("rm parent-file"));
+}
+
+#[test]
 fn a_narrow_terminal_reaches_children_and_keeps_the_transcript_read_only() {
     use navai::tui::{
         reducer::handle_action,
@@ -1860,6 +1904,7 @@ fn prompt(tool: &str, arguments: serde_json::Value, scope: (&str, &str)) -> Bloc
     Block {
         id: "permission:R1".into(),
         kind: BlockKind::Permission(navai::tui::state::PermissionPrompt {
+            child_session_id: None,
             request_id: "R1".into(),
             tool_call_id: "c1".into(),
             tool: tool.into(),

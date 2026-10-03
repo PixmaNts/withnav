@@ -202,7 +202,11 @@ fn block_text(
                 .blocks
                 .iter()
                 .find_map(|b| match &b.kind {
-                    BlockKind::ToolCall { args, .. } if b.id == tool_id => Some(args),
+                    BlockKind::ToolCall { args, .. }
+                        if b.id == tool_id && prompt.child_session_id.is_none() =>
+                    {
+                        Some(args)
+                    }
                     _ => None,
                 });
             lines.extend(super::permission::lines(

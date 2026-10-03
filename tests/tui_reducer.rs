@@ -3314,6 +3314,28 @@ fn answering_posts_once_and_a_stale_answer_drops_the_prompt_with_a_notice() {
         &s.conversation.blocks.last().unwrap().kind,
         BlockKind::Notice(n) if n.contains("no longer waiting")
     ));
+    let prompt = |s: &State| {
+        s.conversation
+            .blocks
+            .iter()
+            .find_map(|b| match &b.kind {
+                BlockKind::Permission(p) => Some(p.clone()),
+                _ => None,
+            })
+            .unwrap()
+    };
+    // marked locally, not given a decision the server did not send
+    let marked = prompt(&s);
+    assert!(marked.stale && !marked.is_open());
+    assert_eq!(marked.resolution, None);
+    assert!(handle_action(&mut s, &mut ui, answer()).is_empty());
+    // the server's resolution, arriving later, says how it ended
+    let mut script = permission_script(3);
+    let skip = script.out.len();
+    resolved(&mut script, 3, PermissionResolution::Cancelled);
+    feed(&mut s, &script.out[skip..]);
+    assert_eq!(prompt(&s).resolution.as_deref(), Some("cancelled"));
+    assert_eq!(tool(&s, "w1").status, Some(ToolStatus::Interrupted));
     // an answer for another request than the open one sends nothing
     let mut other = st();
     created_now(&mut other, "S2").unwrap();

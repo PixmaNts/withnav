@@ -272,6 +272,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 reason: strip_controls(v["reason"].as_str().unwrap_or_default()),
                 resolution: None,
                 message: None,
+                stale: false,
             };
             // A fresh request for the call just approved (it now lands
             // elsewhere) replaces that prompt instead of adding a second one.

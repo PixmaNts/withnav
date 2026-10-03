@@ -1760,6 +1760,7 @@ fn prompt(tool: &str, arguments: serde_json::Value, scope: (&str, &str)) -> Bloc
             reason: "it changes files".into(),
             resolution: None,
             message: None,
+            stale: false,
         }),
     }
 }
@@ -1999,6 +2000,48 @@ fn an_answered_prompt_says_it_was_sent_and_takes_no_more_keys() {
     let shown = screen_text(&s, &ui, (100, 30));
     assert!(shown.contains("sent, waiting for the server"), "{shown}");
     assert!(!shown.contains("y allow once"), "{shown}");
+}
+
+#[test]
+fn a_prompt_the_server_no_longer_waits_on_is_muted_until_it_says_how_it_ended() {
+    let mut s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
+    s.conversation.open_permissions.clear();
+    if let BlockKind::Permission(p) = &mut s.conversation.blocks.last_mut().unwrap().kind {
+        p.stale = true;
+    }
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    render("permission-stale", (100, 30), &s, &ui, &Editor::new());
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(shown.contains("no longer waiting"), "{shown}");
+    assert!(!shown.contains("waiting for your answer"), "{shown}");
+    assert!(!shown.contains("y allow once"), "{shown}");
+    let t = cells(&s, &ui, (100, 30));
+    let theme = Theme::ayu_dark();
+    let row = (0..30)
+        .find(|y| row_text(&t, *y, 100).contains("PERMISSION"))
+        .unwrap();
+    assert_eq!(
+        t.backend().buffer()[(23, row)].fg,
+        theme.border,
+        "no accent rule"
+    );
+    let line = row_text(&t, row, 100);
+    let x = line[..line.find("PERMISSION").unwrap()].chars().count() as u16;
+    assert_ne!(t.backend().buffer()[(x, row)].fg, theme.accent_text);
+    let mut editor = Editor::new();
+    let mut keys_ui = UiState::default();
+    assert!(keys("y", &s, &mut keys_ui, &mut editor).is_empty());
+    assert_eq!(editor.text(), "y", "the key types: nothing is open");
+    // then the server's resolution
+    if let BlockKind::Permission(p) = &mut s.conversation.blocks.last_mut().unwrap().kind {
+        p.resolution = Some("allow_once".into());
+    }
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(shown.contains("allowed once"), "{shown}");
+    assert!(!shown.contains("no longer waiting"), "{shown}");
 }
 
 #[test]

@@ -71,11 +71,15 @@ pub struct PermissionPrompt {
     pub resolution: Option<String>,
     /// What a denial told the model.
     pub message: Option<String>,
+    /// The server said the request was no longer waiting (409) before its `permission.resolved`
+    /// arrived: it takes no answer, and how it ended is not known yet.
+    pub stale: bool,
 }
 
 impl PermissionPrompt {
+    /// Whether the request still waits for an answer: every "open" check goes through here.
     pub fn is_open(&self) -> bool {
-        self.resolution.is_none()
+        self.resolution.is_none() && !self.stale
     }
 }
 
@@ -191,10 +195,11 @@ pub const PLAN_AGENT: &str = "plan";
 impl Tab {
     /// The oldest permission request still open, if any.
     pub fn open_permission(&self) -> Option<&PermissionPrompt> {
-        let id = self.conversation.open_permissions.first()?;
-        self.conversation.blocks.iter().find_map(|b| match &b.kind {
-            BlockKind::Permission(p) if &b.id == id => Some(p),
-            _ => None,
+        self.conversation.open_permissions.iter().find_map(|id| {
+            self.conversation.blocks.iter().find_map(|b| match &b.kind {
+                BlockKind::Permission(p) if &b.id == id && p.is_open() => Some(p),
+                _ => None,
+            })
         })
     }
 

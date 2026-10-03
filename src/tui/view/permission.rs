@@ -69,7 +69,15 @@ fn cut(line: Line<'static>, width: usize) -> Line<'static> {
 
 fn build(p: &PermissionPrompt, keys: Keys<'_>, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
-        Span::styled("PERMISSION", theme.accent().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "PERMISSION",
+            if p.is_open() {
+                theme.accent()
+            } else {
+                theme.muted()
+            }
+            .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(
             format!(" · {} wants to run ", p.agent_or_default()),
             theme.muted(),
@@ -81,6 +89,7 @@ fn build(p: &PermissionPrompt, keys: Keys<'_>, theme: &Theme) -> Vec<Line<'stati
         lines.push(Line::styled(format!(" {line}"), theme.text()));
     }
     match (&p.resolution, keys) {
+        (None, _) if p.stale => lines.push(Line::styled(" no longer waiting", theme.muted())),
         (None, Keys::Denying(message)) => {
             lines.push(Line::from(vec![
                 Span::styled(" deny with a message: ", theme.warning()),

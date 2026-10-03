@@ -246,8 +246,19 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 Ok(()) => {}
                 Err(AnswerError::Stale) => {
                     clear_answered(s, &request_id);
+                    // Not a decision: the prompt is marked, the server's resolution says how
+                    // it ended when it arrives.
                     let id = format!("permission:{request_id}");
                     s.conversation.open_permissions.retain(|open| open != &id);
+                    if let Some(BlockKind::Permission(p)) = s
+                        .conversation
+                        .blocks
+                        .iter_mut()
+                        .find(|b| b.id == id)
+                        .map(|b| &mut b.kind)
+                    {
+                        p.stale = true;
+                    }
                     push_local(
                         s,
                         BlockKind::Notice(

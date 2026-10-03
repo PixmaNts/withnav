@@ -73,6 +73,14 @@ impl Service {
         let Some(handle) = self.handle(child) else {
             return Err(ServerError::ChildNotParked);
         };
+        self.wait_child_operation(child).await;
+        let (_operation, target) = {
+            let _admission = self.admission_gate.lock().await;
+            let Some(target) = self.mark_stopping(child) else {
+                return Ok(());
+            };
+            (self.own_child_operation(child), target)
+        };
         handle
             .status
             .watchdog
@@ -105,17 +113,20 @@ impl Service {
             handle.status.watchdog.resume();
             return Err(error);
         }
-        let target = {
-            let _admission = self.admission_gate.lock().await;
-            let target = self.mark_stopping(child);
-            if let Some(handle) = &target {
-                handle.session_cancel.cancel();
+        target.session_cancel.cancel();
+        #[cfg(debug_assertions)]
+        {
+            let barrier = self
+                .watchdog_teardown_barrier
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(barrier) = barrier {
+                barrier.reached.notify_one();
+                barrier.release.notified().await;
             }
-            target
-        };
-        if let Some(target) = target {
-            self.fence_and_remove(child, target, "watchdog").await;
         }
+        self.fence_and_remove(child, target, "watchdog").await;
         Ok(())
     }
 }

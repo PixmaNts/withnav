@@ -60,6 +60,49 @@ struct Fixture {
     sleeps: mpsc::UnboundedReceiver<oneshot::Sender<()>>,
     checked: mpsc::UnboundedReceiver<Evidence>,
 }
+
+async fn watchdog_teardown_blocks_delete(delete_parent: bool) {
+    let mut f = Fixture::new(vec![Ok(Verdict::Stuck)]).await;
+    let barrier = navai::session::ChildPreparationBarrier::default();
+    f.service.pause_watchdog_teardown(barrier.clone());
+    f.tick(300).await;
+    barrier.reached.notified().bounded(file!(), line!()).await;
+    let service = f.service.clone();
+    let target = if delete_parent { f.parent } else { f.child };
+    let mut deletion = tokio::spawn(async move { service.delete(target).await });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), &mut deletion)
+            .await
+            .is_err()
+    );
+    assert!(f
+        .service
+        .history()
+        .exists(f.child)
+        .bounded(file!(), line!())
+        .await
+        .unwrap());
+    barrier.release.notify_one();
+    deletion.bounded(file!(), line!()).await.unwrap().unwrap();
+    assert!(!f
+        .service
+        .history()
+        .exists(f.child)
+        .bounded(file!(), line!())
+        .await
+        .unwrap());
+    f.close().await;
+}
+
+#[tokio::test]
+async fn watchdog_stop_owns_child_until_concurrent_child_delete_can_finish() {
+    watchdog_teardown_blocks_delete(false).await;
+}
+
+#[tokio::test]
+async fn watchdog_stop_owns_child_until_concurrent_parent_delete_can_finish() {
+    watchdog_teardown_blocks_delete(true).await;
+}
 impl Fixture {
     async fn new(answers: Vec<Result<Verdict, JudgeError>>) -> Self {
         let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;

@@ -213,7 +213,7 @@ impl Drop for Publication {
 // Child ids become visible before runtime registration. Publication owns
 // teardown until this guard completes, so lifecycle callers cannot delete
 // durable ownership underneath registration or failed-start cleanup.
-struct ChildOperation {
+pub(crate) struct ChildOperation {
     child: SessionId,
     operations: Arc<Mutex<HashMap<SessionId, CancellationToken>>>,
     done: CancellationToken,
@@ -287,6 +287,8 @@ fn is_promptable(value: &bool) -> bool {
 #[derive(Clone, Debug)]
 pub struct Service {
     #[cfg(debug_assertions)]
+    pub(crate) watchdog_teardown_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
     pub(crate) watchdog_test: Arc<Mutex<Option<super::subagents::supervisor::TestWatchdog>>>,
     _instance: Arc<super::instance::Instance>,
     /// The live sessions of this process; a closed session is removed.
@@ -328,6 +330,30 @@ pub struct Service {
 }
 
 impl Service {
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_watchdog_teardown(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .watchdog_teardown_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+
+    /// Called under admission: teardown retains ownership until its final durable write.
+    pub(crate) fn own_child_operation(&self, child: SessionId) -> ChildOperation {
+        let done = CancellationToken::new();
+        let previous = self
+            .child_operations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(child, done.clone());
+        debug_assert!(previous.is_none(), "child already has a lifecycle owner");
+        ChildOperation {
+            child,
+            operations: self.child_operations.clone(),
+            done,
+        }
+    }
     pub(super) async fn wait_child_operation(&self, id: SessionId) {
         let pending = {
             let _admission = self.admission_gate.lock().await;
@@ -441,6 +467,8 @@ impl Service {
             .map_err(ServerError::History)?;
         let catalog = crate::provider::catalog::ModelCatalog::new(Some(config.data_dir.clone()));
         Ok(Self {
+            #[cfg(debug_assertions)]
+            watchdog_teardown_barrier: Arc::default(),
             #[cfg(debug_assertions)]
             watchdog_test: Arc::default(),
             _instance: instance,

@@ -432,16 +432,19 @@ const MAX_TIERS: usize = 16;
 /// `capabilities.effort_tiers` of one model entry: the usable names, in the
 /// order reported, without duplicates. A tier becomes a variant name and a
 /// request value, so anything that is not a short plain word is dropped.
-/// `None` when the entry does not carry a list (missing, null or of another
-/// type): that is "not reported", unlike an empty list, which says there are
-/// no tiers.
+/// `None` when the entry does not carry a usable list: missing, null, of
+/// another type, or a non-empty list of which no item is a usable name. That
+/// is "not reported", and the tiers known before are kept. Only a list that
+/// is empty in the source says there are no tiers.
 fn effort_tiers(entry: &serde_json::Value) -> Option<Vec<String>> {
     let mut tiers: Vec<String> = Vec::new();
-    let reported = entry
+    let source = entry
         .pointer("/capabilities/effort_tiers")
-        .and_then(|v| v.as_array())?
-        .iter()
-        .filter_map(|v| v.as_str());
+        .and_then(|v| v.as_array())?;
+    if source.is_empty() {
+        return Some(tiers);
+    }
+    let reported = source.iter().filter_map(|v| v.as_str());
     for tier in reported {
         let plain = !tier.is_empty()
             && tier.len() <= 32
@@ -452,7 +455,7 @@ fn effort_tiers(entry: &serde_json::Value) -> Option<Vec<String>> {
             tiers.push(tier.to_string());
         }
     }
-    Some(tiers)
+    (!tiers.is_empty()).then_some(tiers)
 }
 /// A cache file this build can trust: a readable version, and no limit of
 /// zero (the parser never writes one, so it means the file was damaged).

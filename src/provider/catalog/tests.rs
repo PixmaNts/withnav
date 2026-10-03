@@ -708,6 +708,8 @@ async fn tiers_the_provider_did_not_validly_report_are_kept() {
         r#""capabilities":{"effort_tiers":null}"#,
         r#""capabilities":{"effort_tiers":"high"}"#,
         r#""capabilities":null"#,
+        r#""capabilities":{"effort_tiers":[null,42]}"#,
+        r#""capabilities":{"effort_tiers":["","not a tier"]}"#,
     ] {
         let body = format!(r#"{{"data":[{{"id":"m","context_length":500000,{capabilities}}}]}}"#);
         let (first, again) = refreshed_tiers(&body).await;

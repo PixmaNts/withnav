@@ -137,6 +137,18 @@ impl Service {
         };
         let claim = async {
             #[cfg(debug_assertions)]
+            {
+                let barrier = self
+                    .watchdog_claim_write_barrier
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                if let Some(barrier) = barrier {
+                    barrier.reached.notify_one();
+                    barrier.release.notified().await;
+                }
+            }
+            #[cfg(debug_assertions)]
             if self.watchdog_stop_failure.swap(false, Ordering::AcqRel) {
                 return Err("injected watchdog terminal write failure".into());
             }
@@ -144,7 +156,25 @@ impl Service {
         }
         .await;
         if let Err(error) = claim {
-            handle.status.watchdog.rollback_stop(was_doubt);
+            if let Some((message, outcome)) = handle.status.watchdog.rollback_stop(was_doubt) {
+                use crate::bus::runtime::CompletionOutcome;
+                let status = match outcome {
+                    CompletionOutcome::Done => "done",
+                    CompletionOutcome::Failed => "failed",
+                    CompletionOutcome::Stopped => "stopped",
+                    CompletionOutcome::Parked => unreachable!("parked outcomes are not terminal"),
+                };
+                handle.status.watchdog.supervisor_cancel.cancel();
+                let text = crate::tools::bound_output(&message.text, 16 * 1024).0;
+                self.finish_child(
+                    parent,
+                    child,
+                    status,
+                    (outcome != CompletionOutcome::Done).then_some(message.text),
+                    text,
+                )
+                .await?;
+            }
             return Err(ServerError::History(error));
         }
         let target = {

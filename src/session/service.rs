@@ -287,6 +287,8 @@ fn is_promptable(value: &bool) -> bool {
 #[derive(Clone, Debug)]
 pub struct Service {
     #[cfg(debug_assertions)]
+    pub(crate) watchdog_claim_write_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
     pub(crate) watchdog_ownership_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
     pub(crate) lifecycle_claim_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
@@ -336,6 +338,21 @@ pub struct Service {
 }
 
 impl Service {
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub async fn watchdog_natural_retained(&self, child: SessionId) {
+        if let Some(handle) = self.handle(child) {
+            handle.status.watchdog.natural_retained.notified().await;
+        }
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_watchdog_claim_write(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .watchdog_claim_write_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn pause_watchdog_ownership(&self, barrier: ChildPreparationBarrier) {
@@ -510,6 +527,8 @@ impl Service {
             .map_err(ServerError::History)?;
         let catalog = crate::provider::catalog::ModelCatalog::new(Some(config.data_dir.clone()));
         Ok(Self {
+            #[cfg(debug_assertions)]
+            watchdog_claim_write_barrier: Arc::default(),
             #[cfg(debug_assertions)]
             watchdog_ownership_barrier: Arc::default(),
             #[cfg(debug_assertions)]
@@ -1981,16 +2000,15 @@ impl Service {
                     };
                     let service = service.clone();
                     tokio::spawn(async move {
-                        if let Some(handle) = service.handle(session_id) {
-                            handle.status.watchdog.supervisor_cancel.cancel();
-                        }
-                        if !service.handle(session_id).is_some_and(|h| {
-                            h.status
-                                .watchdog
-                                .claim_terminal(crate::bus::runtime::TerminalOwner::Natural)
-                        }) {
+                        let Some(handle) = service.handle(session_id) else {
                             return;
-                        }
+                        };
+                        let Some((message, outcome)) =
+                            handle.status.watchdog.natural_outcome((message, outcome))
+                        else {
+                            return;
+                        };
+                        handle.status.watchdog.supervisor_cancel.cancel();
                         let result = message.text.clone();
                         let (text, _) = crate::tools::bound_output(&result, 16 * 1024);
                         let _ = service

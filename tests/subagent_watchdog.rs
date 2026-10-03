@@ -605,6 +605,54 @@ async fn replacement_between_stuck_verdict_and_ownership_is_not_stopped() {
 }
 
 #[tokio::test]
+async fn failed_provisional_claim_finalizes_the_retained_natural_completion() {
+    let mut f = Fixture::new(vec![Ok(Verdict::Stuck)]).await;
+    let barrier = navai::session::ChildPreparationBarrier::default();
+    f.service.pause_watchdog_claim_write(barrier.clone());
+    f.service.fail_watchdog_stop_write();
+    f.tick(300).await;
+    barrier.reached.notified().bounded(file!(), line!()).await;
+    f.stream
+        .send(text_chunk("natural completed result"))
+        .unwrap();
+    let (unused, _) = mpsc::unbounded_channel();
+    drop(std::mem::replace(&mut f.stream, unused));
+    f.service
+        .watchdog_natural_retained(f.child)
+        .bounded(file!(), line!())
+        .await;
+    assert_eq!(f.service.reserved_child_count(f.parent), 1);
+    barrier.release.notify_one();
+    let (request, parent_stream) = f
+        .provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(request.contains("natural completed result"));
+    let link = f
+        .service
+        .child_metadata(f.child)
+        .bounded(file!(), line!())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(link.status, "done");
+    assert_eq!(f.service.reserved_child_count(f.parent), 0);
+    assert_eq!(
+        f.events()
+            .await
+            .iter()
+            .filter(|e| e.kind == "subagent.done")
+            .count(),
+        1
+    );
+    drop(parent_stream);
+    f.close().await;
+}
+
+#[tokio::test]
 async fn failed_stop_write_restores_doubt_and_driver_continue_releases_waiter() {
     let mut f = Fixture::new(vec![Ok(Verdict::Doubt)]).await;
     f.tick(300).await;

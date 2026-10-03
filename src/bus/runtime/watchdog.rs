@@ -6,12 +6,20 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Default)]
 pub struct WatchdogPark {
+    pub natural_retained: Notify,
     state: Mutex<(u64, bool)>,
-    terminal_owner: Mutex<Option<TerminalOwner>>,
+    terminal_owner: Mutex<TerminalState>,
     pub supervisor_cancel: CancellationToken,
     pub stopped: AtomicBool,
     doubt: AtomicBool,
     resumed: Notify,
+}
+
+pub type NaturalOutcome = (crate::provider::AssistantMessage, super::CompletionOutcome);
+#[derive(Debug, Default)]
+struct TerminalState {
+    owner: Option<TerminalOwner>,
+    pending: Option<NaturalOutcome>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,24 +59,45 @@ impl WatchdogPark {
         }
         true
     }
-    pub fn rollback_stop(&self, doubt: bool) {
-        *self
+    pub fn rollback_stop(&self, doubt: bool) -> Option<NaturalOutcome> {
+        let mut terminal = self
             .terminal_owner
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) = None;
+            .unwrap_or_else(|e| e.into_inner());
+        let pending = terminal.pending.take();
+        terminal.owner = pending.as_ref().map(|_| TerminalOwner::Natural);
         self.doubt.store(doubt, Ordering::Release);
         self.stopped.store(false, Ordering::Release);
         self.resumed.notify_waiters();
+        pending
+    }
+    pub fn natural_outcome(&self, outcome: NaturalOutcome) -> Option<NaturalOutcome> {
+        let mut terminal = self
+            .terminal_owner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match terminal.owner {
+            Some(TerminalOwner::Watchdog) => {
+                terminal.pending = Some(outcome);
+                self.natural_retained.notify_one();
+                None
+            }
+            Some(TerminalOwner::Natural) => None,
+            None => {
+                terminal.owner = Some(TerminalOwner::Natural);
+                Some(outcome)
+            }
+        }
     }
     pub fn claim_terminal(&self, owner: TerminalOwner) -> bool {
         let mut claimed = self
             .terminal_owner
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if claimed.is_some() {
+        if claimed.owner.is_some() {
             return false;
         }
-        *claimed = Some(owner);
+        claimed.owner = Some(owner);
         if owner == TerminalOwner::Watchdog {
             self.stopped.store(true, Ordering::Release);
         }

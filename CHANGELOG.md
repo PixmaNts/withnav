@@ -8,6 +8,16 @@ requests land in `develop`.
 
 ### Added
 
+- **Session commands**: `GET /v1/commands` lists them; `POST /v1/sessions/{id}/commands` with
+  `{name, arguments}` runs one and answers `{operation_id, ok, data?, error?}`. Built in: `/help`,
+  `/model` (alias, window and where the window comes from), `/new [alias]` (a fresh session; the old one
+  stays) and `/stop`; `/context`, `/variant` and `/compact` are listed and answer "not available yet".
+  An unknown name is an error that lists the close names, and a command sent while the agent waits for
+  an answer to its `ask` is refused, never queued. Each run publishes a durable `command.result` event
+  (`operation_id`, `name`, `ok`, `data` of at most 16 KiB, `error`), so the event catalog has 13 kinds;
+  the envelope version and the other kinds are unchanged. `/messages` is unchanged.
+- **`navai run --prompt "/help"`** runs the command and prints its result; `//text` sends the literal
+  message `/text`.
 - **Model catalog**: a chat alias without `context_window` in models.json gets its window from the
   provider's `GET /models` list (`context_length`, else `max_input_tokens`), cached for a day under the
   data dir. An explicit `context_window` wins without any network call; if it differs from what the

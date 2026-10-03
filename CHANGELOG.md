@@ -4,6 +4,12 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-03
+
+Navai becomes a terminal coding agent as well as a navigator: a chat client with tabs, tool
+permissions you answer from the terminal, a guarded `plan` agent, model switching inside a
+conversation, and automatic compaction. Background subagents are planned for 0.4.0.
+
 ### Added
 
 - **Terminal chat client**: `navai tui` starts a private server, or `--url` connects to a running

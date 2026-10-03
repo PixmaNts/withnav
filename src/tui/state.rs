@@ -262,8 +262,59 @@ impl Tab {
 /// An agent working for a tab's conversation, drawn nested under it.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ChildAgent {
+    pub session_id: String,
     pub name: String,
-    pub activity: Activity,
+    pub goal: String,
+    pub status: ChildStatus,
+    pub delivery: Option<String>,
+    pub reason: Option<String>,
+    /// A sequenced parent event takes precedence over a session-list snapshot.
+    pub event_seq: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChildStatus {
+    #[default]
+    Unknown,
+    Running,
+    Permission,
+    OutOfSteps,
+    Doubt,
+    Done,
+    Failed,
+    Stopped,
+}
+
+impl ChildStatus {
+    pub fn from_wire(status: &str) -> Self {
+        match status {
+            "running" | "active" => Self::Running,
+            "waiting_for_permission" | "permission" => Self::Permission,
+            "out_of_steps" | "step_budget_exhausted" | "parked" => Self::OutOfSteps,
+            "doubt" => Self::Doubt,
+            "done" => Self::Done,
+            "failed" => Self::Failed,
+            "stopped" => Self::Stopped,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "—",
+            Self::Running => "running",
+            Self::Permission => "waiting for permission",
+            Self::OutOfSteps => "out of steps",
+            Self::Doubt => "in doubt",
+            Self::Done => "done",
+            Self::Failed => "failed",
+            Self::Stopped => "stopped",
+        }
+    }
+
+    pub fn terminal(self) -> bool {
+        matches!(self, Self::Done | Self::Failed | Self::Stopped)
+    }
 }
 
 /// The open tabs and what they share (catalog, session list, workspace). `State` reads and writes

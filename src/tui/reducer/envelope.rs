@@ -15,7 +15,7 @@ use crate::{
     tools::ToolStatus,
     tui::{
         protocol::ProtocolError,
-        state::{Activity, Block, BlockKind, PermissionPrompt, State},
+        state::{Activity, Block, BlockKind, ChildAgent, ChildStatus, PermissionPrompt, State},
     },
 };
 use serde::Deserialize;
@@ -64,6 +64,47 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
     let kind = EventKind::from_wire(&e.kind);
     let bad = || ProtocolError(format!("malformed {} payload", e.kind));
     let actor = e.actor_id.clone();
+    if matches!(
+        e.kind.as_str(),
+        "subagent.spawned" | "subagent.done" | "subagent.watchdog"
+    ) {
+        let v = &e.payload;
+        let id = v["child_session_id"].as_str().ok_or_else(bad)?;
+        let at = s
+            .children
+            .iter()
+            .position(|c| c.session_id == id)
+            .unwrap_or_else(|| {
+                s.children.push(ChildAgent {
+                    session_id: id.into(),
+                    ..Default::default()
+                });
+                s.children.len() - 1
+            });
+        let child = &mut s.children[at];
+        if let Some(agent) = v["agent"].as_str() {
+            child.name = strip_controls(agent);
+        }
+        if let Some(goal) = v["goal"].as_str() {
+            child.goal = strip_controls(goal);
+        }
+        if let Some(delivery) = v["delivery"].as_str() {
+            child.delivery = Some(strip_controls(delivery));
+        }
+        child.reason = v["reason"].as_str().map(strip_controls);
+        child.event_seq = Some(e.seq);
+        child.status = match e.kind.as_str() {
+            "subagent.spawned" => ChildStatus::Running,
+            "subagent.done" => ChildStatus::from_wire(v["outcome"].as_str().ok_or_else(bad)?),
+            _ if !child.status.terminal() => match v["verdict"].as_str() {
+                Some("doubt" | "stuck") => ChildStatus::Doubt,
+                Some("active") if child.status == ChildStatus::Doubt => ChildStatus::Running,
+                _ => child.status,
+            },
+            _ => child.status,
+        };
+        return Ok(());
+    }
     match kind {
         Some(EventKind::SessionStart) => s.activity = Activity::Idle,
         Some(EventKind::SessionEnd) => {

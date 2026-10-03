@@ -5,7 +5,7 @@
 use super::text::{columns, fit_end as fit, fit_start};
 use crate::tui::{
     reducer::tokens,
-    state::{Activity, State, UiState},
+    state::{State, UiState},
     theme::Theme,
 };
 use ratatui::{
@@ -92,11 +92,11 @@ fn agents(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         }
     }
     for child in &state.children {
-        let running = child.activity == Activity::Running;
+        let running = child.status == crate::tui::state::ChildStatus::Running;
         lines.push(Line::from(vec![
             Span::styled(if running { " ◐ " } else { " ○ " }, theme.subagent()),
             Span::styled(fit(&child.name, width.saturating_sub(14)), theme.subagent()),
-            Span::styled(if running { "  running" } else { "  done" }, theme.muted()),
+            Span::styled(format!("  {}", child.status.label()), theme.muted()),
         ]));
     }
     lines

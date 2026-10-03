@@ -139,6 +139,7 @@ pub(crate) fn push_local(s: &mut State, kind: BlockKind) {
 /// Clears the conversation projection and the cursor; the replay re-derives everything.
 fn reset_projection(s: &mut State) {
     s.conversation = Default::default();
+    s.children.clear();
     s.last_applied_seq = None;
     s.latest_envelope = None;
     s.activity = Activity::Idle;
@@ -426,7 +427,8 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         },
         ClientEvent::Sessions { result, .. } => {
             if let Ok(b) = result {
-                s.sessions = b.sessions
+                s.sessions = b.sessions;
+                seed_children(s);
             }
         }
         ClientEvent::Created { result, .. } | ClientEvent::Resumed { result, .. } => match result {
@@ -482,7 +484,8 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     s.selected_model_alias = Some(m.model.clone());
                     refresh_model(s);
                 }
-                s.session = Some(m)
+                s.session = Some(m);
+                seed_children(s);
             }
         }
         // An older server has no endpoint: the gauge stays on the provider's count.
@@ -525,4 +528,39 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         ClientEvent::SettingsNotSaved { message, .. } => push_local(s, BlockKind::Notice(message)),
     }
     Ok(effects)
+}
+
+fn seed_children(s: &mut State) {
+    for tab in &mut s.tabs {
+        let Some(parent) = tab
+            .session
+            .as_ref()
+            .map(|m| &m.session_id)
+            .or(tab.resuming.as_ref())
+        else {
+            continue;
+        };
+        for entry in s
+            .sessions
+            .iter()
+            .filter(|e| e.parent_session_id.as_ref() == Some(parent))
+        {
+            if let Some(child) = tab.children.iter_mut().find(|c| c.session_id == entry.id) {
+                if child.event_seq.is_none() {
+                    child.status = super::state::ChildStatus::from_wire(
+                        entry.child_status.as_deref().unwrap_or(""),
+                    );
+                }
+            } else {
+                tab.children.push(super::state::ChildAgent {
+                    session_id: entry.id.clone(),
+                    name: entry.agent.clone().unwrap_or_default(),
+                    status: super::state::ChildStatus::from_wire(
+                        entry.child_status.as_deref().unwrap_or(""),
+                    ),
+                    ..Default::default()
+                });
+            }
+        }
+    }
 }

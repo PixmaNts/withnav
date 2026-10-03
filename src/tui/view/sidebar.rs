@@ -67,7 +67,7 @@ pub fn tab_title(state: &State, tab: &Tab) -> String {
 
 /// Rows one tab takes: title, state, one per nested agent.
 fn tab_height(tab: &Tab) -> u16 {
-    2 + tab.children.len() as u16
+    2 + tab.children.len() as u16 * 3
 }
 
 /// The first tab to draw in `height` rows: the top of the list when the active tab fits below it,
@@ -112,7 +112,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     let label_width = usize::from(inner.width).saturating_sub(5);
     let first = first_shown(state, rows_bottom.saturating_sub(y));
     for (index, tab) in state.tabs.iter().enumerate().skip(first) {
-        let children = tab.children.len() as u16;
+        let children = tab.children.len() as u16 * 3;
         if y + 2 + children > rows_bottom {
             break;
         }
@@ -166,8 +166,25 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
                     fit(&format!("   └ {}", child.name), usize::from(inner.width)),
                     theme.subagent(),
                 )),
-                Rect::new(inner.x, y + 2 + n as u16, inner.width, 1),
+                Rect::new(inner.x, y + 2 + n as u16 * 3, inner.width, 1),
             );
+            for (offset, text) in [child.status.label(), child.goal.as_str()]
+                .iter()
+                .enumerate()
+            {
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        fit(&format!("     {text}"), usize::from(inner.width)),
+                        theme.muted(),
+                    )),
+                    Rect::new(
+                        inner.x,
+                        y + 3 + n as u16 * 3 + offset as u16,
+                        inner.width,
+                        1,
+                    ),
+                );
+            }
         }
         if active {
             for row in rows.top()..rows.bottom() {

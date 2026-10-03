@@ -275,6 +275,8 @@ pub struct Service {
     child_preparation_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
     child_publication_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
+    resume_registration_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     /// Test seam: parks a command run between its work and the publication
     /// of its result, to interleave lifecycle changes deterministically.
     /// Test seam: parks a model switch after its store write and before its
@@ -307,6 +309,14 @@ impl Service {
     pub fn session_is_cancelled(&self, id: SessionId) -> bool {
         self.handle(id)
             .is_some_and(|h| h.session_cancel.is_cancelled())
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_resume_registration(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .resume_registration_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
     }
 
     #[cfg(debug_assertions)]
@@ -353,6 +363,8 @@ impl Service {
             child_preparation_barrier: Arc::default(),
             #[cfg(debug_assertions)]
             child_publication_barrier: Arc::default(),
+            #[cfg(debug_assertions)]
+            resume_registration_barrier: Arc::default(),
             #[cfg(test)]
             install_barrier: Arc::default(),
             #[cfg(test)]
@@ -1479,6 +1491,18 @@ impl Service {
             .as_ref()
             .map(|loaded| loaded.meta.last_seq + 1)
             .unwrap_or(0);
+        #[cfg(debug_assertions)]
+        if resumed.is_some() {
+            let barrier = self
+                .resume_registration_barrier
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(barrier) = barrier {
+                barrier.reached.notify_one();
+                barrier.release.notified().await;
+            }
+        }
         // The in-memory ring starts empty on resume: subscribers replay from
         // the store, and the ring is only a bounded fallback cache.
         let bus = SessionBus::default();

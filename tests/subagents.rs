@@ -145,6 +145,95 @@ async fn child_completion_after_parent_close_is_pending_until_resume() {
 }
 
 #[tokio::test]
+async fn completion_between_resume_snapshot_and_registration_has_no_sequence_collision() {
+    let mut provider = common::sse::spawn_streaming_provider().await;
+    let fx = fixture_at(&provider.url);
+    install_agents(&fx.root, &fx.ws);
+    let parent = fx
+        .state
+        .create_session(&fx.ws, Some("default"), None)
+        .await
+        .unwrap();
+    let child = fx
+        .state
+        .create_child_session(parent, "explore", "inspect")
+        .await
+        .unwrap();
+    let (_, stream) = provider.requests.recv().await.unwrap();
+    fx.state.close_session(parent).await.unwrap();
+    let before = fx
+        .state
+        .history()
+        .meta(parent)
+        .await
+        .unwrap()
+        .unwrap()
+        .last_seq;
+    let barrier = navai::session::ChildPreparationBarrier::default();
+    fx.state.pause_resume_registration(barrier.clone());
+    let service = fx.state.service();
+    let ws = fx.ws.clone();
+    let resume = tokio::spawn(async move {
+        service
+            .create_or_resume_session(&ws, None, None, Some(parent))
+            .await
+    });
+    barrier.reached.notified().await;
+    stream.send(text_chunk("finished during resume")).unwrap();
+    drop(stream);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while fx.state.reserved_child_count(parent) != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        fx.state
+            .child_metadata(child)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "done"
+    );
+    assert_eq!(
+        fx.state
+            .history()
+            .meta(parent)
+            .await
+            .unwrap()
+            .unwrap()
+            .last_seq,
+        before
+    );
+    assert_eq!(
+        fx.state
+            .history()
+            .pending_completions(parent)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    barrier.release.notify_one();
+    resume.await.unwrap().unwrap();
+    let replay = events(&fx, parent).await;
+    let notices = replay
+        .iter()
+        .filter(|e| e.kind == "subagent.done")
+        .collect::<Vec<_>>();
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].seq, before + 1);
+    let mut seqs = replay.iter().map(|e| e.seq).collect::<Vec<_>>();
+    let count = seqs.len();
+    seqs.sort_unstable();
+    seqs.dedup();
+    assert_eq!(seqs.len(), count);
+    fx.state.close_all().await;
+}
+
+#[tokio::test]
 async fn resumed_parent_rejects_spawn_from_previous_incarnation() {
     paused_child_admission(true).await;
 }

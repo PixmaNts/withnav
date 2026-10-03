@@ -86,28 +86,33 @@ impl Tool for GlobTool {
                 }
                 None => cx.workspace.clone(),
             };
-            let root = validate_path(&cx.read_roots(), &requested)?;
-            if !root.is_dir() {
-                return Err(ToolError::NotFound(root));
-            }
+            let roots = cx.read_roots();
 
-            let walk_cancel = cancel.clone();
-            let walked = tokio::task::spawn_blocking(move || {
-                walk(
+            // Path validation, the walk and the rendering all touch the
+            // filesystem or sort large lists: none of it runs on the runtime.
+            let worker_cancel = cancel.clone();
+            let worker = tokio::task::spawn_blocking(move || {
+                let root = validate_path(&roots, &requested)?;
+                if !root.is_dir() {
+                    return Err(ToolError::NotFound(root));
+                }
+                let walked = walk(
                     &root,
                     &matcher,
-                    &walk_cancel,
+                    &worker_cancel,
                     GLOB_MAX_VISITED,
                     GLOB_MAX_DURATION,
-                )
-            })
-            .await
-            .map_err(|e| ToolError::Io(std::io::Error::other(e)))?;
-
-            if walked.stop == Stop::Canceled {
-                return Ok(ToolResult::interrupted());
+                );
+                if walked.stop == Stop::Canceled {
+                    return Ok(ToolResult::interrupted());
+                }
+                Ok(render(walked, limit))
+            });
+            tokio::select! {
+                _ = cancel.cancelled() => Ok(ToolResult::interrupted()),
+                joined = worker => joined
+                    .map_err(|e| ToolError::Io(std::io::Error::other(e)))?,
             }
-            Ok(render(walked, limit))
         })
     }
 }
@@ -191,6 +196,14 @@ fn walk(
     };
     let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
+        if cancel.is_cancelled() {
+            out.stop = Stop::Canceled;
+            return out;
+        }
+        if started.elapsed() >= max_duration {
+            out.stop = Stop::Timeout;
+            return out;
+        }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -199,12 +212,12 @@ fn walk(
                 out.stop = Stop::Canceled;
                 return out;
             }
-            if out.visited >= max_visited {
-                out.stop = Stop::VisitedLimit;
-                return out;
-            }
             if started.elapsed() >= max_duration {
                 out.stop = Stop::Timeout;
+                return out;
+            }
+            if out.visited >= max_visited {
+                out.stop = Stop::VisitedLimit;
                 return out;
             }
             out.visited += 1;
@@ -536,6 +549,51 @@ mod tests {
         let rendered = render(by_count, 200);
         assert_eq!(rendered.metadata["stopped"], "visited_limit");
         assert!(rendered.output.contains("search stopped after 10 entries"));
+    }
+
+    // Given many empty directories and a cancelled token or an expired deadline
+    // When the walk runs
+    // Then it reports cancellation or timeout though nothing matched
+    #[test]
+    fn empty_directories_still_honour_cancellation_and_deadline() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..200 {
+            std::fs::create_dir(tmp.path().join(format!("d{i}"))).unwrap();
+        }
+        let m = Matcher::new("**/*.txt").unwrap();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let walked = walk(tmp.path(), &m, &cancel, 1_000, Duration::from_secs(60));
+        assert_eq!(walked.stop, Stop::Canceled);
+        assert!(walked.paths.is_empty());
+
+        let walked = walk(
+            tmp.path(),
+            &m,
+            &CancellationToken::new(),
+            1_000,
+            Duration::ZERO,
+        );
+        assert_eq!(walked.stop, Stop::Timeout);
+        assert!(walked.visited < 200);
+    }
+
+    // Given a cancelled token and only empty directories
+    // When the tool runs
+    // Then the result is interrupted
+    #[tokio::test]
+    async fn cancellation_interrupts_even_when_nothing_matched() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..20 {
+            std::fs::create_dir(tmp.path().join(format!("d{i}"))).unwrap();
+        }
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let res = GlobTool
+            .call(json!({"pattern": "**/*.txt"}), cancel, &cx(tmp.path()))
+            .await
+            .unwrap();
+        assert_eq!(res.status, ToolStatus::Interrupted);
     }
 
     // Given a cancelled token

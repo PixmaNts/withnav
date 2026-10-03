@@ -17,15 +17,21 @@ requests land in `develop`.
   (`operation_id`, `name`, `ok`, `data` of at most 16 KiB, `error`), so the event catalog has 13 kinds;
   the envelope version and the other kinds are unchanged. `/messages` is unchanged.
 - **Session variant**: a session runs with one model variant, and its chat requests carry that variant
-  (not the alias default). `POST /v1/sessions` takes an optional `variant` (a name the alias offers, or
-  `none`), as does `navai run --variant`; without it the alias's `default_variant` is resolved once and
-  saved in the new nullable `sessions.variant` column (old rows have none). `GET /v1/sessions/{id}` shows
-  `variant`. `/variant` lists the current variant and the names on offer; `/variant <name>` or
-  `/variant none` is checked against the offer, saved before it answers, and takes effect at the next
-  turn (a running turn finishes on the old one). An unknown name is an error listing the offer. A
-  resumed session whose saved variant the alias no longer offers fails with an error naming the alias,
-  the variant and the models.json to fix; it never falls back silently. `/new` keeps the variant when it
-  stays on the same alias.
+  (not the alias default). `POST /v1/sessions` takes an optional `variant`: a string is the exact name of
+  a variant the alias offers (a model that really has a `none` tier is selected with `"none"`), `null`
+  means no variant, and leaving it out takes the alias's `default_variant`. `navai run --variant <name>`
+  does the same, with `off` for no variant. The choice is saved in the new nullable `sessions.variant`
+  column (old rows have none). `GET /v1/sessions/{id}` shows `variant`. `/variant` lists the current
+  variant (`variant: (none set)` when there is none) and the names on offer; `/variant <name>` selects an
+  offered variant by exact name and `/variant off` clears it. A switch is checked against the offer, saved
+  before it answers, and takes effect at the next turn (a running turn finishes on the old one). An
+  unknown name is an error listing the offer; `off` cannot be the name of a variant. A resumed session
+  whose saved variant the alias confirmably no longer offers fails with an error naming the alias, the
+  variant and the models.json that was loaded; it never falls back silently. When the offer cannot be
+  confirmed (generated from the provider's reported tiers, and the list is not cached or only an old copy
+  whose refresh failed), the saved variant is kept, and choosing a new one answers a retryable error
+  (503, `variant_offer_unknown`). `/new` keeps the variant, by exact name, when it stays on the same
+  alias.
 - **`navai run --prompt "/help"`** runs the command and prints its result; `//text` sends the literal
   message `/text`.
 - **`glob` tool**: finds files by a relative pattern (`**/*.rs`) under the workspace or a readable

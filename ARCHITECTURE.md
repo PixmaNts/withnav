@@ -69,27 +69,28 @@ one per tab; each tab streams its own session in the background.
 |---|---|
 | `mod.rs` | `TuiOptions`, `TuiError`, `run` |
 | `protocol.rs` | the wire bodies the client sends and receives, and the three message types of the loop: `Action` (what the user asked), `Effect` (I/O the reducer wants), `ClientEvent` (what came back, tagged with a `Generation`) |
-| `state.rs` | `State`: the open `Tab`s (each with its conversation projection, session, model, activity, generation, draft, transcript position and unread mark) and what they share (catalog, session list, workspace); it derefs to the active tab. `UiState` (overlay, scroll, selection, sidebar shown); data only |
-| `client.rs` | the HTTP client: models, sessions, create/resume, send, stop, open the event stream; send failures split into rejected and uncertain |
+| `state.rs` | `State`: the open `Tab`s (each with its conversation projection, session, model, variant, agent, activity, generation, draft, transcript position and unread mark) and what they share (catalog, session list, server commands, workspace); it derefs to the active tab. `UiState` (overlay, scroll, selection, what the variant list is for, sidebar shown); data only |
+| `client.rs` | the HTTP client: models, sessions, create/resume, send, stop, the command list and a command run, open the event stream; send failures split into rejected and uncertain |
 | `stream.rs` | one SSE subscription: decoding, reconnect with backoff, resume after the last seq, cancellation |
 | `reducer/mod.rs` | `update`: `ClientEvent` to `State` changes and new `Effect`s; routes each event to the tab holding its generation, marks a background tab unread, drops events no tab holds |
-| `reducer/envelope.rs` | `EventEnvelope` to blocks: steps, tools (planned, running, settled), usage, errors; live and replay give the same blocks |
-| `reducer/actions.rs` | `handle_action`: `Action` to `UiState`/`State` changes and `Effect`s; opening (at most nine), switching and closing tabs |
+| `reducer/envelope.rs` | `EventEnvelope` to blocks: steps, tools (planned, running, settled), usage, errors, command results; the tab's agent from `session.agent_changed` and its variant from a `/variant` result; live and replay give the same blocks |
+| `reducer/command.rs` | `outcome_text`: a command result as the short text the transcript shows, in the client's own words; `tokens` for `42k` / `1M` |
+| `reducer/actions.rs` | `handle_action`: `Action` to `UiState`/`State` changes and `Effect`s; opening (at most nine), switching and closing tabs; server commands, the build/plan switch, the model and variant picks |
 | `reducer/text.rs` | `strip_controls`, applied to every piece of model and tool text |
 | `input.rs` | the `Editor` and `route_key`/`route_paste`: keys to editor edits or `Action`s |
-| `commands.rs` | the command catalog, the key help and the key to `Action` map |
+| `commands.rs` | the command catalog, the key help and the key to `Action` map; `route`, which sends a typed `/name` to the server unless the client handles it (`//text` is the literal `/text`); `variant_choices`, the rows of the variant list |
 | `runtime.rs` | `Runtime`: owns state, editor, client and streams; runs an event's effects for the tab it reached; the event loop with its frame tick |
 | `runtime/effects.rs` | `Executor`: runs each `Effect` in a task and reports a tagged `ClientEvent`; owns one live stream per tab generation and stops those no tab holds |
 | `runtime/tests.rs` | executor and loop tests with no terminal and a dead server |
 | `terminal.rs` | raw mode and the alternate screen, restored on exit and on panic |
 | `theme.rs` | the four themes (`ThemeId`, the `Theme` colour roles), the RGB `blend` for tints, and the semantic styles the views draw with |
 | `view/mod.rs` | `draw`: layout of sidebar, transcript, editor, status line and overlays |
-| `view/sidebar.rs` | the tab sidebar: number, title, `build · <state>`, unread mark, active tint, tab keys; hidden under 80 columns |
+| `view/sidebar.rs` | the tab sidebar: number, title, `<agent> · <state>`, unread mark, active tint, tab keys; hidden under 80 columns |
 | `view/transcript.rs` | block layout and drawing: messages by origin, steps, tools, errors, scroll and selection |
 | `view/tool.rs` | the one-line summary and the expanded output of a tool call |
 | `view/markdown.rs` | markdown to styled lines, cached per block revision |
-| `view/status.rs` | the status line of the active tab: connection, model, activity, context (the server's estimate, else the last prompt count) and session tokens |
-| `view/pickers.rs` | the model, session, command, theme and help overlays |
+| `view/status.rs` | the status line of the active tab: `▌agent`, alias, model, variant, context (the server's estimate, else the last prompt count), session tokens, connection and activity; the model name gives way first |
+| `view/pickers.rs` | the model (alias, model, window, variants), variant, session, command, theme and help overlays; a long list scrolls to its selected row |
 
 ## Data flows
 
@@ -102,6 +103,16 @@ into `State` (envelopes become blocks) and may return more effects. After each b
 `view::draw`, which only reads the state. Picking a model or starting a conversation bumps the
 generation, so late results of the old conversation are ignored. A conversation is created on the
 first message, not before.
+
+**Commands and agent controls (terminal client).** Enter on a line starting with `/` goes through
+`commands::route`: the client's own commands (`/sessions`, `/theme`, `/new`, `/quit`…) act locally,
+`//text` is sent as the message `/text`, and every other `/name` becomes `Effect::RunCommand`, a
+`POST /v1/sessions/{id}/commands`. The editor is cleared once the server took it; the outcome comes back
+on the stream as `command.result` and becomes a `BlockKind::Command`. The build/plan switch (tab on an
+empty message) and `/variant` are `/agent` and `/variant` runs; the tab's agent and variant change only
+when the server says so (`session.agent_changed`, the `/variant` result, the session summary), so a
+refusal leaves them as they were. Before a conversation exists, the agent and the variant picked with
+the model are sent in the create request instead.
 
 **Tabs (terminal client).** Every tab has its own generation, never shared, and the executor keeps one
 SSE stream per generation. An event is applied to the tab that holds its generation, whether it is on

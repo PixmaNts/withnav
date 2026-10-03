@@ -8,6 +8,30 @@ requests land in `develop`.
 
 ### Added
 
+- **Server commands in the terminal client**: a line starting with `/` runs on the server
+  (`/context`, `/agent`, `/variant`, `/model`, `/help`…) unless the client handles it itself
+  (`/sessions`, `/theme`, `/new`, `/quit`…). Each result shows in the conversation as a short
+  `/name · ok` or `/name · error` line with the answer under it. To send a message that starts with
+  a slash, type two: `//context` sends `/context`.
+- **Build and plan in the terminal client**: tab, on an empty message, switches the conversation
+  between the build and plan agents (shift+tab now moves between the message and the
+  conversation). The agent shows at the start of the status line (`▌build`, or `▌plan` in blue) and
+  in the tab bar (`plan · idle`). If the server refuses the switch (a turn is running, or a question
+  waits for your answer), its reason shows in the conversation. Before the first message, tab picks
+  the agent the conversation starts as.
+- **Model picker with variants**: the list shows each model's alias, name, context window and the
+  variants it offers; typing filters on alias or model name. After choosing a model you pick the
+  variant to start on (its default is preselected, `off` for none); a model without variants says
+  so and starts without one. Choosing a model still opens a new conversation.
+- **`/variant` in the terminal client** lists the conversation's variants, starting on the one in
+  use, and switches through the server; while a turn runs it tells you the change applies from the
+  next turn.
+
+### Changed
+
+- **Terminal status line**: it now reads `▌agent alias · model · variant · ~42k / 1M · 4%`; on a
+  narrow terminal the model name is shortened first.
+
 - **Several conversations at once in the terminal client**: each conversation opens in its own tab
   and keeps streaming while you look at another one. `/new` and ctrl+n open a new tab; picking a
   conversation in `/sessions` opens it in a tab, or brings its tab forward if it is already open; up

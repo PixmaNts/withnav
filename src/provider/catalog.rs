@@ -4,7 +4,7 @@ use crate::{
     paths,
     provider::{
         client::ModelClient,
-        config::{ApiKind, ResolvedModel},
+        config::{effective_variants, ApiKind, ResolvedModel, UnknownVariant, Variant, Variants},
         openai::ClientCache,
     },
 };
@@ -21,6 +21,11 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 const TTL: u64 = 86_400;
+/// Version 2 added the effort tiers. A version 1 file still holds valid
+/// limits: it is read as a fallback (tiers unknown) and refreshed at once to
+/// learn the tiers.
+const CACHE_VERSION: u32 = 2;
+const OLDEST_READABLE_VERSION: u32 = 1;
 const MAX_ENTRIES: usize = 10_000;
 const FETCH_DEADLINE: Duration = Duration::from_secs(3);
 /// After a failed refresh the endpoint is not asked again for this long, so
@@ -31,6 +36,11 @@ pub struct Limits {
     pub context_length: Option<u64>,
     pub max_input_tokens: Option<u64>,
     pub max_output_tokens: Option<u64>,
+    /// The reasoning-effort tiers the provider advertises (`low`, `high`, ...;
+    /// `none` included when reported). `None`: not known (never validly
+    /// reported); `Some` of an empty list: the provider says there are none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_tiers: Option<Vec<String>>,
 }
 impl Limits {
     /// Every reported limit is positive.
@@ -200,7 +210,7 @@ impl ModelCatalog {
                     let old = self.current(&ep, path.as_deref());
                     let (models, carried) = merge(old.as_ref(), fetched);
                     let file = CacheFile {
-                        version: 1,
+                        version: CACHE_VERSION,
                         fetched_at: now(),
                         models,
                         carried,
@@ -242,7 +252,10 @@ impl ModelCatalog {
         let c = self.current(ep, path)?;
         // The list is current, so it is not asked again; a model whose kept
         // values are older than the TTL still reports itself as stale.
-        (now().saturating_sub(c.fetched_at) < TTL).then(|| {
+        // A file from before the tiers were kept is refreshed once even when
+        // young, so the tiers are learned; until that succeeds it is the
+        // fallback.
+        (c.version == CACHE_VERSION && now().saturating_sub(c.fetched_at) < TTL).then(|| {
             let age = c.age_of(model);
             CatalogData {
                 limits: c.models.get(model).cloned(),
@@ -297,7 +310,9 @@ fn endpoint_key(base_url: &str) -> String {
     endpoint_without_credentials(base_url)
 }
 /// New values over the previous ones: a limit the provider now reports as
-/// null, zero or malformed keeps the value already known for that model. The
+/// null, zero or malformed keeps the value already known for that model, and
+/// so do tiers it did not validly report (an empty list it did report
+/// replaces them). The
 /// second map dates the oldest value kept for each such model, so a kept
 /// number does not pass for a freshly confirmed one.
 #[allow(clippy::type_complexity)]
@@ -315,7 +330,8 @@ fn merge(
             if let Some(p) = old.models.get(&id) {
                 let kept = (l.context_length.is_none() && p.context_length.is_some())
                     || (l.max_input_tokens.is_none() && p.max_input_tokens.is_some())
-                    || (l.max_output_tokens.is_none() && p.max_output_tokens.is_some());
+                    || (l.max_output_tokens.is_none() && p.max_output_tokens.is_some())
+                    || (l.effort_tiers.is_none() && p.effort_tiers.is_some());
                 if kept {
                     let since = old.carried.get(&id).copied().unwrap_or(old.fetched_at);
                     carried.insert(id.clone(), since.min(old.fetched_at));
@@ -323,6 +339,7 @@ fn merge(
                 l.context_length = l.context_length.or(p.context_length);
                 l.max_input_tokens = l.max_input_tokens.or(p.max_input_tokens);
                 l.max_output_tokens = l.max_output_tokens.or(p.max_output_tokens);
+                l.effort_tiers = l.effort_tiers.or_else(|| p.effort_tiers.clone());
             }
             (id, l)
         })
@@ -378,6 +395,7 @@ pub(crate) fn parse_models(bytes: &[u8]) -> Result<HashMap<String, Limits>, Prov
             context_length: positive("context_length"),
             max_input_tokens: positive("max_input_tokens"),
             max_output_tokens: positive("max_output_tokens"),
+            effort_tiers: effort_tiers(e),
         };
         let Some(existing) = models.get_mut(id) else {
             models.insert(id.to_string(), incoming);
@@ -399,15 +417,55 @@ pub(crate) fn parse_models(bytes: &[u8]) -> Result<HashMap<String, Limits>, Prov
         existing.context_length = existing.context_length.or(incoming.context_length);
         existing.max_input_tokens = existing.max_input_tokens.or(incoming.max_input_tokens);
         existing.max_output_tokens = existing.max_output_tokens.or(incoming.max_output_tokens);
+        if existing.effort_tiers.as_ref().is_none_or(Vec::is_empty)
+            && incoming.effort_tiers.is_some()
+        {
+            existing.effort_tiers = incoming.effort_tiers;
+        }
     }
     Ok(models)
 }
-/// A cache file this build can trust: known version, and no limit of zero
-/// (the parser never writes one, so it means the file was damaged).
+
+/// At most this many tiers of one model are kept.
+const MAX_TIERS: usize = 16;
+
+/// `capabilities.effort_tiers` of one model entry: the usable names, in the
+/// order reported, without duplicates. A tier becomes a variant name and a
+/// request value, so anything that is not a short plain word is dropped.
+/// `None` when the entry does not carry a usable list: missing, null, of
+/// another type, or a non-empty list of which no item is a usable name. That
+/// is "not reported", and the tiers known before are kept. Only a list that
+/// is empty in the source says there are no tiers.
+fn effort_tiers(entry: &serde_json::Value) -> Option<Vec<String>> {
+    let mut tiers: Vec<String> = Vec::new();
+    let source = entry
+        .pointer("/capabilities/effort_tiers")
+        .and_then(|v| v.as_array())?;
+    if source.is_empty() {
+        return Some(tiers);
+    }
+    let reported = source.iter().filter_map(|v| v.as_str());
+    for tier in reported {
+        let plain = !tier.is_empty()
+            && tier.len() <= 32
+            && tier
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if plain && !tiers.iter().any(|t| t == tier) && tiers.len() < MAX_TIERS {
+            tiers.push(tier.to_string());
+        }
+    }
+    (!tiers.is_empty()).then_some(tiers)
+}
+/// A cache file this build can trust: a readable version, and no limit of
+/// zero (the parser never writes one, so it means the file was damaged).
 fn read_cache(path: &Path) -> Option<CacheFile> {
     serde_json::from_slice::<CacheFile>(&std::fs::read(path).ok()?)
         .ok()
-        .filter(|c| c.version == 1 && c.models.values().all(Limits::is_sane))
+        .filter(|c| {
+            (OLDEST_READABLE_VERSION..=CACHE_VERSION).contains(&c.version)
+                && c.models.values().all(Limits::is_sane)
+        })
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -539,6 +597,31 @@ pub struct ResolvedChat {
     /// Why the last refresh failed (short, no secrets), if it did.
     pub refresh_error: Option<String>,
     pub snapshot: ModelResolution,
+    /// The variants the alias offers: its own, or generated from the
+    /// discovered effort tiers.
+    pub variants: Variants,
+    /// The alias's `default_variant` as configured. It may name a generated
+    /// tier the provider no longer reports: check with [`Self::default_override`].
+    pub default_variant: Option<String>,
+}
+impl ResolvedChat {
+    /// The default variant's name and override object; `None` when the alias
+    /// sets no default, an error when the default names no variant now on offer.
+    pub fn default_override(
+        &self,
+        alias: &str,
+    ) -> Result<Option<(String, Variant)>, UnknownVariant> {
+        let Some(name) = &self.default_variant else {
+            return Ok(None);
+        };
+        self.variants
+            .get(name)
+            .map(|v| Some((name.clone(), v.clone())))
+            .ok_or_else(|| UnknownVariant {
+                alias: alias.to_string(),
+                variant: name.clone(),
+            })
+    }
 }
 /// A chat alias with no window in models.json and none reported by the
 /// provider.
@@ -565,9 +648,13 @@ pub async fn resolve_chat(
 ) -> Result<ResolvedChat, NoContextWindow> {
     let is_chat = resolved.model.api == ApiKind::Chat;
     let explicit = resolved.model.context_window.filter(|n| *n > 0);
+    // Generated variants need the provider's tiers even when the window is
+    // configured.
+    let needs_tiers =
+        resolved.model.variants.is_none() && resolved.provider.catalog_format.is_some();
     let data = if !is_chat {
         None
-    } else if explicit.is_some() {
+    } else if explicit.is_some() && !needs_tiers {
         Some(catalog.cached(resolved))
     } else {
         Some(catalog.lookup(resolved, key, clients).await)
@@ -576,8 +663,17 @@ pub async fn resolve_chat(
     let used = data.as_ref().filter(|d| d.limits.is_some());
     let stale = used.is_some_and(|d| d.stale);
     let stale_age_secs = used.filter(|d| d.stale).and_then(|d| d.age_seconds);
-    let refresh_error = used.and_then(|d| d.error.clone());
+    // A lookup that failed is reported even when nothing is cached for the
+    // model: a pinned window then still tells why no variants are on offer.
+    // Without a lookup the error is only that of values actually used.
+    let refresh_error = if needs_tiers && is_chat {
+        data.as_ref().and_then(|d| d.error.clone())
+    } else {
+        used.and_then(|d| d.error.clone())
+    };
     let limits = data.and_then(|d| d.limits).unwrap_or_default();
+    let variants = effective_variants(resolved, limits.effort_tiers.as_deref().unwrap_or(&[]));
+    let default_variant = resolved.model.default_variant.clone();
     let (window, source) = if let Some(n) = explicit {
         (n, "models.json")
     } else if let Some(n) = limits.context_length {
@@ -642,6 +738,8 @@ pub async fn resolve_chat(
         stale_age_secs,
         refresh_error,
         snapshot,
+        variants,
+        default_variant,
     })
 }
 

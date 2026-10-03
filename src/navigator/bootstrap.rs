@@ -227,11 +227,16 @@ impl LazyCommenter {
                             e.alias, e.provider, e.model
                         )
                     })?;
+                let variant = chat
+                    .default_override(&self.resolved.alias)
+                    .map_err(|e| format!("{e}; fix `default_variant` in models.json"))?
+                    .map(|(_, v)| v);
                 let mut resolved = self.resolved.clone();
                 resolved.model.context_window = Some(chat.window);
                 resolved.model.max_input_tokens = chat.max_input_tokens;
                 Ok::<_, String>(Arc::new(
                     LlmCommenter::new(resolved, self.api_key.clone(), self.clients.clone())
+                        .with_variant(variant)
                         .with_log(NavLog::new(self.log_path.clone())),
                 ))
             })

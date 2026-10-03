@@ -148,6 +148,8 @@ pub struct LlmCommenter {
     resolved: crate::provider::config::ResolvedModel,
     api_key: String,
     clients: Arc<crate::provider::openai::ClientCache>,
+    /// The alias's default variant, merged into every request.
+    variant: Option<crate::provider::config::Variant>,
     log: Option<NavLog>,
 }
 
@@ -176,8 +178,16 @@ impl LlmCommenter {
             resolved,
             api_key,
             clients,
+            variant: None,
             log: None,
         }
+    }
+
+    /// Applies `variant` (the alias's default, if it has one) to every
+    /// request this commenter sends.
+    pub fn with_variant(mut self, variant: Option<crate::provider::config::Variant>) -> Self {
+        self.variant = variant;
+        self
     }
 
     /// Attaches the navigator log so each round and tool execution is
@@ -271,6 +281,7 @@ impl LlmCommenter {
                     .map_or(REMARK_MAX_TOKENS, |m| m.min(REMARK_MAX_TOKENS)),
             ),
             temperature: Some(0.2),
+            extra: self.variant.clone().unwrap_or_default(),
         };
         let http = build_request(client, &self.resolved.provider, &self.api_key, &request);
         let started = Instant::now();

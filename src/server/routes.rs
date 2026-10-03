@@ -3,7 +3,7 @@
 //!
 //! Response bodies are FROZEN:
 //! - `GET  /v1/health`        -> `{status:"ok"}`
-//! - `GET  /v1/models?workspace=` -> `{models:[{alias, model, context_window?, enabled?, disabled_reason?, window_source?, stale?, stale_age_secs?, refresh_error?, reported_output?, max_input_tokens?, discrepancy?}], default?}`
+//! - `GET  /v1/models?workspace=` -> `{models:[{alias, model, context_window?, enabled?, disabled_reason?, window_source?, stale?, stale_age_secs?, refresh_error?, reported_output?, max_input_tokens?, discrepancy?, variants?, default_variant?, default_variant_unavailable?}], default?}`
 //! - `POST /v1/sessions`      -> `{session_id, root_actor_id:"agent:main", actor_state:"idle"}`
 //!   (422 `{"error", "reason":"no_context_window"}` for a chat alias with no known window)
 //! - `GET  /v1/sessions/:id`  -> `{session_id, actor_state, workspace, model, current_seq}`
@@ -354,6 +354,17 @@ pub struct ModelEntry {
     /// An explicit `context_window` that differs from the provider's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub discrepancy: Option<DiscrepancyBody>,
+    /// Names of the variants the alias offers; never their override objects.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<String>,
+    /// The default variant, when the alias sets one that it offers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_variant: Option<String>,
+    /// The configured `default_variant`, when it names a variant that is not
+    /// on offer now (a tier the provider does not report, or could not be
+    /// asked for); `refresh_error` says why when the lookup failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_variant_unavailable: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -395,6 +406,9 @@ async fn list_models(
                     reported_output: None,
                     max_input_tokens: None,
                     discrepancy: None,
+                    variants: Vec::new(),
+                    default_variant: None,
+                    default_variant_unavailable: None,
                 })
                 .collect::<Vec<_>>();
             for entry in &mut models {
@@ -403,6 +417,12 @@ async fn list_models(
                     .await
                 {
                     Ok(resolution) => {
+                        match resolution.default_override(&entry.alias) {
+                            Ok(chosen) => entry.default_variant = chosen.map(|(name, _)| name),
+                            Err(unknown) => {
+                                entry.default_variant_unavailable = Some(unknown.variant)
+                            }
+                        }
                         entry.context_window = Some(resolution.window);
                         entry.enabled = Some(true);
                         entry.window_source = Some(resolution.window_source);
@@ -415,6 +435,7 @@ async fn list_models(
                             configured: d.configured,
                             discovered: d.discovered,
                         });
+                        entry.variants = resolution.variants.into_keys().collect();
                     }
                     Err(error) => {
                         entry.enabled = Some(false);

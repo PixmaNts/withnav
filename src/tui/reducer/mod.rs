@@ -329,7 +329,9 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             // The gauge is server state, not derived from the replay (`context.updated` is
             // live-only), so it stays; the reconnect that follows refreshes it.
             let context = envelope::take_context(s);
+            let children = std::mem::take(&mut s.children);
             reset_projection(s);
+            s.children = children;
             // The replay says again whether the switch still waits: hidden until its acceptance
             // comes back and nothing settles it.
             if let Some(m) = s.model_switch.as_mut() {

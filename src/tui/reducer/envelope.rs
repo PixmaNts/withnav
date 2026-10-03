@@ -101,10 +101,13 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         if let Some(delivery) = v["delivery"].as_str() {
             child.delivery = Some(strip_controls(delivery));
         }
+        let replayed_spawn =
+            e.kind == "subagent.spawned" && child.event_seq.is_some_and(|seq| seq >= e.seq);
         child.reason = v["reason"].as_str().map(strip_controls);
         child.event_seq = Some(e.seq);
         child.status = match e.kind.as_str() {
-            "subagent.spawned" => ChildStatus::Running,
+            "subagent.spawned" if !replayed_spawn => ChildStatus::Running,
+            "subagent.spawned" => child.status,
             "subagent.done" => ChildStatus::from_wire(v["outcome"].as_str().ok_or_else(bad)?),
             _ if !child.status.terminal() => match v["verdict"].as_str() {
                 Some("doubt" | "stuck") => ChildStatus::Doubt,

@@ -18,6 +18,54 @@ use ulid::Ulid;
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
 #[test]
+fn parent_resync_keeps_a_parked_child_and_its_continue_control() {
+    let mut s = subagent_parent();
+    spawn_subagent(&mut s, None);
+    let mut script = Script::new();
+    script.seq = 10;
+    script.raw(
+        "agent.yield",
+        json!({"kind":"budget","question":"step budget exhausted"}),
+    );
+    update(
+        &mut s,
+        ClientEvent::ChildEnvelope {
+            generation: Generation(0),
+            child_session_id: Ulid(2).to_string(),
+            envelope: script.out[0].clone(),
+        },
+    )
+    .unwrap();
+    update(
+        &mut s,
+        ClientEvent::Resync {
+            generation: Generation(0),
+        },
+    )
+    .unwrap();
+    spawn_subagent(&mut s, None);
+    assert_eq!(s.children[0].status, ChildStatus::OutOfSteps);
+    assert_eq!(s.children[0].child_seq, Some(10));
+    let mut ui = UiState::default();
+    handle_action(&mut s, &mut ui, Action::OpenChild(Ulid(2).to_string()));
+    let generation = s.generation.clone();
+    let mut metadata = s.tabs[0].session.clone().unwrap();
+    metadata.session_id = Ulid(2).to_string();
+    metadata.parent_session_id = Some(Ulid(1).to_string());
+    metadata.promptable = false;
+    update(
+        &mut s,
+        ClientEvent::Metadata {
+            generation,
+            result: Ok(metadata),
+        },
+    )
+    .unwrap();
+    handle_action(&mut s, &mut ui, Action::ContinueChild);
+    assert!(ui.child_confirm.is_some());
+}
+
+#[test]
 fn completion_keeps_the_child_terminal_after_its_parent_tab_closes() {
     let mut s = subagent_parent();
     spawn_subagent(&mut s, None);
@@ -353,7 +401,7 @@ fn subagents_replay_running_and_every_terminal_outcome() {
             },
         )
         .unwrap();
-        assert!(s.children.is_empty());
+        assert_eq!(s.children, children);
         spawn_subagent(&mut s, None);
         subagent_event(&mut s, 2, "subagent.done", payload);
         assert_eq!(s.children, children);

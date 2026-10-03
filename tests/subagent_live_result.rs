@@ -9,6 +9,179 @@ use common::server::TestServerConfig;
 use common::sse::{spawn_streaming_provider, text_chunk};
 
 #[tokio::test]
+async fn failed_second_steer_commit_preserves_the_acknowledged_prefix_after_restore() {
+    let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let service = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(128000)
+        .state();
+    let parent = service
+        .create_session(&ws, None, None)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    service
+        .send(common::server::text_command(parent, "work"))
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (_, parent_stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let a = service
+        .create_child_with_delivery(parent, "explore", "A", "steer")
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (_, stream_a) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let b = service
+        .create_child_with_delivery(parent, "explore", "B", "steer")
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (_, stream_b) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    stream_a
+        .send(text_chunk("first committed finding"))
+        .unwrap();
+    drop(stream_a);
+    async {
+        while service
+            .history()
+            .unconsumed_completions(parent)
+            .await
+            .unwrap()
+            .len()
+            != 1
+        {
+            tokio::task::yield_now().await;
+        }
+    }
+    .bounded(file!(), line!())
+    .await;
+    stream_b.send(text_chunk("second pending finding")).unwrap();
+    drop(stream_b);
+    async {
+        while service
+            .history()
+            .unconsumed_completions(parent)
+            .await
+            .unwrap()
+            .len()
+            != 2
+        {
+            tokio::task::yield_now().await;
+        }
+    }
+    .bounded(file!(), line!())
+    .await;
+    service.fail_delivery_commit(2);
+    parent_stream
+        .send(common::sse::tool_call_chunk(
+            "boundary",
+            "glob",
+            &json!({"pattern":"*"}),
+        ))
+        .unwrap();
+    drop(parent_stream);
+    async {
+        loop {
+            service.history().flush().await.unwrap();
+            let events = service
+                .history()
+                .replay(parent, None, u64::MAX)
+                .await
+                .unwrap();
+            if events
+                .iter()
+                .any(|e| e.kind == "turn.end" && e.payload["outcome"] == "error")
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+    .bounded(file!(), line!())
+    .await;
+    service
+        .close_session(parent)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let loaded = service
+        .history()
+        .load(parent)
+        .bounded(file!(), line!())
+        .await
+        .unwrap()
+        .unwrap();
+    let transcript = serde_json::to_string(&loaded.transcript).unwrap();
+    assert!(transcript.contains("first committed finding"));
+    assert!(!transcript.contains("second pending finding"));
+    let pending = service
+        .history()
+        .unconsumed_completions(parent)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].0, b);
+    service.fail_delivery_commit(0);
+    service
+        .create_or_resume_session(&ws, None, None, Some(parent))
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (request, resumed) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(request.contains("first committed finding"));
+    assert!(request.contains("second pending finding"));
+    service
+        .history()
+        .flush()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let events = service
+        .history()
+        .replay(parent, None, u64::MAX)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    for child in [a, b] {
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.kind == "message.received"
+                    && e.payload["source"] == "subagent"
+                    && e.payload["child_session_id"] == child.to_string())
+                .count(),
+            1
+        );
+    }
+    drop(resumed);
+    service.close_all().bounded(file!(), line!()).await;
+}
+
+#[tokio::test]
 async fn delivered_result_is_live_and_replayed_once_before_the_woken_turn() {
     let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
     let tmp = tempfile::tempdir().unwrap();

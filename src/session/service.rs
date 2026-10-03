@@ -287,6 +287,8 @@ fn is_promptable(value: &bool) -> bool {
 #[derive(Clone, Debug)]
 pub struct Service {
     #[cfg(debug_assertions)]
+    delivery_failure_countdown: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(debug_assertions)]
     pub(crate) shutdown_snapshot_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
     pub(crate) watchdog_claim_write_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
@@ -340,6 +342,12 @@ pub struct Service {
 }
 
 impl Service {
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn fail_delivery_commit(&self, ordinal: usize) {
+        self.delivery_failure_countdown
+            .store(ordinal, std::sync::atomic::Ordering::Release);
+    }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn pause_shutdown_snapshot(&self, barrier: ChildPreparationBarrier) {
@@ -537,6 +545,8 @@ impl Service {
             .map_err(ServerError::History)?;
         let catalog = crate::provider::catalog::ModelCatalog::new(Some(config.data_dir.clone()));
         Ok(Self {
+            #[cfg(debug_assertions)]
+            delivery_failure_countdown: Arc::default(),
             #[cfg(debug_assertions)]
             shutdown_snapshot_barrier: Arc::default(),
             #[cfg(debug_assertions)]
@@ -2066,9 +2076,13 @@ impl Service {
             }));
             let history = self.history.clone();
             let delivery_sequencer = sequencer.clone();
+            #[cfg(debug_assertions)]
+            let failure_countdown = self.delivery_failure_countdown.clone();
             status.install_delivery(Arc::new(move |mut transcript, mid_turn| {
                 let history = history.clone();
                 let sequencer = delivery_sequencer.clone();
+                #[cfg(debug_assertions)]
+                let failure_countdown = failure_countdown.clone();
                 Box::pin(async move {
                     history.flush().await?;
                     let notices = history.unconsumed_completions(session_id).await?;
@@ -2099,9 +2113,25 @@ impl Service {
                         transcript.push(ChatMessage::User { provenance: crate::provider::openai::UserProvenance::Subagent, content: text });
                         let committed_transcript = transcript.clone();
                         let committed_history = history.clone();
-                        sequencer.commit_acked(event, Box::new(move |envelope| Box::pin(async move {
+                        #[cfg(debug_assertions)]
+                        let failure_countdown = failure_countdown.clone();
+                        let result = sequencer.commit_acked(event, Box::new(move |envelope| Box::pin(async move {
+                            #[cfg(debug_assertions)]
+                            {
+                                let previous = failure_countdown.fetch_update(std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire, |n| {
+                                    if n == usize::MAX { Some(n) } else { n.checked_sub(1) }
+                                });
+                                if previous == Ok(1) || previous == Ok(usize::MAX) {
+                                    failure_countdown.store(usize::MAX, std::sync::atomic::Ordering::Release);
+                                    return Err("injected delivery commit failure".into());
+                                }
+                            }
                             committed_history.consume_completions_committed(session_id, vec![child], committed_transcript, Some(envelope)).await
-                        }))).await?;
+                        }))).await;
+                        if let Err(message) = result {
+                            transcript.pop();
+                            return Err(crate::agent::boundary::BoundaryError { message, committed: consumed.then_some(transcript) });
+                        }
                         consumed = true;
                     }
                     if !consumed { return Ok(None); }

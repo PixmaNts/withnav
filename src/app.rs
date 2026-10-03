@@ -92,6 +92,11 @@ pub struct RunArgs {
 
     #[arg(long)]
     pub show_thinking: bool,
+
+    /// Model variant to run with: a name the alias offers, or `none`. Default:
+    /// the alias's default variant.
+    #[arg(long)]
+    pub variant: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -198,7 +203,12 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
     // A session that cannot start (no window, unknown alias, no key) ends the
     // run the way a failed turn does: the `error:` line, exit 1.
     let session_id = match state
-        .create_session(&workspace, args.model.as_deref(), None)
+        .create_session_with_variant(
+            &workspace,
+            args.model.as_deref(),
+            None,
+            crate::session::VariantChoice::from_request(args.variant.as_deref()),
+        )
         .await
     {
         Ok(id) => id,

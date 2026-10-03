@@ -37,6 +37,19 @@ const END_OF_STREAM_REASON: &str = "inbox_closed";
 /// Wire cap for `turn.end{error}.message` (bounded, no secrets).
 const ERROR_SUMMARY_CAP: usize = 256;
 
+/// A selected model variant: its name and override object.
+pub type SelectedVariant = Option<(String, crate::provider::config::Variant)>;
+
+/// The variant a session runs with. A change made while a turn runs waits in
+/// `pending` and takes effect when the next turn starts, so one turn never
+/// mixes two variants.
+#[derive(Debug, Default)]
+struct VariantSlot {
+    active: SelectedVariant,
+    pending: Option<SelectedVariant>,
+    running: bool,
+}
+
 /// What the runtime shares with the session service about its actor, so the
 /// service can decide whether a session command may run without reaching
 /// into the actor.
@@ -44,6 +57,7 @@ const ERROR_SUMMARY_CAP: usize = 256;
 pub struct RuntimeStatus {
     pending_ask: AtomicBool,
     running: AtomicBool,
+    variant: Mutex<VariantSlot>,
 }
 
 impl RuntimeStatus {
@@ -55,6 +69,56 @@ impl RuntimeStatus {
     /// A turn is in flight.
     pub fn running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
+    }
+
+    fn slot(&self) -> std::sync::MutexGuard<'_, VariantSlot> {
+        match self.variant.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    /// Sets the variant the session starts with, before its first turn.
+    pub fn init_variant(&self, variant: SelectedVariant) {
+        self.slot().active = variant;
+    }
+
+    /// The variant name that is selected: the pending one when a change is
+    /// waiting for the running turn to end, else the active one.
+    pub fn selected_variant(&self) -> Option<String> {
+        let slot = self.slot();
+        let chosen = slot.pending.as_ref().unwrap_or(&slot.active);
+        chosen.as_ref().map(|(name, _)| name.clone())
+    }
+
+    /// Selects `variant` (`None` clears it). Returns `true` when it takes
+    /// effect now, `false` when a turn is running and it waits for the next
+    /// turn.
+    pub fn select_variant(&self, variant: SelectedVariant) -> bool {
+        let mut slot = self.slot();
+        if slot.running {
+            slot.pending = Some(variant);
+            false
+        } else {
+            slot.active = variant;
+            slot.pending = None;
+            true
+        }
+    }
+
+    /// A turn starts: a waiting change is applied, and the variant the whole
+    /// turn runs with is returned.
+    fn begin_turn(&self) -> SelectedVariant {
+        let mut slot = self.slot();
+        if let Some(pending) = slot.pending.take() {
+            slot.active = pending;
+        }
+        slot.running = true;
+        slot.active.clone()
+    }
+
+    fn end_turn(&self) {
+        self.slot().running = false;
     }
 
     fn sync_ask(&self, actor: &AgentActor) {
@@ -272,6 +336,7 @@ async fn runtime_loop(
         inbox.apply_batch_to_actor(&mut actor);
         status.sync_ask(&actor);
         status.running.store(true, Ordering::SeqCst);
+        actor.variant = status.begin_turn().map(|(_, variant)| variant);
 
         let task_id = active_task_id.unwrap_or_default();
         let turn_id = Ulid::new();
@@ -312,6 +377,7 @@ async fn runtime_loop(
         let result_message_id = turn.message_id;
         status.sync_ask(&actor);
         status.running.store(false, Ordering::SeqCst);
+        status.end_turn();
 
         // A collapsed session surfaces its first publish failure as the turn
         // error (checked BEFORE translating the natural outcome).

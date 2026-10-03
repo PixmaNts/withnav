@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use ulid::Ulid;
 
 use super::commands::{self, CommandOutcome, CommandSpec};
-use super::service::{Service, SessionHandle, SessionId};
+use super::service::{pick_variant, Service, SessionHandle, SessionId, VariantChoice};
 use crate::bus::event::{CommandResult, EventKind};
 use crate::bus::sequencer::Candidate;
 use crate::error::ServerError;
@@ -91,6 +91,7 @@ impl Service {
         match spec.name {
             "help" => Ok(json!({ "commands": commands::COMMANDS })),
             "model" => Ok(model_data(handle)),
+            "variant" => self.variant_command(session_id, handle, arguments).await,
             "new" => self.new_conversation(session_id, handle, arguments).await,
             // The stop itself is done by `run_command` after the result is
             // published: the stream ends with the session.
@@ -99,6 +100,43 @@ impl Service {
                 other,
             ))),
         }
+    }
+
+    /// `/variant [name]`: shows the variant and the names on offer, or
+    /// switches. A switch is checked against the offer, saved, and only then
+    /// handed to the runtime, which applies it at the next turn boundary.
+    async fn variant_command(
+        &self,
+        session_id: SessionId,
+        handle: &SessionHandle,
+        arguments: &str,
+    ) -> Result<Value, CommandFailure> {
+        let offered: Vec<&String> = handle.variants.keys().collect();
+        let mut words = arguments.split_whitespace();
+        let Some(word) = words.next() else {
+            return Ok(json!({
+                "variant": handle.status.selected_variant(),
+                "offered": offered,
+            }));
+        };
+        if words.next().is_some() {
+            return Err(CommandFailure::Refused(
+                "usage: /variant [name]".to_string(),
+            ));
+        }
+        let chosen = pick_variant(&handle.model, word, &handle.variants)
+            .map_err(|e| CommandFailure::Refused(e.to_string()))?;
+        let name = chosen.as_ref().map(|(name, _)| name.clone());
+        self.history()
+            .set_variant(session_id, name.as_deref())
+            .await
+            .map_err(|e| CommandFailure::Server(ServerError::History(e)))?;
+        let now = handle.status.select_variant(chosen);
+        Ok(json!({
+            "variant": name,
+            "offered": offered,
+            "applies": if now { "now" } else { "next_turn" },
+        }))
     }
 
     /// `/new [alias]`: a fresh session in the same workspace, with the
@@ -115,6 +153,16 @@ impl Service {
             return Err(CommandFailure::Refused("usage: /new [alias]".to_string()));
         }
         let alias = alias.unwrap_or(&handle.model).to_string();
+        // The same alias keeps this session's variant; another alias starts
+        // on its own default.
+        let variant = if alias == handle.model {
+            match handle.status.selected_variant() {
+                Some(name) => VariantChoice::Word(name),
+                None => VariantChoice::Clear,
+            }
+        } else {
+            VariantChoice::Default
+        };
         let profile = self
             .history()
             .meta(session_id)
@@ -122,7 +170,12 @@ impl Service {
             .map_err(|e| CommandFailure::Server(ServerError::History(e)))?
             .and_then(|meta| meta.profile);
         match self
-            .create_session(&handle.workspace, Some(&alias), profile.as_deref())
+            .create_session_with_variant(
+                &handle.workspace,
+                Some(&alias),
+                profile.as_deref(),
+                variant,
+            )
             .await
         {
             Ok(id) => Ok(json!({ "session_id": id.to_string(), "model": alias })),

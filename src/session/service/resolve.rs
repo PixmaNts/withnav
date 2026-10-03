@@ -7,10 +7,11 @@ use std::path::{Path, PathBuf};
 use ulid::Ulid;
 
 use super::{ResumedSession, Service};
+use crate::bus::runtime::SelectedVariant;
 use crate::error::ServerError;
 use crate::provider::auth;
 use crate::provider::catalog::ModelResolution;
-use crate::provider::config::{load_models, ResolvedModel};
+use crate::provider::config::{effective_variants, load_models, ResolvedModel, Variants};
 
 /// The identity half of a resolution (provider, model, api, endpoint) of a
 /// configured alias, for comparison with a saved one.
@@ -48,6 +49,59 @@ fn no_context_window(
         model: e.model,
         models_path: models_path.display().to_string(),
     }
+}
+
+/// What a new session asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VariantChoice {
+    /// The alias's default variant, if it has one.
+    Default,
+    /// No variant, whatever the alias default is.
+    Clear,
+    /// A variant of the alias by name, or `none` for no variant (a variant
+    /// the alias really calls `none` wins over the word).
+    Word(String),
+}
+
+impl VariantChoice {
+    /// A client's optional word: absent is the default.
+    pub fn from_request(word: Option<&str>) -> Self {
+        word.map_or(Self::Default, |w| Self::Word(w.to_string()))
+    }
+}
+
+/// Where a session's variant comes from.
+pub(super) enum VariantStart<'a> {
+    Choice(&'a VariantChoice),
+    Saved(Option<&'a str>),
+}
+
+/// Turns a client's word into the selection: an offered name selects it,
+/// `none` clears, anything else is an error listing what the alias offers.
+pub(crate) fn pick_variant(
+    alias: &str,
+    word: &str,
+    offered: &Variants,
+) -> Result<SelectedVariant, ServerError> {
+    if let Some(v) = offered.get(word) {
+        return Ok(Some((word.to_string(), v.clone())));
+    }
+    if word.eq_ignore_ascii_case("none") {
+        return Ok(None);
+    }
+    let list = if offered.is_empty() {
+        "it offers no variants".to_string()
+    } else {
+        format!(
+            "it offers: {}",
+            offered.keys().cloned().collect::<Vec<_>>().join(", ")
+        )
+    };
+    Err(ServerError::UnknownVariant {
+        alias: alias.to_string(),
+        variant: word.to_string(),
+        offered: list,
+    })
 }
 
 impl Service {
@@ -166,6 +220,78 @@ impl Service {
         resolved.model.context_window = Some(snapshot.bounds.context_window);
         resolved.model.max_input_tokens = snapshot.bounds.max_input_tokens;
         Ok((resolved, api_key, snapshot, save_late))
+    }
+
+    /// The variant a session starts with, and the variants its alias offers.
+    /// A fresh session takes the choice made at creation, else the alias
+    /// default; a resumed one takes the variant it saved. A named variant
+    /// the alias does not offer is an error, never a fallback.
+    pub(super) async fn select_variant(
+        &self,
+        session_id: Ulid,
+        alias: &str,
+        resolved: &ResolvedModel,
+        api_key: &str,
+        start: VariantStart<'_>,
+    ) -> Result<(SelectedVariant, Variants), ServerError> {
+        let models_path = || {
+            self.config
+                .models_path
+                .clone()
+                .unwrap_or_else(|| self.config.config_dir.join("models.json"))
+                .display()
+                .to_string()
+        };
+        // Only the offer is needed here, not the window: a resume must work
+        // with discovery down, so a missing window is not an error.
+        let needs_tiers =
+            resolved.model.variants.is_none() && resolved.provider.catalog_format.is_some();
+        let limits = if needs_tiers {
+            self.catalog
+                .lookup(
+                    resolved,
+                    api_key,
+                    &crate::provider::openai::ClientCache::new(),
+                )
+                .await
+        } else {
+            self.catalog.cached(resolved)
+        }
+        .limits
+        .unwrap_or_default();
+        let offered = effective_variants(resolved, limits.effort_tiers.as_deref().unwrap_or(&[]));
+        let selected = match start {
+            VariantStart::Saved(None) => None,
+            VariantStart::Saved(Some(name)) => match offered.get(name) {
+                Some(v) => Some((name.to_string(), v.clone())),
+                None => {
+                    return Err(ServerError::VariantUnavailable {
+                        session: session_id.to_string(),
+                        alias: alias.to_string(),
+                        variant: name.to_string(),
+                        models_path: models_path(),
+                    })
+                }
+            },
+            VariantStart::Choice(VariantChoice::Clear) => None,
+            VariantStart::Choice(VariantChoice::Word(word)) => pick_variant(alias, word, &offered)?,
+            VariantStart::Choice(VariantChoice::Default) => {
+                match resolved.model.default_variant.as_deref() {
+                    None => None,
+                    Some(name) => match offered.get(name) {
+                        Some(v) => Some((name.to_string(), v.clone())),
+                        None => {
+                            return Err(ServerError::DefaultVariantUnavailable {
+                                alias: alias.to_string(),
+                                variant: name.to_string(),
+                                models_path: models_path(),
+                            })
+                        }
+                    },
+                }
+            }
+        };
+        Ok((selected, offered))
     }
 
     /// First activation of a row from before the column: it gets its

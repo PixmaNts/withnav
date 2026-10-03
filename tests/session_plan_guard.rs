@@ -193,11 +193,26 @@ async fn a_conforming_exception_runs_and_is_recorded() {
         .cloned()
         .collect();
     assert_eq!(options, ["conforms", "uncertain", "violates"]);
-    let state_text = body["state"].as_str().unwrap();
-    assert!(state_text.contains("plan mode"), "the role prompt");
-    assert!(state_text.contains("write the stub"), "the task");
-    assert!(state_text.contains(target.to_str().unwrap()), "the target");
-    assert!(state_text.contains("\"content\":\"x\""), "exact arguments");
+    let described: Value = serde_json::from_str(body["state"].as_str().unwrap()).unwrap();
+    assert!(
+        described["role_policy"]
+            .as_str()
+            .unwrap()
+            .contains("plan mode"),
+        "the role prompt"
+    );
+    let evidence = &described["untrusted_evidence"];
+    assert_eq!(evidence["task"], "write the stub");
+    assert_eq!(evidence["resolved_target"], target.to_str().unwrap());
+    assert_eq!(
+        evidence["arguments"],
+        json!({"path": target, "content": "x"}),
+        "exact arguments"
+    );
+    assert!(body["questions"]["role_conformance"]["instructions"]
+        .as_str()
+        .unwrap()
+        .contains("UNTRUSTED"));
 
     let post = events(&state, id, "tool.post_call").await;
     assert_eq!(post.len(), 1);

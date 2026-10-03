@@ -60,6 +60,8 @@ pub struct TestServerConfig {
     chat_tools: Option<u64>,
     without_window: bool,
     extra_aliases: Vec<(String, String)>,
+    variants: Option<Value>,
+    default_variant: Option<String>,
 }
 
 impl TestServerConfig {
@@ -87,6 +89,8 @@ impl TestServerConfig {
             chat_tools: None,
             without_window: false,
             extra_aliases: Vec::new(),
+            variants: None,
+            default_variant: None,
         }
     }
 
@@ -121,6 +125,14 @@ impl TestServerConfig {
     pub fn extra_alias(mut self, alias: &str, model: &str) -> Self {
         self.extra_aliases
             .push((alias.to_string(), model.to_string()));
+        self
+    }
+
+    /// Gives the alias these `variants` (a JSON object by name) and,
+    /// optionally, a `default_variant`.
+    pub fn variants(mut self, variants: Value, default: Option<&str>) -> Self {
+        self.variants = Some(variants);
+        self.default_variant = default.map(str::to_string);
         self
     }
 
@@ -160,6 +172,12 @@ impl TestServerConfig {
                 .as_object_mut()
                 .unwrap()
                 .remove("context_window");
+        }
+        if let Some(variants) = &self.variants {
+            alias_entry["variants"] = variants.clone();
+        }
+        if let Some(default) = &self.default_variant {
+            alias_entry["default_variant"] = json!(default);
         }
         let mut models = serde_json::Map::new();
         models.insert(self.alias.clone(), alias_entry.clone());

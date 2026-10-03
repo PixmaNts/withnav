@@ -143,6 +143,39 @@ pub async fn spawn_responding_provider(
     }
 }
 
+/// Like [`spawn_capturing_provider`], but the first answer is held back
+/// until `release` is notified, so a test can act while a turn is running.
+pub async fn spawn_gated_provider(
+    responses: Vec<Vec<u8>>,
+    release: Arc<tokio::sync::Notify>,
+) -> CapturingProvider {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock bind");
+    let addr = listener.local_addr().expect("mock addr");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = requests.clone();
+    tokio::spawn(async move {
+        for (i, response) in responses.into_iter().enumerate() {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                break;
+            };
+            let request = read_http_request(&mut sock).await;
+            captured.lock().expect("requests").push(request);
+            if i == 0 {
+                release.notified().await;
+            }
+            let _ = sock.write_all(&response).await;
+            let _ = sock.flush().await;
+            let _ = sock.shutdown().await;
+        }
+    });
+    CapturingProvider {
+        url: format!("http://{addr}/v1"),
+        requests,
+    }
+}
+
 /// Reads one HTTP request: until the head is complete and `Content-Length`
 /// body bytes followed it, or the peer closed.
 async fn read_http_request(sock: &mut tokio::net::TcpStream) -> String {

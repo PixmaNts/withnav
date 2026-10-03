@@ -1,3 +1,4 @@
+use super::text::{columns, fit_end as fit, pad};
 use crate::tui::{
     commands,
     protocol::{ModelEntry, Overlay},
@@ -144,7 +145,8 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
             .collect(),
     };
     let note = note(overlay, state, ui, rows.is_empty());
-    let height = (rows.len() + 4 + usize::from(note.is_some()))
+    // Filter line, rows, note, then a blank line and the keys line.
+    let height = (rows.len() + 5 + usize::from(note.is_some()))
         .min(usize::from(area.height.saturating_sub(2)))
         .max(3) as u16;
     let box_area = Rect::new(
@@ -153,6 +155,8 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
         width,
         height,
     );
+    // The screen behind is dimmed, so the popup reads as the one thing to answer.
+    dim(frame, area, theme);
     frame.render_widget(Clear, box_area);
     frame.buffer_mut().set_style(box_area, theme.surface());
     let block = Block::default()
@@ -165,12 +169,28 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
         horizontal: 2,
         vertical: 1,
     });
+    let keys = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
+    let inner = Rect {
+        height: inner.height.saturating_sub(2),
+        ..inner
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(keys_line(overlay), theme.muted())),
+        keys,
+    );
     if overlay != Overlay::Help {
+        let placeholder = match overlay {
+            Overlay::Commands => "type a command…",
+            Overlay::Models => "filter models…",
+            _ => "filter…",
+        };
+        let typed = if ui.filter.is_empty() {
+            Span::styled(placeholder, theme.muted())
+        } else {
+            Span::styled(ui.filter.clone(), theme.text())
+        };
         frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("filter: ", theme.muted()),
-                Span::styled(ui.filter.clone(), theme.text()),
-            ])),
+            Paragraph::new(Line::from(vec![Span::styled("❯ ", theme.accent()), typed])),
             Rect { height: 1, ..inner },
         );
     }
@@ -212,6 +232,27 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
     }
 }
 
+/// The keys a popup takes, at its foot.
+fn keys_line(overlay: Overlay) -> &'static str {
+    match overlay {
+        Overlay::Help => "esc close",
+        Overlay::Themes => "↑↓ preview  enter keep  esc put back",
+        Overlay::Commands => "↑↓ move  enter run  esc close",
+        _ => "↑↓ move  enter choose  esc close",
+    }
+}
+
+/// Darkens what is behind a popup: the text goes muted, the background stays.
+fn dim(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+    let faded = crate::tui::theme::blend(theme.muted, theme.bg, 0.6);
+    let buffer = frame.buffer_mut();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            buffer[(x, y)].set_fg(faded);
+        }
+    }
+}
+
 /// A line under the filter: why the variant list is empty, or that a change waits for the turn.
 fn note(overlay: Overlay, state: &State, ui: &UiState, empty: bool) -> Option<&'static str> {
     if overlay != Overlay::Variants {
@@ -241,11 +282,11 @@ fn model_row(entry: &ModelEntry, width: usize, theme: &Theme) -> Line<'static> {
         format!("  {}", entry.variants.join(" "))
     };
     // alias (18) + model + "  " + window + variants; the model gives way first, then variants.
-    let alias = format!("{:<18}", fit(&entry.alias, 17));
-    let fixed = alias.chars().count() + 2 + window.chars().count();
+    let alias = format!("{} ", pad(&entry.alias, 17));
+    let fixed = columns(&alias) + 2 + columns(&window);
     let variants = fit(&variants, width.saturating_sub(fixed + 12));
-    let model_room = width.saturating_sub(fixed + variants.chars().count());
-    let model = format!("{:<model_room$}", fit(&entry.model, model_room));
+    let model_room = width.saturating_sub(fixed + columns(&variants));
+    let model = pad(&entry.model, model_room);
     let mut spans = vec![
         Span::styled(alias, theme.accent()),
         Span::styled(model, theme.text()),
@@ -259,18 +300,6 @@ fn model_row(entry: &ModelEntry, width: usize, theme: &Theme) -> Line<'static> {
         }
     }
     Line::from(spans)
-}
-
-/// `text` cut to `width` characters, with `…` when cut.
-fn fit(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        return text.to_string();
-    }
-    let mut cut: String = text.chars().take(width.saturating_sub(1)).collect();
-    if width > 0 {
-        cut.push('…');
-    }
-    cut
 }
 
 /// One theme in the picker: a mark for the one in effect, its name and id, and swatches of its

@@ -2,15 +2,14 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ navai  ~/dev/project                                Fix parser · 01JABCDEFGH 
+ Conversations       │ ◆ navai  ~/dev/project     ▌build  cognition · cc/claude-opus-5-5 · — / 200k 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
 ▌  build · idle      │                                                                              
                      │                                                                              
                      │                                                                              
                      │                                                                              
-                     │                                                                              
             ┌──────────────────────────────── Commands ────────────────────────────────┐            
-            │ filter:                                                                  │            
+            │ ❯ type a command…                                                        │            
             │▌/new [alias]          new conversation in a new tab                      │            
             │ /sessions             browse conversations                               │            
             │ /model [alias]        choose model for a new conversation                │            
@@ -24,11 +23,12 @@ expression: snapshot
             │ /compact              server compact                                     │            
             │ /agent [id]           server agent                                       │            
             │                                                                          │            
+            │ ↑↓ move  enter run  esc close                                            │            
             └──────────────────────────────────────────────────────────────────────────┘            
                      │                                                                              
                      │──────────────────────────────────────────────────────────────────────────────
-                     │▌build  cognition · claude-opus-5-5 · — / 200k   ready                        
+                     │ ready                                                          session — tok 
                      │┌ Message ───────────────────────────────────────────────────────────────────┐
  alt+1…9 switch      ││/                                                                           │
  alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
- alt+b hide bar      │ enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help
+ alt+b hide bar      │ enter send · alt+enter newline · ctrl+p palette · esc stop · f1 help

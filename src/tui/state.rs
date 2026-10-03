@@ -119,6 +119,8 @@ pub struct Conversation {
     pub open_permissions: Vec<String>,
     /// Key of the last `llm.response` seen (the turn-end usage fallback).
     pub last_response_step: Option<(String, String, String)>,
+    /// The last `context.compacted` of the conversation, if any.
+    pub last_compaction: Option<crate::bus::event::ContextCompacted>,
 }
 /// The most conversations open at once; a tenth is refused.
 pub const MAX_TABS: usize = 9;
@@ -185,6 +187,12 @@ pub struct Tab {
     pub view: TabView,
     /// Agents started by this conversation, shown under it; empty until the server reports them.
     pub children: Vec<ChildAgent>,
+    /// The workspace's branch and changes at the last read; `None` until read, or when the
+    /// workspace is not a git repository.
+    pub git: Option<super::git::GitStatus>,
+    /// A read of the git state is running; `git_again` asks for one more when it returns.
+    pub git_reading: bool,
+    pub git_again: bool,
 }
 
 /// The agent a conversation runs as when nothing else is known.
@@ -362,6 +370,10 @@ pub struct UiState {
     pub variant_pick: Option<VariantPick>,
     /// The tab sidebar is hidden by the driver (it also hides itself on narrow terminals).
     pub sidebar_hidden: bool,
+    /// The right column: `None` follows the terminal width, `Some` is the driver's choice.
+    pub panel_shown: Option<bool>,
+    /// Whether the right column was on screen at the last draw: the toggle flips what was seen.
+    pub panel_drawn: bool,
     /// The open permission request whose keys were on screen at the last draw. For any other
     /// (scrolled away, or not drawn yet), the first `y`, `a` or `n` brings it into view instead
     /// of answering it.

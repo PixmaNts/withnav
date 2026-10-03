@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- navai  ~/dev/project                                                      Fix parser · 01JABCDEFGH 
+ ◆ navai  ~/dev/project                       ▌build  cognition · cc/claude-opus-5-5 · 12.4k / 200k 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
  │ YOU                                                                                              
  │  Explain the failure, then fix it.                                                               
@@ -21,8 +21,8 @@ expression: snapshot
                                                                                                     
                                                                                                     
 ────────────────────────────────────────────────────────────────────────────────────────────────────
-▌build  cognition · cc/claude-opus-5-5 · 12.4k / 200k   session 31.2k tok   ready                   
+ ready                                                                            session 31.2k tok 
 ┌ Message ─────────────────────────────────────────────────────────────────────────────────────────┐
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
- enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help
+ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model · /compact · esc stop · alt+r panel

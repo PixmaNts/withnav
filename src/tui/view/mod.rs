@@ -1,9 +1,12 @@
 //! Draws the terminal UI without mutating the conversation projection.
+mod header;
 mod markdown;
+pub mod panel;
 mod permission;
 mod pickers;
 pub mod sidebar;
 mod status;
+pub mod text;
 pub mod tool;
 mod transcript;
 use crate::tui::{
@@ -25,42 +28,134 @@ pub struct RenderCache {
     markdown: std::collections::HashMap<u64, markdown::MarkdownCache>,
     /// The open permission request whose keys line was on screen at the last draw.
     pub prompt_shown: Option<String>,
+    /// Whether the right column was drawn.
+    pub panel_drawn: bool,
 }
 
-fn shorten(path: &str, width: usize) -> String {
-    let path = path.replace(std::env::var("HOME").as_deref().unwrap_or("\0"), "~");
-    let chars: Vec<char> = path.chars().collect();
-    if chars.len() <= width {
-        path
-    } else {
-        format!(
-            "…{}",
-            chars[chars.len() - width.saturating_sub(1)..]
-                .iter()
-                .collect::<String>()
-        )
-    }
+/// One way to show the keys that apply now: the hints in order of use, the first `required` of
+/// which must all be on the bar.
+struct Hints {
+    hints: &'static [&'static str],
+    required: usize,
 }
 
-/// Splits a hint line (`key label  key label`) into keys in text colour and labels in muted.
-fn hint_spans(hint: &str, theme: &Theme) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    for (index, part) in hint.split("  ").enumerate() {
-        if index > 0 {
-            spans.push(Span::raw("  "));
+/// The columns `hints` take on the bar, separators and the leading space included.
+fn bar_width(hints: &[&str]) -> usize {
+    1 + hints.iter().map(|h| text::columns(h)).sum::<usize>() + 3 * hints.len().saturating_sub(1)
+}
+
+/// The key bar: `key label` pairs, keys in text colour and labels muted. The first of `choices`
+/// whose required hints fit is used; from it, as many hints as fit, the last ones giving way.
+fn key_bar(choices: &[Hints], width: usize, theme: &Theme) -> Vec<Span<'static>> {
+    let chosen = choices
+        .iter()
+        .find(|c| bar_width(&c.hints[..c.required]) <= width)
+        .or(choices.last())
+        .map_or(&[][..], |c| c.hints);
+    let mut spans = vec![Span::raw(" ")];
+    let mut used = 1;
+    for (index, hint) in chosen.iter().enumerate() {
+        let sep = if index == 0 { "" } else { " · " };
+        let wanted = text::columns(sep) + text::columns(hint);
+        if used + wanted > width {
+            break;
         }
-        let lead = part.len() - part.trim_start().len();
-        spans.push(Span::raw(part[..lead].to_string()));
-        let part = &part[lead..];
-        match part.split_once(' ') {
+        used += wanted;
+        spans.push(Span::styled(sep, theme.border()));
+        match hint.split_once(' ') {
             Some((key, label)) => {
                 spans.push(Span::styled(key.to_string(), theme.text()));
                 spans.push(Span::styled(format!(" {label}"), theme.muted()));
             }
-            None => spans.push(Span::styled(part.to_string(), theme.text())),
+            None => spans.push(Span::styled(hint.to_string(), theme.text())),
         }
     }
     spans
+}
+
+/// The keys that apply now: a permission prompt's while one waits for an answer (all three
+/// choices always shown, shorter when the row is narrow), the deny message's while one is typed,
+/// else the everyday ones.
+fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
+    // An answered request takes no keys: the usual hints come back.
+    let answerable = state
+        .open_permission()
+        .filter(|p| state.answered_permission.as_deref() != Some(p.request_id.as_str()));
+    let draft = answerable.and_then(|p| ui.deny_draft(&p.request_id));
+    match (answerable, draft) {
+        (Some(_), Some(_)) => &[
+            Hints {
+                hints: &["enter deny with this message", "esc deny without one"],
+                required: 2,
+            },
+            Hints {
+                hints: &["enter deny", "esc no message"],
+                required: 2,
+            },
+            Hints {
+                hints: &["enter deny", "esc omit"],
+                required: 2,
+            },
+        ],
+        // The plan agent's exceptions are allowed once or denied, never always.
+        (Some(open), None) if editor.text().is_empty() && !permission::offers_always(open) => &[
+            Hints {
+                hints: &["y allow once", "n deny", "esc stop", "ctrl+p palette"],
+                required: 2,
+            },
+            Hints {
+                hints: &["y once", "n deny", "esc stop"],
+                required: 2,
+            },
+            Hints {
+                hints: &["y", "n"],
+                required: 2,
+            },
+        ],
+        (Some(_), None) if editor.text().is_empty() => &[
+            Hints {
+                hints: &[
+                    "y allow once",
+                    "a always",
+                    "n deny",
+                    "esc stop",
+                    "ctrl+p palette",
+                ],
+                required: 3,
+            },
+            Hints {
+                hints: &["y once", "a always", "n deny", "esc stop"],
+                required: 3,
+            },
+            Hints {
+                hints: &["y", "a", "n"],
+                required: 3,
+            },
+        ],
+        _ if editor.text().is_empty() => &[Hints {
+            hints: &[
+                "tab build/plan",
+                "ctrl+p palette",
+                "alt+1…9 tabs",
+                "/model",
+                "/compact",
+                "esc stop",
+                "alt+r panel",
+                "f1 help",
+            ],
+            required: 0,
+        }],
+        _ => &[Hints {
+            hints: &[
+                "enter send",
+                "alt+enter newline",
+                "ctrl+p palette",
+                "esc stop",
+                "f1 help",
+            ],
+            required: 0,
+        }],
+    }
 }
 
 pub fn draw(
@@ -79,6 +174,7 @@ pub fn draw(
     markdown.set_theme(theme);
     let area = frame.area();
     frame.buffer_mut().set_style(area, theme.base());
+    cache.panel_drawn = false;
     if area.width < 24 || area.height < 9 {
         cache.prompt_shown = None;
         let bottom = area.bottom().saturating_sub(3);
@@ -98,6 +194,7 @@ pub fn draw(
         return;
     }
     let full = area;
+    let panel_shown = panel::shown(ui, area.width);
     let area = if sidebar::shown(ui, area.width) {
         let [bar, rest] = Layout::default()
             .direction(Direction::Horizontal)
@@ -121,46 +218,23 @@ pub fn draw(
             Constraint::Length(1),
         ])
         .areas(area);
-    let path = state
-        .session
-        .as_ref()
-        .map(|s| s.workspace.as_str())
-        .unwrap_or("workspace");
-    let title = state
-        .session
-        .as_ref()
-        .map(|s| {
-            let name = state
-                .sessions
-                .iter()
-                .find(|entry| entry.id == s.session_id)
-                .and_then(|entry| entry.title.as_deref())
-                .unwrap_or("Conversation");
-            format!(
-                "{} · {}",
-                shorten(name, usize::from(area.width / 4)),
-                shorten(&s.session_id, 12)
-            )
-        })
-        .unwrap_or_else(|| "new conversation".into());
-    let path = shorten(path, (area.width / 3) as usize);
-    let used = " navai  ".chars().count() + path.chars().count() + title.chars().count() + 1;
-    let gap = usize::from(area.width).saturating_sub(used);
-    frame.buffer_mut().set_style(header, theme.panel());
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" navai", theme.title()),
-            Span::raw("  "),
-            Span::styled(path, theme.muted()),
-            Span::raw(" ".repeat(gap)),
-            Span::styled(format!("{title} "), theme.strong()),
-        ])),
-        header,
-    );
+    header::draw(frame, header, state, &theme);
     frame.render_widget(
         Paragraph::new("─".repeat(usize::from(area.width))).style(theme.border()),
         rule,
     );
+    // The right column sits beside the transcript; the transcript keeps at least 40 columns.
+    let transcript = if panel_shown && transcript.width >= panel::WIDTH + 40 {
+        let [left, right] = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(1), Constraint::Length(panel::WIDTH)])
+            .areas(transcript);
+        panel::draw(frame, right, state, &theme);
+        cache.panel_drawn = true;
+        left
+    } else {
+        transcript
+    };
     cache.prompt_shown = transcript::draw(frame, transcript, state, ui, &theme, markdown);
     frame.render_widget(
         Paragraph::new("─".repeat(usize::from(area.width))).style(theme.border()),
@@ -194,17 +268,12 @@ pub fn draw(
             hints,
         );
     } else {
-        // An answered request takes no keys: the usual hints come back.
-        let answerable = state
-            .open_permission()
-            .filter(|p| state.answered_permission.as_deref() != Some(p.request_id.as_str()));
-        let draft = answerable.and_then(|p| ui.deny_draft(&p.request_id));
-        let hint = match (answerable, draft) {
-            (Some(_), Some(_)) => " enter deny with this message  esc deny without one",
-            (Some(open), None) if editor.text().is_empty() => permission::hint(open),
-            _ => " enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help",
-        };
-        frame.render_widget(Paragraph::new(Line::from(hint_spans(hint, &theme))), hints);
+        let bar = key_bar(
+            self::hints(state, ui, editor),
+            usize::from(hints.width),
+            &theme,
+        );
+        frame.render_widget(Paragraph::new(Line::from(bar)), hints);
     }
     pickers::draw(frame, full, state, ui, &theme);
 }

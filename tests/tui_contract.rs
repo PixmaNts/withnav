@@ -47,3 +47,40 @@ fn default_state_is_idle_without_cursor() {
     assert_eq!(state.activity, Activity::Idle);
     assert_eq!(state.last_applied_seq, None);
 }
+
+#[test]
+fn the_panel_gives_the_primary_agents_the_roles_the_server_defines() {
+    let server = navai::agent::definitions::Agents::builtin();
+    for (id, role) in navai::tui::view::panel::PRIMARY_ROLES {
+        let definition = server.get(id).unwrap_or_else(|| panic!("{id} is built in"));
+        assert_eq!(definition.description, role, "{id}");
+        // no agent file can take these names, so the role shown is the one in use
+        assert!(navai::agent::definitions::AgentId::parse(id).is_ok_and(|a| a.is_reserved()));
+    }
+}
+
+#[test]
+fn the_terminal_client_imports_no_agent_session_or_runtime_code() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tui"),
+        &mut files,
+    );
+    assert!(!files.is_empty());
+    for file in files {
+        let text = std::fs::read_to_string(&file).unwrap();
+        for banned in ["crate::agent", "crate::session", "crate::bus::runtime"] {
+            assert!(!text.contains(banned), "{}: {banned}", file.display());
+        }
+    }
+}

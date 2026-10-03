@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ navai  ~/dev/project                                Fix parser · 01JABCDEFGH 
+ Conversations       │ ◆ navai  …dev/project  ▌build  cognition · cc/claude-opus-5-5 · 12.4k / 200k 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
 ▌  build · waiting   │ │ YOU                                                                        
                      │ │  Explain the failure, then fix it.                                         
@@ -27,8 +27,8 @@ expression: snapshot
                      │                                                                              
                      │                                                                              
                      │──────────────────────────────────────────────────────────────────────────────
-                     │▌build  cognition · claude-opus-5-5 · 12.4k / 200k   permission needed        
+                     │ permission needed                                          session 31.2k tok 
                      │┌ Message ───────────────────────────────────────────────────────────────────┐
  alt+1…9 switch      ││                                                                            │
  alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
- alt+b hide bar      │ enter deny with this message  esc deny without one
+ alt+b hide bar      │ enter deny with this message · esc deny without one

@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- navai  ~/dev/project              Fix parser · 01JABCDEFGH 
+ ◆ navai  ▌build  cognition · cc/claude-opus-5-5 · — / 200k 
 ────────────────────────────────────────────────────────────
  │ YOU                                                      
  │  Why is this failing?                                    
@@ -17,8 +17,8 @@ expression: snapshot
                                                             
                                                             
 ────────────────────────────────────────────────────────────
-▌build  cognition · claude-opus-5… · — / 200k   ◐ running   
+ ◐ running                                    session — tok 
 ┌ Message ─────────────────────────────────────────────────┐
 │                                                          │
 └──────────────────────────────────────────────────────────┘
- enter send  alt+enter newline  esc stop  ctrl+p commands  f
+ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model

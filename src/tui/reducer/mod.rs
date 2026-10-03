@@ -53,6 +53,7 @@ pub fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::Stopped { generation, .. }
         | ClientEvent::DeliveryUncertain { generation }
         | ClientEvent::ProtocolError { generation, .. }
+        | ClientEvent::Git { generation, .. }
         | ClientEvent::SettingsNotSaved { generation, .. } => generation,
     }
 }
@@ -62,6 +63,17 @@ pub(crate) fn block(id: impl Into<String>, kind: BlockKind) -> Block {
         id: id.into(),
         kind,
     }
+}
+
+/// Asks for a read of the workspace's git state, unless one is running: then one more is
+/// asked for when it returns, so reads never pile up.
+pub(crate) fn read_git(s: &mut State) -> Option<Effect> {
+    if s.git_reading {
+        s.git_again = true;
+        return None;
+    }
+    s.git_reading = true;
+    Some(Effect::ReadGit)
 }
 
 /// Forgets that an answer was sent for `request_id`, if it was the one.
@@ -182,7 +194,21 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
 fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>, ProtocolError> {
     let mut effects = vec![];
     match e {
-        ClientEvent::Envelope { envelope, .. } => envelope::apply_envelope(s, envelope)?,
+        ClientEvent::Envelope { envelope, .. } => {
+            // A turn may have changed files: the branch and the changes are read again.
+            let turn_end = envelope.kind == crate::bus::event::EventKind::TurnEnd.as_str();
+            envelope::apply_envelope(s, envelope)?;
+            if turn_end {
+                effects.extend(read_git(s));
+            }
+        }
+        ClientEvent::Git { status, .. } => {
+            s.git = status;
+            s.git_reading = false;
+            if std::mem::take(&mut s.git_again) {
+                effects.extend(read_git(s));
+            }
+        }
         ClientEvent::Resync { .. } => {
             // Keeps catalog, model, session list, pending submit, notice and the session itself.
             // The gauge is server state, not derived from the replay (`context.updated` is
@@ -354,6 +380,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     s.activity = Activity::Idle;
                 }
                 effects.push(Effect::FetchMetadata(r.session_id.clone()));
+                effects.extend(read_git(s));
                 // `None` for a fresh conversation; the kept cursor when resuming the same one.
                 effects.push(Effect::Subscribe {
                     session_id: r.session_id.clone(),

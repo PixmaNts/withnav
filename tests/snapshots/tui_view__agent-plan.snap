@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ navai  ~/dev/project                                Fix parser · 01JABCDEFGH 
+ Conversations       │ ◆ navai  …oject  ▌plan  cognition · cc/claude-opus-5-5 · high · 12.4k / 200k 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
 ▌  plan · idle       │ │ YOU                                                                        
                      │ │  Explain the failure, then fix it.                                         
@@ -27,8 +27,8 @@ expression: snapshot
                      │                                                                              
                      │                                                                              
                      │──────────────────────────────────────────────────────────────────────────────
-                     │▌plan  cognition · claude-opus-5-5 · high · 12.4k / 200k   ready              
+                     │ ready                                                      session 31.2k tok 
                      │┌ Message ───────────────────────────────────────────────────────────────────┐
  alt+1…9 switch      ││                                                                            │
  alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
- alt+b hide bar      │ enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help
+ alt+b hide bar      │ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model · /compact · esc stop

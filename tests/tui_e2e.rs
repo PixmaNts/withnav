@@ -956,3 +956,72 @@ async fn text_sent_over_an_open_request_cancels_it_after_a_warning() {
     assert!(!target.exists());
     assert!(screen(&mut rt).contains("cancelled"));
 }
+
+// Given a workspace that is a git repository on branch `trial` with one changed file
+// When a conversation starts
+// Then the header shows the branch and one change, read off the reducer by `git`
+// And after a turn that adds a file, the count is read again
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_header_shows_the_workspace_branch_and_its_changes() {
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("git is not installed: skipped");
+        return;
+    }
+    let root = tempfile::tempdir().expect("tempdir");
+    let provider = spawn_capturing_provider(vec![
+        final_answer("Hello.", usage(10, 2)),
+        final_answer("Again.", usage(12, 2)),
+    ])
+    .await;
+    let env = Env::start(root, &provider.url).await;
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&env.ws)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "{args:?}: {out:?}");
+    };
+    git(&["init", "-q", "-b", "trial"]);
+    git(&["add", "notes.txt"]);
+    git(&[
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-q",
+        "-m",
+        "notes",
+    ]);
+    std::fs::write(env.ws.join("notes.txt"), "changed\n").expect("edit");
+    let mut rt = started(&env).await;
+    pick_model(&mut rt, 0);
+    type_and_send(&mut rt, "hello");
+    until("the git state", &mut rt, |_, rt| {
+        rt.state.git.as_ref().is_some_and(|g| g.dirty == 1)
+    })
+    .await;
+    let header = screen(&mut rt)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    assert!(header.contains("trial ●1"), "{header}");
+
+    std::fs::write(env.ws.join("new.txt"), "new\n").expect("new file");
+    until("the first answer", &mut rt, |_, rt| has_final(rt, "Hello.")).await;
+    type_and_send(&mut rt, "again");
+    until("the count read after the turn", &mut rt, |_, rt| {
+        has_final(rt, "Again.") && rt.state.git.as_ref().is_some_and(|g| g.dirty == 2)
+    })
+    .await;
+    assert!(screen(&mut rt).contains("trial ●2"));
+}

@@ -23,7 +23,11 @@ requests land in `develop`.
   `child_status` and `promptable: false`; you can read and stop a subagent but not write to it (403
   `child_read_only`). `subagent.spawned`, `subagent.done` and `subagent.watchdog` are stored on the parent's stream (the event catalog now has 22 kinds). The
   subagent's result is delivered exactly once as a bounded, labelled untrusted user message at the
-  parent's next turn boundary. A finished child wakes an idle parent; results wait while the parent
+  parent's next turn boundary. Each delivered result (including watchdog stop/doubt notices) also
+  appears live and on reconnect as `message.received` with `source: "subagent"`, child identity,
+  agent and outcome, plus a watchdog marker when applicable. The event, transcript entry and
+  consumption marker commit together, so a crash cannot hide or duplicate the delivered text;
+  the event catalog stays at 22 kinds. A finished child wakes an idle parent; results wait while the parent
   is busy or has a pending interaction, and survive restart and deletion of the child. Child tool
   permissions appear on the parent's stream and are answered through the parent's permission API,
   without occupying the parent actor's pending interaction. Grants remain child-local. Stopping a

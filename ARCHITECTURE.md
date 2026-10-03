@@ -213,7 +213,13 @@ Terminal `child_links` CAS records a self-contained `completion_outbox` notice a
 releases capacity. A parent's sequencer commits `subagent.done` and the notice's `delivered` marker
 together. `bus/runtime/delivery.rs` invokes the service callback at the next turn boundary, after
 earlier transcript snapshots have drained. The callback appends bounded untrusted JSON user
-messages in notice order and commits the transcript with `consumed` markers before the model call.
+messages in notice order. Each message is sequenced as durable `message.received` and its commit
+callback atomically saves the transcript, notice's `consumed` marker and event before emission or
+the model call. Its payload keeps `{command_id, source, target, mode, content}` with
+`source: "subagent"`, plus `child_session_id`, `agent`, `outcome`; watchdog deliveries add
+`watchdog: true` and doubt notices include `verdict`. Content is the same bounded untrusted JSON
+text stored in the transcript. A crash before emission therefore replays the committed event
+without consuming or delivering the message twice. No new event kind is added (22 total).
 It never injects through navigator commands or changes the driver task. The runtime's existing
 control channel carries delivery wakes: idle parents run immediately, busy parents wait until the
 boundary, and pending interactions cannot be answered by a result. Stopped parents have no wake;

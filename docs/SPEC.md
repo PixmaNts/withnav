@@ -678,7 +678,7 @@ A hook mutates the candidate payload before the finalized event is published. It
 |---|---|---|
 | `session.start` | A session is configured and its actor is ready | `{workspace, root_actor_id}` |
 | `session.end` | A session shuts down after cleanup | `{reason, final_seq}` |
-| `message.received` | A user or actor command was accepted into an inbox | `{command_id, source, target, mode, content}` |
+| `message.received` | A user or actor command was accepted into an inbox, or an outbox result was committed to the parent's transcript | `{command_id, source, target, mode, content}`. Delivered results use `source: "subagent"` with optional `child_session_id`, `agent`, `outcome`; watchdog deliveries add `watchdog: true` and doubt adds `verdict`. The content is the bounded untrusted JSON transcript entry. Consumption, transcript and event are one acknowledged sequencer commit: live publication follows the commit and replay contains the entry exactly once even if the process dies before publication. No additional event kind. |
 | `turn.start` | The actor begins a turn | `{turn_id, actor_id, task_id}` |
 | `turn.end` | A turn reaches `done`, `yielded`, `interrupted` or `error` | `{turn_id, actor_id, outcome, usage?, duration_ms, error?{code, message}}` |
 | `llm.delta` | A normalized text, reasoning or tool-call delta arrived (live-only) | `{turn_id, step_id, delta}` |

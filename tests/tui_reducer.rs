@@ -2272,6 +2272,24 @@ fn context_compacted_pushes_a_one_line_notice() {
         .as_ref()
         .expect("kept for the panel");
     assert_eq!((kept.generation, kept.estimate_after), (1, 18_000));
+    // a million tokens reads as the gauge writes it
+    let mut script = Script::new();
+    script.start().push(
+        EventKind::ContextCompacted,
+        &ContextCompacted {
+            generation: 2,
+            through_message: 70,
+            pruned: 0,
+            estimate_before: 1_000_000,
+            estimate_after: 1_500,
+        },
+    );
+    let mut s = st();
+    feed(&mut s, &script.out);
+    assert_eq!(
+        s.conversation.blocks.last().map(|b| b.kind.clone()),
+        Some(BlockKind::Notice("context compacted: ~1M -> ~2k".into()))
+    );
 }
 
 // ---------------------------------------------------------------- server commands

@@ -58,3 +58,29 @@ fn the_panel_gives_the_primary_agents_the_roles_the_server_defines() {
         assert!(navai::agent::definitions::AgentId::parse(id).is_ok_and(|a| a.is_reserved()));
     }
 }
+
+#[test]
+fn the_terminal_client_imports_no_agent_session_or_runtime_code() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tui"),
+        &mut files,
+    );
+    assert!(!files.is_empty());
+    for file in files {
+        let text = std::fs::read_to_string(&file).unwrap();
+        for banned in ["crate::agent", "crate::session", "crate::bus::runtime"] {
+            assert!(!text.contains(banned), "{}: {banned}", file.display());
+        }
+    }
+}

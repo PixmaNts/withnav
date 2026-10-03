@@ -339,7 +339,8 @@ impl Service {
         }
         // Concurrent calls in this process reserve capacity atomically; the
         // persistent active count includes children from other processes.
-        let parent_alias = parent_handle.selected().alias;
+        let inherited = parent_handle.selected();
+        let parent_alias = inherited.alias.clone();
         let alias = definition.model.as_deref().unwrap_or(&parent_alias);
         let mut policy = BTreeMap::new();
         policy.insert("read".into(), true);
@@ -374,6 +375,7 @@ impl Service {
                         || parent_role.access == crate::agent::definitions::AgentAccess::ReadOnly,
                 )),
                 Some(parent),
+                definition.model.is_none().then_some(inherited),
             )
             .await;
         drop(_spawn_lock);
@@ -1010,6 +1012,7 @@ impl Service {
             variant,
             None,
             None,
+            None,
         )
         .await
     }
@@ -1026,6 +1029,7 @@ impl Service {
         variant: &VariantChoice,
         child_policy: Option<(BTreeMap<String, bool>, bool)>,
         child_parent: Option<SessionId>,
+        inherited: Option<SelectedModel>,
     ) -> Result<SessionId, ServerError> {
         // Resume keeps the stored model/profile/workspace (the stored row is
         // the authority); a fresh session honors the request's.
@@ -1072,14 +1076,36 @@ impl Service {
         } else {
             Self::pick_agent(&agents, session_id, agent, resumed.as_ref())?
         };
-        let (resolved, api_key, snapshot, save_late, models_file) = self
-            .resolve_for_spawn(session_id, resume_workspace, &alias, resumed.as_ref())
-            .await?;
+        let (resolved, api_key, snapshot, save_late, models_file) =
+            if let Some(selection) = &inherited {
+                let (mut resolved, models_file) = self.resolve_model(resume_workspace, &alias)?;
+                let snapshot = selection
+                    .resolution
+                    .as_ref()
+                    .expect("live parent has a resolution")
+                    .as_ref()
+                    .clone();
+                resolved.model.model = snapshot.model.clone();
+                resolved.provider.base_url = snapshot.endpoint.clone();
+                resolved.model.context_window = Some(snapshot.bounds.context_window);
+                resolved.model.max_input_tokens = snapshot.bounds.max_input_tokens;
+                let api_key = crate::provider::auth::resolve_key(
+                    &self.config.config_dir,
+                    &snapshot.provider,
+                    resolved.provider.api_key_env.as_deref(),
+                )?;
+                (resolved, api_key, snapshot, false, models_file)
+            } else {
+                self.resolve_for_spawn(session_id, resume_workspace, &alias, resumed.as_ref())
+                    .await?
+            };
         // A resume keeps the variant the row saved; a fresh session takes the
         // request's choice. Either way it is checked against what the alias
         // offers now, before anything is written.
-        let (selected, offered) = self
-            .select_variant(
+        let (selected, offered) = if let Some(selection) = &inherited {
+            (selection.variant.clone(), (*selection.offer).clone())
+        } else {
+            self.select_variant(
                 session_id,
                 &alias,
                 &resolved,
@@ -1097,7 +1123,8 @@ impl Service {
                     None => VariantStart::Choice(variant),
                 },
             )
-            .await?;
+            .await?
+        };
         // A resume with a readable offer keeps the saved override current
         // with the definition it now has.
         if let (Some(loaded), Some(chosen)) = (&resumed, &selected) {

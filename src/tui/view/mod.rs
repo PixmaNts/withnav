@@ -1,4 +1,5 @@
 //! Draws the terminal UI without mutating the conversation projection.
+mod header;
 mod markdown;
 mod permission;
 mod pickers;
@@ -25,21 +26,6 @@ pub struct RenderCache {
     markdown: std::collections::HashMap<u64, markdown::MarkdownCache>,
     /// The open permission request whose keys line was on screen at the last draw.
     pub prompt_shown: Option<String>,
-}
-
-fn shorten(path: &str, width: usize) -> String {
-    let path = path.replace(std::env::var("HOME").as_deref().unwrap_or("\0"), "~");
-    let chars: Vec<char> = path.chars().collect();
-    if chars.len() <= width {
-        path
-    } else {
-        format!(
-            "…{}",
-            chars[chars.len() - width.saturating_sub(1)..]
-                .iter()
-                .collect::<String>()
-        )
-    }
 }
 
 /// Splits a hint line (`key label  key label`) into keys in text colour and labels in muted.
@@ -121,42 +107,7 @@ pub fn draw(
             Constraint::Length(1),
         ])
         .areas(area);
-    let path = state
-        .session
-        .as_ref()
-        .map(|s| s.workspace.as_str())
-        .unwrap_or("workspace");
-    let title = state
-        .session
-        .as_ref()
-        .map(|s| {
-            let name = state
-                .sessions
-                .iter()
-                .find(|entry| entry.id == s.session_id)
-                .and_then(|entry| entry.title.as_deref())
-                .unwrap_or("Conversation");
-            format!(
-                "{} · {}",
-                shorten(name, usize::from(area.width / 4)),
-                shorten(&s.session_id, 12)
-            )
-        })
-        .unwrap_or_else(|| "new conversation".into());
-    let path = shorten(path, (area.width / 3) as usize);
-    let used = " navai  ".chars().count() + path.chars().count() + title.chars().count() + 1;
-    let gap = usize::from(area.width).saturating_sub(used);
-    frame.buffer_mut().set_style(header, theme.panel());
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" navai", theme.title()),
-            Span::raw("  "),
-            Span::styled(path, theme.muted()),
-            Span::raw(" ".repeat(gap)),
-            Span::styled(format!("{title} "), theme.strong()),
-        ])),
-        header,
-    );
+    header::draw(frame, header, state, &theme);
     frame.render_widget(
         Paragraph::new("─".repeat(usize::from(area.width))).style(theme.border()),
         rule,

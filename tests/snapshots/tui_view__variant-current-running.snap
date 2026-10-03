@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ navai  ~/dev/project                                Fix parser · 01JABCDEFGH 
+ Conversations       │ ◆ navai  ~/dev/project   ▌build  opus · cc/claude-opus-5-5 · high · — / 200k 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
 ▌  build · running   │                                                                              
                      │                                                                              
@@ -27,7 +27,7 @@ expression: snapshot
                      │                                                                              
                      │                                                                              
                      │──────────────────────────────────────────────────────────────────────────────
-                     │▌build  opus · claude-opus-5-5 · high · — / 200k   ◐ running                  
+                     │ ◐ running                                                      session — tok 
                      │┌ Message ───────────────────────────────────────────────────────────────────┐
  alt+1…9 switch      ││                                                                            │
  alt+w close         │└────────────────────────────────────────────────────────────────────────────┘

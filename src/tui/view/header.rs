@@ -1,0 +1,122 @@
+//! The header row: `◆ navai`, the workspace, the git branch and its changes on the left; the
+//! agent and the model in use (alias · model · variant · context gauge) on the right. What does
+//! not fit is dropped, least useful first.
+use super::status::{context_gauge, shorten};
+use crate::tui::{state::State, theme::Theme};
+use ratatui::{
+    layout::Rect,
+    style::Modifier,
+    text::{Line, Span},
+    widgets::Paragraph,
+    Frame,
+};
+
+fn width(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(Span::width).sum()
+}
+
+pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
+    if area.height == 0 {
+        return;
+    }
+    frame.buffer_mut().set_style(area, theme.panel());
+    let agent = state.agent_name();
+    let agent_style = super::sidebar::agent_style(agent, theme);
+    let alias = state.selected_model_alias.as_deref().unwrap_or("—");
+    let model = state.selected_model_name.as_deref().unwrap_or("—");
+    let (used, window, percent) = context_gauge(state);
+
+    // Left: the logo always; the branch, then the path, as room allows.
+    let logo = vec![Span::styled(
+        " ◆ navai",
+        theme.accent().add_modifier(Modifier::BOLD),
+    )];
+    let branch = state.git.as_ref().map(|git| {
+        let mut spans = vec![
+            Span::raw("  "),
+            Span::styled(
+                git.branch.clone().unwrap_or_else(|| "detached".into()),
+                theme.code_ref(),
+            ),
+        ];
+        if git.dirty > 0 {
+            spans.push(Span::styled(format!(" ●{}", git.dirty), theme.warning()));
+        }
+        spans
+    });
+    let path = state
+        .session
+        .as_ref()
+        .map(|s| s.workspace.as_str())
+        .unwrap_or(state.workspace.as_str());
+
+    // Right: the agent and the alias always; then the gauge, the variant and the model.
+    let lead = vec![
+        Span::styled("▌", agent_style),
+        Span::styled(agent.to_string(), agent_style.add_modifier(Modifier::BOLD)),
+        Span::styled(format!("  {alias}"), theme.title()),
+    ];
+    let gauge = vec![
+        Span::styled(" · ", theme.muted()),
+        Span::styled(used, theme.number()),
+        Span::styled(" / ", theme.muted()),
+        Span::styled(window, theme.text()),
+        Span::styled(percent.unwrap_or_default(), theme.muted()),
+    ];
+    let variant = state.variant.as_deref().map(|v| {
+        vec![
+            Span::styled(" · ", theme.muted()),
+            Span::styled(v.to_string(), theme.text()),
+        ]
+    });
+
+    let total = usize::from(area.width);
+    let mut room = total.saturating_sub(width(&logo) + width(&lead) + 3);
+    let mut take = |spans: Option<Vec<Span<'static>>>| match spans {
+        Some(spans) if width(&spans) <= room => {
+            room -= width(&spans);
+            Some(spans)
+        }
+        _ => None,
+    };
+    let gauge = take(Some(gauge));
+    let branch = take(branch);
+    let variant = take(variant);
+    // The model takes up to 30 columns, then the path what is left (cut from its start).
+    let model = (room >= 8).then(|| {
+        let shown = shorten_end(model, room.min(33) - 3);
+        room -= shown.chars().count() + 3;
+        vec![
+            Span::styled(" · ", theme.muted()),
+            Span::styled(shown, theme.muted()),
+        ]
+    });
+    let path = (room >= 8).then(|| {
+        let shown = shorten(path, room - 2);
+        room -= shown.chars().count() + 2;
+        vec![Span::raw("  "), Span::styled(shown, theme.muted())]
+    });
+
+    let mut left = logo;
+    left.extend(path.unwrap_or_default());
+    left.extend(branch.unwrap_or_default());
+    let mut right = lead;
+    right.extend(model.unwrap_or_default());
+    right.extend(variant.unwrap_or_default());
+    right.extend(gauge.unwrap_or_default());
+    right.push(Span::raw(" "));
+    let gap = total.saturating_sub(width(&left) + width(&right));
+    left.push(Span::raw(" ".repeat(gap)));
+    left.extend(right);
+    frame.render_widget(Paragraph::new(Line::from(left)), area);
+}
+
+/// `text` cut to `max` characters at its end, with `…` when cut.
+fn shorten_end(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut cut: String = text.chars().take(max.saturating_sub(1)).collect();
+    cut.push('…');
+    cut
+}

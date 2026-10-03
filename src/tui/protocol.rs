@@ -237,6 +237,11 @@ pub enum ClientEvent {
         generation: Generation,
         message: String,
     },
+    /// The workspace's git state was read; `None` when it is not a repository.
+    Git {
+        generation: Generation,
+        status: Option<crate::tui::git::GitStatus>,
+    },
     /// Saving the user settings failed; the change still applies until the client quits.
     SettingsNotSaved {
         generation: Generation,
@@ -346,6 +351,8 @@ pub enum Effect {
     Quit,
     /// Writes the theme id to the user settings.
     SaveTheme(crate::tui::theme::ThemeId),
+    /// Reads the workspace's git state in the background; it comes back as `ClientEvent::Git`.
+    ReadGit,
     /// Clears the editor if it still holds the text sent at `revision`.
     ClearEditor {
         revision: u64,

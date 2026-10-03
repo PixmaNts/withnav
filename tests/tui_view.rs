@@ -943,7 +943,7 @@ fn sidebar_hides_on_demand_and_on_narrow_terminals() {
     ui.sidebar_hidden = true;
     render("sidebar-hidden", (100, 24), &s, &ui, &Editor::new());
     let hidden = cells(&s, &ui, (100, 24));
-    assert!(row_text(&hidden, 0, 100).starts_with(" navai"));
+    assert!(row_text(&hidden, 0, 100).starts_with(" ◆ navai"));
     assert!(!(0..24).any(|y| row_text(&hidden, y, 100).contains("build · ")));
 }
 
@@ -2293,4 +2293,43 @@ fn sending_text_over_an_open_request_asks_for_a_second_enter() {
         keys("⏎", &plain, &mut ui, &mut editor).as_slice(),
         [Action::SubmitAt { .. }]
     ));
+}
+
+// ---------------------------------------------------------------- header
+
+#[test]
+fn the_header_shows_the_branch_its_changes_and_the_agent_in_its_colour() {
+    let mut s = done();
+    s.git = Some(navai::tui::git::GitStatus {
+        branch: Some("feat/tui-design".into()),
+        dirty: 3,
+        files: vec![],
+    });
+    let ui = UiState::default();
+    let t = cells(&s, &ui, (140, 20));
+    let header = row_text(&t, 0, 140);
+    for want in [
+        "◆ navai",
+        "~/dev/project",
+        "feat/tui-design ●3",
+        "▌build  cognition · cc/claude-opus-5-5 · 12.4k / 200k",
+    ] {
+        assert!(header.contains(want), "{want}: {header}");
+    }
+    let theme = Theme::ayu_dark();
+    let x = header[..header.find("▌build").unwrap()].chars().count() as u16;
+    assert_eq!(t.backend().buffer()[(x, 0)].fg, theme.accent);
+    s.agent = Some("plan".into());
+    let t = cells(&s, &ui, (140, 20));
+    let header = row_text(&t, 0, 140);
+    let x = header[..header.find("▌plan").unwrap()].chars().count() as u16;
+    assert_eq!(t.backend().buffer()[(x, 0)].fg, theme.blue);
+    // not a repository: no branch, nothing made up
+    s.git = None;
+    let header = row_text(&cells(&s, &ui, (140, 20)), 0, 140);
+    assert!(!header.contains('●'), "{header}");
+    // narrow: the path and the model give way before the agent and the gauge
+    let header = row_text(&cells(&s, &ui, (60, 20)), 0, 60);
+    assert!(header.contains("▌plan  cognition"), "{header}");
+    assert!(header.contains("/ 200k"), "{header}");
 }

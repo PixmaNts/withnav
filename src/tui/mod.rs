@@ -1,6 +1,7 @@
 //! Terminal client module tree. Owns only the HTTP/SSE client and UI types.
 pub mod client;
 pub mod commands;
+pub mod git;
 pub mod input;
 pub mod protocol;
 pub mod reducer;

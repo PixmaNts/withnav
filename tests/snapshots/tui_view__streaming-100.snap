@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ navai  ~/dev/project                                Fix parser · 01JABCDEFGH 
+ Conversations       │ ◆ navai  ~/dev/project     ▌build  cognition · cc/claude-opus-5-5 · — / 200k 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
 ▌  build · running   │ │ YOU                                                                        
                      │ │  Why is this failing?                                                      
@@ -27,7 +27,7 @@ expression: snapshot
                      │                                                                              
                      │                                                                              
                      │──────────────────────────────────────────────────────────────────────────────
-                     │▌build  cognition · claude-opus-5-5 · — / 200k   ◐ running                    
+                     │ ◐ running                                                      session — tok 
                      │┌ Message ───────────────────────────────────────────────────────────────────┐
  alt+1…9 switch      ││                                                                            │
  alt+w close         │└────────────────────────────────────────────────────────────────────────────┘

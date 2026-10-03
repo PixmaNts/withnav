@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- navai  …/the-last-directory       Fix parser · 01JABCDEFGH 
+ ◆ navai  ▌build  cognition · cc/claude-opus-5-5 · — / 200k 
 ────────────────────────────────────────────────────────────
  │ YOU                                                      
  │  你 好  é 👩‍💻  café                                          
@@ -16,7 +16,7 @@ expression: snapshot
                                                             
                                                             
 ────────────────────────────────────────────────────────────
-▌build  cognition · claude-opus-5-5 · — / 200k   ready      
+ ready                                        session — tok 
 ┌ Message ─────────────────────────────────────────────────┐
 │line one                                                  │
 │line two                                                  │

@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- navai  ~/dev/project              Fix parser · 01JABCDEFGH 
+ ◆ navai  ▌build  cognition · cc/claude-opu… · 12.4k / 200k 
 ────────────────────────────────────────────────────────────
  │ ASSISTANT                                                
  │ ▸ Reasoning                                              
@@ -17,7 +17,7 @@ expression: snapshot
  │ discarded.                                               
  │                                                          
 ────────────────────────────────────────────────────────────
-▌build  cognition · claude-opus-5… · 12.4k / 200k   ready   
+ ready                                    session 31.2k tok 
 ┌ Message ─────────────────────────────────────────────────┐
 │                                                          │
 └──────────────────────────────────────────────────────────┘

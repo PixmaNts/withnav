@@ -185,6 +185,12 @@ pub struct Tab {
     pub view: TabView,
     /// Agents started by this conversation, shown under it; empty until the server reports them.
     pub children: Vec<ChildAgent>,
+    /// The workspace's branch and changes at the last read; `None` until read, or when the
+    /// workspace is not a git repository.
+    pub git: Option<super::git::GitStatus>,
+    /// A read of the git state is running; `git_again` asks for one more when it returns.
+    pub git_reading: bool,
+    pub git_again: bool,
 }
 
 /// The agent a conversation runs as when nothing else is known.

@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- navai  ~/dev/project              Fix parser · 01JABCDEFGH 
+ ◆ navai  ▌build  cognition · cc/claude-opus-5-5 · — / 200k 
 ────────────────────────────────────────────────────────────
  │ ERROR                                                    
  │  Permission denied                                       
@@ -17,7 +17,7 @@ expression: snapshot
                                                             
                                                             
 ────────────────────────────────────────────────────────────
-▌build  cognition   reconnecting   stopped   delivery uncert
+ stopped   reconnecting   delivery uncertain; check conversa
 ┌ Message ─────────────────────────────────────────────────┐
 │                                                          │
 └──────────────────────────────────────────────────────────┘

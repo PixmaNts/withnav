@@ -3342,3 +3342,48 @@ fn answering_posts_once_and_a_stale_answer_drops_the_prompt_with_a_notice() {
     feed(&mut other, &permission_script(4).out);
     assert!(handle_action(&mut other, &mut ui, answer()).is_empty());
 }
+
+// ---------------------------------------------------------------- git state
+
+fn git_now(s: &mut State, branch: Option<&str>) -> Vec<Effect> {
+    let ev = ClientEvent::Git {
+        generation: s.generation.clone(),
+        status: branch.map(|b| navai::tui::git::GitStatus {
+            branch: Some(b.into()),
+            dirty: 2,
+            files: vec![],
+        }),
+    };
+    update(s, ev).unwrap()
+}
+
+#[test]
+fn the_git_state_is_read_at_start_and_after_each_turn_one_read_at_a_time() {
+    let mut s = st();
+    let fx = created_now(&mut s, "S1").unwrap();
+    assert_eq!(fx.iter().filter(|e| **e == Effect::ReadGit).count(), 1);
+    // a turn ends while the first read runs: one more read once it returns, not two at once
+    let mut script = Script::new();
+    script.start().user("hi").turn_start(1);
+    script.turn_end(1, TurnEndOutcome::Done, Some(usage(1, 1)));
+    let mut asked = 0;
+    for e in &script.out {
+        let ev = envelope(&s, e);
+        asked += update(&mut s, ev)
+            .unwrap()
+            .iter()
+            .filter(|e| **e == Effect::ReadGit)
+            .count();
+    }
+    assert_eq!(asked, 0, "a read is already running");
+    assert_eq!(git_now(&mut s, Some("main")), vec![Effect::ReadGit]);
+    assert_eq!(s.git.as_ref().unwrap().branch.as_deref(), Some("main"));
+    assert!(git_now(&mut s, Some("main")).is_empty());
+    // not a repository: nothing shown
+    let mut again = script.out.last().unwrap().clone();
+    again.seq += 100;
+    let ev = envelope(&s, &again);
+    assert_eq!(update(&mut s, ev).unwrap(), vec![Effect::ReadGit]);
+    git_now(&mut s, None);
+    assert_eq!(s.git, None);
+}

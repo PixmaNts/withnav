@@ -14,7 +14,12 @@ requests land in `develop`.
   once, `a` to allow it always for that folder or site, or `n` to deny it, then type an optional
   reason for the agent and press enter (esc denies without one). The prompt then shows how it was
   answered. If an allowed call now lands somewhere else, the new request replaces its prompt
-  instead of adding a second one. A tab waiting for your answer shows `waiting` in the tab bar, and the status line says
+  instead of adding a second one. Once an answer is sent the prompt says "sent, waiting for the
+  server" and takes no other key; a request the server no longer waits on is shown muted as "no
+  longer waiting". A deny message stays with the request it was started on. When the prompt is
+  scrolled out of view, the first `y`, `a` or `n` brings it back and the next one answers. The
+  preview reads the call's own arguments, so a large file still shows its path and first lines,
+  and control characters are written out. A tab waiting for your answer shows `waiting` in the tab bar, and the status line says
   `permission needed`. Typing a message instead cancels the request rather than approving it, so the
   first enter warns you and a second one sends it.
 - **Permission gate**: a session that runs as an agent asks before it runs `write`, `edit`, `bash`

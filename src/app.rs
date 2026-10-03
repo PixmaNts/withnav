@@ -410,7 +410,8 @@ pub fn event_to_ui(envelope: &EventEnvelope) -> Option<UiEvent> {
         | EventKind::ToolPreCall
         | EventKind::ToolPostCall
         | EventKind::AgentState
-        | EventKind::TaskDone => None,
+        | EventKind::TaskDone
+        | EventKind::CommandResult => None,
     }
 }
 

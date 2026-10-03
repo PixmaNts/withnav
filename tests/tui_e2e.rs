@@ -519,7 +519,10 @@ async fn two_tabs_stream_their_own_conversations_at_once() {
     assert!(!shown.contains("Answer to the first."), "{shown}");
 
     // Closing the second tab stops its stream only; the server keeps the conversation.
-    rt.dispatch(navai::tui::protocol::Action::CloseTab);
+    rt.handle_terminal_event(Event::Key(KeyEvent::new(
+        KeyCode::Char('w'),
+        KeyModifiers::ALT,
+    )));
     assert_eq!(rt.state.tabs.len(), 1);
     assert_eq!(rt.executor().stream_count(), 1);
     assert_eq!(session_id(&rt), first_id);

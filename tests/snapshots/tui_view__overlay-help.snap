@@ -6,16 +6,17 @@ expression: snapshot
 ────────────────────────────────────────────────────────────────────────────────────────────────────
  │ YOU                                                                                              
  │  Explain the failure, then fix it.                                                               
- │                                                                                                  
- │ ASSISTANT                                                                                        
- │ ▸ Reasoni┌─────────────────────────── Keyboard shortcuts ───────────────────────────┐            
- │  The pars│ enter                   send / choose                                    │            
- │          │ alt+enter / ctrl+j      newline                                          │            
- │ ▸ × bash │ ctrl+p / /              commands                                         │            
- │          │ ctrl+n                  new conversation                                 │            
- │ ASSISTANT│ ctrl+o                  sessions                                         │            
- │  I found │ f2                      models                                           │            
- │          │ f1                      help                                             │            
+ │          ┌─────────────────────────── Keyboard shortcuts ───────────────────────────┐            
+ │ ASSISTANT│ enter                   send / choose                                    │            
+ │ ▸ Reasoni│ alt+enter / ctrl+j      newline                                          │            
+ │  The pars│ ctrl+p / /              commands                                         │            
+ │          │ ctrl+n                  new conversation, in a new tab                   │            
+ │ ▸ × bash │ ctrl+o                  sessions (opens in a tab)                        │            
+ │          │ alt+1 … alt+9           switch to tab 1 … 9                              │            
+ │ ASSISTANT│ alt+w                   close tab (the conversation is kept)             │            
+ │  I found │ alt+b                   hide / show the tab bar                          │            
+ │          │ f2                      models                                           │            
+            │ f1                      help                                             │            
             │ tab / shift+tab         switch focus                                     │            
             │ page up / page down     scroll                                           │            
             │ up / down               select transcript block                          │            
@@ -25,8 +26,7 @@ expression: snapshot
             │ ctrl+q                  quit                                             │            
             │                                                                          │            
             │                                                                          │            
-            └──────────────────────────────────────────────────────────────────────────┘            
-────────────────────────────────────────────────────────────────────────────────────────────────────
+────────────└──────────────────────────────────────────────────────────────────────────┘────────────
  cognition · cc/claude-opus-5-5   ctx 12.4k / 200k   session 31.2k tok   ready                      
 ┌ Message ─────────────────────────────────────────────────────────────────────────────────────────┐
 │                                                                                                  │

@@ -13,7 +13,7 @@ expression: snapshot
  │                                                                                                  
  │ ▸ × bash ┌──────────────────────────────── Commands ────────────────────────────────┐            
  │          │ filter:                                                                  │            
- │ ASSISTANT│▌/new         new conversation                                            │            
+ │ ASSISTANT│▌/new         new conversation in a new tab                               │            
  │  I found │ /sessions    browse conversations                                        │            
  │          │ /model       choose model for a new conversation                         │            
             │ /stop        stop generation                                             │            

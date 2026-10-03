@@ -782,3 +782,41 @@ fn markdown_repaints_when_the_theme_changes_and_back() {
     assert_ne!(dark.1, light.1, "code is highlighted with the light scheme");
     assert_eq!(back, dark, "going back repaints exactly as before");
 }
+
+#[test]
+fn tab_keys_switch_close_and_hide_the_bar() {
+    let s = state();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    editor.set_text("draft");
+    let alt = |c| key(KeyCode::Char(c), KeyModifiers::ALT);
+    assert_eq!(
+        route_key(alt('1'), &s, &mut ui, &mut editor),
+        Some(Action::SwitchTab(0))
+    );
+    assert_eq!(
+        route_key(alt('9'), &s, &mut ui, &mut editor),
+        Some(Action::SwitchTab(8))
+    );
+    assert_eq!(
+        route_key(alt('w'), &s, &mut ui, &mut editor),
+        Some(Action::CloseTab)
+    );
+    assert_eq!(
+        route_key(alt('b'), &s, &mut ui, &mut editor),
+        Some(Action::ToggleSidebar)
+    );
+    assert_eq!(editor.text(), "draft", "tab keys type nothing");
+    // plain digits still type
+    route_key(
+        key(KeyCode::Char('1'), KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(editor.text(), "1draft");
+    let help: Vec<_> = navai::tui::commands::KEYS.iter().map(|(k, _)| *k).collect();
+    for wanted in ["alt+1 … alt+9", "alt+w", "alt+b"] {
+        assert!(help.contains(&wanted), "{help:?}");
+    }
+}

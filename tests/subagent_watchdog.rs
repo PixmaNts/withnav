@@ -1252,6 +1252,19 @@ async fn stuck_stops_with_partial_output_and_wakes_parent() {
         .unwrap();
     assert_eq!(link.status, "stopped");
     assert_eq!(link.terminal_reason.as_deref(), Some("watchdog"));
+    let messages = f
+        .events()
+        .await
+        .into_iter()
+        .filter(|event| event.kind == "message.received" && event.payload["source"] == "subagent")
+        .collect::<Vec<_>>();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].payload["watchdog"], true);
+    assert_eq!(messages[0].payload["outcome"], "stopped");
+    assert!(messages[0].payload["content"]
+        .as_str()
+        .unwrap()
+        .contains("stopped by watchdog"));
     drop(parent_stream);
     f.close().await;
 }

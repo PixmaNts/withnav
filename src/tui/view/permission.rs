@@ -86,7 +86,14 @@ fn build(
             .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(" · {} wants to run ", p.agent_or_default()),
+            format!(
+                " · {} wants to run ",
+                if p.agent.is_empty() {
+                    "the agent"
+                } else {
+                    &p.agent
+                }
+            ),
             theme.muted(),
         ),
         Span::styled(p.tool.clone(), theme.strong()),
@@ -254,18 +261,4 @@ fn escape(text: &str) -> String {
         }
     }
     out
-}
-
-trait AgentName {
-    fn agent_or_default(&self) -> String;
-}
-
-impl AgentName for PermissionPrompt {
-    fn agent_or_default(&self) -> String {
-        if self.agent.is_empty() {
-            "the agent".into()
-        } else {
-            self.agent.clone()
-        }
-    }
 }

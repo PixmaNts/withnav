@@ -112,3 +112,67 @@ impl AgentSelection {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plan() -> Arc<AgentDefinition> {
+        AgentSelection::default()
+            .agents()
+            .get("plan")
+            .cloned()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_switch_waits_for_no_turn_and_is_refused_while_one_runs() {
+        let selection = AgentSelection::new(
+            Arc::new(Agents::builtin()),
+            Agents::builtin().get("build").cloned().unwrap(),
+        );
+        let role = selection.begin_turn().await.expect("a role");
+        assert_eq!(role.id.as_str(), "build");
+        let refused = selection.switch(plan(), async { Ok(()) }).await;
+        assert_eq!(refused.unwrap_err(), SwitchError::Busy);
+        assert_eq!(selection.current().id.as_str(), "build");
+
+        selection.end_turn();
+        let previous = selection.switch(plan(), async { Ok(()) }).await.unwrap();
+        assert_eq!(previous.id.as_str(), "build");
+        assert_eq!(selection.current().id.as_str(), "plan");
+    }
+
+    #[tokio::test]
+    async fn a_choice_that_cannot_be_stored_does_not_take_effect() {
+        let selection = AgentSelection::new(
+            Arc::new(Agents::builtin()),
+            Agents::builtin().get("build").cloned().unwrap(),
+        );
+        let err = selection
+            .switch(plan(), async { Err("disk full".to_string()) })
+            .await
+            .unwrap_err();
+        assert_eq!(err, SwitchError::Persist("disk full".to_string()));
+        assert_eq!(selection.current().id.as_str(), "build");
+    }
+
+    #[tokio::test]
+    async fn a_turn_keeps_its_role_when_the_selection_changes_after_it_began() {
+        let selection = AgentSelection::new(
+            Arc::new(Agents::builtin()),
+            Agents::builtin().get("build").cloned().unwrap(),
+        );
+        let turn_role = selection.begin_turn().await.unwrap();
+        selection.end_turn();
+        selection.switch(plan(), async { Ok(()) }).await.unwrap();
+        assert_eq!(turn_role.id.as_str(), "build");
+        assert_eq!(selection.begin_turn().await.unwrap().id.as_str(), "plan");
+    }
+
+    #[tokio::test]
+    async fn the_default_selection_sends_no_role() {
+        let selection = AgentSelection::default();
+        assert!(selection.begin_turn().await.is_none());
+    }
+}

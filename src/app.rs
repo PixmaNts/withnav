@@ -102,6 +102,11 @@ pub struct RunArgs {
 
     #[arg(long)]
     pub show_thinking: bool,
+
+    /// The primary agent to run as (`build` by default; `plan` researches and
+    /// writes markdown plans).
+    #[arg(long)]
+    pub agent: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -209,7 +214,12 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
     // A session that cannot start (no window, unknown alias, no key) ends the
     // run the way a failed turn does: the `error:` line, exit 1.
     let session_id = match state
-        .create_session(&workspace, args.model.as_deref(), None)
+        .create_session_as(
+            &workspace,
+            args.model.as_deref(),
+            None,
+            args.agent.as_deref(),
+        )
         .await
     {
         Ok(id) => id,

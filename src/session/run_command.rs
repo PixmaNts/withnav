@@ -7,7 +7,8 @@ use ulid::Ulid;
 
 use super::commands::{self, CommandOutcome, CommandSpec};
 use super::service::{Service, SessionHandle, SessionId};
-use crate::bus::event::{CommandResult, EventKind};
+use crate::agent::selection::SwitchError;
+use crate::bus::event::{CommandResult, EventKind, SessionAgentChanged};
 use crate::bus::sequencer::Candidate;
 use crate::error::ServerError;
 
@@ -138,6 +139,7 @@ impl Service {
             "help" => Ok(Done::data(json!({ "commands": commands::COMMANDS }))),
             "model" => Ok(Done::data(self.model_data(handle))),
             "new" => self.new_conversation(session_id, handle, arguments).await,
+            "agent" => self.agent_command(session_id, handle, arguments).await,
             // The stop itself is done by `run_command` after the result is
             // published: the stream ends with the session.
             "stop" => Ok(Done::data(json!({ "stopped": true }))),
@@ -145,6 +147,76 @@ impl Service {
                 other,
             ))),
         }
+    }
+
+    /// `/agent [id]`: with no argument, the current primary agent and the
+    /// ones that can be selected. With an id, switches to it: only between
+    /// turns (a pending `ask` was refused before this), stored before it is
+    /// reported, and announced by a durable `session.agent_changed`. The
+    /// conversation and the model stay as they are.
+    async fn agent_command(
+        &self,
+        session_id: SessionId,
+        handle: &SessionHandle,
+        arguments: &str,
+    ) -> Result<Done, CommandFailure> {
+        let selection = &handle.status.selection;
+        let current = selection.current();
+        let mut words = arguments.split_whitespace();
+        let Some(wanted) = words.next() else {
+            let agents: Vec<Value> = selection
+                .agents()
+                .primary()
+                .map(|a| json!({ "id": a.id, "description": a.description, "mode": a.mode.as_str() }))
+                .collect();
+            return Ok(Done::data(json!({ "agent": current.id, "agents": agents })));
+        };
+        if words.next().is_some() {
+            return Err(CommandFailure::Refused("usage: /agent [id]".to_string()));
+        }
+        let target = match selection.agents().get(wanted) {
+            Some(agent) if agent.mode.is_primary() => agent.clone(),
+            _ => {
+                return Err(CommandFailure::Refused(format!(
+                    "unknown agent {wanted}; the primary agents are {}",
+                    super::service::primary_list(selection.agents())
+                )))
+            }
+        };
+        if target.id == current.id {
+            return Ok(Done::data(json!({ "agent": current.id, "changed": false })));
+        }
+        let stored = (!target.id.is_build()).then(|| target.id.as_str().to_string());
+        let history = self.history().clone();
+        let previous = selection
+            .switch(target.clone(), async move {
+                history
+                    .set_primary_agent(session_id, stored.as_deref())
+                    .await
+            })
+            .await
+            .map_err(|err| match err {
+                SwitchError::Busy => CommandFailure::Refused(
+                    "the agent is working: wait for the turn to end or stop it, then switch"
+                        .to_string(),
+                ),
+                SwitchError::Persist(err) => CommandFailure::Server(ServerError::History(err)),
+            })?;
+        let payload = serde_json::to_value(SessionAgentChanged {
+            agent: target.id.to_string(),
+            previous: previous.id.to_string(),
+        })
+        .unwrap_or(Value::Null);
+        handle
+            .sequencer
+            .publish_acked(Candidate::new(EventKind::SessionAgentChanged, payload))
+            .await
+            .map_err(|_| CommandFailure::Server(ServerError::SessionStopping))?;
+        Ok(Done::data(json!({
+            "agent": target.id,
+            "previous": previous.id,
+            "changed": true,
+        })))
     }
 
     /// `/new [alias]`: a fresh session in the same workspace, with the

@@ -18,7 +18,7 @@ pub struct CommandSpec {
 
 /// Every registered command, in listing order. A command that is listed but
 /// not built answers [`NOT_AVAILABLE`].
-pub const COMMANDS: [CommandSpec; 7] = [
+pub const COMMANDS: [CommandSpec; 8] = [
     CommandSpec {
         name: "help",
         description: "List the available commands",
@@ -54,6 +54,11 @@ pub const COMMANDS: [CommandSpec; 7] = [
         name: "compact",
         description: "Compact the conversation",
         args_hint: "[focus]",
+    },
+    CommandSpec {
+        name: "agent",
+        description: "Show or change the primary agent",
+        args_hint: "[id]",
     },
 ];
 
@@ -219,9 +224,38 @@ impl CommandOutcome {
                 )
             }
             "stop" => "stopped".to_string(),
+            "agent" => render_agent(data),
             _ => data.to_string(),
         }
     }
+}
+
+/// `/agent`: the switch, or the current agent and the choices.
+fn render_agent(data: &Value) -> String {
+    let text = |key: &str| data[key].as_str().unwrap_or_default().to_string();
+    if data["changed"].as_bool() == Some(true) {
+        return format!("agent {} (was {})", text("agent"), text("previous"));
+    }
+    let list = data["agents"]
+        .as_array()
+        .map(|agents| {
+            agents
+                .iter()
+                .map(|a| {
+                    format!(
+                        "{:<12} {}",
+                        a["id"].as_str().unwrap_or_default(),
+                        a["description"].as_str().unwrap_or_default()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    if data.get("agents").is_none() {
+        return format!("agent {}", text("agent"));
+    }
+    format!("agent {}\n{list}", text("agent"))
 }
 
 #[cfg(test)]
@@ -229,11 +263,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_lists_the_seven_commands_with_unique_names() {
+    fn registry_lists_the_eight_commands_with_unique_names() {
         let names: Vec<&str> = COMMANDS.iter().map(|c| c.name).collect();
         assert_eq!(
             names,
-            ["help", "model", "new", "stop", "context", "variant", "compact"]
+            ["help", "model", "new", "stop", "context", "variant", "compact", "agent"]
         );
         assert!(NOT_AVAILABLE.iter().all(|n| find(n).is_some()));
         assert_eq!(find("/help").map(|c| c.name), Some("help"));

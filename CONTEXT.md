@@ -122,3 +122,16 @@ _Avoid_: outcome, effect
 Running a recorded history of triggers through a different pipeline to see which actions it would
 have chosen, compared against the driver's verdicts.
 _Avoid_: backtest, simulation
+
+## Context budget
+
+**Context budget**:
+How much of a model's context window the next request may fill, and how full it is now. The
+window W comes from the saved resolution; the output reserve R is the `models.json`
+`max_output_tokens`, else the smallest of 8192, a quarter of W and the output ceiling the provider
+reports; the margin M is 5% of W (at least 4096); the input budget is `min(W − R, input limit or W) − M`.
+A window that leaves no input budget is refused at session creation. The fill is an estimate of the
+next request (UTF-8 bytes / 4 plus a fixed framing per message), split into system, rules, skills
+catalog, tools and messages, and it is shown as an estimate (`~42k`). It is never the provider's count
+of the last request (`last_usage`), and never the session's cumulative usage.
+_Avoid_: token limit, quota

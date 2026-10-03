@@ -1,5 +1,6 @@
 pub mod actor;
 pub mod definitions;
+pub mod context;
 pub mod instructions;
 pub mod prompt;
 pub mod response;

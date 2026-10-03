@@ -26,6 +26,10 @@ pub struct AgentActor {
     pub model: String,
     pub reasoning_history: ReasoningHistory,
     pub max_tokens: Option<u64>,
+    /// The variant merged into every chat request of the next run; `None`
+    /// sends the request as built. The session runtime sets it at each turn
+    /// start.
+    pub variant: Option<crate::provider::config::Variant>,
     /// Model steps one run may take before it yields; read from the
     /// environment once, when the actor is built.
     pub max_steps: usize,
@@ -70,6 +74,7 @@ impl AgentActor {
             model,
             reasoning_history,
             max_tokens,
+            variant: None,
             max_steps: crate::agent::run_loop::max_steps(),
             system_prompt: None,
             role: None,
@@ -119,6 +124,18 @@ impl AgentActor {
         }
         self.tool_context.readable_roots = skills.readable_roots().to_vec();
         self.skills = skills;
+    }
+
+    /// The estimated size of the request this actor would send now, by
+    /// category (see [`crate::agent::context`]).
+    pub fn context_breakdown(&self) -> crate::agent::context::Breakdown {
+        crate::agent::context::estimate(
+            self.system_prompt.as_deref(),
+            self.rules.message(),
+            self.skills.catalog(),
+            &self.transcript,
+            &self.registry.schemas(),
+        )
     }
 
     /// Re-derives `pending_ask_id` from a restored transcript: the `ask` call

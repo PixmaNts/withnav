@@ -131,6 +131,12 @@ pub enum ClientEvent {
         generation: Generation,
         result: Result<SessionMetadata, String>,
     },
+    Context {
+        generation: Generation,
+        /// The conversation's context epoch when the fetch was issued.
+        epoch: u64,
+        result: Result<crate::bus::event::ContextSnapshot, String>,
+    },
     Submitted {
         generation: Generation,
         revision: u64,
@@ -199,6 +205,11 @@ pub enum Effect {
     Create(CreateSessionRequest),
     Resume(String),
     FetchMetadata(String),
+    /// Reads the session's context snapshot; `epoch` is echoed in `ClientEvent::Context`.
+    FetchContext {
+        session_id: String,
+        epoch: u64,
+    },
     Subscribe {
         session_id: String,
         cursor: Option<u64>,

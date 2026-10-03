@@ -8,6 +8,22 @@ requests land in `develop`.
 
 ### Added
 
+- **Context budget**: every session keeps an estimate of its next request (UTF-8 bytes / 4 plus a
+  fixed framing per message), split into system, rules, skills catalog, tools and messages, against
+  its model's window. The input budget is `min(W − R, input limit or W) − M`: R is the alias's
+  `max_output_tokens`, else the smallest of 8192, a quarter of the window and the output ceiling the
+  provider reports; M is 5% of the window, at least 4096. A window too small to leave any input
+  budget is refused when the session is created (422, `impossible_context_budget`), naming
+  models.json. `GET /v1/sessions/{id}/context` returns the snapshot (alias, variant, window and its
+  source, estimate and breakdown, `estimated`, output reserve, margin, input budget, percent, skills
+  listed and omitted, rule file count, the provider's count for the last request with its alias and
+  step, a runtime incarnation and a revision that counts within it; the TUI drops a fetch answered after a resume or reconnect and never shows a retired incarnation again), `/context` renders it (`~42k / 1,000k · 4% · input
+  budget 942k` and the breakdown), and a new `context.updated` event carries it after each provider
+  response, each step's tool results and at turn start and end. The event is live-only: it is not
+  stored or replayed, so the TUI reads the snapshot back after every stream connection; the catalog has 15 kinds with `session.agent_changed`; the envelope version, the other kinds and the
+  stored history are unchanged. The TUI status line shows the estimate (`ctx ~42k / 1M · 4%`)
+  instead of the last prompt count, and keeps the old display against a server that has no endpoint.
+
 - **Primary agents**: a session runs as `build` (the default: implement, verify, report) or `plan`
   (research, markdown plans, delegation; its prompt forbids changing code), or as a custom agent from a
   markdown file with a YAML header (`description`, `mode`, `model`, `tools`, `access`) and the role prompt
@@ -20,16 +36,37 @@ requests land in `develop`.
   column (empty means `build`, so older conversations resume as before); a resume whose stored agent no
   longer exists fails with an explicit error. `/agent` lists the choices, `/agent <id>` switches between
   turns (refused while the agent works or waits for an answer) and publishes a durable
-  `session.agent_changed` `{agent, previous}`, so the event catalog has 14 kinds. Both agents keep every
+  `session.agent_changed` `{agent, previous}`, so the event catalog has 15 kinds with `context.updated`. Both agents keep every
   tool; the permission gate comes next.
 - **Session commands**: `GET /v1/commands` lists them; `POST /v1/sessions/{id}/commands` with
   `{name, arguments}` runs one and answers `{operation_id, ok, data?, error?}`. Built in: `/help`,
   `/model` (alias, window and where the window comes from), `/new [alias]` (a fresh session; the old one
-  stays) and `/stop`; `/context`, `/variant` and `/compact` are listed and answer "not available yet".
+  stays) and `/stop`; `/compact` is listed and answers "not available yet" (`/context` and `/variant` are built, below).
   An unknown name is an error that lists the close names, and a command sent while the agent waits for
   an answer to its `ask` is refused, never queued. Each run publishes a durable `command.result` event
   (`operation_id`, `name`, `ok`, `data` of at most 16 KiB, `error`), so the event catalog has 13 kinds;
   the envelope version and the other kinds are unchanged. `/messages` is unchanged.
+- **Session variant**: a session runs with one model variant, and its chat requests carry that variant
+  (not the alias default). `POST /v1/sessions` takes an optional `variant`: a string is the exact name of
+  a variant the alias offers (a model that really has a `none` tier is selected with `"none"`), `null`
+  means no variant, and leaving it out takes the alias's `default_variant`. `navai run --variant <name>`
+  does the same, with `off` for no variant. The choice is saved in the new nullable `sessions.variant`
+  column (old rows have none). `GET /v1/sessions/{id}` shows `variant`. `/variant` lists the current
+  variant (`variant: (none set)` when there is none) and the names on offer; `/variant <name>` selects an
+  offered variant by exact name and `/variant off` clears it. A switch is checked against the offer, saved
+  before it answers, and takes effect at the next turn (a running turn finishes on the old one). An
+  unknown name is an error listing the offer; `off` cannot be the name of a variant. A resumed session
+  whose saved variant the alias confirmably no longer offers fails with an error naming the alias, the
+  variant and the models.json that was loaded; it never falls back silently. When the offer cannot be
+  confirmed (generated from the provider's reported tiers, and the list is not cached or only an old copy
+  whose refresh failed), a resume sends the override object saved with the session (new nullable
+  `sessions.variant_override` column, written with `variant` at creation and by `/variant`), so a removed
+  or changed definition does not alter what the session sends; a row saved before that column, or a new
+  choice, answers a retryable error (503, `variant_offer_unknown`) instead of a guess. With a readable
+  offer the saved override is refreshed from the current definition. A session that started while the
+  offer was unknown reads it again when `/variant <name>` is run, so it works once the provider is back.
+  `/new` keeps the variant, by exact name, when it stays on the same alias. `/context` and
+  `context.updated` show the selected variant, and a `/variant` change updates them at once.
 - **`navai run --prompt "/help"`** runs the command and prints its result; `//text` sends the literal
   message `/text`.
 - **`glob` tool**: finds files by a relative pattern (`**/*.rs`) under the workspace or a readable

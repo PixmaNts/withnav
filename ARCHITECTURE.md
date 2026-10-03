@@ -34,9 +34,9 @@ Dependencies point down this list. A module never imports one above it.
 | `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
 | `provider/` | `models.json` aliases (`config.rs`, `load_models`), keys (`auth.rs`), one `ModelClient` per endpoint (`client.rs`: auth header, deadline, cancellation, status errors), the chat SSE decoder (`sse.rs`, `mod.rs`), the FIM and System One wire clients | anything navigator-specific: no `crate::navigator` import |
 | `tools/` | the tool trait, the registry, path validation (`validate_path`), the eight tools (`glob.rs`: bounded, link-free file search; `fetch.rs`: HTTP(S) GET with its own credential-free client, same-origin redirects, a 5 MiB streamed cap; HTML is converted by a memory- and CPU-limited child, `navai internal-html-convert`, killed on cancel or timeout); `ToolContext` with the writable roots and the read-only ones (`read`/`grep`/`glob` accept both, `write`/`edit`/`bash` only the first) | which tools a session gets |
-| `agent/` | `AgentActor` (transcript, pending `ask`, optional role prompt, the rules and skills snapshots), `run_agent` with one `AgentEvent` observer, request building, the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`explore`/`review` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
+| `agent/` | `AgentActor` (transcript, pending `ask`, optional role prompt, the rules and skills snapshots), `run_agent` with one `AgentEvent` observer, request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`explore`/`review` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events | HTTP, storage |
-| `session/` | the `Service` (registry and router, `service.rs`), teardown and close (`lifecycle.rs`), actor construction (`actor.rs`), subscriptions, the `SessionHooks` seam (`hooks.rs`: default model, actor setup, a `started` callback with a `SessionSender` that can only post) the SQLite history (`store.rs`), the primary agent of each session (`sessions.primary_agent`, `/agent`) and the session commands (`commands.rs`: the registry and line routing; `run_command.rs`: `Service::list_commands` / `run_command`, each run publishing a `command.result`) | HTTP, SSE, any profile by name |
+| `session/` | the `Service` (registry and router, `service.rs`), teardown and close (`lifecycle.rs`), actor construction (`actor.rs`), subscriptions, the `SessionHooks` seam (`hooks.rs`: default model, actor setup, a `started` callback with a `SessionSender` that can only post) the SQLite history (`store.rs`), the primary agent of each session (`sessions.primary_agent`, `/agent`) and the session commands (`commands.rs`: the registry and line routing; `run_command.rs`: `Service::list_commands` / `run_command`, each run publishing a `command.result`; `Service::context`), and the session variant (saved in `sessions.variant`, chosen in `service/resolve.rs`, held by the runtime's `RuntimeStatus` and applied at each turn start) | HTTP, SSE, any profile by name |
 | `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service` | session state, the model layers |
 | `navigator/` | everything the driver perceives as the navigator, below | session internals |
 
@@ -86,7 +86,7 @@ imports the serialized bus types and no runtime internals.
 | `view/transcript.rs` | block layout and drawing: messages by origin, steps, tools, errors, scroll and selection |
 | `view/tool.rs` | the one-line summary and the expanded output of a tool call |
 | `view/markdown.rs` | markdown to styled lines, cached per block revision |
-| `view/status.rs` | the status line: connection, model, activity, context and session tokens |
+| `view/status.rs` | the status line: connection, model, activity, context (the server's estimate, else the last prompt count) and session tokens |
 | `view/pickers.rs` | the model, session, command, theme and help overlays |
 
 ## Data flows
@@ -148,6 +148,16 @@ it is and that run keeps using it.
   The fetch is single-flight per endpoint, bounded (3 s, 2 MB, 10 000 entries), never follows a
   cross-origin redirect (`ClientCache::get_same_origin`) and keeps stale values on failure; `GET /v1/models`
   (`server/routes.rs`) reports the source, staleness and discrepancy of each alias.
+- The context budget (what the next request weighs, and how much of the window it may fill):
+  `agent/context.rs`. `estimate` is the one place that sizes a request, by category; `Budget::compute`
+  is the one place that applies the window, output reserve, input limit and margin; `ContextTracker`
+  owns the snapshot and its revision. `AgentActor::context_breakdown` feeds it, `run_agent` reports
+  `AgentEvent::ContextEstimated` after each response and each step's tool results, and the runtime
+  (`bus/runtime.rs`) records the provider's usage per step, updates the tracker held in
+  `RuntimeStatus` and publishes the live-only `context.updated`. Readers go through
+  `Service::context` (`GET /v1/sessions/{id}/context`, `/context`), never the actor. Compaction asks
+  `ContextLimits::from_resolution` and `Budget::compute` for the budget and compares the estimate
+  against `input_budget`; a client shows the server's estimate and never re-derives it.
 - A helper you need probably exists. Look first in: `provider/client.rs` (any HTTP call to a model),
   `provider/config.rs` (`load_models`), `navigator/log.rs` (`excerpt`, `new_ulid_string`),
   `bus/event.rs` (`now_rfc3339`), `navigator/lsp/uri.rs`, `navigator/document.rs` (diffs and

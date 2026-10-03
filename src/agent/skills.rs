@@ -138,6 +138,9 @@ pub struct Skills {
     diagnostics: Vec<Diagnostic>,
     roots: Vec<PathBuf>,
     catalog: Option<String>,
+    /// How many skills the catalog lists and how many fell out of its bound.
+    catalog_listed: usize,
+    catalog_omitted: usize,
 }
 
 impl Skills {
@@ -157,6 +160,11 @@ impl Skills {
     /// The catalog message; `None` when no skill is offered.
     pub fn catalog(&self) -> Option<&str> {
         self.catalog.as_deref()
+    }
+
+    /// The skills the catalog lists, and the offered ones it had no room for.
+    pub fn catalog_counts(&self) -> (usize, usize) {
+        (self.catalog_listed, self.catalog_omitted)
     }
 
     pub fn diagnostics(&self) -> &[Diagnostic] {
@@ -417,8 +425,14 @@ impl Walk {
             .collect();
         let mut offered: Vec<&Skill> = winners.values().filter(|s| !s.disabled).collect();
         offered.sort_by(|a, b| a.rank.cmp(&b.rank).then_with(|| a.name.cmp(&b.name)));
-        let catalog = catalog::render(&offered);
+        let (catalog, catalog_listed) = match catalog::render(&offered) {
+            Some((message, listed)) => (Some(message), listed),
+            None => (None, 0),
+        };
+        let catalog_omitted = offered.len() - catalog_listed;
         Skills {
+            catalog_listed,
+            catalog_omitted,
             winners,
             ambiguous,
             diagnostics,

@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
 use crate::agent::actor::{AgentActor, AgentState};
+use crate::agent::context::{Breakdown, ContextSnapshot, ContextTracker};
 use crate::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
 use crate::bus::event::{
     AgentStateChanged, AgentYield, EventKind, TaskDone, TaskStatus, ToolPostCall, ToolPreCall,
@@ -37,12 +38,29 @@ const END_OF_STREAM_REASON: &str = "inbox_closed";
 /// Wire cap for `turn.end{error}.message` (bounded, no secrets).
 const ERROR_SUMMARY_CAP: usize = 256;
 
+/// A selected model variant: its name and override object.
+pub type SelectedVariant = Option<(String, crate::provider::config::Variant)>;
+
+/// The variant a session runs with. A change made while a turn runs waits in
+/// `pending` and takes effect when the next turn starts, so one turn never
+/// mixes two variants.
+#[derive(Debug, Default)]
+struct VariantSlot {
+    active: SelectedVariant,
+    pending: Option<SelectedVariant>,
+    running: bool,
+}
+
 /// What the runtime shares with the session service about its actor, so the
 /// service can decide whether a session command may run without reaching
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
     pending_ask: AtomicBool,
+    variant: Mutex<VariantSlot>,
+    /// The session's context gauge: written by the runtime at each boundary,
+    /// read on demand by the service.
+    context: Mutex<Option<ContextTracker>>,
     /// The primary agent the session runs as, and the agents it may switch
     /// to. A turn reads it at its start.
     pub selection: crate::agent::selection::AgentSelection,
@@ -52,14 +70,112 @@ impl RuntimeStatus {
     /// A status that runs as the agent `selection` names.
     pub fn with_selection(selection: crate::agent::selection::AgentSelection) -> Self {
         Self {
-            pending_ask: AtomicBool::new(false),
             selection,
+            ..Self::default()
         }
     }
 
     /// The agent asked the human something and waits for the answer.
     pub fn pending_ask(&self) -> bool {
         self.pending_ask.load(Ordering::SeqCst)
+    }
+
+    fn slot(&self) -> std::sync::MutexGuard<'_, VariantSlot> {
+        match self.variant.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    /// Sets the variant the session starts with, before its first turn.
+    pub fn init_variant(&self, variant: SelectedVariant) {
+        self.slot().active = variant;
+    }
+
+    /// The variant name that is selected: the pending one when a change is
+    /// waiting for the running turn to end, else the active one.
+    pub fn selected_variant(&self) -> Option<String> {
+        let slot = self.slot();
+        let chosen = slot.pending.as_ref().unwrap_or(&slot.active);
+        chosen.as_ref().map(|(name, _)| name.clone())
+    }
+
+    /// Selects `variant` (`None` clears it). Returns `true` when it takes
+    /// effect now, `false` when a turn is running and it waits for the next
+    /// turn.
+    pub fn select_variant(&self, variant: SelectedVariant) -> bool {
+        let mut slot = self.slot();
+        if slot.running {
+            slot.pending = Some(variant);
+            false
+        } else {
+            slot.active = variant;
+            slot.pending = None;
+            true
+        }
+    }
+
+    /// A turn starts: a waiting variant change is applied, and the agent and
+    /// the variant the whole turn runs with are returned. The agent is
+    /// `None` for a status that sends no role.
+    async fn begin_turn(
+        &self,
+    ) -> (
+        Option<Arc<crate::agent::definitions::AgentDefinition>>,
+        SelectedVariant,
+    ) {
+        let role = self.selection.begin_turn().await;
+        let mut slot = self.slot();
+        if let Some(pending) = slot.pending.take() {
+            slot.active = pending;
+        }
+        slot.running = true;
+        (role, slot.active.clone())
+    }
+
+    /// The turn is over: an agent or variant change may apply.
+    fn end_turn(&self) {
+        self.selection.end_turn();
+        self.slot().running = false;
+    }
+
+    /// Installs the session's context tracker before the runtime starts.
+    /// Without one the runtime publishes no `context.updated`.
+    pub fn install_context(&self, tracker: ContextTracker) {
+        *self.lock_context() = Some(tracker);
+    }
+
+    /// The latest context snapshot, `None` for a session without a tracker.
+    pub fn context_snapshot(&self) -> Option<ContextSnapshot> {
+        self.lock_context().as_ref().map(|t| t.snapshot().clone())
+    }
+
+    fn lock_context(&self) -> std::sync::MutexGuard<'_, Option<ContextTracker>> {
+        match self.context.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    /// Shows `variant` in the gauge; the new snapshot when the name changed.
+    pub fn set_context_variant(&self, variant: Option<String>) -> Option<ContextSnapshot> {
+        self.lock_context()
+            .as_mut()
+            .and_then(|t| t.set_variant(variant).cloned())
+    }
+
+    /// Records the provider's count for `step`.
+    fn record_usage(&self, step: Ulid, usage: crate::provider::Usage) {
+        if let Some(tracker) = self.lock_context().as_mut() {
+            tracker.record_usage(step, usage);
+        }
+    }
+
+    /// Moves the gauge to `breakdown`; the new snapshot when it changed.
+    fn update_context(&self, breakdown: Breakdown) -> Option<ContextSnapshot> {
+        self.lock_context()
+            .as_mut()
+            .and_then(|t| t.update(breakdown).cloned())
     }
 
     fn sync_ask(&self, actor: &AgentActor) {
@@ -77,6 +193,7 @@ impl RuntimeStatus {
 /// (the session is collapsed; the runtime tears it down).
 struct TurnPublisher {
     sequencer: Sequencer,
+    status: Arc<RuntimeStatus>,
     turn_id: Ulid,
     task_id: Ulid,
     step_id: Ulid,
@@ -88,9 +205,10 @@ struct TurnPublisher {
 }
 
 impl TurnPublisher {
-    fn new(sequencer: Sequencer, turn_id: Ulid, task_id: Ulid) -> Self {
+    fn new(sequencer: Sequencer, status: Arc<RuntimeStatus>, turn_id: Ulid, task_id: Ulid) -> Self {
         Self {
             sequencer,
+            status,
             turn_id,
             task_id,
             step_id: Ulid::new(),
@@ -111,6 +229,15 @@ impl TurnPublisher {
         }
     }
 
+    /// Moves the context gauge to `breakdown` and publishes `context.updated`
+    /// when it changed.
+    fn publish_context(&mut self, breakdown: Breakdown) {
+        if let Some(snapshot) = self.status.update_context(breakdown) {
+            let payload = to_value(&snapshot);
+            self.publish(EventKind::ContextUpdated, payload);
+        }
+    }
+
     fn take_error(&mut self) -> Option<crate::error::BusError> {
         self.error.take()
     }
@@ -128,7 +255,11 @@ impl TurnPublisher {
                 });
                 self.publish(EventKind::LlmDelta, payload);
             }
+            AgentEvent::ContextEstimated(breakdown) => self.publish_context(breakdown),
             AgentEvent::Response(message) => {
+                if let Some(usage) = message.usage {
+                    self.status.record_usage(self.step_id, usage);
+                }
                 self.message_id = Ulid::new();
                 let payload = to_value(&crate::bus::event::LlmResponse {
                     turn_id: self.turn_id,
@@ -277,13 +408,15 @@ async fn runtime_loop(
 
         inbox.apply_batch_to_actor(&mut actor);
         status.sync_ask(&actor);
-        // The turn runs as the agent selected now; a later switch waits for
-        // the turn to end.
-        actor.role = status.selection.begin_turn().await;
+        // The turn runs as the agent and the variant selected now; a later
+        // change waits for the turn to end.
+        let (role, variant) = status.begin_turn().await;
+        actor.role = role;
+        actor.variant = variant.map(|(_, variant)| variant);
 
         let task_id = active_task_id.unwrap_or_default();
         let turn_id = Ulid::new();
-        let mut turn = TurnPublisher::new(sequencer.clone(), turn_id, task_id);
+        let mut turn = TurnPublisher::new(sequencer.clone(), status.clone(), turn_id, task_id);
 
         turn.publish(
             EventKind::TurnStart,
@@ -293,6 +426,9 @@ async fn runtime_loop(
                 task_id,
             }),
         );
+
+        // The gauge with the new message in it, before the first request.
+        turn.publish_context(actor.context_breakdown());
 
         let started = Instant::now();
         // Session cancellation must interrupt a MID-FLIGHT turn too: the
@@ -318,8 +454,11 @@ async fn runtime_loop(
         };
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let result_message_id = turn.message_id;
+        // The turn's last word on the gauge: it also covers a cancelled turn
+        // and the usage of a final response.
+        turn.publish_context(actor.context_breakdown());
         status.sync_ask(&actor);
-        status.selection.end_turn();
+        status.end_turn();
 
         // A collapsed session surfaces its first publish failure as the turn
         // error (checked BEFORE translating the natural outcome).

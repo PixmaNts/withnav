@@ -56,6 +56,16 @@ pub struct Conversation {
     pub tools_by_turn: HashMap<(String, String), Vec<String>>,
     pub usage_by_step: HashMap<(String, String, String), Usage>,
     pub context_tokens: Option<u64>,
+    /// The server's estimate of the next request, from `context.updated` or
+    /// `GET /context`; the status line shows it. `context_tokens` stays the
+    /// provider's last prompt count.
+    pub context: Option<crate::bus::event::ContextSnapshot>,
+    /// Bumped on every resume and every stream (re)connection: a context fetch answered
+    /// under an older epoch is dropped.
+    pub context_epoch: u64,
+    /// The runtime incarnations the gauge has moved past (the last few): a snapshot of one
+    /// of them is never accepted again.
+    pub retired_incarnations: std::collections::VecDeque<ulid::Ulid>,
     pub completion_tokens: Option<u64>,
     pub session_tokens: Option<u64>,
     pub missing_usage: bool,

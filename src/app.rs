@@ -107,6 +107,10 @@ pub struct RunArgs {
     /// writes markdown plans).
     #[arg(long)]
     pub agent: Option<String>,
+    /// Model variant to run with: the exact name of one the alias offers, or
+    /// `off` for no variant. Default: the alias's default variant.
+    #[arg(long)]
+    pub variant: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -214,10 +218,11 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
     // A session that cannot start (no window, unknown alias, no key) ends the
     // run the way a failed turn does: the `error:` line, exit 1.
     let session_id = match state
-        .create_session_as(
+        .create_session_with(
             &workspace,
             args.model.as_deref(),
             None,
+            crate::session::VariantChoice::from_word(args.variant.as_deref()),
             args.agent.as_deref(),
         )
         .await
@@ -458,6 +463,7 @@ pub fn event_to_ui(envelope: &EventEnvelope) -> Option<UiEvent> {
         | EventKind::TaskDone
         | EventKind::CommandResult
         | EventKind::SessionAgentChanged => None,
+        | EventKind::ContextUpdated => None,
     }
 }
 

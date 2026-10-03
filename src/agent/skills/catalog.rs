@@ -27,8 +27,9 @@ pub(super) fn flatten(description: &str) -> String {
     cut
 }
 
-/// The message for `skills`, already in display order; `None` when empty.
-pub(super) fn render(skills: &[&Skill]) -> Option<String> {
+/// The message for `skills`, already in display order, and how many of them
+/// it lists; `None` when empty.
+pub(super) fn render(skills: &[&Skill]) -> Option<(String, usize)> {
     if skills.is_empty() {
         return None;
     }
@@ -57,5 +58,5 @@ pub(super) fn render(skills: &[&Skill]) -> Option<String> {
         message.push('\n');
         message.push_str(&omitted_line(lines.len() - kept));
     }
-    Some(message)
+    Some((message, kept))
 }

@@ -5,6 +5,7 @@
 //! failure has two meanings, so it returns a [`SendError`]: the request was
 //! refused, or it may have reached the server. Nothing here retries.
 use super::protocol::*;
+use crate::bus::event::ContextSnapshot;
 use serde::de::DeserializeOwned;
 use std::error::Error as _;
 use std::time::Duration;
@@ -96,6 +97,12 @@ impl Client {
 
     pub async fn summary(&self, id: &str) -> Result<SessionMetadata, String> {
         let request = self.get(&format!("/v1/sessions/{}", encode_segment(id)));
+        self.json(request).await
+    }
+
+    /// The session's context snapshot.
+    pub async fn context(&self, id: &str) -> Result<ContextSnapshot, String> {
+        let request = self.get(&format!("/v1/sessions/{}/context", encode_segment(id)));
         self.json(request).await
     }
 

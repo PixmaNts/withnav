@@ -39,6 +39,22 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// Progress-check interval; zero disables child supervision.
+    pub fn subagents_watchdog_interval_secs(&self) -> Result<u64, String> {
+        let Some(value) = self
+            .root
+            .get("subagents")
+            .and_then(|s| s.get("watchdog_interval_secs"))
+        else {
+            return Ok(300);
+        };
+        value
+            .as_u64()
+            .filter(|n| *n <= 365 * 24 * 60 * 60)
+            .ok_or_else(|| {
+                "subagents.watchdog_interval_secs must be an integer from 0 to 31536000".into()
+            })
+    }
     /// The theme id the terminal client saved, `tui.theme`.
     pub fn tui_theme(&self) -> Option<&str> {
         self.root.get("tui")?.get("theme")?.as_str()

@@ -657,6 +657,10 @@ impl Service {
             pending.push(publication.clone());
         }
         let _publication = Publication(publication);
+        let watchdog_interval = crate::settings::load(&self.config.config_dir)
+            .map_err(|error| ServerError::MalformedBody(error.to_string()))?
+            .subagents_watchdog_interval_secs()
+            .map_err(ServerError::MalformedBody)?;
         let child = prepared.session_id;
         let done = CancellationToken::new();
         self.child_operations
@@ -830,6 +834,7 @@ impl Service {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&child);
+        self.start_child_watchdog(child, watchdog_interval);
         Ok(child)
     }
 

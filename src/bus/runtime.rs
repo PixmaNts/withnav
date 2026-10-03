@@ -12,6 +12,7 @@
 mod compact;
 mod deferred;
 mod delivery;
+pub mod progress;
 mod steering;
 pub use delivery::Delivery;
 mod model;
@@ -91,6 +92,7 @@ struct PermissionSlot {
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
+    pub activity: progress::Activity,
     steering: Arc<steering::Steering>,
     budget_parked: std::sync::atomic::AtomicBool,
     delivery: Mutex<Option<delivery::DeliveryCell>>,
@@ -112,6 +114,13 @@ pub struct RuntimeStatus {
 }
 
 impl RuntimeStatus {
+    pub fn watchdog_eligible(&self) -> bool {
+        !self
+            .budget_parked
+            .load(std::sync::atomic::Ordering::Acquire)
+            && self.pending_permission().is_none()
+            && !self.selection.ask_pending()
+    }
     pub fn steer(&self, text: String, interrupt: bool) -> bool {
         self.steering
             .queue
@@ -484,6 +493,7 @@ impl TurnPublisher {
     /// Translates one run event onto the bus. Pure: never feeds back into
     /// the loop's control flow.
     fn observe(&mut self, event: AgentEvent<'_>) {
+        self.status.activity.observe(&event);
         match event {
             AgentEvent::StepStarted => self.step_id = Ulid::new(),
             AgentEvent::Delta(delta) => {

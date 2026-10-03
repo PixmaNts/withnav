@@ -305,3 +305,43 @@ async fn nothing_to_compact_and_a_tail_that_cannot_fit_are_clear_errors() {
     assert!(provider.bodies().is_empty(), "no summary was asked for");
     assert!(stored(&state, big, "context.compacted").await.is_empty());
 }
+
+// Given an idle /compact whose summary request is still in flight
+// When the session is stopped, and another session runs a command
+// Then neither waits for the provider, and nothing is committed
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_summary_in_flight_never_holds_up_a_stop_or_another_session() {
+    let (tmp, ws) = tmp_ws();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let provider = spawn_gated_provider(vec![answer(SUMMARY)], release.clone()).await;
+    let state = state(tmp.path(), &provider);
+    let id = seeded(&state, &ws, 4).await;
+    let other = state.create_session(&ws, None, None).await.unwrap();
+
+    let compacting = {
+        let state = state.clone();
+        tokio::spawn(async move { state.run_command(id, "compact", "").await })
+    };
+    common::server::wait_for("the summary request", || provider.bodies().len() == 1).await;
+
+    let wait = std::time::Duration::from_secs(3);
+    let help = tokio::time::timeout(wait, state.run_command(other, "help", ""))
+        .await
+        .expect("another session's command is not blocked")
+        .unwrap();
+    assert!(help.ok);
+    tokio::time::timeout(wait, state.close_session(id))
+        .await
+        .expect("stop does not wait for the provider")
+        .unwrap();
+
+    // The command is answered (the session is gone), and nothing was saved.
+    let _ = tokio::time::timeout(wait, compacting)
+        .await
+        .expect("the command is released");
+    release.notify_one();
+    state.history().flush().await.unwrap();
+    let (_, _, checkpoint) = state.history().load_for_resume(id).await.unwrap().unwrap();
+    assert!(checkpoint.is_none(), "a stopped session commits nothing");
+    assert!(stored(&state, id, "context.compacted").await.is_empty());
+}

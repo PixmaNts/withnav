@@ -41,7 +41,11 @@ impl Service {
     /// The run holds the lifecycle gate from the session check to the
     /// acknowledged publication of its result, so a stop or delete of the
     /// session waits for the command and never lands between its work and
-    /// its result. When the result cannot be published (the session closed
+    /// its result. `/compact` is the exception: it hands its work to the
+    /// session runtime and lets go of the gate before it waits for the
+    /// summary, so a stop, a shutdown and the other sessions never wait for
+    /// the provider; the runtime, which a stop cancels, guarantees that a
+    /// stopped session commits nothing. When the result cannot be published (the session closed
     /// on its own) the command fails and a session it created is closed
     /// again.
     pub async fn run_command(
@@ -50,7 +54,7 @@ impl Service {
         name: &str,
         arguments: &str,
     ) -> Result<CommandOutcome, ServerError> {
-        let _gate = self.lifecycle_gate().await;
+        let mut gate = Some(self.lifecycle_gate().await);
         let handle = self.routable_handle(session_id).await?;
         let spec = commands::find(name);
         let name = match spec {
@@ -64,8 +68,15 @@ impl Service {
         let mut created = None;
         let result = match spec {
             Some(spec) => {
-                self.dispatch(session_id, &handle, spec, arguments.trim())
-                    .await
+                self.dispatch(
+                    session_id,
+                    &handle,
+                    spec,
+                    arguments.trim(),
+                    operation_id,
+                    &mut gate,
+                )
+                .await
             }
             None => Err(CommandFailure::Refused(commands::unknown_error(&name))),
         };
@@ -117,6 +128,8 @@ impl Service {
         handle: &SessionHandle,
         spec: &'static CommandSpec,
         arguments: &str,
+        operation_id: Ulid,
+        gate: &mut Option<tokio::sync::MutexGuard<'_, ()>>,
     ) -> Result<Done, CommandFailure> {
         if handle.status.pending_ask() {
             return Err(CommandFailure::Refused(
@@ -148,7 +161,10 @@ impl Service {
             "variant" => self.variant_command(session_id, handle, arguments).await,
             "new" => self.new_conversation(session_id, handle, arguments).await,
             "agent" => self.agent_command(session_id, handle, arguments).await,
-            "compact" => self.compact_command(handle, arguments).await,
+            "compact" => {
+                self.compact_command(handle, arguments, operation_id, gate)
+                    .await
+            }
             // The stop itself is done by `run_command` after the result is
             // published: the stream ends with the session.
             "stop" => Ok(Done::data(json!({ "stopped": true }))),
@@ -166,6 +182,8 @@ impl Service {
         &self,
         handle: &SessionHandle,
         arguments: &str,
+        operation_id: Ulid,
+        gate: &mut Option<tokio::sync::MutexGuard<'_, ()>>,
     ) -> Result<Done, CommandFailure> {
         let focus = (!arguments.is_empty()).then(|| arguments.to_string());
         if focus
@@ -177,7 +195,9 @@ impl Service {
                 crate::bus::runtime::FOCUS_MAX_CHARS
             )));
         }
-        match handle.status.request_compact(focus).await {
+        // The summary is a provider call: nothing else may wait for it.
+        drop(gate.take());
+        match handle.status.request_compact(focus, operation_id).await {
             Some(CompactReply::Done(done)) => Ok(Done::data(json!({
                 "generation": done.generation,
                 "through_message": done.through_message,

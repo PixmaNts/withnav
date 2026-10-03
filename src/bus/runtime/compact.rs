@@ -21,6 +21,9 @@ use crate::bus::event::{ContextCompacted, EventKind};
 use crate::bus::sequencer::{Candidate, Sequencer};
 use crate::provider::openai::ChatMessage;
 
+/// Why a compaction that a stop cut short was not done.
+pub(super) const CANCELLED: &str = "the session is stopping: nothing was compacted";
+
 /// Longest focus text `/compact` accepts, in characters.
 pub const FOCUS_MAX_CHARS: usize = 1000;
 
@@ -59,6 +62,9 @@ pub enum CompactReply {
 #[derive(Debug)]
 pub struct CompactRequest {
     pub focus: Option<String>,
+    /// The `command.result` operation this request belongs to: a later
+    /// failure or cancellation is published under the same id.
+    pub operation_id: ulid::Ulid,
     pub reply: oneshot::Sender<CompactReply>,
 }
 
@@ -112,9 +118,12 @@ impl Controls {
     }
 }
 
+/// Requests accepted while a turn ran, each with its operation id.
+pub(super) type Waiting = Vec<(ulid::Ulid, Option<String>)>;
+
 /// Folds the focus texts of requests that waited for one turn into one.
-pub(super) fn merge_focus(waiting: &[Option<String>]) -> Option<String> {
-    waiting.iter().rev().find_map(|f| f.clone())
+pub(super) fn merge_focus(waiting: &Waiting) -> Option<String> {
+    waiting.iter().rev().find_map(|(_, focus)| focus.clone())
 }
 
 /// Summarizes the conversation of `actor` and installs the result. Nothing
@@ -171,6 +180,10 @@ pub(super) async fn run(
     .await
     .map_err(|e| e.to_string())?;
 
+    // A session that is stopping commits nothing: the stop wins.
+    if cancel.is_cancelled() {
+        return Err(CANCELLED.to_string());
+    }
     let installed = prepared.compaction;
     let done = Compacted {
         generation: installed.checkpoint.generation,
@@ -211,19 +224,19 @@ fn publish_compacted(
     }
 }
 
-/// Tells the stream that a compaction that waited for a turn could not run.
-pub(super) fn report_failure(sequencer: &Sequencer, why: String) {
-    use crate::bus::event::{CommandResult, EventKind};
-    let payload = serde_json::to_value(CommandResult {
-        operation_id: ulid::Ulid::new(),
-        name: "compact".to_string(),
-        ok: false,
-        data: None,
-        error: Some(why),
-    })
-    .unwrap_or(serde_json::Value::Null);
-    let _ = sequencer.publish(crate::bus::sequencer::Candidate::new(
-        EventKind::CommandResult,
-        payload,
-    ));
+/// Tells the stream that each request that waited for the turn did not
+/// happen, under the operation id its command answered with.
+pub(super) fn report_failure(sequencer: &Sequencer, waiting: &Waiting, why: &str) {
+    use crate::bus::event::CommandResult;
+    for (operation_id, _) in waiting {
+        let payload = serde_json::to_value(CommandResult {
+            operation_id: *operation_id,
+            name: "compact".to_string(),
+            ok: false,
+            data: None,
+            error: Some(why.to_string()),
+        })
+        .unwrap_or(serde_json::Value::Null);
+        let _ = sequencer.publish(Candidate::new(EventKind::CommandResult, payload));
+    }
 }

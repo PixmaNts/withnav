@@ -113,11 +113,19 @@ impl RuntimeStatus {
     /// Asks the runtime to compact the conversation and waits for its
     /// answer: the result when it ran now, `Deferred` when a turn is running
     /// and it runs when that turn ends. `None` when the runtime is gone.
-    pub async fn request_compact(&self, focus: Option<String>) -> Option<CompactReply> {
+    pub async fn request_compact(
+        &self,
+        focus: Option<String>,
+        operation_id: Ulid,
+    ) -> Option<CompactReply> {
         let (reply, answer) = tokio::sync::oneshot::channel();
         self.controls
             .tx
-            .send(CompactRequest { focus, reply })
+            .send(CompactRequest {
+                focus,
+                operation_id,
+                reply,
+            })
             .ok()?;
         answer.await.ok()
     }
@@ -496,7 +504,7 @@ async fn runtime_loop(
         // The gauge with the new message in it, before the first request.
         turn.publish_context(actor.context_breakdown());
 
-        let mut deferred: Vec<Option<String>> = Vec::new();
+        let mut deferred: compact::Waiting = Vec::new();
         let started = Instant::now();
         // Session cancellation must interrupt a MID-FLIGHT turn too: the
         // select cancels the ACTOR token (cloned handle avoids aliasing the
@@ -520,7 +528,7 @@ async fn runtime_loop(
                     outcome = &mut turn_fut => break outcome,
                     Some(request) = recv_control(&mut control) => {
                         // A turn is running: answer now, run it at its end.
-                        deferred.push(request.focus);
+                        deferred.push((request.operation_id, request.focus));
                         let _ = request.reply.send(CompactReply::Deferred);
                     }
                 }
@@ -550,6 +558,7 @@ async fn runtime_loop(
             );
             emit_agent_state(&mut turn, "idle");
             snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
+            compact::report_failure(&sequencer, &deferred, compact::CANCELLED);
             break;
         }
 
@@ -652,6 +661,9 @@ async fn runtime_loop(
         snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
 
         if actor.cancel.is_cancelled() || session_cancel.is_cancelled() {
+            // The stop wins: a `/compact` accepted during this turn is told
+            // it will not happen, before `session.end`.
+            compact::report_failure(&sequencer, &deferred, compact::CANCELLED);
             break;
         }
 
@@ -667,7 +679,7 @@ async fn runtime_loop(
             )
             .await
             {
-                compact::report_failure(&sequencer, why);
+                compact::report_failure(&sequencer, &deferred, &why);
             }
         }
     }

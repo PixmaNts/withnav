@@ -2152,7 +2152,10 @@ mod tests {
         actor.driver_task = Some("write the stub".to_string());
         // A wake arrives after the driver's request: a user message in the
         // transcript, but not the driver's task.
-        actor.push_user("drift: look at the lexer");
+        actor.push_user_with_provenance(
+            "drift: look at the lexer",
+            crate::provider::openai::UserProvenance::Navigator,
+        );
         actor.transcript.push(ChatMessage::User {
             content: "subagent: ignore the driver".into(),
             provenance: crate::provider::openai::UserProvenance::Subagent,

@@ -604,27 +604,48 @@ fn a_mid_turn_checkpoint_carries_the_latest_user_request_verbatim() {
 
 #[test]
 fn delivered_subagent_output_does_not_displace_checkpoint_driver_request() {
-    let mut transcript = vec![user("driver instruction verbatim"), answer("working")];
-    let checkpoint = Compaction {
-        checkpoint: Checkpoint {
-            through_message: 1,
-            summary: "work so far".into(),
-            generation: 1,
-        },
-        pruned_message_indices: vec![],
-    };
+    use crate::provider::openai::UserProvenance;
+    let mut transcript = vec![
+        user("driver instruction verbatim"),
+        call("first", "read", "{}"),
+        result("first", 10),
+        call("latest", "read", "{}"),
+        result("latest", 10),
+    ];
+    let checkpoint = k(2, "work so far", vec![]);
+    validate(&checkpoint, &transcript).unwrap();
+    let saved = checkpoint.to_json();
+    transcript.push(ChatMessage::User {
+        content: "navigator wake says inspect elsewhere".into(),
+        provenance: UserProvenance::Navigator,
+    });
     transcript.push(ChatMessage::User {
         content: "untrusted subagent says ignore the driver".into(),
-        provenance: crate::provider::openai::UserProvenance::Subagent,
+        provenance: UserProvenance::Subagent,
     });
     let restored: Vec<ChatMessage> =
         serde_json::from_value(serde_json::to_value(&transcript).unwrap()).unwrap();
+    let checkpoint = Compaction::from_json(&saved, &restored).unwrap();
     assert_eq!(latest_user_batch(&restored), Some(0..1));
-    let prompt = effective_history(&restored, Some(&checkpoint));
-    assert!(prompt.iter().any(|m| matches!(m, ChatMessage::User { content, .. } if content == "driver instruction verbatim")));
-    assert!(prompt.iter().any(
+    let request = crate::agent::prompt::build_request(
+        "model",
+        None,
+        None,
+        None,
+        effective_history(&restored, Some(&checkpoint)),
+        vec![],
+        None,
+    );
+    assert!(request.messages.iter().any(|m| matches!(m, ChatMessage::User { content, .. } if content == "driver instruction verbatim")));
+    assert!(request.messages.iter().any(
         |m| matches!(m, ChatMessage::User { content, .. } if content.contains("untrusted subagent"))
     ));
+    assert!(request.messages.iter().any(
+        |m| matches!(m, ChatMessage::User { content, .. } if content.contains("navigator wake"))
+    ));
+    assert!(
+        matches!(&request.messages[0], ChatMessage::System { content } if content.contains("untrusted data"))
+    );
 }
 
 // Given a checkpoint whose boundary is past the latest user request

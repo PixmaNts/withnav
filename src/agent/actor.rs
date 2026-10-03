@@ -345,6 +345,14 @@ impl AgentActor {
     }
 
     pub fn push_user(&mut self, text: impl Into<String>) {
+        self.push_user_with_provenance(text, crate::provider::openai::UserProvenance::Driver);
+    }
+
+    pub fn push_user_with_provenance(
+        &mut self,
+        text: impl Into<String>,
+        provenance: crate::provider::openai::UserProvenance,
+    ) {
         let text = text.into();
         match self.pending.take() {
             Some(PendingInteraction::Ask { tool_call_id }) => {
@@ -360,12 +368,12 @@ impl AgentActor {
             }) => {
                 self.settle_interrupted(&call, &remaining_calls);
                 self.transcript.push(ChatMessage::User {
-                    provenance: Default::default(),
+                    provenance,
                     content: text,
                 });
             }
             None => self.transcript.push(ChatMessage::User {
-                provenance: Default::default(),
+                provenance,
                 content: text,
             }),
         }

@@ -212,7 +212,7 @@ impl ActorInbox {
             if cmd.from_driver() {
                 actor.driver_task = Some(text.clone());
             }
-            actor.push_user(text);
+            actor.push_user_with_provenance(text, cmd.user_provenance());
         }
         outcome
     }
@@ -559,6 +559,14 @@ mod tests {
         inbox.drain_transport();
         inbox.apply_batch_to_actor(&mut actor);
         assert_eq!(actor.driver_task.as_deref(), Some("build the parser"));
+        assert!(actor.transcript[0].is_driver_message());
+        assert!(!actor.transcript[1].is_driver_message());
+        let restored: Vec<ChatMessage> =
+            serde_json::from_value(serde_json::to_value(&actor.transcript).unwrap()).unwrap();
+        assert_eq!(
+            crate::agent::compaction::latest_user_batch(&restored),
+            Some(0..1)
+        );
         assert_eq!(
             user_texts(&actor),
             vec!["build the parser", "drift: look at the lexer"]

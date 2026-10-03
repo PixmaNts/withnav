@@ -77,6 +77,7 @@ pub enum ChatMessage {
 pub enum UserProvenance {
     #[default]
     Driver,
+    Navigator,
     Subagent,
 }
 impl UserProvenance {

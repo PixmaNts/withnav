@@ -106,7 +106,7 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
         ClientEvent::Resync { .. } => {
             // Keeps catalog, model, session list, pending submit, notice and the session itself.
             // The gauge is server state, not derived from the replay (`context.updated` is
-            // live-only), so it stays too.
+            // live-only), so it stays; the reconnect that follows refreshes it.
             let context = s.conversation.context.take();
             reset_projection(s);
             s.conversation.context = context;
@@ -119,7 +119,14 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
                 cursor: None,
             });
         }
-        ClientEvent::StreamConnected { .. } => s.connection = ConnectionStatus::Connected,
+        ClientEvent::StreamConnected { .. } => {
+            s.connection = ConnectionStatus::Connected;
+            // `context.updated` is live-only: what was missed before this subscription (a
+            // reconnect, or the gap since the session was created) is read back here.
+            if let Some(m) = &s.session {
+                effects.push(Effect::FetchContext(m.session_id.clone()));
+            }
+        }
         ClientEvent::StreamDisconnected { .. } => s.connection = ConnectionStatus::Disconnected,
         ClientEvent::Reconnecting { .. } => s.connection = ConnectionStatus::Reconnecting,
         ClientEvent::ProtocolError { message, .. } => s.last_protocol_error = Some(message),
@@ -158,7 +165,6 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
                     s.activity = Activity::Idle;
                 }
                 effects.push(Effect::FetchMetadata(r.session_id.clone()));
-                effects.push(Effect::FetchContext(r.session_id.clone()));
                 // `None` for a fresh conversation; the kept cursor when resuming the same one.
                 effects.push(Effect::Subscribe {
                     session_id: r.session_id.clone(),

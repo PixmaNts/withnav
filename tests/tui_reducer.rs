@@ -1455,7 +1455,33 @@ fn a_malformed_context_payload_is_a_protocol_error() {
 }
 
 #[test]
-fn creating_a_session_fetches_its_context_and_a_resync_keeps_it() {
+fn every_stream_connection_reads_the_context_back() {
+    let mut s = st();
+    models_now(&mut s, Some("a".into())).unwrap();
+    // Before a session exists there is nothing to fetch.
+    let connected = ClientEvent::StreamConnected {
+        generation: s.generation.clone(),
+    };
+    assert!(update(&mut s, connected).unwrap().is_empty());
+    let created = ClientEvent::Created {
+        generation: s.generation.clone(),
+        result: Ok(CreateSessionResponse {
+            session_id: "s1".into(),
+            root_actor_id: "agent:main".into(),
+            actor_state: "idle".into(),
+        }),
+    };
+    let effects = update(&mut s, created).unwrap();
+    assert!(!effects.contains(&Effect::FetchContext("s1".into())));
+    let connected = ClientEvent::StreamConnected {
+        generation: s.generation.clone(),
+    };
+    let effects = update(&mut s, connected).unwrap();
+    assert_eq!(effects, vec![Effect::FetchContext("s1".into())]);
+}
+
+#[test]
+fn a_snapshot_missed_during_a_disconnect_is_read_back_on_reconnect() {
     let mut s = st();
     models_now(&mut s, Some("a".into())).unwrap();
     let created = ClientEvent::Created {
@@ -1466,8 +1492,41 @@ fn creating_a_session_fetches_its_context_and_a_resync_keeps_it() {
             actor_state: "idle".into(),
         }),
     };
-    let effects = update(&mut s, created).unwrap();
-    assert!(effects.contains(&Effect::FetchContext("s1".into())));
+    update(&mut s, created).unwrap();
+    let mut script = Script::new();
+    script.seq = 1_000;
+    script.push(EventKind::ContextUpdated, &snapshot(2, 20_000));
+    feed(&mut s, &script.out);
+    assert_eq!(s.conversation.context.as_ref().unwrap().revision, 2);
+
+    // The stream drops; revision 3 is published while nobody listens.
+    for event in [
+        ClientEvent::StreamDisconnected {
+            generation: s.generation.clone(),
+        },
+        ClientEvent::Reconnecting {
+            generation: s.generation.clone(),
+        },
+    ] {
+        update(&mut s, event).unwrap();
+    }
+    let connected = ClientEvent::StreamConnected {
+        generation: s.generation.clone(),
+    };
+    let effects = update(&mut s, connected).unwrap();
+    assert_eq!(effects, vec![Effect::FetchContext("s1".into())]);
+    let fetched = ClientEvent::Context {
+        generation: s.generation.clone(),
+        result: Ok(snapshot(3, 30_000)),
+    };
+    update(&mut s, fetched).unwrap();
+    let held = s.conversation.context.as_ref().unwrap();
+    assert_eq!((held.revision, held.estimate_total), (3, 30_000));
+}
+
+#[test]
+fn a_resync_keeps_the_gauge_until_the_reconnect_refreshes_it() {
+    let mut s = st();
     let held = ClientEvent::Context {
         generation: s.generation.clone(),
         result: Ok(snapshot(3, 30_000)),

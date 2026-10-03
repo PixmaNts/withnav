@@ -245,7 +245,14 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                         set_variant_offer(s, data);
                     }
                     if std::mem::take(&mut s.variant_list_wanted) && response.ok && !background {
-                        effects.push(Effect::ShowVariants);
+                        // The offer and the variant in use come from the same answer, which may
+                        // arrive before its `command.result` on the stream.
+                        let current = response
+                            .data
+                            .as_ref()
+                            .and_then(|d| d["variant"].as_str())
+                            .map(text::strip_controls);
+                        effects.push(Effect::ShowVariants { current });
                     }
                 }
                 if let Some(revision) = revision {

@@ -2640,7 +2640,21 @@ fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server
     let (mut s, mut ui) = (with_variants(), ui());
     s.selected_model_alias = Some("opus".into());
     created_now(&mut s, "S1").unwrap();
-    s.variant = Some("high".into());
+    // the tab last heard the conversation runs on `high`
+    let summary = ClientEvent::Metadata {
+        generation: s.generation.clone(),
+        result: Ok(SessionMetadata {
+            session_id: "S1".into(),
+            actor_state: "idle".into(),
+            workspace: "/ws".into(),
+            model: "opus".into(),
+            agent: None,
+            variant: Some("high".into()),
+            current_seq: 0,
+        }),
+    };
+    update(&mut s, summary).unwrap();
+    assert_eq!(s.variant.as_deref(), Some("high"));
     let mut editor = Editor::new();
     let press = |code, s: &mut State, ui: &mut UiState, editor: &mut Editor| {
         route_key(KeyEvent::new(code, KeyModifiers::NONE), s, ui, editor)
@@ -2666,7 +2680,8 @@ fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server
         }]
     );
     assert_eq!(ui.overlay, None);
-    // the server offers `low` and `max`: not the catalog's `low` and `high`
+    // the HTTP answer comes before its `command.result` on the stream: the server offers `low`
+    // and `max` (not the catalog's `low` and `high`) and runs on `max`
     let answer = ClientEvent::CommandRan {
         generation: s.generation.clone(),
         name: "variant".into(),
@@ -2679,15 +2694,25 @@ fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server
         }),
     };
     let fx = update(&mut s, answer).unwrap();
-    assert_eq!(fx, vec![Effect::ShowVariants]);
-    navai::tui::reducer::show_variants(&s, &mut ui);
+    assert_eq!(
+        fx,
+        vec![Effect::ShowVariants {
+            current: Some("max".into())
+        }]
+    );
+    // what the runtime does with that effect
+    let Effect::ShowVariants { current } = &fx[0] else {
+        unreachable!()
+    };
+    navai::tui::reducer::show_variants(&s, &mut ui, current.as_deref());
     assert_eq!(ui.overlay, Some(Overlay::Variants));
     assert_eq!(ui.variant_pick, Some(VariantPick::Current));
-    s.variant = Some("max".into());
-    let (rows, start) = navai::tui::commands::variant_choices(&s, &VariantPick::Current);
+    let (rows, _) = navai::tui::commands::variant_choices(&s, &VariantPick::Current);
     assert_eq!(rows, ["low", "max", "off"]);
-    assert_eq!(rows[start], "max", "starts on the variant in use");
-    ui.selection.insert("Variants".into(), start);
+    assert_eq!(
+        rows[ui.selection["Variants"]], "max",
+        "starts on the variant the answer names, not the tab's older `high`"
+    );
     press(KeyCode::Down, &mut s, &mut ui, &mut editor);
     let fx = press(KeyCode::Enter, &mut s, &mut ui, &mut editor).unwrap();
     assert_eq!(

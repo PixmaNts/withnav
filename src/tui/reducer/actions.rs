@@ -236,13 +236,19 @@ fn pick_model(
     Some(effects)
 }
 
-/// Opens the `/variant` list on the variant in use, unless another overlay took the screen.
-pub fn show_variants(s: &State, ui: &mut UiState) {
+/// Opens the `/variant` list on `current` (the variant in use, `None` for none), unless another
+/// overlay took the screen.
+pub fn show_variants(s: &State, ui: &mut UiState, current: Option<&str>) {
     if ui.overlay.is_some() {
         return;
     }
     let pick = VariantPick::Current;
-    let (_, start) = commands::variant_choices(s, &pick);
+    let (rows, _) = commands::variant_choices(s, &pick);
+    let wanted = current.unwrap_or(NO_VARIANT);
+    let start = rows
+        .iter()
+        .position(|r| r == wanted)
+        .unwrap_or(rows.len().saturating_sub(1));
     ui.overlay = Some(Overlay::Variants);
     ui.filter.clear();
     ui.selection

@@ -231,9 +231,9 @@ impl Runtime {
             config_dir: self.config_dir.clone(),
         };
         for effect in effects {
-            if effect == Effect::ShowVariants {
+            if let Effect::ShowVariants { current } = &effect {
                 // A screen change, not I/O: it needs the `UiState` the reducer's `update` lacks.
-                reducer::show_variants(&self.state, &mut self.ui);
+                reducer::show_variants(&self.state, &mut self.ui, current.as_deref());
                 continue;
             }
             if self.exec.execute(effect, &ctx, &mut self.editor) == Flow::Quit {

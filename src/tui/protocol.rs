@@ -324,7 +324,10 @@ pub enum Effect {
         revision: u64,
     },
     /// Opens the variant list of the active conversation, from the offer the server just gave.
-    ShowVariants,
+    ShowVariants {
+        /// The variant in use according to that same answer; the list starts on it.
+        current: Option<String>,
+    },
     /// Puts the draft of the tab that came forward in the editor, at the revision it was kept at,
     /// so a send still in flight from that tab can clear it.
     SetEditor {

@@ -19,6 +19,10 @@ use serde::{Deserialize, Serialize};
 use crate::agent::context::{estimate, message_tokens, Breakdown};
 use crate::provider::openai::{ChatMessage, ToolDef};
 
+mod summary;
+
+pub use summary::{build_summary_request, prepare, validate_summary, PrepareInput, Prepared};
+
 /// The longest summary accepted, in bytes.
 pub const SUMMARY_MAX_BYTES: usize = 8 * 1024;
 
@@ -188,8 +192,9 @@ pub struct Plan {
     /// Every tool output shown as a marker, in the part to summarize and in
     /// what stays: previously pruned ones included. Ascending.
     pub pruned: Vec<usize>,
-    /// Outputs of the part to summarize still whole, biggest first: what the
-    /// summary request may cut further when it does not fit its own window.
+    /// Outputs of the part to summarize that were whole before this plan,
+    /// biggest first: what the summary request may cut when it does not fit
+    /// the session's own input budget.
     pub prefix_elidable: Vec<usize>,
     /// The estimated size of the prompt with the plan installed, the summary
     /// counted at its largest.
@@ -287,11 +292,7 @@ pub fn plan(
         .find(|&c| suffix(&cost, c) <= budget)
         .unwrap_or(latest_cut);
 
-    let prefix_elidable = order
-        .iter()
-        .copied()
-        .filter(|i| *i < boundary && !pruned.contains(i))
-        .collect();
+    let prefix_elidable = order.iter().copied().filter(|i| *i < boundary).collect();
     Ok(Plan {
         through_message: boundary - 1,
         pruned: pruned.into_iter().collect(),

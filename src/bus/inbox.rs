@@ -206,7 +206,11 @@ impl ActorInbox {
                 outcome.first_applied = Some(cmd.command_id);
             }
             outcome.applied += 1;
-            actor.push_user(cmd.text_content());
+            let text = cmd.text_content();
+            if cmd.from_driver() {
+                actor.driver_task = Some(text.clone());
+            }
+            actor.push_user(text);
         }
         outcome
     }
@@ -539,6 +543,40 @@ mod tests {
             assert_eq!(outcome.applied, 1);
             assert_eq!(user_texts(&actor), vec!["latest wake"]);
         }
+    }
+
+    // Given a driver request, then a navigator wake, then a driver answer to an ask
+    // When the batches apply
+    // Then the task is the driver's latest words, never the wake
+    #[tokio::test]
+    async fn the_driver_task_follows_the_driver_and_never_a_wake() {
+        let (tx, mut inbox) = ActorInbox::channel();
+        let mut actor = test_actor();
+        send(&tx, command_from("user:http", "build the parser"));
+        send(&tx, command_from("navigator", "drift: look at the lexer"));
+        inbox.drain_transport();
+        inbox.apply_batch_to_actor(&mut actor);
+        assert_eq!(actor.driver_task.as_deref(), Some("build the parser"));
+        assert_eq!(
+            user_texts(&actor),
+            vec!["build the parser", "drift: look at the lexer"]
+        );
+
+        actor.pending = Some(PendingInteraction::Ask {
+            tool_call_id: "call_ask".into(),
+        });
+        send(&tx, command_from("user:cli", "use the local scope"));
+        inbox.drain_transport();
+        inbox.apply_batch_to_actor(&mut actor);
+        assert_eq!(
+            actor.driver_task.as_deref(),
+            Some("use the local scope"),
+            "an answer to an ask is the driver speaking"
+        );
+        send(&tx, command_from("navigator", "another wake"));
+        inbox.drain_transport();
+        inbox.apply_batch_to_actor(&mut actor);
+        assert_eq!(actor.driver_task.as_deref(), Some("use the local scope"));
     }
 
     // Given a pending permission request

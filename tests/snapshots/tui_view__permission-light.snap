@@ -17,11 +17,11 @@ expression: snapshot
                      │ │  I found the failing test. The empty argument is discarded.                
                      │ │                                                                            
                      │ │ PERMISSION · build wants to run write in /ws                               
+                     │ │  it changes files                                                          
                      │ │  /ws/a.txt                                                                 
                      │ │  + hello                                                                   
                      │ │  y allow once   a always for this folder   n deny                          
                      │ │                                                                            
-                     │                                                                              
                      │                                                                              
                      │                                                                              
                      │                                                                              

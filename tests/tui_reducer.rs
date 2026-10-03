@@ -1965,3 +1965,101 @@ fn a_fetch_issued_before_a_resume_and_answered_after_it_is_dropped() {
     update(&mut s, fresh).unwrap();
     assert_eq!(shown(&s), (2, 0));
 }
+
+#[test]
+fn a_background_tabs_context_update_reaches_that_tab_only_and_shows_on_switch() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    let first = s.generation.clone();
+    open_with(&mut s, &mut ui, "S2");
+    let second = s.generation.clone();
+    // the active tab already shows its own estimate
+    let epoch = s.conversation.context_epoch;
+    update(
+        &mut s,
+        ClientEvent::Context {
+            generation: second.clone(),
+            epoch,
+            result: Ok(snapshot(1, 10_000)),
+        },
+    )
+    .unwrap();
+    // the background tab's stream reports a new estimate
+    let mut script = Script::new();
+    script.seq = 500;
+    script.push(EventKind::ContextUpdated, &snapshot(3, 77_000));
+    update(
+        &mut s,
+        ClientEvent::Envelope {
+            generation: first.clone(),
+            envelope: script.out[0].clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.active, 1);
+    assert_eq!(
+        s.conversation.context.as_ref().unwrap().estimate_total,
+        10_000,
+        "the gauge on screen is unchanged"
+    );
+    assert!(!s.tabs[0].unread, "a gauge refresh is not news");
+    // its fetch answer, under its own epoch, lands on it too
+    let epoch = s.tabs[0].conversation.context_epoch;
+    update(
+        &mut s,
+        ClientEvent::Context {
+            generation: first,
+            epoch,
+            result: Ok(snapshot(4, 80_000)),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        s.conversation.context.as_ref().unwrap().estimate_total,
+        10_000
+    );
+    handle_action(&mut s, &mut ui, Action::SwitchTab(0));
+    assert_eq!(
+        s.conversation.context.as_ref().unwrap().estimate_total,
+        80_000,
+        "switching shows the background tab's gauge"
+    );
+    // a closed tab's late answer is dropped
+    handle_action(&mut s, &mut ui, Action::SwitchTab(1));
+    handle_action(&mut s, &mut ui, Action::CloseTab);
+    let before = s.clone();
+    update(
+        &mut s,
+        ClientEvent::Context {
+            generation: second,
+            epoch: 0,
+            result: Ok(snapshot(9, 99_000)),
+        },
+    )
+    .unwrap();
+    assert_eq!(s, before);
+}
+
+#[test]
+fn each_tab_keeps_its_own_context_epoch() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    let first = s.generation.clone();
+    open_with(&mut s, &mut ui, "S2");
+    let before = s.tabs[0].conversation.context_epoch;
+    // the active tab reconnects: only its epoch moves, and its fetch names its session
+    let generation = s.generation.clone();
+    let fx = update(&mut s, ClientEvent::StreamConnected { generation }).unwrap();
+    assert_eq!(fx, vec![fetch("S2", &s)]);
+    assert_eq!(s.tabs[0].conversation.context_epoch, before);
+    // the background tab reconnects: its fetch names its own session
+    let fx = update(&mut s, ClientEvent::StreamConnected { generation: first }).unwrap();
+    assert_eq!(
+        fx,
+        vec![Effect::FetchContext {
+            session_id: "S1".into(),
+            epoch: s.tabs[0].conversation.context_epoch,
+        }]
+    );
+    assert_eq!(s.tabs[0].conversation.context_epoch, before + 1);
+}

@@ -131,7 +131,11 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
         return Ok(vec![]);
     };
     let background = index != s.active;
-    if background && matches!(e, ClientEvent::Envelope { .. }) {
+    // A gauge refresh is not news: only conversation events mark a background tab unread.
+    if background
+        && matches!(&e, ClientEvent::Envelope { envelope, .. }
+            if envelope.kind != crate::bus::event::EventKind::ContextUpdated.as_str())
+    {
         s.tabs[index].unread = true;
     }
     // The event is applied with its tab in front, then the tab on screen comes back.

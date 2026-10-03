@@ -952,3 +952,44 @@ fn sidebar_shows_waiting_and_error_states() {
     let err_x = row_text(&t, 6, 22)[..err_x].chars().count() as u16;
     assert_eq!(t.backend().buffer()[(err_x, 6)].fg, theme.red);
 }
+
+#[test]
+fn the_gauge_follows_the_active_tab() {
+    let gauge = |estimate_total: u64| navai::bus::event::ContextSnapshot {
+        alias: "cognition".into(),
+        variant: None,
+        window: 1_000_000,
+        window_source: "models.json".into(),
+        estimated: true,
+        estimate_total,
+        breakdown: Default::default(),
+        output_reserve: 8192,
+        margin: 50_000,
+        input_budget: 941_808,
+        percent: estimate_total * 100 / 1_000_000,
+        last_usage: None,
+        skills: Default::default(),
+        rule_files: 0,
+        incarnation: ulid::Ulid::new(),
+        revision: 1,
+    };
+    let mut s = done();
+    s.conversation.context = Some(gauge(42_000));
+    let mut background = s.tabs[0].clone();
+    background.conversation.context = Some(gauge(120_000));
+    s.tabs.push(background);
+    // Wide enough for the sidebar and the whole status line.
+    let screen = |s: &State| {
+        let t = cells(s, &UiState::default(), (120, 24));
+        (0..24)
+            .map(|y| row_text(&t, y, 120))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let text = screen(&s);
+    assert!(text.contains("ctx ~42k / 1M · 4%"), "{text}");
+    assert!(!text.contains("120k"), "{text}");
+    s.active = 1;
+    let text = screen(&s);
+    assert!(text.contains("ctx ~120k / 1M · 12%"), "{text}");
+}

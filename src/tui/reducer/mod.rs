@@ -468,7 +468,17 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             }
         },
         ClientEvent::Sessions { result, .. } => {
-            if let Ok(b) = result {
+            if let Ok(mut b) = result {
+                for entry in &mut b.sessions {
+                    entry.id = strip_controls(&entry.id);
+                    entry.title = entry.title.as_deref().map(strip_controls);
+                    entry.agent = entry.agent.as_deref().map(strip_controls);
+                    entry.created_at = strip_controls(&entry.created_at);
+                    entry.updated_at = strip_controls(&entry.updated_at);
+                    entry.parent_session_id =
+                        entry.parent_session_id.as_deref().map(strip_controls);
+                    entry.child_status = entry.child_status.as_deref().map(strip_controls);
+                }
                 s.sessions = b.sessions;
                 seed_children(s);
                 effects.extend(child_watches(s));
@@ -516,7 +526,15 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             }
         },
         ClientEvent::Metadata { result, .. } => {
-            if let Ok(m) = result {
+            if let Ok(mut m) = result {
+                m.session_id = strip_controls(&m.session_id);
+                m.actor_state = strip_controls(&m.actor_state);
+                m.workspace = strip_controls(&m.workspace);
+                m.model = strip_controls(&m.model);
+                m.agent = m.agent.as_deref().map(strip_controls);
+                m.variant = m.variant.as_deref().map(strip_controls);
+                m.parent_session_id = m.parent_session_id.as_deref().map(strip_controls);
+                m.child_status = m.child_status.as_deref().map(strip_controls);
                 if std::mem::take(&mut s.inspecting) {
                     if m.parent_session_id.is_some() || !m.promptable {
                         s.parent_session_id = m.parent_session_id.clone();
@@ -536,6 +554,12 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 }
                 if s.read_only() {
                     s.resuming = None;
+                    let status = super::state::ChildStatus::from_wire(
+                        m.child_status.as_deref().unwrap_or(""),
+                    );
+                    if status.terminal() {
+                        s.child_status = status;
+                    }
                 }
                 // Only reached for the current generation, so `m` describes this conversation.
                 // A summary read before a change the stream already confirmed is older than it.

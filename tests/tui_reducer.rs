@@ -18,6 +18,37 @@ use ulid::Ulid;
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
 #[test]
+fn session_list_and_metadata_strip_terminal_controls_before_display() {
+    let mut s = subagent_parent();
+    let entry = serde_json::from_value(json!({"id":Ulid(2),"title":"\u{1b}[31mGoal\u{1b}[0m","created_at":"now","updated_at":"now","message_count":1,"live":true,"agent":"\u{1b}[31mexplore\u{1b}[0m","parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
+    update(
+        &mut s,
+        ClientEvent::Sessions {
+            generation: Generation(0),
+            result: Ok(SessionListBody {
+                sessions: vec![entry],
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.children[0].name, "explore");
+    assert_eq!(s.sessions[0].title.as_deref(), Some("Goal"));
+    let mut metadata = s.session.clone().unwrap();
+    metadata.agent = Some("\u{1b}[31mreview\u{1b}[0m".into());
+    metadata.model = "\u{1b}[31mfast\u{1b}[0m".into();
+    update(
+        &mut s,
+        ClientEvent::Metadata {
+            generation: Generation(0),
+            result: Ok(metadata),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.agent_name(), "review");
+    assert_eq!(s.selected_model_alias.as_deref(), Some("fast"));
+}
+
+#[test]
 fn late_permission_mirrors_and_replayed_child_events_do_not_hide_continue() {
     let mut s = subagent_parent();
     spawn_subagent(&mut s, None);

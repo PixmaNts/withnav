@@ -23,7 +23,7 @@ navai-lsp   (one process, two channels: ADR 0006)
 
 A second binary, `navai` (`src/main.rs`, `src/app.rs`), is a thin CLI over the same library:
 `run` (one task in a terminal), `serve` (the session server alone), `auth`, and `tui` (the terminal
-chat client, below).
+chat client, below). `navai run` exits 3 when permission is required and 130 when interrupted.
 
 ## Modules
 
@@ -278,6 +278,8 @@ it is and that run keeps using it.
   numbered excerpts), `tools/mod.rs` (`validate_path`).
 - A new model call goes through `ModelClient`. A new navigator layer seam goes in `ports.rs`, with
   its adapter in `models.rs` and its fake in `tests/common/navigator.rs`.
+- `navai run` exit status mapping lives in `app.rs`: 0 complete, 1 error, 2 yielded, 3 permission
+  required, 130 interrupted.
 - A new trigger record field goes in `PendingTrigger`; nothing else writes trigger records.
 - Behaviour that should be tunable goes in the pipeline (TOML and prompts), not in Rust (ADR 0005).
 - `src/tui/**` is a server client: HTTP + SSE only. It may share serialized bus event types, but never imports session, agent, or bus runtime internals.

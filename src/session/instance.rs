@@ -12,8 +12,11 @@ pub(super) struct Instance {
 }
 
 impl Instance {
-    pub fn acquire(data_dir: &Path) -> Result<Self, String> {
-        let directory = data_dir.join("instances");
+    pub fn acquire(history_db: &Path) -> Result<Self, String> {
+        let database = std::fs::canonicalize(history_db).map_err(|e| e.to_string())?;
+        let mut directory = database.into_os_string();
+        directory.push(".instances");
+        let directory = PathBuf::from(directory);
         std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
         let id = Ulid::new();
         let file = OpenOptions::new()

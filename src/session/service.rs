@@ -425,11 +425,11 @@ impl Service {
         hooks: Arc<dyn SessionHooks>,
     ) -> Result<Self, ServerError> {
         // No fallback: a conversation that cannot be saved is not served.
-        let instance = Arc::new(
-            super::instance::Instance::acquire(&config.data_dir).map_err(ServerError::History)?,
-        );
         let mut history =
             super::store::HistoryStore::open(&config.history_db).map_err(ServerError::History)?;
+        let instance = Arc::new(
+            super::instance::Instance::acquire(&config.history_db).map_err(ServerError::History)?,
+        );
         history.set_owner(instance.id);
         history
             .recover_children(&instance.directory)

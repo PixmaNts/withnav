@@ -322,7 +322,12 @@ async fn recovery_leaves_live_instance_children_and_recovers_stale_owner() {
         )
         .await
         .unwrap();
-    let second = AppState::new(config.clone()).unwrap();
+    let mut other_config = config.clone();
+    other_config.data_dir = tmp.path().join("another-data-directory");
+    let alias = tmp.path().join("database-alias.db");
+    std::os::unix::fs::symlink(&config.history_db, &alias).unwrap();
+    other_config.history_db = alias;
+    let second = AppState::new(other_config).unwrap();
     assert_eq!(
         second.child_metadata(child).await.unwrap().unwrap().status,
         "running"

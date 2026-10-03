@@ -123,6 +123,10 @@ pub struct Tab {
     pub pending_submit_text: Option<String>,
     pub pending_model_pick: bool,
     pub editor_revision: u64,
+    /// The primary agent the conversation runs as, or starts as; `None` is build.
+    pub agent: Option<String>,
+    /// The model variant the conversation runs with, or starts with; `None` is none.
+    pub variant: Option<String>,
     /// Something arrived while another tab was shown.
     pub unread: bool,
     /// The editor text while another tab is shown, and the editor revision it was saved at.
@@ -134,7 +138,17 @@ pub struct Tab {
     pub children: Vec<ChildAgent>,
 }
 
+/// The agent a conversation runs as when nothing else is known.
+pub const DEFAULT_AGENT: &str = "build";
+/// The other primary agent the build/plan switch goes to.
+pub const PLAN_AGENT: &str = "plan";
+
 impl Tab {
+    /// The primary agent's name for display.
+    pub fn agent_name(&self) -> &str {
+        self.agent.as_deref().unwrap_or(DEFAULT_AGENT)
+    }
+
     /// True when the tab holds nothing yet: no session, nothing being created or resumed, no block.
     pub fn is_blank(&self) -> bool {
         self.session.is_none()

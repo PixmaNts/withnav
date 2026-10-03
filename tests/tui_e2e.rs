@@ -659,3 +659,60 @@ async fn typed_server_commands_run_and_show_their_outcome() {
         .iter()
         .any(|(_, text)| text == "/context"));
 }
+
+fn press_tab(rt: &mut Runtime) {
+    press(rt, KeyCode::Tab);
+}
+
+// Given a conversation that answered once
+// When tab is pressed on an empty message
+// Then the server switches it to plan and the status line says so; tab again goes back to build
+// And while a turn is running the switch is refused and the refusal shows, the agent unchanged
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tab_switches_build_and_plan_through_the_server() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let mut provider = spawn_streaming_provider().await;
+    let env = Env::start(root, &provider.url).await;
+    let mut rt = started(&env).await;
+    pick_model(&mut rt, 0);
+    type_and_send(&mut rt, "hello");
+    let (_, answer) = next_request(&mut rt, &mut provider).await;
+
+    // a turn is running: the server refuses the switch
+    until("the turn to run", &mut rt, |_, rt| {
+        rt.state.activity == Activity::Running
+    })
+    .await;
+    press_tab(&mut rt);
+    until("the refusal", &mut rt, |_, rt| {
+        command_blocks(&rt.state)
+            .iter()
+            .any(|(n, ok, _)| n == "agent" && !ok)
+    })
+    .await;
+    assert_eq!(rt.state.agent_name(), "build");
+    answer.send(chunk(json!({"content": "Hi."}))).unwrap();
+    answer.send(usage_chunk("stop", usage(10, 2))).unwrap();
+    drop(answer);
+    until("the answer", &mut rt, |_, rt| has_final(rt, "Hi.")).await;
+
+    press_tab(&mut rt);
+    until("the switch to plan", &mut rt, |_, rt| {
+        rt.state.agent_name() == "plan"
+    })
+    .await;
+    let shown = screen(&mut rt);
+    assert!(shown.contains("▌plan"), "{shown}");
+    assert!(shown.contains("plan · idle"), "{shown}");
+    let summary = Client::new(env.base.clone(), None)
+        .summary(&session_id(&rt))
+        .await
+        .expect("summary");
+    assert_eq!(summary.agent.as_deref(), Some("plan"));
+
+    press_tab(&mut rt);
+    until("the switch back", &mut rt, |_, rt| {
+        rt.state.agent_name() == "build"
+    })
+    .await;
+}

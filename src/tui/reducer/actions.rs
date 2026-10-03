@@ -2,7 +2,9 @@
 use super::{push_local, refresh_model, send_effect, start_conversation};
 use crate::tui::{
     protocol::{Action, CommandRequest, CreateSessionRequest, Effect, Generation, Overlay},
-    state::{Activity, BlockKind, State, Tab, TabView, UiState, MAX_TABS},
+    state::{
+        Activity, BlockKind, State, Tab, TabView, UiState, DEFAULT_AGENT, MAX_TABS, PLAN_AGENT,
+    },
     theme::ThemeId,
 };
 
@@ -38,6 +40,7 @@ fn submit(s: &mut State, text: String, revision: u64) -> Vec<Effect> {
                 workspace: s.workspace.clone(),
                 model: s.selected_model_alias.clone(),
                 resume: None,
+                agent: s.agent.clone(),
             })]
         }
     }
@@ -206,6 +209,21 @@ fn resume(s: &mut State, ui: &mut UiState, id: String) -> Vec<Effect> {
     effects
 }
 
+/// Build to plan and back. A conversation switches through `/agent` (the server may refuse, and
+/// says why in its `command.result`); one not created yet just starts as the other agent.
+fn toggle_agent(s: &mut State) -> Vec<Effect> {
+    let next = if s.agent_name() == PLAN_AGENT {
+        DEFAULT_AGENT
+    } else {
+        PLAN_AGENT
+    };
+    if s.session.is_none() && s.resuming.is_none() && s.pending_submit_text.is_none() {
+        s.agent = (next != DEFAULT_AGENT).then(|| next.to_string());
+        return vec![];
+    }
+    run_command(s, "agent".into(), next.into(), None)
+}
+
 /// Sends a server command to the active conversation. With no conversation yet (or one being
 /// started or resumed) there is nothing to run it in, and the driver is told so.
 fn run_command(
@@ -268,6 +286,7 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             arguments,
             revision,
         } => run_command(s, name, arguments, revision),
+        Action::ToggleAgent => toggle_agent(s),
         Action::SwitchTab(index) => {
             if index < s.tabs.len() && index != s.active {
                 show(s, ui, index)

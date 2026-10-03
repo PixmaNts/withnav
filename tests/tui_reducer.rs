@@ -608,6 +608,8 @@ fn with_session(s: &mut State, id: &str) {
         actor_state: "idle".into(),
         workspace: "/ws".into(),
         model: "a".into(),
+        agent: None,
+        variant: None,
         current_seq: 0,
     });
 }
@@ -1049,6 +1051,7 @@ fn bug2_resync_keeps_catalog_model_sessions_pending_submit_and_notice() {
         created_at: "t".into(),
         updated_at: "t".into(),
         message_count: 1,
+        agent: None,
         live: false,
     }];
     s.pending_submit_text = Some("draft".into());
@@ -1291,6 +1294,8 @@ fn bug9_metadata_refreshes_display_and_stale_metadata_cannot_clobber_a_pick() {
             actor_state: "idle".into(),
             workspace: "/ws".into(),
             model: model.into(),
+            agent: None,
+            variant: None,
             current_seq: 3,
         }),
     };
@@ -2437,4 +2442,108 @@ fn the_server_command_list_is_kept() {
         1,
         "shared: kept whatever its generation"
     );
+}
+
+// ---------------------------------------------------------------- build / plan
+
+#[test]
+fn toggling_the_agent_before_a_conversation_sets_the_one_it_starts_as() {
+    let (mut s, mut ui) = (st(), ui());
+    assert_eq!(s.agent_name(), "build");
+    assert!(handle_action(&mut s, &mut ui, Action::ToggleAgent).is_empty());
+    assert_eq!(s.agent_name(), "plan");
+    let fx = handle_action(&mut s, &mut ui, Action::Submit("hi".into()));
+    assert!(
+        matches!(&fx[0], Effect::Create(r) if r.agent.as_deref() == Some("plan")),
+        "{fx:?}"
+    );
+    let mut back = st();
+    handle_action(&mut back, &mut ui, Action::ToggleAgent);
+    handle_action(&mut back, &mut ui, Action::ToggleAgent);
+    assert_eq!(back.agent, None, "build is the server's default: not sent");
+}
+
+#[test]
+fn toggling_the_agent_of_a_conversation_goes_through_the_server() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    let fx = handle_action(&mut s, &mut ui, Action::ToggleAgent);
+    assert_eq!(
+        fx,
+        vec![Effect::RunCommand {
+            session_id: "S1".into(),
+            request: CommandRequest {
+                name: "agent".into(),
+                arguments: "plan".into(),
+            },
+            revision: None,
+        }]
+    );
+    assert_eq!(
+        s.agent_name(),
+        "build",
+        "nothing changes until the server says so"
+    );
+    let mut script = Script::new();
+    script.raw(
+        "session.agent_changed",
+        json!({"agent": "plan", "previous": "build"}),
+    );
+    feed(&mut s, &script.out);
+    assert_eq!(s.agent_name(), "plan");
+    // a refusal arrives as a failed command.result and leaves the agent as it was
+    script.raw(
+        "command.result",
+        json!({"operation_id": Ulid(3).to_string(), "name": "agent", "ok": false,
+               "error": "the agent is working: wait for the turn to end or stop it, then switch"}),
+    );
+    feed(&mut s, &script.out);
+    assert_eq!(s.agent_name(), "plan");
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Command { ok: false, text, .. } if text.starts_with("the agent is working")
+    ));
+    // the next toggle asks for build
+    let fx = handle_action(&mut s, &mut ui, Action::ToggleAgent);
+    assert!(matches!(
+        &fx[0],
+        Effect::RunCommand { request, .. } if request.arguments == "build"
+    ));
+}
+
+#[test]
+fn the_session_summary_and_a_background_change_set_each_tabs_agent() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    let first = s.generation.clone();
+    let meta = ClientEvent::Metadata {
+        generation: first.clone(),
+        result: Ok(SessionMetadata {
+            session_id: "S1".into(),
+            actor_state: "idle".into(),
+            workspace: "/ws".into(),
+            model: "a".into(),
+            agent: Some("plan".into()),
+            variant: Some("high".into()),
+            current_seq: 0,
+        }),
+    };
+    update(&mut s, meta).unwrap();
+    assert_eq!(s.agent_name(), "plan");
+    handle_action(&mut s, &mut ui, Action::NewConversation);
+    assert_eq!(s.agent_name(), "build", "a new tab starts as build");
+    let mut script = Script::new();
+    script.raw(
+        "session.agent_changed",
+        json!({"agent": "build", "previous": "plan"}),
+    );
+    update(
+        &mut s,
+        ClientEvent::Envelope {
+            generation: first,
+            envelope: script.out[0].clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.tabs[0].agent_name(), "build");
 }

@@ -251,6 +251,10 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 settle_turn_tools(s, &actor, t, outcome);
             }
         }
+        Some(EventKind::SessionAgentChanged) => {
+            let agent = e.payload["agent"].as_str().ok_or_else(bad)?;
+            s.agent = Some(strip_controls(agent));
+        }
         Some(EventKind::CommandResult) => {
             let v = e.payload;
             let name = v["name"].as_str().ok_or_else(bad)?.to_string();

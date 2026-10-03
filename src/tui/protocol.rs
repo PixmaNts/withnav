@@ -46,6 +46,9 @@ pub struct SessionListEntry {
     pub created_at: String,
     pub updated_at: String,
     pub message_count: u64,
+    /// The primary agent; absent from an older server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     pub live: bool,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -59,6 +62,9 @@ pub struct CreateSessionRequest {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume: Option<String>,
+    /// The primary agent a new conversation starts as; the server's default (build) when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CreateSessionResponse {
@@ -72,6 +78,12 @@ pub struct SessionMetadata {
     pub actor_state: String,
     pub workspace: String,
     pub model: String,
+    /// The primary agent; absent from an older server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// The model variant; `None` for none or an older server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
     pub current_seq: u64,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -237,6 +249,8 @@ pub enum Action {
         arguments: String,
         revision: Option<u64>,
     },
+    /// Switches the active conversation between the build and plan agents.
+    ToggleAgent,
     /// Shows the tab at this index (0 is the first).
     SwitchTab(usize),
     /// Closes the active tab; its conversation stays on the server.

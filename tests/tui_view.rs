@@ -56,6 +56,8 @@ fn state() -> State {
             actor_state: "idle".into(),
             workspace: "/home/pixma/dev/project".into(),
             model: "cognition".into(),
+            agent: None,
+            variant: None,
             current_seq: 42,
         }),
         ..Tab::default()
@@ -82,6 +84,7 @@ fn state() -> State {
             created_at: "2026-10-01T08:00:00Z".into(),
             updated_at: "2026-10-02T10:00:00Z".into(),
             message_count: 3,
+            agent: None,
             live: true,
         }],
         ..State::default()
@@ -445,7 +448,7 @@ fn pickers_filter_and_keep_draft() {
 fn the_status_gauge_shows_the_server_estimate_with_its_percent() {
     let mut s = done();
     // Before any snapshot: the provider's last prompt count over the window.
-    assert!(buffer_text(&s).contains("ctx 12.4k / 200k"));
+    assert!(buffer_text(&s).contains("· 12.4k / 200k"));
     s.conversation.context = Some(navai::bus::event::ContextSnapshot {
         alias: "cognition".into(),
         variant: None,
@@ -465,7 +468,7 @@ fn the_status_gauge_shows_the_server_estimate_with_its_percent() {
         revision: 1,
     });
     let text = buffer_text(&s);
-    assert!(text.contains("ctx ~42k / 1M · 4%"), "{text}");
+    assert!(text.contains("· ~42k / 1M · 4%"), "{text}");
     assert!(!text.contains("12.4k"), "{text}");
 }
 
@@ -987,11 +990,11 @@ fn the_gauge_follows_the_active_tab() {
             .join("\n")
     };
     let text = screen(&s);
-    assert!(text.contains("ctx ~42k / 1M · 4%"), "{text}");
+    assert!(text.contains("· ~42k / 1M · 4%"), "{text}");
     assert!(!text.contains("120k"), "{text}");
     s.active = 1;
     let text = screen(&s);
-    assert!(text.contains("ctx ~120k / 1M · 12%"), "{text}");
+    assert!(text.contains("· ~120k / 1M · 12%"), "{text}");
 }
 
 #[test]
@@ -1152,4 +1155,63 @@ fn enter_on_a_server_command_runs_it_and_a_double_slash_sends_text() {
             revision: editor.revision(),
         })
     );
+}
+
+#[test]
+fn tab_on_an_empty_message_switches_the_agent_otherwise_it_moves_the_focus() {
+    let s = state();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    let tab = key(KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(
+        route_key(tab, &s, &mut ui, &mut editor),
+        Some(Action::ToggleAgent)
+    );
+    editor.set_text("draft");
+    assert_eq!(route_key(tab, &s, &mut ui, &mut editor), None);
+    assert_eq!(ui.focus, navai::tui::state::Focus::Transcript);
+    assert_eq!(route_key(tab, &s, &mut ui, &mut editor), None);
+    assert_eq!(ui.focus, navai::tui::state::Focus::Editor);
+    editor.set_text("");
+    let back = key(KeyCode::BackTab, KeyModifiers::SHIFT);
+    assert_eq!(route_key(back, &s, &mut ui, &mut editor), None);
+    assert_eq!(ui.focus, navai::tui::state::Focus::Transcript);
+    let help: Vec<_> = navai::tui::commands::KEYS.iter().map(|(k, _)| *k).collect();
+    assert!(
+        help.contains(&"tab") && help.contains(&"shift+tab"),
+        "{help:?}"
+    );
+}
+
+#[test]
+fn the_agent_shows_in_the_status_line_and_the_sidebar() {
+    let theme = Theme::ayu_dark();
+    let mut s = done();
+    let ui = UiState::default();
+    let t = cells(&s, &ui, (100, 30));
+    let status = (0..30)
+        .find(|y| row_text(&t, *y, 100).contains("▌build  cognition"))
+        .expect("status line");
+    let x = row_text(&t, status, 100)
+        .chars()
+        .position(|c| c == '▌')
+        .unwrap() as u16;
+    assert_eq!(t.backend().buffer()[(x, status)].fg, theme.accent);
+    assert_eq!(t.backend().buffer()[(x + 1, status)].fg, theme.accent_text);
+    s.agent = Some("plan".into());
+    s.variant = Some("high".into());
+    s.conversation.context = None;
+    render("agent-plan", (100, 30), &s, &ui, &Editor::new());
+    let t = cells(&s, &ui, (100, 30));
+    let status = (0..30)
+        .find(|y| row_text(&t, *y, 100).contains("▌plan  cognition"))
+        .expect("status line");
+    let line = row_text(&t, status, 100);
+    assert!(line.contains("· high · 12.4k / 200k"), "{line}");
+    let x = line.chars().position(|c| c == '▌').unwrap() as u16;
+    assert_eq!(t.backend().buffer()[(x, status)].fg, theme.blue);
+    assert!(row_text(&t, 2, 22).contains("plan · idle"));
+    let x = row_text(&t, 2, 22).find("plan").unwrap() as u16;
+    let x = row_text(&t, 2, 22)[..x as usize].chars().count() as u16;
+    assert_eq!(t.backend().buffer()[(x, 2)].fg, theme.blue);
 }

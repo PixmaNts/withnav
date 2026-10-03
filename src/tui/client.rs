@@ -91,6 +91,7 @@ impl Client {
             workspace: workspace.to_string(),
             model: None,
             resume: Some(id.to_string()),
+            agent: None,
         })
         .await
     }

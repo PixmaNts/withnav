@@ -257,6 +257,8 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     actor_state: r.actor_state,
                     workspace: s.workspace.clone(),
                     model: s.selected_model_alias.clone().unwrap_or_default(),
+                    agent: s.agent.clone(),
+                    variant: None,
                     current_seq: s.last_applied_seq.unwrap_or(0),
                 });
                 if s.activity == Activity::Stopped {
@@ -283,6 +285,9 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         ClientEvent::Metadata { result, .. } => {
             if let Ok(m) = result {
                 // Only reached for the current generation, so `m` describes this conversation.
+                if m.agent.is_some() {
+                    s.agent = m.agent.clone();
+                }
                 s.selected_model_alias = Some(m.model.clone());
                 refresh_model(s);
                 s.session = Some(m)

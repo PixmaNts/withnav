@@ -137,6 +137,15 @@ pub fn route_key(
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
+    // tab on an empty message switches build/plan; with text in it, or as shift+tab, it moves the
+    // focus between the editor and the transcript.
+    if key.code == KeyCode::Tab
+        && !key.modifiers.contains(KeyModifiers::SHIFT)
+        && ui.focus == Focus::Editor
+        && editor.text().is_empty()
+    {
+        return Some(Action::ToggleAgent);
+    }
     if key.code == KeyCode::Tab || key.code == KeyCode::BackTab {
         ui.focus = if ui.focus == Focus::Editor {
             Focus::Transcript

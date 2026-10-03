@@ -23,6 +23,15 @@ pub fn shown(ui: &UiState, width: u16) -> bool {
     !ui.sidebar_hidden && width >= MIN_TERMINAL_WIDTH
 }
 
+/// The colour of an agent's name: plan in blue, build (and any other) in the accent.
+pub fn agent_style(agent: &str, theme: &Theme) -> Style {
+    if agent == crate::tui::state::PLAN_AGENT {
+        theme.code_ref()
+    } else {
+        theme.accent()
+    }
+}
+
 /// What a tab is doing, in the words the sidebar uses.
 pub fn tab_state(tab: &Tab) -> &'static str {
     match tab.activity {
@@ -159,7 +168,12 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
         };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled("   build · ", theme.muted()),
+                Span::styled("   ", theme.muted()),
+                Span::styled(
+                    tab.agent_name().to_string(),
+                    agent_style(tab.agent_name(), theme),
+                ),
+                Span::styled(" · ", theme.muted()),
                 Span::styled(status, status_style),
             ])),
             Rect::new(inner.x, y + 1, inner.width, 1),

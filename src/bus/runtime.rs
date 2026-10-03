@@ -12,7 +12,10 @@
 mod compact;
 mod deferred;
 mod delivery;
+mod steering;
+pub use delivery::BoundaryEligible;
 pub use delivery::Delivery;
+pub use delivery::PendingNotice;
 mod model;
 
 use std::sync::{Arc, Mutex};
@@ -90,6 +93,14 @@ struct PermissionSlot {
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
+    #[cfg(debug_assertions)]
+    negative_eligibility_barrier:
+        Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
+    boundary_eligible: Mutex<Option<delivery::EligibleCell>>,
+    queued_driver: Arc<std::sync::atomic::AtomicUsize>,
+    boundary_deferred: std::sync::atomic::AtomicBool,
+    pending_notice: Mutex<Option<delivery::NoticeCell>>,
+    steering: Arc<steering::Steering>,
     budget_parked: std::sync::atomic::AtomicBool,
     delivery: Mutex<Option<delivery::DeliveryCell>>,
     variant: Mutex<VariantSlot>,
@@ -110,6 +121,75 @@ pub struct RuntimeStatus {
 }
 
 impl RuntimeStatus {
+    #[cfg(debug_assertions)]
+    pub(crate) fn pause_negative_eligibility(
+        &self,
+        reached: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    ) {
+        *self
+            .negative_eligibility_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some((reached, release));
+    }
+    pub fn install_boundary_eligible(&self, callback: BoundaryEligible) {
+        *self
+            .boundary_eligible
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(delivery::EligibleCell(callback));
+    }
+    async fn result_eligible(&self) -> bool {
+        let callback = self
+            .boundary_eligible
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|c| c.0.clone());
+        match callback {
+            Some(callback) => callback().await.unwrap_or(false),
+            None => false,
+        }
+    }
+    pub(crate) fn queue_driver(&self) {
+        self.queued_driver
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+    pub fn install_pending_notice(&self, callback: PendingNotice) {
+        *self
+            .pending_notice
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(delivery::NoticeCell(callback));
+    }
+    async fn notice_pending(&self, id: Ulid) -> bool {
+        let callback = self
+            .pending_notice
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|c| c.0.clone());
+        match callback {
+            Some(callback) => callback(id).await.unwrap_or(false),
+            None => false,
+        }
+    }
+    pub fn steer(&self, text: String, interrupt: bool) -> bool {
+        let id = Ulid::new();
+        if !self.steering.admit(steering::Operation {
+            id,
+            content: text,
+            interrupt,
+        }) {
+            return false;
+        }
+        self.controls
+            .tx
+            .send(if interrupt {
+                Control::Interrupt(id)
+            } else {
+                Control::Steer
+            })
+            .is_ok()
+    }
     pub fn continue_budget(&self) -> bool {
         if self
             .budget_parked
@@ -127,6 +207,14 @@ impl RuntimeStatus {
     }
     pub fn wake_delivery(&self) {
         let _ = self.controls.tx.send(Control::Delivery);
+    }
+    pub fn wake_delivery_mode(&self, mode: &str, notice: Ulid) {
+        let control = match mode {
+            "steer" => Control::DeliverySteer,
+            "interrupt" => Control::DeliveryInterrupt(notice),
+            _ => Control::Delivery,
+        };
+        let _ = self.controls.tx.send(control);
     }
     pub fn install_delivery(&self, delivery: Delivery) {
         *self.delivery.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -629,6 +717,55 @@ async fn runtime_loop(
     let mut active_task_id: Option<Ulid> = None;
     let mut control = status.controls.take_receiver();
     let mut delivery_waiting = false;
+    let mut replacement_waiting = false;
+    let mut restart_waiting = false;
+    inbox.track_driver(status.queued_driver.clone());
+    let boundary_status = status.clone();
+    actor.safe_boundary = Some(Arc::new(move |transcript| {
+        let status = boundary_status.clone();
+        Box::pin(async move {
+            let driver_queued = status
+                .queued_driver
+                .load(std::sync::atomic::Ordering::Acquire)
+                > 0;
+            if driver_queued {
+                if status.result_eligible().await {
+                    status
+                        .boundary_deferred
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    return Ok(None);
+                }
+                #[cfg(debug_assertions)]
+                {
+                    let barrier = status
+                        .negative_eligibility_barrier
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take();
+                    if let Some((reached, release)) = barrier {
+                        reached.notify_one();
+                        release.notified().await;
+                    }
+                }
+                // Eligibility and consumption otherwise read different outbox
+                // snapshots. A later completion must not overtake this driver.
+                return Ok(Some(status.steering.apply(transcript)));
+            }
+            let mut transcript = status.steering.apply(transcript);
+            let callback = status
+                .delivery
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .map(|c| c.0.clone());
+            if let Some(callback) = callback {
+                if let Some(updated) = callback(transcript.clone(), true).await? {
+                    transcript = updated;
+                }
+            }
+            Ok(Some(transcript))
+        })
+    }));
 
     loop {
         let inbound = tokio::select! {
@@ -637,11 +774,42 @@ async fn runtime_loop(
                 actor.cancel.cancel();
                 break;
             }
+            _ = std::future::ready(()), if replacement_waiting || restart_waiting => {
+                let restart=std::mem::take(&mut restart_waiting);
+                replacement_waiting=false;
+                let previous_len=actor.transcript.len();
+                let (transcript,claimed)=status.steering.claim_replacements(actor.transcript.clone());
+                if !claimed && !restart { continue; }
+                if claimed {
+                    if let Some(request)=actor.pending_permission().cloned() {
+                        actor.interrupt_pending_permission();
+                        publish_resolved(&sequencer,active_task_id,&request,PermissionResolution::Cancelled);
+                    } else if actor.has_pending() { actor.pending=None; actor.settle_unanswered_calls(); }
+                    // Preserve settled interaction results before appended input.
+                    let extra=transcript[previous_len..].to_vec();
+                    actor.transcript.extend(extra);
+                }
+                actor.cancel=session_cancel.child_token();
+                Some(Inbound::Continue)
+            }
             Some(control) = recv_control(&mut control) => {
                 // Between turns: run it now, publish its result, then answer.
                 match control {
+                    Control::Steer => {
+                        if actor.has_pending() || status.budget_parked.load(std::sync::atomic::Ordering::Acquire)
+                            || status.steering.queue.lock().unwrap_or_else(|e| e.into_inner()).is_empty() { continue; }
+                        actor.transcript = status.steering.apply(actor.transcript.clone());
+                        Some(Inbound::Continue)
+                    }
+                    Control::Interrupt(id) => {
+                        if !status.steering.has_interrupt(id) { continue; }
+                        replacement_waiting=true;
+                        continue;
+                    }
                     Control::Continue => Some(Inbound::Continue),
                     Control::Delivery => { delivery_waiting = true; continue; }
+                    Control::DeliverySteer => { delivery_waiting=true; continue; }
+                    Control::DeliveryInterrupt(id) => { if status.notice_pending(id).await { delivery_waiting=true; } continue; }
                     Control::Compact(request) => {
                         let outcome = compact::run(
                             &mut actor,
@@ -792,7 +960,9 @@ async fn runtime_loop(
         // block scope drops the future (+ its &mut actor borrow) BEFORE the
         // outcome handling below assigns actor.state.
         let actor_cancel = actor.cancel.clone();
-        let outcome = {
+        let mut interrupted_for_input = false;
+        let mut replacement = None;
+        let mut outcome = {
             let mut observe = |event: AgentEvent<'_>| turn.observe(event);
             let turn_fut = async {
                 let first = match resume {
@@ -825,8 +995,24 @@ async fn runtime_loop(
                     Some(control) = recv_control(&mut control) => {
                         // A turn is running: accept now, run it at its end.
                         match control {
+                            Control::Steer => {}
+                            Control::Interrupt(id) => {
+                                if !status.steering.has_interrupt(id) { continue; }
+                                replacement = Some(id);
+                                interrupted_for_input = true;
+                                actor_cancel.cancel();
+                                break (&mut turn_fut).await;
+                            }
                             Control::Continue => {}
                             Control::Delivery => { delivery_waiting = true; }
+                            Control::DeliverySteer => { delivery_waiting=true; }
+                            Control::DeliveryInterrupt(id) => {
+                                if !status.notice_pending(id).await { continue; }
+                                delivery_waiting=true;
+                                interrupted_for_input=true;
+                                actor_cancel.cancel();
+                                break (&mut turn_fut).await;
+                            }
                             Control::Compact(request) => {
                                 let (operation_id, focus) =
                                     (request.operation_id, request.focus.clone());
@@ -852,6 +1038,32 @@ async fn runtime_loop(
                 }
             }
         };
+        if status
+            .boundary_deferred
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            interrupted_for_input = true;
+            delivery_waiting = true;
+        }
+        if completion.is_some()
+            && matches!(outcome, Ok(RunOutcome::Done(_)) | Err(_))
+            && !status.steering.finish()
+        {
+            // Admission and the terminal decision share the queue lock.
+            // Accepted guidance must run before publishing a terminal result.
+            outcome = Ok(RunOutcome::Interrupted);
+            interrupted_for_input = true;
+            let queued = status
+                .steering
+                .queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            replacement = queued.iter().find(|op| op.interrupt).map(|op| op.id);
+            drop(queued);
+            if replacement.is_none() {
+                let _ = status.controls.tx.send(Control::Steer);
+            }
+        }
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let result_message_id = turn.message_id;
         // The turn's last word on the gauge: it also covers a cancelled turn
@@ -960,7 +1172,7 @@ async fn runtime_loop(
                 emit_agent_state(&mut turn, "yielded");
             }
             Ok(RunOutcome::Interrupted) => {
-                if let Some(done) = &completion {
+                if let Some(done) = completion.as_ref().filter(|_| !interrupted_for_input) {
                     done(
                         crate::provider::AssistantMessage {
                             text: "stopped".into(),
@@ -1044,6 +1256,24 @@ async fn runtime_loop(
 
         // Every terminal outcome saves the transcript, a cancelled turn too.
         snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
+
+        if interrupted_for_input && !session_cancel.is_cancelled() {
+            actor.cancel = session_cancel.child_token();
+            if let Some(id) = replacement {
+                replacement_waiting = status.steering.has_interrupt(id);
+            } else if !delivery_waiting {
+                restart_waiting = true;
+            }
+        } else if !actor.has_pending()
+            && !status
+                .steering
+                .queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty()
+        {
+            let _ = status.controls.tx.send(Control::Steer);
+        }
 
         if actor.cancel.is_cancelled() || session_cancel.is_cancelled() {
             // The stop wins: a `/compact` accepted during this turn is told

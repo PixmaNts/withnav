@@ -59,6 +59,7 @@ pub struct BatchOutcome {
 /// receiver would make every later `try_send` a `Closed` error) and keeps
 /// drain/apply explicit so the runtime drive loop controls the timing.
 pub struct ActorInbox {
+    queued_driver: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     commands: Vec<Command>,
     /// The latest command that is not the driver's, set aside while the
     /// actor waits on an `ask` or a permission request: such a command would
@@ -84,6 +85,9 @@ impl From<mpsc::error::TrySendError<Command>> for BusError {
 }
 
 impl ActorInbox {
+    pub(crate) fn track_driver(&mut self, count: std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        self.queued_driver = Some(count);
+    }
     /// Create the bounded per-actor inbox transport: one `mpsc` channel plus
     /// the in-actor buffer, sharing a single FIFO order.
     pub fn channel() -> (mpsc::Sender<Command>, Self) {
@@ -92,6 +96,7 @@ impl ActorInbox {
         (
             tx,
             Self {
+                queued_driver: None,
                 commands: Vec::new(),
                 held: None,
                 _rx: rx,
@@ -190,6 +195,15 @@ impl ActorInbox {
     pub fn apply_batch_to_actor(&mut self, actor: &mut AgentActor) -> BatchOutcome {
         let mut outcome = BatchOutcome::default();
         for cmd in std::mem::take(&mut self.commands) {
+            if cmd.from_driver() {
+                if let Some(count) = &self.queued_driver {
+                    let _ = count.fetch_update(
+                        std::sync::atomic::Ordering::AcqRel,
+                        std::sync::atomic::Ordering::Acquire,
+                        |n| Some(n.saturating_sub(1)),
+                    );
+                }
+            }
             if !cmd.from_driver() {
                 if actor.has_pending() {
                     self.held = Some(cmd);

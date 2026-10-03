@@ -16,6 +16,7 @@ pub mod fetch;
 pub mod glob;
 pub mod native;
 pub mod nofollow;
+pub mod steer_subagent;
 pub mod task;
 
 /// The argument the agent loop adds to a `write` or `edit` whose destination

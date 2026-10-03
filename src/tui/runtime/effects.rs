@@ -151,6 +151,7 @@ impl Executor {
             Effect::ClearEditor { revision } => {
                 editor.clear_if_revision(revision);
             }
+            Effect::SetEditor { text, revision } => editor.restore(&text, revision),
             Effect::SaveTheme(theme) => {
                 // A few bytes written once per pick: done inline. A failure is shown, not fatal:
                 // the theme stays in effect and picking it again retries the save.

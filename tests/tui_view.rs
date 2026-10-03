@@ -4,7 +4,7 @@ use navai::{
     tui::{
         input::{route_key, route_paste, Editor},
         protocol::{Action, ModelEntry, Overlay, SessionListEntry, SessionMetadata},
-        state::{Activity, Block, BlockKind, ConnectionStatus, State, UiState},
+        state::{Activity, Block, BlockKind, ConnectionStatus, State, Tab, UiState},
         theme::{Theme, ThemeId},
         view::{self, tool, RenderCache},
     },
@@ -46,7 +46,7 @@ fn tool_block(status: Option<ToolStatus>) -> Block {
     }
 }
 fn state() -> State {
-    State {
+    let tab = Tab {
         connection: ConnectionStatus::Connected,
         selected_model_alias: Some("cognition".into()),
         selected_model_name: Some("cc/claude-opus-5-5".into()),
@@ -58,6 +58,10 @@ fn state() -> State {
             model: "cognition".into(),
             current_seq: 42,
         }),
+        ..Tab::default()
+    };
+    State {
+        tabs: vec![tab],
         catalog: vec![
             ModelEntry {
                 alias: "cognition".into(),

@@ -52,11 +52,11 @@ impl Runtime {
         let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         let client = Client::new(options.url.clone(), options.token.clone());
         let workspace = options.workspace.to_string_lossy().into_owned();
-        let state = State {
+        let mut state = State {
             workspace,
-            selected_model_alias: options.initial_model.clone(),
             ..State::default()
         };
+        state.selected_model_alias = options.initial_model.clone();
         let ui = UiState {
             follow_bottom: true,
             theme: options
@@ -136,8 +136,13 @@ impl Runtime {
 
     pub fn apply_event(&mut self, event: ClientEvent) {
         self.dirty = true;
+        // The effects of an event belong to the tab it reached, which may not be the one shown.
+        let tab = self
+            .state
+            .tab_of(reducer::generation(&event))
+            .map(|i| self.state.tabs[i].id);
         match reducer::update(&mut self.state, event) {
-            Ok(effects) => self.run_effects(effects),
+            Ok(effects) => self.run_effects_for(tab, effects),
             // A bad event is shown, never fatal.
             Err(err) => self.state.last_protocol_error = Some(err.0),
         }
@@ -165,6 +170,9 @@ impl Runtime {
 
     fn dispatch(&mut self, action: Action) {
         self.dirty = true;
+        // The reducer keeps the draft of a tab that goes to the background.
+        self.state.draft = self.editor.text();
+        self.state.draft_revision = self.editor.revision();
         let effects = reducer::handle_action(&mut self.state, &mut self.ui, action);
         self.run_effects(effects);
     }
@@ -172,9 +180,18 @@ impl Runtime {
     /// Executes `effects` the way the loop does after the reducer returned them, tagged with the
     /// current generation; tests use it to inject effects such as a re-subscription.
     pub fn run_effects(&mut self, effects: Vec<Effect>) {
+        self.run_effects_for(None, effects);
+    }
+
+    /// Runs `effects` for the tab with id `tab` (the active tab when `None` or closed).
+    fn run_effects_for(&mut self, tab: Option<u64>, effects: Vec<Effect>) {
+        let index = tab
+            .and_then(|id| self.state.tabs.iter().position(|t| t.id == id))
+            .unwrap_or(self.state.active);
+        let owner = &self.state.tabs[index];
         let ctx = Context {
-            generation: self.state.generation.clone(),
-            session_id: self.state.session.as_ref().map(|s| s.session_id.clone()),
+            generation: owner.generation.clone(),
+            session_id: owner.session.as_ref().map(|s| s.session_id.clone()),
             workspace: self.state.workspace.clone(),
             config_dir: self.config_dir.clone(),
         };

@@ -950,33 +950,39 @@ fn stop_then_resume() {
 // ---------------------------------------------------------------- regressions (bug numbers of the review)
 
 #[test]
-fn bug1_new_conversation_resets_cursor_and_bumps_generation() {
+fn new_conversation_opens_a_tab_with_its_own_cursor_and_generation() {
     let mut s = run("turn_replay");
     with_session(&mut s, "S1");
     let old = s.generation.clone();
     let fx = handle_action(&mut s, &mut ui(), Action::NewConversation);
-    assert_eq!(fx, vec![Effect::Unsubscribe]);
+    assert_eq!(
+        fx,
+        vec![Effect::SetEditor {
+            text: String::new(),
+            revision: 0
+        }]
+    );
+    assert_eq!((s.tabs.len(), s.active), (2, 1));
     assert_eq!(
         (s.last_applied_seq, s.activity, s.session.is_none()),
         (None, Activity::Idle, true)
     );
     assert!(s.conversation.blocks.is_empty() && s.conversation.pending_tools.is_empty());
     assert_ne!(s.generation, old);
-    // events in flight from the old stream are dropped
-    let stale = ClientEvent::Envelope {
-        generation: old,
-        envelope: load("turn_replay")[1].clone(),
-    };
-    update(&mut s, stale).unwrap();
-    assert!(s.conversation.blocks.is_empty());
-    // the new conversation's seq 0 is applied
+    // the first tab keeps its conversation
+    assert_eq!(s.tabs[0].last_applied_seq, Some(8));
+    // the new conversation's seq 0 is applied to the new tab
     feed(&mut s, &load("turn_replay"));
     assert_eq!(s.last_applied_seq, Some(8));
     assert!(!s.conversation.blocks.is_empty());
+    // a blank tab is reused rather than doubled
+    let mut blank = st();
+    handle_action(&mut blank, &mut ui(), Action::NewConversation);
+    assert_eq!(blank.tabs.len(), 1);
 }
 
 #[test]
-fn bug1_pick_model_with_a_session_starts_a_conversation_without_one_it_does_not() {
+fn pick_model_with_a_session_opens_a_tab_without_one_it_does_not() {
     let mut s = run("turn_replay");
     models_now(&mut s, None).unwrap();
     let gen = s.generation.clone();
@@ -987,16 +993,17 @@ fn bug1_pick_model_with_a_session_starts_a_conversation_without_one_it_does_not(
         (gen.clone(), false)
     ); // no session: untouched
     with_session(&mut s, "S1");
-    let fx = handle_action(&mut s, &mut ui(), Action::PickModel("a".into()));
-    assert_eq!(fx, vec![Effect::Unsubscribe]);
+    handle_action(&mut s, &mut ui(), Action::PickModel("a".into()));
+    assert_eq!((s.tabs.len(), s.active), (2, 1));
     assert_ne!(s.generation, gen);
     assert_eq!(s.last_applied_seq, None);
     assert!(s.conversation.blocks.is_empty());
     assert_eq!(s.selected_model_alias.as_deref(), Some("a"));
+    assert_eq!(s.tabs[0].selected_model_alias.as_deref(), Some("b"));
 }
 
 #[test]
-fn bug1_resume_other_id_resets_same_stopped_id_keeps_cursor() {
+fn resume_other_id_opens_a_tab_same_stopped_id_keeps_cursor() {
     let mut s = run("stopped");
     with_session(&mut s, "S1");
     let gen = s.generation.clone();
@@ -1012,9 +1019,10 @@ fn bug1_resume_other_id_resets_same_stopped_id_keeps_cursor() {
         session_id: "S1".into(),
         cursor: Some(5)
     }));
-    // another id: fresh start
+    // another id: a new tab, fresh start
     let fx = handle_action(&mut s, &mut ui(), Action::ResumeSession("S2".into()));
-    assert_eq!(fx, vec![Effect::Unsubscribe, Effect::Resume("S2".into())]);
+    assert_eq!(fx.last(), Some(&Effect::Resume("S2".into())));
+    assert_eq!((s.tabs.len(), s.active), (2, 1));
     assert_ne!(s.generation, gen);
     assert_eq!(s.last_applied_seq, None);
     let fx = resumed_now(&mut s, "S2").unwrap();
@@ -1022,6 +1030,11 @@ fn bug1_resume_other_id_resets_same_stopped_id_keeps_cursor() {
         session_id: "S2".into(),
         cursor: None
     }));
+    // S1 again: its tab comes forward, nothing is resumed
+    let fx = handle_action(&mut s, &mut ui(), Action::ResumeSession("S1".into()));
+    assert_eq!(s.active, 0);
+    assert_eq!(s.activity, Activity::Idle);
+    assert!(!fx.contains(&Effect::Resume("S1".into())), "{fx:?}");
 }
 
 #[test]
@@ -1382,4 +1395,249 @@ fn message_source_is_kept_as_the_actor_id() {
         &s.conversation.blocks[0].kind,
         BlockKind::Message { source, .. } if source == "user:http"
     ));
+}
+
+// ---------------------------------------------------------------- tabs
+
+/// Opens a tab and gives it the conversation `id`, as a `Created` answer would.
+fn open_with(s: &mut State, ui: &mut UiState, id: &str) {
+    handle_action(s, ui, Action::NewConversation);
+    created_now(s, id).unwrap();
+}
+
+fn notices(s: &State) -> Vec<String> {
+    s.conversation
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.kind {
+            BlockKind::Notice(n) => Some(n.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn tabs_open_switch_and_close() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    open_with(&mut s, &mut ui, "S2");
+    open_with(&mut s, &mut ui, "S3");
+    assert_eq!((s.tabs.len(), s.active), (3, 2));
+    let fx = handle_action(&mut s, &mut ui, Action::SwitchTab(0));
+    assert_eq!(s.active, 0);
+    assert_eq!(s.session.as_ref().unwrap().session_id, "S1");
+    assert!(matches!(fx[..], [Effect::SetEditor { .. }]));
+    // out of range or the active tab: nothing happens
+    assert!(handle_action(&mut s, &mut ui, Action::SwitchTab(5)).is_empty());
+    assert!(handle_action(&mut s, &mut ui, Action::SwitchTab(0)).is_empty());
+    // closing stops nothing on the server and says so
+    handle_action(&mut s, &mut ui, Action::SwitchTab(1));
+    let fx = handle_action(&mut s, &mut ui, Action::CloseTab);
+    assert!(!fx.iter().any(|e| matches!(e, Effect::Stop(_))), "{fx:?}");
+    assert_eq!(s.tabs.len(), 2);
+    assert_eq!(s.session.as_ref().unwrap().session_id, "S3");
+    let shown = notices(&s);
+    assert!(
+        shown.last().unwrap().contains("the conversation is kept"),
+        "{shown:?}"
+    );
+    // closing the last tab leaves a blank one
+    handle_action(&mut s, &mut ui, Action::CloseTab);
+    handle_action(&mut s, &mut ui, Action::CloseTab);
+    assert_eq!(s.tabs.len(), 1);
+    assert!(s.session.is_none());
+}
+
+#[test]
+fn closing_a_running_tab_says_its_turn_goes_on() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    s.activity = Activity::Running;
+    open_with(&mut s, &mut ui, "S2");
+    handle_action(&mut s, &mut ui, Action::SwitchTab(0));
+    handle_action(&mut s, &mut ui, Action::CloseTab);
+    assert_eq!(s.session.as_ref().unwrap().session_id, "S2");
+    let shown = notices(&s);
+    assert!(
+        shown
+            .last()
+            .unwrap()
+            .contains("keeps running on the server"),
+        "{shown:?}"
+    );
+}
+
+#[test]
+fn a_tenth_tab_is_refused_with_a_notice() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    for i in 2..=MAX_TABS {
+        open_with(&mut s, &mut ui, &format!("S{i}"));
+    }
+    assert_eq!(s.tabs.len(), MAX_TABS);
+    let fx = handle_action(&mut s, &mut ui, Action::NewConversation);
+    assert!(fx.is_empty());
+    assert_eq!((s.tabs.len(), s.active), (MAX_TABS, MAX_TABS - 1));
+    assert!(notices(&s).last().unwrap().contains("close one"));
+    let fx = handle_action(&mut s, &mut ui, Action::ResumeSession("other".into()));
+    assert!(fx.is_empty(), "{fx:?}");
+    // an already open conversation is still focused
+    handle_action(&mut s, &mut ui, Action::ResumeSession("S1".into()));
+    assert_eq!(s.active, 0);
+}
+
+#[test]
+fn events_reach_their_tab_and_a_background_tab_is_unread() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    let first = s.generation.clone();
+    open_with(&mut s, &mut ui, "S2");
+    let second = s.generation.clone();
+    assert_ne!(first, second);
+    // S1's stream delivers while S2 is on screen
+    for e in load("turn_replay") {
+        update(
+            &mut s,
+            ClientEvent::Envelope {
+                generation: first.clone(),
+                envelope: e,
+            },
+        )
+        .unwrap();
+    }
+    assert!(
+        s.conversation.blocks.is_empty(),
+        "the active tab is untouched"
+    );
+    assert!(!s.unread);
+    assert!(s.tabs[0].unread);
+    assert_eq!(s.tabs[0].last_applied_seq, Some(8));
+    assert_eq!(s.tabs[0].activity, Activity::Idle);
+    // stream status lands on its tab too
+    update(&mut s, ClientEvent::Reconnecting { generation: first }).unwrap();
+    assert_eq!(s.tabs[0].connection, ConnectionStatus::Reconnecting);
+    assert_eq!(s.connection, ConnectionStatus::Disconnected);
+    // the active tab's events are not unread
+    feed(&mut s, &load("turn_replay"));
+    assert!(!s.unread);
+    // coming forward clears the mark
+    handle_action(&mut s, &mut ui, Action::SwitchTab(0));
+    assert!(!s.unread);
+    assert!(!s.conversation.blocks.is_empty());
+}
+
+#[test]
+fn a_closed_tab_drops_its_late_events() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    open_with(&mut s, &mut ui, "S2");
+    let gone = s.generation.clone();
+    handle_action(&mut s, &mut ui, Action::CloseTab);
+    let before = s.clone();
+    let fx = update(
+        &mut s,
+        ClientEvent::Envelope {
+            generation: gone,
+            envelope: load("turn_replay")[1].clone(),
+        },
+    )
+    .unwrap();
+    assert!(fx.is_empty());
+    assert_eq!(s, before);
+}
+
+#[test]
+fn a_background_creation_subscribes_for_its_own_tab() {
+    let (mut s, mut ui) = (st(), ui());
+    handle_action(&mut s, &mut ui, Action::Submit("hi".into()));
+    let first = s.generation.clone();
+    // the driver opens another tab before the server answers
+    handle_action(&mut s, &mut ui, Action::NewConversation);
+    assert_eq!(s.active, 1);
+    let fx = update(
+        &mut s,
+        ClientEvent::Created {
+            generation: first,
+            result: Ok(CreateSessionResponse {
+                session_id: "S1".into(),
+                root_actor_id: "agent:main".into(),
+                actor_state: "idle".into(),
+            }),
+        },
+    )
+    .unwrap();
+    assert!(fx.contains(&Effect::Subscribe {
+        session_id: "S1".into(),
+        cursor: None
+    }));
+    assert!(fx.iter().any(|e| matches!(e, Effect::SendAt { .. })));
+    assert_eq!(s.tabs[0].session.as_ref().unwrap().session_id, "S1");
+    assert!(s.session.is_none(), "the tab on screen stays blank");
+}
+
+#[test]
+fn drafts_and_positions_are_kept_per_tab() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    s.draft = "half a question".into();
+    s.draft_revision = 4;
+    ui.scroll = 7;
+    ui.follow_bottom = false;
+    let fx = handle_action(&mut s, &mut ui, Action::NewConversation);
+    assert_eq!(
+        fx,
+        vec![Effect::SetEditor {
+            text: String::new(),
+            revision: 0
+        }]
+    );
+    assert!(ui.follow_bottom);
+    assert_eq!(ui.scroll, 0);
+    s.draft = "other".into();
+    s.draft_revision = 2;
+    let fx = handle_action(&mut s, &mut ui, Action::SwitchTab(0));
+    assert_eq!(
+        fx,
+        vec![Effect::SetEditor {
+            text: "half a question".into(),
+            revision: 4
+        }]
+    );
+    assert_eq!((ui.scroll, ui.follow_bottom), (7, false));
+    assert_eq!(s.tabs[1].draft, "other");
+}
+
+#[test]
+fn a_send_accepted_in_the_background_clears_that_tabs_draft_only() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    let first = s.generation.clone();
+    s.draft = "sent text".into();
+    s.draft_revision = 9;
+    handle_action(&mut s, &mut ui, Action::NewConversation);
+    let fx = update(
+        &mut s,
+        ClientEvent::Submitted {
+            generation: first,
+            revision: 9,
+            result: Ok(SubmitResponse {
+                command_id: "c".into(),
+                accepted: true,
+                actor_state: "running".into(),
+                notice: None,
+            }),
+        },
+    )
+    .unwrap();
+    assert!(fx.is_empty(), "the editor on screen belongs to another tab");
+    assert!(s.tabs[0].draft.is_empty());
+}
+
+#[test]
+fn sidebar_toggle() {
+    let (mut s, mut ui) = (st(), ui());
+    handle_action(&mut s, &mut ui, Action::ToggleSidebar);
+    assert!(ui.sidebar_hidden);
+    handle_action(&mut s, &mut ui, Action::ToggleSidebar);
+    assert!(!ui.sidebar_hidden);
 }

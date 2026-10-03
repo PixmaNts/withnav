@@ -38,6 +38,13 @@ impl Editor {
         self.revision += 1;
     }
 
+    /// Puts back a kept draft with the revision it was kept at.
+    pub fn restore(&mut self, text: &str, revision: u64) {
+        let lines = text.split('\n').map(str::to_string).collect();
+        self.area = TextArea::new(lines);
+        self.revision = revision;
+    }
+
     /// Clears the editor only if nothing was edited since `revision`; returns
     /// whether it cleared.
     pub fn clear_if_revision(&mut self, revision: u64) -> bool {

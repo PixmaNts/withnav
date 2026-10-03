@@ -183,6 +183,12 @@ pub enum Action {
         text: String,
         revision: u64,
     },
+    /// Shows the tab at this index (0 is the first).
+    SwitchTab(usize),
+    /// Closes the active tab; its conversation stays on the server.
+    CloseTab,
+    /// Hides or shows the tab sidebar.
+    ToggleSidebar,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
@@ -217,6 +223,12 @@ pub enum Effect {
     /// only cleared if it was not edited since. Replaces `Send`, which the reducer no longer emits.
     SendAt {
         request: SubmitRequest,
+        revision: u64,
+    },
+    /// Puts the draft of the tab that came forward in the editor, at the revision it was kept at,
+    /// so a send still in flight from that tab can clear it.
+    SetEditor {
+        text: String,
         revision: u64,
     },
 }

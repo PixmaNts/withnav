@@ -661,3 +661,39 @@ async fn new_inherits_an_exact_none_variant_and_never_clears_it() {
     assert!(out.error.unwrap().contains("'none'"));
     assert_eq!(state.session_count(), before, "no unvaried session made");
 }
+
+// Given a models.json found in the workspace (no explicit path)
+// When a resume finds the saved variant gone
+// Then the error names that workspace file, not the global one
+#[tokio::test]
+async fn variant_errors_name_the_models_file_that_was_loaded() {
+    let (tmp, ws) = tmp_ws();
+    let cfg = TestServerConfig::unreachable(tmp.path()).variants(offer(), None);
+    let mut session = cfg.config().split().0;
+    std::fs::copy(cfg.models_path(), ws.join("models.json")).unwrap();
+    session.models_path = None;
+    let service = navai::session::Service::new(session).expect("service");
+    let id = service
+        .create_session_with_variant(&ws, None, None, VariantChoice::from_word(Some("low")))
+        .await
+        .unwrap();
+    service.close_session(id).await.unwrap();
+    service.history().flush().await.unwrap();
+
+    std::fs::write(
+        ws.join("models.json"),
+        std::fs::read_to_string(ws.join("models.json"))
+            .unwrap()
+            .replace("\"low\"", "\"lower\""),
+    )
+    .unwrap();
+    let err = service
+        .create_or_resume_session(&ws, None, None, Some(id))
+        .await
+        .unwrap_err();
+    let text = err.to_string();
+    assert!(
+        text.contains(&ws.join("models.json").display().to_string()),
+        "{text}"
+    );
+}

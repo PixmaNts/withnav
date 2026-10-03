@@ -292,7 +292,7 @@ fn limits(context: u64) -> Limits {
         context_length: Some(context),
         max_input_tokens: None,
         max_output_tokens: None,
-        effort_tiers: Vec::new(),
+        effort_tiers: None,
     }
 }
 
@@ -651,7 +651,7 @@ async fn null_or_malformed_fields_keep_the_previous_values() {
             context_length: Some(500_000),
             max_input_tokens: Some(400_000),
             max_output_tokens: Some(1_000),
-            effort_tiers: Vec::new(),
+            effort_tiers: None,
         },
     );
     let d = lookup(&catalog, &base, "m").await;
@@ -677,6 +677,63 @@ async fn null_or_malformed_fields_keep_the_previous_values() {
     let cached = reopened.cached(&resolved(&base, "m", ApiKind::Chat, None));
     assert!(cached.stale && cached.age_seconds.unwrap() > TTL);
     assert_eq!(cached.limits.unwrap().context_length, Some(500_000));
+}
+
+fn tiers_of(d: &CatalogData) -> Option<Vec<String>> {
+    d.limits.as_ref().and_then(|l| l.effort_tiers.clone())
+}
+
+/// Seeds an expired entry with tiers `low`, `high`, refreshes it against
+/// `body`, then reads it again after a restart.
+async fn refreshed_tiers(body: &str) -> (CatalogData, CatalogData) {
+    let dir = tempfile::tempdir().unwrap();
+    let server = serve(body).await;
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let base = format!("{}/v1", server.uri());
+    let mut seeded = limits(500_000);
+    seeded.effort_tiers = Some(vec!["low".into(), "high".into()]);
+    seed(&catalog, &base, TTL + 1, "m", seeded);
+    let first = lookup(&catalog, &base, "m").await;
+    assert_eq!(requests(&server).await, 1);
+    let reopened = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let again = lookup(&reopened, &base, "m").await;
+    assert_eq!(requests(&server).await, 1, "the list itself is current");
+    (first, again)
+}
+
+#[tokio::test]
+async fn tiers_the_provider_did_not_validly_report_are_kept() {
+    for capabilities in [
+        r#""capabilities":{}"#,
+        r#""capabilities":{"effort_tiers":null}"#,
+        r#""capabilities":{"effort_tiers":"high"}"#,
+        r#""capabilities":null"#,
+    ] {
+        let body = format!(r#"{{"data":[{{"id":"m","context_length":500000,{capabilities}}}]}}"#);
+        let (first, again) = refreshed_tiers(&body).await;
+        for d in [first, again] {
+            assert_eq!(
+                tiers_of(&d),
+                Some(vec!["low".to_string(), "high".to_string()]),
+                "{capabilities}"
+            );
+            assert!(
+                d.stale,
+                "kept tiers are not freshly confirmed: {capabilities}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_explicit_empty_tier_list_removes_the_tiers() {
+    let body =
+        r#"{"data":[{"id":"m","context_length":500000,"capabilities":{"effort_tiers":[]}}]}"#;
+    let (first, again) = refreshed_tiers(body).await;
+    for d in [first, again] {
+        assert_eq!(tiers_of(&d), Some(Vec::new()));
+        assert!(!d.stale);
+    }
 }
 
 #[tokio::test]

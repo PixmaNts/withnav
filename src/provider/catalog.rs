@@ -37,9 +37,10 @@ pub struct Limits {
     pub max_input_tokens: Option<u64>,
     pub max_output_tokens: Option<u64>,
     /// The reasoning-effort tiers the provider advertises (`low`, `high`, ...;
-    /// `none` included when reported). Empty: none reported.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub effort_tiers: Vec<String>,
+    /// `none` included when reported). `None`: not known (never validly
+    /// reported); `Some` of an empty list: the provider says there are none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_tiers: Option<Vec<String>>,
 }
 impl Limits {
     /// Every reported limit is positive.
@@ -309,7 +310,9 @@ fn endpoint_key(base_url: &str) -> String {
     endpoint_without_credentials(base_url)
 }
 /// New values over the previous ones: a limit the provider now reports as
-/// null, zero or malformed keeps the value already known for that model. The
+/// null, zero or malformed keeps the value already known for that model, and
+/// so do tiers it did not validly report (an empty list it did report
+/// replaces them). The
 /// second map dates the oldest value kept for each such model, so a kept
 /// number does not pass for a freshly confirmed one.
 #[allow(clippy::type_complexity)]
@@ -327,7 +330,8 @@ fn merge(
             if let Some(p) = old.models.get(&id) {
                 let kept = (l.context_length.is_none() && p.context_length.is_some())
                     || (l.max_input_tokens.is_none() && p.max_input_tokens.is_some())
-                    || (l.max_output_tokens.is_none() && p.max_output_tokens.is_some());
+                    || (l.max_output_tokens.is_none() && p.max_output_tokens.is_some())
+                    || (l.effort_tiers.is_none() && p.effort_tiers.is_some());
                 if kept {
                     let since = old.carried.get(&id).copied().unwrap_or(old.fetched_at);
                     carried.insert(id.clone(), since.min(old.fetched_at));
@@ -335,6 +339,7 @@ fn merge(
                 l.context_length = l.context_length.or(p.context_length);
                 l.max_input_tokens = l.max_input_tokens.or(p.max_input_tokens);
                 l.max_output_tokens = l.max_output_tokens.or(p.max_output_tokens);
+                l.effort_tiers = l.effort_tiers.or_else(|| p.effort_tiers.clone());
             }
             (id, l)
         })
@@ -412,7 +417,9 @@ pub(crate) fn parse_models(bytes: &[u8]) -> Result<HashMap<String, Limits>, Prov
         existing.context_length = existing.context_length.or(incoming.context_length);
         existing.max_input_tokens = existing.max_input_tokens.or(incoming.max_input_tokens);
         existing.max_output_tokens = existing.max_output_tokens.or(incoming.max_output_tokens);
-        if existing.effort_tiers.is_empty() {
+        if existing.effort_tiers.as_ref().is_none_or(Vec::is_empty)
+            && incoming.effort_tiers.is_some()
+        {
             existing.effort_tiers = incoming.effort_tiers;
         }
     }
@@ -425,13 +432,15 @@ const MAX_TIERS: usize = 16;
 /// `capabilities.effort_tiers` of one model entry: the usable names, in the
 /// order reported, without duplicates. A tier becomes a variant name and a
 /// request value, so anything that is not a short plain word is dropped.
-fn effort_tiers(entry: &serde_json::Value) -> Vec<String> {
+/// `None` when the entry does not carry a list (missing, null or of another
+/// type): that is "not reported", unlike an empty list, which says there are
+/// no tiers.
+fn effort_tiers(entry: &serde_json::Value) -> Option<Vec<String>> {
     let mut tiers: Vec<String> = Vec::new();
     let reported = entry
         .pointer("/capabilities/effort_tiers")
-        .and_then(|v| v.as_array())
-        .into_iter()
-        .flatten()
+        .and_then(|v| v.as_array())?
+        .iter()
         .filter_map(|v| v.as_str());
     for tier in reported {
         let plain = !tier.is_empty()
@@ -443,7 +452,7 @@ fn effort_tiers(entry: &serde_json::Value) -> Vec<String> {
             tiers.push(tier.to_string());
         }
     }
-    tiers
+    Some(tiers)
 }
 /// A cache file this build can trust: a readable version, and no limit of
 /// zero (the parser never writes one, so it means the file was damaged).
@@ -653,7 +662,7 @@ pub async fn resolve_chat(
     let stale_age_secs = used.filter(|d| d.stale).and_then(|d| d.age_seconds);
     let refresh_error = used.and_then(|d| d.error.clone());
     let limits = data.and_then(|d| d.limits).unwrap_or_default();
-    let variants = effective_variants(resolved, &limits.effort_tiers);
+    let variants = effective_variants(resolved, limits.effort_tiers.as_deref().unwrap_or(&[]));
     let default_variant = resolved.model.default_variant.clone();
     let (window, source) = if let Some(n) = explicit {
         (n, "models.json")

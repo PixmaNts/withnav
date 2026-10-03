@@ -62,31 +62,33 @@ Dependencies point down this list. A module never imports one above it.
 ### Inside `tui/`
 
 The terminal client of the session server: HTTP for commands, SSE for events, nothing else. It
-imports the serialized bus types and no runtime internals.
+imports the serialized bus types and no runtime internals. Several conversations are open at once,
+one per tab; each tab streams its own session in the background.
 
 | File | Responsibility |
 |---|---|
 | `mod.rs` | `TuiOptions`, `TuiError`, `run` |
 | `protocol.rs` | the wire bodies the client sends and receives, and the three message types of the loop: `Action` (what the user asked), `Effect` (I/O the reducer wants), `ClientEvent` (what came back, tagged with a `Generation`) |
-| `state.rs` | `State` (the conversation projection, session, catalog, activity) and `UiState` (overlay, scroll, selection); data only |
+| `state.rs` | `State`: the open `Tab`s (each with its conversation projection, session, model, activity, generation, draft, transcript position and unread mark) and what they share (catalog, session list, workspace); it derefs to the active tab. `UiState` (overlay, scroll, selection, sidebar shown); data only |
 | `client.rs` | the HTTP client: models, sessions, create/resume, send, stop, open the event stream; send failures split into rejected and uncertain |
 | `stream.rs` | one SSE subscription: decoding, reconnect with backoff, resume after the last seq, cancellation |
-| `reducer/mod.rs` | `update`: `ClientEvent` to `State` changes and new `Effect`s; generation filtering |
+| `reducer/mod.rs` | `update`: `ClientEvent` to `State` changes and new `Effect`s; routes each event to the tab holding its generation, marks a background tab unread, drops events no tab holds |
 | `reducer/envelope.rs` | `EventEnvelope` to blocks: steps, tools (planned, running, settled), usage, errors; live and replay give the same blocks |
-| `reducer/actions.rs` | `handle_action`: `Action` to `UiState`/`State` changes and `Effect`s |
+| `reducer/actions.rs` | `handle_action`: `Action` to `UiState`/`State` changes and `Effect`s; opening (at most nine), switching and closing tabs |
 | `reducer/text.rs` | `strip_controls`, applied to every piece of model and tool text |
 | `input.rs` | the `Editor` and `route_key`/`route_paste`: keys to editor edits or `Action`s |
 | `commands.rs` | the command catalog, the key help and the key to `Action` map |
-| `runtime.rs` | `Runtime`: owns state, editor, client and stream; the event loop with its frame tick |
-| `runtime/effects.rs` | `Executor`: runs each `Effect` in a task and reports a tagged `ClientEvent`; owns the one live stream |
+| `runtime.rs` | `Runtime`: owns state, editor, client and streams; runs an event's effects for the tab it reached; the event loop with its frame tick |
+| `runtime/effects.rs` | `Executor`: runs each `Effect` in a task and reports a tagged `ClientEvent`; owns one live stream per tab generation and stops those no tab holds |
 | `runtime/tests.rs` | executor and loop tests with no terminal and a dead server |
 | `terminal.rs` | raw mode and the alternate screen, restored on exit and on panic |
 | `theme.rs` | the four themes (`ThemeId`, the `Theme` colour roles), the RGB `blend` for tints, and the semantic styles the views draw with |
-| `view/mod.rs` | `draw`: layout of transcript, editor, status line and overlays |
+| `view/mod.rs` | `draw`: layout of sidebar, transcript, editor, status line and overlays |
+| `view/sidebar.rs` | the tab sidebar: number, title, `build · <state>`, unread mark, active tint, tab keys; hidden under 80 columns |
 | `view/transcript.rs` | block layout and drawing: messages by origin, steps, tools, errors, scroll and selection |
 | `view/tool.rs` | the one-line summary and the expanded output of a tool call |
 | `view/markdown.rs` | markdown to styled lines, cached per block revision |
-| `view/status.rs` | the status line: connection, model, activity, context (the server's estimate, else the last prompt count) and session tokens |
+| `view/status.rs` | the status line of the active tab: connection, model, activity, context (the server's estimate, else the last prompt count) and session tokens |
 | `view/pickers.rs` | the model, session, command, theme and help overlays |
 
 ## Data flows
@@ -100,6 +102,17 @@ into `State` (envelopes become blocks) and may return more effects. After each b
 `view::draw`, which only reads the state. Picking a model or starting a conversation bumps the
 generation, so late results of the old conversation are ignored. A conversation is created on the
 first message, not before.
+
+**Tabs (terminal client).** Every tab has its own generation, never shared, and the executor keeps one
+SSE stream per generation. An event is applied to the tab that holds its generation, whether it is on
+screen or not (a background tab is then marked unread), and the effects it returns run with that tab's
+session. Opening a conversation (`/new`, ctrl+n, `/sessions`, a model pick) adds a tab; closing one
+drops its generation, so the runtime cancels its stream and its late results are ignored; nothing is
+sent to the server. Before each action the runtime copies the editor into the active tab's draft; the
+reducer puts the next tab's draft back with `Effect::SetEditor`. The context gauge is per tab too: each
+conversation keeps its snapshot, its epoch and its retired incarnations, a `context.updated` or a
+`FetchContext` answer lands on the tab whose generation it carries (without marking it unread), and the
+status line shows the active tab's.
 
 **Keystroke to suggestion (reflex).** The extension asks `navigator/inlineCompletion` after 150 ms
 of pause. `runtime/inline.rs` reads the document and the reflex context, `reflex.rs` builds the FIM

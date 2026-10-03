@@ -1,9 +1,16 @@
 //! Pure event projection and UI action transitions.
 //!
-//! Runtime contract (the runtime owns I/O, the reducer owns `State.generation`):
-//! - `start_conversation` bumps `State.generation`. After every `update` / `handle_action` call the
-//!   runtime must stamp the `ClientEvent`s of the effects it spawns with the CURRENT
-//!   `State.generation`; results of older generations are dropped.
+//! Runtime contract (the runtime owns I/O, the reducer owns the generations):
+//! - Every tab has its own generation, never shared with another tab; `start_conversation` gives
+//!   the active tab a new one. An event reaches the tab whose generation it carries; an event whose
+//!   generation no tab holds any more (an older conversation, a closed tab) is dropped. Catalog,
+//!   session-list and settings results are shared and always applied.
+//! - The effects returned by `update` belong to the tab the event reached; the effects returned by
+//!   `handle_action` belong to the tab active after the action. The runtime stamps them with that
+//!   tab's CURRENT generation and session, and stops the stream of a generation no tab holds.
+//! - Before each action the runtime copies the editor text and revision into the active tab's
+//!   `draft`/`draft_revision`; when another tab comes forward the reducer returns
+//!   `Effect::SetEditor` with that tab's draft.
 //! - `Effect::Resume(id)` carries only the id. The runtime owns the workspace (it fills
 //!   `State.workspace` at startup) and builds `CreateSessionRequest { workspace, resume: Some(id) }`.
 //! - `Resync` replays the same session on the SAME stream, so it does not bump the generation:
@@ -13,7 +20,7 @@ mod actions;
 mod envelope;
 mod text;
 
-pub use actions::handle_action;
+pub use actions::{handle_action, short_id};
 pub use text::strip_controls;
 
 use super::{
@@ -21,7 +28,8 @@ use super::{
     state::{Activity, Block, BlockKind, ConnectionStatus, State},
 };
 
-fn generation(e: &ClientEvent) -> &Generation {
+/// The generation an event is tagged with: the tab it belongs to.
+pub fn generation(e: &ClientEvent) -> &Generation {
     match e {
         ClientEvent::Envelope { generation, .. }
         | ClientEvent::Resync { generation }
@@ -64,25 +72,39 @@ fn reset_projection(s: &mut State) {
     s.activity = Activity::Idle;
 }
 
-/// Switches to a different conversation: resets the projection, drops the session and any
-/// unsent submit of the old one, and bumps the generation so in-flight results are dropped.
+/// Switches the active tab to a different conversation: resets the projection, drops the session
+/// and any unsent submit of the old one, and gives the tab a new generation so in-flight results
+/// are dropped.
 pub(crate) fn start_conversation(s: &mut State) {
     reset_projection(s);
     s.session = None;
+    s.resuming = None;
     s.pending_submit_text = None;
     s.pending_submit = None;
     s.delivery_uncertain = false;
-    s.generation = Generation(s.generation.0 + 1);
+    s.unread = false;
+    let generation = Generation(s.issue());
+    s.generation = generation;
 }
 
 /// Refreshes the display name and context window from the catalog for the selected alias.
 pub(crate) fn refresh_model(s: &mut State) {
-    let Some(alias) = s.selected_model_alias.clone() else {
+    let State {
+        tabs,
+        active,
+        catalog,
+        ..
+    } = s;
+    refresh_tab_model(catalog, &mut tabs[*active]);
+}
+
+fn refresh_tab_model(catalog: &[super::protocol::ModelEntry], tab: &mut super::state::Tab) {
+    let Some(alias) = tab.selected_model_alias.clone() else {
         return;
     };
-    let found = s.catalog.iter().find(|m| m.alias == alias);
-    s.selected_model_name = found.map(|m| m.model.clone());
-    s.context_window = found.and_then(|m| m.context_window);
+    let found = catalog.iter().find(|m| m.alias == alias);
+    tab.selected_model_name = found.map(|m| m.model.clone());
+    tab.context_window = found.and_then(|m| m.context_window);
 }
 
 pub(crate) fn send_effect(text: String, revision: u64) -> Effect {
@@ -97,9 +119,35 @@ pub(crate) fn send_effect(text: String, revision: u64) -> Effect {
 }
 
 pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolError> {
-    if generation(&e) != &s.generation {
-        return Ok(vec![]);
+    let shared = matches!(
+        e,
+        ClientEvent::Models { .. }
+            | ClientEvent::Sessions { .. }
+            | ClientEvent::SettingsNotSaved { .. }
+    );
+    if shared {
+        return apply(s, e, false);
     }
+    let Some(index) = s.tab_of(generation(&e)) else {
+        return Ok(vec![]);
+    };
+    let background = index != s.active;
+    // A gauge refresh is not news: only conversation events mark a background tab unread.
+    if background
+        && matches!(&e, ClientEvent::Envelope { envelope, .. }
+            if envelope.kind != crate::bus::event::EventKind::ContextUpdated.as_str())
+    {
+        s.tabs[index].unread = true;
+    }
+    // The event is applied with its tab in front, then the tab on screen comes back.
+    let shown = std::mem::replace(&mut s.active, index);
+    let result = apply(s, e, background);
+    s.active = shown;
+    result
+}
+
+/// Applies `e` to the active tab; `background` tells that the driver is looking at another one.
+fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>, ProtocolError> {
     let mut effects = vec![];
     match e {
         ClientEvent::Envelope { envelope, .. } => envelope::apply_envelope(s, envelope)?,
@@ -137,18 +185,24 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
         ClientEvent::Models { result, .. } => {
             if let Ok(body) = result {
                 s.catalog = body.models;
-                if s.selected_model_alias.is_none() {
-                    s.selected_model_alias = body
-                        .default
-                        .filter(|a| s.catalog.iter().any(|m| &m.alias == a))
-                        .or_else(|| {
-                            s.catalog
-                                .iter()
-                                .find(|m| m.alias == "default")
-                                .map(|m| m.alias.clone())
-                        });
+                let default = body
+                    .default
+                    .filter(|a| s.catalog.iter().any(|m| &m.alias == a))
+                    .or_else(|| {
+                        s.catalog
+                            .iter()
+                            .find(|m| m.alias == "default")
+                            .map(|m| m.alias.clone())
+                    });
+                // Every tab, on screen or not: a default where none is chosen, and the display
+                // name and window refreshed from the new catalog.
+                let State { tabs, catalog, .. } = s;
+                for tab in tabs {
+                    if tab.selected_model_alias.is_none() {
+                        tab.selected_model_alias = default.clone();
+                    }
+                    refresh_tab_model(catalog, tab);
                 }
-                refresh_model(s);
             }
         }
         ClientEvent::Sessions { result, .. } => {
@@ -158,6 +212,7 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
         }
         ClientEvent::Created { result, .. } | ClientEvent::Resumed { result, .. } => match result {
             Ok(r) => {
+                s.resuming = None;
                 // A fetch issued before this (re)start may describe the old runtime.
                 s.conversation.context_epoch += 1;
                 s.session = Some(SessionMetadata {
@@ -182,6 +237,7 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
                 }
             }
             Err(x) => {
+                s.resuming = None;
                 s.pending_submit_text = None;
                 s.pending_submit = None;
                 s.notice = Some(x)
@@ -207,7 +263,12 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
             revision, result, ..
         } => match result {
             Ok(r) => {
-                effects.push(Effect::ClearEditor { revision });
+                if !background {
+                    effects.push(Effect::ClearEditor { revision });
+                } else if s.draft_revision == revision {
+                    // The tab is not on screen: its kept draft is the editor text that was sent.
+                    s.draft.clear();
+                }
                 if let Some(n) = r.notice {
                     push_local(s, BlockKind::Notice(n));
                 }

@@ -9,7 +9,7 @@ pub struct Command {
 pub const CATALOG: &[Command] = &[
     Command {
         name: "/new",
-        description: "new conversation",
+        description: "new conversation in a new tab",
     },
     Command {
         name: "/sessions",
@@ -45,8 +45,11 @@ pub const KEYS: &[(&str, &str)] = &[
     ("enter", "send / choose"),
     ("alt+enter / ctrl+j", "newline"),
     ("ctrl+p / /", "commands"),
-    ("ctrl+n", "new conversation"),
-    ("ctrl+o", "sessions"),
+    ("ctrl+n", "new conversation, in a new tab"),
+    ("ctrl+o", "sessions (opens in a tab)"),
+    ("alt+1 … alt+9", "switch to tab 1 … 9"),
+    ("alt+w", "close tab (the conversation is kept)"),
+    ("alt+b", "hide / show the tab bar"),
     ("f2", "models"),
     ("f1", "help"),
     ("tab / shift+tab", "switch focus"),
@@ -78,7 +81,11 @@ pub fn command_action(name: &str, mode: Mode) -> Option<Action> {
 
 pub fn key_to_action(key: KeyEvent) -> Option<Action> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT) && !ctrl;
     Some(match key.code {
+        KeyCode::Char(c @ '1'..='9') if alt => Action::SwitchTab(c as usize - '1' as usize),
+        KeyCode::Char('w') if alt => Action::CloseTab,
+        KeyCode::Char('b') if alt => Action::ToggleSidebar,
         KeyCode::Char('p') if ctrl => Action::OpenOverlay(Overlay::Commands),
         KeyCode::Char('n') if ctrl => Action::NewConversation,
         KeyCode::Char('o') if ctrl => Action::OpenOverlay(Overlay::Sessions),

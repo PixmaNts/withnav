@@ -8,6 +8,16 @@ requests land in `develop`.
 
 ### Added
 
+- **Several conversations at once in the terminal client**: each conversation opens in its own tab
+  and keeps streaming while you look at another one. `/new` and ctrl+n open a new tab; picking a
+  conversation in `/sessions` opens it in a tab, or brings its tab forward if it is already open; up
+  to nine tabs. alt+1 … alt+9 switch, alt+w closes a tab and alt+b hides or shows the tab bar. Closing
+  a tab stops nothing: the conversation stays on the server, a turn in progress finishes there, and
+  `/sessions` reopens it. Each tab keeps its own draft, scroll position and model.
+- **Tab bar** on the left of the terminal client: every open conversation with its number, its title
+  (or the start of its id), what it is doing (`build · idle`, `running`, `waiting` or `error`) and a
+  dot when something new arrived while you were elsewhere. It hides itself when the terminal is
+  narrower than 80 columns.
 - **Context budget**: every session keeps an estimate of its next request (UTF-8 bytes / 4 plus a
   fixed framing per message), split into system, rules, skills catalog, tools and messages, against
   its model's window. The input budget is `min(W − R, input limit or W) − M`: R is the alias's

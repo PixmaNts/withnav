@@ -4,7 +4,7 @@ use navai::{
     tui::{
         input::{route_key, route_paste, Editor},
         protocol::{Action, ModelEntry, Overlay, SessionListEntry, SessionMetadata},
-        state::{Activity, Block, BlockKind, ConnectionStatus, State, UiState},
+        state::{Activity, Block, BlockKind, ConnectionStatus, State, Tab, UiState},
         theme::{Theme, ThemeId},
         view::{self, tool, RenderCache},
     },
@@ -46,7 +46,7 @@ fn tool_block(status: Option<ToolStatus>) -> Block {
     }
 }
 fn state() -> State {
-    State {
+    let tab = Tab {
         connection: ConnectionStatus::Connected,
         selected_model_alias: Some("cognition".into()),
         selected_model_name: Some("cc/claude-opus-5-5".into()),
@@ -58,6 +58,10 @@ fn state() -> State {
             model: "cognition".into(),
             current_seq: 42,
         }),
+        ..Tab::default()
+    };
+    State {
+        tabs: vec![tab],
         catalog: vec![
             ModelEntry {
                 alias: "cognition".into(),
@@ -805,4 +809,268 @@ fn markdown_repaints_when_the_theme_changes_and_back() {
     assert_eq!(light.0, Theme::ayu_light().accent_text);
     assert_ne!(dark.1, light.1, "code is highlighted with the light scheme");
     assert_eq!(back, dark, "going back repaints exactly as before");
+}
+
+#[test]
+fn tab_keys_switch_close_and_hide_the_bar() {
+    let s = state();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    editor.set_text("draft");
+    let alt = |c| key(KeyCode::Char(c), KeyModifiers::ALT);
+    assert_eq!(
+        route_key(alt('1'), &s, &mut ui, &mut editor),
+        Some(Action::SwitchTab(0))
+    );
+    assert_eq!(
+        route_key(alt('9'), &s, &mut ui, &mut editor),
+        Some(Action::SwitchTab(8))
+    );
+    assert_eq!(
+        route_key(alt('w'), &s, &mut ui, &mut editor),
+        Some(Action::CloseTab)
+    );
+    assert_eq!(
+        route_key(alt('b'), &s, &mut ui, &mut editor),
+        Some(Action::ToggleSidebar)
+    );
+    assert_eq!(editor.text(), "draft", "tab keys type nothing");
+    // plain digits still type
+    route_key(
+        key(KeyCode::Char('1'), KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(editor.text(), "1draft");
+    let help: Vec<_> = navai::tui::commands::KEYS.iter().map(|(k, _)| *k).collect();
+    for wanted in ["alt+1 … alt+9", "alt+w", "alt+b"] {
+        assert!(help.contains(&wanted), "{help:?}");
+    }
+}
+
+/// Three tabs: the active "Fix parser", a running one with news, and a blank one.
+fn three_tabs() -> State {
+    let mut s = done();
+    let mut running = s.tabs[0].clone();
+    running.session.as_mut().unwrap().session_id = "01JZZZZZZZZZZ".into();
+    running.activity = Activity::Running;
+    running.unread = true;
+    running.conversation.blocks.clear();
+    let blank = Tab::default();
+    s.tabs.extend([running, blank]);
+    s
+}
+
+fn row_text(t: &Terminal<TestBackend>, y: u16, width: u16) -> String {
+    (0..width)
+        .map(|x| t.backend().buffer()[(x, y)].symbol())
+        .collect()
+}
+
+#[test]
+fn sidebar_lists_tabs_with_state_unread_and_active_tint() {
+    let s = three_tabs();
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    render("sidebar-three-tabs", (100, 24), &s, &ui, &Editor::new());
+    let t = cells(&s, &ui, (100, 24));
+    let theme = Theme::ayu_dark();
+    assert!(row_text(&t, 1, 22).starts_with("▌1 Fix parser"));
+    assert!(row_text(&t, 2, 22).contains("build · idle"));
+    assert!(
+        row_text(&t, 3, 22).contains("2 01JZZZZZ"),
+        "short id for an untitled tab"
+    );
+    assert!(row_text(&t, 3, 22).contains('●'), "unread mark");
+    assert!(row_text(&t, 4, 22).contains("build · running"));
+    assert!(row_text(&t, 5, 22).contains("3 new conversation"));
+    assert!(row_text(&t, 23, 22).contains("alt+b hide bar"));
+    let buffer = t.backend().buffer();
+    // the active rows carry the accent tint and the accent bar; the others the panel
+    let tint = theme.selection_bg_on_panel();
+    for y in [1, 2] {
+        assert_eq!(buffer[(5, y)].bg, tint, "row {y}");
+        assert_eq!(buffer[(0, y)].fg, theme.accent, "bar on row {y}");
+        assert_eq!(buffer[(0, y)].symbol(), "▌");
+    }
+    for y in [3, 4] {
+        assert_eq!(buffer[(5, y)].bg, theme.panel, "row {y}");
+        assert_ne!(buffer[(0, y)].symbol(), "▌");
+    }
+    // states and the unread mark use theme roles
+    let running_x = row_text(&t, 4, 22).find("running").unwrap();
+    let running_x = row_text(&t, 4, 22)[..running_x].chars().count() as u16;
+    assert_eq!(buffer[(running_x, 4)].fg, theme.accent_text);
+    let dot_x = row_text(&t, 3, 22).chars().position(|c| c == '●').unwrap() as u16;
+    assert_eq!(buffer[(dot_x, 3)].fg, theme.accent);
+    // the transcript starts right of the bar
+    assert_eq!(buffer[(21, 1)].symbol(), "│");
+}
+
+#[test]
+fn sidebar_hides_on_demand_and_on_narrow_terminals() {
+    let s = three_tabs();
+    let mut ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    let narrow = cells(&s, &ui, (79, 24));
+    assert!(
+        !row_text(&narrow, 1, 79).contains("Fix parser · "),
+        "header unchanged"
+    );
+    assert!(
+        !(0..24).any(|y| row_text(&narrow, y, 79).contains("build · ")),
+        "no sidebar under 80 columns"
+    );
+    let wide = cells(&s, &ui, (80, 24));
+    assert!(row_text(&wide, 2, 80).contains("build · idle"));
+    ui.sidebar_hidden = true;
+    render("sidebar-hidden", (100, 24), &s, &ui, &Editor::new());
+    let hidden = cells(&s, &ui, (100, 24));
+    assert!(row_text(&hidden, 0, 100).starts_with(" navai"));
+    assert!(!(0..24).any(|y| row_text(&hidden, y, 100).contains("build · ")));
+}
+
+#[test]
+fn sidebar_shows_waiting_and_error_states() {
+    let mut s = three_tabs();
+    s.tabs[1].activity = Activity::AwaitingUser;
+    s.tabs[2].conversation.blocks = vec![Block {
+        id: "e".into(),
+        kind: BlockKind::Error("provider: 429".into()),
+    }];
+    let ui = UiState::default();
+    let t = cells(&s, &ui, (100, 24));
+    let theme = Theme::ayu_dark();
+    assert!(row_text(&t, 4, 22).contains("build · waiting"));
+    assert!(row_text(&t, 6, 22).contains("build · error"));
+    let err_x = row_text(&t, 6, 22).find("error").unwrap();
+    let err_x = row_text(&t, 6, 22)[..err_x].chars().count() as u16;
+    assert_eq!(t.backend().buffer()[(err_x, 6)].fg, theme.red);
+}
+
+#[test]
+fn the_gauge_follows_the_active_tab() {
+    let gauge = |estimate_total: u64| navai::bus::event::ContextSnapshot {
+        alias: "cognition".into(),
+        variant: None,
+        window: 1_000_000,
+        window_source: "models.json".into(),
+        estimated: true,
+        estimate_total,
+        breakdown: Default::default(),
+        output_reserve: 8192,
+        margin: 50_000,
+        input_budget: 941_808,
+        percent: estimate_total * 100 / 1_000_000,
+        last_usage: None,
+        skills: Default::default(),
+        rule_files: 0,
+        incarnation: ulid::Ulid::new(),
+        revision: 1,
+    };
+    let mut s = done();
+    s.conversation.context = Some(gauge(42_000));
+    let mut background = s.tabs[0].clone();
+    background.conversation.context = Some(gauge(120_000));
+    s.tabs.push(background);
+    // Wide enough for the sidebar and the whole status line.
+    let screen = |s: &State| {
+        let t = cells(s, &UiState::default(), (120, 24));
+        (0..24)
+            .map(|y| row_text(&t, y, 120))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let text = screen(&s);
+    assert!(text.contains("ctx ~42k / 1M · 4%"), "{text}");
+    assert!(!text.contains("120k"), "{text}");
+    s.active = 1;
+    let text = screen(&s);
+    assert!(text.contains("ctx ~120k / 1M · 12%"), "{text}");
+}
+
+#[test]
+fn tabs_with_the_same_block_id_render_their_own_text_and_height() {
+    let mut s = state();
+    s.tabs[0].generation = navai::tui::protocol::Generation(1);
+    s.tabs[0].conversation.blocks = vec![message("7", "assistant", "first tab line")];
+    let mut other = s.tabs[0].clone();
+    other.generation = navai::tui::protocol::Generation(2);
+    other.conversation.blocks = vec![message(
+        "7",
+        "assistant",
+        "second tab one\n\nsecond tab two\n\nsecond tab three",
+    )];
+    s.tabs.push(other);
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    let mut cache = RenderCache::default();
+    let mut screen = |s: &State| {
+        let mut t = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        t.draw(|f| view::draw(f, s, &ui, &Editor::new(), &mut cache))
+            .unwrap();
+        (0..24)
+            .map(|y| row_text(&t, y, 100))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let first = screen(&s);
+    assert!(first.contains("first tab line"), "{first}");
+    s.active = 1;
+    let second = screen(&s);
+    assert!(!second.contains("first tab line"), "{second}");
+    for line in ["second tab one", "second tab two", "second tab three"] {
+        assert!(second.contains(line), "{second}");
+    }
+    s.active = 0;
+    let again = screen(&s);
+    assert!(again.contains("first tab line"), "{again}");
+    assert!(!again.contains("second tab"), "{again}");
+}
+
+#[test]
+fn a_short_sidebar_scrolls_to_keep_the_active_tab_in_view() {
+    let mut s = done();
+    for n in 2..=9 {
+        s.tabs.push(Tab {
+            pending_submit_text: Some(format!("tab {n}")),
+            ..Tab::default()
+        });
+    }
+    s.active = 8;
+    let ui = UiState::default();
+    // 14 rows: the title row and 4 key rows leave room for 4 tabs of 2 rows
+    let t = cells(&s, &ui, (100, 14));
+    let bar: Vec<String> = (0..14).map(|y| row_text(&t, y, 22)).collect();
+    let all = bar.join("\n");
+    assert!(all.contains("▌9 starting…"), "{all}");
+    assert!(!all.contains(" 1 Fix parser"), "{all}");
+    let theme = Theme::ayu_dark();
+    let row = bar.iter().position(|r| r.starts_with("▌9")).unwrap() as u16;
+    assert_eq!(
+        t.backend().buffer()[(5, row)].bg,
+        theme.selection_bg_on_panel()
+    );
+    // with the first tab active, the list starts at the top again
+    s.active = 0;
+    let t = cells(&s, &ui, (100, 14));
+    assert!(row_text(&t, 1, 22).starts_with("▌1 Fix parser"));
+    render(
+        "sidebar-scrolled",
+        (100, 14),
+        &{
+            let mut s = s.clone();
+            s.active = 8;
+            s
+        },
+        &ui,
+        &Editor::new(),
+    );
 }

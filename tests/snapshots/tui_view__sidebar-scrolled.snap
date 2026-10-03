@@ -1,0 +1,18 @@
+---
+source: tests/tui_view.rs
+expression: snapshot
+---
+ Conversations       │ navai  workspace                                            new conversation 
+ 6 starting…         │──────────────────────────────────────────────────────────────────────────────
+   build · idle      │                                                                              
+ 7 starting…         │                                                                              
+   build · idle      │                                                                              
+ 8 starting…         │                                                                              
+   build · idle      │                                                                              
+▌9 starting…         │                                                                              
+▌  build · idle      │──────────────────────────────────────────────────────────────────────────────
+                     │ — · —   ctx — / —   offline   ready                                          
+                     │┌ Message ───────────────────────────────────────────────────────────────────┐
+ alt+1…9 switch      ││                                                                            │
+ alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
+ alt+b hide bar      │ enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help

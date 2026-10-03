@@ -1,6 +1,6 @@
 //! Owns the UI event loop; effect execution lives in `effects`, drawing in
 //! view. The runtime is the only owner of `State`, `UiState`, the editor, the
-//! render cache, the client and the event stream.
+//! render cache, the client and the event streams (one per open tab).
 mod effects;
 
 use std::time::Duration;
@@ -45,6 +45,9 @@ pub struct Runtime {
     needs_clear: bool,
     quit: bool,
     config_dir: Option<std::path::PathBuf>,
+    /// The editors of the tabs in the background, by tab id: cursor, selection and undo history
+    /// survive a switch.
+    parked: std::collections::HashMap<u64, Editor>,
 }
 
 impl Runtime {
@@ -52,11 +55,11 @@ impl Runtime {
         let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         let client = Client::new(options.url.clone(), options.token.clone());
         let workspace = options.workspace.to_string_lossy().into_owned();
-        let state = State {
+        let mut state = State {
             workspace,
-            selected_model_alias: options.initial_model.clone(),
             ..State::default()
         };
+        state.selected_model_alias = options.initial_model.clone();
         let ui = UiState {
             follow_bottom: true,
             theme: options
@@ -78,6 +81,7 @@ impl Runtime {
             needs_clear: false,
             quit: false,
             config_dir: options.config_dir.clone(),
+            parked: Default::default(),
         }
     }
 
@@ -107,7 +111,12 @@ impl Runtime {
     /// here. Marks the screen dirty while something on it moves.
     pub fn on_tick(&mut self) -> u64 {
         self.tick = self.tick.wrapping_add(1);
-        let animating = self.state.activity == Activity::Running
+        // A background tab changes only its sidebar row; that row animates too.
+        let animating = self
+            .state
+            .tabs
+            .iter()
+            .any(|t| t.activity == Activity::Running)
             || self.state.pending_submit.is_some()
             || matches!(
                 self.state.connection,
@@ -136,8 +145,13 @@ impl Runtime {
 
     pub fn apply_event(&mut self, event: ClientEvent) {
         self.dirty = true;
+        // The effects of an event belong to the tab it reached, which may not be the one shown.
+        let tab = self
+            .state
+            .tab_of(reducer::generation(&event))
+            .map(|i| self.state.tabs[i].id);
         match reducer::update(&mut self.state, event) {
-            Ok(effects) => self.run_effects(effects),
+            Ok(effects) => self.run_effects_for(tab, effects),
             // A bad event is shown, never fatal.
             Err(err) => self.state.last_protocol_error = Some(err.0),
         }
@@ -163,18 +177,49 @@ impl Runtime {
         }
     }
 
-    fn dispatch(&mut self, action: Action) {
+    /// Applies `action` as if a key had produced it.
+    pub fn dispatch(&mut self, action: Action) {
         self.dirty = true;
+        // The reducer keeps the draft of a tab that goes to the background.
+        self.state.draft = self.editor.text();
+        self.state.draft_revision = self.editor.revision();
+        let before = self.state.id;
         let effects = reducer::handle_action(&mut self.state, &mut self.ui, action);
+        if self.state.id == before {
+            self.run_effects(effects);
+            return;
+        }
+        // Another tab came forward: its `SetEditor` fills a fresh editor, then its parked one
+        // takes over if it still holds that draft (a send accepted meanwhile cleared it).
+        let left = std::mem::take(&mut self.editor);
         self.run_effects(effects);
+        if self.state.tabs.iter().any(|t| t.id == before) {
+            self.parked.insert(before, left);
+        }
+        if let Some(editor) = self.parked.remove(&self.state.id) {
+            if editor.text() == self.state.draft && editor.revision() == self.state.draft_revision {
+                self.editor = editor;
+            }
+        }
+        let open: Vec<u64> = self.state.tabs.iter().map(|t| t.id).collect();
+        self.parked.retain(|id, _| open.contains(id));
     }
 
     /// Executes `effects` the way the loop does after the reducer returned them, tagged with the
     /// current generation; tests use it to inject effects such as a re-subscription.
     pub fn run_effects(&mut self, effects: Vec<Effect>) {
+        self.run_effects_for(None, effects);
+    }
+
+    /// Runs `effects` for the tab with id `tab` (the active tab when `None` or closed).
+    fn run_effects_for(&mut self, tab: Option<u64>, effects: Vec<Effect>) {
+        let index = tab
+            .and_then(|id| self.state.tabs.iter().position(|t| t.id == id))
+            .unwrap_or(self.state.active);
+        let owner = &self.state.tabs[index];
         let ctx = Context {
-            generation: self.state.generation.clone(),
-            session_id: self.state.session.as_ref().map(|s| s.session_id.clone()),
+            generation: owner.generation.clone(),
+            session_id: owner.session.as_ref().map(|s| s.session_id.clone()),
             workspace: self.state.workspace.clone(),
             config_dir: self.config_dir.clone(),
         };
@@ -183,7 +228,13 @@ impl Runtime {
                 self.quit = true;
             }
         }
-        self.exec.retire_stale_stream(&ctx.generation);
+        let live: Vec<_> = self
+            .state
+            .tabs
+            .iter()
+            .map(|t| t.generation.clone())
+            .collect();
+        self.exec.retire_streams(&live);
     }
 
     pub fn render(&mut self, frame: &mut ratatui::Frame<'_>) {
@@ -228,7 +279,7 @@ pub async fn run(options: TuiOptions) -> Result<(), TuiError> {
     let mut runtime = Runtime::new(&options);
     runtime.start(options.initial_session.clone());
     let result = event_loop(&mut runtime, &mut guard).await;
-    runtime.exec.cancel_stream();
+    runtime.exec.cancel_streams();
     drop(guard);
     result
 }

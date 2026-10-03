@@ -190,44 +190,33 @@ async fn quit_ends_the_loop() {
 }
 
 #[tokio::test]
-async fn subscribe_replaces_the_previous_stream_and_unsubscribe_cancels_it() {
+async fn each_generation_has_its_own_stream_and_unsubscribe_cancels_only_its_own() {
     let (mut exec, _rx) = executor();
     let mut editor = Editor::new();
+    let subscribe = |id: &str| Effect::Subscribe {
+        session_id: id.into(),
+        cursor: None,
+    };
     assert!(!exec.has_stream());
-    exec.execute(
-        Effect::Subscribe {
-            session_id: "a".into(),
-            cursor: None,
-        },
-        &ctx(1, Some("a")),
-        &mut editor,
+    exec.execute(subscribe("a"), &ctx(1, Some("a")), &mut editor);
+    exec.execute(subscribe("b"), &ctx(2, Some("b")), &mut editor);
+    assert_eq!(exec.stream_count(), 2, "two tabs stream at once");
+    exec.execute(subscribe("b"), &ctx(2, Some("b")), &mut editor);
+    assert_eq!(
+        exec.stream_count(),
+        2,
+        "a tab's new stream replaces its old one"
     );
-    assert!(exec.has_stream());
-    exec.execute(
-        Effect::Subscribe {
-            session_id: "b".into(),
-            cursor: Some(4),
-        },
-        &ctx(2, Some("b")),
-        &mut editor,
+    exec.retire_streams(&[Generation(2), Generation(3)]);
+    assert_eq!(
+        exec.stream_count(),
+        1,
+        "a generation no tab holds is retired"
     );
-    assert!(exec.has_stream());
-    exec.retire_stale_stream(&Generation(3));
-    assert!(
-        !exec.has_stream(),
-        "a stream of an older generation is retired"
-    );
-    exec.execute(
-        Effect::Subscribe {
-            session_id: "c".into(),
-            cursor: None,
-        },
-        &ctx(3, Some("c")),
-        &mut editor,
-    );
-    exec.retire_stale_stream(&Generation(3));
-    assert!(exec.has_stream(), "the current generation's stream stays");
-    exec.execute(Effect::Unsubscribe, &ctx(3, Some("c")), &mut editor);
+    exec.execute(subscribe("c"), &ctx(3, Some("c")), &mut editor);
+    exec.execute(Effect::Unsubscribe, &ctx(2, Some("b")), &mut editor);
+    assert_eq!(exec.stream_count(), 1);
+    exec.cancel_streams();
     assert!(!exec.has_stream());
 }
 
@@ -397,4 +386,42 @@ async fn a_failed_save_is_shown_and_picking_again_retries() {
         crate::settings::load(dir.path()).unwrap().tui_theme(),
         Some("ayu-light")
     );
+}
+
+#[tokio::test]
+async fn a_tabs_editor_keeps_its_cursor_and_history_across_a_switch() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let key = |code, modifiers| Event::Key(KeyEvent::new(code, modifiers));
+    let mut runtime = Runtime::new(&options(None));
+    // the first tab holds a conversation, so ctrl+n opens a second one
+    runtime.state.tabs[0].resuming = Some("S1".into());
+    for c in "hello world".chars() {
+        runtime.handle_terminal_event(key(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    runtime
+        .editor
+        .area_mut()
+        .move_cursor(ratatui_textarea::CursorMove::Jump(0, 5));
+    let cursor = runtime.editor.area().cursor();
+    runtime.handle_terminal_event(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+    assert_eq!(runtime.state.active, 1);
+    assert_eq!(runtime.editor.text(), "");
+    runtime.handle_terminal_event(key(KeyCode::Char('x'), KeyModifiers::NONE));
+    runtime.handle_terminal_event(key(KeyCode::Char('1'), KeyModifiers::ALT));
+    assert_eq!(runtime.state.active, 0);
+    assert_eq!(runtime.editor.text(), "hello world");
+    assert_eq!(
+        runtime.editor.area().cursor(),
+        cursor,
+        "typing resumes where it stopped"
+    );
+    runtime.handle_terminal_event(key(KeyCode::Char(','), KeyModifiers::NONE));
+    assert_eq!(runtime.editor.text(), "hello, world");
+    // the undo history came back with it
+    assert!(runtime.editor.area_mut().undo());
+    assert_eq!(runtime.editor.text(), "hello world");
+    // and the other tab's editor was kept as well
+    runtime.handle_terminal_event(key(KeyCode::Char('2'), KeyModifiers::ALT));
+    assert_eq!(runtime.editor.text(), "x");
+    assert_eq!(runtime.editor.area().cursor().1, 1);
 }

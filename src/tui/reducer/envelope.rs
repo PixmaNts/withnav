@@ -15,7 +15,7 @@ use crate::{
     tools::ToolStatus,
     tui::{
         protocol::ProtocolError,
-        state::{Activity, Block, BlockKind, State},
+        state::{Activity, Block, BlockKind, PermissionPrompt, State},
     },
 };
 use serde::Deserialize;
@@ -251,6 +251,92 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 settle_turn_tools(s, &actor, t, outcome);
             }
         }
+        Some(EventKind::PermissionRequested) => {
+            let v = e.payload;
+            let text = |key: &str| -> Result<String, ProtocolError> {
+                Ok(strip_controls(v[key].as_str().ok_or_else(bad)?))
+            };
+            let request_id = text("request_id")?;
+            let id = format!("permission:{request_id}");
+            if s.conversation.blocks.iter().any(|b| b.id == id) {
+                return Ok(());
+            }
+            let prompt = PermissionPrompt {
+                request_id,
+                tool_call_id: text("tool_call_id")?,
+                tool: text("tool")?,
+                arguments: text("arguments")?,
+                scope_kind: strip_controls(v["scope"]["kind"].as_str().ok_or_else(bad)?),
+                scope: strip_controls(v["scope"]["value"].as_str().ok_or_else(bad)?),
+                agent: strip_controls(v["agent"].as_str().unwrap_or_default()),
+                reason: strip_controls(v["reason"].as_str().unwrap_or_default()),
+                resolution: None,
+                message: None,
+                stale: false,
+            };
+            // A fresh request for the call just approved (it now lands
+            // elsewhere) replaces that prompt instead of adding a second one.
+            let retarget = s
+                .conversation
+                .blocks
+                .iter()
+                .rposition(|b| matches!(&b.kind, BlockKind::Permission(_)))
+                .filter(|&at| {
+                    matches!(
+                        &s.conversation.blocks[at].kind,
+                        BlockKind::Permission(old) if old.tool_call_id == prompt.tool_call_id
+                            && old.resolution.as_deref().is_none_or(|r| r.starts_with("allow"))
+                    )
+                })
+                .filter(|_| {
+                    let tool_id = format!("tool:{}", prompt.tool_call_id);
+                    !s.conversation.blocks.iter().any(|b| {
+                        b.id == tool_id
+                            && matches!(
+                                &b.kind,
+                                BlockKind::ToolCall {
+                                    status: Some(_),
+                                    ..
+                                }
+                            )
+                    })
+                });
+            s.conversation.open_permissions.push(id.clone());
+            match retarget {
+                Some(at) => {
+                    let old = std::mem::replace(
+                        &mut s.conversation.blocks[at],
+                        block(id, BlockKind::Permission(prompt)),
+                    );
+                    s.conversation
+                        .open_permissions
+                        .retain(|open| open != &old.id);
+                }
+                None => s
+                    .conversation
+                    .blocks
+                    .push(block(id, BlockKind::Permission(prompt))),
+            }
+            s.activity = Activity::AwaitingUser;
+        }
+        Some(EventKind::PermissionResolved) => {
+            let v = e.payload;
+            let request_id = v["request_id"].as_str().ok_or_else(bad)?;
+            let resolution = strip_controls(v["resolution"].as_str().ok_or_else(bad)?);
+            let id = format!("permission:{request_id}");
+            s.conversation.open_permissions.retain(|open| open != &id);
+            super::clear_answered(s, request_id);
+            if let Some(Block {
+                kind: BlockKind::Permission(prompt),
+                ..
+            }) = s.conversation.blocks.iter_mut().find(|b| b.id == id)
+            {
+                prompt.message = v["message"].as_str().map(strip_controls);
+                prompt.resolution = Some(resolution.clone());
+            }
+            let call_id = strip_controls(v["tool_call_id"].as_str().unwrap_or_default());
+            settle_held_tools(s, &call_id, &resolution);
+        }
         Some(EventKind::ContextCompacted) => {
             let v = e.payload;
             let tokens = |key: &str| crate::agent::context::tokens_k(v[key].as_u64().unwrap_or(0));
@@ -437,6 +523,11 @@ fn settle_turn_tools(s: &mut State, actor: &str, turn: &str, outcome: &str) {
         .get(&(actor.to_string(), turn.to_string()))
         .cloned()
         .unwrap_or_default();
+    // A turn that yields for a permission holds its gated call and the calls behind it: they run
+    // (or not) once the request is answered, so none of them is settled here.
+    if yielded && ids.iter().any(|id| open_permission_for(s, id)) {
+        return;
+    }
     for id in ids {
         if all || !s.conversation.pending_tools.contains_key(&id) {
             let bid = format!("tool:{id}");
@@ -450,6 +541,44 @@ fn settle_turn_tools(s: &mut State, actor: &str, turn: &str, outcome: &str) {
                     }
                 }
                 interrupt_block(b);
+            }
+        }
+    }
+}
+
+/// Whether an open permission request holds the tool call `call_id`.
+fn open_permission_for(s: &State, call_id: &str) -> bool {
+    s.conversation.blocks.iter().any(
+        |b| matches!(&b.kind, BlockKind::Permission(p) if p.is_open() && p.tool_call_id == call_id),
+    )
+}
+
+/// Settles the tools a permission request held, when the server sends no `tool.post_call` for
+/// them: a denied call is `Denied`; on a cancel or an expiry it and the calls behind it (still
+/// planned in the same turn) are `Interrupted`. An allowed call runs and reports itself.
+fn settle_held_tools(s: &mut State, call_id: &str, resolution: &str) {
+    let ids: Vec<String> = match resolution {
+        "deny" => vec![call_id.to_string()],
+        "cancelled" | "expired" => s
+            .conversation
+            .tools_by_turn
+            .values()
+            .find(|ids| ids.iter().any(|id| id == call_id))
+            .cloned()
+            .unwrap_or_default(),
+        _ => return,
+    };
+    for id in ids {
+        let bid = format!("tool:{id}");
+        if let Some(b) = s.conversation.blocks.iter_mut().find(|b| b.id == bid) {
+            if let BlockKind::ToolCall { status, .. } = &mut b.kind {
+                if status.is_none() {
+                    *status = Some(if resolution == "deny" {
+                        ToolStatus::Denied
+                    } else {
+                        ToolStatus::Interrupted
+                    });
+                }
             }
         }
     }

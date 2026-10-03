@@ -62,6 +62,8 @@ fn save_view(s: &mut State, ui: &UiState) {
 /// Brings the tab at `index` forward: its transcript position, and its draft in the editor.
 fn show(s: &mut State, ui: &mut UiState, index: usize) -> Vec<Effect> {
     save_view(s, ui);
+    // A deny message belongs to the request on screen.
+    ui.deny_message = None;
     s.active = index;
     s.unread = false;
     let view = s.view.clone();
@@ -117,6 +119,7 @@ fn blank_tab(s: &mut State, ui: &mut UiState) -> Option<Vec<Effect>> {
 /// Closes the active tab. The conversation is not stopped: the server keeps it, and a running turn
 /// goes on there. The last tab is replaced by a blank one.
 fn close_tab(s: &mut State, ui: &mut UiState) -> Vec<Effect> {
+    ui.deny_message = None;
     // A message sent while the conversation is still being created or resumed is held in the tab
     // until the server answers; closing now would drop it with no way to get it back.
     if s.pending_submit_text.is_some() {
@@ -337,6 +340,24 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             revision,
         } => run_command(s, name, arguments, revision),
         Action::ToggleAgent => toggle_agent(s),
+        Action::AnswerPermission { request_id, answer } => {
+            let open = s.open_permission().map(|p| p.request_id.clone());
+            let session = s.session.as_ref().map(|m| m.session_id.clone());
+            match (open, session) {
+                (Some(open), Some(session_id))
+                    if open == request_id
+                        && s.answered_permission.as_deref() != Some(request_id.as_str()) =>
+                {
+                    s.answered_permission = Some(request_id.clone());
+                    vec![Effect::AnswerPermission {
+                        session_id,
+                        request_id,
+                        answer,
+                    }]
+                }
+                _ => vec![],
+            }
+        }
         Action::ShowNotice(text) => {
             push_local(s, BlockKind::Notice(text));
             vec![]

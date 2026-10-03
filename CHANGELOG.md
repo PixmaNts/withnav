@@ -19,6 +19,20 @@ requests land in `develop`.
   key, no answer within 2 s, a call too large to send) becomes a permission request whose reason says
   why; for `plan` you can allow it once or deny it, and "allow folder" counts as once. `build` is
   unchanged, and its folder grants never reach `plan`. The guard is advisory, not a sandbox.
+- **Permission prompts in the terminal client**: when the agent asks before running `write`,
+  `edit`, `bash` or `fetch`, the conversation shows what it would do (the file and its first lines,
+  the change, the command or the URL) and where (in a folder, or to a site). Press `y` to allow it
+  once, `a` to allow it always for that folder or site, or `n` to deny it, then type an optional
+  reason for the agent and press enter (esc denies without one). The prompt then shows how it was
+  answered. If an allowed call now lands somewhere else, the new request replaces its prompt
+  instead of adding a second one. Once an answer is sent the prompt says "sent, waiting for the
+  server" and takes no other key; a request the server no longer waits on is shown muted as "no
+  longer waiting". A deny message stays with the request it was started on. When the prompt is
+  scrolled out of view, the first `y`, `a` or `n` brings it back and the next one answers. The
+  preview reads the call's own arguments, so a large file still shows its path and first lines,
+  and control characters are written out. A tab waiting for your answer shows `waiting` in the tab bar, and the status line says
+  `permission needed`. Typing a message instead cancels the request rather than approving it, so the
+  first enter warns you and a second one sends it.
 - **Permission gate**: a session that runs as an agent asks before it runs `write`, `edit`, `bash`
   or `fetch`; `read`, `grep`, `glob`, `skill` and `ask` never ask. The call does not run: the turn
   yields with a durable `permission.requested` `{request_id, tool_call_id, tool, arguments (at most

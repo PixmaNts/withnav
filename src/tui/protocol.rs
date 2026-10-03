@@ -115,6 +115,21 @@ pub struct StopResponse {
     pub accepted: bool,
     pub actor_state: String,
 }
+/// `POST /v1/sessions/{id}/permissions/{request_id}` body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionAnswer {
+    /// `allow_once`, `allow_folder` or `deny`.
+    pub decision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+/// Why a permission answer was not taken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnswerError {
+    /// The request is no longer waiting (answered, cancelled, expired).
+    Stale,
+    Other(String),
+}
 /// One command the server runs for a session (`GET /v1/commands`).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ServerCommand {
@@ -193,6 +208,12 @@ pub enum ClientEvent {
         revision: u64,
         result: Result<SubmitResponse, String>,
     },
+    /// A permission answer came back.
+    PermissionAnswered {
+        generation: Generation,
+        request_id: String,
+        result: Result<(), AnswerError>,
+    },
     /// The server's command list.
     Commands {
         generation: Generation,
@@ -262,6 +283,11 @@ pub enum Action {
     /// A row of the variant list: a variant name, or `off` for none. What it applies to is the
     /// list's `UiState::variant_pick`.
     PickVariant(String),
+    /// Answers the open permission request of the active tab.
+    AnswerPermission {
+        request_id: String,
+        answer: PermissionAnswer,
+    },
     /// Shows a notice in the active conversation; nothing else happens.
     ShowNotice(String),
     /// Switches the active conversation between the build and plan agents.
@@ -289,6 +315,13 @@ pub enum Effect {
     ListSessions,
     /// Reads the server's command list.
     FetchCommands,
+    /// Sends a decision on a permission request; the outcome comes back as
+    /// `ClientEvent::PermissionAnswered`.
+    AnswerPermission {
+        session_id: String,
+        request_id: String,
+        answer: PermissionAnswer,
+    },
     /// Runs a command in a session; the outcome comes back as `ClientEvent::CommandRan`.
     RunCommand {
         session_id: String,

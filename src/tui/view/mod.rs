@@ -1,5 +1,6 @@
 //! Draws the terminal UI without mutating the conversation projection.
 mod markdown;
+mod permission;
 mod pickers;
 pub mod sidebar;
 mod status;
@@ -22,6 +23,8 @@ use ratatui::{
 #[derive(Debug, Default)]
 pub struct RenderCache {
     markdown: std::collections::HashMap<u64, markdown::MarkdownCache>,
+    /// The open permission request whose keys line was on screen at the last draw.
+    pub prompt_shown: Option<String>,
 }
 
 fn shorten(path: &str, width: usize) -> String {
@@ -77,6 +80,7 @@ pub fn draw(
     let area = frame.area();
     frame.buffer_mut().set_style(area, theme.base());
     if area.width < 24 || area.height < 9 {
+        cache.prompt_shown = None;
         let bottom = area.bottom().saturating_sub(3);
         frame.render_widget(
             Paragraph::new(" resize terminal to see conversation").style(theme.warning()),
@@ -157,7 +161,7 @@ pub fn draw(
         Paragraph::new("─".repeat(usize::from(area.width))).style(theme.border()),
         rule,
     );
-    transcript::draw(frame, transcript, state, ui, &theme, markdown);
+    cache.prompt_shown = transcript::draw(frame, transcript, state, ui, &theme, markdown);
     frame.render_widget(
         Paragraph::new("─".repeat(usize::from(area.width))).style(theme.border()),
         separator,
@@ -190,7 +194,18 @@ pub fn draw(
             hints,
         );
     } else {
-        let hint = " enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help";
+        // An answered request takes no keys: the usual hints come back.
+        let answerable = state
+            .open_permission()
+            .filter(|p| state.answered_permission.as_deref() != Some(p.request_id.as_str()));
+        let draft = answerable.and_then(|p| ui.deny_draft(&p.request_id));
+        let hint = match (answerable, draft) {
+            (Some(_), Some(_)) => " enter deny with this message  esc deny without one",
+            (Some(_), None) if editor.text().is_empty() => {
+                " y allow once  a always  n deny  esc stop  ctrl+p commands"
+            }
+            _ => " enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help",
+        };
         frame.render_widget(Paragraph::new(Line::from(hint_spans(hint, &theme))), hints);
     }
     pickers::draw(frame, full, state, ui, &theme);

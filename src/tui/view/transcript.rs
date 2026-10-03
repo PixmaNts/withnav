@@ -1,5 +1,6 @@
 use super::{
     markdown::{self, MarkdownCache},
+    permission::Keys,
     tool,
 };
 use crate::tui::{
@@ -52,6 +53,7 @@ impl Origin {
 
 fn block_text(
     block: &Block,
+    state: &State,
     ui: &UiState,
     theme: &Theme,
     cache: &mut MarkdownCache,
@@ -175,6 +177,35 @@ fn block_text(
                     .map(|s| Line::styled(format!(" {s}"), body)),
             );
         }
+        BlockKind::Permission(prompt) => {
+            let open = state.open_permission().map(|p| p.request_id.as_str())
+                == Some(prompt.request_id.as_str());
+            let keys = if !open {
+                Keys::Inactive
+            } else if state.answered_permission.as_deref() == Some(prompt.request_id.as_str()) {
+                Keys::Sent
+            } else if let Some(message) = ui.deny_draft(&prompt.request_id) {
+                Keys::Denying(message)
+            } else {
+                Keys::Ready
+            };
+            let tool_id = format!("tool:{}", prompt.tool_call_id);
+            let call = state
+                .conversation
+                .blocks
+                .iter()
+                .find_map(|b| match &b.kind {
+                    BlockKind::ToolCall { args, .. } if b.id == tool_id => Some(args),
+                    _ => None,
+                });
+            lines.extend(super::permission::lines(
+                prompt,
+                call,
+                keys,
+                theme,
+                usize::from(width.saturating_sub(2)),
+            ));
+        }
         BlockKind::Notice(notice) => {
             lines.push(Line::styled(
                 "NOTICE",
@@ -193,6 +224,7 @@ fn block_text(
     Text::from(lines)
 }
 
+/// Draws the transcript; returns the open permission request whose keys line is on screen.
 pub fn draw(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -200,10 +232,12 @@ pub fn draw(
     ui: &UiState,
     theme: &Theme,
     cache: &mut MarkdownCache,
-) {
+) -> Option<String> {
     if area.width < 4 || area.height == 0 {
-        return;
+        return None;
     }
+    let open = state.open_permission().map(|p| p.request_id.as_str());
+    let mut shown = None;
     let width = area.width.saturating_sub(3);
     let blocks: Vec<_> = state
         .conversation
@@ -265,6 +299,10 @@ pub fn draw(
                     }
                 }
                 BlockKind::Message { .. } => 2,
+                // One row per line: the prompt cuts its lines to the width.
+                BlockKind::Permission(_) => {
+                    block_text(b, state, ui, theme, cache, width).lines.len() + 1
+                }
                 BlockKind::YieldQuestion(s)
                 | BlockKind::Error(s)
                 | BlockKind::Notice(s)
@@ -313,13 +351,21 @@ pub fn draw(
     for (block, height) in blocks {
         let from = cursor;
         cursor += height;
+        if let BlockKind::Permission(p) = &block.kind {
+            // The keys line is the prompt's last; a blank row follows it.
+            let keys_row = cursor.saturating_sub(2);
+            if open == Some(p.request_id.as_str()) && (start..start + viewport).contains(&keys_row)
+            {
+                shown = Some(p.request_id.clone());
+            }
+        }
         if cursor <= start || from >= start + viewport {
             continue;
         }
         if height == 0 {
             continue;
         }
-        let text = block_text(block, ui, theme, cache, width);
+        let text = block_text(block, state, ui, theme, cache, width);
         let skipped = start.saturating_sub(from);
         let top = from.saturating_sub(start);
         let visible = height.saturating_sub(skipped).min(viewport - top);
@@ -335,6 +381,8 @@ pub fn draw(
                 Origin::Other => theme.subagent(),
             },
             BlockKind::Command { ok: false, .. } => theme.error(),
+            BlockKind::Permission(p) if p.is_open() => theme.accent_line(),
+            BlockKind::Permission(_) => theme.border(),
             BlockKind::Notice(_) | BlockKind::Command { .. } | BlockKind::ToolCall { .. } => {
                 theme.border()
             }
@@ -365,4 +413,5 @@ pub fn draw(
             rect,
         );
     }
+    shown
 }

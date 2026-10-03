@@ -26,7 +26,9 @@ pub use command::{outcome_text, tokens};
 pub use text::strip_controls;
 
 use super::{
-    protocol::{ClientEvent, Effect, Generation, ProtocolError, SessionMetadata, SubmitRequest},
+    protocol::{
+        AnswerError, ClientEvent, Effect, Generation, ProtocolError, SessionMetadata, SubmitRequest,
+    },
     state::{Activity, Block, BlockKind, ConnectionStatus, State},
 };
 
@@ -46,6 +48,7 @@ pub fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::Context { generation, .. }
         | ClientEvent::Submitted { generation, .. }
         | ClientEvent::Commands { generation, .. }
+        | ClientEvent::PermissionAnswered { generation, .. }
         | ClientEvent::CommandRan { generation, .. }
         | ClientEvent::Stopped { generation, .. }
         | ClientEvent::DeliveryUncertain { generation }
@@ -58,6 +61,13 @@ pub(crate) fn block(id: impl Into<String>, kind: BlockKind) -> Block {
     Block {
         id: id.into(),
         kind,
+    }
+}
+
+/// Forgets that an answer was sent for `request_id`, if it was the one.
+pub(crate) fn clear_answered(s: &mut State, request_id: &str) {
+    if s.answered_permission.as_deref() == Some(request_id) {
+        s.answered_permission = None;
     }
 }
 
@@ -224,6 +234,48 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                         tab.selected_model_alias = default.clone();
                     }
                     refresh_tab_model(catalog, tab);
+                }
+            }
+        }
+        ClientEvent::PermissionAnswered {
+            request_id, result, ..
+        } => {
+            match result {
+                // The request stays answered until `permission.resolved` arrives on the stream
+                // (which may already have come).
+                Ok(()) => {}
+                Err(AnswerError::Stale) => {
+                    clear_answered(s, &request_id);
+                    // Not a decision: the prompt is marked, the server's resolution says how
+                    // it ended when it arrives.
+                    let id = format!("permission:{request_id}");
+                    s.conversation.open_permissions.retain(|open| open != &id);
+                    if let Some(BlockKind::Permission(p)) = s
+                        .conversation
+                        .blocks
+                        .iter_mut()
+                        .find(|b| b.id == id)
+                        .map(|b| &mut b.kind)
+                    {
+                        p.stale = true;
+                    }
+                    push_local(
+                        s,
+                        BlockKind::Notice(
+                            "that permission request was no longer waiting; nothing was changed"
+                                .into(),
+                        ),
+                    );
+                }
+                Err(AnswerError::Other(error)) => {
+                    // Not taken: the keys answer it again.
+                    clear_answered(s, &request_id);
+                    push_local(
+                        s,
+                        BlockKind::Notice(format!(
+                            "the answer to the permission request did not reach the server: {error}"
+                        )),
+                    )
                 }
             }
         }

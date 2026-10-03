@@ -44,6 +44,8 @@ pub enum BlockKind {
     YieldQuestion(String),
     Error(String),
     Notice(String),
+    /// A gated tool call waiting for the driver's decision, then how it ended.
+    Permission(PermissionPrompt),
     /// The outcome of a server command: its name, whether it ran, and what it answered.
     Command {
         name: String,
@@ -51,6 +53,36 @@ pub enum BlockKind {
         text: String,
     },
 }
+/// What a permission request asks and, once it ended, how.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PermissionPrompt {
+    pub request_id: String,
+    pub tool_call_id: String,
+    pub tool: String,
+    /// The call's arguments as JSON text, cut by the server to 4 KiB.
+    pub arguments: String,
+    /// `folder` or `origin`.
+    pub scope_kind: String,
+    /// The folder path or the `scheme://host[:port]` origin.
+    pub scope: String,
+    pub agent: String,
+    pub reason: String,
+    /// `None` while open; then `allow_once`, `allow_folder`, `deny`, `cancelled` or `expired`.
+    pub resolution: Option<String>,
+    /// What a denial told the model.
+    pub message: Option<String>,
+    /// The server said the request was no longer waiting (409) before its `permission.resolved`
+    /// arrived: it takes no answer, and how it ended is not known yet.
+    pub stale: bool,
+}
+
+impl PermissionPrompt {
+    /// Whether the request still waits for an answer: every "open" check goes through here.
+    pub fn is_open(&self) -> bool {
+        self.resolution.is_none() && !self.stale
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
     pub id: String,
@@ -83,6 +115,8 @@ pub struct Conversation {
     pub counted_steps: std::collections::HashSet<(String, String, String)>,
     pub pending_tools: HashMap<String, String>,
     pub pending_tool_fragments: HashMap<String, String>,
+    /// Block ids of the permission requests still open, oldest first.
+    pub open_permissions: Vec<String>,
     /// Key of the last `llm.response` seen (the turn-end usage fallback).
     pub last_response_step: Option<(String, String, String)>,
 }
@@ -139,6 +173,9 @@ pub struct Tab {
     /// The variant chosen in the model picker for a conversation not created yet: `None` leaves
     /// the alias's default, `Some(None)` asks for none.
     pub start_variant: Option<Option<String>>,
+    /// The request an answer was sent for, until `permission.resolved` ends it (or the answer
+    /// did not reach the server): its keys are ignored meanwhile, another request's are not.
+    pub answered_permission: Option<String>,
     /// Something arrived while another tab was shown.
     pub unread: bool,
     /// The editor text while another tab is shown, and the editor revision it was saved at.
@@ -156,6 +193,16 @@ pub const DEFAULT_AGENT: &str = "build";
 pub const PLAN_AGENT: &str = "plan";
 
 impl Tab {
+    /// The oldest permission request still open, if any.
+    pub fn open_permission(&self) -> Option<&PermissionPrompt> {
+        self.conversation.open_permissions.iter().find_map(|id| {
+            self.conversation.blocks.iter().find_map(|b| match &b.kind {
+                BlockKind::Permission(p) if &b.id == id && p.is_open() => Some(p),
+                _ => None,
+            })
+        })
+    }
+
     /// The primary agent's name for display.
     pub fn agent_name(&self) -> &str {
         self.agent.as_deref().unwrap_or(DEFAULT_AGENT)
@@ -262,6 +309,23 @@ pub enum VariantPick {
 /// The word for "no variant" in the list and in `/variant off`.
 pub const NO_VARIANT: &str = "off";
 
+/// A deny message being typed, for one permission request only.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DenyDraft {
+    pub request_id: String,
+    pub text: String,
+}
+
+impl UiState {
+    /// The deny message typed for `request_id`, if that is the request it was started on.
+    pub fn deny_draft(&self, request_id: &str) -> Option<&str> {
+        self.deny_message
+            .as_ref()
+            .filter(|d| d.request_id == request_id)
+            .map(|d| d.text.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Focus {
     #[default]
@@ -285,6 +349,12 @@ pub struct UiState {
     pub theme: crate::tui::theme::ThemeId,
     /// The theme in effect when the theme picker opened; `esc` goes back to it.
     pub theme_on_open: Option<crate::tui::theme::ThemeId>,
+    /// Enter was pressed once on a message while this permission request (id, editor revision)
+    /// was open: a second enter on the same text sends it.
+    pub send_over_permission: Option<(String, u64)>,
+    /// The message being typed after `n` on a permission prompt, with the request it denies;
+    /// `None` when not denying.
+    pub deny_message: Option<DenyDraft>,
     /// The command palette was opened by typing `/` in the editor: the editor holds the line and
     /// the filter follows it.
     pub palette_typed: bool,
@@ -292,4 +362,8 @@ pub struct UiState {
     pub variant_pick: Option<VariantPick>,
     /// The tab sidebar is hidden by the driver (it also hides itself on narrow terminals).
     pub sidebar_hidden: bool,
+    /// The open permission request whose keys were on screen at the last draw. For any other
+    /// (scrolled away, or not drawn yet), the first `y`, `a` or `n` brings it into view instead
+    /// of answering it.
+    pub prompt_shown: Option<String>,
 }

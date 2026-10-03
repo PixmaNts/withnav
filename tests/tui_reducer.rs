@@ -2965,3 +2965,380 @@ fn picking_a_model_while_a_conversation_is_being_created_opens_another_tab() {
     assert_eq!((s.tabs.len(), s.active), (2, 1));
     assert_eq!(s.tabs[0].resuming.as_deref(), Some("S9"));
 }
+
+// ---------------------------------------------------------------- permission requests
+
+/// A turn whose `write` call waits for a decision: llm.response with the call, then
+/// permission.requested and the yielded turn end, built from the server's own types.
+fn permission_script(request: u128) -> Script {
+    let mut s = Script::new();
+    s.start().user("write a.txt").turn_start(1);
+    s.response(
+        1,
+        1,
+        "",
+        "",
+        vec![call(
+            "w1",
+            "write",
+            json!({"path": "/ws/a.txt", "content": "one\ntwo"}),
+        )],
+        Some(usage(10, 2)),
+    );
+    s.push(
+        EventKind::PermissionRequested,
+        &PermissionRequested {
+            request_id: Ulid(request),
+            tool_call_id: "w1".into(),
+            tool: "write".into(),
+            arguments: json!({"path": "/ws/a.txt", "content": "one\ntwo"}).to_string(),
+            scope: navai::agent::permissions::Scope::Folder("/ws".into()),
+            agent: "build".into(),
+            reason: "write changes a file".into(),
+        },
+    );
+    s.turn_end(1, TurnEndOutcome::Yielded, None);
+    s
+}
+
+fn resolved(s: &mut Script, request: u128, resolution: PermissionResolution) {
+    s.push(
+        EventKind::PermissionResolved,
+        &PermissionResolved {
+            request_id: Ulid(request),
+            tool_call_id: "w1".into(),
+            resolution,
+        },
+    );
+}
+
+#[test]
+fn a_permission_request_is_open_until_resolved_live_and_on_replay() {
+    let script = permission_script(77);
+    let mut s = st();
+    feed(&mut s, &script.out);
+    let open = s.open_permission().expect("an open request");
+    assert_eq!(open.request_id, Ulid(77).to_string());
+    assert_eq!(
+        (
+            open.tool.as_str(),
+            open.scope_kind.as_str(),
+            open.scope.as_str()
+        ),
+        ("write", "folder", "/ws")
+    );
+    assert_eq!(s.activity, Activity::AwaitingUser);
+    assert_eq!(
+        tool(&s, "w1").status,
+        None,
+        "the held call is not settled by the yield"
+    );
+    // replay from the start gives the same open request
+    let mut again = st();
+    feed(&mut again, &script.out);
+    assert_eq!(again.conversation.blocks, s.conversation.blocks);
+    assert_eq!(again.open_permission(), s.open_permission());
+    // the same event twice adds nothing
+    let mut twice = st();
+    let mut dup = script.out.clone();
+    let mut copy = dup[dup.len() - 2].clone();
+    copy.seq = 999;
+    dup.push(copy);
+    feed(&mut twice, &dup);
+    assert_eq!(twice.conversation.open_permissions.len(), 1);
+
+    // resolved: no longer open, and the block says how
+    let mut script = permission_script(77);
+    resolved(&mut script, 77, PermissionResolution::AllowOnce);
+    let mut s = st();
+    feed(&mut s, &script.out);
+    assert!(s.open_permission().is_none());
+    assert!(s.conversation.blocks.iter().any(|b| matches!(
+        &b.kind,
+        BlockKind::Permission(p) if p.resolution.as_deref() == Some("allow_once")
+    )));
+}
+
+#[test]
+fn a_denial_or_a_cancel_settles_the_held_call() {
+    let mut script = permission_script(5);
+    resolved(
+        &mut script,
+        5,
+        PermissionResolution::Deny {
+            message: "not that file".into(),
+        },
+    );
+    let mut s = st();
+    feed(&mut s, &script.out);
+    assert_eq!(tool(&s, "w1").status, Some(ToolStatus::Denied));
+    assert!(s.conversation.blocks.iter().any(|b| matches!(
+        &b.kind,
+        BlockKind::Permission(p) if p.resolution.as_deref() == Some("deny")
+            && p.message.as_deref() == Some("not that file")
+    )));
+    let mut script = permission_script(6);
+    resolved(&mut script, 6, PermissionResolution::Cancelled);
+    let mut s = st();
+    feed(&mut s, &script.out);
+    assert_eq!(tool(&s, "w1").status, Some(ToolStatus::Interrupted));
+    assert!(s.open_permission().is_none());
+}
+
+#[test]
+fn a_fresh_request_after_a_retarget_replaces_the_prompt_for_that_call() {
+    // allowed, but the call now lands elsewhere: the server asks again for w1
+    let mut script = permission_script(10);
+    resolved(&mut script, 10, PermissionResolution::AllowOnce);
+    script.turn_start(2);
+    script.push(
+        EventKind::PermissionRequested,
+        &PermissionRequested {
+            request_id: Ulid(11),
+            tool_call_id: "w1".into(),
+            tool: "write".into(),
+            arguments: json!({"path": "/elsewhere/a.txt", "content": "one\ntwo"}).to_string(),
+            scope: navai::agent::permissions::Scope::Folder("/elsewhere".into()),
+            agent: "build".into(),
+            reason: "write changes a file".into(),
+        },
+    );
+    script.turn_end(2, TurnEndOutcome::Yielded, None);
+    let mut s = st();
+    feed(&mut s, &script.out);
+    let prompts: Vec<_> = s
+        .conversation
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.kind {
+            BlockKind::Permission(p) => Some(p),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(prompts.len(), 1, "one prompt for w1, not two");
+    assert_eq!(prompts[0].request_id, Ulid(11).to_string());
+    assert_eq!(prompts[0].scope, "/elsewhere");
+    assert_eq!(prompts[0].resolution, None);
+    assert_eq!(
+        s.open_permission().map(|p| p.request_id.clone()),
+        Some(Ulid(11).to_string())
+    );
+    assert_eq!(s.conversation.open_permissions.len(), 1);
+    // replay gives the same single prompt
+    let mut again = st();
+    feed(&mut again, &script.out);
+    assert_eq!(again.conversation.blocks, s.conversation.blocks);
+
+    // a denied call asked again later (a new turn reusing the id) keeps its record
+    let mut script = permission_script(20);
+    resolved(
+        &mut script,
+        20,
+        PermissionResolution::Deny {
+            message: "no".into(),
+        },
+    );
+    script.push(
+        EventKind::PermissionRequested,
+        &PermissionRequested {
+            request_id: Ulid(21),
+            tool_call_id: "w1".into(),
+            tool: "write".into(),
+            arguments: "{}".into(),
+            scope: navai::agent::permissions::Scope::Folder("/ws".into()),
+            agent: "build".into(),
+            reason: String::new(),
+        },
+    );
+    let mut s = st();
+    feed(&mut s, &script.out);
+    let count = s
+        .conversation
+        .blocks
+        .iter()
+        .filter(|b| matches!(b.kind, BlockKind::Permission(_)))
+        .count();
+    assert_eq!(count, 2);
+}
+
+#[test]
+fn a_background_tab_with_an_open_request_waits_and_is_unread() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    let first = s.generation.clone();
+    handle_action(&mut s, &mut ui, Action::NewConversation);
+    for e in permission_script(9).out {
+        update(
+            &mut s,
+            ClientEvent::Envelope {
+                generation: first.clone(),
+                envelope: e,
+            },
+        )
+        .unwrap();
+    }
+    let background = &s.tabs[0];
+    assert!(background.open_permission().is_some());
+    assert!(background.unread);
+    assert_eq!(navai::tui::view::sidebar::tab_state(background), "waiting");
+    assert!(s.open_permission().is_none(), "the tab on screen has none");
+}
+
+fn answer_effects(s: &mut State, ui: &mut UiState, request: u128, decision: &str) -> Vec<Effect> {
+    handle_action(
+        s,
+        ui,
+        Action::AnswerPermission {
+            request_id: Ulid(request).to_string(),
+            answer: PermissionAnswer {
+                decision: decision.into(),
+                message: None,
+            },
+        },
+    )
+}
+
+#[test]
+fn an_accepted_answer_waiting_for_its_resolution_is_not_sent_again() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    feed(&mut s, &permission_script(30).out);
+    assert_eq!(answer_effects(&mut s, &mut ui, 30, "allow_once").len(), 1);
+    // the server took it; permission.resolved is late
+    let ok = ClientEvent::PermissionAnswered {
+        generation: s.generation.clone(),
+        request_id: Ulid(30).to_string(),
+        result: Ok(()),
+    };
+    update(&mut s, ok).unwrap();
+    for decision in ["allow_once", "allow_folder", "deny"] {
+        assert!(answer_effects(&mut s, &mut ui, 30, decision).is_empty());
+    }
+    // the resolution ends it; a fresh request is answerable at once
+    let mut script = permission_script(30);
+    resolved(&mut script, 30, PermissionResolution::AllowOnce);
+    script.turn_start(2);
+    script.push(
+        EventKind::PermissionRequested,
+        &PermissionRequested {
+            request_id: Ulid(31),
+            tool_call_id: "w1".into(),
+            tool: "write".into(),
+            arguments: "{}".into(),
+            scope: navai::agent::permissions::Scope::Folder("/other".into()),
+            agent: "build".into(),
+            reason: String::new(),
+        },
+    );
+    let skip = permission_script(30).out.len();
+    feed(&mut s, &script.out[skip..]);
+    assert!(s.answered_permission.is_none());
+    assert_eq!(answer_effects(&mut s, &mut ui, 31, "allow_once").len(), 1);
+}
+
+#[test]
+fn a_resolution_before_the_http_reply_leaves_nothing_answered() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    let mut script = permission_script(40);
+    let skip = script.out.len();
+    resolved(&mut script, 40, PermissionResolution::AllowOnce);
+    feed(&mut s, &script.out[..skip]);
+    assert_eq!(answer_effects(&mut s, &mut ui, 40, "allow_once").len(), 1);
+    feed(&mut s, &script.out[skip..]);
+    assert!(s.open_permission().is_none());
+    let ok = ClientEvent::PermissionAnswered {
+        generation: s.generation.clone(),
+        request_id: Ulid(40).to_string(),
+        result: Ok(()),
+    };
+    update(&mut s, ok).unwrap();
+    assert!(s.answered_permission.is_none());
+    assert!(answer_effects(&mut s, &mut ui, 40, "allow_once").is_empty());
+    assert!(s.conversation.blocks.iter().any(|b| matches!(
+        &b.kind,
+        BlockKind::Permission(p) if p.resolution.as_deref() == Some("allow_once")
+    )));
+}
+
+#[test]
+fn answering_posts_once_and_a_stale_answer_drops_the_prompt_with_a_notice() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    feed(&mut s, &permission_script(3).out);
+    let request_id = Ulid(3).to_string();
+    let answer = || Action::AnswerPermission {
+        request_id: request_id.clone(),
+        answer: PermissionAnswer {
+            decision: "allow_once".into(),
+            message: None,
+        },
+    };
+    let fx = handle_action(&mut s, &mut ui, answer());
+    assert_eq!(
+        fx,
+        vec![Effect::AnswerPermission {
+            session_id: "S1".into(),
+            request_id: request_id.clone(),
+            answer: PermissionAnswer {
+                decision: "allow_once".into(),
+                message: None,
+            },
+        }]
+    );
+    assert!(
+        handle_action(&mut s, &mut ui, answer()).is_empty(),
+        "one answer in flight at a time"
+    );
+    // accepted: the prompt stays until permission.resolved arrives
+    let ok = ClientEvent::PermissionAnswered {
+        generation: s.generation.clone(),
+        request_id: request_id.clone(),
+        result: Ok(()),
+    };
+    update(&mut s, ok).unwrap();
+    assert!(s.open_permission().is_some());
+    assert!(
+        handle_action(&mut s, &mut ui, answer()).is_empty(),
+        "still answered until the server ends it"
+    );
+    // stale: dropped with a short notice
+    let stale = ClientEvent::PermissionAnswered {
+        generation: s.generation.clone(),
+        request_id: request_id.clone(),
+        result: Err(AnswerError::Stale),
+    };
+    update(&mut s, stale).unwrap();
+    assert!(s.open_permission().is_none());
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Notice(n) if n.contains("no longer waiting")
+    ));
+    let prompt = |s: &State| {
+        s.conversation
+            .blocks
+            .iter()
+            .find_map(|b| match &b.kind {
+                BlockKind::Permission(p) => Some(p.clone()),
+                _ => None,
+            })
+            .unwrap()
+    };
+    // marked locally, not given a decision the server did not send
+    let marked = prompt(&s);
+    assert!(marked.stale && !marked.is_open());
+    assert_eq!(marked.resolution, None);
+    assert!(handle_action(&mut s, &mut ui, answer()).is_empty());
+    // the server's resolution, arriving later, says how it ended
+    let mut script = permission_script(3);
+    let skip = script.out.len();
+    resolved(&mut script, 3, PermissionResolution::Cancelled);
+    feed(&mut s, &script.out[skip..]);
+    assert_eq!(prompt(&s).resolution.as_deref(), Some("cancelled"));
+    assert_eq!(tool(&s, "w1").status, Some(ToolStatus::Interrupted));
+    // an answer for another request than the open one sends nothing
+    let mut other = st();
+    created_now(&mut other, "S2").unwrap();
+    feed(&mut other, &permission_script(4).out);
+    assert!(handle_action(&mut other, &mut ui, answer()).is_empty());
+}

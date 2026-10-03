@@ -38,6 +38,15 @@ impl Service {
                 .child_link(row.meta.id)
                 .await
                 .map_err(ServerError::History)?;
+            if link.is_none()
+                && self
+                    .unpublished_children
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains(&row.meta.id)
+            {
+                continue;
+            }
             listings.push(SessionListing {
                 live: matches!(
                     self.handle(row.meta.id),

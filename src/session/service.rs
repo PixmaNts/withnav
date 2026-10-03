@@ -215,6 +215,7 @@ pub struct Service {
     /// being stopped or deleted. One client, so one gate for the service.
     gate: Arc<tokio::sync::Mutex<()>>,
     pub(super) subagent_slots: Arc<Mutex<HashMap<SessionId, usize>>>,
+    pub(super) unpublished_children: Arc<Mutex<std::collections::HashSet<SessionId>>>,
     catalog: crate::provider::catalog::ModelCatalog,
     /// Test seam: parks a command run between its work and the publication
     /// of its result, to interleave lifecycle changes deterministically.
@@ -250,6 +251,7 @@ impl Service {
             hooks,
             gate: Arc::new(tokio::sync::Mutex::new(())),
             subagent_slots: Arc::default(),
+            unpublished_children: Arc::default(),
             catalog,
             #[cfg(test)]
             install_barrier: Arc::default(),
@@ -411,17 +413,10 @@ impl Service {
             self.reset_child_slots_for_delete(parent).await?;
             return Err(ServerError::History(error));
         }
-        if let Some(handle) = self.handle(child) {
-            // The parent is immutable after publication; replacing the
-            // registry handle is safe before exposing the returned id.
-            self.lock_sessions().insert(
-                child,
-                SessionHandle {
-                    parent_session_id: Some(parent),
-                    ..handle
-                },
-            );
-        }
+        self.unpublished_children
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&child);
         let start_result = if let Some(handle) = self.handle(child) {
             accept(&handle, Command::child_prompt(child, prompt.to_string()))
                 .await
@@ -1234,6 +1229,12 @@ impl Service {
         // History hooks: a persisting emitter + a turn-end transcript
         // snapshot.
         let history = self.history.clone();
+        if child_parent.is_some() {
+            self.unpublished_children
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(session_id);
+        }
         // Acknowledged: a session whose row cannot be written would
         // silently lose every later event and snapshot.
         history
@@ -1379,25 +1380,27 @@ impl Service {
             workspace: workspace.clone(),
             selected: selected_model,
             status,
-            parent_session_id: None,
+            parent_session_id: child_parent,
         };
         let sender = SessionSender::new(session_id, handle.clone());
         let cancel = handle.session_cancel.clone();
         self.lock_sessions().insert(session_id, handle);
         // The host learns of the session once it is routable. A session
         // already closing hands back a subscription that ends at once.
-        if let Ok(subscription) = self.subscribe(session_id, None).await {
-            self.hooks.started(
-                StartedSession {
-                    id: session_id,
-                    profile: profile.map(str::to_string),
-                    workspace,
-                    resumed: is_resume,
-                },
-                sender,
-                subscription,
-                cancel,
-            );
+        if child_parent.is_none() {
+            if let Ok(subscription) = self.subscribe(session_id, None).await {
+                self.hooks.started(
+                    StartedSession {
+                        id: session_id,
+                        profile: profile.map(str::to_string),
+                        workspace,
+                        resumed: is_resume,
+                    },
+                    sender,
+                    subscription,
+                    cancel,
+                );
+            }
         }
         Ok(session_id)
     }

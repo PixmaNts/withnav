@@ -422,6 +422,8 @@ async fn a_deferred_compact_refused_after_an_ask_keeps_its_operation_id() {
 
     let results = compact_results(&state, id).await;
     assert_eq!(results.len(), 2, "{results:?}");
+    assert_eq!(results[0].payload["ok"], true, "the acceptance comes first");
+    assert_eq!(results[0].payload["data"]["accepted"], true);
     assert_eq!(results[1].payload["ok"], false);
     assert_eq!(
         results[1].payload["operation_id"],
@@ -433,4 +435,52 @@ async fn a_deferred_compact_refused_after_an_ask_keeps_its_operation_id() {
         .contains("waiting for an answer"));
     assert_eq!(provider.bodies().len(), 1, "no summary request");
     assert!(stored(&state, id, "context.compacted").await.is_empty());
+}
+
+// Given an idle /compact whose summary request is still in flight
+// When /agent plan and /variant are run
+// Then both are refused as a compaction is running, and the gauge after the
+//      commit still counts the build role
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agent_change_during_a_summary_is_refused_and_the_gauge_keeps_the_role() {
+    let (tmp, ws) = tmp_ws();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let provider = spawn_gated_provider(vec![answer(SUMMARY)], release.clone()).await;
+    let state = state(tmp.path(), &provider);
+    let id = seeded(&state, &ws, 4).await;
+    let system = |snapshot: Value| {
+        snapshot["breakdown"]["system"]
+            .as_u64()
+            .expect("system tokens")
+    };
+    let before = serde_json::to_value(state.context(id).await.unwrap()).unwrap();
+    let sub = state.subscribe(id, None).await.unwrap();
+
+    let compacting = {
+        let state = state.clone();
+        tokio::spawn(async move { state.run_command(id, "compact", "").await })
+    };
+    common::server::wait_for("the summary request", || provider.bodies().len() == 1).await;
+
+    for command in ["agent", "variant"] {
+        let arguments = if command == "agent" { "plan" } else { "off" };
+        let refused = state.run_command(id, command, arguments).await.unwrap();
+        assert!(!refused.ok, "{command}: {refused:?}");
+        assert!(
+            refused.error.unwrap().contains("a compaction is running"),
+            "{command}"
+        );
+    }
+
+    release.notify_one();
+    let out = compacting.await.unwrap().unwrap();
+    assert!(out.ok, "{out:?}");
+    let live = collect_until(sub, |e| e.kind == "context.compacted").await;
+    assert!(live.iter().any(|e| e.kind == "context.compacted"));
+    let after = serde_json::to_value(state.context(id).await.unwrap()).unwrap();
+    assert_eq!(system(after.clone()), system(before), "{after}");
+
+    // Once it is over, the change goes through.
+    let switched = state.run_command(id, "agent", "plan").await.unwrap();
+    assert!(switched.ok, "{switched:?}");
 }

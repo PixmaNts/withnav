@@ -316,8 +316,9 @@ impl HistoryStore {
     ) -> Result<(), String> {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
-            let inserted = conn.execute(
+            let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            let inserted = tx.execute(
                 "INSERT INTO child_links (parent_id, child_id, agent, goal, policy_snapshot, status, created_at)
                  SELECT ?1, ?2, ?3, ?4, ?5, 'running', ?6
                  WHERE (SELECT COUNT(*) FROM child_links WHERE parent_id=?1 AND status IN ('starting','running')) < ?7
@@ -327,6 +328,7 @@ impl HistoryStore {
                     policy_snapshot, now_rfc3339(), crate::settings::DEFAULT_MAX_SUBAGENTS as i64],
             ).map_err(|e| e.to_string())?;
             if inserted == 0 { return Err("subagent capacity reached or parent/child session is missing".into()); }
+            tx.commit().map_err(|e| e.to_string())?;
             Ok(())
         }).await.map_err(|e| e.to_string())?
     }

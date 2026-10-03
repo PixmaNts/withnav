@@ -191,7 +191,12 @@ pub struct SessionSummary {
     pub parent_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub child_status: Option<String>,
+    #[serde(skip_serializing_if = "is_promptable")]
     pub promptable: bool,
+}
+
+fn is_promptable(value: &bool) -> bool {
+    *value
 }
 
 /// The session service: the registry plus the immutable config. Cheap to

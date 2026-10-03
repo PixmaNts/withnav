@@ -80,10 +80,14 @@ code --install-extension vscode-navigator/navai-0.2.0.vsix
 | `~/.local/share/navai/` | conversation history `navai.db`, decision log `navai.jsonl`, `tui.log`, `model-catalog/` |
 
 To build `models.json` and `auth.json` from an OpenCode config, run
-`scripts/import-opencode-models [--dry-run] [--config-dir DIR] [--opencode FILE] [--with-windows]`.
-It writes one alias per OpenCode model, the role aliases, and `"catalog_format": "omniroute"` on the
-omniroute provider. Context windows are left out so Navai reads them from the provider; add
-`--with-windows` to copy them from OpenCode instead. The key goes to `auth.json` (mode 0600).
+`scripts/import-opencode-models [--dry-run] [--config-dir DIR] [--opencode FILE] [--with-windows]`
+(`--self-test` runs its built-in tests). It imports OpenAI-compatible providers only, keeps the first
+of two providers that share a model id, and writes one alias per model, the role aliases, and
+`"catalog_format": "omniroute"` on the omniroute provider. Context windows are left out so Navai
+reads them from the provider; `--with-windows` copies them from OpenCode instead. A literal `apiKey`
+goes to `auth.json` (mode 0600); an `{env:NAME}` key becomes `api_key_env` in `models.json`; other
+references and a `baseURL` that carries credentials are refused. Nothing is written until the whole
+config checks out, and both files are replaced atomically.
 
 Coming from `rust-agent`? The first start of `navai` or `navai-lsp` moves your data and config from
 `~/.local/share/navigator/`, `~/.local/share/rust-agent/` and `~/.config/rust-agent/` to the new

@@ -12,8 +12,23 @@ Imported chat aliases therefore carry no context_window, unless you pass
 --with-windows to copy the limits from the OpenCode config. The reflex and
 instinct aliases keep their fixed windows: they speak their own APIs.
 
+What it imports:
+  - Only OpenAI-compatible providers (`npm` is `@ai-sdk/openai-compatible` or
+    `@ai-sdk/openai`). Any other provider is skipped with a warning.
+  - The same model id from two providers: the first one is kept, the second
+    is skipped with a warning (the alias is the model id, so it must be unique).
+  - `apiKey` as a literal goes to auth.json (0600). `apiKey` as `{env:NAME}`
+    becomes `"api_key_env": "NAME"` in models.json and nothing is stored in
+    auth.json. Any other `{...}` reference (such as `{file:...}`) is refused.
+  - A `baseURL` with credentials (`user:pass@`) or a query string with a
+    key-like parameter is refused: Navai would write it to models.json.
+
+Everything is checked before anything is written. The files are written
+through temporary files in the same directory and then renamed, so a failure
+leaves models.json and auth.json as they were.
+
 Usage: import-opencode-models [--config-dir DIR] [--opencode FILE]
-                              [--with-windows] [--dry-run]
+                              [--with-windows] [--dry-run] [--self-test]
 """
 
 import argparse
@@ -21,7 +36,17 @@ import json
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
+from urllib.parse import parse_qsl, urlsplit
+
+OPENAI_STYLE_NPM = {"@ai-sdk/openai-compatible", "@ai-sdk/openai"}
+KEYLIKE = re.compile(r"key|token|secret|auth|passw|sig|credential", re.I)
+ENV_REF = re.compile(r"^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$")
+
+
+class ImportError_(Exception):
+    """A problem the user must fix; nothing has been written."""
 
 # Role aliases: the layer -> (provider, model id, extra settings). Instinct
 # and reflex speak their own APIs and stay on their dedicated endpoints.
@@ -59,14 +84,40 @@ EXTRA_PROVIDERS = {
 }
 
 
+def _skip_gap(text: str, i: int) -> int:
+    """Index of the next character after whitespace and comments."""
+    while i < len(text):
+        if text[i].isspace():
+            i += 1
+        elif text.startswith("//", i):
+            while i < len(text) and text[i] != "\n":
+                i += 1
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            if end < 0:
+                raise ImportError_("unterminated /* comment in the OpenCode config")
+            i = end + 2
+        else:
+            break
+    return i
+
+
 def strip_jsonc(text: str) -> str:
-    """Drop // line comments outside strings, and trailing commas."""
+    """Drop comments and trailing commas, outside strings only.
+
+    >>> strip_jsonc('{"a": 1, // note\\n "b": [1, 2,], /* x */ }')
+    '{"a": 1, \\n "b": [1, 2]  }'
+    >>> strip_jsonc('{"x": "keep,]", "y": "//no", "z": "/*no*/",}')
+    '{"x": "keep,]", "y": "//no", "z": "/*no*/"}'
+    >>> strip_jsonc('{"q": "a\\\\"b,}"}')
+    '{"q": "a\\\\"b,}"}'
+    """
     out, i, in_str = [], 0, False
     while i < len(text):
         c = text[i]
         if in_str:
             out.append(c)
-            if c == "\\":
+            if c == "\\" and i + 1 < len(text):
                 out.append(text[i + 1])
                 i += 1
             elif c == '"':
@@ -79,12 +130,180 @@ def strip_jsonc(text: str) -> str:
                 i += 1
             continue
         elif text.startswith("/*", i):
-            i = text.index("*/", i) + 2
+            end = text.find("*/", i + 2)
+            if end < 0:
+                raise ImportError_("unterminated /* comment in the OpenCode config")
+            i = end + 2
             continue
+        elif c == ",":
+            j = _skip_gap(text, i + 1)
+            if j < len(text) and text[j] in "}]":
+                i += 1  # a trailing comma: drop it
+                continue
+            out.append(c)
         else:
             out.append(c)
         i += 1
-    return re.sub(r",(\s*[}\]])", r"\1", "".join(out))
+    return "".join(out)
+
+
+def check_base_url(pname: str, base: str) -> str:
+    parts = urlsplit(base)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ImportError_(f"provider '{pname}': baseURL is not an http(s) URL")
+    if parts.username is not None or parts.password is not None:
+        raise ImportError_(
+            f"provider '{pname}': baseURL carries credentials; put the key in apiKey instead")
+    for name, _ in parse_qsl(parts.query, keep_blank_values=True):
+        if KEYLIKE.search(name):
+            raise ImportError_(
+                f"provider '{pname}': baseURL has a key-like query parameter '{name}'; "
+                "Navai would store it in models.json")
+    return base.rstrip("/")
+
+
+def read_api_key(pname: str, raw):
+    """Returns (literal key or None, env var name or None)."""
+    if raw is None or raw == "":
+        return None, None
+    if not isinstance(raw, str):
+        raise ImportError_(f"provider '{pname}': apiKey is not a string")
+    m = ENV_REF.match(raw)
+    if m:
+        return None, m.group(1)
+    if "{" in raw and "}" in raw and re.search(r"\{[a-z]+:", raw):
+        raise ImportError_(
+            f"provider '{pname}': apiKey is the reference {raw.split(':')[0]}:...}}; only "
+            "{env:NAME} is supported. Put the key in an environment variable, or write the "
+            "literal key.")
+    return raw, None
+
+
+def convert(oc: dict, with_windows: bool, warn):
+    """OpenCode config -> (providers, models, keys). Raises ImportError_."""
+    providers, models, keys = {}, {}, {}
+    for pname, p in oc.get("provider", {}).items():
+        opts = p.get("options", {})
+        base = opts.get("baseURL")
+        if not base:
+            continue
+        if p.get("npm") not in OPENAI_STYLE_NPM:
+            warn(f"skipped provider '{pname}': npm {p.get('npm')!r} is not OpenAI-compatible")
+            continue
+        key, env = read_api_key(pname, opts.get("apiKey"))
+        providers[pname] = {
+            "base_url": check_base_url(pname, base),
+            "api_key_env": env or re.sub(r"[^A-Z0-9]", "_", pname.upper()) + "_API_KEY",
+        }
+        if key:
+            keys[pname] = key
+        for mid, m in p.get("models", {}).items():
+            if mid in models:
+                warn(f"model '{mid}' of provider '{pname}' skipped: already imported from "
+                     f"'{models[mid]['provider']}' (the first one is kept)")
+                continue
+            lim = m.get("limit", {})
+            entry = {"provider": pname, "model": mid, "supports_tools": True,
+                     "supports_parallel_tool_calls": True}
+            if with_windows and lim.get("context"):
+                entry["context_window"] = int(lim["context"])
+            models[mid] = entry
+    if "omniroute" not in providers:
+        raise ImportError_("no usable omniroute provider in the OpenCode config")
+    for alias, (mid, extra) in ROLES.items():
+        base = dict(models.get(mid, {"provider": "omniroute", "model": mid,
+                                     "supports_tools": True}))
+        base.update(extra)
+        models[alias] = base
+    models.update(FIXED)
+    for k, v in EXTRA_PROVIDERS.items():
+        providers.setdefault(k, v)
+    providers["omniroute"]["catalog_format"] = "omniroute"
+    return providers, dict(sorted(models.items())), keys
+
+
+def stage(path: Path, text: str, mode: int) -> Path:
+    """Writes `text` to a new, uniquely named file beside `path` (created
+    exclusively, mode set before any content is written) and returns it."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+    except BaseException:
+        os.unlink(tmp)
+        raise
+    return Path(tmp)
+
+
+def sync_dir(d: Path) -> None:
+    fd = os.open(d, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def write_files(d: Path, files: dict) -> None:
+    """Stage every file, then rename them all: a failure while staging leaves
+    the directory untouched."""
+    d.mkdir(parents=True, exist_ok=True)
+    staged = {}
+    try:
+        for name, (text, mode) in files.items():
+            staged[name] = stage(d / name, text, mode)
+        for name, tmp in staged.items():
+            os.replace(tmp, d / name)
+        staged.clear()
+    finally:
+        for tmp in staged.values():
+            tmp.unlink(missing_ok=True)
+    sync_dir(d)
+
+
+def self_test() -> int:
+    import doctest
+    failed = doctest.testmod(sys.modules[__name__]).failed
+    errors = []
+
+    def check(cond, what):
+        if not cond:
+            errors.append(what)
+
+    check(json.loads(strip_jsonc('{"x":"keep,]"}')) == {"x": "keep,]"}, "comma in a string")
+    check(json.loads(strip_jsonc('{"u":"http://h/p", "a": [1,],}')) == {"u": "http://h/p", "a": [1]},
+          "// inside a string, trailing commas")
+    check(json.loads(strip_jsonc('{"a": 1, /* c */ }')) == {"a": 1}, "comma before a comment")
+    for bad in ("http://u:p@h/v1", "http://h/v1?api_key=abc", "ftp://h/v1"):
+        try:
+            check_base_url("p", bad)
+            errors.append(f"accepted {bad}")
+        except ImportError_:
+            pass
+    check(check_base_url("p", "http://h:1/v1/") == "http://h:1/v1", "clean url")
+    check(read_api_key("p", "{env:MY_KEY}") == (None, "MY_KEY"), "env reference")
+    check(read_api_key("p", "sk-123") == ("sk-123", None), "literal key")
+    try:
+        read_api_key("p", "{file:~/k}")
+        errors.append("accepted a file reference")
+    except ImportError_:
+        pass
+    oc = {"provider": {
+        "omniroute": {"npm": "@ai-sdk/openai-compatible", "options": {
+            "baseURL": "http://h/v1", "apiKey": "{env:OR_KEY}"}, "models": {"m": {}}},
+        "other": {"npm": "@ai-sdk/openai-compatible", "options": {"baseURL": "http://o/v1"},
+                  "models": {"m": {}, "n": {}}},
+        "anthropic": {"npm": "@ai-sdk/anthropic", "options": {"baseURL": "http://a/v1"},
+                      "models": {"c": {}}}}}
+    warnings = []
+    providers, models, keys = convert(oc, False, warnings.append)
+    check(keys == {} and providers["omniroute"]["api_key_env"] == "OR_KEY", "env key not stored")
+    check(models["m"]["provider"] == "omniroute" and "n" in models, "first provider wins")
+    check("c" not in models and len(warnings) == 2, "skips and warns")
+    print("self-test: ok" if not (errors or failed) else f"self-test FAILED: {errors}")
+    return 1 if (errors or failed) else 0
 
 
 def main() -> int:
@@ -96,56 +315,50 @@ def main() -> int:
                          "Navai discover it")
     ap.add_argument("--dry-run", action="store_true",
                     help="print a summary and write nothing")
+    ap.add_argument("--self-test", action="store_true", help="run the built-in tests and exit")
     args = ap.parse_args()
+    if args.self_test:
+        return self_test()
 
-    oc = json.loads(strip_jsonc(Path(args.opencode).read_text()))
-    providers, models, keys = {}, {}, {}
-    for pname, p in oc.get("provider", {}).items():
-        opts = p.get("options", {})
-        base = opts.get("baseURL")
-        if not base:
-            continue
-        providers[pname] = {"base_url": base.rstrip("/"),
-                            "api_key_env": f"{pname.upper()}_API_KEY"}
-        if opts.get("apiKey"):
-            keys[pname] = opts["apiKey"]
-        for mid, m in p.get("models", {}).items():
-            lim = m.get("limit", {})
-            entry = {"provider": pname, "model": mid, "supports_tools": True,
-                     "supports_parallel_tool_calls": True}
-            if args.with_windows and lim.get("context"):
-                entry["context_window"] = int(lim["context"])
-            models[mid] = entry
-    if "omniroute" not in providers:
-        print("no omniroute provider in the OpenCode config", file=sys.stderr)
+    def warn(msg: str) -> None:
+        print(f"warning: {msg}", file=sys.stderr)
+
+    # Validate everything first: nothing is written until all of it is sound.
+    try:
+        try:
+            oc = json.loads(strip_jsonc(Path(args.opencode).read_text()))
+        except ValueError as e:
+            raise ImportError_(f"{args.opencode} is not valid JSON/JSONC ({e})")
+        providers, models, keys = convert(oc, args.with_windows, warn)
+        d = Path(args.config_dir)
+        auth_path = d / "auth.json"
+        auth = {}
+        if auth_path.exists():
+            try:
+                auth = json.loads(auth_path.read_text())
+            except ValueError as e:
+                raise ImportError_(f"{auth_path} is not valid JSON ({e}); fix or remove it")
+            if not isinstance(auth, dict):
+                raise ImportError_(f"{auth_path} is not a JSON object")
+    except (ImportError_, OSError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
         return 1
-    for alias, (mid, extra) in ROLES.items():
-        base = dict(models.get(mid, {"provider": "omniroute", "model": mid,
-                                     "supports_tools": True}))
-        base.update(extra)
-        models[alias] = base
-    models.update(FIXED)
-    for k, v in EXTRA_PROVIDERS.items():
-        providers.setdefault(k, v)
-    providers["omniroute"]["catalog_format"] = "omniroute"
-
-    cfg = {"providers": providers, "models": dict(sorted(models.items()))}
+    for k, v in keys.items():
+        auth[k] = {"api_key": v}
     if args.dry_run:
         print(f"{len(models)} aliases, providers {sorted(providers)}, keys {sorted(keys)}")
         return 0
-    d = Path(args.config_dir)
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "models.json").write_text(json.dumps(cfg, indent=2) + "\n")
-    auth_path = d / "auth.json"
-    auth = json.loads(auth_path.read_text()) if auth_path.exists() else {}
-    for k, v in keys.items():
-        auth[k] = {"api_key": v}
-    fd = os.open(auth_path.with_suffix(".json.tmp"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(auth, f, indent=2)
-    os.chmod(auth_path.with_suffix(".json.tmp"), 0o600)
-    os.replace(auth_path.with_suffix(".json.tmp"), auth_path)
-    print(f"wrote {d/'models.json'} ({len(models)} aliases) and {auth_path} ({sorted(keys)})")
+    cfg = {"providers": providers, "models": models}
+    files = {"models.json": (json.dumps(cfg, indent=2) + "\n", 0o644)}
+    if keys or auth_path.exists():
+        files["auth.json"] = (json.dumps(auth, indent=2) + "\n", 0o600)
+    try:
+        write_files(d, files)
+    except OSError as e:
+        print(f"error: {e}; nothing was changed", file=sys.stderr)
+        return 1
+    print(f"wrote {d/'models.json'} ({len(models)} aliases)"
+          + (f" and {auth_path} ({sorted(keys)})" if "auth.json" in files else ""))
     return 0
 
 

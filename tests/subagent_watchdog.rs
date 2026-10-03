@@ -782,6 +782,83 @@ impl navai::session::SessionHooks for HeldToolHooks {
 }
 
 #[tokio::test]
+async fn parent_stop_joins_its_preclaimed_child_before_releasing_capacity() {
+    let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let tool = Arc::new(HeldTool::default());
+    let service = navai::server::AppState::with_hooks(
+        TestServerConfig::mock(tmp.path(), &provider.url)
+            .chat_tools(128000)
+            .config(),
+        Arc::new(HeldToolHooks(tool.clone())),
+    )
+    .unwrap();
+    let parent = service
+        .create_session(&ws, None, None)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let child = service
+        .create_child_session(parent, "explore", "inspect")
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (_, stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    stream
+        .send(tool_call_chunk("held", "glob", &json!({"pattern":"*"})))
+        .unwrap();
+    drop(stream);
+    tool.entered.notified().bounded(file!(), line!()).await;
+    let stopping = service.clone();
+    let mut stop = tokio::spawn(async move { stopping.close_session(parent).await });
+    tool.cancelled.notified().bounded(file!(), line!()).await;
+    assert!(tokio::time::timeout(Duration::from_millis(30), &mut stop)
+        .await
+        .is_err());
+    assert_eq!(service.reserved_child_count(parent), 1);
+    assert_eq!(
+        service
+            .child_metadata(child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "running"
+    );
+    assert!(service
+        .history()
+        .unconsumed_completions(parent)
+        .bounded(file!(), line!())
+        .await
+        .unwrap()
+        .is_empty());
+    tool.release.notify_one();
+    stop.bounded(file!(), line!()).await.unwrap().unwrap();
+    assert!(tool.ended.load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(service.session_count(), 0);
+    assert_eq!(service.reserved_child_count(parent), 0);
+    assert_eq!(
+        service
+            .history()
+            .unconsumed_completions(parent)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    service.close_all().bounded(file!(), line!()).await;
+}
+
+#[tokio::test]
 async fn running_tool_keeps_capacity_and_completion_until_it_has_ended() {
     let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
     let tmp = tempfile::tempdir().unwrap();

@@ -82,7 +82,7 @@ impl Service {
     /// lifecycle gate.
     pub(super) async fn close_session_gated(&self, id: SessionId) -> Result<(), ServerError> {
         let target = self.claim_lifecycle_stop(id).await;
-        {
+        let claimed_children = {
             let _admission = self.admission_gate.lock().await;
             let children = self
                 .lock_sessions()
@@ -90,6 +90,7 @@ impl Service {
                 .filter(|(_, h)| h.parent_session_id == Some(id))
                 .map(|(id, _)| *id)
                 .collect::<Vec<_>>();
+            let mut claimed = std::collections::HashMap::new();
             for child in children {
                 if self
                     .child_operations
@@ -101,12 +102,14 @@ impl Service {
                 }
                 if let Some(handle) = self.mark_stopping(child) {
                     handle.session_cancel.cancel();
+                    claimed.insert(child, handle);
                 }
             }
-        }
+            claimed
+        };
         if let Some(handle) = target {
             self.fence_and_remove(id, handle, "stop requested").await;
-            self.close_children(id).await?;
+            self.close_children(id, claimed_children).await?;
             return Ok(());
         }
         let stored = self
@@ -115,21 +118,29 @@ impl Service {
             .await
             .map_err(ServerError::History)?;
         if stored {
-            self.close_children(id).await?;
+            self.close_children(id, claimed_children).await?;
             Ok(())
         } else {
             Err(ServerError::SessionNotFound(id.to_string()))
         }
     }
 
-    async fn close_children(&self, parent: SessionId) -> Result<(), ServerError> {
+    async fn close_children(
+        &self,
+        parent: SessionId,
+        mut claimed: std::collections::HashMap<SessionId, SessionHandle>,
+    ) -> Result<(), ServerError> {
         for child in self
             .history()
             .child_ids(parent)
             .await
             .map_err(ServerError::History)?
         {
-            if let Some(handle) = self.claim_lifecycle_stop(child).await {
+            let handle = match claimed.remove(&child) {
+                Some(handle) => Some(handle),
+                None => self.claim_lifecycle_stop(child).await,
+            };
+            if let Some(handle) = handle {
                 self.fence_and_remove(child, handle, "parent stopped").await;
             }
             self.finish_child(

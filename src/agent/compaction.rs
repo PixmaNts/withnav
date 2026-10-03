@@ -30,7 +30,7 @@ pub const SUMMARY_MAX_BYTES: usize = 8 * 1024;
 /// unfinished turn.
 pub const PROTECTED_COMPLETED_TURNS: usize = 2;
 
-/// What the persisted checkpoint format is called; bump on a shape change.
+/// The version of the persisted checkpoint shape; bump on a change.
 pub const CHECKPOINT_VERSION: u32 = 1;
 
 /// The summary that stands for the start of a conversation.
@@ -74,6 +74,41 @@ pub enum CompactionError {
     Cancelled,
     #[error("the saved checkpoint does not fit the transcript: {0}")]
     Invalid(String),
+}
+
+#[derive(Serialize, Deserialize)]
+struct Stored {
+    version: u32,
+    #[serde(flatten)]
+    compaction: Compaction,
+}
+
+impl Compaction {
+    /// The JSON the `sessions.checkpoint` column holds:
+    /// `{version, checkpoint: {through_message, summary, generation},
+    /// pruned_message_indices}`.
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(&Stored {
+            version: CHECKPOINT_VERSION,
+            compaction: self.clone(),
+        })
+        .expect("a checkpoint always serializes")
+    }
+
+    /// Reads the column back and checks it against the transcript it belongs
+    /// to. Anything else, an unknown version included, is an error.
+    pub fn from_json(raw: &str, transcript: &[ChatMessage]) -> Result<Self, CompactionError> {
+        let stored: Stored = serde_json::from_str(raw)
+            .map_err(|e| CompactionError::Invalid(format!("not a checkpoint: {e}")))?;
+        if stored.version != CHECKPOINT_VERSION {
+            return Err(CompactionError::Invalid(format!(
+                "unsupported checkpoint version {}",
+                stored.version
+            )));
+        }
+        validate(&stored.compaction, transcript)?;
+        Ok(stored.compaction)
+    }
 }
 
 /// The text a marker replaces a tool output with.

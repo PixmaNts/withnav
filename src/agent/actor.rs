@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::compaction::Compaction;
 use crate::agent::instructions::Instructions;
 use crate::agent::skills::{SkillTool, Skills};
 use crate::provider::config::{ProviderConfig, ReasoningHistory};
@@ -18,6 +19,10 @@ pub enum AgentState {
 
 pub struct AgentActor {
     pub transcript: Vec<ChatMessage>,
+    /// The installed compaction: what stands for the start of `transcript`
+    /// and which tool outputs the prompt shows as markers. `transcript`
+    /// itself stays the full history.
+    pub compaction: Option<Compaction>,
     pub registry: Registry,
     pub tool_context: ToolContext,
     pub provider: ProviderConfig,
@@ -61,6 +66,7 @@ impl AgentActor {
     ) -> Self {
         Self {
             transcript: Vec::new(),
+            compaction: None,
             registry,
             tool_context,
             provider,

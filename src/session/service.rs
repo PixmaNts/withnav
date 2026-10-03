@@ -138,6 +138,7 @@ impl std::fmt::Debug for SessionHandle {
 struct ResumedSession {
     meta: super::store::StoredSession,
     transcript: Vec<ChatMessage>,
+    compaction: Option<crate::agent::compaction::Compaction>,
 }
 
 /// Frozen `GET /v1/sessions/:id` body.
@@ -332,14 +333,18 @@ impl Service {
             // still be queued: the load must see them, or the resumed
             // sequence could restart below a seq a client already saw.
             store.flush().await.map_err(ServerError::History)?;
-            let Some((meta, transcript)) = store
+            let Some((meta, transcript, compaction)) = store
                 .load_for_resume(id)
                 .await
                 .map_err(ServerError::History)?
             else {
                 return Err(ServerError::SessionNotFound(id.to_string()));
             };
-            let loaded = ResumedSession { meta, transcript };
+            let loaded = ResumedSession {
+                meta,
+                transcript,
+                compaction,
+            };
             self.spawn_session(
                 workspace,
                 None,
@@ -556,6 +561,7 @@ impl Service {
         );
         if let Some(loaded) = &resumed {
             actor.transcript = loaded.transcript.clone();
+            actor.compaction = loaded.compaction.clone();
         }
         actor.rules = self
             .load_rules(&workspace, session_id, resumed.is_some())

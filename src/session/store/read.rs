@@ -9,6 +9,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use ulid::Ulid;
 
 use super::{HistoryStore, ListedSession, LoadedSession, StoredSession};
+use crate::agent::compaction::Compaction;
 use crate::bus::event::EventEnvelope;
 use crate::provider::openai::ChatMessage;
 
@@ -55,10 +56,7 @@ impl HistoryStore {
 
     /// What a resume needs: the metadata and the last transcript snapshot,
     /// without the envelopes (see [`HistoryStore::replay`]).
-    pub async fn load_for_resume(
-        &self,
-        id: Ulid,
-    ) -> Result<Option<(StoredSession, Vec<ChatMessage>)>, String> {
+    pub async fn load_for_resume(&self, id: Ulid) -> Result<Option<Resumed>, String> {
         let path = Arc::clone(&self.path);
         blocking(move || with_read_tx(&path, |tx| resume_tx(tx, id))).await
     }
@@ -69,7 +67,7 @@ impl HistoryStore {
         let path = Arc::clone(&self.path);
         blocking(move || {
             with_read_tx(&path, |tx| {
-                let Some((meta, transcript)) = resume_tx(tx, id)? else {
+                let Some((meta, transcript, compaction)) = resume_tx(tx, id)? else {
                     return Ok(None);
                 };
                 let envelopes = replay_tx(tx, id, None, meta.last_seq)?;
@@ -77,6 +75,7 @@ impl HistoryStore {
                     meta,
                     envelopes,
                     transcript,
+                    compaction,
                 }))
             })
         })
@@ -172,20 +171,21 @@ fn list_sync(path: &Path, workspace: &str) -> Result<Vec<ListedSession>, String>
     })
 }
 
-fn resume_tx(
-    tx: &Transaction<'_>,
-    id: Ulid,
-) -> Result<Option<(StoredSession, Vec<ChatMessage>)>, String> {
-    let Some((meta, transcript)) = tx
+/// A session row, its transcript and its validated compaction.
+pub type Resumed = (StoredSession, Vec<ChatMessage>, Option<Compaction>);
+
+fn resume_tx(tx: &Transaction<'_>, id: Ulid) -> Result<Option<Resumed>, String> {
+    let Some((meta, transcript, checkpoint)) = tx
         .query_row(
             "SELECT id, workspace, model, profile, title, created_at, updated_at, last_seq,
-                    model_resolution, variant, variant_override, transcript
+                    model_resolution, variant, variant_override, transcript, checkpoint
              FROM sessions WHERE id = ?1",
             params![id.to_string()],
             |row| {
                 let meta = row_to_session(row)?;
                 let transcript: Option<String> = row.get(11)?;
-                Ok((meta, transcript))
+                let checkpoint: Option<String> = row.get(12)?;
+                Ok((meta, transcript, checkpoint))
             },
         )
         .optional()
@@ -197,7 +197,12 @@ fn resume_tx(
         .as_deref()
         .and_then(|raw| serde_json::from_str::<Vec<ChatMessage>>(raw).ok())
         .unwrap_or_default();
-    Ok(Some((meta, transcript)))
+    let compaction = checkpoint
+        .as_deref()
+        .map(|raw| Compaction::from_json(raw, &transcript))
+        .transpose()
+        .map_err(|e| format!("the saved checkpoint of session {id} cannot be used: {e}"))?;
+    Ok(Some((meta, transcript, compaction)))
 }
 
 fn replay_tx(

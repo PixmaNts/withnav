@@ -54,8 +54,17 @@
 //! NULL or the JSON object the variant sent when it was chosen, written
 //! together with `variant` (NULL for a row from before the column), so a
 //! resume can send the same keys when the offer cannot be read.
+//!
+//! `checkpoint` is NULL (no compaction) or the versioned JSON of a
+//! [`Compaction`]: the summary that stands for the start of the conversation
+//! and the tool outputs the prompt shows as markers. `transcript` stays the
+//! full history; both are written together by
+//! [`HistoryStore::save_checkpoint`]. A resume validates the indices against
+//! the transcript, and a non-null value that does not validate fails it.
 
 mod read;
+
+pub use read::Resumed;
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -65,6 +74,7 @@ use rusqlite::{params, Connection};
 use tokio::sync::oneshot;
 use ulid::Ulid;
 
+use crate::agent::compaction::Compaction;
 use crate::bus::event::{EventEnvelope, EventKind};
 use crate::provider::openai::ChatMessage;
 
@@ -98,6 +108,8 @@ pub struct LoadedSession {
     pub meta: StoredSession,
     pub envelopes: Vec<EventEnvelope>,
     pub transcript: Vec<ChatMessage>,
+    /// The installed compaction, validated against `transcript`.
+    pub compaction: Option<Compaction>,
 }
 
 /// The result channel of an acknowledged write.
@@ -135,6 +147,11 @@ enum Write {
     SaveTranscript {
         id: Ulid,
         transcript: Vec<ChatMessage>,
+    },
+    SaveCheckpoint {
+        id: Ulid,
+        transcript: Vec<ChatMessage>,
+        checkpoint: String,
     },
     SetTitle {
         id: Ulid,
@@ -346,6 +363,23 @@ impl HistoryStore {
         self.enqueue(Write::SaveTranscript { id, transcript });
     }
 
+    /// Saves the transcript and the compaction that goes with it in ONE
+    /// transaction and waits for the commit. The caller installs the
+    /// compaction only after this returns `Ok`.
+    pub async fn save_checkpoint(
+        &self,
+        id: Ulid,
+        transcript: Vec<ChatMessage>,
+        compaction: &Compaction,
+    ) -> Result<(), String> {
+        self.acked(Write::SaveCheckpoint {
+            id,
+            transcript,
+            checkpoint: compaction.to_json(),
+        })
+        .await
+    }
+
     /// Sets the session title (first driver message; only when unset).
     /// Fire-and-forget, like [`HistoryStore::append_event`].
     pub fn set_title(&self, id: Ulid, title: String) {
@@ -521,6 +555,21 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                 return Err(WriteError::UnknownSession(id));
             }
         }
+        Write::SaveCheckpoint {
+            id,
+            transcript,
+            checkpoint,
+        } => {
+            let payload = serde_json::to_string(&transcript)?;
+            let touched = tx.execute(
+                "UPDATE sessions SET transcript = ?2, checkpoint = ?3, updated_at = ?4
+                 WHERE id = ?1",
+                params![id.to_string(), payload, checkpoint, now_rfc3339()],
+            )?;
+            if touched == 0 {
+                return Err(WriteError::UnknownSession(id));
+            }
+        }
         Write::SetTitle { id, title } => {
             tx.execute(
                 "UPDATE sessions SET title = ?2 WHERE id = ?1 AND title IS NULL",
@@ -559,7 +608,8 @@ fn migrate(path: &Path) -> Result<(), String> {
             transcript TEXT,
             model_resolution TEXT,
             variant TEXT,
-            variant_override TEXT
+            variant_override TEXT,
+            checkpoint TEXT
         );
         CREATE TABLE IF NOT EXISTS events (
             session_id TEXT NOT NULL,
@@ -594,6 +644,15 @@ fn migrate(path: &Path) -> Result<(), String> {
         .map_err(|e| format!("migrate: {e}"))?;
     if !has_override {
         conn.execute("ALTER TABLE sessions ADD COLUMN variant_override TEXT", [])
+            .map_err(|e| format!("migrate: {e}"))?;
+    }
+    // A database from before `checkpoint`: add the nullable column.
+    let has_checkpoint = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'checkpoint'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| format!("migrate: {e}"))?;
+    if !has_checkpoint {
+        conn.execute("ALTER TABLE sessions ADD COLUMN checkpoint TEXT", [])
             .map_err(|e| format!("migrate: {e}"))?;
     }
     Ok(())
@@ -938,13 +997,14 @@ mod tests {
         let meta = store.meta(id).await.expect("meta").expect("present");
         assert_eq!(meta.profile.as_deref(), Some("p"));
         assert_eq!(meta.last_seq, 0);
-        let (resumed, transcript) = store
+        let (resumed, transcript, compaction) = store
             .load_for_resume(id)
             .await
             .expect("resume")
             .expect("present");
         assert_eq!(resumed.id, id);
         assert_eq!(transcript.len(), 1);
+        assert!(compaction.is_none());
         assert!(store.meta(Ulid::new()).await.expect("meta").is_none());
         assert!(store
             .load_for_resume(Ulid::new())
@@ -1186,5 +1246,150 @@ mod tests {
             .set_model_resolution(Ulid::new(), &make(1))
             .await
             .is_err());
+    }
+
+    fn exchange(n: usize) -> Vec<ChatMessage> {
+        use crate::provider::openai::{RequestFunction, RequestToolCall};
+        vec![
+            ChatMessage::User {
+                content: format!("request {n}"),
+            },
+            ChatMessage::Assistant {
+                content: None,
+                reasoning_content: None,
+                tool_calls: vec![RequestToolCall {
+                    id: format!("c{n}"),
+                    kind: "function".into(),
+                    function: RequestFunction {
+                        name: "read".into(),
+                        arguments: "{}".into(),
+                    },
+                }],
+            },
+            ChatMessage::Tool {
+                tool_call_id: format!("c{n}"),
+                content: "output".repeat(50),
+            },
+            ChatMessage::Assistant {
+                content: Some("done".into()),
+                reasoning_content: None,
+                tool_calls: vec![],
+            },
+        ]
+    }
+
+    fn compaction(through: usize, pruned: Vec<usize>) -> Compaction {
+        Compaction {
+            checkpoint: crate::agent::compaction::Checkpoint {
+                through_message: through,
+                summary: "the gist".into(),
+                generation: 1,
+            },
+            pruned_message_indices: pruned,
+        }
+    }
+
+    // Given a session with a transcript and no checkpoint
+    // When a checkpoint is saved
+    // Then transcript and checkpoint read back together, in the versioned shape
+    #[tokio::test]
+    async fn a_checkpoint_is_saved_with_the_transcript_and_read_back() {
+        let (dir, store) = temp_store();
+        let id = Ulid::new();
+        store.record_session(id, "/w", "m", None).await.unwrap();
+        let transcript: Vec<ChatMessage> = (0..3).flat_map(exchange).collect();
+        let k = compaction(3, vec![6]);
+        store
+            .save_checkpoint(id, transcript.clone(), &k)
+            .await
+            .unwrap();
+        let (_, back, restored) = store.load_for_resume(id).await.unwrap().unwrap();
+        assert_eq!(back.len(), transcript.len());
+        assert_eq!(restored, Some(k));
+        let raw: String = side_connection(&dir)
+            .query_row("SELECT checkpoint FROM sessions", [], |r| r.get(0))
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(v["version"], 1);
+        assert_eq!(v["checkpoint"]["through_message"], 3);
+        assert_eq!(v["checkpoint"]["summary"], "the gist");
+        assert_eq!(v["checkpoint"]["generation"], 1);
+        assert_eq!(v["pruned_message_indices"], serde_json::json!([6]));
+    }
+
+    // Given a checkpoint for an unknown session
+    // When it is saved
+    // Then the write fails and nothing is acknowledged
+    #[tokio::test]
+    async fn saving_a_checkpoint_of_an_unknown_session_fails() {
+        let (_dir, store) = temp_store();
+        let err = store
+            .save_checkpoint(Ulid::new(), vec![], &compaction(0, vec![]))
+            .await
+            .unwrap_err();
+        assert!(err.contains("no stored session"), "{err}");
+    }
+
+    // Given a stored checkpoint that does not fit the transcript, or is not JSON
+    // When the session is resumed
+    // Then the resume fails clearly; a NULL checkpoint resumes as before
+    #[tokio::test]
+    async fn an_invalid_checkpoint_fails_the_resume() {
+        let (dir, store) = temp_store();
+        let id = Ulid::new();
+        store.record_session(id, "/w", "m", None).await.unwrap();
+        store.save_transcript(id, exchange(0));
+        store.flush().await.unwrap();
+        assert!(store
+            .load_for_resume(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .2
+            .is_none());
+        let conn = side_connection(&dir);
+        for bad in [
+            "{not json".to_string(),
+            compaction(99, vec![]).to_json(),
+            compaction(0, vec![2])
+                .to_json()
+                .replace("\"version\":1", "\"version\":7"),
+        ] {
+            conn.execute("UPDATE sessions SET checkpoint = ?1", [&bad])
+                .unwrap();
+            let err = store.load_for_resume(id).await.unwrap_err();
+            assert!(err.contains("saved checkpoint"), "{err}");
+            assert!(store.load(id).await.is_err());
+        }
+    }
+
+    // Given a database from before the checkpoint column
+    // When it is opened
+    // Then the nullable column is added and old rows resume without one
+    #[tokio::test]
+    async fn migration_adds_the_checkpoint_column_to_an_old_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("h.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY, workspace TEXT NOT NULL, model TEXT NOT NULL,
+                    profile TEXT, title TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    last_seq INTEGER NOT NULL DEFAULT -1, transcript TEXT
+                 );
+                 CREATE TABLE events (
+                    session_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
+                    envelope TEXT NOT NULL, PRIMARY KEY (session_id, seq)
+                 );
+                 INSERT INTO sessions (id, workspace, model, created_at, updated_at)
+                 VALUES ('01J0000000000000000000000A', '/w', 'm', 't', 't');",
+            )
+            .unwrap();
+        }
+        let store = HistoryStore::open(&path).unwrap();
+        let id = Ulid::from_string("01J0000000000000000000000A").unwrap();
+        let (_, _, compaction) = store.load_for_resume(id).await.unwrap().unwrap();
+        assert!(compaction.is_none());
     }
 }

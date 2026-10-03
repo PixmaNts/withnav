@@ -185,16 +185,20 @@ pub enum Routed {
     Server { name: String, arguments: String },
     /// A message, sent as this text.
     Message(String),
+    /// A client command typed wrong: this says why; nothing runs.
+    Refused(String),
 }
 
-/// Routes `line` (as typed, before trimming). Every `/name` that is not one of the client's
-/// commands goes to the server, which answers an unknown name with the close ones.
+/// Routes `line` as typed, with the server's rule: only a line whose very first character is `/`
+/// is a command (`  /stop` is a message), `//text` is the message `/text`, the name runs to the
+/// first whitespace and the rest, trimmed, is the arguments. The client then keeps the commands it
+/// handles itself; every other name goes to the server, which answers an unknown one with the
+/// close ones.
 pub fn route(line: &str, mode: Mode) -> Routed {
-    let trimmed = line.trim();
-    if let Some(rest) = trimmed.strip_prefix("//") {
+    if let Some(rest) = line.strip_prefix("//") {
         return Routed::Message(format!("/{rest}"));
     }
-    let Some(rest) = trimmed.strip_prefix('/') else {
+    let Some(rest) = line.strip_prefix('/') else {
         return Routed::Message(line.to_string());
     };
     let (name, arguments) = match rest.split_once(char::is_whitespace) {
@@ -204,23 +208,42 @@ pub fn route(line: &str, mode: Mode) -> Routed {
     if name.is_empty() {
         return Routed::Message(line.to_string());
     }
-    if let Some(action) = local_action(name, arguments, mode) {
-        return Routed::Local(action);
-    }
-    Routed::Server {
-        name: name.to_string(),
-        arguments: arguments.to_string(),
+    match local_action(name, arguments, mode) {
+        Local::Run(action) => Routed::Local(action),
+        Local::Refuse(why) => Routed::Refused(why),
+        Local::Server => Routed::Server {
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        },
     }
 }
 
-/// The client's own meaning of `/name arguments`, if it has one.
-fn local_action(name: &str, arguments: &str, mode: Mode) -> Option<Action> {
-    match (name, arguments.is_empty()) {
-        // `/new <alias>` opens a tab on that model, like picking it in the model list.
-        ("new", false) => Some(Action::PickModel(arguments.to_string())),
+enum Local {
+    Run(Action),
+    /// A client command typed wrong; the reason is shown and nothing is sent.
+    Refuse(String),
+    /// Not the client's: the server runs it.
+    Server,
+}
+
+/// The client's own meaning of `/name arguments`.
+fn local_action(name: &str, arguments: &str, mode: Mode) -> Local {
+    let has_args = !arguments.is_empty();
+    match name {
+        // `/new <alias>` and `/model <alias>` open a tab on that model, like the model list.
+        "new" | "model" if has_args => {
+            if arguments.contains(char::is_whitespace) {
+                return Local::Refuse(format!("usage: /{name} [alias]"));
+            }
+            Local::Run(Action::PickModel(arguments.to_string()))
+        }
         // With arguments, `/variant` is the server's; alone it opens the list.
-        ("variant", false) => None,
-        _ => command_action(&format!("/{name}"), mode),
+        "variant" if has_args => Local::Server,
+        _ => match command_action(&format!("/{name}"), mode) {
+            Some(_) if has_args => Local::Refuse(format!("/{name} takes no arguments")),
+            Some(action) => Local::Run(action),
+            None => Local::Server,
+        },
     }
 }
 

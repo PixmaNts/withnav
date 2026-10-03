@@ -1681,3 +1681,20 @@ fn esc_and_backspace_in_the_typed_palette_keep_the_line() {
     assert_eq!(editor.text(), "");
     assert_eq!(ui.overlay, None);
 }
+
+#[test]
+fn a_typed_local_command_with_an_argument_is_refused_with_a_notice() {
+    let s = with_server_commands();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    let actions = keys("/stop now⏎", &s, &mut ui, &mut editor);
+    assert_eq!(
+        actions.last(),
+        Some(&Action::ShowNotice("/stop takes no arguments".into()))
+    );
+    assert_eq!(editor.text(), "/stop now", "the line stays to fix");
+    let mut editor = Editor::new();
+    let actions = keys("/model fast⏎", &s, &mut ui, &mut editor);
+    assert_eq!(actions.last(), Some(&Action::PickModel("fast".into())));
+    assert_eq!(editor.text(), "", "a client command clears its line");
+}

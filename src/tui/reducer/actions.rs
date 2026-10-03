@@ -319,6 +319,10 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             revision,
         } => run_command(s, name, arguments, revision),
         Action::ToggleAgent => toggle_agent(s),
+        Action::ShowNotice(text) => {
+            push_local(s, BlockKind::Notice(text));
+            vec![]
+        }
         Action::SwitchTab(index) => {
             if index < s.tabs.len() && index != s.active {
                 show(s, ui, index)

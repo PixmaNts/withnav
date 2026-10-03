@@ -262,6 +262,8 @@ pub enum Action {
     /// A row of the variant list: a variant name, or `off` for none. What it applies to is the
     /// list's `UiState::variant_pick`.
     PickVariant(String),
+    /// Shows a notice in the active conversation; nothing else happens.
+    ShowNotice(String),
     /// Switches the active conversation between the build and plan agents.
     ToggleAgent,
     /// Shows the tab at this index (0 is the first).

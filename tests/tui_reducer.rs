@@ -2258,7 +2258,7 @@ fn typed_lines_route_like_the_server_with_client_commands_kept_local() {
     };
     let mode = Mode::NextTurn;
     assert_eq!(route("/context", mode), server("context", ""));
-    assert_eq!(route("  /agent plan ", mode), server("agent", "plan"));
+    assert_eq!(route("/agent plan ", mode), server("agent", "plan"));
     assert_eq!(route("/variant high", mode), server("variant", "high"));
     assert_eq!(
         route("/compact keep the tests", mode),
@@ -2763,4 +2763,57 @@ fn a_summary_read_before_a_confirmed_change_does_not_undo_it() {
         (s.agent_name(), s.variant.as_deref()),
         ("build", Some("low"))
     );
+}
+
+#[test]
+fn local_routing_follows_the_server_prefix_rule_and_checks_arguments() {
+    use navai::tui::commands::{route, Routed};
+    let mode = Mode::NextTurn;
+    // only a slash in the first column makes a command
+    assert_eq!(route("  /stop", mode), Routed::Message("  /stop".into()));
+    assert_eq!(
+        route("\t/context", mode),
+        Routed::Message("\t/context".into())
+    );
+    // the escape keeps everything after it, whitespace included
+    assert_eq!(
+        route("//  spaced ", mode),
+        Routed::Message("/  spaced ".into())
+    );
+    // client commands that take no argument refuse one
+    assert_eq!(route("/stop", mode), Routed::Local(Action::Stop));
+    assert_eq!(
+        route("/stop now please", mode),
+        Routed::Refused("/stop takes no arguments".into())
+    );
+    assert_eq!(
+        route("/quit later", mode),
+        Routed::Refused("/quit takes no arguments".into())
+    );
+    assert!(matches!(route("/sessions x", mode), Routed::Refused(_)));
+    // `/model <alias>` opens a new tab on it, like `/new <alias>`; one alias only
+    assert_eq!(
+        route("/model", mode),
+        Routed::Local(Action::OpenOverlay(Overlay::Models))
+    );
+    assert_eq!(
+        route("/model opus high", mode),
+        Routed::Refused("usage: /model [alias]".into())
+    );
+}
+
+#[test]
+fn a_refused_local_command_shows_why_and_sends_nothing() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    let fx = handle_action(
+        &mut s,
+        &mut ui,
+        Action::ShowNotice("/stop takes no arguments".into()),
+    );
+    assert!(fx.is_empty());
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Notice(n) if n == "/stop takes no arguments"
+    ));
 }

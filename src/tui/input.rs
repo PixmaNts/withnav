@@ -286,6 +286,8 @@ pub fn route_key(
         }
         return Some(match commands::route(&text, ui.mode) {
             commands::Routed::Local(action) => {
+                // The client runs it now: the line has done its job.
+                editor.clear_if_revision(editor.revision());
                 if let Action::OpenOverlay(overlay) = action {
                     ui.overlay = Some(overlay);
                     ui.filter.clear();
@@ -301,6 +303,7 @@ pub fn route_key(
                 text,
                 revision: editor.revision(),
             },
+            commands::Routed::Refused(why) => Action::ShowNotice(why),
         });
     }
     let changed = if (key.code == KeyCode::Enter

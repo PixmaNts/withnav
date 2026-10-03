@@ -313,6 +313,7 @@ impl HistoryStore {
         agent: String,
         goal: String,
         policy_snapshot: String,
+        capacity: usize,
     ) -> Result<(), String> {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
@@ -325,7 +326,7 @@ impl HistoryStore {
                    AND EXISTS(SELECT 1 FROM sessions WHERE id=?1)
                    AND EXISTS(SELECT 1 FROM sessions WHERE id=?2)",
                 params![parent_id.to_string(), child_id.to_string(), agent, goal,
-                    policy_snapshot, now_rfc3339(), crate::settings::DEFAULT_MAX_SUBAGENTS as i64],
+                    policy_snapshot, now_rfc3339(), capacity as i64],
             ).map_err(|e| e.to_string())?;
             if inserted == 0 { return Err("subagent capacity reached or parent/child session is missing".into()); }
             tx.commit().map_err(|e| e.to_string())?;
@@ -1298,7 +1299,14 @@ mod tests {
         store.record_session(parent, "/w", "m", None).await.unwrap();
         store.record_session(child, "/w", "m", None).await.unwrap();
         store
-            .create_child_link(parent, child, "explore".into(), "goal".into(), "{}".into())
+            .create_child_link(
+                parent,
+                child,
+                "explore".into(),
+                "goal".into(),
+                "{}".into(),
+                4,
+            )
             .await
             .unwrap();
         let first = store

@@ -291,7 +291,6 @@ impl Service {
             return Err(ServerError::ChildReadOnly);
         }
         let parent_role = parent_handle.status.selection.current();
-        let parent_policy = parent_role.clone();
         let agents = self
             .load_agents(&parent_handle.workspace, parent, false)
             .await;
@@ -323,12 +322,15 @@ impl Service {
                 .subagent_slots
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let current = slots.entry(parent).or_default();
-            *current = (*current).max(persisted_active);
-            if *current >= cap {
+            let current = slots
+                .get(&parent)
+                .copied()
+                .unwrap_or(persisted_active)
+                .max(persisted_active);
+            if current >= cap {
                 return Err(ServerError::SubagentCapacity { capacity: cap });
             }
-            *current += 1;
+            slots.insert(parent, current + 1);
         }
         // Concurrent calls in this process reserve capacity atomically; the
         // persistent active count includes children from other processes.
@@ -364,7 +366,7 @@ impl Service {
                 Some((
                     allowed,
                     definition.access == crate::agent::definitions::AgentAccess::ReadOnly
-                        || parent_policy.access == crate::agent::definitions::AgentAccess::ReadOnly,
+                        || parent_role.access == crate::agent::definitions::AgentAccess::ReadOnly,
                 )),
                 Some(parent),
             )
@@ -379,18 +381,17 @@ impl Service {
         let frozen = serde_json::to_string(&policy).unwrap_or_else(|_| "{}".into());
         if let Err(error) = self
             .history
-            .create_child_link(parent, child, agent.to_string(), prompt.to_string(), frozen)
+            .create_child_link(
+                parent,
+                child,
+                agent.to_string(),
+                prompt.to_string(),
+                frozen,
+                cap,
+            )
             .await
         {
             let _ = self.close_session(child).await;
-            if let Some(count) = self
-                .subagent_slots
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get_mut(&parent)
-            {
-                *count = count.saturating_sub(1);
-            }
             self.reset_child_slots_for_delete(parent).await?;
             return Err(ServerError::History(error));
         }
@@ -482,7 +483,15 @@ impl Service {
                 .sequencer
                 .publish(Candidate::new(EventKind::SubagentDone, payload));
         }
-        self.reset_child_slots_for_delete(parent).await?;
+        let active = self
+            .history
+            .active_child_count(parent)
+            .await
+            .map_err(ServerError::History)?;
+        self.subagent_slots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(parent, active);
         Ok(())
     }
 

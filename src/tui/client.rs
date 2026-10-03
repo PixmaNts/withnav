@@ -135,6 +135,39 @@ impl Client {
         })
     }
 
+    /// Answers a permission request. A 409 `permission_stale` is [`AnswerError::Stale`].
+    pub async fn answer_permission(
+        &self,
+        id: &str,
+        request_id: &str,
+        answer: PermissionAnswer,
+    ) -> Result<(), AnswerError> {
+        let path = format!(
+            "/v1/sessions/{}/permissions/{}",
+            encode_segment(id),
+            encode_segment(request_id)
+        );
+        let response = self
+            .post(&path)
+            .json(&answer)
+            .send()
+            .await
+            .map_err(|e| AnswerError::Other(describe(&e)))?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let body = response.text().await.unwrap_or_default();
+        let stale = status == reqwest::StatusCode::CONFLICT
+            && serde_json::from_str::<serde_json::Value>(&body)
+                .is_ok_and(|v| v["reason"] == "permission_stale");
+        if stale {
+            Err(AnswerError::Stale)
+        } else {
+            Err(AnswerError::Other(status_message(status, &body)))
+        }
+    }
+
     /// The commands the server runs for a session.
     pub async fn commands(&self) -> Result<CommandsBody, String> {
         self.json(self.get("/v1/commands")).await

@@ -70,14 +70,14 @@ one per tab; each tab streams its own session in the background.
 | `mod.rs` | `TuiOptions`, `TuiError`, `run` |
 | `protocol.rs` | the wire bodies the client sends and receives, and the three message types of the loop: `Action` (what the user asked), `Effect` (I/O the reducer wants), `ClientEvent` (what came back, tagged with a `Generation`) |
 | `state.rs` | `State`: the open `Tab`s (each with its conversation projection, session, model, variant, agent, activity, generation, draft, transcript position and unread mark) and what they share (catalog, session list, server commands, workspace); it derefs to the active tab. `UiState` (overlay, scroll, selection, what the variant list is for, sidebar shown); data only |
-| `client.rs` | the HTTP client: models, sessions, create/resume, send, stop, the command list and a command run, open the event stream; send failures split into rejected and uncertain |
+| `client.rs` | the HTTP client: models, sessions, create/resume, send, stop, the command list and a command run, a permission answer (409 `permission_stale` read as stale), open the event stream; send failures split into rejected and uncertain |
 | `stream.rs` | one SSE subscription: decoding, reconnect with backoff, resume after the last seq, cancellation |
 | `reducer/mod.rs` | `update`: `ClientEvent` to `State` changes and new `Effect`s; routes each event to the tab holding its generation, marks a background tab unread, drops events no tab holds |
-| `reducer/envelope.rs` | `EventEnvelope` to blocks: steps, tools (planned, running, settled), usage, errors, command results; the tab's agent from `session.agent_changed` and its variant from a `/variant` result; live and replay give the same blocks |
+| `reducer/envelope.rs` | `EventEnvelope` to blocks: steps, tools (planned, running, settled), usage, errors, command results, permission prompts (open until their `permission.resolved`); the tab's agent from `session.agent_changed` and its variant from a `/variant` result; live and replay give the same blocks |
 | `reducer/command.rs` | `outcome_text`: a command result as the short text the transcript shows, in the client's own words; `tokens` for `42k` / `1M` |
 | `reducer/actions.rs` | `handle_action`: `Action` to `UiState`/`State` changes and `Effect`s; opening (at most nine), switching and closing tabs; server commands, the build/plan switch, the model and variant picks |
 | `reducer/text.rs` | `strip_controls`, applied to every piece of model and tool text |
-| `input.rs` | the `Editor` and `route_key`/`route_paste`: keys to editor edits or `Action`s |
+| `input.rs` | the `Editor` and `route_key`/`route_paste`: keys to editor edits or `Action`s; the open permission request's `y`/`a`/`n` and deny message; the second enter before text that would cancel it |
 | `commands.rs` | the command catalog, the key help and the key to `Action` map; `palette`, the client's and the server's commands in one list; `route`, the server's prefix rule (a slash in the first column, `//text` is the literal `/text`) with the client's own commands kept local and their arguments checked; `variant_choices`, the rows of the variant list |
 | `runtime.rs` | `Runtime`: owns state, editor, client and streams; runs an event's effects for the tab it reached; the event loop with its frame tick |
 | `runtime/effects.rs` | `Executor`: runs each `Effect` in a task and reports a tagged `ClientEvent`; owns one live stream per tab generation and stops those no tab holds |
@@ -86,7 +86,8 @@ one per tab; each tab streams its own session in the background.
 | `theme.rs` | the four themes (`ThemeId`, the `Theme` colour roles), the RGB `blend` for tints, and the semantic styles the views draw with |
 | `view/mod.rs` | `draw`: layout of sidebar, transcript, editor, status line and overlays |
 | `view/sidebar.rs` | the tab sidebar: number, title, `<agent> · <state>`, unread mark, active tint, tab keys; hidden under 80 columns |
-| `view/transcript.rs` | block layout and drawing: messages by origin, steps, tools, errors, scroll and selection |
+| `view/transcript.rs` | block layout and drawing: messages by origin, steps, tools, errors, permission prompts, scroll and selection |
+| `view/permission.rs` | the inline permission prompt: tool and scope, a short preview of the call (a write's first lines, an edit's change, a command, a URL), the answer keys or the outcome |
 | `view/tool.rs` | the one-line summary and the expanded output of a tool call |
 | `view/markdown.rs` | markdown to styled lines, cached per block revision |
 | `view/status.rs` | the status line of the active tab: `▌agent`, alias, model, variant, context (the server's estimate, else the last prompt count), session tokens, connection and activity; the model name gives way first |
@@ -103,6 +104,15 @@ into `State` (envelopes become blocks) and may return more effects. After each b
 `view::draw`, which only reads the state. Picking a model or starting a conversation bumps the
 generation, so late results of the old conversation are ignored. A conversation is created on the
 first message, not before.
+
+**Permission prompts (terminal client).** `permission.requested` adds a `BlockKind::Permission` to the
+tab and its id to `Conversation::open_permissions`; the matching `permission.resolved` closes it and
+settles the held tool (denied, or interrupted on a cancel or an expiry). Because both are durable
+events, a replay or a reconnect rebuilds the same open requests. While one is open on the tab on
+screen and the message is empty, `y`/`a`/`n` become `Action::AnswerPermission`; the reducer posts it once
+(`Effect::AnswerPermission`) and the prompt stays until the stream says how it ended; a stale answer
+drops it with a notice. Text sent meanwhile cancels the request on the server, so the first enter
+only warns.
 
 **Commands and agent controls (terminal client).** Typing `/` on an empty message puts the slash in
 the editor and opens the palette, which follows the line: it lists the client's commands and the

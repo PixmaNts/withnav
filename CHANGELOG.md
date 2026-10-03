@@ -1,10 +1,71 @@
-# Changelog
-
 All notable changes to this project. Versions follow [Semantic Versioning](https://semver.org/);
-before 1.0, a minor version may break compatibility. New entries go under `Unreleased` as merge
+before 1.0, a minor version may break compatibility. New entries go under `Unreleased` as pull
 requests land in `develop`.
 
 ## [Unreleased]
+
+## [0.3.0] - 2026-10-03
+
+Navai becomes a terminal coding agent as well as a navigator: a chat client with tabs, tool
+permissions you answer from the terminal, a guarded `plan` agent, model switching inside a
+conversation, and automatic compaction. Background subagents are planned for 0.4.0.
+
+### Added
+
+- **Terminal chat client**: `navai tui` starts a private server, or `--url` connects to a running
+  server (set `NAVAI_SERVER_TOKEN` when it requires a bearer token). Open up to nine conversations;
+  each keeps its draft and scroll position and continues streaming in the background. The left
+  sidebar lists conversations and unread activity; the right panel shows agent, context, skills and
+  changed files on terminals at least 140 columns wide (`alt+r` toggles it). The sidebar is hidden
+  below 80 columns. `alt+1`–`alt+9` switch tabs, `alt+w` closes one, `ctrl+n` starts a conversation,
+  `ctrl+o` opens the session list, `alt+b` hides or shows the sidebar, `f2` picks a model, `tab` on
+  an empty message switches build/plan,
+  `shift+tab` changes focus, and `ctrl+q` quits.
+- **Session commands**: `/help`, `/model [alias]`, `/new [alias]`, `/stop`, `/context`,
+  `/variant [name|off]`, `/compact [focus]` and `/agent [id]`. The TUI command palette combines
+  these with local commands. The event catalog has 19 kinds. A line beginning `//` sends a literal
+  slash, so `//help` sends `/help`.
+- **Model switching and variants**: `/model <alias>` switches the current conversation; `/new <alias>`
+  starts another. A switch uses the target model's default variant and waits until the current turn
+  ends. Model lists and `f2` switch the live conversation; `ctrl+n` in the model picker starts a new
+  conversation on that model. `/variant` lists the session's choices; `/variant <name>` selects one,
+  and `/variant off` clears it.
+- **Automatic compaction**: when the next request will not fit the input budget, Navai summarizes
+  the older conversation and continues the same turn. If even the required history cannot fit, the
+  turn ends with an error recommending a model with a larger context window. `/compact [focus]` also
+  requests compaction manually. Compaction is not run while an answer or permission decision is
+  pending.
+- **Tool permissions**: the eight registry tools are `read`, `write`, `edit`, `bash`, `grep`, `glob`,
+  `fetch` and `ask`; sessions also provide a `skill` tool to load a listed skill. `navai run` does not
+  approve tool permissions automatically: it prints `permission_required: <tool> <scope>` and exits
+  with code 3. `--yes` approves each request once. Ctrl-C interrupts a run and exits with code 130.
+- **Plan agent guard**: `plan` can write Markdown files without a permission prompt. Other writes,
+  edits, shell commands and fetches are checked against its role; if the check cannot confirm the
+  action, Navai asks for permission. The guard is advisory, not a sandbox.
+- **Model catalog**: when a model alias has no configured context window, Navai can discover one from
+  the provider's model list and cache it under the data directory. `GET /v1/models` reports the
+  resolved window and its source.
+- **Workspace tools**: `glob` searches for files without following links, with a default limit of
+  200 results (up to 1,000). `fetch` retrieves HTTP(S) text or HTML, caps the downloaded body at 5 MiB,
+  and follows only same-origin redirects.
+- **Terminal themes**: Ayu Dark, Ayu Light, Nord Dark and Nord Light. `/theme` opens the picker; the
+  choice is saved in `~/.config/navai/config.json`.
+
+### Changed
+
+- **State locations**: configuration is stored in `~/.config/navai/`; data is stored in
+  `~/.local/share/navai/`. Navai migrates supported files from the former `navigator` and
+  `rust-agent` directories on first start without overwriting existing files.
+- **Project identity**: the crate and binaries are named `navai` and `navai-lsp`; the VS Code
+  extension is Navai (`pixmants.navai`). Environment variables use the `NAVAI_*` prefix.
+
+### Fixed
+
+- A permission answer is tied to the checked destination. If a tool call resolves to a different
+  destination when it runs, Navai asks again rather than using the earlier approval.
+- A stopped or interrupted permission request is settled without running its held tool call.
+- The terminal client keeps each open conversation's model, variant and context display in its own
+  tab, and ignores late events from a conversation that has been closed.
 
 ## [0.2.0] - 2026-10-01
 

@@ -8,12 +8,13 @@ use std::sync::Arc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::navigator::document::text_around_line;
+use crate::navigator::document::{first_changed_line, text_around_line};
 use crate::navigator::log::{DeliveryOutcome, LogRecord, PendingTrigger};
 use crate::navigator::metacognition::RemarkContext;
 use crate::navigator::pipeline::{Action, TriggerInputs, TriggerKind};
 use crate::navigator::ports::ModelError;
 
+use super::wake::WakeReason;
 use super::Runtime;
 
 /// Lines on each side of the last edited line shown to the conversation
@@ -28,12 +29,26 @@ pub(super) struct TriggerContext {
     pub(super) version: i32,
     pub(super) changed_lines: i64,
     pub(super) since_last_remark_ms: i64,
+    pub(super) since_last_wake_ms: i64,
+    pub(super) called_for_help: bool,
+    /// The unanswered calls for help in the added lines (normalized comment
+    /// text): what a remark about this trigger answers.
+    pub(super) help_calls: Vec<String>,
+    /// A remark is already being written for every one of `help_calls`.
+    pub(super) help_in_flight: bool,
+    /// A remark request is already running on this version of the text.
+    pub(super) remark_in_flight: bool,
     pub(super) has_errors: bool,
     pub(super) has_intent: bool,
     pub(super) has_conversation: bool,
     pub(super) intent_text: String,
     pub(super) language_id: String,
     pub(super) diff: String,
+    /// The document text this trigger judged: a late remark's line is
+    /// re-anchored from it onto the current text.
+    pub(super) text: String,
+    /// 1-based line of the first inserted line since the baseline (0: none).
+    pub(super) first_changed_line: usize,
     pub(super) context_text: String,
     pub(super) diagnostics_text: String,
     pub(super) conversation_text: String,
@@ -63,6 +78,14 @@ impl TriggerContext {
             (
                 "since_last_remark_ms".to_string(),
                 serde_json::json!(self.since_last_remark_ms),
+            ),
+            (
+                "since_last_wake_ms".to_string(),
+                serde_json::json!(self.since_last_wake_ms),
+            ),
+            (
+                "called_for_help".to_string(),
+                serde_json::json!(self.called_for_help),
             ),
             ("has_errors".to_string(), serde_json::json!(self.has_errors)),
             ("has_intent".to_string(), serde_json::json!(self.has_intent)),
@@ -117,18 +140,29 @@ impl Runtime {
             .map(|f| f.digest())
             .unwrap_or_default();
         let has_conversation = !conversation_text.trim().is_empty();
+        // A conversation turn changed nothing in the file; a call already
+        // answered (or being answered) is not a new one.
+        let called_for_help = !snapshot.help_calls.is_empty();
+        let (first_changed_line, _) = first_changed_line(&snapshot.baseline, &snapshot.text);
         Some(TriggerContext {
             uri: uri.to_string(),
             event: "",
             version: snapshot.version,
             changed_lines: snapshot.changed_lines,
             since_last_remark_ms: snapshot.since_last_remark_ms,
+            since_last_wake_ms: snapshot.since_last_wake_ms,
+            called_for_help,
+            help_calls: snapshot.help_calls,
+            help_in_flight: snapshot.help_in_flight,
+            remark_in_flight: snapshot.remark_in_flight,
             has_errors,
             has_intent,
             has_conversation,
             intent_text,
             language_id: snapshot.language_id,
             diff: ctx.diff,
+            text: snapshot.text,
+            first_changed_line,
             context_text: ctx.text_excerpt,
             diagnostics_text,
             conversation_text,
@@ -159,6 +193,8 @@ impl Runtime {
         let inputs = TriggerInputs {
             changed_lines: ctx.changed_lines,
             since_last_remark_ms: ctx.since_last_remark_ms,
+            since_last_wake_ms: ctx.since_last_wake_ms,
+            called_for_help: ctx.called_for_help,
             has_errors: ctx.has_errors,
             has_intent: ctx.has_intent,
             has_conversation: ctx.has_conversation,
@@ -177,6 +213,36 @@ impl Runtime {
             ctx.event,
             ctx.prefilter_inputs(),
         );
+
+        // The comment that calls for help stays in the file: while a remark
+        // is being written for it, the same call is not a new trigger (it
+        // would cancel the answer it is waiting for).
+        if ctx.help_in_flight {
+            pending.prefilter_outcome = "skip";
+            pending.prefilter_reason = Some("help_in_flight");
+            pending.finish(
+                &self.log,
+                DeliveryOutcome::None {
+                    reason: "help_in_flight",
+                },
+            );
+            return;
+        }
+
+        // A save and an idle on the same text: the remark being written
+        // for that text already answers both, and restarting it would
+        // only throw its model calls away. Newer text still supersedes it.
+        if ctx.remark_in_flight {
+            pending.prefilter_outcome = "skip";
+            pending.prefilter_reason = Some("remark_in_flight");
+            pending.finish(
+                &self.log,
+                DeliveryOutcome::None {
+                    reason: "remark_in_flight",
+                },
+            );
+            return;
+        }
 
         // No instinct wired: the pipeline cannot run.
         let Some(decision) = self.decision.as_ref().map(Arc::clone) else {
@@ -322,7 +388,12 @@ impl Runtime {
             }
             Action::WakeCognition => {
                 self.clear_in_flight(&uri).await;
-                self.deliver_wake(uri, ctx, pending).await;
+                let reason = WakeReason::from_answers(
+                    evaluation.answers.as_ref(),
+                    ctx.has_intent,
+                    ctx.has_conversation,
+                );
+                self.deliver_wake(uri, ctx, pending, reason).await;
             }
             Action::Remark => {
                 let prompt =

@@ -60,6 +60,11 @@ pub enum ToolError {
     Canceled,
     #[error("tool denied [{code}]: {message}")]
     Denied { code: String, message: String },
+    /// A `write` or `edit` was bound to the canonical file a reviewer saw, and
+    /// a link (or another kind of file) is there now. Nothing was touched; the
+    /// call is checked again.
+    #[error("the destination changed since it was checked: {0}")]
+    DestinationChanged(PathBuf),
     #[error("tool I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -74,6 +79,8 @@ pub enum ConfigError {
     ParseToml(#[from] toml::de::Error),
     #[error("missing provider in config: {0}")]
     MissingProvider(String),
+    #[error("invalid models.json: {0}")]
+    Invalid(String),
 }
 
 #[derive(Debug, Error)]
@@ -90,6 +97,10 @@ pub enum AgentError {
     Bus(#[from] BusError),
     #[error(transparent)]
     Server(#[from] ServerError),
+    /// The conversation outgrew the model's context window and the automatic
+    /// compaction could not make room.
+    #[error("{0}")]
+    Compaction(String),
 }
 
 #[derive(Debug, Error)]
@@ -116,6 +127,8 @@ pub enum ServerError {
     SessionStopping,
     #[error("conversation is stopped; resume it first")]
     ResumeRequired,
+    #[error("no such permission request is waiting: it was answered, cancelled or never existed")]
+    PermissionStale,
     #[error("message content must be text")]
     NonTextContent,
     #[error("non-loopback bind refused: {0} (pass --allow-non-loopback to override)")]
@@ -126,6 +139,55 @@ pub enum ServerError {
     Model(#[from] crate::error::ProviderError),
     #[error("malformed request body: {0}")]
     MalformedBody(String),
+    #[error("Chat alias '{alias}' (provider '{provider}', model '{model}') has no known context window: the provider's model list did not report one. Set \"context_window\" for it in {models_path}, or make the provider reachable and try again.")]
+    NoContextWindow {
+        alias: String,
+        provider: String,
+        model: String,
+        models_path: String,
+    },
+    #[error("Session {session} was started on {saved} and alias '{alias}' now maps to {current}. A conversation never moves to another model on its own: point '{alias}' back at the saved model in {models_path}, or start a new session.")]
+    ModelIdentityChanged {
+        session: String,
+        alias: String,
+        saved: String,
+        current: String,
+        models_path: String,
+    },
+    #[error("Session {session} has an unreadable saved model resolution ({reason}); it cannot be resumed until the sessions.model_resolution column of that row is fixed or cleared.")]
+    SavedResolutionInvalid { session: String, reason: String },
+    #[error("unknown agent '{agent}': the primary agents are {available}")]
+    UnknownAgent { agent: String, available: String },
+    #[error("Session {session} runs as agent '{agent}', which is not available ({reason}); add the agent back or fix its file to resume it. The conversation is kept as it is.")]
+    SavedAgentUnavailable {
+        session: String,
+        agent: String,
+        reason: String,
+    },
+    #[error("model alias '{alias}' has no variant '{variant}'; {offered}")]
+    UnknownVariant {
+        alias: String,
+        variant: String,
+        /// What the alias offers, worded for the reader.
+        offered: String,
+    },
+    #[error("alias '{alias}' has default_variant '{variant}', which it does not offer now (a generated variant comes from the provider's reported effort tiers). Fix `default_variant` for '{alias}' in {models_path}, or name a variant when creating the session.")]
+    DefaultVariantUnavailable {
+        alias: String,
+        variant: String,
+        models_path: String,
+    },
+    #[error("Session {session} runs with variant '{variant}', but alias '{alias}' no longer offers it. A conversation never changes variant on its own: add the variant back to '{alias}' in {models_path} (or make the provider report that effort tier again), or start a new session.")]
+    VariantUnavailable {
+        session: String,
+        alias: String,
+        variant: String,
+        models_path: String,
+    },
+    #[error("cannot confirm that alias '{alias}' offers variant '{variant}': its list of variants comes from the provider's model list, which is not available and has no earlier copy. Try again when the provider is reachable.")]
+    VariantOfferUnknown { alias: String, variant: String },
+    #[error("Chat alias '{alias}' cannot be used: {reason}")]
+    ImpossibleBudget { alias: String, reason: String },
     #[error("history store error: {0}")]
     History(String),
 }

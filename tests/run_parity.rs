@@ -13,19 +13,19 @@ use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
-use rust_agent::agent::actor::AgentActor;
-use rust_agent::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
-use rust_agent::app::{event_to_ui, exit_code_for};
-use rust_agent::bus::inbox::ActorInbox;
-use rust_agent::bus::runtime;
-use rust_agent::bus::sequencer::Sequencer;
-use rust_agent::bus::{ResumeOutcome, SessionBus};
-use rust_agent::provider::config::{ProviderConfig, ReasoningHistory};
-use rust_agent::provider::StreamDelta;
-use rust_agent::render::UiEvent;
-use rust_agent::tools::bash::BashTool;
-use rust_agent::tools::native::ReadTool;
-use rust_agent::tools::{Registry, ToolContext};
+use navai::agent::actor::AgentActor;
+use navai::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
+use navai::app::{event_to_ui, exit_code_for};
+use navai::bus::inbox::ActorInbox;
+use navai::bus::runtime;
+use navai::bus::sequencer::Sequencer;
+use navai::bus::{ResumeOutcome, SessionBus};
+use navai::provider::config::{ProviderConfig, ReasoningHistory};
+use navai::provider::StreamDelta;
+use navai::render::UiEvent;
+use navai::tools::bash::BashTool;
+use navai::tools::native::ReadTool;
+use navai::tools::{Registry, ToolContext};
 
 mod common;
 use common::sse::{http_sse, spawn_mock_provider, sse_body};
@@ -120,7 +120,7 @@ async fn run_via_bus_renders_identically_to_the_direct_path() {
 /// Drive the bus event stream through `event_to_ui`, collecting rendered
 /// UiEvents until the terminal turn.end, and derive the exit code the same
 /// way `run` does (via the public `exit_code_for`).
-async fn collect_bus_render(sub: rust_agent::bus::SubscribeReply) -> (Vec<Ui>, i32) {
+async fn collect_bus_render(sub: navai::bus::SubscribeReply) -> (Vec<Ui>, i32) {
     let mut out = Vec::new();
     if let ResumeOutcome::Replay(events) = &sub.replay {
         for env in events {
@@ -147,7 +147,10 @@ async fn collect_bus_render(sub: rust_agent::bus::SubscribeReply) -> (Vec<Ui>, i
 fn phase1_exit(outcome: &RunOutcome) -> i32 {
     match outcome {
         RunOutcome::Done(_) => 0,
-        RunOutcome::Yielded(_) | RunOutcome::StepBudgetExhausted => 2,
+        RunOutcome::Yielded(_)
+        | RunOutcome::PermissionRequired(_)
+        | RunOutcome::StepBudgetExhausted
+        | RunOutcome::NeedsCompaction { .. } => 2,
         RunOutcome::Interrupted => 130,
     }
 }
@@ -159,7 +162,7 @@ fn phase1_exit(outcome: &RunOutcome) -> i32 {
 /// client rendering from events sees byte-identical error output.
 #[test]
 fn error_turn_end_reproduces_the_phase1_stderr_line_and_exit_code() {
-    use rust_agent::bus::event::{EventEnvelope, EventKind, TurnEnd, TurnEndOutcome, TurnError};
+    use navai::bus::event::{EventEnvelope, EventKind, TurnEnd, TurnEndOutcome, TurnError};
 
     let message = "provider API error (status 500): boom".to_string();
     // The Phase-1 `finish` stderr for `Err(e)` is `\nerror: {e}`.
@@ -192,8 +195,8 @@ fn error_turn_end_reproduces_the_phase1_stderr_line_and_exit_code() {
     // Assert the ACTUAL string the production path emits — the shared
     // `terminal_stderr_line` that `exit_code_for` prints — equals the Phase-1
     // `finish` line, not an independent reconstruction.
-    let bus_stderr = rust_agent::app::terminal_stderr_line(&payload)
-        .expect("error outcome produces a stderr line");
+    let bus_stderr =
+        navai::app::terminal_stderr_line(&payload).expect("error outcome produces a stderr line");
     assert_eq!(
         bus_stderr, phase1_stderr,
         "bus stderr line != Phase-1 stderr line for the same error"
@@ -201,7 +204,7 @@ fn error_turn_end_reproduces_the_phase1_stderr_line_and_exit_code() {
 }
 
 /// Subprocess capture of the REAL production stderr: run the actual
-/// `rust-agent run` binary against a mock provider that returns HTTP 500, and
+/// `navai run` binary against a mock provider that returns HTTP 500, and
 /// assert the process stderr carries the `error:` line and the process exits
 /// 1. This exercises the `exit_code_for` -> `eprint!(terminal_stderr_line)`
 /// path end-to-end, so deleting the production `eprint!` would FAIL this test
@@ -241,11 +244,12 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
         serde_json::json!({
             "providers": { "mock": {
                 "base_url": format!("http://{addr}/v1"),
-                "api_key_env": "RUST_AGENT_RUN_PARITY_KEY",
+                "api_key_env": "NAVAI_RUN_PARITY_KEY",
                 "headers": {}, "connect_timeout_ms": 2000, "request_timeout_ms": 30000
             }},
             "models": { "default": {
-                "provider": "mock", "model": "m", "reasoning_history": "preserve"
+                "provider": "mock", "model": "m", "reasoning_history": "preserve",
+                "context_window": 128000
             }}
         })
         .to_string(),
@@ -254,9 +258,10 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
 
     let out = tokio::task::spawn_blocking({
         let models = models.clone();
+        let home = root.to_path_buf();
         let ws = root.join("ws");
         move || {
-            std::process::Command::new(env!("CARGO_BIN_EXE_rust-agent"))
+            std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
                 .args([
                     "run",
                     "--workspace",
@@ -266,13 +271,15 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
                     "--prompt",
                     "go",
                 ])
-                .env("RUST_AGENT_RUN_PARITY_KEY", "test-key")
+                .env("NAVAI_RUN_PARITY_KEY", "test-key")
                 // The binary opens the conversation history in the XDG data
                 // dir and migrates legacy files there. Without these two, a
                 // test run wrote into the driver's real database and moved
                 // their data (observed 2026-10-01).
                 .env("XDG_DATA_HOME", data_home.as_os_str())
                 .env("XDG_CONFIG_HOME", config_home.as_os_str())
+                // The home directory holds the global rules files.
+                .env("HOME", &home)
                 .output()
                 .expect("run the binary")
         }
@@ -292,8 +299,8 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
     );
 }
 
-fn user_command(session_id: Ulid, text: &str) -> rust_agent::bus::command::Command {
-    use rust_agent::bus::command::{Command, ContentBlock, DeliveryMode};
+fn user_command(session_id: Ulid, text: &str) -> navai::bus::command::Command {
+    use navai::bus::command::{Command, ContentBlock, DeliveryMode};
     Command {
         command_id: Ulid::new(),
         session_id,
@@ -319,6 +326,7 @@ fn make_actor(base_url: String) -> AgentActor {
         ToolContext {
             workspace: ws.clone(),
             writable_roots: vec![ws],
+            readable_roots: Vec::new(),
         },
         ProviderConfig {
             base_url,
@@ -326,6 +334,7 @@ fn make_actor(base_url: String) -> AgentActor {
             headers: BTreeMap::new(),
             connect_timeout_ms: 2000,
             request_timeout_ms: 600_000,
+            catalog_format: None,
         },
         "test-key".to_string(),
         "test-model".to_string(),
@@ -337,4 +346,88 @@ fn make_actor(base_url: String) -> AgentActor {
 
 fn cancel_placeholder() -> CancellationToken {
     CancellationToken::new()
+}
+
+/// A chat alias without a window is refused at `navai run` startup with the
+/// usual `error:` line naming the models.json to fix, and exits 1.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_binary_refuses_an_alias_without_a_known_window() {
+    // The provider's model list does not know the model, and a chat call
+    // must never be reached.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                break;
+            };
+            let mut buf = vec![0u8; 8192];
+            let _ = sock.read(&mut buf).await;
+            let body = "{\"data\":[]}";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+            let _ = sock.shutdown().await;
+        }
+    });
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("ws")).unwrap();
+    let models = root.join("models.json");
+    std::fs::write(
+        &models,
+        serde_json::json!({
+            "providers": { "mock": {
+                "base_url": format!("http://{addr}/v1"),
+                "api_key_env": "NAVAI_RUN_PARITY_KEY",
+                "headers": {}, "connect_timeout_ms": 2000, "request_timeout_ms": 30000
+            }},
+            "models": { "default": {
+                "provider": "mock", "model": "m", "reasoning_history": "preserve"
+            }}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let out = tokio::task::spawn_blocking({
+        let models = models.clone();
+        let home = root.to_path_buf();
+        let ws = root.join("ws");
+        move || {
+            std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
+                .args([
+                    "run",
+                    "--workspace",
+                    ws.to_str().unwrap(),
+                    "--models",
+                    models.to_str().unwrap(),
+                    "--prompt",
+                    "go",
+                ])
+                .env("NAVAI_RUN_PARITY_KEY", "test-key")
+                .env("XDG_DATA_HOME", home.join("data"))
+                .env("XDG_CONFIG_HOME", home.join("config"))
+                .env("HOME", &home)
+                .output()
+                .expect("run the binary")
+        }
+    })
+    .await
+    .expect("join");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let expected = format!(
+        "error: Chat alias 'default' (provider 'mock', model 'm') has no known context window: the provider's model list did not report one. Set \"context_window\" for it in {}, or make the provider reachable and try again.",
+        models.display()
+    );
+    assert!(
+        stderr.contains(&expected),
+        "stderr lacks the window refusal; got {stderr:?}"
+    );
+    assert_eq!(out.status.code(), Some(1));
 }

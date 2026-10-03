@@ -1,14 +1,22 @@
-# Rust Agent v0.1 Specification
+# Navai v0.1 Specification (original design)
 
-**Status:** Draft  
+**Status:** The original design, partly built. Read the notes under each section heading.  
 **Audience:** Pixma and coding agents implementing the project  
-**Project location:** `~/dev/rust-agent`  
+**Repository:** https://github.com/PixmaNts/Navai  
 **Primary artifact:** A headless, single-binary Rust coding-agent core with an event API  
 **Delivery model:** Four vertical phases, each a demonstrable end-to-end slice
 
+> **How to read this file.** It is the first design of the agent core. It is **not** a description of the code. Navai grew in a different direction: the terminal client, the VS Code navigator (Language Server, four model layers), build and plan agents, the permission gate, skills, rules, the model catalog, variants, the context budget and manual compaction were built. Plugins, MCP, subagents, hot reload and the co-agent were not.
+>
+> - **What the code does:** [`ARCHITECTURE.md`](../ARCHITECTURE.md) (modules and flows) and [`CONTEXT.md`](../CONTEXT.md) (vocabulary). The decisions are in [`docs/adr/`](adr/).
+> - **Status of each section** is the line that starts with "Status" under its heading: *built*, *partly built*, *not built*, *superseded*, *historical* or *direction*. Sections 9, 10.3, 17, 18, 20, 21, 22, 24 and 27 were rewritten to match the code. The others keep their original wording; where a statement is not true of the code, the status line says so.
+> - Sections 11 to 14 and 16 are kept as design references for work that is not built. They are not a promise.
+
 ## 1. Vision
 
-Rust Agent is a personal, minimal-but-complete coding agent inspired by `pi` and `oh-my-pi`, but not constrained by compatibility with either. It must remain understandable, fast, reliable, and cooperative with its operator. The core agent loop should be approximately 200 lines of direct orchestration: call a model, execute requested tools, append results, and either continue, finish, or yield to the human.
+> **Status: direction.** The vision holds; the plugin, MCP and co-agent parts of it are not built.
+
+Navai is a personal, minimal-but-complete coding agent inspired by `pi` and `oh-my-pi`, but not constrained by compatibility with either. It must remain understandable, fast, reliable, and cooperative with its operator. The core agent loop should be approximately 200 lines of direct orchestration: call a model, execute requested tools, append results, and either continue, finish, or yield to the human.
 
 The system is built around one unifying primitive: an asynchronous event bus connecting independent actors. Main agents, subagents, users, plugins, persistence, user interfaces, and the optional co-agent all participate through messages and events rather than bespoke integration paths.
 
@@ -16,14 +24,16 @@ The design deliberately leaves judgment to the model when judgment does not need
 
 ## 2. Goals
 
+> **Status: partly built.** Built: items 1, 2, 4 to 6, 9 (as one actor, no subagents), 10, 11 and 14. Item 3 became eight tools plus `skill`. Not built: 7 (plugins), 8 (MCP), 12 (hot reload), 13 (co-agent), and non-blocking subagents.
+
 Version 0.1 SHALL provide:
 
 1. A headless Rust agent loop using an OpenAI-compatible model endpoint.
 2. Streaming assistant text and tool calls.
-3. Five native development tools: `read`, `write`, `edit`, `bash`, and `grep`.
+3. Native development tools: first `read`, `write`, `edit`, `bash` and `grep`; now also `glob` and `fetch` (section 9).
 4. Explicit `Continue`, `Done`, and `Yield` loop outcomes.
 5. An asynchronous event bus with per-actor inboxes.
-6. A local SSE and WebSocket API implemented with Axum.
+6. A local HTTP and SSE API implemented with Axum.
 7. External-process plugins over JSON-RPC stdio.
 8. MCP tool integration through `rmcp`.
 9. Non-blocking subagents using the same loop as the main agent.
@@ -34,6 +44,8 @@ Version 0.1 SHALL provide:
 14. A Ratatui client that consumes the server API rather than importing agent internals.
 
 ## 3. Non-Goals
+
+> **Status: still in force.** Added since: no WebUI, and no automatic compaction yet.
 
 Version 0.1 SHALL NOT attempt to provide:
 
@@ -58,6 +70,8 @@ Version 0.1 SHALL NOT attempt to provide:
 
 ## 4. Normative Language
 
+> **Status: reference.** Defines the words this document uses.
+
 The terms **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** describe requirements for v0.1.
 
 - **MUST** indicates a required invariant.
@@ -71,6 +85,8 @@ The terms **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** descri
 - **Task** means the work correlated with an initiating inbox message. Task completion is advisory, not an enforced goal condition.
 
 ## 5. Core Principles
+
+> **Status: principles, still guide the code.** Parts 5.4 to 5.6 mention plugins and hooks, which are not built.
 
 ### 5.1 Keep the Agent Loop Small
 
@@ -149,6 +165,8 @@ When a plugin rewrites a prompt, modifies tool arguments, changes a tool result,
 
 ## 6. Architecture Overview
 
+> **Status: partly built.** The loop, bus, server, SQLite subscriber and clients exist (`navai serve`, `navai tui`, `navai run`, plus `navai-lsp`). The plugin supervisor, MCP supervisor and co-agent in the diagram do not exist. See `ARCHITECTURE.md`.
+
 ### 6.1 System Diagram
 
 ```mermaid
@@ -160,8 +178,8 @@ flowchart LR
         USER[Human user]
     end
 
-    subgraph Core["rust-agent core process"]
-        API[Axum SSE / WebSocket API]
+    subgraph Core["navai core process"]
+        API[Axum HTTP / SSE API]
         ROUTER[Inbox router]
         BUS[Session event bus and sequencer]
         MAIN[Main-agent actor]
@@ -180,8 +198,8 @@ flowchart LR
     end
 
     USER --> TUI
-    TUI <-->|WebSocket| API
-    CLI -->|HTTP / WebSocket| API
+    TUI <-->|HTTP + SSE| API
+    CLI -->|HTTP + SSE| API
     WEB -. future .-> API
 
     API --> ROUTER
@@ -213,13 +231,13 @@ flowchart LR
 The core is a single Rust binary with multiple operating modes:
 
 ```text
-rust-agent serve
-rust-agent tui
-rust-agent run
+navai serve
+navai tui
+navai run
 ```
 
 - `serve` starts the authoritative core, event bus, agent actors, plugin supervisor, SQLite subscriber, and Axum API.
-- `tui` is a client. It connects through WebSocket and MUST NOT reach directly into agent-loop state.
+- `tui` is a client. It connects through HTTP (commands) and SSE (events) and MUST NOT reach directly into agent-loop state.
 - `run` starts a local core for a single terminal invocation. It MAY use an in-process client, but that client MUST still communicate through the same command and event interfaces.
 
 The binary remains mono-binary even though user-selected plugins run as external processes. Plugin language runtimes are not bundled or embedded.
@@ -284,6 +302,8 @@ Events MUST have total order within one session through the monotonically increa
 
 ## 7. Core Agent State Machine
 
+> **Status: built.** The three states are `idle`, `running` and `yielded` (the `agent.state` values). Stopping a session ends the actor; there is no `STOPPED` value on the wire.
+
 An agent actor has four externally visible states:
 
 ```text
@@ -318,6 +338,8 @@ stateDiagram-v2
 `Done` is a turn outcome, not a permanent actor state. After `Done`, the actor returns to `IDLE` unless queued messages immediately start another turn.
 
 ## 8. Agent Loop
+
+> **Status: built.** `StepOutcome` is in `src/agent/response.rs`. A fourth outcome, a held permission request, is handled as a yield (`RunOutcome::PermissionRequired`). The step budget is 50 (`NAVAI_MAX_STEPS`); running out yields, never forces a continuation.
 
 ### 8.1 Loop Outcomes
 
@@ -547,53 +569,70 @@ A plain-text assistant question may still result in `Done`, but personas SHOULD 
 
 ## 9. Tools
 
-### 9.1 Native Development Tools
+> **Status: built, and larger than first specified.** The registry holds eight tools (`read`, `write`, `edit`, `bash`, `grep`, `glob`, `fetch`, `ask`), and a ninth, `skill`, is added per session. The permission gate and the plan role guard (9.4, 9.5) were not in the first design. Code: `src/tools/`, `src/agent/permissions.rs`, `src/agent/guard.rs`.
 
-The core exposes exactly five native development tools:
+### 9.1 Registry Tools
 
-| Tool | Purpose | Required behavior |
+A session gets these tools (`src/session/actor.rs`):
+
+| Tool | Purpose | Behavior |
 |---|---|---|
-| `read` | Read files or bounded line ranges | Normalize paths, report truncation, never invent missing content |
-| `write` | Create or replace a file | Use atomic temporary-file plus rename where supported |
-| `edit` | Apply exact, reviewable edits | Fail on no match or ambiguous multiple matches unless explicitly allowed |
-| `bash` | Run a shell command | Set workspace cwd, capture stdout/stderr, support timeout and cancellation |
-| `grep` | Search file contents | Prefer `rg`, bound result count and output bytes |
+| `read` | Read a file or a bounded line range | `offset` is 1-indexed, `limit` is a line count. Reports truncation. Accepts the writable and the read-only roots. |
+| `write` | Create or replace a file | Atomic: a temporary file beside the target, then a rename. |
+| `edit` | Replace an exact literal string | Fails on no match or on several matches, unless `replace_all` is set. |
+| `bash` | Run a shell command | Runs in the workspace, in its own process group. `timeout` in milliseconds (default 120 000). On timeout or cancel it sends `SIGTERM` to the group, waits a grace period (5 s, `NAVAI_BASH_GRACE_MS`), then `SIGKILL`. |
+| `grep` | Search file contents by regex | Uses `rg` when it is installed, else a built-in walk. At most 1,000 matches; output bounded. |
+| `glob` | Find files by a relative pattern | Sorted relative paths. Links are not followed. Hidden entries, `node_modules` and `target` are skipped unless the pattern names them. 200 paths by default (1,000 at most), 100,000 entries visited, 5 s. Absolute patterns and `..` are refused. |
+| `fetch` | HTTP(S) GET | Returns markdown (default), text or raw HTML. Its own client, with no provider credentials. Same-origin redirects only (at most 10); another origin comes back as a URL for a new call. 5 MiB streamed cap, text types only, 30 s default timeout (120 s at most). HTML is converted by a memory- and CPU-limited child process (`navai internal-html-convert`). |
+| `ask` | Yield to the human | See 8.3. |
 
-These are the only native development tools. Additional development integrations belong in MCP servers.
+`skill` is not in the base registry. A session registers it only when discovery found at least one skill (section 18.3).
 
-### 9.2 Core Control-Plane Tools
+Output of every tool is bounded to 64 KiB, with the original size in the result metadata when it was cut. Extra development tools were meant to come from MCP; MCP is not built (section 13).
 
-The following are core control primitives and are not counted among the five development tools:
+### 9.2 Control Tools
 
-- `ask`
-- `spawn_agent`
-- `load_skill`
+`ask` and `skill` are control tools: they talk to core state, not to the workspace.
 
-They exist because they interact with core state rather than operating on the workspace.
+- `ask` yields the turn (8.3).
+- `skill` loads one skill by its exact id and returns its instructions and the files next to it. It runs nothing. It replaces the `load_skill` of the first design.
+- `spawn_agent` is not built (section 14).
 
 ### 9.3 Tool Safety Defaults
 
-- `read`, `write`, `edit`, and `grep` MUST reject path traversal outside configured roots.
-- Default writable roots SHOULD be the workspace and the Rust Agent user configuration directory.
-- `bash` is not sandboxed in v0.1 and runs with the operator's OS permissions.
-- Shell subprocesses MUST run in their own process group so `interrupt` can terminate descendants.
-- Output MUST be bounded. Truncation metadata MUST include original byte counts when known.
-- Tool denial MUST be represented as a structured tool result so the model can recover.
-- Tool errors MUST never crash the agent actor.
+- Paths are checked against roots. `write`, `edit` and `bash` may change files under the workspace and the Navai config directory. `read` and `grep` also accept the read-only roots, which are the skill directories. Path traversal outside the roots is refused.
+- `bash` is not sandboxed. It runs with the operator's OS permissions.
+- A `write` or `edit` whose destination was reviewed is opened without following any link (`src/tools/nofollow.rs`: `openat2` with `RESOLVE_NO_SYMLINKS`, else a component-by-component `O_NOFOLLOW` walk). A link put in the destination after the check is refused and the call is checked again.
+- Tool denial is a structured tool result, so the model can recover. Tool errors never crash the agent actor.
+
+### 9.4 Permission Gate
+
+A session that runs as an agent asks the driver before it runs `write`, `edit`, `bash` or `fetch`. `read`, `grep`, `glob`, `skill` and `ask` never ask.
+
+- The call does not run. The turn yields and the server publishes a durable `permission.requested`. The scope is the canonical parent folder for `write` and `edit`, the workspace for `bash` (what the driver approves, not a confinement) and the URL origin for `fetch`.
+- The driver answers with `POST /v1/sessions/{id}/permissions/{request_id}`: `allow_once`, `allow_folder` or `deny` with a message. `allow_folder` is remembered in memory, per agent, capability and scope, until the session ends. Chat text never approves a request: a message sent while a request waits cancels it.
+- `permission.resolved` ends every request: `allow_once`, `allow_folder`, `deny`, `cancelled` (a stop, or a message) or `expired` (a restart). A restart never runs a held call.
+- `navai run` never approves by itself: it prints `permission_required: <tool> <scope>` and exits with code 3. `--yes` approves every request once (unsafe).
+
+### 9.5 Plan Role Guard
+
+The `plan` agent keeps every tool. Its prompt says it researches and writes markdown only. A `write` or `edit` of a regular `.md` file runs without a request. Every other `write` or `edit`, and every `bash` and `fetch`, is first put to Jev (the model behind the `instinct` alias) as one `role_conformance` question with the exact call (at most 16 KiB). Only a valid `conforms` lets the call run without the driver. Anything else becomes a permission request that says why, answerable once or by denial only. The guard is advisory, not a sandbox. See ADR 0008 and `src/agent/guard.rs`.
 
 ## 10. Event Bus
+
+> **Status: partly built.** The envelope (10.1) and sequencing are built. Hook processing (10.2) is not. The catalog (10.3) was rewritten to match the code.
 
 ### 10.1 Event Envelope
 
 ```rust
 struct EventEnvelope {
-    schema_version: u16,
+    schema_version: u32,
     event_id: Ulid,
     seq: u64,
-    session_id: SessionId,
-    actor_id: ActorId,
+    session_id: Ulid,
+    actor_id: String,
     kind: String,
-    occurred_at: DateTime<Utc>,
+    occurred_at: String,              // RFC 3339, UTC, millisecond precision
     causation_id: Option<Ulid>,
     correlation_id: Option<Ulid>,
     payload: serde_json::Value,
@@ -631,40 +670,47 @@ Execute the permitted action
 
 A hook mutates the candidate payload before the finalized event is published. It does not rewrite an event already present in the log.
 
-### 10.3 Minimum Event Catalog
+### 10.3 Event Catalog
 
-Hook policy legend:
+> **Status: built, without hooks.** The code emits 19 kinds (`src/bus/event.rs`, `EVENT_KIND_COUNT`). Every event is observe-only: no hook can modify or deny one. All kinds are stored and replayed except `llm.delta` and `context.updated`, which are live-only. The envelope is unchanged since version 1; its `actor_id` is always `agent:main`.
 
-- **Observe:** asynchronous notification only; no mutation.
-- **Modify:** JSON Patch may modify the candidate payload.
-- **Deny:** plugin may prevent the associated action.
-- **No:** unavailable as a synchronous hook in v0.1.
+| Event | Fired when | Payload shape |
+|---|---|---|
+| `session.start` | A session is configured and its actor is ready | `{workspace, root_actor_id}` |
+| `session.end` | A session shuts down after cleanup | `{reason, final_seq}` |
+| `message.received` | A user or actor command was accepted into an inbox | `{command_id, source, target, mode, content}` |
+| `turn.start` | The actor begins a turn | `{turn_id, actor_id, task_id}` |
+| `turn.end` | A turn reaches `done`, `yielded`, `interrupted` or `error` | `{turn_id, actor_id, outcome, usage?, duration_ms, error?{code, message}}` |
+| `llm.delta` | A normalized text, reasoning or tool-call delta arrived (live-only) | `{turn_id, step_id, delta}` |
+| `llm.response` | A full streamed response was normalized | `{turn_id, step_id, message, usage?, finish_reason?}` |
+| `tool.pre_call` | Before a tool runs | `{tool_call_id, name, source, args, actor_id}`; `source` is always `native` |
+| `tool.post_call` | A tool completed, before its result enters the transcript | `{tool_call_id, name, status, output, metadata}`; `metadata` carries `duration_ms` and, for a guarded `plan` call, `guard` |
+| `agent.state` | The actor changed state | `{actor_id, from, to, reason?}`; the values are `idle`, `running`, `yielded` |
+| `agent.yield` | The actor pauses for human input | `{actor_id, turn_id, question, kind?, details?}` |
+| `task.done` | The actor produced a final response for the task | `{task_id, actor_id, result_message_id, status}`; `status` is `done` |
+| `command.result` | A session command (`/help`, `/model`, `/compact`, ...) has run | `{operation_id, name, ok, data?, error?}`; `data` bounded to 16 KiB |
+| `session.agent_changed` | The session's primary agent was changed (`/agent`) | `{agent, previous}` |
+| `permission.requested` | A gated tool call (`write`, `edit`, `bash`, `fetch`) waits for a decision; it has not run | `{request_id, tool_call_id, tool, arguments, scope{kind, value}, agent, reason}`; `arguments` is JSON text cut to 4 KiB |
+| `permission.resolved` | A permission request ended | `{request_id, tool_call_id, resolution, message?}`; `resolution` is `allow_once`, `allow_folder`, `deny` (with `message`), `cancelled` (stop, or a message sent meanwhile) or `expired` (restart) |
+| `model.changed` | The model selection of the session was committed: its first selection at start, then each `/model <alias>` switch, variant change, or resume refresh of the variant | `{operation_id?, revision, reason, previous?{alias, provider, model}, new{alias, provider, model}, variant, window, input_budget, from_message}`; `reason` is `initial`, `switch`, `variant` or `resume-refresh`; `from_message` is the transcript index where the new selection starts |
+| `context.updated` | The estimated size of the next request changed (after a provider response, after a step's tool results, at turn start and end) | The context snapshot: `{alias, variant?, window, window_source, estimate_total, breakdown{system, rules, skills_catalog, tools, messages}, output_reserve, margin, input_budget, percent, estimated, skills{listed, omitted}, rule_files, last_usage?{alias, prompt_tokens, completion_tokens, step}, incarnation, revision}`. `revision` counts within one runtime `incarnation` (a stopped and resumed session starts a new one). Incarnation ids carry no order, so a client retires the incarnation it moves past and ignores later snapshots of it. Live-only (not stored or replayed); also readable from `GET /v1/sessions/{id}/context`. |
+| `context.compacted` | A compaction was saved (`/compact`): a summary now stands for the start of the conversation | `{generation, through_message, pruned, estimate_before, estimate_after}`; explanatory only (the stored checkpoint is what a resume restores) |
 
-| Event | Fired when | Payload shape | Hook policy |
-|---|---|---|---|
-| `session.start` | A new session has been configured but actors have not started | `{workspace, config, root_actor_id, client_ids}` | Modify, Deny |
-| `session.end` | A session is shutting down after actor cleanup | `{reason, final_seq, actor_summaries}` | Observe |
-| `message.received` | A user or actor command has been accepted into an inbox | `{command_id, source, target, mode, content}` | Observe |
-| `turn.start` | An actor begins processing a drained inbox batch | `{turn_id, actor_id, messages, persona, task_id}` | Modify, Deny |
-| `prompt.pre_llm` | Immediately before an OpenAI request is constructed | `{model, messages, tools, context_blocks, settings}` | Modify, Deny |
-| `llm.delta` | A normalized text or tool-call delta is received | `{turn_id, step_id, delta_type, delta}` | Observe; high-volume |
-| `llm.response` | A full streamed response has been normalized | `{turn_id, step_id, message, usage, finish_reason}` | Modify, Deny |
-| `tool.pre_call` | Before native or MCP tool execution | `{tool_call_id, name, source, args, actor_id}` | Modify, Deny |
-| `tool.progress` | A running tool emits bounded progress | `{tool_call_id, stream, chunk, truncated}` | Observe |
-| `tool.post_call` | A tool has completed, before its result enters the transcript | `{tool_call_id, name, status, output, metadata}` | Modify, Deny |
-| `context.pre_compact` | The actor is near its configured context limit | `{messages, estimated_tokens, limit, strategy}` | Modify, Deny |
-| `agent.state` | An actor changes state | `{actor_id, from, to, reason}` | Observe |
-| `agent.yield` | An actor pauses for human input or action | `{actor_id, turn_id, question, kind, details}` | Observe |
-| `subagent.spawned` | A child actor has been created and scheduled | `{agent_id, parent_id, persona, model, background, tools}` | Observe |
-| `subagent.done` | A child finishes, yields terminally, is cancelled, or fails | `{agent_id, parent_id, status, result, error, usage}` | Observe |
-| `turn.end` | A turn reaches `done`, `yielded`, `interrupted`, or `error` | `{turn_id, actor_id, outcome, usage, duration_ms}` | Observe |
-| `task.done` | An actor produces a final response for the initiating task | `{task_id, actor_id, result_message_id, status}` | Observe |
-| `hook.decision` | A hook returns, times out, crashes, or is bypassed | `{plugin_id, event, decision, paths, reason, duration_ms}` | No |
-| `plugin.error` | A plugin has a protocol, process, or timeout failure | `{plugin_id, phase, code, message, failure_mode}` | No |
+Kinds in the first design that are **not built** and never emitted:
+
+| Event | Why |
+|---|---|
+| `prompt.pre_llm` | No hooks. |
+| `tool.progress` | Tools do not stream progress. |
+| `context.pre_compact` | No compaction plugin; compaction is a command (section 24). |
+| `subagent.spawned`, `subagent.done` | No subagents (section 14). |
+| `hook.decision`, `plugin.error` | No plugins (section 11). |
 
 `task.done` MUST NOT mean that a todo list is empty. It records that the actor finished responding to the current task correlation.
 
 ## 11. Plugin Architecture
+
+> **Status: not built.** There is no plugin supervisor, no hook protocol and no JSON-RPC stdio. Kept as a design reference.
 
 ### 11.1 Process Model
 
@@ -742,7 +788,7 @@ The core starts the process and sends:
   "params": {
     "protocol_version": "0.1",
     "core_version": "0.1.0",
-    "workspace": "/home/pixma/dev/rust-agent",
+    "workspace": "/home/pixma/dev/navai",
     "session_id": "session-01J...",
     "capabilities": {
       "json_patch": "rfc6902",
@@ -956,6 +1002,8 @@ The core MUST:
 
 ## 12. Plugin Examples
 
+> **Status: not built.** Depends on section 11.
+
 ### 12.1 Contextd Plugin
 
 Contextd must be implementable without direct access to the core database, transcript objects, or provider internals.
@@ -1049,6 +1097,8 @@ The agent may explain the denial, choose a safer command, or use `ask`. It MUST 
 
 ## 13. MCP Integration
 
+> **Status: not built.** There is no `rmcp` dependency and no `tools/mcp.rs`.
+
 The core is an MCP client using `rmcp`.
 
 Version 0.1 SHALL support:
@@ -1081,12 +1131,14 @@ Version 0.1 does not require:
 - Remote HTTP MCP transport.
 - MCP resources.
 - MCP prompts.
-- Exposing Rust Agent itself as an MCP server.
+- Exposing Navai itself as an MCP server.
 - Dynamic installation of MCP servers.
 
 MCP covers external tools. The mini hook protocol covers inverse control flow where the core calls a plugin during lifecycle processing.
 
 ## 14. Subagents
+
+> **Status: not built.** Only the agent definitions it relies on exist (section 18.2): `explore` and `review` are defined and cannot be started yet. The current design for background child sessions lives in the maintainers' working notes, not in this file.
 
 ### 14.1 Definition
 
@@ -1205,6 +1257,8 @@ Spawning N subagents SHALL create N independently scheduled actors. Completion o
 
 ## 15. Message Delivery Modes
 
+> **Status: partly built.** The `mode` field is accepted and recorded. `steer` and `interrupt` are downgraded: they run at next-turn timing, and the message ack carries a `notice` saying so (`src/bus/command.rs`).
+
 Every message sent by a user, subagent, or plugin uses the same delivery selector.
 
 | Mode | Meaning | Injection point |
@@ -1259,6 +1313,8 @@ For `bash`, cancellation SHOULD send `SIGTERM` to the process group, wait a shor
 The UI MUST acknowledge message acceptance immediately, independent of injection timing.
 
 ## 16. Meta-Loop and Co-Agent
+
+> **Status: not built.** The navigator (`src/navigator/`) is a different mechanism: it watches the editor, not the bus. See `CONTEXT.md`.
 
 ### 16.1 Definition
 
@@ -1324,278 +1380,149 @@ If the co-agent rewrites a user prompt:
 
 ## 17. Persistence
 
+> **Status: partly built.** Conversations persist in one SQLite file, written by a subscriber of the event bus. The design below the code is simpler than the first spec: two tables, no actors, no inbox table, no plugin state. Code: `src/session/store.rs`, `src/session/store/read.rs`.
+
 ### 17.1 Model
 
-SQLite persistence is a durable event-bus subscriber, not an independent orchestration layer.
+- One database per user: `<data dir>/navai.db` (`~/.local/share/navai/navai.db` on Linux). WAL mode. One dedicated writer thread owns the connection and is fed by a channel; reads open their own connection. The sequencer never waits on SQLite.
+- Every write is one transaction: an event insert and the `last_seq` bump commit together or not at all. A failed write is remembered until `flush`, which is also a barrier.
+- The events table is the log clients replay. The `transcript` column holds the model-facing messages. A resume rebuilds the actor from the transcript (and the checkpoint) and replays the events to the client. The transcript is not rebuilt from events.
 
-The event log is canonical. Tables such as `messages` are rebuildable projections.
-
-Recommended tables:
-
-```text
-workspaces
-sessions
-actors
-events
-messages
-inbox_messages
-plugin_state
-```
-
-Conceptual schema:
+Tables:
 
 ```sql
-workspaces(
-    workspace_id TEXT PRIMARY KEY,
-    root_path TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    last_opened_at TEXT NOT NULL
-)
-
 sessions(
-    session_id TEXT PRIMARY KEY,
-    workspace_id TEXT NOT NULL,
-    root_actor_id TEXT NOT NULL,
-    status TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-)
-
-actors(
-    actor_id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    parent_actor_id TEXT,
-    persona TEXT NOT NULL,
+    id TEXT PRIMARY KEY,
+    workspace TEXT NOT NULL,
     model TEXT NOT NULL,
-    state TEXT NOT NULL
+    profile TEXT,
+    title TEXT,                 -- from the first driver message, 60 characters
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_seq INTEGER NOT NULL DEFAULT -1,
+    transcript TEXT,            -- the chat messages, JSON
+    model_resolution TEXT,      -- provider, model, api, window and limits, versioned JSON, no credentials
+    variant TEXT,               -- the variant in use; NULL for none
+    variant_override TEXT,      -- the override object saved with the variant
+    checkpoint TEXT,            -- the compaction checkpoint, versioned JSON
+    primary_agent TEXT,         -- NULL means build
+    reasoning_floor INTEGER     -- transcript index below which earlier reasoning is left out after a model switch; NULL for none
 )
 
 events(
     session_id TEXT NOT NULL,
     seq INTEGER NOT NULL,
-    event_id TEXT NOT NULL UNIQUE,
-    actor_id TEXT NOT NULL,
     kind TEXT NOT NULL,
-    occurred_at TEXT NOT NULL,
-    causation_id TEXT,
-    correlation_id TEXT,
-    payload_json TEXT NOT NULL,
-    PRIMARY KEY(session_id, seq)
-)
-
-messages(
-    message_id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    actor_id TEXT NOT NULL,
-    turn_id TEXT NOT NULL,
-    role TEXT NOT NULL,
-    content_json TEXT NOT NULL,
-    source_event_id TEXT NOT NULL
-)
-
-inbox_messages(
-    command_id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    source_actor_id TEXT NOT NULL,
-    target_actor_id TEXT NOT NULL,
-    mode TEXT NOT NULL,
-    content_json TEXT NOT NULL,
-    status TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    envelope TEXT NOT NULL,     -- the whole event envelope, JSON
+    PRIMARY KEY (session_id, seq)
 )
 ```
 
-Production migrations SHOULD use typed Rust domain functions rather than spreading SQL throughout the codebase.
+Columns after `last_seq`/`transcript` were added one by one; an older database gets each as a nullable column at the next start, and resumes as before.
+
+Not built: the `workspaces`, `actors`, `messages`, `inbox_messages` and `plugin_state` tables of the first design.
 
 ### 17.2 Durability Ordering
 
-For state-changing events:
-
 1. The session sequencer assigns `seq`.
-2. The persistence subscriber writes the event in a transaction.
-3. The durable write is acknowledged.
-4. The event is broadcast to non-durable subscribers.
+2. The persisting emitter queues every durable envelope to the writer thread, in `seq` order, inside the sequencer task. The queueing is a channel send; it does not wait for the disk.
+3. The event is then broadcast to subscribers.
 
-This makes the database a bus subscriber while ensuring the UI never observes a state transition that cannot be resumed after a crash.
+Queueing is not an acknowledgement: a crash can lose events still in the channel, so a live client can have seen an event that was never stored. Keep two things apart:
 
-High-volume `llm.delta` events MAY be configured as non-durable. Final `llm.response`, messages, tool calls, tool results, state changes, and hook decisions MUST be durable.
+- **State persistence.** Some state changes are written and acknowledged before the event that reports them. The compaction checkpoint is saved with the transcript before `context.compacted` is published. The primary agent is stored before `session.agent_changed` is published. The event is then an ordinary queued event; the state it reports is already durable.
+- **Event durability.** `publish_acked` (command results, `session.agent_changed`) waits until the event is sequenced and on the stream. It does not wait for the disk. Only `commit_acked`, used by the model switch, commits the event row itself (with the new model state, in one transaction) and emits the event only after the store acknowledged.
+
+`llm.delta` and `context.updated` are never stored. `session.end` is stored like any other durable event. Tool outputs are bounded to 64 KiB before they reach the transcript, but messages and tool payloads are stored as they are, with no redaction: a secret that a tool read or the driver typed is in the database.
 
 ### 17.3 Replay and Resume
 
-Resume consists of:
+`POST /v1/sessions` with `resume` rebuilds an actor and a sequencer under the same id. A conversation is resumable while its row exists, whether or not its runtime is live; `DELETE` removes it.
 
-1. Loading the session and workspace.
-2. Replaying durable events through pure state reducers.
-3. Reconstructing actor transcripts and inbox state.
-4. Marking any uncompleted model or tool operation as interrupted.
-5. Restarting actors in `IDLE` or `YIELDED`.
-6. Restarting plugins and MCP servers.
-7. Waiting for a message or explicit retry.
-
-Replay MUST NOT re-execute model requests, tools, or plugin side effects. It reconstructs state only.
-
-If a crash occurred during a tool call, the core MUST NOT blindly repeat it. The resumed transcript receives an interrupted tool result and the agent or user decides whether retrying is safe.
+- A subscriber replays the stored events after its `Last-Event-ID`, then goes live.
+- A tool call that was running when the process stopped is settled as interrupted in the transcript. It is never repeated.
+- A pending `ask` is restored. A pending permission request is expired (`permission.resolved` `expired`) and its calls are settled as interrupted.
+- A stored checkpoint is validated against the transcript; a mismatch fails the resume with an explicit error. A saved variant or agent that no longer exists fails the resume, never a silent fallback.
+- Replay does not re-execute model requests or tools.
 
 ### 17.4 Database Defaults
 
-- SQLite SHOULD use WAL mode.
-- One writer task SHOULD serialize writes.
-- The database file SHOULD be created with user-only permissions.
-- Tool outputs MUST be bounded before persistence.
-- Secrets SHOULD not be duplicated across event payloads.
-- Encryption at rest is out of scope for v0.1 and must be documented to the operator.
+- WAL mode and one writer: built.
+- The file is created by SQLite with the process umask; Navai does not set user-only permissions on it. Encryption at rest is out of scope.
+- `model_resolution` holds no credentials, and API keys live in `auth.json` (mode 0600). There is no general redaction: transcript messages and event payloads are stored as they are.
 
 ## 18. Standard File Loading
 
-### 18.1 Instruction Precedence
+> **Status: partly built, with other paths than the first design.** Rules, agent definitions and skills are discovered. They are read once, when a session is created or resumed, and edits take effect at the next session or resume. There is no hot reload and nothing under `/etc/navai`. Code: `src/agent/instructions.rs`, `src/agent/definitions.rs`, `src/agent/skills.rs`.
 
-Instruction sources are loaded from lowest to highest precedence:
+### 18.1 Rules
 
-```text
-embedded core contract
-global rules
-user rules
-project rules
-persona
-explicit user message
-```
+Rules are `AGENTS.md`, `CLAUDE.md` and `rules.md` files. They reach the model as one system message after the role prompt, each source labelled. Discovery order (later text is closer to the work):
 
-Conflict precedence is:
+1. The global file: `~/.agents/AGENTS.md`, else `~/.claude/CLAUDE.md`.
+2. The optional global supplement `~/.agents/rules.md`.
+3. For each directory from the worktree root down to the workspace: `AGENTS.md`, else `CLAUDE.md`, then the optional `rules.md`.
 
-```text
-project > user > global
-```
+The worktree root is the nearest ancestor holding a `.git` directory or file. Without Git it is the workspace itself, so nothing above it is read. A file reached twice through links is read once. Files over 16 KiB, or beyond 64 KiB in all, are cut with a visible marker. The log tells what was loaded, shadowed, truncated or unreadable.
 
-Security invariants enforced by the core cannot be overridden by files or prompts.
+The request is built in this order: the embedded agent contract, the role prompt of the primary agent, the rules message, the skills catalog, then the history. Rules never override the contract or the role. Security invariants enforced by the core cannot be overridden by files or prompts.
 
-Suggested locations:
+### 18.2 Agent Definitions
 
-```text
-/etc/rust-agent/AGENTS.md
-/etc/rust-agent/rules.md
+Personas became **agent definitions**. A session runs as one primary agent: `build` (the default), `plan`, or a custom one. Built-ins are `build`, `plan` (primary) and `explore`, `review` (read-only subagents). Files are Markdown with a YAML header; the body is the role prompt. Sources, later ones replacing earlier ones that carry the same id:
 
-~/.config/rust-agent/AGENTS.md
-~/.config/rust-agent/rules.md
+1. the built-ins;
+2. `~/.config/opencode/agents/*.md` (only read);
+3. `~/.config/navai/agents/*.md`;
+4. `.navai/agents/*.md` of the project, from the worktree root down to the workspace (nearer directories last).
 
-<workspace>/AGENTS.md
-<workspace>/rules.md
-<workspace>/<nested-path>/AGENTS.md
-<workspace>/<nested-path>/rules.md
-```
-
-For project files, discovery proceeds from the workspace root toward the active working directory. More specific nested files are appended later and take precedence.
-
-Every injected block SHOULD include its source path.
-
-### 18.2 Personas
-
-Personas are Markdown files with YAML frontmatter:
+`build` and `plan` are reserved: a file with one of those names never replaces the built-in and is reported.
 
 ```markdown
 ---
+description: A focused Rust reviewer
+mode: subagent
 model: fast
 tools:
-  - read
-  - grep
-  - bash
-thinking: medium
+  bash: false
+access: read-only
 ---
 
-You are a focused Rust reviewer.
-
-Inspect the requested change for correctness, cancellation safety,
-error handling, and unnecessary abstraction. Do not edit files.
+You are a focused Rust reviewer. ...
 ```
 
-Search order:
+Header fields, all optional: `description`; `mode` (`primary`, `subagent` or `all`; `all` when absent); `model` (an alias); `tools` (a map of tool name to boolean; `false` removes a tool); `access` (`read-only` or `full`; `full` when absent). **`model`, `tools` and `access` are loaded and validated but not applied today:** they do not change which tools a session can call, and they do not change the session's model. A session uses the model it was created with, and the permission gate (section 9.4) is what limits `write`, `edit`, `bash` and `fetch`. Only the role prompt (the body) and `mode` take effect. Any other key is kept and has no effect. A malformed header rejects that file, reports it, and the others still load. At most 200 files per directory, 64 KiB each.
 
-```text
-<workspace>/agents/<name>.md
-~/.config/rust-agent/agents/<name>.md
-/etc/rust-agent/agents/<name>.md
-```
-
-The first match wins.
-
-Required frontmatter fields:
-
-- `model`
-- `tools`
-
-Optional fields:
-
-- `thinking`
-- `description`
-- `max_steps`
-- `timeout_seconds`
-
-Unknown fields SHOULD produce a warning rather than being silently accepted.
+An agent definition says what the agent is for. It does not say what it may execute: permissions are separate (section 9.4, ADR 0008). `/agent` lists and switches the primary agent between turns. Only primary agents can be selected; subagents cannot be started yet (section 14).
 
 ### 18.3 Skills
 
-Skills use progressive disclosure:
+A session finds `SKILL.md` files once, lists them in a bounded catalog message after the rules, and lets the model load one with the `skill` tool. Where it looks, nearest first:
 
-```text
-<workspace>/skills/<name>/SKILL.md
-~/.config/rust-agent/skills/<name>/SKILL.md
-/etc/rust-agent/skills/<name>/SKILL.md
-```
+1. For each directory from the workspace up to the worktree root: `.agents/skills`, `.claude/skills`, `.opencode/skills`.
+2. The user's `~/.agents/skills`, then `~/.claude/skills`.
 
-The core exposes:
+Each root is walked recursively (nested folders count), down to 8 levels and 20,000 entries, without `.git`, `node_modules` or `target`. Two skills with one id: the nearer project scope wins, then `.agents` before `.claude` before `.opencode`, then the user's. Equal ranks make the id ambiguous and neither is offered.
 
-```json
-{
-  "name": "load_skill",
-  "arguments": {
-    "name": "debugging"
-  }
-}
-```
+The header needs `name` and `description`. `disable-model-invocation: true` keeps a skill out of the catalog. Other keys are ignored. The catalog is capped at about 8,192 estimated tokens and 256 characters per description. `read` and `grep` may open skill files outside the workspace; this adds no write permission.
 
-The core performs only deterministic discovery, loading, and provenance reporting. It does not decide which skill is relevant.
-
-Skill selection belongs in:
-
-- The main system prompt.
-- A persona.
-- A plugin.
-- The co-agent.
+The core only discovers, loads and reports provenance. It does not decide which skill is relevant.
 
 ### 18.4 Hot Reload and Self-Awareness
 
-The `notify` crate watches:
+**Not built.** There is no file watcher (`notify` is not a dependency). Rules, agents and skills are snapshots taken at session create and resume. `models.json` is read when a session starts.
 
-```text
-AGENTS.md
-rules.md
-agents/*.md
-skills/*/SKILL.md
-plugins/*.toml
-models.json
-```
-
-Reload semantics:
-
-- Rule changes apply at the next `prompt.pre_llm`.
-- Persona changes apply to new subagents and to existing actors at their next turn when configured.
-- Model configuration changes apply to the next model request.
-- Plugin manifest changes trigger a supervised restart at a safe boundary.
-- Invalid new configuration leaves the last valid configuration active and emits `plugin.error` or a configuration event.
-
-This provides self-awareness levels 1 and 2:
-
-1. Agent behavior is represented as inspectable files.
-2. The agent may edit those files and observe live reload.
-
-Level 3, editing Rust source and recompiling or replacing the running core, is out of scope. A future implementation may use an external supervisor and atomic binary replacement.
+Behaviour is still inspectable as files, so an agent can edit them; the change is picked up by the next session. Editing Rust source and recompiling is out of scope.
 
 ## 19. Core Versus Plugin Rule
+
+> **Status: direction.** Applies to the parts that exist. Hook validation, MCP transport and process supervision are not built.
 
 The core owns:
 
 - The agent loop.
-- The five native development tools.
-- The three control-plane tools.
+- The native development tools.
+- The control-plane tools (`ask`, `skill`).
 - Actor mailboxes.
 - Event sequencing and publication.
 - Hook protocol validation.
@@ -1626,6 +1553,8 @@ If not, improve the general hook, event, or MCP contract instead of adding a Con
 
 ## 20. Server API
 
+> **Status: built, with more routes than the first design.** HTTP and SSE only; the WebSocket route was removed (20.4). Code: `src/server/routes.rs`, `src/server/sse.rs`.
+
 ### 20.1 Binding and Trust Model
 
 Version 0.1 is a personal local service.
@@ -1633,40 +1562,66 @@ Version 0.1 is a personal local service.
 Defaults:
 
 ```text
-bind = 127.0.0.1
-port = 7310
+bind = 127.0.0.1:7310        (navai serve --bind)
 ```
 
-The server MUST NOT bind to a non-loopback address without an explicit configuration change. Remote authentication and TLS termination are not a v0.1 feature. Operators exposing it remotely are responsible for an authenticated reverse proxy or private network.
+A non-loopback bind is refused unless `--allow-non-loopback` is given, and even then there is no TLS. Operators exposing it remotely are responsible for an authenticated reverse proxy or private network.
 
-### 20.2 Minimum HTTP API
+When the server is started with a bearer token, every route except `GET /v1/health` needs `Authorization: Bearer <token>`. `navai tui` starts a private server with a random per-process token, and `navai-lsp` does the same for the editor. A client reaches a running server with `navai tui --url`, and gives the token in `NAVAI_SERVER_TOKEN`. `navai serve` itself starts without a token.
+
+### 20.2 HTTP API
 
 ```text
-POST   /v1/sessions
-GET    /v1/sessions/:session_id
-POST   /v1/sessions/:session_id/messages
-GET    /v1/sessions/:session_id/events
-GET    /v1/sessions/:session_id/ws
-POST   /v1/sessions/:session_id/stop
 GET    /v1/health
+GET    /v1/models?workspace=
+GET    /v1/sessions?workspace=
+POST   /v1/sessions
+GET    /v1/sessions/{id}
+DELETE /v1/sessions/{id}
+POST   /v1/sessions/{id}/messages
+POST   /v1/sessions/{id}/stop
+GET    /v1/sessions/{id}/events
+GET    /v1/sessions/{id}/context
+GET    /v1/commands
+POST   /v1/sessions/{id}/commands
+POST   /v1/sessions/{id}/permissions/{request_id}
 ```
 
-Create session:
+Create session (`workspace` is required; the rest is optional):
 
 ```json
 {
   "workspace": "/home/pixma/dev/project",
-  "persona": "main",
-  "model": "default"
+  "model": "default",
+  "agent": "build",
+  "variant": "high"
 }
 ```
+
+Resume a stored conversation (the same id comes back):
+
+```json
+{
+  "workspace": "/home/pixma/dev/project",
+  "resume": "01J..."
+}
+```
+
+`resume` and `variant` together are refused with 400: a resumed session keeps its saved variant, and `/variant` changes it.
+
+- `model` is a `models.json` alias; a profile may supply a default.
+- `agent` is the primary agent (`build` when absent). A resumed session keeps the agent it was stored with.
+- `variant` (new sessions only) is the exact name of a variant the alias offers; `null` means no variant; leaving it out takes the alias's `default_variant`.
+- `resume` is the id of a stored conversation to continue.
+- Response: `{session_id, root_actor_id: "agent:main", actor_state}`.
+- A chat alias with no known context window is refused with 422 `{"error", "reason": "no_context_window"}`. A window that leaves no input budget is 422 `impossible_context_budget`.
 
 Post message:
 
 ```json
 {
   "target_actor_id": "agent:main",
-  "mode": "steer",
+  "mode": "next-turn",
   "content": [
     {
       "type": "text",
@@ -1676,15 +1631,18 @@ Post message:
 }
 ```
 
-Response:
+Response: `{command_id, accepted: true, actor_state, notice?}`. `steer` and `interrupt` are accepted and recorded, then run at next-turn timing; `notice` says so (section 15). Errors: 404 unknown session, 409 stopping, 409 `resume_required` for a stopped or stored-only conversation, 503 `{"accepted": false, "reason": "inbox_full"}`.
 
-```json
-{
-  "command_id": "01J...",
-  "accepted": true,
-  "actor_state": "running"
-}
-```
+Other bodies:
+
+- `GET /v1/sessions/{id}` gives `{session_id, actor_state, workspace, model, agent, variant, current_seq}`.
+- `POST /v1/sessions/{id}/stop` gives `{accepted: true, actor_state: "stopped"}`.
+- `GET /v1/models` lists the chat aliases with their resolved window, `enabled`, `disabled_reason` and, when known, where the window came from, its staleness, and the variants on offer.
+- `GET /v1/commands` lists the session commands; `POST .../commands` with `{name, arguments?}` runs one and answers `{operation_id, ok, data?, error?}`. The commands are `/help`, `/model [alias]`, `/new [alias]`, `/stop`, `/context`, `/variant [name|off]`, `/compact [focus]` and `/agent [id]`. A command that cannot run is 200 with `ok: false`. The outcome is also published as a `command.result` event.
+- `POST .../permissions/{request_id}` takes `{decision: "allow_once" | "allow_folder" | "deny", message?}` and answers `{accepted: true}`; 409 `permission_stale` when the request is not waiting.
+- `GET .../context` returns the context snapshot (section 10.3, `context.updated`).
+
+All errors share the `{"error": ...}` shape.
 
 ### 20.3 SSE
 
@@ -1697,10 +1655,11 @@ Requirements:
 - Reconnect replays durable events after that sequence.
 - Live events follow replay without a gap.
 - Slow clients receive bounded buffering and are disconnected rather than blocking actors.
+- A cursor the server cannot honour gets a single `resync` control frame, then the stream ends. A stopped session also ends with one control frame.
 
 ### 20.4 WebSocket
 
-> **Removed 2026-10-01.** The WebSocket transport (`GET /v1/sessions/:session_id/ws`) was removed from the implementation because the only client uses HTTP + SSE. The text below is kept as historical specification and is not implemented.
+> **Not built. Removed 2026-10-01.** The WebSocket transport (`GET /v1/sessions/:session_id/ws`) was removed from the implementation because the only client uses HTTP + SSE. The text below is kept as historical specification and is not implemented.
 
 WebSocket is the preferred bidirectional transport for the TUI.
 
@@ -1734,29 +1693,21 @@ All clients observe the same core event history. No UI owns authoritative transc
 
 ## 21. Provider Configuration
 
+> **Status: built, and extended.** One provider protocol for chat (OpenAI-compatible), plus two small wire clients for the navigator layers (fill-in-the-middle and System One). Code: `src/provider/`.
+
 ### 21.1 Scope
 
-The core supports OpenAI-compatible chat completions only.
-
-Required endpoint:
+The core supports OpenAI-compatible chat completions for the agent:
 
 ```text
-POST <base_url>/chat/completions
+POST <base_url>/chat/completions        ("stream": true)
 ```
 
-Streaming uses:
-
-```json
-{
-  "stream": true
-}
-```
-
-OmniRoute works directly because it exposes an OpenAI-compatible endpoint.
+OmniRoute works directly because it exposes an OpenAI-compatible endpoint. A model alias may also name another `api`: `fim` (the reflex, fill-in-the-middle) or `systemone` (the instinct and the plan role guard, typed decisions). These serve the navigator layers only; the agent loop speaks `chat`.
 
 ### 21.2 `models.json`
 
-Recommended shape:
+Where it is read, first found wins: the explicit `--models` path, `<workspace>/models.json`, then `~/.config/navai/models.json`. The repository ships `models.example.json`, an example with the role aliases; a `models.json` at the root of a checkout is git-ignored, since it would shadow your own config for sessions started there. Shape:
 
 ```json
 {
@@ -1764,47 +1715,52 @@ Recommended shape:
     "omniroute": {
       "base_url": "http://localhost:20128/v1",
       "api_key_env": "OMNIROUTE_API_KEY",
+      "catalog_format": "omniroute",
       "headers": {},
       "connect_timeout_ms": 5000,
       "request_timeout_ms": 600000
     }
   },
   "models": {
-    "default": {
+    "cognition": {
       "provider": "omniroute",
-      "model": "openai/gpt-5.1-codex",
+      "model": "cc/claude-opus-5-5",
+      "api": "chat",
       "context_window": 200000,
       "max_output_tokens": 32000,
       "supports_tools": true,
       "supports_parallel_tool_calls": true,
-      "thinking": "medium"
-    },
-    "fast": {
-      "provider": "omniroute",
-      "model": "openai/gpt-5-mini",
-      "context_window": 128000,
-      "max_output_tokens": 16000,
-      "supports_tools": true,
-      "supports_parallel_tool_calls": true,
-      "thinking": "low"
+      "default_variant": "high",
+      "reasoning_history": "preserve"
     }
   }
 }
 ```
 
-Model IDs above are examples and MUST be replaced with models actually available through the operator's OmniRoute deployment.
+Provider fields: `base_url`, `api_key_env` (a variable name, never a secret), `headers`, `connect_timeout_ms` (default 5000), `request_timeout_ms` (default 600000) and `catalog_format`. With `"catalog_format": "omniroute"`, the provider's model list reports effort tiers, and an alias that omits `variants` gets one variant per tier.
+
+Model fields:
+
+- `provider`, `model`: required.
+- `api`: `chat` (default), `fim` or `systemone`.
+- `context_window`: optional. When it is absent, the window comes from the provider's `GET /models` list (`context_length`, else `max_input_tokens`), cached for a day under `<data dir>/model-catalog/`. An explicit value wins over a discovered one. It does not always avoid the network: an alias on a provider with `catalog_format` and no `variants` of its own still fetches the model list, to generate its variants from the effort tiers. A chat alias with no window from either source is refused at session creation: HTTP 422 `no_context_window` (`navai run` prints it and exits 1).
+- `max_input_tokens`, `max_output_tokens`: optional limits. They feed the context budget (section 24).
+- `supports_tools`, `supports_parallel_tool_calls`: capability flags. Tool calls are executed serially.
+- `default_variant`: the variant a new conversation starts with.
+- `variants`: named request overrides, each a JSON object merged shallowly into the chat request (`{"high": {"reasoning_effort": "high"}}`). Omitted: generated from the provider's effort tiers when `catalog_format` is `omniroute`. `{}`: none. A variant may not set a key the request owns (`model`, `messages`, `tools`, `stream`, `max_tokens`, `temperature` and a few more), and may not be named `off`, the word that clears the variant.
+- `reasoning_history`: `preserve` (default) or `omit`, whether earlier reasoning is sent back.
+- `thinking`: **deprecated and ignored.** It logs a warning that names `default_variant` instead.
 
 Rules:
 
-- Configuration stores API key environment-variable names, not secret values.
-- Persona and `spawn_agent` model references use aliases such as `default` and `fast`.
-- Unknown model aliases fail before starting a model request.
-- Unsupported optional parameters produce a visible warning.
-- v0.1 may execute parallel tool calls serially even if the model emits them in parallel.
+- Keys live in `~/.config/navai/auth.json` (mode 0600, written by `navai auth set <provider>`), with the `api_key_env` variable as a fallback.
+- Unknown model aliases fail before any request.
+- A conversation saves its provider, model, api and limits when it is created (`sessions.model_resolution`). A resume uses them, and refuses an alias that now points elsewhere (409 `model_identity_changed`). `/model <alias>` switches the conversation to another alias between turns; the switch is saved in one step and announced by `model.changed`. The new model gets the whole history, and the earlier reasoning is only replayed to the same provider and model. A switch is refused when the conversation does not fit the new model's input budget (`/compact` first).
+- `scripts/import-opencode-models` can generate this file from an OpenCode config (see the README).
 
 ### 21.3 Streaming Parser
 
-The implementation SHOULD use `reqwest` plus a focused SSE decoder.
+The implementation uses `reqwest` plus a focused SSE decoder (`src/provider/sse.rs`).
 
 It MUST correctly handle:
 
@@ -1823,24 +1779,32 @@ The parser MUST NOT assume that one HTTP byte chunk equals one SSE event.
 
 ## 22. Stack
 
+> **Status: built, with a different set of crates.** `rmcp` and `notify` are not dependencies, because MCP and hot reload are not built. See `Cargo.toml` for the exact versions.
+
 | Concern | Choice |
 |---|---|
 | Async runtime | `tokio` |
-| HTTP client | `reqwest` |
+| HTTP client | `reqwest` (rustls) |
 | HTTP server | `axum` |
-| Serialization | `serde`, `serde_json`, `toml` |
-| MCP client | `rmcp` |
-| TUI | `ratatui`, `crossterm` |
-| SQLite | `rusqlite` or `sqlx` with SQLite |
-| File watching | `notify` |
+| Serialization | `serde`, `serde_json`, `toml`, `serde-saphyr` (YAML headers) |
+| TUI | `ratatui`, `crossterm`, `ratatui-textarea`, `tui-markdown` |
+| Editor surface | `tower-lsp-server` (the navigator's Language Server) |
+| SQLite | `rusqlite` (bundled), behind one writer thread |
+| Fetch tool | `htmd`, `html2text`, `encoding_rs` |
+| File search | `globset` |
+| Navigator pipeline | `evalexpr`, `similar` |
 | IDs | `ulid` |
 | Cancellation | `tokio-util::sync::CancellationToken` |
 | Logging | `tracing`, `tracing-subscriber` |
 | Errors | Typed domain errors with `thiserror`; `anyhow` only at application boundaries |
+| MCP client | not used (MCP is not built) |
+| File watching | not used (hot reload is not built) |
 
-A synchronous SQLite writer actor using `rusqlite` is preferred for v0.1 unless async query requirements become real. SQLite operations remain behind that actor, avoiding accidental blocking across the async runtime.
+SQLite is written by one synchronous writer thread using `rusqlite`, so no query blocks the async runtime.
 
 ## 23. Rig Versus Hand-Rolled Core
+
+> **Status: decided and built.** The loop is hand-rolled on `reqwest`; `rig-core` is not a dependency.
 
 ### Decision
 
@@ -1882,26 +1846,38 @@ Until then, direct ownership is simpler.
 
 ## 24. Context Management and Compaction
 
-Semantic compaction is not a default v0.1 core feature.
+> **Status: partly built.** The context budget and manual compaction are built. Automatic compaction is not. Plugin compaction through `context.pre_compact` is not built and no longer planned. Code: `src/agent/context.rs`, `src/agent/compaction.rs`, `src/agent/compaction/summary.rs`, `src/bus/runtime/compact.rs`. Terms are in `CONTEXT.md` (Context budget, Checkpoint).
 
-The core SHOULD estimate context pressure from:
+### 24.1 Context Budget
 
-- Configured `context_window`.
-- Provider-reported usage.
-- A conservative local estimate for newly appended messages.
+Every session keeps an estimate of its next request: UTF-8 bytes divided by 4 plus a fixed framing per message, split into system, rules, skills catalog, tools and messages. It is shown as an estimate. It is never the provider's count of the last request.
 
-When approaching the configured threshold, it emits `context.pre_compact`.
+The window W comes from the saved model resolution (section 21.2). The input budget is `min(W - R, input limit or W) - M`:
 
-A plugin MAY return a modified message set containing a summary. Without a successful compaction hook, the core MUST NOT silently discard history. It SHOULD:
+- R, the output reserve: the alias's `max_output_tokens`, else the smallest of 8,192, a quarter of W and the output ceiling the provider reports.
+- M, the margin: 5% of W, at least 4,096.
 
-1. Warn the actor and UI.
-2. Allow the model request if still within the known limit.
-3. On a context-limit failure, transition to `Yield`.
-4. Ask the user to start a fresh session or enable a compaction plugin.
+A window that leaves no input budget is refused when the session is created (422 `impossible_context_budget`). `GET /v1/sessions/{id}/context` and the `/context` command return the snapshot; the `context.updated` event carries it live.
 
-This is less convenient than hidden truncation but preserves correctness and follows the honest-exit principle.
+### 24.2 Manual Compaction
+
+`/compact [focus]` asks the session's own model and variant for a summary of the older part of the conversation, with no tools. It keeps verbatim: the system components, the latest user request, the unfinished turn with any pending `ask`, and the last two completed turns. Old tool outputs outside that tail may become elision markers. A cut never splits a tool call from its results.
+
+- The summary is validated (not empty, no tool call, at most 8 KiB) and sent back to the model as labelled conversation data, never as instructions.
+- The result is a **checkpoint** `{through_message, summary, generation}` stored with the transcript in one transaction (`sessions.checkpoint`). The full transcript is never rewritten.
+- A running turn is not interrupted: the command is accepted and runs when the turn ends. It is refused while an `ask` or a permission request waits, and answers a clear error when there is nothing to compact.
+- A durable `context.compacted` event follows the save. The stored checkpoint, not the event, is what a resume restores.
+
+### 24.3 Not Built
+
+- **Automatic compaction.** Without `/compact`, the core does not shrink a conversation by itself, and does not silently discard history. `Aim::Fit` in `compaction.rs` is the planning mode meant for it and is not called yet.
+- **Compaction hooks** (`context.pre_compact`).
+
+When a request is over the input budget the status shows it; the driver compacts, or starts a new conversation (`/new`).
 
 ## 25. Security and Reliability Boundaries
+
+> **Status: partly built.** Local bind, bounded sizes, path normalization, process-group cancellation and the permission gate are built (sections 9 and 20). Plugin environment rules apply to plugins, which are not built. Persistence is queued, and nothing is redacted before it is stored (section 17).
 
 ### 25.1 Trusted Personal Agent
 
@@ -1937,13 +1913,15 @@ Real OS sandboxing may be added later through Bubblewrap, containers, or platfor
 ### 25.3 Backpressure
 
 - Every subscriber gets a bounded channel.
-- Persistence is durable and participates in the publication barrier.
+- Persistence is a queued writer, not a barrier: events are handed to it before they are broadcast (section 17.2). `publish_acked` waits for the stream, not the disk. Compaction and agent changes await their state write before they publish their event; only the model switch commits its event before emitting it.
 - UI and observational subscribers may lag or disconnect.
 - Hook plugins are bounded by timeout rather than channel capacity.
 - `llm.delta` may be dropped for lagging observational subscribers.
 - Final messages and state transitions MUST remain replayable.
 
 ## 26. Open Questions and Risks
+
+> **Status: partly outdated.** The context compaction row is now: manual `/compact` only (section 24). Steer is downgraded to next-turn (section 15). Plugin rows apply to plugins, which are not built.
 
 These questions do not block the architecture, but implementation must make their defaults explicit.
 
@@ -1955,7 +1933,7 @@ These questions do not block the architecture, but implementation must make thei
 | Multiple modifying hooks | Sequential priority order, validate after each patch | Plugin order can change behavior and must remain visible |
 | Hook timeouts | Per-subscription timeout; enrichment fails open | Slow hooks may add latency at every model step |
 | Context compaction | No silent built-in semantic compaction | Long sessions eventually yield instead of continuing automatically |
-| Event durability | Commit final events before live publication | SQLite latency becomes part of state-transition latency |
+| Event durability | Events are queued to the writer before broadcast. State writes (checkpoint, primary agent) are awaited before their event is published. Only the model switch commits its event before emitting it | A crash can lose queued events a live client already saw |
 | Delta persistence | Non-durable by default | Exact partial stream reconstruction is unavailable after a crash |
 | In-flight resume | Mark interrupted, never replay side effects | The user or model must decide whether a tool is safe to retry |
 | OpenAI compatibility | Support the tested OmniRoute subset | Some providers use subtly incompatible SSE or tool-call formats |
@@ -1973,87 +1951,41 @@ The hardest practical areas are expected to be:
 4. Context management that remains honest without making long sessions unusable.
 5. Durable replay that reconstructs state without replaying side effects.
 
-## 27. Suggested Repository Layout
+## 27. Repository Layout
+
+> **Status: superseded by `ARCHITECTURE.md`**, which maps every module and says where new code goes. This is the top level of the tree today. The first design's `plugins/`, `persistence/`, `config/`, `agents/`, `skills/` and `tools/mcp.rs` do not exist.
 
 ```text
-rust-agent/
-├── Cargo.toml
-├── README.md
-├── models.json
-├── docs/
-│   └── SPEC.md
-├── agents/
-│   ├── main.md
-│   ├── reviewer.md
-│   └── researcher.md
-├── skills/
-│   └── example/
-│       └── SKILL.md
-├── plugins/
-│   ├── contextd.toml
-│   └── co-agent.toml
+navai/
+├── Cargo.toml                 crate `navai`: bins `navai`, `navai-lsp`
+├── models.json                example model aliases
+├── README.md, ARCHITECTURE.md, CONTEXT.md, CHANGELOG.md, AGENTS.md
+├── docs/                      SPEC.md, PLAN.md, adr/, design/, agents/
+├── scripts/                   import-opencode-models
 ├── src/
-│   ├── main.rs
-│   ├── app.rs
-│   ├── agent/
-│   │   ├── mod.rs
-│   │   ├── actor.rs
-│   │   ├── loop.rs
-│   │   ├── prompt.rs
-│   │   └── response.rs
-│   ├── bus/
-│   │   ├── mod.rs
-│   │   ├── command.rs
-│   │   ├── event.rs
-│   │   ├── inbox.rs
-│   │   └── sequencer.rs
-│   ├── provider/
-│   │   ├── mod.rs
-│   │   ├── config.rs
-│   │   ├── openai.rs
-│   │   └── sse.rs
-│   ├── tools/
-│   │   ├── mod.rs
-│   │   ├── native.rs
-│   │   ├── control.rs
-│   │   └── mcp.rs
-│   ├── plugins/
-│   │   ├── mod.rs
-│   │   ├── protocol.rs
-│   │   ├── hooks.rs
-│   │   └── supervisor.rs
-│   ├── persistence/
-│   │   ├── mod.rs
-│   │   ├── sqlite.rs
-│   │   ├── migrations.rs
-│   │   └── replay.rs
-│   ├── config/
-│   │   ├── mod.rs
-│   │   ├── rules.rs
-│   │   ├── persona.rs
-│   │   ├── skills.rs
-│   │   └── watch.rs
-│   ├── server/
-│   │   ├── mod.rs
-│   │   ├── routes.rs
-│   │   ├── sse.rs
-│   │   └── websocket.rs
-│   └── tui/
-│       ├── mod.rs
-│       ├── client.rs
-│       └── view.rs
-└── tests/
-    ├── agent_loop.rs
-    ├── delivery_modes.rs
-    ├── hook_protocol.rs
-    ├── persistence_replay.rs
-    ├── sse_parser.rs
-    └── subagents.rs
+│   ├── main.rs, app.rs, app/  the `navai` CLI: run, serve, tui, auth
+│   ├── bin/navai-lsp.rs       the editor binary: Language Server + session server
+│   ├── lib.rs, error.rs, paths.rs, settings.rs, render.rs
+│   ├── agent/                 loop, actor, prompt, permissions, guard, context, compaction,
+│   │                          instructions (rules), skills, definitions (agents), selection
+│   ├── bus/                   sequencer, event catalog, commands, inboxes, runtime task
+│   ├── provider/              models.json, auth, catalog, chat client, SSE, FIM, System One
+│   ├── tools/                 read, write, edit, bash, grep, glob, fetch, ask, no-follow open
+│   ├── session/               service, commands, store (SQLite), lifecycle, hooks, guard wiring
+│   ├── server/                HTTP routes and SSE
+│   ├── navigator/             Language Server, reflex, instinct pipeline, metacognition, replay
+│   ├── tui/                   terminal client: reducer, runtime, view, theme
+│   └── paths/                 move from the former rust-agent locations
+├── tests/                     integration tests, common/ harnesses, fixtures
+├── vscode-navigator/          the VS Code extension (TypeScript)
+└── examples/
 ```
 
 Modules SHOULD remain small and explicit. The project SHOULD avoid creating generic `manager`, `engine`, or `framework` abstractions unless a concrete second implementation requires them.
 
 ## 28. Vertical-Phase MVP Roadmap
+
+> **Status: historical.** Phase 1 and the server slice of phase 2 are built. Plugins, MCP, subagents, hot reload and the co-agent were not. The TUI exists. The terminal client and the navigator were built instead of the plugin layer.
 
 The roadmap is a sequence of vertical slices. Each phase ends with a usable or demonstrable system. A phase is not complete merely because types compile.
 
@@ -2095,7 +2027,7 @@ The roadmap is a sequence of vertical slices. Each phase ends with a usable or d
 1. Add event envelopes, session sequencing, and bounded subscribers.
 2. Add per-actor inboxes and command routing.
 3. Move stdout rendering behind an event subscriber.
-4. Add Axum session, message, SSE, WebSocket, and health endpoints.
+4. Add Axum session, message, SSE, and health endpoints.
 5. Verify two clients can observe the same session.
 
 #### Plugins and MCP
@@ -2162,7 +2094,7 @@ The roadmap is a sequence of vertical slices. Each phase ends with a usable or d
 
 #### Ratatui Client
 
-1. Build the Ratatui WebSocket client.
+1. Build the Ratatui HTTP + SSE client.
 2. Show actor state, streaming text, tool activity, yields, and subagent completion.
 3. Support user selection of `next-turn`, `steer`, and `interrupt`.
 4. Show prompt and tool mutations with plugin attribution.
@@ -2178,6 +2110,8 @@ The roadmap is a sequence of vertical slices. Each phase ends with a usable or d
 - No TUI logic is imported into the core agent loop.
 
 ## 29. Strict Scope Fence
+
+> **Status: historical.** Kept as the original scope rule.
 
 The v0.1 architecture has exactly four foundational primitives:
 
@@ -2214,11 +2148,13 @@ If a planned feature cannot be expressed through the four primitives, the first 
 
 ## 30. Definition of v0.1 Complete
 
+> **Status: historical.** Items 3, 7 to 10 and 12 were not met; see the status of each section above.
+
 Version 0.1 is complete when all of the following are true:
 
 1. A user can start the server and connect with the Ratatui client.
 2. A configured OmniRoute model can stream text and invoke tools.
-3. The five native development tools work against a real Rust workspace.
+3. The native development tools work against a real Rust workspace.
 4. The agent can finish, continue, or yield without a forced-continuation mechanism.
 5. User messages remain accepted during model and tool execution.
 6. Steer and interrupt follow the specified boundaries.

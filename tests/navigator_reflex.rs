@@ -8,8 +8,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rust_agent::navigator::protocol::Position;
-use rust_agent::navigator::reflex::{
+use navai::navigator::protocol::Position;
+use navai::navigator::reflex::{
     build_fim_request, render_context_block, ReflexService, DEBOUNCE_MS, MAX_CONTEXT_BYTES,
     MAX_PREFIX_BYTES, MAX_SUFFIX_BYTES,
 };
@@ -32,10 +32,7 @@ fn spawn_suggest(
     position: Position,
     context: &str,
 ) -> tokio::task::JoinHandle<
-    Result<
-        rust_agent::navigator::reflex::Suggestion,
-        rust_agent::navigator::reflex::SuggestOutcome,
-    >,
+    Result<navai::navigator::reflex::Suggestion, navai::navigator::reflex::SuggestOutcome>,
 > {
     let svc = Arc::clone(svc);
     let uri = uri.to_string();
@@ -224,7 +221,7 @@ async fn empty_model_answer_is_silent() {
     .unwrap();
     assert_eq!(
         outcome.unwrap_err(),
-        rust_agent::navigator::reflex::SuggestOutcome::ModelSilent
+        navai::navigator::reflex::SuggestOutcome::ModelSilent
     );
 }
 
@@ -249,7 +246,7 @@ async fn out_of_bounds_position_is_silent_without_a_model_call() {
     .unwrap();
     assert_eq!(
         outcome.unwrap_err(),
-        rust_agent::navigator::reflex::SuggestOutcome::OutOfRange
+        navai::navigator::reflex::SuggestOutcome::OutOfRange
     );
     assert_eq!(model.calls(), 0);
 }

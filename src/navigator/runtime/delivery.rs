@@ -8,44 +8,17 @@ use std::sync::Arc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use crate::navigator::document::reanchor_line;
 use crate::navigator::log::{excerpt, DeliveryOutcome, LogRecord, PendingTrigger};
 use crate::navigator::lsp::protocol::{RemarkNotification, RemarkParams};
-use crate::navigator::metacognition::RemarkContext;
+use crate::navigator::metacognition::{RemarkContext, HELP_TOOL_ROUNDS, REMARK_TOOL_ROUNDS};
 use crate::navigator::pipeline::TriggerKind;
 use crate::navigator::ports::ModelError;
 use crate::navigator::WakeOutcome;
 
 use super::trigger::TriggerContext;
+use super::wake::{relative_path, wake_message, WakeReason};
 use super::Runtime;
-
-/// The wake message the metacognition sends the cognition: what changed,
-/// where, why it looks like drift, and the intent it drifts from — plus the
-/// recent conversation so the cognition can place the remark. Short by
-/// construction: it starts a deliberate discussion, it is not the
-/// discussion.
-fn wake_message(ctx: &TriggerContext, digest: &str) -> String {
-    let mut out = format!(
-        "Navigator wake: this edit looks at odds with the intent on record or with what was \
-         just agreed in this conversation.\n\n\
-         File: {file}\nWhat changed:\n{diff}\n\nIntent on record:\n{intent}",
-        file = ctx.uri,
-        diff = if ctx.diff.trim().is_empty() {
-            "(no diff captured)".to_string()
-        } else {
-            ctx.diff.trim().to_string()
-        },
-        intent = if ctx.intent_text.trim().is_empty() {
-            "(none recorded)".to_string()
-        } else {
-            ctx.intent_text.trim().to_string()
-        },
-    );
-    if !digest.trim().is_empty() {
-        out.push_str("\n\nRecent conversation:\n");
-        out.push_str(digest);
-    }
-    out
-}
 
 impl Runtime {
     /// Delivers a `remark` branch: calls the metacognition with the rendered
@@ -56,8 +29,24 @@ impl Runtime {
         ctx: TriggerContext,
         pending: PendingTrigger,
         prompt: String,
-        cancel: CancellationToken,
+        instinct_cancel: CancellationToken,
     ) {
+        // The instinct stage is over. Typing during it cancelled it (its
+        // answer was about text that is gone); from here typing no longer
+        // cancels: the remark request runs on its own handle, which only a
+        // newer remark for the document or a close cancels.
+        let Some(cancel) = self
+            .begin_remark(
+                &uri,
+                &instinct_cancel,
+                &ctx.help_calls,
+                ctx.event == TriggerKind::Conversation.as_str(),
+            )
+            .await
+        else {
+            pending.finish(&self.log, DeliveryOutcome::Cancelled { reason: None });
+            return;
+        };
         let remark_ctx = RemarkContext {
             uri: ctx.uri.clone(),
             language_id: ctx.language_id.clone(),
@@ -72,17 +61,22 @@ impl Runtime {
             prompt: Some(prompt),
             workspace: self.workspace.lock().await.clone(),
             open_buffers: self.documents.lock().await.open_buffers(),
+            tool_rounds: if ctx.called_for_help {
+                HELP_TOOL_ROUNDS
+            } else {
+                REMARK_TOOL_ROUNDS
+            },
         };
         let started = Instant::now();
         let result = tokio::select! {
             biased;
-            _ = cancel.cancelled() => None, // superseded by a newer edit
+            _ = cancel.cancelled() => None, // superseded, or the document closed
             r = self.metacognition.remark(&remark_ctx, &cancel) => Some(r),
         };
-        self.clear_in_flight(&uri).await;
+        self.end_remark(&uri, &cancel).await;
 
         let Some(result) = result else {
-            // Cancelled: a newer edit took over. Stay quiet.
+            // Cancelled: a newer remark took over, or the document closed.
             pending.finish(&self.log, DeliveryOutcome::Cancelled { reason: None });
             return;
         };
@@ -93,30 +87,38 @@ impl Runtime {
             .unwrap_or_else(|| "metacognition".to_string());
         match result {
             Ok(Some(remark)) => {
-                // A remark about a stale document version is dropped; a
-                // current one stamps the cooldown clock and rebases.
-                {
+                // Typing while the remark was being written does not kill
+                // it: it is delivered when its line survived the edits, at
+                // the line's place in the current text. A line that was
+                // changed or removed has nothing left to talk about.
+                let line = {
                     let mut state = self.documents.lock().await;
-                    match state.get_mut(&uri) {
-                        Some(doc) if doc.version == ctx.version => {
-                            doc.last_remark = Some(Instant::now());
-                            // A conversation remark considered no diff.
-                            if ctx.event != TriggerKind::Conversation.as_str() {
-                                doc.rebase();
-                            }
+                    let anchored = state.get_mut(&uri).and_then(|doc| {
+                        let line = if doc.version == ctx.version {
+                            Some(remark.line)
+                        } else {
+                            reanchor_line(&ctx.text, &doc.text, remark.line)
+                        }?;
+                        doc.last_remark = Some(Instant::now());
+                        doc.help.answer(&ctx.help_calls);
+                        // A conversation remark considered no diff.
+                        if ctx.event != TriggerKind::Conversation.as_str() {
+                            doc.rebase_to(&ctx.text);
                         }
-                        _ => {
-                            tracing::info!(uri = %ctx.uri, "dropping remark for stale version");
-                            pending.finish(
-                                &self.log,
-                                DeliveryOutcome::Cancelled {
-                                    reason: Some("stale_version"),
-                                },
-                            );
-                            return;
-                        }
-                    }
-                }
+                        Some(line)
+                    });
+                    let Some(line) = anchored else {
+                        tracing::info!(uri = %ctx.uri, "dropping remark whose line is gone");
+                        pending.finish(
+                            &self.log,
+                            DeliveryOutcome::Cancelled {
+                                reason: Some("stale_version"),
+                            },
+                        );
+                        return;
+                    };
+                    line
+                };
                 let id = crate::navigator::new_ulid_string();
                 let latency = started.elapsed().as_millis();
                 self.log.append(&LogRecord::Call {
@@ -131,7 +133,7 @@ impl Runtime {
                 self.log.append(&LogRecord::Remark {
                     id: &id,
                     uri: &ctx.uri,
-                    line: remark.line,
+                    line,
                     text: &remark.text,
                     model: &model,
                     latency_ms: latency,
@@ -140,7 +142,7 @@ impl Runtime {
                     .send_notification::<RemarkNotification>(RemarkParams {
                         id: id.clone(),
                         uri: uri.clone(),
-                        line: remark.line,
+                        line,
                         text: remark.text,
                     })
                     .await;
@@ -162,13 +164,19 @@ impl Runtime {
                     model: &model,
                     latency_ms: started.elapsed().as_millis(),
                 });
-                // Silence rebases: this diff was considered and judged fine.
+                // Silence rebases onto the text that was judged: this diff was
+                // considered and found fine; later edits stay in the next one.
                 // A conversation trigger considered no diff.
                 if ctx.event != TriggerKind::Conversation.as_str() {
                     let mut state = self.documents.lock().await;
                     if let Some(doc) = state.get_mut(&uri) {
-                        doc.rebase();
+                        doc.rebase_to(&ctx.text);
                     }
+                }
+                // The model judged the call and had nothing to say: asking
+                // again about the same comment would get the same silence.
+                if let Some(doc) = self.documents.lock().await.get_mut(&uri) {
+                    doc.help.answer(&ctx.help_calls);
                 }
                 pending.finish(&self.log, DeliveryOutcome::Silent { reason: None });
                 self.set_status("idle", None).await;
@@ -221,6 +229,7 @@ impl Runtime {
         uri: String,
         ctx: TriggerContext,
         pending: PendingTrigger,
+        reason: WakeReason,
     ) {
         const UNAVAILABLE: DeliveryOutcome = DeliveryOutcome::None {
             reason: "cognition_unavailable",
@@ -235,19 +244,26 @@ impl Runtime {
             self.set_status("idle", None).await;
             return;
         }
-        let message = wake_message(&ctx, &feed.digest());
+        let workspace = self.workspace.lock().await.clone();
+        let message = wake_message(
+            &reason,
+            &relative_path(&ctx.uri, workspace.as_deref()),
+            ctx.first_changed_line,
+            &ctx.diff,
+            &ctx.intent_text,
+        );
         let outcome = feed.post_wake(&message).await;
         if matches!(outcome, WakeOutcome::Posted(_) | WakeOutcome::Queued(_)) {
-            // A wake consumes the edit like a remark does: stamp the cooldown
-            // and rebase, or the idle trigger right after the save wakes the
-            // cognition a second time about the same change (observed
-            // 2026-10-01: two identical wakes 1.5 s apart).
+            // A wake consumes the edit like a remark does: stamp the wake
+            // clock and rebase, or the idle trigger right after the save
+            // wakes the cognition a second time about the same change
+            // (observed 2026-10-01: two identical wakes 1.5 s apart). The
+            // remark clock is left alone: wakes and remarks are rate-limited
+            // apart, and a wake must not silence the next remark.
             let mut state = self.documents.lock().await;
             if let Some(doc) = state.get_mut(&uri) {
-                if doc.version == ctx.version {
-                    doc.last_remark = Some(Instant::now());
-                    doc.rebase();
-                }
+                doc.last_wake = Some(Instant::now());
+                doc.rebase_to(&ctx.text);
             }
         }
         match outcome {

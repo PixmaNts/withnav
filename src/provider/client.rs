@@ -9,9 +9,12 @@ use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ProviderError;
-use crate::provider::config::ProviderConfig;
+use crate::provider::config::{ProviderConfig, Variant};
 use crate::provider::openai::{ChatRequest, ClientCache};
 use crate::provider::{extract_error_message, start_and_consume, AssistantMessage, StreamDelta};
+
+/// The largest model list accepted.
+const MAX_CATALOG_BYTES: usize = 2_000_000;
 
 /// A provider's base URL, auth and extra headers over a pooled
 /// `reqwest::Client`. Build it once and reuse it across calls.
@@ -63,6 +66,74 @@ impl ModelClient {
         req
     }
 
+    /// [`Self::new`] over the cache's no-cross-origin-redirect client, for
+    /// the model list: its credentials and headers never leave the endpoint.
+    pub fn for_catalog(
+        provider_name: &str,
+        provider: &ProviderConfig,
+        api_key: String,
+        cache: &ClientCache,
+    ) -> Result<Self, ProviderError> {
+        let mut client = Self::new(provider_name, provider, api_key, cache)?;
+        client.http = cache.get_same_origin(provider_name, provider)?;
+        Ok(client)
+    }
+
+    /// Fetch model metadata (bounded in time and size). A redirect to
+    /// another origin is not followed, so this client's credentials and
+    /// headers never reach it.
+    pub async fn get_json(
+        &self,
+        endpoint: &str,
+        budget: Duration,
+        cancel: &CancellationToken,
+    ) -> Result<bytes::Bytes, ProviderError> {
+        let url = format!("{}/{}", self.base_url, endpoint);
+        let mut req = self.http.get(url).bearer_auth(&self.api_key);
+        for (k, v) in &self.headers {
+            req = req.header(k, v);
+        }
+        let call = async {
+            let mut response = cancellable(cancel, req.send()).await??;
+            let status = response.status();
+            if !status.is_success() {
+                return Err(ProviderError::Api {
+                    status: status.as_u16(),
+                    message: if status.is_redirection() {
+                        "model catalog redirected to another origin (not followed)"
+                    } else {
+                        "model catalog request failed"
+                    }
+                    .into(),
+                    partial: None,
+                });
+            }
+            let too_big =
+                || ProviderError::MalformedResponse("model catalog response exceeds 2 MB".into());
+            if response
+                .content_length()
+                .is_some_and(|n| n > MAX_CATALOG_BYTES as u64)
+            {
+                return Err(too_big());
+            }
+            let mut body = Vec::new();
+            while let Some(chunk) = cancellable(cancel, response.chunk()).await?? {
+                if body.len() + chunk.len() > MAX_CATALOG_BYTES {
+                    return Err(too_big());
+                }
+                body.extend_from_slice(&chunk);
+            }
+            Ok(bytes::Bytes::from(body))
+        };
+        tokio::time::timeout(budget, call)
+            .await
+            .map_err(|_| ProviderError::Api {
+                status: 0,
+                message: "model catalog deadline exceeded".into(),
+                partial: None,
+            })?
+    }
+
     /// POSTs `body` as JSON to `{base_url}/{endpoint}` and returns the raw
     /// success body; the caller parses it. A non-2xx status becomes
     /// [`ProviderError::Api`] carrying the API's error message when the body
@@ -102,16 +173,21 @@ impl ModelClient {
         }
     }
 
-    /// The streaming chat call: sends under `cancel`, then streams the
-    /// answer through `on_delta` until `[DONE]`.
+    /// The streaming chat call: sends `request` with `variant` (the selected
+    /// variant's overrides, if any) merged into the body under `cancel`, then
+    /// streams the answer through `on_delta` until `[DONE]`.
     pub async fn chat(
         &self,
-        request: &ChatRequest,
+        mut request: ChatRequest,
+        variant: Option<&Variant>,
         cancel: &CancellationToken,
         on_delta: &mut (dyn FnMut(StreamDelta) + Send),
     ) -> Result<AssistantMessage, ProviderError> {
+        if let Some(variant) = variant {
+            request.apply_variant(variant);
+        }
         let response =
-            cancellable(cancel, self.post("chat/completions").json(request).send()).await??;
+            cancellable(cancel, self.post("chat/completions").json(&request).send()).await??;
         start_and_consume(response, cancel, on_delta).await
     }
 }
@@ -143,6 +219,7 @@ mod tests {
             connect_timeout_ms: 1_000,
             // Far above every budget below: only the call's own deadline can fire.
             request_timeout_ms: 600_000,
+            catalog_format: None,
         };
         ModelClient::new("p", &provider, "key".into(), &ClientCache::new()).unwrap()
     }
@@ -231,10 +308,11 @@ mod tests {
             stream_options: None,
             max_tokens: None,
             temperature: None,
+            extra: Default::default(),
         };
         let started = Instant::now();
         let err = client_at(addr)
-            .chat(&request, &cancel, &mut |_| {})
+            .chat(request, None, &cancel, &mut |_| {})
             .await
             .unwrap_err();
         assert!(started.elapsed() < Duration::from_secs(3));

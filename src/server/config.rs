@@ -5,6 +5,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use crate::agent::instructions::RulesRoots;
 use crate::error::ServerError;
 use crate::session::SessionConfig;
 
@@ -26,6 +27,10 @@ pub struct ServerConfig {
     /// Conversation-history database; the binaries default it to
     /// [`crate::paths::history_db`], tests give each server its own.
     pub history_db: PathBuf,
+    pub data_dir: PathBuf,
+    /// Where session instructions are read from besides the workspace; the
+    /// binaries use the user's home, tests an empty or temporary one.
+    pub rules_roots: RulesRoots,
 }
 
 /// The HTTP-only half of [`ServerConfig`].
@@ -53,6 +58,8 @@ impl ServerConfig {
                 models_path: self.models_path,
                 config_dir: self.config_dir,
                 history_db: self.history_db,
+                data_dir: self.data_dir,
+                rules_roots: self.rules_roots,
             },
             HttpConfig {
                 bind: self.bind,
@@ -71,10 +78,12 @@ mod tests {
         ServerConfig {
             bind: bind.parse().expect("test bind addr"),
             models_path: None,
-            config_dir: PathBuf::from("/tmp/rust-agent-test"),
+            config_dir: PathBuf::from("/tmp/navai-test"),
             allow_non_loopback,
             bearer_token: None,
-            history_db: PathBuf::from("/tmp/rust-agent-test/history.db"),
+            history_db: PathBuf::from("/tmp/navai-test/history.db"),
+            data_dir: PathBuf::from("/tmp/navai-test/data"),
+            rules_roots: RulesRoots::default(),
         }
     }
 
@@ -111,7 +120,7 @@ mod tests {
         let (session, http) = config.split();
         assert_eq!(session.history_db, PathBuf::from("/tmp/h.db"));
         assert_eq!(session.models_path, Some(PathBuf::from("/tmp/m.json")));
-        assert_eq!(session.config_dir, PathBuf::from("/tmp/rust-agent-test"));
+        assert_eq!(session.config_dir, PathBuf::from("/tmp/navai-test"));
         assert_eq!(http.bind, "127.0.0.1:7310".parse().unwrap());
         assert!(http.allow_non_loopback);
         assert_eq!(http.bearer_token.as_deref(), Some("t"));

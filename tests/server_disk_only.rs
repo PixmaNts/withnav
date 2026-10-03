@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use rust_agent::bus::event::EventEnvelope;
-use rust_agent::server::AppState;
+use navai::bus::event::EventEnvelope;
+use navai::server::AppState;
 
 mod common;
 use common::server::{post_message, post_message_ok, spawn_server, TestServerConfig};
@@ -76,7 +76,7 @@ async fn restarted_after_one_turn() -> Restarted {
 async fn stored_events(state: &AppState, id: ulid::Ulid) -> Vec<EventEnvelope> {
     let sub = state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
-        rust_agent::bus::ResumeOutcome::Replay(events) => events,
+        navai::bus::ResumeOutcome::Replay(events) => events,
         other => panic!("expected a replay: {other:?}"),
     }
 }
@@ -164,6 +164,7 @@ async fn restarted_server_answers_get_for_a_stored_conversation() {
     assert_eq!(summary["actor_state"], "stopped");
     assert_eq!(summary["current_seq"], last);
     assert_eq!(summary["session_id"], restarted.id.as_str());
+    assert_eq!(summary["agent"], "build", "a legacy row runs as build");
     let mut keys: Vec<&str> = summary
         .as_object()
         .expect("object")
@@ -175,9 +176,11 @@ async fn restarted_server_answers_get_for_a_stored_conversation() {
         keys,
         [
             "actor_state",
+            "agent",
             "current_seq",
             "model",
             "session_id",
+            "variant",
             "workspace"
         ]
     );

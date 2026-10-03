@@ -1,0 +1,89 @@
+//! Owns terminal mode lifecycle and restoration; no application state transitions.
+use std::io::{self, IsTerminal, Stdout};
+use std::sync::Once;
+
+use crossterm::{
+    cursor::Show,
+    event::{DisableBracketedPaste, EnableBracketedPaste},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{backend::CrosstermBackend, Frame, Terminal};
+
+use super::TuiError;
+
+/// Raw mode, alternate screen and bracketed paste for as long as it lives.
+/// Dropping it restores the terminal, also while unwinding from a panic.
+pub struct TerminalGuard {
+    terminal: Terminal<CrosstermBackend<Stdout>>,
+}
+
+impl TerminalGuard {
+    /// Takes over the terminal. Refuses to touch it unless stdin and stdout
+    /// are both a terminal, so a pipe is never put in raw mode.
+    pub fn enter() -> Result<Self, TuiError> {
+        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+            return Err(TuiError::Other(
+                "the terminal client needs an interactive terminal on stdin and stdout".into(),
+            ));
+        }
+        install_panic_hook();
+        match Self::setup() {
+            Ok(terminal) => Ok(Self { terminal }),
+            Err(err) => {
+                restore();
+                Err(TuiError::Other(format!(
+                    "cannot set up the terminal: {err}"
+                )))
+            }
+        }
+    }
+
+    fn setup() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
+        enable_raw_mode()?;
+        let mut out = io::stdout();
+        execute!(out, EnterAlternateScreen, EnableBracketedPaste)?;
+        Terminal::new(CrosstermBackend::new(out))
+    }
+
+    /// Draws one frame.
+    pub fn draw(&mut self, render: impl FnOnce(&mut Frame<'_>)) -> io::Result<()> {
+        self.terminal.draw(render).map(|_| ())
+    }
+
+    /// Forgets the screen contents so the next draw repaints everything.
+    pub fn invalidate(&mut self) -> io::Result<()> {
+        self.terminal.clear()
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        restore();
+    }
+}
+
+/// Undoes every mode change, ignoring errors: it runs on the way out and in
+/// the panic hook, where nothing can be done about a failure.
+fn restore() {
+    let _ = disable_raw_mode();
+    let _ = execute!(
+        io::stdout(),
+        DisableBracketedPaste,
+        LeaveAlternateScreen,
+        Show
+    );
+}
+
+/// Restores the terminal before the previous hook prints its message, so the
+/// message lands on the normal screen and stays readable.
+fn install_panic_hook() {
+    static INSTALLED: Once = Once::new();
+    INSTALLED.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            restore();
+            previous(info);
+        }));
+    });
+}

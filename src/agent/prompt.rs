@@ -19,20 +19,35 @@ task is genuinely complete, or yield honestly when blocked.
 Do not invent file contents or command output.
 - Unused token budget is not a reason to continue.";
 
+/// One request: the contract, the optional role prompt, the optional rules
+/// message (the local instructions), the optional skills catalog, then the
+/// history.
 pub fn build_request(
     model: &str,
     system_prompt: Option<&str>,
+    rules: Option<&str>,
+    skills: Option<&str>,
     messages: Vec<ChatMessage>,
     tools: Vec<ToolDef>,
     max_tokens: Option<u64>,
 ) -> ChatRequest {
-    let mut full = Vec::with_capacity(messages.len() + 2);
+    let mut full = Vec::with_capacity(messages.len() + 4);
     full.push(ChatMessage::System {
         content: SYSTEM_CONTRACT.to_string(),
     });
     if let Some(prompt) = system_prompt {
         full.push(ChatMessage::System {
             content: prompt.to_string(),
+        });
+    }
+    if let Some(rules) = rules {
+        full.push(ChatMessage::System {
+            content: rules.to_string(),
+        });
+    }
+    if let Some(skills) = skills {
+        full.push(ChatMessage::System {
+            content: skills.to_string(),
         });
     }
     full.extend(messages);
@@ -47,6 +62,7 @@ pub fn build_request(
         }),
         max_tokens,
         temperature: None,
+        extra: Default::default(),
     }
 }
 
@@ -104,7 +120,7 @@ mod tests {
             "read a file",
             json!({"type": "object"}),
         )];
-        let req = build_request("m", None, vec![user], tools, Some(100));
+        let req = build_request("m", None, None, None, vec![user], tools, Some(100));
         assert!(matches!(req.messages[0], ChatMessage::System { .. }));
         assert!(matches!(req.messages[1], ChatMessage::User { .. }));
         assert_eq!(req.tools.len(), 1);
@@ -116,7 +132,7 @@ mod tests {
         let user = ChatMessage::User {
             content: "hi".into(),
         };
-        let req = build_request("m", Some("role"), vec![user], vec![], None);
+        let req = build_request("m", Some("role"), None, None, vec![user], vec![], None);
         assert!(matches!(
             &req.messages[0],
             ChatMessage::System { content } if content == SYSTEM_CONTRACT
@@ -126,6 +142,31 @@ mod tests {
             ChatMessage::System { content } if content == "role"
         ));
         assert!(matches!(req.messages[2], ChatMessage::User { .. }));
+    }
+
+    #[test]
+    fn build_request_puts_rules_then_skills_after_the_role_and_before_history() {
+        let user = ChatMessage::User {
+            content: "hi".into(),
+        };
+        let req = build_request(
+            "m",
+            Some("role"),
+            Some("rules"),
+            Some("skills"),
+            vec![user],
+            vec![],
+            None,
+        );
+        let contents: Vec<&str> = req
+            .messages
+            .iter()
+            .map(|m| match m {
+                ChatMessage::System { content } | ChatMessage::User { content } => content.as_str(),
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(contents, [SYSTEM_CONTRACT, "role", "rules", "skills", "hi"]);
     }
 
     #[test]

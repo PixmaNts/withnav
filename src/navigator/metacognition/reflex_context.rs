@@ -13,7 +13,7 @@ use crate::navigator::ports::ModelError;
 const REFLEX_CONTEXT_PROMPT: &str = include_str!("reflex_context_prompt.md");
 /// The refresh is capped well under the remark budget's tool loop: one
 /// short plain call.
-const REFLEX_CONTEXT_BUDGET: Duration = Duration::from_secs(15);
+const REFLEX_CONTEXT_BUDGET: Duration = Duration::from_secs(25);
 const REFLEX_CONTEXT_MAX_TOKENS: u64 = 300;
 
 impl crate::navigator::ports::ReflexContextModel for LlmCommenter {
@@ -54,6 +54,7 @@ impl crate::navigator::ports::ReflexContextModel for LlmCommenter {
                     .min(Some(REFLEX_CONTEXT_MAX_TOKENS))
                     .or(Some(REFLEX_CONTEXT_MAX_TOKENS)),
                 temperature: Some(0.2),
+                extra: self.variant.clone().unwrap_or_default(),
             };
             let client = self
                 .clients

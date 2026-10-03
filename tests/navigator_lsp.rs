@@ -8,13 +8,13 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
-use rust_agent::navigator;
+use navai::navigator;
 
 mod common;
 use common::navigator::{
-    base_text, big_edit, driver_message, feed_with_session, with_intent_and_feed, LspClient, Nav,
-    RemarkAnswer as Answer, ScriptedCommenter as MockCommenter, ScriptedFim, ScriptedReflexContext,
-    URI,
+    base_text, big_edit, driver_message, feed_with_session, with_intent_and_feed,
+    with_min_changed_lines, LspClient, Nav, RemarkAnswer as Answer,
+    ScriptedCommenter as MockCommenter, ScriptedFim, ScriptedReflexContext, URI,
 };
 
 // ---------- tests ----------
@@ -43,11 +43,15 @@ async fn idle_after_big_edit_emits_remark() {
     assert!(records.contains("\"kind\":\"trigger\""));
 }
 
-/// A 1-line change never triggers (skip: too_few_changed_lines).
+/// A pipeline that asks for 3 changed lines skips a smaller change
+/// (skip: too_few_changed_lines) without calling the metacognition.
 #[tokio::test(start_paused = true)]
-async fn one_line_change_never_triggers() {
+async fn a_change_under_the_pipelines_size_limit_never_triggers() {
     let mock = MockCommenter::new(vec![Answer::Remark(0, "should not happen")]);
-    let mut client = Nav::start(mock.clone()).await;
+    let mut client = Nav::start_with(mock.clone(), json!({}), |d, ws| {
+        with_min_changed_lines(d, ws, 3)
+    })
+    .await;
     client.open_base().await;
     // only one line changed
     client
@@ -63,7 +67,12 @@ async fn one_line_change_never_triggers() {
 /// change logs a light record, without the rendered state.
 #[tokio::test(start_paused = true)]
 async fn skips_logs_light_or_not_at_all() {
-    let mut client = Nav::start(MockCommenter::new(vec![Answer::Silent])).await;
+    let mut client = Nav::start_with(
+        MockCommenter::new(vec![Answer::Silent]),
+        json!({}),
+        |d, ws| with_min_changed_lines(d, ws, 3),
+    )
+    .await;
     client.open_base().await;
     client
         .notify("navigator/diagnostics", json!({"uri": URI, "items": []}))
@@ -119,6 +128,30 @@ async fn cooldown_suppresses_second_remark() {
     assert_eq!(second["params"]["text"], "second");
 }
 
+/// A one-line comment that calls on the navigator reaches it: the instinct
+/// runs and the remark is delivered, where an ordinary one-line edit is
+/// skipped (`one_line_change_never_triggers`).
+#[tokio::test(start_paused = true)]
+async fn a_one_line_call_for_help_in_a_comment_reaches_the_metacognition() {
+    let mock = MockCommenter::new(vec![Answer::Remark(2, "what part is stuck?")]);
+    let mut client = Nav::start(mock.clone()).await;
+    client.open_base().await;
+    client
+        .did_change(
+            URI,
+            "fn main() {\n    println!(\"hello\");\n    // J'ai besoin d'aide\n}",
+            2,
+        )
+        .await;
+    tokio::time::advance(Duration::from_millis(3001)).await;
+    let mut seen = Vec::new();
+    let remark = client.expect("navigator/remark", &mut seen).await;
+    assert_eq!(remark["params"]["text"], "what part is stuck?");
+    assert_eq!(mock.calls(), 1);
+    let records = client.log_text();
+    assert!(records.contains("\"called_for_help\":true"), "{records}");
+}
+
 /// Silent answer emits no remark.
 #[tokio::test(start_paused = true)]
 async fn silent_answer_emits_no_remark() {
@@ -151,46 +184,133 @@ async fn commenter_error_emits_status_error_and_survives() {
     assert!(resp.get("result").is_some());
 }
 
-/// Typing again before the mock answers yields no remark (in-flight cancel).
+/// The remark request outlives typing: it is delivered after further
+/// `didChange` events, on the line's place in the current text.
 #[tokio::test(start_paused = true)]
-async fn retyping_cancels_in_flight_request() {
+async fn typing_does_not_cancel_a_remark_and_its_line_follows_the_edits() {
     let gate = Arc::new(CancellationToken::new());
-    // The gated call holds "stale"; any later call answers Silent.
-    let mock = MockCommenter::gated(
-        vec![Answer::Remark(0, "stale"), Answer::Silent],
-        gate.clone(),
-    );
+    let mock = MockCommenter::gated(vec![Answer::Remark(1, "x is unused")], gate.clone());
     let mut client = Nav::start(mock).await;
     client.open_and_edit().await;
     tokio::time::advance(Duration::from_millis(3001)).await;
-    // "thinking" proves the first (gated) call is in flight.
+    // "thinking" proves the instinct answered and the remark is in flight.
     client.expect_status("thinking").await;
 
-    // The user types again: the in-flight call must be cancelled.
+    // Typing above the remark's line (the file grows by two lines), twice.
+    let above = format!("// one\n// two\n{}", big_edit());
+    client
+        .did_change(URI, &format!("// one\n{}", big_edit()), 3)
+        .await;
+    client.did_change(URI, &above, 4).await;
+    tokio::time::sleep(Duration::from_millis(1)).await;
+
+    gate.cancel();
+    let mut seen = Vec::new();
+    let remark = client.expect("navigator/remark", &mut seen).await;
+    assert_eq!(remark["params"]["text"], "x is unused");
+    assert_eq!(
+        remark["params"]["line"], 3,
+        "line 1 of the judged text is line 3 after two lines were added above"
+    );
+}
+
+/// A remark about a line that was edited meanwhile has nothing left to
+/// talk about: it is dropped, and logged as such.
+#[tokio::test(start_paused = true)]
+async fn a_remark_on_a_line_edited_meanwhile_is_dropped() {
+    let gate = Arc::new(CancellationToken::new());
+    let mock = MockCommenter::gated(vec![Answer::Remark(1, "x is unused")], gate.clone());
+    let mut client = Nav::start(mock).await;
+    client.open_and_edit().await;
+    tokio::time::advance(Duration::from_millis(3001)).await;
+    client.expect_status("thinking").await;
+
+    // Line 2 of the file (index 1) is rewritten.
+    client
+        .did_change(URI, &big_edit().replace("let x = 1;", "let x = 10;"), 3)
+        .await;
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    gate.cancel();
+    let msgs = client.collect_for(Duration::from_millis(100)).await;
+    assert!(
+        msgs.iter().all(|m| m["method"] != "navigator/remark"),
+        "a remark about a rewritten line leaked: {msgs:?}"
+    );
+    let records = client.log_text();
+    assert!(
+        records.contains("\"reason\":\"stale_version\""),
+        "{records}"
+    );
+    assert!(!records.contains("\"kind\":\"remark\""));
+}
+
+/// A newer trigger for the same document supersedes the remark still being
+/// written: only the newer one is delivered.
+#[tokio::test(start_paused = true)]
+async fn a_newer_trigger_supersedes_the_remark_in_flight() {
+    let gate = Arc::new(CancellationToken::new());
+    let mock = MockCommenter::gated(
+        vec![Answer::Remark(0, "old"), Answer::Remark(0, "new")],
+        gate.clone(),
+    );
+    let mut client = Nav::start(mock.clone()).await;
+    client.open_and_edit().await;
+    tokio::time::advance(Duration::from_millis(3001)).await;
+    client.expect_status("thinking").await;
+
+    // Typing, then another idle: a second remark request starts.
     client
         .did_change(URI, &format!("{}\n// tail\n", big_edit()), 3)
         .await;
-    tokio::time::sleep(Duration::from_millis(1)).await;
-
-    // Release the gate: the cancelled call must not emit "stale". A later
-    // idle window may legitimately fire a fresh call (Silent).
-    gate.cancel();
-    tokio::time::advance(Duration::from_millis(10_000)).await;
-    tokio::time::sleep(Duration::from_millis(10)).await;
-
-    let msgs = client.collect_for(Duration::from_millis(100)).await;
-    for m in &msgs {
-        assert_ne!(
-            m["params"]["text"].as_str().unwrap_or(""),
-            "stale",
-            "cancelled answer leaked: {m}"
-        );
-    }
-    let records = client.log_text();
-    assert!(
-        !records.contains("\"text\":\"stale\""),
-        "cancelled answer must not be logged"
+    // Let the server register the new idle timer before the clock moves.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        mock.calls(),
+        2,
+        "the newer trigger asked for its own remark"
     );
+
+    gate.cancel();
+    let mut seen = Vec::new();
+    let remark = client.expect("navigator/remark", &mut seen).await;
+    assert_eq!(remark["params"]["text"], "new");
+    let rest = client.collect_for(Duration::from_millis(100)).await;
+    assert!(
+        rest.iter().all(|m| m["method"] != "navigator/remark"),
+        "the superseded remark leaked: {rest:?}"
+    );
+    assert!(client.log_text().contains("\"delivered\":\"cancelled\""));
+}
+
+/// Closing the document still cancels the remark in flight.
+#[tokio::test(start_paused = true)]
+async fn closing_the_document_cancels_the_remark_in_flight() {
+    let gate = Arc::new(CancellationToken::new());
+    let mock = MockCommenter::gated(vec![Answer::Remark(0, "late")], gate.clone());
+    let mut client = Nav::start(mock).await;
+    client.open_and_edit().await;
+    tokio::time::advance(Duration::from_millis(3001)).await;
+    client.expect_status("thinking").await;
+
+    client
+        .notify(
+            "textDocument/didClose",
+            json!({"textDocument": {"uri": URI}}),
+        )
+        .await;
+    let mut seen = Vec::new();
+    client.expect("navigator/clear", &mut seen).await;
+    gate.cancel();
+    let msgs = client.collect_for(Duration::from_millis(100)).await;
+    assert!(
+        msgs.iter().all(|m| m["method"] != "navigator/remark"),
+        "a remark was delivered for a closed document: {msgs:?}"
+    );
+    let records = client.log_text();
+    assert!(records.contains("\"delivered\":\"cancelled\""), "{records}");
+    assert!(!records.contains("\"text\":\"late\""));
 }
 
 /// Save fires the trigger without waiting for the idle timer.
@@ -463,6 +583,91 @@ async fn wake_cognition_posts_once_and_logs_wake() {
     assert!(trigger["session"].as_str().is_some(), "session id logged");
 }
 
+/// The wake text: a stable first line, the diff in a fenced block, the
+/// intent (drift) and no conversation digest.
+#[tokio::test(start_paused = true)]
+async fn the_wake_message_is_short_and_renders() {
+    let (feed, posted, _session) = feed_with_session(Ok(())).await;
+    let mut client = Nav::start_with(MockCommenter::new(vec![]), json!({}), |d, ws| {
+        with_intent_and_feed(d, ws, feed)
+    })
+    .await;
+    client.open_and_edit().await;
+    client.did_save(URI).await;
+    client.expect_status("idle").await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let posted = posted.lock().unwrap().clone();
+    assert_eq!(posted.len(), 1);
+    let message = &posted[0];
+    // Drift and contradiction both score 0.9 with the scripted instinct: the
+    // intent drift wins the tie.
+    // The uri is outside the temporary workspace, so it stays as it is.
+    assert_eq!(
+        message.lines().next().unwrap(),
+        "Navigator noticed: the code drifts from the intent (0.90) in file:///ws/src/main.rs:2",
+        "{message}"
+    );
+    assert!(message.contains("```diff\n"), "{message}");
+    assert!(message.contains("+    let x = 1;"), "{message}");
+    assert!(
+        message.contains("\nIntent on record:\nadd an auth remove command"),
+        "{message}"
+    );
+    assert!(!message.contains("Recent conversation"), "{message}");
+    assert!(
+        !message.contains("add an auth remove command\n\n"),
+        "{message}"
+    );
+}
+
+/// A wake does not set the remark cooldown, and a second wake inside 120 s
+/// is skipped: the trigger falls through to the remark branch instead, which
+/// the wake did not silence.
+#[tokio::test(start_paused = true)]
+async fn a_wake_does_not_silence_remarks_and_wakes_have_their_own_cooldown() {
+    let (feed, posted, _session) = feed_with_session(Ok(())).await;
+    let mock = MockCommenter::new(vec![Answer::Remark(0, "after the wake")]);
+    let mut client = Nav::start_with(mock.clone(), json!({}), |d, ws| {
+        with_intent_and_feed(d, ws, feed)
+    })
+    .await;
+    client.open_and_edit().await;
+    client.did_save(URI).await;
+    client.expect_status("idle").await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(posted.lock().unwrap().len(), 1);
+
+    // 5 s later (well inside the 45 s remark cooldown, were it stamped): a
+    // new edit and save. The instinct runs (no remark cooldown), the wake is
+    // inside its own cooldown, so the remark branch answers.
+    tokio::time::advance(Duration::from_secs(5)).await;
+    let bigger = format!("{}\n// a\n// b\n// c\n", big_edit());
+    client.did_change(URI, &bigger, 3).await;
+    client.did_save(URI).await;
+    let mut seen = Vec::new();
+    let remark = client.expect("navigator/remark", &mut seen).await;
+    assert_eq!(remark["params"]["text"], "after the wake");
+    assert_eq!(posted.lock().unwrap().len(), 1, "no second wake");
+
+    let records = client.log_text();
+    let triggers: Vec<Value> = records
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|r| r["kind"] == "trigger")
+        .collect();
+    assert_eq!(triggers[0]["requested_action"], "wake_cognition");
+    assert_eq!(triggers[1]["requested_action"], "remark");
+    assert_eq!(
+        triggers[1]["prefilter"]["inputs"]["since_last_remark_ms"], 4611686018427387903i64,
+        "the wake did not stamp the remark clock"
+    );
+    let since_wake = triggers[1]["prefilter"]["inputs"]["since_last_wake_ms"]
+        .as_i64()
+        .unwrap();
+    assert!((5_000..120_000).contains(&since_wake), "{since_wake}");
+}
+
 /// Without a feed (or with no active conversation), the wake branch keeps
 /// today's behaviour: nothing posted, delivered `none`, reason
 /// `cognition_unavailable`.
@@ -670,14 +875,46 @@ async fn reflex_context_refresh_failure_keeps_the_previous_context() {
     assert!(fim.prompts()[3].contains("RECOVERED"));
 }
 
+/// An empty answer keeps the previous context and is logged once per run,
+/// not on every refresh; the next real answer still lands.
+#[tokio::test(start_paused = true)]
+async fn reflex_context_empty_answers_are_logged_once() {
+    let model = ScriptedReflexContext::new(vec![Ok(""), Ok("  "), Ok("FRESH")]);
+    let fim = ScriptedFim::fixed("x");
+    let mut client = Nav::start_with(MockCommenter::new(vec![]), json!({}), |d, _| {
+        d.with_fim(Arc::new(fim.clone()))
+            .with_reflex_context(Arc::new(model.clone()))
+    })
+    .await;
+    client
+        .notify("navigator/intent", json!({"text": "fix the parser"}))
+        .await;
+    client.open_base().await;
+
+    for step in 0..3u64 {
+        client.complete(31 + step, 1).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::advance(Duration::from_secs(61)).await;
+    }
+    client.complete(40, 1).await;
+    assert_eq!(model.calls(), 3);
+    let records = client.log_text();
+    assert_eq!(
+        records.matches("empty answer").count(),
+        1,
+        "logged once: {records}"
+    );
+    assert!(fim.prompts().last().unwrap().contains("FRESH"));
+}
+
 // ---------- conversation trigger ----------
 
 fn session_event(
     session_id: ulid::Ulid,
-    kind: rust_agent::bus::event::EventKind,
+    kind: navai::bus::event::EventKind,
     payload: Value,
-) -> rust_agent::bus::event::EventEnvelope {
-    rust_agent::bus::event::EventEnvelope::new(session_id, 0, kind, payload)
+) -> navai::bus::event::EventEnvelope {
+    navai::bus::event::EventEnvelope::new(session_id, 0, kind, payload)
 }
 
 /// The first trigger record of the log.
@@ -690,10 +927,10 @@ fn first_trigger(client: &Nav) -> Value {
         .expect("a trigger record")
 }
 
-fn message_event(session_id: ulid::Ulid, source: &str) -> rust_agent::bus::event::EventEnvelope {
+fn message_event(session_id: ulid::Ulid, source: &str) -> navai::bus::event::EventEnvelope {
     session_event(
         session_id,
-        rust_agent::bus::event::EventKind::MessageReceived,
+        navai::bus::event::EventKind::MessageReceived,
         json!({
             "command_id": ulid::Ulid::new().to_string(),
             "source": source,
@@ -704,10 +941,10 @@ fn message_event(session_id: ulid::Ulid, source: &str) -> rust_agent::bus::event
     )
 }
 
-fn turn_end_event(session_id: ulid::Ulid) -> rust_agent::bus::event::EventEnvelope {
+fn turn_end_event(session_id: ulid::Ulid) -> navai::bus::event::EventEnvelope {
     session_event(
         session_id,
-        rust_agent::bus::event::EventKind::TurnEnd,
+        navai::bus::event::EventKind::TurnEnd,
         json!({
             "turn_id": ulid::Ulid::new().to_string(),
             "actor_id": "agent:main",
@@ -822,4 +1059,147 @@ async fn conversation_trigger_targets_the_last_focused_document() {
     let records = trigger_records(&client, "conversation");
     assert_eq!(records.len(), 1, "{records:?}");
     assert_eq!(records[0]["uri"], URI, "the document changed last");
+}
+
+// ---------- a call for help is answered once ----------
+
+const HELP_COMMENT: &str = "    // need help here :)";
+
+/// [`base_text`] with the call for help on a line of its own, plus `extra`
+/// lines after it.
+fn with_help(extra: &[&str]) -> String {
+    let mut lines = vec![
+        "fn main() {".to_string(),
+        HELP_COMMENT.to_string(),
+        "    println!(\"hello\");".to_string(),
+    ];
+    lines.extend(extra.iter().map(|l| l.to_string()));
+    lines.push("}".to_string());
+    lines.join("\n")
+}
+
+fn delivered(client: &Nav) -> Vec<(String, Option<String>)> {
+    client
+        .log_text()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|v| v["kind"] == "trigger")
+        .map(|v| {
+            (
+                v["delivered"].as_str().unwrap().to_string(),
+                v["reason"].as_str().map(str::to_string),
+            )
+        })
+        .collect()
+}
+
+/// The same comment, triggered again while its remark is being written,
+/// leaves that remark alone: it is skipped, not superseded.
+#[tokio::test(start_paused = true)]
+async fn the_same_call_for_help_does_not_cancel_its_own_remark() {
+    let gate = Arc::new(CancellationToken::new());
+    let mock = MockCommenter::gated(vec![Answer::Remark(1, "the cache")], gate.clone());
+    let mut client = Nav::start(mock.clone()).await;
+    client.open_base().await;
+    client.did_change(URI, &with_help(&[]), 2).await;
+    client.did_save(URI).await;
+    client.expect_status("thinking").await;
+
+    // The comment moves down a line and the driver saves again.
+    client
+        .did_change(URI, &with_help(&["    // tail"]), 3)
+        .await;
+    client.did_save(URI).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(mock.calls(), 1, "no second request for the same comment");
+
+    gate.cancel();
+    let mut seen = Vec::new();
+    let remark = client.expect("navigator/remark", &mut seen).await;
+    assert_eq!(remark["params"]["text"], "the cache");
+    let outcomes = delivered(&client);
+    assert!(
+        outcomes.contains(&("none".to_string(), Some("help_in_flight".to_string()))),
+        "{outcomes:?}"
+    );
+    assert!(
+        !outcomes.iter().any(|(d, _)| d == "cancelled"),
+        "{outcomes:?}"
+    );
+}
+
+/// After the remark, the comment does not fire again unless it was removed
+/// and written anew.
+#[tokio::test(start_paused = true)]
+async fn an_answered_call_for_help_fires_again_only_once_rewritten() {
+    let mock = MockCommenter::new(vec![
+        Answer::Remark(1, "first answer"),
+        Answer::Remark(1, "second answer"),
+    ]);
+    let mut client = Nav::start(mock.clone()).await;
+    client.open_base().await;
+    client.did_change(URI, &with_help(&[]), 2).await;
+    client.did_save(URI).await;
+    let mut seen = Vec::new();
+    let first = client.expect("navigator/remark", &mut seen).await;
+    assert_eq!(first["params"]["text"], "first answer");
+    client.expect_status("idle").await;
+
+    // The same comment written a second time elsewhere is the same call.
+    let copied = with_help(&["    // Need  help here :)"]);
+    client.did_change(URI, &copied, 3).await;
+    client.did_save(URI).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(mock.calls(), 1, "an answered call is not asked again");
+
+    // Removing every copy forgets it; writing it again asks again.
+    client.did_change(URI, &base_text(), 4).await;
+    client.did_change(URI, &with_help(&[]), 5).await;
+    client.did_save(URI).await;
+    let second = client.expect("navigator/remark", &mut seen).await;
+    assert_eq!(second["params"]["text"], "second answer");
+    assert_eq!(mock.calls(), 2);
+}
+
+/// A trigger that is not a call for help still supersedes the remark in
+/// flight, and help remarks get three tool rounds, ordinary ones one.
+#[tokio::test(start_paused = true)]
+async fn an_ordinary_trigger_still_supersedes_a_help_remark_and_tool_rounds_differ() {
+    let gate = Arc::new(CancellationToken::new());
+    let mock = MockCommenter::gated(
+        vec![Answer::Remark(1, "help"), Answer::Remark(0, "ordinary")],
+        gate.clone(),
+    );
+    let mut client = Nav::start(mock.clone()).await;
+    client.open_base().await;
+    client.did_change(URI, &with_help(&[]), 2).await;
+    client.did_save(URI).await;
+    client.expect_status("thinking").await;
+
+    // The comment is rewritten away and plain lines are added: not a call
+    // for help, so it supersedes the help remark.
+    let plain = [
+        "fn main() {",
+        "    let x = 1;",
+        "    let y = 2;",
+        "    println!(\"{x}-{y}\");",
+        "}",
+    ]
+    .join("\n");
+    client.did_change(URI, &plain, 3).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::advance(Duration::from_millis(3001)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(mock.calls(), 2, "the ordinary trigger asked for its own");
+    assert_eq!(mock.tool_rounds(), vec![3, 1]);
+
+    gate.cancel();
+    let mut seen = Vec::new();
+    let remark = client.expect("navigator/remark", &mut seen).await;
+    assert_eq!(remark["params"]["text"], "ordinary");
+    assert!(delivered(&client).iter().any(|(d, _)| d == "cancelled"));
 }

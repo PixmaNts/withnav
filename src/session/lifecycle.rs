@@ -163,6 +163,7 @@ mod tests {
             ToolContext {
                 workspace: std::env::temp_dir(),
                 writable_roots: vec![std::env::temp_dir()],
+                readable_roots: Vec::new(),
             },
             ProviderConfig {
                 base_url: "http://127.0.0.1:1".into(),
@@ -170,6 +171,7 @@ mod tests {
                 headers: BTreeMap::new(),
                 connect_timeout_ms: 100,
                 request_timeout_ms: 100,
+                catalog_format: None,
             },
             "test-key".into(),
             "test-model".into(),
@@ -187,6 +189,7 @@ mod tests {
     fn wedged_runtime_handle() -> SessionHandle {
         SessionHandle {
             inbox_tx: mpsc::channel(1).0,
+            permissions: mpsc::channel(1).0,
             sequencer: Sequencer::spawn(Ulid::new(), SessionBus::default(), 0),
             session_cancel: CancellationToken::new(),
             runtime_task: Arc::new(Mutex::new(Some(tokio::spawn(async {
@@ -198,7 +201,16 @@ mod tests {
             lifecycle: Lifecycle::Active,
             actor_state: "idle".to_string(),
             workspace: PathBuf::from("/w"),
-            model: "fast".to_string(),
+            selected: Arc::new(std::sync::Mutex::new(
+                crate::session::service::SelectedModel {
+                    alias: "fast".to_string(),
+                    resolution: None,
+                    revision: 1,
+                    variant: None,
+                    offer: Arc::default(),
+                },
+            )),
+            status: Arc::default(),
         }
     }
 

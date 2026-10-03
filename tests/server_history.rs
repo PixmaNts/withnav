@@ -11,10 +11,10 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use rust_agent::bus::event::{EventEnvelope, EventKind};
-use rust_agent::navigator::COGNITION_PROMPT;
-use rust_agent::provider::openai::ChatMessage;
-use rust_agent::server::AppState;
+use navai::bus::event::{EventEnvelope, EventKind};
+use navai::navigator::COGNITION_PROMPT;
+use navai::provider::openai::ChatMessage;
+use navai::server::AppState;
 
 mod common;
 use common::server::{
@@ -186,7 +186,7 @@ async fn converse_persists_events_title_and_transcript() {
 
     // Direct store probe: events stored except llm.delta; no session.end
     // while live; transcript snapshot present.
-    let store = rust_agent::session::store::HistoryStore::open(&db).unwrap();
+    let store = navai::session::store::HistoryStore::open(&db).unwrap();
     let loaded = tokio::time::timeout(Duration::from_secs(5), store.load(id.parse().unwrap()))
         .await
         .expect("load")
@@ -252,6 +252,10 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
     let ws2 = root2.join("ws");
     std::fs::create_dir_all(&ws2).expect("ws2");
     let state2 = make_state(&root2, &mock2.url, db.clone());
+    // The two scripted providers listen on different ports, and a resume
+    // refuses another endpoint: the stored row is moved to the second one so
+    // this test stays about what a resume replays.
+    common::server::move_saved_endpoint(&db, &id, &mock2.url);
     // The resume keys on the STORED row (workspace/model/profile are the
     // stored ones); the request's workspace only guides models.json lookup.
     let (resumed_id, resumed) = state2
@@ -268,7 +272,7 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
         .subscribe(id.parse().unwrap(), None)
         .await
         .expect("sub2");
-    if let rust_agent::bus::ResumeOutcome::Replay(replay) = &sub2.replay {
+    if let navai::bus::ResumeOutcome::Replay(replay) = &sub2.replay {
         assert!(
             replay.iter().any(|e| e.kind == "session.start"),
             "the original session.start replays"
@@ -382,7 +386,7 @@ async fn a_resumed_session_continues_after_the_stored_session_end() {
         .expect("resume");
     assert!(resumed);
     let sub = server.state.subscribe(ulid, None).await.expect("sub");
-    if let rust_agent::bus::ResumeOutcome::Replay(replay) = &sub.replay {
+    if let navai::bus::ResumeOutcome::Replay(replay) = &sub.replay {
         assert!(
             !replay.iter().any(|e| e.kind == "session.end"),
             "the old session.end is not replayed to the resumed stream"
@@ -444,7 +448,7 @@ async fn resuming_an_old_navigator_transcript_sends_the_role_prompt_once() {
     std::fs::create_dir_all(&ws).expect("ws");
 
     let id = ulid::Ulid::new();
-    let store = rust_agent::session::store::HistoryStore::open(&db).expect("open");
+    let store = navai::session::store::HistoryStore::open(&db).expect("open");
     store
         .record_session(
             id,
@@ -541,7 +545,7 @@ async fn delete_removes_from_memory_and_store() {
     assert_eq!(resp.status(), 204);
     assert!(matches!(
         server.state.session_summary(id.parse().unwrap()).await,
-        Err(rust_agent::error::ServerError::SessionNotFound(_))
+        Err(navai::error::ServerError::SessionNotFound(_))
     ));
 
     // Store is empty for the workspace.
@@ -628,7 +632,7 @@ async fn test_server_config_never_resolves_to_the_users_data_dir() {
     let config = TestServerConfig::mock(&root, &mock.url);
     let db = config.config().history_db;
     assert_eq!(db, root.join("history.db"));
-    if let Some(data_dir) = rust_agent::paths::data_dir() {
+    if let Some(data_dir) = navai::paths::data_dir() {
         assert!(
             !db.starts_with(&data_dir),
             "{db:?} is in the user's data dir"

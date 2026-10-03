@@ -9,13 +9,13 @@ use serde_json::json;
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use rust_agent::error::ProviderError;
-use rust_agent::provider::auth;
-use rust_agent::provider::config::{
+use navai::error::ProviderError;
+use navai::provider::auth;
+use navai::provider::config::{
     ApiKind, ModelConfig, ModelsConfig, ProviderConfig, ReasoningHistory, ResolvedModel,
 };
-use rust_agent::provider::fim::InceptionFim;
-use rust_agent::provider::openai::ClientCache;
+use navai::provider::fim::InceptionFim;
+use navai::provider::openai::ClientCache;
 
 fn resolved(base_url: String) -> ResolvedModel {
     ResolvedModel {
@@ -28,16 +28,20 @@ fn resolved(base_url: String) -> ResolvedModel {
             connect_timeout_ms: 1_000,
             // Long on purpose: the reflex engine must clamp it.
             request_timeout_ms: 600_000,
+            catalog_format: None,
         },
         model: ModelConfig {
             provider: "inception".to_string(),
             model: "mercury-edit-2".to_string(),
             api: ApiKind::Fim,
             context_window: None,
+            max_input_tokens: None,
             max_output_tokens: None,
             supports_tools: false,
             supports_parallel_tool_calls: None,
             thinking: None,
+            default_variant: None,
+            variants: None,
             reasoning_history: ReasoningHistory::Preserve,
         },
     }
@@ -198,7 +202,7 @@ async fn cancelled_call_stops_waiting() {
 /// engine expects (inception provider, mercury-edit-2, fim api kind).
 #[test]
 fn repo_models_json_resolves_the_reflex_alias() {
-    let cfg = ModelsConfig::parse(include_str!("../models.json")).unwrap();
+    let cfg = ModelsConfig::parse(include_str!("../models.example.json")).unwrap();
     let r = cfg.resolve("reflex").unwrap();
     assert_eq!(r.provider_name, "inception");
     assert_eq!(r.model.model, "mercury-edit-2");

@@ -45,7 +45,7 @@ fn durable(frames: &[SseFrame]) -> Vec<(u64, String)> {
     frames
         .iter()
         .filter_map(|f| Some((f.id?, f.kind()?)))
-        .filter(|(_, k)| k != "llm.delta")
+        .filter(|(_, k)| k != "llm.delta" && k != "context.updated")
         .collect()
 }
 
@@ -80,7 +80,7 @@ async fn sse_frames_carry_id_equal_to_seq_and_are_monotonic() {
 async fn reconnect_with_last_event_id_resumes_without_gap_or_dup() {
     let (server, id) = server_with_session().await;
     let live = live_turn(&server, &id).await;
-    // The ring retains only DURABLE kinds; `llm.delta` is live-only and
+    // The ring retains only DURABLE kinds; `llm.delta` and `context.updated` are live-only and
     // legitimately absent on replay, so the resume contract is over the
     // durable subsequence (a dropped-delta seq gap is expected + legal).
     let seqs = |fs: &[SseFrame]| -> Vec<u64> { durable(fs).into_iter().map(|(s, _)| s).collect() };
@@ -227,9 +227,9 @@ async fn reconnect_after_stop_replays_through_final_seq_then_terminates() {
 // and is absent from replay (no gap, no dup at the boundary).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn subscribe_then_replay_seam_is_complete_and_delivers_once() {
-    use rust_agent::bus::event::EventKind;
-    use rust_agent::bus::sequencer::{Candidate, Sequencer};
-    use rust_agent::bus::{ResumeOutcome, SessionBus};
+    use navai::bus::event::EventKind;
+    use navai::bus::sequencer::{Candidate, Sequencer};
+    use navai::bus::{ResumeOutcome, SessionBus};
 
     let seq = Sequencer::spawn(ulid::Ulid::new(), SessionBus::default(), 0);
 

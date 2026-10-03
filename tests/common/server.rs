@@ -11,9 +11,10 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use rust_agent::bus::command::{Command, ContentBlock, DeliveryMode};
-use rust_agent::bus::event::EventEnvelope;
-use rust_agent::server::{AppState, ServerConfig};
+use navai::agent::instructions::RulesRoots;
+use navai::bus::command::{Command, ContentBlock, DeliveryMode};
+use navai::bus::event::EventEnvelope;
+use navai::server::{AppState, ServerConfig};
 
 use super::sse::spawn_mock_provider;
 
@@ -22,7 +23,7 @@ use super::sse::spawn_mock_provider;
 pub const UNREACHABLE_PROVIDER_URL: &str = "http://127.0.0.1:1/v1";
 
 /// Name of the provider in the generated `models.json` and `auth.json`.
-const PROVIDER: &str = "mock";
+pub const PROVIDER: &str = "mock";
 
 /// Writes `auth.json` under `config_dir` with `api_key` for `provider`,
 /// readable by the owner only.
@@ -55,6 +56,13 @@ pub struct TestServerConfig {
     request_timeout_ms: u64,
     bearer_token: Option<String>,
     history_db: Option<PathBuf>,
+    rules_roots: RulesRoots,
+    chat_tools: Option<u64>,
+    without_window: bool,
+    extra_aliases: Vec<(String, String)>,
+    variants: Option<Value>,
+    default_variant: Option<String>,
+    omniroute: bool,
 }
 
 impl TestServerConfig {
@@ -78,7 +86,33 @@ impl TestServerConfig {
             request_timeout_ms: 600_000,
             bearer_token: None,
             history_db: None,
+            rules_roots: RulesRoots::default(),
+            chat_tools: None,
+            without_window: false,
+            extra_aliases: Vec::new(),
+            variants: None,
+            default_variant: None,
+            omniroute: false,
         }
+    }
+
+    /// Marks the alias as a chat model with tools and a context window of
+    /// `context_window` tokens, so `GET /v1/models` lists it.
+    pub fn chat_tools(mut self, context_window: u64) -> Self {
+        self.chat_tools = Some(context_window);
+        self
+    }
+
+    /// Leaves the alias without a `context_window`, as a models.json written
+    /// before windows were required.
+    pub fn without_window(mut self) -> Self {
+        self.without_window = true;
+        self
+    }
+
+    /// Path of the `models.json` [`Self::config`] writes.
+    pub fn models_path(&self) -> PathBuf {
+        self.root.join("models.json")
     }
 
     /// Names the single model alias the `models.json` defines.
@@ -88,8 +122,45 @@ impl TestServerConfig {
         self
     }
 
+    /// Adds a second alias on the same provider, with the same chat/tools
+    /// settings as the first.
+    pub fn extra_alias(mut self, alias: &str, model: &str) -> Self {
+        self.extra_aliases
+            .push((alias.to_string(), model.to_string()));
+        self
+    }
+
+    /// Gives the alias these `variants` (a JSON object by name) and,
+    /// optionally, a `default_variant`.
+    pub fn variants(mut self, variants: Value, default: Option<&str>) -> Self {
+        self.variants = Some(variants);
+        self.default_variant = default.map(str::to_string);
+        self
+    }
+
+    /// Marks the provider as an OmniRoute one: an alias without `variants`
+    /// then offers one variant per effort tier its model list reports.
+    pub fn omniroute(mut self) -> Self {
+        self.omniroute = true;
+        self
+    }
+
+    /// A `default_variant` on an alias with no `variants` of its own.
+    pub fn default_variant(mut self, name: &str) -> Self {
+        self.default_variant = Some(name.to_string());
+        self
+    }
+
     pub fn bearer_token(mut self, token: &str) -> Self {
         self.bearer_token = Some(token.to_string());
+        self
+    }
+
+    /// Reads the global rules from `home` instead of none.
+    pub fn rules_home(mut self, home: &Path) -> Self {
+        self.rules_roots = RulesRoots {
+            home: Some(home.to_path_buf()),
+        };
         self
     }
 
@@ -101,25 +172,50 @@ impl TestServerConfig {
     /// Writes the models and auth files and returns the config.
     pub fn config(&self) -> ServerConfig {
         let models_path = self.root.join("models.json");
+        let mut alias_entry = json!({
+            "provider": PROVIDER,
+            "model": self.model,
+            "reasoning_history": "preserve",
+            "context_window": 128000
+        });
+        if let Some(window) = self.chat_tools {
+            alias_entry["supports_tools"] = json!(true);
+            alias_entry["context_window"] = json!(window);
+        }
+        if self.without_window {
+            alias_entry
+                .as_object_mut()
+                .unwrap()
+                .remove("context_window");
+        }
+        if let Some(variants) = &self.variants {
+            alias_entry["variants"] = variants.clone();
+        }
+        if let Some(default) = &self.default_variant {
+            alias_entry["default_variant"] = json!(default);
+        }
+        let mut models = serde_json::Map::new();
+        models.insert(self.alias.clone(), alias_entry.clone());
+        for (alias, model) in &self.extra_aliases {
+            let mut entry = alias_entry.clone();
+            entry["model"] = json!(model);
+            models.insert(alias.clone(), entry);
+        }
+        let mut provider = json!({
+            "base_url": self.base_url,
+            "api_key_env": "NAVAI_TEST_KEY",
+            "headers": {},
+            "connect_timeout_ms": self.connect_timeout_ms,
+            "request_timeout_ms": self.request_timeout_ms
+        });
+        if self.omniroute {
+            provider["catalog_format"] = json!("omniroute");
+        }
         std::fs::write(
             &models_path,
             json!({
-                "providers": {
-                    PROVIDER: {
-                        "base_url": self.base_url,
-                        "api_key_env": "RUST_AGENT_TEST_KEY",
-                        "headers": {},
-                        "connect_timeout_ms": self.connect_timeout_ms,
-                        "request_timeout_ms": self.request_timeout_ms
-                    }
-                },
-                "models": {
-                    self.alias.as_str(): {
-                        "provider": PROVIDER,
-                        "model": self.model,
-                        "reasoning_history": "preserve"
-                    }
-                }
+                "providers": { PROVIDER: provider },
+                "models": models
             })
             .to_string(),
         )
@@ -137,6 +233,8 @@ impl TestServerConfig {
                 .history_db
                 .clone()
                 .unwrap_or_else(|| self.root.join("history.db")),
+            data_dir: self.root.join("data"),
+            rules_roots: self.rules_roots.clone(),
         }
     }
 
@@ -153,11 +251,11 @@ impl TestServerConfig {
     /// [`Self::navigator_state`] sharing the navigator's conversation feed.
     pub fn navigator_state_with_conversation(
         &self,
-        conversation: Option<rust_agent::navigator::ConversationFeed>,
+        conversation: Option<navai::navigator::ConversationFeed>,
     ) -> AppState {
         let hooks = match conversation {
-            Some(feed) => rust_agent::navigator::NavigatorHooks::with_feed(feed),
-            None => rust_agent::navigator::NavigatorHooks::new(),
+            Some(feed) => navai::navigator::NavigatorHooks::with_feed(feed),
+            None => navai::navigator::NavigatorHooks::new(),
         };
         AppState::with_hooks(self.config(), std::sync::Arc::new(hooks))
             .expect("state over a temp history database")
@@ -186,7 +284,7 @@ pub async fn spawn_server(state: AppState) -> (SocketAddr, tokio::task::JoinHand
         .expect("ephemeral bind");
     let addr = listener.local_addr().expect("local addr");
     let task = tokio::spawn(async move {
-        let _ = rust_agent::server::routes::serve_state_on(state, listener).await;
+        let _ = navai::server::routes::serve_state_on(state, listener).await;
     });
     wait_until_healthy(addr).await;
     (addr, task)
@@ -213,9 +311,24 @@ impl TestServer {
     /// Starts a server whose provider lives at `provider_url`, for a test
     /// that owns its mock connection directly.
     pub async fn start_with_provider_url(provider_url: &str) -> Self {
+        Self::start_inner(provider_url, None).await
+    }
+
+    /// Like [`Self::start`], but every route except `/v1/health` demands
+    /// `Authorization: Bearer <token>`.
+    pub async fn start_with_token(mock_responses: Vec<Vec<u8>>, token: &str) -> Self {
+        let mock = spawn_mock_provider(mock_responses).await;
+        Self::start_inner(&mock.url, Some(token)).await
+    }
+
+    async fn start_inner(provider_url: &str, token: Option<&str>) -> Self {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().to_path_buf();
-        let state = TestServerConfig::mock(&root, provider_url).state();
+        let mut config = TestServerConfig::mock(&root, provider_url);
+        if let Some(token) = token {
+            config = config.bearer_token(token);
+        }
+        let state = config.state();
         let (addr, task) = spawn_server(state.clone()).await;
         let ws = root.join("ws");
         std::fs::create_dir_all(&ws).expect("workspace dir");
@@ -292,9 +405,9 @@ pub async fn post_message_ok(base: &str, id: &str, text: &str) {
 /// The command `POST /messages` builds for a plain-text message to the main
 /// agent in session `id`.
 pub fn text_command(id: ulid::Ulid, text: &str) -> Command {
-    rust_agent::server::routes::build_command(
+    navai::server::routes::build_command(
         id,
-        &rust_agent::server::routes::PostMessageRequest {
+        &navai::server::routes::PostMessageRequest {
             target_actor_id: "agent:main".to_string(),
             mode: Some("next-turn".to_string()),
             content: vec![ContentBlock::Text {
@@ -310,7 +423,7 @@ pub async fn send_text(
     state: &AppState,
     id: ulid::Ulid,
     text: &str,
-) -> rust_agent::session::MessageAccepted {
+) -> navai::session::MessageAccepted {
     state.send(text_command(id, text)).await.expect("routed")
 }
 
@@ -346,12 +459,12 @@ pub async fn request_json(
 /// what is ready. Panics, listing the events seen, if nothing matches within
 /// 20 s or the stream closes first.
 pub async fn collect_until(
-    sub: rust_agent::session::Subscription,
+    sub: navai::session::Subscription,
     pred: impl Fn(&EventEnvelope) -> bool,
 ) -> Vec<EventEnvelope> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     let mut out = Vec::new();
-    if let rust_agent::bus::ResumeOutcome::Replay(replay) = sub.replay {
+    if let navai::bus::ResumeOutcome::Replay(replay) = sub.replay {
         out.extend(replay);
     }
     if let Some(mut live) = sub.live {
@@ -391,4 +504,83 @@ pub async fn wait_for(what: &str, cond: impl Fn() -> bool) {
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+/// A TCP forwarder in front of a server that can drop every open connection
+/// on demand, to provoke a lost event stream. New connections still work.
+pub struct CuttableProxy {
+    pub base: String,
+    connections: std::sync::Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    accept: tokio::task::JoinHandle<()>,
+}
+
+impl CuttableProxy {
+    /// Forwards `127.0.0.1:<ephemeral>` to the server at `target` (a base URL
+    /// such as `http://127.0.0.1:4000`).
+    pub async fn start(target: &str) -> Self {
+        let target = target.trim_start_matches("http://").to_string();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("proxy bind");
+        let addr = listener.local_addr().expect("proxy addr");
+        let connections: std::sync::Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>> =
+            Default::default();
+        let tracked = connections.clone();
+        let accept = tokio::spawn(async move {
+            while let Ok((mut inbound, _)) = listener.accept().await {
+                let target = target.clone();
+                let task = tokio::spawn(async move {
+                    if let Ok(mut outbound) = tokio::net::TcpStream::connect(&target).await {
+                        let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                    }
+                });
+                tracked.lock().expect("proxy connections").push(task);
+            }
+        });
+        Self {
+            base: format!("http://{addr}"),
+            connections,
+            accept,
+        }
+    }
+
+    /// Drops every connection that is open right now.
+    pub fn cut(&self) {
+        for task in self
+            .connections
+            .lock()
+            .expect("proxy connections")
+            .drain(..)
+        {
+            task.abort();
+        }
+    }
+}
+
+impl Drop for CuttableProxy {
+    fn drop(&mut self) {
+        self.cut();
+        self.accept.abort();
+    }
+}
+
+/// Points the model resolution saved on session `id` at `endpoint`, so a
+/// resume against another scripted provider is not refused as a moved
+/// endpoint.
+pub fn move_saved_endpoint(db: &Path, id: &str, endpoint: &str) {
+    let conn = rusqlite::Connection::open(db).expect("open history db");
+    let raw: String = conn
+        .query_row(
+            "SELECT model_resolution FROM sessions WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .expect("saved resolution");
+    let mut saved: serde_json::Value = serde_json::from_str(&raw).expect("resolution json");
+    saved["endpoint"] = json!(endpoint);
+    conn.execute(
+        "UPDATE sessions SET model_resolution = ?2 WHERE id = ?1",
+        rusqlite::params![id, saved.to_string()],
+    )
+    .expect("move the saved endpoint");
 }

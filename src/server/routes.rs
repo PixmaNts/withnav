@@ -3,14 +3,26 @@
 //!
 //! Response bodies are FROZEN:
 //! - `GET  /v1/health`        -> `{status:"ok"}`
+//! - `GET  /v1/models?workspace=` -> `{models:[{alias, model, context_window?, enabled?, disabled_reason?, window_source?, stale?, stale_age_secs?, refresh_error?, reported_output?, max_input_tokens?, discrepancy?, variants?, default_variant?, default_variant_unavailable?}], default?}`
 //! - `POST /v1/sessions`      -> `{session_id, root_actor_id:"agent:main", actor_state:"idle"}`
-//! - `GET  /v1/sessions/:id`  -> `{session_id, actor_state, workspace, model, current_seq}`
+//!   (422 `{"error", "reason":"no_context_window"}` for a chat alias with no known window)
+//! - `GET  /v1/sessions/:id`  -> `{session_id, actor_state, workspace, model, variant, current_seq}`
+//!   (`variant` is the variant name or null; `POST /v1/sessions` takes an optional `variant`)
 //! - `POST /v1/sessions/:id/messages` -> `{command_id, accepted:true, actor_state, notice?}`
 //!   (frozen error bodies: 404 unknown id / 409 stopping / 503 `{"accepted":false,"reason":"inbox_full"}`
 //!   / 400 non-Text). All errors share the `{"error": ...}` shape.
 //!   A stopped conversation (stopped, or stored only) answers 409
 //!   `{"error", "reason":"resume_required"}`: resume it first.
 //! - `POST /v1/sessions/:id/stop` -> `{accepted:true, actor_state:"stopped"}`
+//! - `POST /v1/sessions/:id/permissions/:request_id` `{decision:"allow_once"|"allow_folder"|"deny", message?}`
+//!   -> `{accepted:true}`: the typed answer to a `permission.requested`. 404 unknown session or
+//!   malformed id, 409 `{"error","reason":"permission_stale"}` for a request that is not waiting
+//!   (answered, cancelled, expired, never existed), 400 for a body that is not a decision.
+//! - `GET  /v1/sessions/:id/context` -> the context snapshot (`alias, variant?, window, window_source, estimate_total, breakdown{system,rules,skills_catalog,tools,messages}, output_reserve, margin, input_budget, percent, last_usage?{prompt_tokens,completion_tokens,step}, revision`); an estimate of the NEXT request, `last_usage` is the provider's count for the last one
+//! - `GET  /v1/commands`      -> `{commands:[{name, description, args_hint}]}`
+//! - `POST /v1/sessions/:id/commands` `{name, arguments?}` -> `{operation_id, ok, data?, error?}`
+//!   (a command that cannot run is 200 with `ok:false` and an `error`; the same
+//!   statuses as `/messages` for a session that cannot take commands)
 
 use std::net::SocketAddr;
 use std::time::SystemTime;
@@ -36,6 +48,15 @@ pub struct HealthBody {
     pub status: &'static str,
 }
 
+/// Distinguishes an omitted field (`None`, by `serde(default)`) from an
+/// explicit `null` (`Some(None)`).
+fn present_or_null<'de, D>(d: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(d).map(Some)
+}
+
 /// Frozen create-session request.
 #[derive(Debug, Deserialize)]
 pub struct CreateSessionRequest {
@@ -44,6 +65,15 @@ pub struct CreateSessionRequest {
     pub model: Option<String>,
     #[serde(default)]
     pub profile: Option<String>,
+    /// The primary agent a new session runs as (`build` when absent). A
+    /// resumed session keeps the agent it was stored with.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// The model variant to start on: a string is the exact name of a
+    /// variant the alias offers, `null` means no variant, and an omitted
+    /// field means the alias's default variant.
+    #[serde(default, deserialize_with = "present_or_null")]
+    pub variant: Option<Option<String>>,
     /// Optional id of a past conversation to resume (same id returned; the
     /// conversation continues with its stored events and transcript).
     #[serde(default)]
@@ -89,10 +119,18 @@ pub fn app(state: AppState) -> Router {
     let token = state.http.bearer_token.clone();
     Router::new()
         .route("/v1/health", get(health))
+        .route("/v1/models", get(list_models))
         .route("/v1/sessions", get(list_sessions).post(create_session))
         .route("/v1/sessions/{id}", get(get_session).delete(delete_session))
         .route("/v1/sessions/{id}/messages", post(post_message))
         .route("/v1/sessions/{id}/stop", post(stop_session))
+        .route(
+            "/v1/sessions/{id}/permissions/{request_id}",
+            post(answer_permission),
+        )
+        .route("/v1/sessions/{id}/context", get(get_context))
+        .route("/v1/commands", get(list_commands))
+        .route("/v1/sessions/{id}/commands", post(post_command))
         .route(
             "/v1/sessions/{id}/events",
             get(crate::server::sse::get_events),
@@ -228,14 +266,37 @@ async fn create_session(
             return error_response(ServerError::SessionNotFound(request.resume.unwrap()));
         }
     };
-    let session_id = state
-        .create_or_resume_session(
-            std::path::Path::new(&request.workspace),
-            request.model.as_deref(),
-            request.profile.as_deref(),
-            resume,
-        )
-        .await;
+    if resume.is_some() && request.variant.is_some() {
+        return error_response(ServerError::MalformedBody(
+            "a resumed session keeps its saved variant: change it with /variant".to_string(),
+        ));
+    }
+    let session_id = match resume {
+        Some(_) => {
+            state
+                .create_or_resume_session(
+                    std::path::Path::new(&request.workspace),
+                    request.model.as_deref(),
+                    request.profile.as_deref(),
+                    resume,
+                )
+                .await
+        }
+        None => state
+            .create_session_with(
+                std::path::Path::new(&request.workspace),
+                request.model.as_deref(),
+                request.profile.as_deref(),
+                match request.variant {
+                    None => crate::session::VariantChoice::Default,
+                    Some(None) => crate::session::VariantChoice::Clear,
+                    Some(Some(name)) => crate::session::VariantChoice::Exact(name),
+                },
+                request.agent.as_deref(),
+            )
+            .await
+            .map(|id| (id, false)),
+    };
     match session_id {
         Ok((id, _)) => (
             StatusCode::OK,
@@ -271,6 +332,8 @@ pub struct SessionListEntry {
     pub updated_at: String,
     /// Number of driver messages (`message.received` events).
     pub message_count: u64,
+    /// The primary agent the session runs as.
+    pub agent: String,
     /// True when a live, active session with this id exists in this process.
     pub live: bool,
 }
@@ -301,6 +364,7 @@ async fn list_sessions(
                     created_at: row.created_at,
                     updated_at: row.updated_at,
                     message_count: row.message_count,
+                    agent: row.agent,
                     live: row.live,
                 })
                 .collect();
@@ -319,6 +383,181 @@ async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -
     };
     match state.delete(parsed).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => error_response(err),
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModelEntry {
+    pub alias: String,
+    pub model: String,
+    pub context_window: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
+    /// Where `context_window` came from: `models.json` or a `discovered.*` field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_source: Option<String>,
+    /// The provider's model list could not be refreshed and the discovered
+    /// values shown are past their 24 h TTL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stale: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stale_age_secs: Option<u64>,
+    /// Short, secret-free reason of the failed refresh.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reported_output: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_input_tokens: Option<u64>,
+    /// An explicit `context_window` that differs from the provider's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discrepancy: Option<DiscrepancyBody>,
+    /// Names of the variants the alias offers; never their override objects.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<String>,
+    /// The default variant, when the alias sets one that it offers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_variant: Option<String>,
+    /// The configured `default_variant`, when it names a variant that is not
+    /// on offer now (a tier the provider does not report, or could not be
+    /// asked for); `refresh_error` says why when the lookup failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_variant_unavailable: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DiscrepancyBody {
+    pub configured: u64,
+    pub discovered: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModelsBody {
+    pub models: Vec<ModelEntry>,
+    pub default: Option<String>,
+}
+
+/// `GET /v1/models?workspace=<abs path>`: chat models with tools.
+async fn list_models(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let Some(workspace) = params.get("workspace") else {
+        return error_response(ServerError::MalformedBody(
+            "missing query parameter: workspace".to_string(),
+        ));
+    };
+    match state.list_models(std::path::Path::new(workspace)) {
+        Ok(entries) => {
+            let mut models = entries
+                .into_iter()
+                .map(|(alias, m)| ModelEntry {
+                    alias,
+                    model: m.model,
+                    context_window: m.context_window,
+                    enabled: None,
+                    disabled_reason: None,
+                    window_source: None,
+                    stale: None,
+                    stale_age_secs: None,
+                    refresh_error: None,
+                    reported_output: None,
+                    max_input_tokens: None,
+                    discrepancy: None,
+                    variants: Vec::new(),
+                    default_variant: None,
+                    default_variant_unavailable: None,
+                })
+                .collect::<Vec<_>>();
+            for entry in &mut models {
+                match state
+                    .resolve_model_metadata(std::path::Path::new(workspace), &entry.alias)
+                    .await
+                {
+                    Ok(resolution) => {
+                        match resolution.default_override(&entry.alias) {
+                            Ok(chosen) => entry.default_variant = chosen.map(|(name, _)| name),
+                            Err(unknown) => {
+                                entry.default_variant_unavailable = Some(unknown.variant)
+                            }
+                        }
+                        entry.context_window = Some(resolution.window);
+                        entry.enabled = Some(true);
+                        entry.window_source = Some(resolution.window_source);
+                        entry.stale = Some(resolution.stale);
+                        entry.stale_age_secs = resolution.stale_age_secs;
+                        entry.refresh_error = resolution.refresh_error;
+                        entry.reported_output = resolution.reported_output;
+                        entry.max_input_tokens = resolution.max_input_tokens;
+                        entry.discrepancy = resolution.discrepancy.map(|d| DiscrepancyBody {
+                            configured: d.configured,
+                            discovered: d.discovered,
+                        });
+                        entry.variants = resolution.variants.into_keys().collect();
+                    }
+                    Err(error) => {
+                        entry.enabled = Some(false);
+                        entry.disabled_reason = Some(error.to_string());
+                    }
+                }
+            }
+            let default = state.default_model(Some("navigator")).map(str::to_string);
+            (StatusCode::OK, Json(ModelsBody { models, default })).into_response()
+        }
+        Err(err) => error_response(err),
+    }
+}
+
+/// `GET /v1/sessions/:id/context`: the session's context snapshot.
+async fn get_context(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let parsed: Ulid = match id.parse() {
+        Ok(parsed) => parsed,
+        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+    };
+    match state.context(parsed).await {
+        Ok(snapshot) => Json(snapshot).into_response(),
+        Err(err) => error_response(err),
+    }
+}
+
+/// `GET /v1/commands`: the registered session commands.
+async fn list_commands(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(json!({ "commands": state.list_commands() }))
+}
+
+/// `POST /v1/sessions/:id/commands` request.
+#[derive(Debug, Deserialize)]
+pub struct PostCommandRequest {
+    pub name: String,
+    #[serde(default)]
+    pub arguments: String,
+}
+
+/// Runs one session command; the outcome is also published as a durable
+/// `command.result` on the session stream.
+async fn post_command(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Result<Json<PostCommandRequest>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let parsed: Ulid = match id.parse() {
+        Ok(parsed) => parsed,
+        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+    };
+    let Json(request) = match body {
+        Ok(parsed) => parsed,
+        Err(rejection) => {
+            return error_response(ServerError::MalformedBody(rejection.body_text()));
+        }
+    };
+    match state
+        .run_command(parsed, &request.name, &request.arguments)
+        .await
+    {
+        Ok(outcome) => Json(outcome).into_response(),
         Err(err) => error_response(err),
     }
 }
@@ -389,6 +628,65 @@ async fn post_message(
     }
 }
 
+/// `POST /v1/sessions/:id/permissions/:request_id` body.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnswerPermissionRequest {
+    pub decision: DecisionKind,
+    /// What the model reads back on a denial.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionKind {
+    AllowOnce,
+    AllowFolder,
+    Deny,
+}
+
+/// The message a denial carries when the driver gave none.
+const DEFAULT_DENIAL: &str = "the user denied this tool call";
+
+async fn answer_permission(
+    State(state): State<AppState>,
+    Path((id, request_id)): Path<(String, String)>,
+    body: Result<Json<AnswerPermissionRequest>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Ok(session_id) = id.parse::<Ulid>() else {
+        return error_response(ServerError::SessionNotFound(id));
+    };
+    if let Err(err) = state.routable_handle(session_id).await {
+        return error_response(err);
+    }
+    let Ok(request_id) = request_id.parse::<Ulid>() else {
+        return error_response(ServerError::PermissionStale);
+    };
+    let Json(body) = match body {
+        Ok(body) => body,
+        Err(rejection) => return error_response(ServerError::MalformedBody(rejection.body_text())),
+    };
+    use crate::agent::permissions::PermissionDecision;
+    let decision = match body.decision {
+        DecisionKind::AllowOnce => PermissionDecision::AllowOnce,
+        DecisionKind::AllowFolder => PermissionDecision::AllowFolder,
+        DecisionKind::Deny => PermissionDecision::Deny {
+            message: body
+                .message
+                .filter(|m| !m.trim().is_empty())
+                .unwrap_or_else(|| DEFAULT_DENIAL.to_string()),
+        },
+    };
+    match state
+        .answer_permission(session_id, request_id, decision)
+        .await
+    {
+        Ok(()) => Json(json!({ "accepted": true })).into_response(),
+        Err(err) => error_response(err),
+    }
+}
+
 async fn stop_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let parsed: Ulid = match id.parse() {
         Ok(parsed) => parsed,
@@ -411,10 +709,24 @@ async fn stop_session(State(state): State<AppState>, Path(id): Path<String>) -> 
 pub(crate) fn error_response(err: ServerError) -> Response {
     let status = match &err {
         ServerError::SessionNotFound(_) => StatusCode::NOT_FOUND,
-        ServerError::SessionStopping | ServerError::ResumeRequired => StatusCode::CONFLICT,
+        ServerError::SessionStopping
+        | ServerError::ResumeRequired
+        | ServerError::PermissionStale => StatusCode::CONFLICT,
         ServerError::NonLoopbackBind(_) | ServerError::Bind(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::InboxFull => StatusCode::SERVICE_UNAVAILABLE,
         ServerError::NonTextContent | ServerError::MalformedBody(_) => StatusCode::BAD_REQUEST,
+        ServerError::NoContextWindow { .. } | ServerError::ImpossibleBudget { .. } => {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
+        ServerError::ModelIdentityChanged { .. } | ServerError::VariantUnavailable { .. } => {
+            StatusCode::CONFLICT
+        }
+        ServerError::UnknownVariant { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+        ServerError::UnknownAgent { .. } => StatusCode::BAD_REQUEST,
+        ServerError::SavedAgentUnavailable { .. } => StatusCode::CONFLICT,
+        ServerError::DefaultVariantUnavailable { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+        ServerError::VariantOfferUnknown { .. } => StatusCode::SERVICE_UNAVAILABLE,
+        ServerError::SavedResolutionInvalid { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::History(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::Config(_) | ServerError::Model(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -429,6 +741,62 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         return (
             status,
             Json(json!({ "error": err.to_string(), "reason": "resume_required" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::PermissionStale) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "permission_stale" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::NoContextWindow { .. }) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "no_context_window" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::SavedAgentUnavailable { .. }) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "saved_agent_unavailable" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::ImpossibleBudget { .. }) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "impossible_context_budget" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::ModelIdentityChanged { .. }) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "model_identity_changed" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::VariantUnavailable { .. }) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "variant_unavailable" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::VariantOfferUnknown { .. }) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "variant_offer_unknown" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::UnknownVariant { .. }) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "unknown_variant" })),
         )
             .into_response();
     }
@@ -464,6 +832,8 @@ mod tests {
             allow_non_loopback: false,
             bearer_token: None,
             history_db: dir.path().join("history.db"),
+            data_dir: dir.path().join("data"),
+            rules_roots: Default::default(),
         })
         .expect("state over a temp database");
         (dir, state)

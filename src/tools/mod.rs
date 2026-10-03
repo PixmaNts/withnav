@@ -12,14 +12,54 @@ use crate::provider::openai::ToolDef;
 
 pub mod bash;
 pub mod control;
+pub mod fetch;
+pub mod glob;
 pub mod native;
+pub mod nofollow;
+
+/// The argument the agent loop adds to a `write` or `edit` whose destination
+/// was reviewed: `path` is then that canonical file, and the tool opens it
+/// without following any link ([`nofollow`]). Never part of a tool's schema;
+/// the loop strips what a model puts under this name.
+pub const BOUND_ARG: &str = "navai_bound_destination";
+
+/// The canonical file a bound call is for, checked against the writable roots
+/// as a plain path: it must be absolute, free of `..`, and under a root. No
+/// link is resolved here; the no-follow open refuses any that is there.
+pub fn bound_destination(args: &Value, roots: &[PathBuf]) -> Result<Option<PathBuf>, ToolError> {
+    if args.get(BOUND_ARG).and_then(Value::as_bool) != Some(true) {
+        return Ok(None);
+    }
+    let path = args
+        .get("path")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .ok_or_else(|| ToolError::Denied {
+            code: "invalid_args".into(),
+            message: "missing string argument: path".into(),
+        })?;
+    let plain = path.is_absolute()
+        && path
+            .components()
+            .all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
+    let inside = roots.iter().any(|root| {
+        root.canonicalize()
+            .map(|root| path.starts_with(root))
+            .unwrap_or(false)
+    });
+    if plain && inside {
+        Ok(Some(path))
+    } else {
+        Err(ToolError::PathTraversal(path))
+    }
+}
 
 pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 64 * 1024;
 pub const DEFAULT_BASH_TIMEOUT_MS: u64 = 120_000;
 pub const DEFAULT_BASH_GRACE_MS: u64 = 5_000;
 
 pub fn bash_grace_ms() -> u64 {
-    std::env::var("RUST_AGENT_BASH_GRACE_MS")
+    std::env::var("NAVAI_BASH_GRACE_MS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_BASH_GRACE_MS)
@@ -84,6 +124,21 @@ impl ToolResult {
         }
     }
 
+    /// A call a driver refused: the model reads `message` back.
+    pub fn permission_denied(message: impl Into<String>) -> Self {
+        Self {
+            status: ToolStatus::Denied,
+            output: String::new(),
+            truncated: None,
+            error: Some(ToolErrorObj {
+                code: "permission_denied".into(),
+                plugin_id: None,
+                message: message.into(),
+            }),
+            metadata: Value::Null,
+        }
+    }
+
     pub fn interrupted() -> Self {
         Self {
             status: ToolStatus::Interrupted,
@@ -107,7 +162,22 @@ impl ToolResult {
 
 pub struct ToolContext {
     pub workspace: PathBuf,
+    /// Where `write`, `edit` and `bash` may change files (and `read`/`grep`
+    /// may look).
     pub writable_roots: Vec<PathBuf>,
+    /// Extra places `read` and `grep` may look, never change: the skill
+    /// roots.
+    pub readable_roots: Vec<PathBuf>,
+}
+
+impl ToolContext {
+    /// The roots `read` and `grep` accept: the writable roots, then the
+    /// read-only ones.
+    pub fn read_roots(&self) -> Vec<PathBuf> {
+        let mut roots = self.writable_roots.clone();
+        roots.extend(self.readable_roots.iter().cloned());
+        roots
+    }
 }
 
 pub trait Tool: Send + Sync {
@@ -291,6 +361,7 @@ mod tests {
         ToolContext {
             workspace: root.to_path_buf(),
             writable_roots: vec![root.to_path_buf()],
+            readable_roots: Vec::new(),
         }
     }
 

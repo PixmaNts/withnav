@@ -1,0 +1,34 @@
+---
+source: tests/tui_view.rs
+expression: snapshot
+---
+ Conversations       │ ◆ navai  …dev/project  ▌build  cognition · cc/claude-opus-5-5 · 12.4k / 200k 
+▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
+▌  build · idle      │ │ YOU                                                                        
+                     │ │  Explain the failure, then fix it.                                         
+                     │ │                                                                            
+                     │ │ ASSISTANT                                                                  
+                     │ │ ▸ Reasoning                                                                
+                     │ │  The parser treats an empty argument as a missing value.                   
+            ┌──────────────────────────────── Commands ────────────────────────────────┐            
+            │ ❯ type a command…                                                        │            
+            │▌/new [alias]          new conversation in a new tab                      │            
+            │ /sessions             browse conversations                               │            
+            │ /model [alias]        switch this conversation's model                   │            
+            │ /variant [name|off]   choose the model variant for this conversation     │            
+            │ /stop                 stop generation                                    │            
+            │ /mode                 cycle delivery mode (steer and interrupt send as n │            
+            │ /theme                choose the colour theme                            │            
+            │ /help                 show keyboard shortcuts                            │            
+            │ /quit                 quit terminal client                               │            
+            │                                                                          │            
+            │ ↑↓ move  enter run  esc close                                            │            
+            └──────────────────────────────────────────────────────────────────────────┘            
+                     │                                                                              
+                     │                                                                              
+                     │──────────────────────────────────────────────────────────────────────────────
+                     │ ready                                                      session 31.2k tok 
+                     │┌ Message ───────────────────────────────────────────────────────────────────┐
+ alt+1…9 switch      ││                                                                            │
+ alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
+ alt+b hide bar      │ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model · /compact · esc stop

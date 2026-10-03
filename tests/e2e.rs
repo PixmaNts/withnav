@@ -2,14 +2,14 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rust_agent::agent::actor::AgentActor;
-use rust_agent::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
-use rust_agent::provider::config::{ProviderConfig, ReasoningHistory};
-use rust_agent::provider::StreamDelta;
-use rust_agent::tools::bash::BashTool;
-use rust_agent::tools::control::AskTool;
-use rust_agent::tools::native::{EditTool, GrepTool, ReadTool, WriteTool};
-use rust_agent::tools::{Registry, ToolContext};
+use navai::agent::actor::AgentActor;
+use navai::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
+use navai::provider::config::{ProviderConfig, ReasoningHistory};
+use navai::provider::StreamDelta;
+use navai::tools::bash::BashTool;
+use navai::tools::control::AskTool;
+use navai::tools::native::{EditTool, GrepTool, ReadTool, WriteTool};
+use navai::tools::{Registry, ToolContext};
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
@@ -105,6 +105,7 @@ fn build_actor(base_url: String, workspace: PathBuf, cancel: CancellationToken) 
     let tool_context = ToolContext {
         workspace: workspace.clone(),
         writable_roots: vec![workspace.clone()],
+        readable_roots: Vec::new(),
     };
     AgentActor::new(
         registry,
@@ -115,6 +116,7 @@ fn build_actor(base_url: String, workspace: PathBuf, cancel: CancellationToken) 
             headers: BTreeMap::new(),
             connect_timeout_ms: 2000,
             request_timeout_ms: 600_000,
+            catalog_format: None,
         },
         "test-key".to_string(),
         "test-model".to_string(),
@@ -177,7 +179,7 @@ async fn mock_full_loop_exercises_all_five_tools_and_ask() {
 /// LIVE end-to-end against a real OmniRoute proxy.
 ///
 /// REQUIRED for Phase-1 completion. Run explicitly:
-///   RUST_AGENT_LIVE=1 cargo test --test e2e -- --ignored --nocapture
+///   NAVAI_LIVE=1 cargo test --test e2e -- --ignored --nocapture
 /// When OmniRoute is unavailable this test FAILS (or is a BLOCKED gate) — it is
 /// NEVER a passing skip.
 #[tokio::test]
@@ -206,6 +208,7 @@ async fn live_omniroute_edit_and_test() {
         headers: BTreeMap::new(),
         connect_timeout_ms: 5000,
         request_timeout_ms: 600_000,
+        catalog_format: None,
     };
 
     let mut registry = Registry::new();
@@ -222,6 +225,7 @@ async fn live_omniroute_edit_and_test() {
         ToolContext {
             workspace: ws.clone(),
             writable_roots: vec![ws.clone()],
+            readable_roots: Vec::new(),
         },
         provider,
         key,
@@ -267,8 +271,8 @@ async fn live_omniroute_edit_and_test() {
 }
 
 fn read_live_key() -> Option<String> {
-    let dir = rust_agent::provider::auth::default_config_dir()?;
-    rust_agent::provider::auth::resolve_key(&dir, "omniroute", Some("OMNIROUTE_API_KEY")).ok()
+    let dir = navai::provider::auth::default_config_dir()?;
+    navai::provider::auth::resolve_key(&dir, "omniroute", Some("OMNIROUTE_API_KEY")).ok()
 }
 
 async fn preflight(base_url: &str, key: &str) -> Result<(), String> {

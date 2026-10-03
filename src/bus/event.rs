@@ -1,5 +1,7 @@
-//! Frozen `EventEnvelope` shape and the 12-kind `EventKind`
-//! catalog.
+//! Frozen `EventEnvelope` shape and the 19-kind `EventKind`
+//! catalog (the twelve original kinds plus `command.result`,
+//! `context.updated`, `session.agent_changed`, `context.compacted`,
+//! `permission.requested`, `permission.resolved` and `model.changed`).
 //!
 //! Reserved-but-deferred kind names (NOT in the enum, never emitted this slice):
 //! `prompt.pre_llm`, `tool.progress`, `context.pre_compact` (Phase 3),
@@ -21,21 +23,28 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// The single root actor id for this slice (all events are published by it).
 pub const ROOT_ACTOR_ID: &str = "agent:main";
 
-/// The catalog emits EXACTLY 12 kinds: 2 session +
-/// message + 2 turn + 2 llm + 2 tool + 2 agent + task = 12, never 13.
-pub const EVENT_KIND_COUNT: usize = 12;
+/// The catalog emits EXACTLY 19 kinds: 2 session +
+/// message + 2 turn + 2 llm + 2 tool + 2 agent + task + command result +
+/// context update + agent change + context compacted + 2 permission + model
+/// change = 19. The first twelve are frozen; `command.result`,
+/// `context.updated`, `session.agent_changed`, `context.compacted`,
+/// `permission.requested`, `permission.resolved` and `model.changed` were
+/// added without changing the envelope version.
+pub const EVENT_KIND_COUNT: usize = 19;
 
-/// Durable kinds are retained in the reconnect ring; only `llm.delta` is
-/// live-only. Kept with the catalog it guards.
+/// Durable kinds are retained in the reconnect ring and the history store;
+/// `llm.delta` and `context.updated` are live-only (the latter is a
+/// recomputable gauge, readable at any time from the session's context
+/// endpoint). Kept with the catalog it guards.
 const fn is_durable(kind: EventKind) -> bool {
-    !matches!(kind, EventKind::LlmDelta)
+    !matches!(kind, EventKind::LlmDelta | EventKind::ContextUpdated)
 }
 
 /// DRIFT GUARD (compile-authoritative): `ALL` is DERIVED from
 /// [`EventKind::all_variants`], an exhaustive match whose single or-pattern
-/// arms name EVERY variant with no `_` wildcard — so adding a 13th variant
+/// arms name EVERY variant with no `_` wildcard — so adding a variant
 /// without editing that match is error[E0004] (non-exhaustive patterns) and
-/// the crate does not compile. The array's type `[EventKind; 12]` plus the
+/// the crate does not compile. The array's type `[EventKind; EVENT_KIND_COUNT]` plus the
 /// `const _` assert below additionally pin the frozen catalog size, so the
 /// list itself cannot silently grow or shrink either. A runtime name/order
 /// test still guards the wire spellings, but completeness is enforced HERE,
@@ -54,7 +63,14 @@ impl EventKind {
             | Self::ToolPostCall
             | Self::AgentState
             | Self::AgentYield
-            | Self::TaskDone => [
+            | Self::TaskDone
+            | Self::CommandResult
+            | Self::ContextUpdated
+            | Self::SessionAgentChanged
+            | Self::ContextCompacted
+            | Self::PermissionRequested
+            | Self::PermissionResolved
+            | Self::ModelChanged => [
                 Self::SessionStart,
                 Self::SessionEnd,
                 Self::MessageReceived,
@@ -67,18 +83,25 @@ impl EventKind {
                 Self::AgentState,
                 Self::AgentYield,
                 Self::TaskDone,
+                Self::CommandResult,
+                Self::ContextUpdated,
+                Self::SessionAgentChanged,
+                Self::ContextCompacted,
+                Self::PermissionRequested,
+                Self::PermissionResolved,
+                Self::ModelChanged,
             ],
         }
     }
 
-    /// The 12 emitted kinds, in catalog order. The bus iterates this to seed
+    /// The 19 emitted kinds, in catalog order. The bus iterates this to seed
     /// the ring/fan-out.
     pub const ALL: [EventKind; EVENT_KIND_COUNT] = Self::all_variants();
 }
 
 const _: () = assert!(EventKind::ALL.len() == EVENT_KIND_COUNT);
 
-/// Typed catalog of the 12 emitted event kinds; the wire name is the dotted
+/// Typed catalog of the 19 emitted event kinds; the wire name is the dotted
 /// string (serialized verbatim, e.g. `"llm.delta"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventKind {
@@ -106,6 +129,20 @@ pub enum EventKind {
     AgentYield,
     #[serde(rename = "task.done")]
     TaskDone,
+    #[serde(rename = "command.result")]
+    CommandResult,
+    #[serde(rename = "context.updated")]
+    ContextUpdated,
+    #[serde(rename = "session.agent_changed")]
+    SessionAgentChanged,
+    #[serde(rename = "context.compacted")]
+    ContextCompacted,
+    #[serde(rename = "permission.requested")]
+    PermissionRequested,
+    #[serde(rename = "permission.resolved")]
+    PermissionResolved,
+    #[serde(rename = "model.changed")]
+    ModelChanged,
 }
 
 impl EventKind {
@@ -124,6 +161,13 @@ impl EventKind {
             EventKind::AgentState => "agent.state",
             EventKind::AgentYield => "agent.yield",
             EventKind::TaskDone => "task.done",
+            EventKind::CommandResult => "command.result",
+            EventKind::ContextUpdated => "context.updated",
+            EventKind::SessionAgentChanged => "session.agent_changed",
+            EventKind::ContextCompacted => "context.compacted",
+            EventKind::PermissionRequested => "permission.requested",
+            EventKind::PermissionResolved => "permission.resolved",
+            EventKind::ModelChanged => "model.changed",
         }
     }
 
@@ -142,11 +186,19 @@ impl EventKind {
             "agent.state" => Some(EventKind::AgentState),
             "agent.yield" => Some(EventKind::AgentYield),
             "task.done" => Some(EventKind::TaskDone),
+            "command.result" => Some(EventKind::CommandResult),
+            "context.updated" => Some(EventKind::ContextUpdated),
+            "session.agent_changed" => Some(EventKind::SessionAgentChanged),
+            "context.compacted" => Some(EventKind::ContextCompacted),
+            "permission.requested" => Some(EventKind::PermissionRequested),
+            "permission.resolved" => Some(EventKind::PermissionResolved),
+            "model.changed" => Some(EventKind::ModelChanged),
             _ => None,
         }
     }
 
-    /// Durable = retained in the reconnect ring (all but `llm.delta`).
+    /// Durable = retained in the reconnect ring and stored (all but
+    /// `llm.delta` and `context.updated`).
     pub const fn is_durable(self) -> bool {
         is_durable(self)
     }
@@ -345,6 +397,272 @@ pub struct TaskDone {
     pub status: TaskStatus,
 }
 
+/// The primary agent of a session changed (`/agent`). Published after the
+/// new agent is stored, so a stream that shows it never outlives a restart.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionAgentChanged {
+    /// The agent the session runs as from now on.
+    pub agent: String,
+    /// The agent it ran as until now.
+    pub previous: String,
+}
+
+/// Who a session talks to: the alias it was asked for and what that resolved
+/// to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelIdentity {
+    pub alias: String,
+    pub provider: String,
+    pub model: String,
+}
+
+/// Why the model selection of a session was announced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ModelChangeReason {
+    /// The first selection of a new session.
+    #[serde(rename = "initial")]
+    Initial,
+    /// `/model <alias>` moved the conversation to another alias.
+    #[serde(rename = "switch")]
+    Switch,
+    /// The variant changed on the same alias.
+    #[serde(rename = "variant")]
+    Variant,
+    /// A resume refreshed the saved variant from the current offer.
+    #[serde(rename = "resume-refresh")]
+    ResumeRefresh,
+}
+
+/// The model selection of a session was committed: the first one at its
+/// start, then every switch of alias or variant. The events table is the
+/// selection history; a turn belongs to the selection in force at its
+/// `turn.start`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelChanged {
+    /// The `command.result` operation that asked for it; absent for the
+    /// session's own start and a resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<Ulid>,
+    /// 1 for the first selection of the conversation, +1 for each later one.
+    pub revision: u64,
+    pub reason: ModelChangeReason,
+    /// What the session talked to until now; absent at the start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<ModelIdentity>,
+    pub new: ModelIdentity,
+    /// The variant in force from now on; `null` for none.
+    pub variant: Option<String>,
+    /// The new model's context window, in tokens.
+    pub window: u64,
+    /// The input budget the conversation now fits, in tokens.
+    pub input_budget: u64,
+    /// Index, in the full transcript, of the first message the new selection
+    /// answers: the transcript length when it was committed.
+    pub from_message: u64,
+}
+
+/// What asked for a compaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompactionReason {
+    /// `/compact`.
+    Manual,
+    /// The next request would not fit the input budget: the turn was held at
+    /// a safe boundary, compacted and carried on.
+    Automatic,
+    /// A `/model` switch to a smaller window compacted first, with the model
+    /// the conversation was on.
+    Switch,
+}
+
+/// The conversation was compacted: a summary now stands for its start. A
+/// notice published after the checkpoint is stored; the stored checkpoint,
+/// not this event, is what a resume restores from. The events before it are
+/// untouched.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextCompacted {
+    /// 1 for the first compaction of the conversation, +1 for each later one.
+    pub generation: u64,
+    /// Index, in the full transcript, of the last message the summary
+    /// replaces.
+    pub through_message: u64,
+    /// Tool outputs the prompt now shows as markers.
+    pub pruned: u64,
+    /// The estimated prompt size before and after, in tokens.
+    pub estimate_before: u64,
+    pub estimate_after: u64,
+    /// What asked for it. Absent in an event stored before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<CompactionReason>,
+}
+
+/// A gated tool call waits for a driver's decision. The call has not run.
+/// `arguments` is the call's JSON text cut to 4 KiB, for review only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PermissionRequested {
+    pub request_id: Ulid,
+    pub tool_call_id: String,
+    pub tool: String,
+    pub arguments: String,
+    pub scope: crate::agent::permissions::Scope,
+    pub agent: String,
+    pub reason: String,
+}
+
+/// How a permission request ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "resolution", rename_all = "snake_case")]
+pub enum PermissionResolution {
+    AllowOnce,
+    AllowFolder,
+    /// A driver refused; `message` is what the model reads back.
+    Deny {
+        message: String,
+    },
+    /// The turn was stopped while the request waited, or a new message
+    /// replaced it.
+    Cancelled,
+    /// The session restarted while the request waited.
+    Expired,
+}
+
+impl From<&crate::agent::permissions::PermissionDecision> for PermissionResolution {
+    fn from(decision: &crate::agent::permissions::PermissionDecision) -> Self {
+        use crate::agent::permissions::PermissionDecision as Decision;
+        match decision {
+            Decision::AllowOnce => Self::AllowOnce,
+            Decision::AllowFolder => Self::AllowFolder,
+            Decision::Deny { message } => Self::Deny {
+                message: message.clone(),
+            },
+        }
+    }
+}
+
+/// A permission request ended, by a decision, a stop or a restart. Published
+/// exactly once per `permission.requested`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PermissionResolved {
+    pub request_id: Ulid,
+    pub tool_call_id: String,
+    #[serde(flatten)]
+    pub resolution: PermissionResolution,
+}
+
+/// Largest serialized `data` a `command.result` carries.
+pub const COMMAND_RESULT_DATA_MAX_BYTES: usize = 16 * 1024;
+
+/// The outcome of one session command, published durably on the session
+/// stream. `data` is bounded: see [`CommandResult::bound_data`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommandResult {
+    pub operation_id: Ulid,
+    pub name: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl CommandResult {
+    /// Keeps `data` when its JSON form fits [`COMMAND_RESULT_DATA_MAX_BYTES`];
+    /// otherwise replaces it with a marker naming the dropped size.
+    pub fn bound_data(data: Value) -> Value {
+        let size = serde_json::to_vec(&data).map(|v| v.len()).unwrap_or(0);
+        if size <= COMMAND_RESULT_DATA_MAX_BYTES {
+            data
+        } else {
+            serde_json::json!({ "truncated": true, "bytes": size })
+        }
+    }
+}
+
+/// The estimated size of one request, split by where its text comes from.
+/// The categories add up to [`Breakdown::total`] exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Breakdown {
+    /// The system contract and the role prompt.
+    pub system: u64,
+    /// The local instructions message.
+    pub rules: u64,
+    /// The skills catalog message.
+    pub skills_catalog: u64,
+    /// The serialized tool definitions.
+    pub tools: u64,
+    /// The history: user and assistant text, reasoning, tool calls, tool
+    /// outputs and loaded skill bodies.
+    pub messages: u64,
+}
+
+/// The provider usage of the last step that reported one: the input the
+/// provider actually counted for that request, never the estimate of the next.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastUsage {
+    /// The alias the step ran on.
+    pub alias: String,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    /// The `step_id` of the `llm.response` that reported it.
+    pub step: Ulid,
+}
+
+/// What the skills catalog holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SkillCounts {
+    pub listed: u64,
+    pub omitted: u64,
+}
+
+fn always_true() -> bool {
+    true
+}
+
+/// How full the context window is: the payload of `context.updated` and the
+/// body of `GET /v1/sessions/:id/context`. Three numbers that must stay apart:
+/// `estimate_total` sizes the NEXT request (an estimate, bytes / 4), `last_usage`
+/// is what the provider counted for the LAST one, and cumulative session usage
+/// lives in the `llm.response` and `turn.end` events, not here.
+///
+/// `estimated` is always true: no figure here but `last_usage` comes from a
+/// tokenizer or the provider. Rule diagnostics (which files were cut or
+/// skipped) and compaction metadata are not part of the snapshot yet; they
+/// join it as optional fields when those features land.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextSnapshot {
+    pub alias: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    pub window: u64,
+    /// `models.json` or a `discovered.*` field.
+    pub window_source: String,
+    /// Marks the sizes as estimates (bytes / 4), never a provider count.
+    #[serde(default = "always_true")]
+    pub estimated: bool,
+    pub estimate_total: u64,
+    pub breakdown: Breakdown,
+    pub output_reserve: u64,
+    pub margin: u64,
+    pub input_budget: u64,
+    /// `estimate_total` as a whole percent of `window`.
+    pub percent: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_usage: Option<LastUsage>,
+    /// The skills the catalog lists and the ones it had no room for.
+    #[serde(default)]
+    pub skills: SkillCounts,
+    /// How many local rule files are in the rules message.
+    #[serde(default)]
+    pub rule_files: u64,
+    /// The runtime incarnation that produced this snapshot: a session that is
+    /// stopped and resumed gets a fresh actor, whose revisions start again.
+    pub incarnation: Ulid,
+    /// Counts up with every snapshot of one incarnation. Incarnation ids carry
+    /// no order: a client orders revisions within an incarnation only, and
+    /// decides itself when a new incarnation has replaced the one it shows.
+    pub revision: u64,
+}
+
 // --- RFC 3339 timestamp (no chrono dependency; UTC only) ---
 
 /// Current UTC time as RFC 3339 with millisecond precision (`...Z`).
@@ -390,7 +708,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const FROZEN_KIND_NAMES: [&str; 12] = [
+    const KIND_NAMES: [&str; 19] = [
         "session.start",
         "session.end",
         "message.received",
@@ -403,17 +721,25 @@ mod tests {
         "agent.state",
         "agent.yield",
         "task.done",
+        "command.result",
+        "context.updated",
+        "session.agent_changed",
+        "context.compacted",
+        "permission.requested",
+        "permission.resolved",
+        "model.changed",
     ];
 
     #[test]
-    fn event_kind_catalog_is_exactly_the_frozen_twelve() {
+    fn event_kind_catalog_is_exactly_the_nineteen() {
         let kinds = EventKind::ALL;
-        assert_eq!(EVENT_KIND_COUNT, 12);
-        assert_eq!(kinds.len(), 12);
+        assert_eq!(EVENT_KIND_COUNT, 19);
+        assert_eq!(kinds.len(), 19);
+        assert_eq!(SCHEMA_VERSION, 1);
         let names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
-        assert_eq!(names, FROZEN_KIND_NAMES);
+        assert_eq!(names, KIND_NAMES);
         // Wire names are unique and parse back.
-        for (kind, name) in kinds.iter().zip(FROZEN_KIND_NAMES) {
+        for (kind, name) in kinds.iter().zip(KIND_NAMES) {
             assert_eq!(EventKind::from_wire(name), Some(*kind));
             assert_eq!(serde_json::to_string(kind).unwrap(), format!("\"{name}\""));
         }
@@ -423,10 +749,11 @@ mod tests {
     }
 
     #[test]
-    fn event_kind_durability_marks_only_llm_delta_live_only() {
+    fn event_kind_durability_marks_only_llm_delta_and_context_updated_live_only() {
         let durable: Vec<bool> = EventKind::ALL.iter().map(|k| k.is_durable()).collect();
-        assert_eq!(durable.iter().filter(|d| !**d).count(), 1);
+        assert_eq!(durable.iter().filter(|d| !**d).count(), 2);
         assert!(!EventKind::LlmDelta.is_durable());
+        assert!(!EventKind::ContextUpdated.is_durable());
         assert!(EventKind::TurnEnd.is_durable());
         assert!(EventKind::SessionStart.is_durable());
     }
@@ -606,6 +933,104 @@ mod tests {
                 })
                 .unwrap(),
             ),
+            (
+                "command.result",
+                serde_json::to_value(&CommandResult {
+                    operation_id: Ulid::new(),
+                    name: "help".into(),
+                    ok: true,
+                    data: Some(json!({"commands": []})),
+                    error: None,
+                })
+                .unwrap(),
+            ),
+            (
+                "context.updated",
+                serde_json::to_value(&ContextSnapshot {
+                    alias: "default".into(),
+                    variant: None,
+                    window: 200_000,
+                    window_source: "models.json".into(),
+                    estimated: true,
+                    estimate_total: 42_000,
+                    breakdown: Default::default(),
+                    output_reserve: 8192,
+                    margin: 10_000,
+                    input_budget: 181_808,
+                    percent: 21,
+                    last_usage: None,
+                    skills: Default::default(),
+                    rule_files: 0,
+                    incarnation: Ulid::new(),
+                    revision: 3,
+                })
+                .unwrap(),
+            ),
+            (
+                "session.agent_changed",
+                serde_json::to_value(&SessionAgentChanged {
+                    agent: "plan".into(),
+                    previous: "build".into(),
+                })
+                .unwrap(),
+            ),
+            (
+                "context.compacted",
+                serde_json::to_value(&ContextCompacted {
+                    generation: 1,
+                    through_message: 7,
+                    pruned: 2,
+                    estimate_before: 120_000,
+                    estimate_after: 18_000,
+                    reason: Some(CompactionReason::Manual),
+                })
+                .unwrap(),
+            ),
+            (
+                "permission.requested",
+                serde_json::to_value(&PermissionRequested {
+                    request_id: Ulid::new(),
+                    tool_call_id: "call_1".into(),
+                    tool: "bash".into(),
+                    arguments: "{\"command\":\"ls\"}".into(),
+                    scope: crate::agent::permissions::Scope::Folder("/w".into()),
+                    agent: "build".into(),
+                    reason: "`bash` acts in /w".into(),
+                })
+                .unwrap(),
+            ),
+            (
+                "permission.resolved",
+                serde_json::to_value(&PermissionResolved {
+                    request_id: Ulid::new(),
+                    tool_call_id: "call_1".into(),
+                    resolution: PermissionResolution::Expired,
+                })
+                .unwrap(),
+            ),
+            (
+                "model.changed",
+                serde_json::to_value(&ModelChanged {
+                    operation_id: Some(Ulid::new()),
+                    revision: 2,
+                    reason: ModelChangeReason::Switch,
+                    previous: Some(ModelIdentity {
+                        alias: "a".into(),
+                        provider: "p".into(),
+                        model: "m1".into(),
+                    }),
+                    new: ModelIdentity {
+                        alias: "b".into(),
+                        provider: "p".into(),
+                        model: "m2".into(),
+                    },
+                    variant: Some("high".into()),
+                    window: 200_000,
+                    input_budget: 181_808,
+                    from_message: 7,
+                })
+                .unwrap(),
+            ),
         ];
         assert_eq!(cases.len(), EVENT_KIND_COUNT);
 
@@ -614,6 +1039,99 @@ mod tests {
             let back: Value = serde_json::from_str(&wire).unwrap();
             assert_eq!(back, payload, "payload roundtrip failed for {kind}");
         }
+    }
+
+    #[test]
+    fn permission_events_wire_shape_roundtrips() {
+        let request_id = Ulid::new();
+        let requested = PermissionRequested {
+            request_id,
+            tool_call_id: "call_1".into(),
+            tool: "write".into(),
+            arguments: "{\"path\":\"/w/a\"}".into(),
+            scope: crate::agent::permissions::Scope::Folder("/w".into()),
+            agent: "build".into(),
+            reason: "`write` acts in /w".into(),
+        };
+        let wire = serde_json::to_value(&requested).unwrap();
+        assert_eq!(wire["scope"], json!({"kind": "folder", "value": "/w"}));
+        assert_eq!(
+            serde_json::from_value::<PermissionRequested>(wire).unwrap(),
+            requested
+        );
+
+        for (resolution, expected) in [
+            (
+                PermissionResolution::AllowOnce,
+                json!({"resolution": "allow_once"}),
+            ),
+            (
+                PermissionResolution::AllowFolder,
+                json!({"resolution": "allow_folder"}),
+            ),
+            (
+                PermissionResolution::Deny {
+                    message: "no".into(),
+                },
+                json!({"resolution": "deny", "message": "no"}),
+            ),
+            (
+                PermissionResolution::Cancelled,
+                json!({"resolution": "cancelled"}),
+            ),
+            (
+                PermissionResolution::Expired,
+                json!({"resolution": "expired"}),
+            ),
+        ] {
+            let resolved = PermissionResolved {
+                request_id,
+                tool_call_id: "call_1".into(),
+                resolution,
+            };
+            let mut wire = serde_json::to_value(&resolved).unwrap();
+            assert_eq!(wire["request_id"], json!(request_id));
+            assert_eq!(wire["tool_call_id"], "call_1");
+            wire.as_object_mut().unwrap().remove("request_id");
+            wire.as_object_mut().unwrap().remove("tool_call_id");
+            assert_eq!(wire, expected);
+            let back: PermissionResolved =
+                serde_json::from_value(serde_json::to_value(&resolved).unwrap()).unwrap();
+            assert_eq!(back, resolved);
+        }
+    }
+
+    #[test]
+    fn command_result_wire_shape_and_bounded_data() {
+        let id = Ulid::new();
+        let ok = CommandResult {
+            operation_id: id,
+            name: "model".into(),
+            ok: true,
+            data: Some(json!({"alias": "a"})),
+            error: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&ok).unwrap(),
+            json!({"operation_id": id.to_string(), "name": "model", "ok": true, "data": {"alias": "a"}})
+        );
+        let failed = CommandResult {
+            operation_id: id,
+            name: "x".into(),
+            ok: false,
+            data: None,
+            error: Some("nope".into()),
+        };
+        let v = serde_json::to_value(&failed).unwrap();
+        assert_eq!(v["error"], "nope");
+        assert!(v.get("data").is_none());
+
+        let small = json!({"k": "v"});
+        assert_eq!(CommandResult::bound_data(small.clone()), small);
+        let big = json!({"k": "x".repeat(COMMAND_RESULT_DATA_MAX_BYTES + 1)});
+        let bounded = CommandResult::bound_data(big);
+        assert_eq!(bounded["truncated"], true);
+        assert!(serde_json::to_vec(&bounded).unwrap().len() < 100);
     }
 
     #[test]

@@ -365,6 +365,9 @@ struct ReflexContextCache {
     /// Start of the latest refresh attempt, successful or not.
     last_attempt: Option<Instant>,
     refreshing: bool,
+    /// An empty answer was already logged this run: the model does that
+    /// often, the previous text stays, and one record says so.
+    empty_answer_logged: bool,
     /// The latest inline-completion cursor: the excerpt anchor for
     /// refreshes triggered from `didSave`.
     cursor: Option<(String, u32)>,
@@ -379,8 +382,9 @@ pub(crate) struct RefreshClaim {
 
 /// The refreshed reflex context and its background refresh. Never waits on
 /// the model: the current text keeps being served while a refresh runs. A
-/// failed or empty refresh keeps the previous text, is logged, and is
-/// retried after the minimum interval.
+/// failed or empty refresh keeps the previous text and is retried after the
+/// minimum interval; a failure is logged each time, an empty answer once per
+/// run.
 pub(crate) struct ReflexContext {
     model: Option<Arc<dyn ReflexContextModel>>,
     log: Arc<NavLog>,
@@ -501,10 +505,17 @@ impl ReflexContext {
                     cache.text = Some(excerpt(text.trim(), REFLEX_CONTEXT_MAX_CHARS));
                     cache.inputs = Some(claim.inputs);
                 }
-                Ok(_) => this.log.append(&LogRecord::Error {
-                    uri: &uri,
-                    message: "reflex context refresh: empty answer",
-                }),
+                // An empty answer keeps the previous text. It is logged once
+                // per run, not on every refresh.
+                Ok(_) => {
+                    if !std::mem::replace(&mut cache.empty_answer_logged, true) {
+                        this.log.append(&LogRecord::Error {
+                            uri: &uri,
+                            message: "reflex context refresh: empty answer (previous text kept; \
+                                      not logged again this run)",
+                        });
+                    }
+                }
                 Err(e) => this.log.append(&LogRecord::Error {
                     uri: &uri,
                     message: &format!("reflex context refresh: {e}"),

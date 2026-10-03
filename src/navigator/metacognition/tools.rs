@@ -41,6 +41,7 @@ impl LlmCommenter {
         let cx = ToolContext {
             workspace: workspace.clone(),
             writable_roots: vec![workspace.clone()],
+            readable_roots: Vec::new(),
         };
         let output = match tc.name.as_str() {
             "read" => {

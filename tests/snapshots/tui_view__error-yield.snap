@@ -1,0 +1,34 @@
+---
+source: tests/tui_view.rs
+expression: snapshot
+---
+ Conversations       │ ◆ navai  ~/dev/project     ▌build  cognition · cc/claude-opus-5-5 · — / 200k 
+▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
+▌  build · waiting   │ │ ERROR                                                                      
+                     │ │  Permission denied                                                         
+                     │ │                                                                            
+                     │ │ QUESTION · awaiting answer                                                 
+                     │ │  Choose a file                                                             
+                     │ │                                                                            
+                     │ │ NOTICE                                                                     
+                     │ │  Mode downgraded to next-turn                                              
+                     │ │                                                                            
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │──────────────────────────────────────────────────────────────────────────────
+                     │ awaiting answer                                                session — tok 
+                     │┌ Message ───────────────────────────────────────────────────────────────────┐
+ alt+1…9 switch      ││                                                                            │
+ alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
+ alt+b hide bar      │ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model · /compact · esc stop

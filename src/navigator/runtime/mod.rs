@@ -11,11 +11,13 @@
 mod delivery;
 mod inline;
 mod trigger;
+mod wake;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use tower_lsp_server::ls_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DidSaveTextDocumentParams,
@@ -258,6 +260,50 @@ impl Runtime {
         }
     }
 
+    /// Hands the document's in-flight slot from the instinct evaluation to a
+    /// remark request: the instinct handle is released (a new trigger may
+    /// evaluate while the remark is written), a remark still running for the
+    /// document is superseded, and the new remark's handle is returned.
+    /// `None` when typing already cancelled the instinct stage or the
+    /// document is gone. `help_calls` are the calls for help the remark answers
+    /// (empty for an ordinary remark); `conversation` marks a remark about
+    /// the conversation, which is not tied to a version of the text.
+    async fn begin_remark(
+        &self,
+        uri: &str,
+        instinct_cancel: &CancellationToken,
+        help_calls: &[String],
+        conversation: bool,
+    ) -> Option<CancellationToken> {
+        let mut state = self.documents.lock().await;
+        let doc = state.get_mut(uri)?;
+        doc.in_flight_cancel = None;
+        doc.in_flight_version = None;
+        if instinct_cancel.is_cancelled() {
+            return None;
+        }
+        if let Some(previous) = doc.remark_cancel.take() {
+            previous.cancel();
+        }
+        let cancel = CancellationToken::new();
+        doc.remark_cancel = Some(cancel.clone());
+        doc.remark_version = (!conversation).then_some(doc.version);
+        doc.help.begin(help_calls);
+        Some(cancel)
+    }
+
+    /// Releases the remark handle, unless a newer remark already replaced it.
+    async fn end_remark(&self, uri: &str, cancel: &CancellationToken) {
+        let mut state = self.documents.lock().await;
+        if let Some(doc) = state.get_mut(uri) {
+            if !cancel.is_cancelled() {
+                doc.remark_cancel = None;
+                doc.remark_version = None;
+                doc.help.end();
+            }
+        }
+    }
+
     async fn clear_in_flight(&self, uri: &str) {
         let mut state = self.documents.lock().await;
         if let Some(doc) = state.get_mut(uri) {
@@ -453,7 +499,7 @@ mod tests {
     #[test]
     fn navigator_config_uris_match_project_and_user_dirs() {
         let ws = std::path::Path::new("/ws");
-        let user = std::path::Path::new("/home/u/.config/rust-agent/navigator");
+        let user = std::path::Path::new("/home/u/.config/navai/navigator");
         assert!(Runtime::is_navigator_config(
             "file:///ws/.navigator/pipeline.toml",
             Some(ws),
@@ -465,7 +511,7 @@ mod tests {
             Some(user)
         ));
         assert!(Runtime::is_navigator_config(
-            "file:///home/u/.config/rust-agent/navigator/pipeline.toml",
+            "file:///home/u/.config/navai/navigator/pipeline.toml",
             Some(ws),
             Some(user)
         ));

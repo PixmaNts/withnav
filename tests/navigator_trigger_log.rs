@@ -9,11 +9,11 @@ use serde_json::{json, Value};
 
 use tokio_util::sync::CancellationToken;
 
-use rust_agent::navigator;
+use navai::navigator;
 
 mod common;
 use common::navigator::{
-    big_edit, feed_with_session, with_intent_and_feed, Nav, RemarkAnswer as Answer,
+    feed_with_session, with_intent_and_feed, with_min_changed_lines, Nav, RemarkAnswer as Answer,
     ScriptedCommenter as MockCommenter, ScriptedDecision, URI,
 };
 
@@ -75,10 +75,10 @@ async fn run_wake_trigger(
     ask_pending_for: Option<ulid::Ulid>,
 ) -> Value {
     if let Some(session_id) = ask_pending_for {
-        feed.observe(&rust_agent::bus::event::EventEnvelope::new(
+        feed.observe(&navai::bus::event::EventEnvelope::new(
             session_id,
             2,
-            rust_agent::bus::event::EventKind::AgentYield,
+            navai::bus::event::EventKind::AgentYield,
             json!({}),
         ))
         .await;
@@ -96,11 +96,13 @@ async fn run_wake_trigger(
 
 fn inputs(changed_lines: i64, has_conversation: bool, has_intent: bool) -> Value {
     json!({
+        "called_for_help": false,
         "changed_lines": changed_lines,
         "has_conversation": has_conversation,
         "has_errors": false,
         "has_intent": has_intent,
         "since_last_remark_ms": 4611686018427387903i64,
+        "since_last_wake_ms": 4611686018427387903i64,
     })
 }
 
@@ -109,7 +111,7 @@ fn inputs(changed_lines: i64, has_conversation: bool, has_intent: bool) -> Value
 fn idle_remark_record(extra: Value) -> Value {
     let mut record = json!({
         "answers": "<object>",
-        "branch": 1,
+        "branch": 3,
         "event": "idle",
         "kind": "trigger",
         "model": "instinct",
@@ -136,7 +138,7 @@ fn idle_remark_record(extra: Value) -> Value {
 fn save_wake_record(has_conversation: bool, extra: Value) -> Value {
     let mut record = json!({
         "answers": "<object>",
-        "branch": 0,
+        "branch": 2,
         "event": "save",
         "kind": "trigger",
         "model": "instinct",
@@ -192,14 +194,17 @@ async fn the_trigger_record_json_shape_per_delivered_outcome() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn the_trigger_record_json_shape_when_the_remark_is_superseded() {
+async fn the_trigger_record_json_shape_when_the_remark_is_cancelled_by_a_close() {
     let gate = Arc::new(CancellationToken::new());
     let mock = MockCommenter::gated(vec![Answer::Remark(0, "stale")], gate);
     let mut client = Nav::start(mock).await;
     client.open_and_edit().await;
     client.expect_status("thinking").await;
     client
-        .did_change(URI, &format!("{}\n// tail\n", big_edit()), 3)
+        .notify(
+            "textDocument/didClose",
+            json!({"textDocument": {"uri": URI}}),
+        )
         .await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(
@@ -259,7 +264,10 @@ async fn the_trigger_record_json_shape_without_an_instinct() {
 
 #[tokio::test(start_paused = true)]
 async fn the_trigger_record_json_shape_for_a_pre_filter_skip() {
-    let mut client = Nav::start(MockCommenter::new(vec![])).await;
+    let mut client = Nav::start_with(MockCommenter::new(vec![]), json!({}), |d, ws| {
+        with_min_changed_lines(d, ws, 3)
+    })
+    .await;
     client.open_base().await;
     client
         .did_change(URI, "fn main() {\n    println!(\"hi\");\n}", 2)
@@ -288,6 +296,7 @@ async fn the_trigger_record_json_shape_for_a_pre_filter_skip() {
             "ts": "<string>",
             "uri": URI,
             "version": 2,
+            "workspace": "<string>",
         })
     );
 }

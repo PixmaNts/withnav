@@ -34,6 +34,7 @@ pub(super) fn build_actor(
     let tool_context = ToolContext {
         workspace: workspace.to_path_buf(),
         writable_roots: vec![workspace.to_path_buf(), config_dir.to_path_buf()],
+        readable_roots: Vec::new(),
     };
     AgentActor::new(
         build_registry(),
@@ -54,6 +55,8 @@ fn build_registry() -> Registry {
     registry.register(Box::new(crate::tools::native::EditTool));
     registry.register(Box::new(crate::tools::bash::BashTool));
     registry.register(Box::new(crate::tools::native::GrepTool));
+    registry.register(Box::new(crate::tools::glob::GlobTool));
+    registry.register(Box::new(crate::tools::fetch::FetchTool::new()));
     registry.register(Box::new(crate::tools::control::AskTool));
     registry
 }

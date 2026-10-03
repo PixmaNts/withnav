@@ -1,4 +1,4 @@
-# rust-agent
+# Navai
 
 A pair-programming system in which the human keeps the keyboard and stays the author of the code,
 while several models of different speeds watch, complete, judge and discuss. It exists to get the
@@ -57,6 +57,81 @@ _Avoid_: autopilot, vibe mode
 The driver's rating of a remark: useful, noise, or dismissed.
 _Avoid_: feedback, vote
 
+## Agents
+
+**Primary agent**:
+The role a session runs as: `build` (implement, verify, report), `plan` (research, write markdown
+plans, delegate) or a custom one. The driver selects it for the session and can switch between turns.
+It sets what the model is told to do, not what it may execute.
+_Avoid_: mode (a mode is where an agent definition may be used), persona
+
+**Agent definition**:
+A role described in a built-in or a markdown file: description, mode (primary, subagent or both),
+role prompt, optional model, tool allow/deny map and access level. `build` and `plan` are reserved.
+_Avoid_: profile (a profile is the kind of session, such as the navigator)
+
+**Subagent**:
+An agent definition whose mode is `subagent` or `all`, meant to be given a task by another agent
+(`explore` and `review` are built in and read-only). The definitions exist and load; **a subagent
+cannot be started yet**, so only primary agents run today.
+_Avoid_: worker, child agent
+
+## Models and commands
+
+**Model alias**:
+A name in `models.json` (`cognition`, `fast`, your own) that stands for one provider, model, API and
+set of limits. Sessions, agents and the navigator layers refer to aliases, never to raw model ids. A
+conversation saves what its alias resolved to and keeps it, until `/model <alias>` moves it to
+another alias between turns (the history goes with it, and the switch is announced by `model.changed`).
+_Avoid_: model name, preset
+
+**Variant**:
+A named set of request overrides that an alias offers, such as a reasoning effort (`low`, `high`).
+One variant is in use per conversation: it starts on the alias's default, `/variant <name>` changes
+it from the next turn, and `/variant off` clears it. Variants come from `models.json` or from the
+tiers the provider reports.
+_Avoid_: thinking level, mode, profile
+
+**Session command**:
+A `/name` the server runs on a conversation: `/help`, `/model`, `/new`, `/stop`, `/context`,
+`/variant`, `/compact`, `/agent`. A command has a result, shown in the conversation. While a permission request is pending, `/stop`
+runs (and cancels the request) and every other command is refused. While an `ask` is pending, every
+command is refused, `/stop` included; the stop endpoint (`POST /v1/sessions/{id}/stop`) still works. `//text` sends the literal text `/text`. The
+terminal client also has its own commands (`/sessions`, `/theme`, `/quit`), and it opens a new tab
+for `/model <alias>` and `/new <alias>` instead of running them on the open conversation.
+_Avoid_: tool, action (an action is what a pipeline branch decides)
+
+## Permissions
+
+**Permission request**:
+A tool call (`write`, `edit`, `bash`, `fetch`) that has not run and waits for the driver's decision:
+allow once, allow the folder, or deny with a message. Only a typed answer to that request resolves it;
+chat text never does. It does not survive a restart.
+_Avoid_: confirmation, approval prompt
+
+**Folder grant**:
+An "allow folder" answer, kept in memory for the session: it lets the same agent run the same kind of
+call (file changes, `bash`, or `fetch` for an origin) in that folder and below without asking again.
+A grant on the workspace never covers the config directory. For `bash` the folder is the scope the
+driver approved, not a confinement.
+_Avoid_: whitelist, permission rule
+
+**Role guard**:
+The check the `plan` agent's exceptions go through before the driver: a `write` or `edit` of a file
+that is not a regular `.md` file, and every `bash` and `fetch`. Jev (the instinct model) is asked one
+typed question, "does this call conform to the role?", with the exact call; only a valid "conforms"
+runs it, recorded on the call's result. "Violates", "uncertain", a bad answer, no answer or a call too
+large to send become a permission request that says why, answerable once or by denial only. Advisory,
+never a sandbox.
+_Avoid_: filter, sandbox, policy
+
+**Pending interaction**:
+What a yielded actor waits for: the answer to an `ask`, or the decision on a permission request (with
+the held call and the calls behind it). While a permission request is pending, session commands are
+refused, except `/stop`, which runs and cancels the request. While an `ask` is pending, all session
+commands are refused, `/stop` included, until it is answered. The stop endpoint
+(`POST /v1/sessions/{id}/stop`) works in both cases.
+
 ## Shared context
 
 **Shared context**:
@@ -78,6 +153,12 @@ _Avoid_: session state, cache
 The metacognition bringing something to the cognition's attention, turning a fast observation into a
 deliberate discussion.
 _Avoid_: escalate, trigger (a trigger is an instinct input)
+
+**Wake hold**:
+The rule that, while a conversation waits for an answer to an `ask` or for a permission decision, a
+wake from the navigator is kept back instead of delivered. Only the latest held wake is kept, and it
+is delivered once nothing is pending. Driver text, unlike a wake, still cancels a permission request.
+_Avoid_: mute, queue
 
 **Trigger**:
 An event (save, idle, diagnostic change, conversation turn) that makes the instinct evaluate whether
@@ -109,3 +190,27 @@ _Avoid_: outcome, effect
 Running a recorded history of triggers through a different pipeline to see which actions it would
 have chosen, compared against the driver's verdicts.
 _Avoid_: backtest, simulation
+
+## Context budget
+
+**Context budget**:
+How much of a model's context window the next request may fill, and how full it is now. The
+window W comes from the saved resolution; the output reserve R is the `models.json`
+`max_output_tokens`, else the smallest of 8192, a quarter of W and the output ceiling the provider
+reports; the margin M is 5% of W (at least 4096); the input budget is `min(W − R, input limit or W) − M`.
+A window that leaves no input budget is refused at session creation. The fill is an estimate of the
+next request (UTF-8 bytes / 4 plus a fixed framing per message), split into system, rules, skills
+catalog, tools and messages, and it is shown as an estimate (`~42k`). It is never the provider's count
+of the last request (`last_usage`), and never the session's cumulative usage.
+_Avoid_: token limit, quota
+
+**Checkpoint**:
+The summary that stands for the start of a conversation once it was compacted: `{through_message,
+summary, generation}` plus the tool outputs the prompt shows as elision markers. The full
+transcript is never rewritten: `sessions.transcript` keeps every message, and the checkpoint is a
+boundary the request builder applies. The prompt is then the fresh system components, the summary
+as labelled conversation data (never as instructions), and the messages after the boundary. The
+system components, the latest user request, the unfinished turn with any pending `ask` and the last
+two completed turns are always kept verbatim, and a cut never splits a tool call from its results.
+`/compact [focus]` makes one by asking the session's own model and variant for a summary.
+_Avoid_: snapshot (that is the context gauge), history rewrite

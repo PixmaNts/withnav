@@ -1,4 +1,4 @@
-//! `rust-agent-lsp`: the navigator Language Server over stdio.
+//! `navai-lsp`: the navigator Language Server over stdio.
 //!
 //! stdout is the LSP channel; all logging goes to stderr via tracing. This
 //! file only parses the command line and dispatches: the server wiring lives
@@ -8,16 +8,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-use rust_agent::navigator;
-use rust_agent::navigator::bootstrap;
-use rust_agent::navigator::models::DecisionAdapter;
-use rust_agent::provider::auth;
-use rust_agent::provider::openai::ClientCache;
-use rust_agent::provider::systemone::SystemOneClient;
+use navai::navigator;
+use navai::navigator::bootstrap;
+use navai::navigator::models::DecisionAdapter;
+use navai::provider::auth;
+use navai::provider::openai::ClientCache;
+use navai::provider::systemone::SystemOneClient;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "rust-agent-lsp",
+    name = "navai-lsp",
     version,
     about = "Navigator: a pair-programming navigator over LSP"
 )]
@@ -67,9 +67,24 @@ fn init_tracing_stderr() {
         .try_init();
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    // The editor host runs the agent too, and its `fetch` converts pages in
+    // a child started from this same executable: handle that invocation
+    // before the async runtime exists (see `conversion_child`).
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(code) = navai::tools::fetch::conversion_child(&args) {
+        std::process::exit(code);
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+async fn run() -> anyhow::Result<()> {
+    let migration = navai::paths::migrate_legacy();
     init_tracing_stderr();
+    migration.log();
     let cli = Cli::parse();
 
     if let Some(Command::Replay {
@@ -95,8 +110,8 @@ async fn run_replay(
     reask: bool,
     json: bool,
 ) -> anyhow::Result<()> {
-    use rust_agent::navigator::pipeline::Pipeline;
-    use rust_agent::navigator::replay::{load_candidate, ReplayLog, Replayer};
+    use navai::navigator::pipeline::Pipeline;
+    use navai::navigator::replay::{load_candidate, ReplayLog, Replayer};
 
     let candidate = load_candidate(pipeline_path)
         .map_err(|e| anyhow::anyhow!("cannot load the candidate pipeline: {e}"))?;
@@ -104,7 +119,7 @@ async fn run_replay(
 
     let log_path = match log_path {
         Some(path) => path.to_path_buf(),
-        None => rust_agent::paths::decision_log()
+        None => navai::paths::decision_log()
             .ok_or_else(|| anyhow::anyhow!("cannot resolve the user data dir; pass --log"))?,
     };
     // A missing log replays as an empty one: no triggers, nothing to compare.

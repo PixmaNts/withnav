@@ -9,13 +9,13 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use rust_agent::agent::actor::AgentActor;
-use rust_agent::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
-use rust_agent::provider::config::{ProviderConfig, ReasoningHistory};
-use rust_agent::tools::bash::BashTool;
-use rust_agent::tools::control::AskTool;
-use rust_agent::tools::native::ReadTool;
-use rust_agent::tools::{Registry, ToolContext};
+use navai::agent::actor::AgentActor;
+use navai::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
+use navai::provider::config::{ProviderConfig, ReasoningHistory};
+use navai::tools::bash::BashTool;
+use navai::tools::control::AskTool;
+use navai::tools::native::ReadTool;
+use navai::tools::{Registry, ToolContext};
 use tokio_util::sync::CancellationToken;
 
 mod common;
@@ -44,6 +44,7 @@ async fn make_actor(base_url: String, registry: Registry) -> TestActor {
         ToolContext {
             workspace: ws.clone(),
             writable_roots: vec![ws],
+            readable_roots: Vec::new(),
         },
         ProviderConfig {
             base_url,
@@ -51,6 +52,7 @@ async fn make_actor(base_url: String, registry: Registry) -> TestActor {
             headers: BTreeMap::new(),
             connect_timeout_ms: 2000,
             request_timeout_ms: 600_000,
+            catalog_format: None,
         },
         "test-key".to_string(),
         "test-model".to_string(),

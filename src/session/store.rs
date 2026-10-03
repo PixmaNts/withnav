@@ -29,7 +29,8 @@
 //!
 //! Schema:
 //! - `sessions(id TEXT PRIMARY KEY, workspace TEXT, model TEXT, profile TEXT,
-//!   title TEXT, created_at TEXT, updated_at TEXT, last_seq INTEGER, transcript TEXT)`
+//!   title TEXT, created_at TEXT, updated_at TEXT, last_seq INTEGER, transcript TEXT,
+//!   model_resolution TEXT, variant TEXT, variant_override TEXT, primary_agent TEXT, reasoning_floor INTEGER)`
 //! - `events(session_id TEXT, seq INTEGER, kind TEXT, envelope TEXT,
 //!   PRIMARY KEY(session_id, seq))`
 //!
@@ -37,11 +38,43 @@
 //! Recording it keeps `last_seq` at the highest seq any client has seen, so a
 //! resumed session continues after it and never reuses a seq; the resume path
 //! (not the store) keeps it from replaying to subscribers, so the resumed
-//! stream does not look closed. `llm.delta` is live-only and never stored.
+//! stream does not look closed. `llm.delta` and `context.updated` are live-only and never stored.
 //! `transcript` is the JSON of the actor's `Vec<ChatMessage>`, snapshotted
 //! after every turn end.
+//!
+//! `model_resolution` is NULL or the versioned JSON of a
+//! [`ModelResolution`](crate::provider::catalog::ModelResolution): the model
+//! identity and bounds the conversation runs on. It is written once (at
+//! creation, or at the first activation of a row that has none) and never
+//! overwritten: a catalog refresh does not move a conversation.
+//!
+//! `variant` is NULL or the name of the model variant the conversation
+//! runs with: NULL means none (a row from before the column has none). It
+//! changes only through [`HistoryStore::set_variant`]. `variant_override` is
+//! NULL or the JSON object the variant sent when it was chosen, written
+//! together with `variant` (NULL for a row from before the column), so a
+//! resume can send the same keys when the offer cannot be read.
+//!
+//! `checkpoint` is NULL (no compaction) or the versioned JSON of a
+//! [`Compaction`]: the summary that stands for the start of the conversation
+//! and the tool outputs the prompt shows as markers. `transcript` stays the
+//! full history; both are written together by
+//! [`HistoryStore::save_checkpoint`]. A resume validates the indices against
+//! the transcript, and a non-null value that does not validate fails it.
+//!
+//! `primary_agent` is NULL (the `build` agent, also for every row written
+//! before the column existed) or the id of the primary agent the session runs
+//! as. It changes with `/agent`, and the change is committed before it is
+//! reported.
+//!
+//! `reasoning_floor` is NULL (zero) or the transcript index below which the
+//! request projection leaves reasoning out: the messages written before a
+//! `/model` switch to another model identity. It is written with the model,
+//! resolution and variant of the switch, in the same transaction.
 
 mod read;
+
+pub use read::Resumed;
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -51,7 +84,8 @@ use rusqlite::{params, Connection};
 use tokio::sync::oneshot;
 use ulid::Ulid;
 
-use crate::bus::event::EventEnvelope;
+use crate::agent::compaction::Compaction;
+use crate::bus::event::{EventEnvelope, EventKind};
 use crate::provider::openai::ChatMessage;
 
 /// The stored session row's client-facing projection (the HTTP list shape,
@@ -66,6 +100,21 @@ pub struct StoredSession {
     pub created_at: String,
     pub updated_at: String,
     pub last_seq: u64,
+    /// The raw `model_resolution` column: `None` for a row that has none
+    /// (created before the column existed). Parsed by the session service,
+    /// so an invalid value fails the resume instead of being dropped here.
+    pub model_resolution: Option<String>,
+    /// The saved model variant name; `None` means no variant.
+    pub variant: Option<String>,
+    /// The raw JSON of the saved variant's override object; `None` for a row
+    /// saved before it was kept, or with no variant.
+    pub variant_override: Option<String>,
+    /// The raw `primary_agent` column: `None` is the `build` agent.
+    pub primary_agent: Option<String>,
+    /// Transcript messages before this index come from a model the
+    /// conversation no longer talks to: the request projection leaves their
+    /// reasoning out. `None` (a row never switched) is zero.
+    pub reasoning_floor: Option<u64>,
 }
 
 /// A full session load: the row's metadata, its stored envelopes (in seq
@@ -75,6 +124,8 @@ pub struct LoadedSession {
     pub meta: StoredSession,
     pub envelopes: Vec<EventEnvelope>,
     pub transcript: Vec<ChatMessage>,
+    /// The installed compaction, validated against `transcript`.
+    pub compaction: Option<Compaction>,
 }
 
 /// The result channel of an acknowledged write.
@@ -87,6 +138,38 @@ enum Write {
         workspace: String,
         model: String,
         profile: Option<String>,
+        resolution: Option<String>,
+        variant: Option<String>,
+        variant_override: Option<String>,
+        primary_agent: Option<String>,
+    },
+    SetVariant {
+        id: Ulid,
+        variant: Option<String>,
+        variant_override: Option<String>,
+    },
+    SetResolution {
+        id: Ulid,
+        resolution: String,
+    },
+    SwitchModel {
+        id: Ulid,
+        model: String,
+        resolution: String,
+        variant: Option<String>,
+        variant_override: Option<String>,
+        reasoning_floor: i64,
+        /// The sequenced `model.changed` stored with the new selection.
+        envelope: EventEnvelope,
+    },
+    FillEndpoint {
+        id: Ulid,
+        expected: String,
+        resolution: String,
+    },
+    SetPrimaryAgent {
+        id: Ulid,
+        agent: Option<String>,
     },
     AppendEvent {
         id: Ulid,
@@ -95,6 +178,11 @@ enum Write {
     SaveTranscript {
         id: Ulid,
         transcript: Vec<ChatMessage>,
+    },
+    SaveCheckpoint {
+        id: Ulid,
+        transcript: Vec<ChatMessage>,
+        checkpoint: String,
     },
     SetTitle {
         id: Ulid,
@@ -124,6 +212,8 @@ enum WriteError {
     Json(#[from] serde_json::Error),
     #[error("no stored session {0}")]
     UnknownSession(Ulid),
+    #[error("the saved model resolution of session {0} changed while it was being completed")]
+    ResolutionChanged(Ulid),
 }
 
 /// The handle side of the store: clones a sender into the single writer
@@ -210,16 +300,130 @@ impl HistoryStore {
         model: &str,
         profile: Option<&str>,
     ) -> Result<(), String> {
+        self.record_session_resolved(id, workspace, model, profile, None, None, None)
+            .await
+    }
+
+    /// [`HistoryStore::record_session`] with the model resolution saved in
+    /// the same insert, and the primary agent when it is not `build`. An
+    /// existing row keeps what it has.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_session_resolved(
+        &self,
+        id: Ulid,
+        workspace: &str,
+        model: &str,
+        profile: Option<&str>,
+        resolution: Option<&crate::provider::catalog::ModelResolution>,
+        variant: Option<&(String, crate::provider::config::Variant)>,
+        primary_agent: Option<&str>,
+    ) -> Result<(), String> {
+        let (variant, variant_override) = split_variant(variant)?;
+        let resolution = resolution
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| format!("serialize model resolution: {e}"))?;
         self.acked(Write::RecordSession {
             id,
             workspace: workspace.to_string(),
             model: model.to_string(),
             profile: profile.map(str::to_string),
+            resolution,
+            variant,
+            variant_override,
+            primary_agent: primary_agent.map(str::to_string),
         })
         .await
     }
 
-    /// Appends one durable envelope (the caller filters `llm.delta`) and
+    /// Saves the model variant of a session with its override object
+    /// (`None` clears both) and waits for the commit.
+    pub async fn set_variant(
+        &self,
+        id: Ulid,
+        variant: Option<&(String, crate::provider::config::Variant)>,
+    ) -> Result<(), String> {
+        let (variant, variant_override) = split_variant(variant)?;
+        self.acked(Write::SetVariant {
+            id,
+            variant,
+            variant_override,
+        })
+        .await
+    }
+
+    /// Moves a session to another model alias in ONE transaction: the alias,
+    /// its resolution, its variant (with the override object), the reasoning
+    /// floor and the sequenced `model.changed` event change together or not at
+    /// all (an event row already at that seq fails the whole write). Waits for
+    /// the commit.
+    pub async fn switch_model(
+        &self,
+        id: Ulid,
+        alias: &str,
+        resolution: &crate::provider::catalog::ModelResolution,
+        variant: Option<&(String, crate::provider::config::Variant)>,
+        reasoning_floor: usize,
+        envelope: EventEnvelope,
+    ) -> Result<(), String> {
+        let (variant, variant_override) = split_variant(variant)?;
+        let resolution = serde_json::to_string(resolution)
+            .map_err(|e| format!("serialize model resolution: {e}"))?;
+        self.acked(Write::SwitchModel {
+            id,
+            model: alias.to_string(),
+            resolution,
+            variant,
+            variant_override,
+            reasoning_floor: i64::try_from(reasoning_floor).unwrap_or(i64::MAX),
+            envelope,
+        })
+        .await
+    }
+
+    /// Saves the model resolution of a row that has none (a conversation
+    /// from before the column). Never overwrites a saved one. Waits for the
+    /// commit.
+    pub async fn set_model_resolution(
+        &self,
+        id: Ulid,
+        resolution: &crate::provider::catalog::ModelResolution,
+    ) -> Result<(), String> {
+        let resolution = serde_json::to_string(resolution)
+            .map_err(|e| format!("serialize model resolution: {e}"))?;
+        self.acked(Write::SetResolution { id, resolution }).await
+    }
+
+    /// Replaces a saved resolution that lacks its endpoint with the same one
+    /// carrying it. Only when the column still holds exactly `expected`, so a
+    /// concurrent change is never overwritten. Waits for the commit.
+    pub async fn fill_resolution_endpoint(
+        &self,
+        id: Ulid,
+        expected: &str,
+        resolution: &crate::provider::catalog::ModelResolution,
+    ) -> Result<(), String> {
+        let resolution = serde_json::to_string(resolution)
+            .map_err(|e| format!("serialize model resolution: {e}"))?;
+        self.acked(Write::FillEndpoint {
+            id,
+            expected: expected.to_string(),
+            resolution,
+        })
+        .await
+    }
+
+    /// Sets the primary agent of a session (`None` is `build`) and waits for
+    /// the commit.
+    pub async fn set_primary_agent(&self, id: Ulid, agent: Option<&str>) -> Result<(), String> {
+        self.acked(Write::SetPrimaryAgent {
+            id,
+            agent: agent.map(str::to_string),
+        })
+        .await
+    }
+
+    /// Appends one durable envelope (the caller filters the live-only kinds) and
     /// bumps `last_seq` in the same transaction. Fire-and-forget: a failure
     /// surfaces at the next [`HistoryStore::flush`].
     pub fn append_event(&self, id: Ulid, envelope: EventEnvelope) {
@@ -233,6 +437,23 @@ impl HistoryStore {
         self.enqueue(Write::SaveTranscript { id, transcript });
     }
 
+    /// Saves the transcript and the compaction that goes with it in ONE
+    /// transaction and waits for the commit. The caller installs the
+    /// compaction only after this returns `Ok`.
+    pub async fn save_checkpoint(
+        &self,
+        id: Ulid,
+        transcript: Vec<ChatMessage>,
+        compaction: &Compaction,
+    ) -> Result<(), String> {
+        self.acked(Write::SaveCheckpoint {
+            id,
+            transcript,
+            checkpoint: compaction.to_json(),
+        })
+        .await
+    }
+
     /// Sets the session title (first driver message; only when unset).
     /// Fire-and-forget, like [`HistoryStore::append_event`].
     pub fn set_title(&self, id: Ulid, title: String) {
@@ -244,6 +465,18 @@ impl HistoryStore {
     pub async fn delete(&self, id: Ulid) -> Result<(), String> {
         self.acked(Write::Delete { id }).await
     }
+}
+
+/// The two columns a selected variant is saved in: its name and its override
+/// object as JSON.
+fn split_variant(
+    variant: Option<&(String, crate::provider::config::Variant)>,
+) -> Result<(Option<String>, Option<String>), String> {
+    let Some((name, object)) = variant else {
+        return Ok((None, None));
+    };
+    let raw = serde_json::to_string(object).map_err(|e| format!("serialize variant: {e}"))?;
+    Ok((Some(name.clone()), Some(raw)))
 }
 
 /// One row of the list projection: the session metadata plus its driver
@@ -298,14 +531,129 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             workspace,
             model,
             profile,
+            resolution,
+            variant,
+            variant_override,
+            primary_agent,
         } => {
             let now = now_rfc3339();
             tx.execute(
                 "INSERT OR IGNORE INTO sessions
-                 (id, workspace, model, profile, title, created_at, updated_at, last_seq, transcript)
-                 VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5, -1, NULL)",
-                params![id.to_string(), workspace, model, profile, now],
+                 (id, workspace, model, profile, title, created_at, updated_at, last_seq, transcript,
+                  model_resolution, variant, variant_override, primary_agent)
+                 VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5, -1, NULL, ?6, ?7, ?8, ?9)",
+                params![
+                    id.to_string(),
+                    workspace,
+                    model,
+                    profile,
+                    now,
+                    resolution,
+                    variant,
+                    variant_override,
+                    primary_agent
+                ],
             )?;
+        }
+        Write::SetVariant {
+            id,
+            variant,
+            variant_override,
+        } => {
+            let touched = tx.execute(
+                "UPDATE sessions SET variant = ?2, variant_override = ?3 WHERE id = ?1",
+                params![id.to_string(), variant, variant_override],
+            )?;
+            if touched == 0 {
+                return Err(WriteError::UnknownSession(id));
+            }
+        }
+        Write::SetResolution { id, resolution } => {
+            let touched = tx.execute(
+                "UPDATE sessions SET model_resolution = ?2
+                 WHERE id = ?1 AND model_resolution IS NULL",
+                params![id.to_string(), resolution],
+            )?;
+            if touched == 0
+                && !tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1)",
+                        params![id.to_string()],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map(|v| v != 0)?
+            {
+                return Err(WriteError::UnknownSession(id));
+            }
+        }
+        Write::SwitchModel {
+            id,
+            model,
+            resolution,
+            variant,
+            variant_override,
+            reasoning_floor,
+            envelope,
+        } => {
+            let touched = tx.execute(
+                "UPDATE sessions
+                 SET model = ?2, model_resolution = ?3, variant = ?4, variant_override = ?5,
+                     reasoning_floor = ?6
+                 WHERE id = ?1",
+                params![
+                    id.to_string(),
+                    model,
+                    resolution,
+                    variant,
+                    variant_override,
+                    reasoning_floor
+                ],
+            )?;
+            if touched == 0 {
+                return Err(WriteError::UnknownSession(id));
+            }
+            // A plain insert: a row already at this seq is an error, not a
+            // reason to keep the selection without its event.
+            tx.execute(
+                "INSERT INTO events (session_id, seq, kind, envelope) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    id.to_string(),
+                    envelope.seq as i64,
+                    envelope.kind,
+                    serde_json::to_string(&envelope)?
+                ],
+            )?;
+            tx.execute(
+                "UPDATE sessions SET updated_at = ?2, last_seq = MAX(last_seq, ?3) WHERE id = ?1",
+                params![id.to_string(), now_rfc3339(), envelope.seq as i64],
+            )?;
+        }
+        Write::FillEndpoint {
+            id,
+            expected,
+            resolution,
+        } => {
+            // Exactly one row: another process that completed the same
+            // legacy resolution first may have recorded a different endpoint,
+            // and this activation must not run against an endpoint that is
+            // not the committed one.
+            let touched = tx.execute(
+                "UPDATE sessions SET model_resolution = ?2
+                 WHERE id = ?1 AND model_resolution = ?3",
+                params![id.to_string(), resolution, expected],
+            )?;
+            if touched != 1 {
+                return Err(WriteError::ResolutionChanged(id));
+            }
+        }
+        Write::SetPrimaryAgent { id, agent } => {
+            let touched = tx.execute(
+                "UPDATE sessions SET primary_agent = ?2 WHERE id = ?1",
+                params![id.to_string(), agent],
+            )?;
+            if touched == 0 {
+                return Err(WriteError::UnknownSession(id));
+            }
         }
         Write::AppendEvent { id, envelope } => {
             let payload = serde_json::to_string(&envelope)?;
@@ -329,6 +677,21 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             let touched = tx.execute(
                 "UPDATE sessions SET transcript = ?2, updated_at = ?3 WHERE id = ?1",
                 params![id.to_string(), payload, now_rfc3339()],
+            )?;
+            if touched == 0 {
+                return Err(WriteError::UnknownSession(id));
+            }
+        }
+        Write::SaveCheckpoint {
+            id,
+            transcript,
+            checkpoint,
+        } => {
+            let payload = serde_json::to_string(&transcript)?;
+            let touched = tx.execute(
+                "UPDATE sessions SET transcript = ?2, checkpoint = ?3, updated_at = ?4
+                 WHERE id = ?1",
+                params![id.to_string(), payload, checkpoint, now_rfc3339()],
             )?;
             if touched == 0 {
                 return Err(WriteError::UnknownSession(id));
@@ -369,7 +732,13 @@ fn migrate(path: &Path) -> Result<(), String> {
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             last_seq INTEGER NOT NULL DEFAULT -1,
-            transcript TEXT
+            transcript TEXT,
+            model_resolution TEXT,
+            variant TEXT,
+            variant_override TEXT,
+            checkpoint TEXT,
+            primary_agent TEXT,
+            reasoning_floor INTEGER
         );
         CREATE TABLE IF NOT EXISTS events (
             session_id TEXT NOT NULL,
@@ -380,6 +749,63 @@ fn migrate(path: &Path) -> Result<(), String> {
         );",
     )
     .map_err(|e| format!("migrate: {e}"))?;
+    // A database from before `model_resolution`: add the nullable column.
+    let has_column = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'model_resolution'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| format!("migrate: {e}"))?;
+    if !has_column {
+        conn.execute("ALTER TABLE sessions ADD COLUMN model_resolution TEXT", [])
+            .map_err(|e| format!("migrate: {e}"))?;
+    }
+    // A database from before `variant`: add the nullable column.
+    let has_variant = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'variant'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| format!("migrate: {e}"))?;
+    if !has_variant {
+        conn.execute("ALTER TABLE sessions ADD COLUMN variant TEXT", [])
+            .map_err(|e| format!("migrate: {e}"))?;
+    }
+    // A database from before `variant_override`: add the nullable column.
+    let has_variant_override = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'variant_override'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| format!("migrate: {e}"))?;
+    if !has_variant_override {
+        conn.execute("ALTER TABLE sessions ADD COLUMN variant_override TEXT", [])
+            .map_err(|e| format!("migrate: {e}"))?;
+    }
+    // A database from before `checkpoint`: add the nullable column.
+    let has_checkpoint = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'checkpoint'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| format!("migrate: {e}"))?;
+    if !has_checkpoint {
+        conn.execute("ALTER TABLE sessions ADD COLUMN checkpoint TEXT", [])
+            .map_err(|e| format!("migrate: {e}"))?;
+    }
+    // A database from before `primary_agent`: add the nullable column.
+    let has_primary_agent = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'primary_agent'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| format!("migrate: {e}"))?;
+    if !has_primary_agent {
+        conn.execute("ALTER TABLE sessions ADD COLUMN primary_agent TEXT", [])
+            .map_err(|e| format!("migrate: {e}"))?;
+    }
+    // A database from before `reasoning_floor`: add the nullable column.
+    let has_floor = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'reasoning_floor'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| format!("migrate: {e}"))?;
+    if !has_floor {
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN reasoning_floor INTEGER",
+            [],
+        )
+        .map_err(|e| format!("migrate: {e}"))?;
+    }
     Ok(())
 }
 
@@ -395,8 +821,8 @@ use crate::bus::sequencer::Emitter;
 use crate::bus::SubscribeReply;
 
 /// Wraps a session's [`SessionBus`] as the sequencer's emitter and forwards
-/// every DURABLE envelope — everything except `llm.delta` (live-only, never
-/// stored), `session.end` included — to the writer thread, in seq order, synchronously inside the single sequencer task. The
+/// every DURABLE envelope — everything except the live-only kinds
+/// (`llm.delta`, `context.updated`; never stored), `session.end` included — to the writer thread, in seq order, synchronously inside the single sequencer task. The
 /// hand-off is a channel send: the sequencer never waits on SQLite.
 pub struct PersistingEmitter {
     bus: crate::bus::SessionBus,
@@ -417,7 +843,8 @@ impl PersistingEmitter {
 impl Emitter for PersistingEmitter {
     fn emit(&mut self, envelope: EventEnvelope) {
         let kind = envelope.kind.as_str();
-        if kind != "llm.delta" {
+        // An unknown name is stored: only a catalog kind marked live-only is not.
+        if EventKind::from_wire(kind).is_none_or(EventKind::is_durable) {
             // The first driver message becomes the title (the store guards:
             // only when the title is still NULL).
             if kind == "message.received" {
@@ -721,13 +1148,14 @@ mod tests {
         let meta = store.meta(id).await.expect("meta").expect("present");
         assert_eq!(meta.profile.as_deref(), Some("p"));
         assert_eq!(meta.last_seq, 0);
-        let (resumed, transcript) = store
+        let (resumed, transcript, compaction) = store
             .load_for_resume(id)
             .await
             .expect("resume")
             .expect("present");
         assert_eq!(resumed.id, id);
         assert_eq!(transcript.len(), 1);
+        assert!(compaction.is_none());
         assert!(store.meta(Ulid::new()).await.expect("meta").is_none());
         assert!(store
             .load_for_resume(Ulid::new())
@@ -837,5 +1265,282 @@ mod tests {
         // Unclosed block: kept verbatim.
         let unclosed = "hello <editor-context> junk";
         assert_eq!(title_from_message(unclosed), "hello <editor-context> junk");
+    }
+
+    // Given a database written before `model_resolution` existed
+    // When the store opens it
+    // Then the column is added, old rows read with none, and a second open
+    //      is a no-op
+    #[tokio::test]
+    async fn migration_adds_the_resolution_column_to_an_old_database() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sessions.db");
+        let id = Ulid::new();
+        {
+            let conn = Connection::open(&path).expect("open");
+            conn.execute_batch(
+                "CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY, workspace TEXT NOT NULL, model TEXT NOT NULL,
+                    profile TEXT, title TEXT, created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL, last_seq INTEGER NOT NULL DEFAULT -1,
+                    transcript TEXT
+                 );
+                 CREATE TABLE events (
+                    session_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
+                    envelope TEXT NOT NULL, PRIMARY KEY (session_id, seq)
+                 );",
+            )
+            .expect("old schema");
+            conn.execute(
+                "INSERT INTO sessions VALUES (?1, '/w', 'm', NULL, NULL, 't', 't', -1, NULL)",
+                params![id.to_string()],
+            )
+            .expect("old row");
+        }
+        let store = HistoryStore::open(&path).expect("migrates");
+        let meta = store.meta(id).await.expect("meta").expect("present");
+        assert_eq!(meta.model_resolution, None);
+        assert_eq!(meta.variant, None, "an old row has no variant");
+        assert_eq!(meta.variant_override, None);
+        drop(store);
+        HistoryStore::open(&path).expect("idempotent");
+    }
+
+    // Given a session saved with a variant
+    // When the variant is changed, cleared, and set for an unknown id
+    // Then each read shows it; the unknown id is an error
+    #[tokio::test]
+    async fn the_variant_is_saved_changed_and_cleared() {
+        let pick = |name: &str| {
+            let mut object = crate::provider::config::Variant::new();
+            object.insert("reasoning_effort".into(), name.into());
+            (name.to_string(), object)
+        };
+        let (_dir, store) = temp_store();
+        let id = Ulid::new();
+        store
+            .record_session_resolved(id, "/w", "m", None, None, Some(&pick("high")), None)
+            .await
+            .expect("record");
+        let read = |store: &HistoryStore| {
+            let store = store.clone();
+            async move { store.meta(id).await.expect("meta").expect("row").variant }
+        };
+        assert_eq!(read(&store).await.as_deref(), Some("high"));
+        store
+            .set_variant(id, Some(&pick("low")))
+            .await
+            .expect("set");
+        assert_eq!(read(&store).await.as_deref(), Some("low"));
+        let raw = store.meta(id).await.unwrap().unwrap().variant_override;
+        assert_eq!(raw.as_deref(), Some(r#"{"reasoning_effort":"low"}"#));
+        store.set_variant(id, None).await.expect("clear");
+        assert_eq!(read(&store).await, None);
+        assert_eq!(
+            store.meta(id).await.unwrap().unwrap().variant_override,
+            None
+        );
+        assert!(store
+            .set_variant(Ulid::new(), Some(&pick("x")))
+            .await
+            .is_err());
+        let listed = store.list("/w").await.expect("list");
+        assert_eq!(listed[0].meta.variant, None);
+    }
+
+    // Given a saved resolution
+    // When another is offered for the same row
+    // Then the first stays: a snapshot is written once
+    #[tokio::test]
+    async fn a_saved_resolution_is_never_overwritten() {
+        use crate::provider::catalog::{Bounds, ModelResolution, Provenance, RESOLUTION_VERSION};
+        let make = |window| ModelResolution {
+            version: RESOLUTION_VERSION,
+            provider: "p".into(),
+            model: "m".into(),
+            api: "chat".into(),
+            endpoint: "http://h/v1".into(),
+            bounds: Bounds {
+                context_window: window,
+                max_input_tokens: None,
+                reported_output: None,
+            },
+            history_policy: "preserve".into(),
+            provenance: Provenance {
+                context_window: "models.json".into(),
+                max_input_tokens: "none".into(),
+                reported_output: "none".into(),
+            },
+        };
+        let (_dir, store) = temp_store();
+        let id = Ulid::new();
+        store
+            .record_session(id, "/w", "m", None)
+            .await
+            .expect("record");
+        store
+            .set_model_resolution(id, &make(100))
+            .await
+            .expect("first");
+        store
+            .set_model_resolution(id, &make(200))
+            .await
+            .expect("ignored");
+        store
+            .record_session_resolved(id, "/w", "m", None, Some(&make(300)), None, None)
+            .await
+            .expect("existing row keeps its own");
+        let meta = store.meta(id).await.expect("meta").expect("present");
+        let saved = ModelResolution::from_saved(&meta.model_resolution.expect("saved")).unwrap();
+        assert_eq!(saved.bounds.context_window, 100);
+        assert!(store
+            .set_model_resolution(Ulid::new(), &make(1))
+            .await
+            .is_err());
+    }
+
+    fn exchange(n: usize) -> Vec<ChatMessage> {
+        use crate::provider::openai::{RequestFunction, RequestToolCall};
+        vec![
+            ChatMessage::User {
+                content: format!("request {n}"),
+            },
+            ChatMessage::Assistant {
+                content: None,
+                reasoning_content: None,
+                tool_calls: vec![RequestToolCall {
+                    id: format!("c{n}"),
+                    kind: "function".into(),
+                    function: RequestFunction {
+                        name: "read".into(),
+                        arguments: "{}".into(),
+                    },
+                }],
+            },
+            ChatMessage::Tool {
+                tool_call_id: format!("c{n}"),
+                content: "output".repeat(50),
+            },
+            ChatMessage::Assistant {
+                content: Some("done".into()),
+                reasoning_content: None,
+                tool_calls: vec![],
+            },
+        ]
+    }
+
+    fn compaction(through: usize, pruned: Vec<usize>) -> Compaction {
+        Compaction {
+            checkpoint: crate::agent::compaction::Checkpoint {
+                through_message: through,
+                summary: "the gist".into(),
+                generation: 1,
+            },
+            pruned_message_indices: pruned,
+        }
+    }
+
+    // Given a session with a transcript and no checkpoint
+    // When a checkpoint is saved
+    // Then transcript and checkpoint read back together, in the versioned shape
+    #[tokio::test]
+    async fn a_checkpoint_is_saved_with_the_transcript_and_read_back() {
+        let (dir, store) = temp_store();
+        let id = Ulid::new();
+        store.record_session(id, "/w", "m", None).await.unwrap();
+        let transcript: Vec<ChatMessage> = (0..4).flat_map(exchange).collect();
+        let k = compaction(3, vec![6]);
+        store
+            .save_checkpoint(id, transcript.clone(), &k)
+            .await
+            .unwrap();
+        let (_, back, restored) = store.load_for_resume(id).await.unwrap().unwrap();
+        assert_eq!(back.len(), transcript.len());
+        assert_eq!(restored, Some(k));
+        let raw: String = side_connection(&dir)
+            .query_row("SELECT checkpoint FROM sessions", [], |r| r.get(0))
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(v["version"], 1);
+        assert_eq!(v["checkpoint"]["through_message"], 3);
+        assert_eq!(v["checkpoint"]["summary"], "the gist");
+        assert_eq!(v["checkpoint"]["generation"], 1);
+        assert_eq!(v["pruned_message_indices"], serde_json::json!([6]));
+    }
+
+    // Given a checkpoint for an unknown session
+    // When it is saved
+    // Then the write fails and nothing is acknowledged
+    #[tokio::test]
+    async fn saving_a_checkpoint_of_an_unknown_session_fails() {
+        let (_dir, store) = temp_store();
+        let err = store
+            .save_checkpoint(Ulid::new(), vec![], &compaction(0, vec![]))
+            .await
+            .unwrap_err();
+        assert!(err.contains("no stored session"), "{err}");
+    }
+
+    // Given a stored checkpoint that does not fit the transcript, or is not JSON
+    // When the session is resumed
+    // Then the resume fails clearly; a NULL checkpoint resumes as before
+    #[tokio::test]
+    async fn an_invalid_checkpoint_fails_the_resume() {
+        let (dir, store) = temp_store();
+        let id = Ulid::new();
+        store.record_session(id, "/w", "m", None).await.unwrap();
+        store.save_transcript(id, exchange(0));
+        store.flush().await.unwrap();
+        assert!(store
+            .load_for_resume(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .2
+            .is_none());
+        let conn = side_connection(&dir);
+        for bad in [
+            "{not json".to_string(),
+            compaction(99, vec![]).to_json(),
+            compaction(0, vec![2])
+                .to_json()
+                .replace("\"version\":1", "\"version\":7"),
+        ] {
+            conn.execute("UPDATE sessions SET checkpoint = ?1", [&bad])
+                .unwrap();
+            let err = store.load_for_resume(id).await.unwrap_err();
+            assert!(err.contains("saved checkpoint"), "{err}");
+            assert!(store.load(id).await.is_err());
+        }
+    }
+
+    // Given a database from before the checkpoint column
+    // When it is opened
+    // Then the nullable column is added and old rows resume without one
+    #[tokio::test]
+    async fn migration_adds_the_checkpoint_column_to_an_old_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("h.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY, workspace TEXT NOT NULL, model TEXT NOT NULL,
+                    profile TEXT, title TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    last_seq INTEGER NOT NULL DEFAULT -1, transcript TEXT
+                 );
+                 CREATE TABLE events (
+                    session_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
+                    envelope TEXT NOT NULL, PRIMARY KEY (session_id, seq)
+                 );
+                 INSERT INTO sessions (id, workspace, model, created_at, updated_at)
+                 VALUES ('01J0000000000000000000000A', '/w', 'm', 't', 't');",
+            )
+            .unwrap();
+        }
+        let store = HistoryStore::open(&path).unwrap();
+        let id = Ulid::from_string("01J0000000000000000000000A").unwrap();
+        let (_, _, compaction) = store.load_for_resume(id).await.unwrap().unwrap();
+        assert!(compaction.is_none());
     }
 }

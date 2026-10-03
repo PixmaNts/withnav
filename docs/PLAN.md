@@ -1,8 +1,10 @@
-# Rust Agent — Layer-0 Meta-Plan (PLAN.md)
+# Navai — Layer-0 Meta-Plan (PLAN.md)
 
-**Status:** Living reference (frozen decisions for the whole build)
+**Status:** Historical: the Phase 1 plan, kept for reference. It is not kept up to date.
+For what the code does today read [`ARCHITECTURE.md`](../ARCHITECTURE.md) (module map and flows) and
+[`CONTEXT.md`](../CONTEXT.md). The notes marked "Today" below correct the facts that changed.
 **Schema version of this document:** 1
-**Authoritative spec:** [`docs/SPEC.md`](SPEC.md) (2233 lines). This PLAN.md is the *engineering
+**Authoritative spec:** [`docs/SPEC.md`](SPEC.md) (the original design; each section carries a status line). This PLAN.md is the *engineering
 anticipation* layer that freezes cross-cutting decisions so later phases add code without
 rewriting earlier work. Where SPEC and PLAN disagree, SPEC wins on requirements; PLAN wins on
 the concrete engineering choice that satisfies the requirement.
@@ -21,12 +23,13 @@ complete merely because types compile.
 
 - **Phase 1 — Single-agent vertical slice.** One headless agent edits a Rust project through
   OmniRoute. Hand-rolled OpenAI SSE core, stream accumulator (text + `reasoning_content` +
-  tool-calls), 5 native tools (`read`/`write`/`edit`/`bash`/`grep`), `ask` control tool,
+  tool-calls), 5 native tools (`read`/`write`/`edit`/`bash`/`grep`; today also `glob` and `fetch`,
+  plus `ask`, and `skill` per session), `ask` control tool,
   `Continue`/`Done`/`Yield` loop with cancellation, CLI `run` + `auth`. **This is the only phase
   decomposed to executable depth right now.**
 - **Phase 2 — Bus, plugins, MCP, server.** Event envelopes + session sequencer + bounded
   subscribers; per-actor inboxes + command routing; move stdout rendering behind an event
-  subscriber; Axum SSE/WebSocket/health API; hook-plugin supervisor (JSON-RPC stdio, RFC-6902
+  subscriber; Axum SSE/health API (the WebSocket route was removed; HTTP and SSE only); hook-plugin supervisor (JSON-RPC stdio, RFC-6902
   patches, deterministic ordering, timeouts, failure policies); MCP via `rmcp`.
 - **Phase 3 — Non-blocking subagents + persistence.** Refactor the loop into a reusable actor
   constructor; `spawn_agent` (returns immediately); parent/child cancellation; event-sourced
@@ -82,7 +85,7 @@ the F2 gate.
 
 | Crate | Concern | Phase |
 |---|---|---|
-| `axum` | SSE/WebSocket/health server API | 2 |
+| `axum` | SSE/health server API (no WebSocket) | 2 |
 | `rmcp` | MCP client transport | 2 |
 | `rusqlite` | 0.40.2 | single-writer event store | 3 |
 | `rusqlite_migration` | 2.6.0 | `user_version` migrations | 3 |
@@ -142,6 +145,11 @@ Carries message finish-reason + usage metadata for the turn result.
 
 Phase-1 files are created now; the rest are the frozen destinations (empty until their phase).
 
+> **Today:** this tree is the Phase 1 plan, not the code. `plugins/`, `persistence/` and `config/`
+> were never created, and there is no `tools/mcp.rs`. Persistence is `session/store.rs`, rules and
+> skills and agent files are in `agent/`, and `session/`, `navigator/`, `tui/`, `paths/` and
+> `settings.rs` exist beyond this map. See [`ARCHITECTURE.md`](../ARCHITECTURE.md).
+
 ```
 src/
 ├── main.rs            # thin bin: clap Cli, tracing init, dispatch (anyhow boundary)   [P1]
@@ -162,13 +170,13 @@ src/
 ├── tools/
 │   ├── mod.rs         # Tool trait + Registry + path safety + bounded output           [P1]
 │   ├── native.rs      # read/write/edit/bash/grep                                      [P1]
-│   ├── control.rs     # ask (spawn_agent/load_skill are P3/P4)                         [P1: ask]
+│   ├── control.rs     # ask; today glob and fetch too, skill is in agent/skills/        [P1: ask]
 │   └── mcp.rs         # MCP client tools                                               [P2]
 ├── bus/               # event envelope, command, inbox, sequencer                      [P2]
 ├── plugins/           # protocol, hooks, supervisor                                    [P2]
 ├── persistence/       # sqlite, migrations, replay                                     [P3]
 ├── config/            # rules, persona, skills, watch                                  [P4]
-├── server/            # routes, sse, websocket                                         [P2]
+├── server/            # routes, sse (no websocket)                                    [P2]
 └── tui/               # client, view                                                   [P4]
 ```
 
@@ -187,7 +195,7 @@ without a second concrete use (SPEC §27). The loop stays legible as one primary
   `tests/`. `proptest` for the SSE chunk-boundary property. `wiremock`/raw `TcpListener` for the
   mock HTTP server. No extra test framework.
 - Every todo has a **happy** and a **failure** QA scenario with the exact `cargo test`/`cargo run`
-  invocation and an evidence path `.omo/evidence/task-<N>-rust-agent-phase1.txt`.
+  invocation and an evidence path `.omo/evidence/task-<N>-navai-phase1.txt`.
 - **Anti-fake rule:** "SSE works" / "it compiles" is never an acceptance criterion. Two DISTINCT
   test suites, never conflated:
   - **SSE framing suite** (provider-agnostic, `provider::sse`): the 13 named framing tests +
@@ -423,7 +431,7 @@ by config/data ROOTS — not deployment tiers.
   machine (or a homelab host such as `pixma-main`). It is an ENVIRONMENT, not a tier. **Isolation
   is CONCRETE and pinned:** a `--config <dir>` / `--data <dir>` override (or explicit
   `XDG_CONFIG_HOME` / `XDG_DATA_HOME`) so a staging run **never touches** the prod
-  `~/.config/rust-agent/auth.json`. Config precedence + per-env data dir are pinned so dev
+  `~/.config/navai/auth.json`. Config precedence + per-env data dir are pinned so dev
   experiments never pollute prod.
 - **prod (personal)** — `cargo build --release`; single binary; loopback only (never a
   non-loopback bind without explicit config, SPEC §20.1); `auth.json` 0600, DB file user-only
@@ -446,8 +454,8 @@ by config/data ROOTS — not deployment tiers.
 ### Config & secret precedence (pinned now)
 
 - **`models.json`** location + precedence: workspace `./models.json` wins over
-  `~/.config/rust-agent/models.json`; `--models <path>` overrides both.
-- **`auth.json`**: file (`~/.config/rust-agent/auth.json`) WINS over the env var named by the
+  `~/.config/navai/models.json`; `--models <path>` overrides both.
+- **`auth.json`**: file (`~/.config/navai/auth.json`) WINS over the env var named by the
   provider's `api_key_env` (default `OMNIROUTE_API_KEY`); `auth set` writes the file. Created
   **atomically with mode 0600 at creation** (`O_CREAT|mode`, not create-then-chmod). An existing
   `auth.json` with looser perms **fails closed** with a clear "fix perms" error — a

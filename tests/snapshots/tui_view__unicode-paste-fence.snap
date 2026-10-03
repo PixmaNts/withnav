@@ -1,0 +1,24 @@
+---
+source: tests/tui_view.rs
+expression: snapshot
+---
+ ◆ navai  ▌build  cognition · cc/claude-opus-5-5 · — / 200k 
+────────────────────────────────────────────────────────────
+ │ YOU                                                      
+ │  你 好  é 👩‍💻  café                                          
+ │                                                          
+ │ ASSISTANT                                                
+ │  ```rust                                                 
+ │  fn main() { println!("hi"); }                           
+ │  ```                                                     
+ │                                                          
+                                                            
+                                                            
+                                                            
+────────────────────────────────────────────────────────────
+ ready                                        session — tok 
+┌ Message ─────────────────────────────────────────────────┐
+│line one                                                  │
+│line two                                                  │
+└──────────────────────────────────────────────────────────┘
+ enter send · alt+enter newline · ctrl+p palette · esc stop

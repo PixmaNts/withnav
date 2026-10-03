@@ -1,0 +1,24 @@
+---
+source: tests/tui_view.rs
+expression: snapshot
+---
+ ◆ navai  ▌build  cognition · cc/claude-opus-5-5 · — / 200k 
+────────────────────────────────────────────────────────────
+ │ YOU                                                      
+ │  Why is this failing?                                    
+ │                                                          
+ │ ASSISTANT                                                
+ │ ▸ Reasoning                                              
+ │  Checking the parser as tokens arrive…                   
+ │                                                          
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+────────────────────────────────────────────────────────────
+ ◐ running                                    session — tok 
+┌ Message ─────────────────────────────────────────────────┐
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model

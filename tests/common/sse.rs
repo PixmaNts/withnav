@@ -21,6 +21,22 @@ pub fn sse_body(events: &[&str]) -> String {
     b
 }
 
+/// A streamed assistant turn that calls tool `name` with the JSON `args`.
+pub fn tool_call_chunk(id: &str, name: &str, args: &Value) -> String {
+    serde_json::json!({"choices": [{"index": 0, "finish_reason": "tool_calls", "delta": {
+        "tool_calls": [{"index": 0, "id": id, "function": {
+            "name": name, "arguments": args.to_string(),
+        }}],
+    }}]})
+    .to_string()
+}
+
+/// A streamed assistant turn that answers with `text` and stops.
+pub fn text_chunk(text: &str) -> String {
+    serde_json::json!({"choices": [{"index": 0, "finish_reason": "stop", "delta": {"content": text}}]})
+        .to_string()
+}
+
 /// The raw HTTP/1.1 response a scripted TCP provider writes for `body`.
 pub fn http_sse(body: &str) -> Vec<u8> {
     format!(
@@ -122,6 +138,125 @@ pub async fn spawn_responding_provider(
         }
     });
     CapturingProvider {
+        url: format!("http://{addr}/v1"),
+        requests,
+    }
+}
+
+/// Like [`spawn_capturing_provider`], but the first answer is held back
+/// until `release` is notified, so a test can act while a turn is running.
+pub async fn spawn_gated_provider(
+    responses: Vec<Vec<u8>>,
+    release: Arc<tokio::sync::Notify>,
+) -> CapturingProvider {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock bind");
+    let addr = listener.local_addr().expect("mock addr");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = requests.clone();
+    tokio::spawn(async move {
+        for (i, response) in responses.into_iter().enumerate() {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                break;
+            };
+            let request = read_http_request(&mut sock).await;
+            captured.lock().expect("requests").push(request);
+            if i == 0 {
+                release.notified().await;
+            }
+            let _ = sock.write_all(&response).await;
+            let _ = sock.flush().await;
+            let _ = sock.shutdown().await;
+        }
+    });
+    CapturingProvider {
+        url: format!("http://{addr}/v1"),
+        requests,
+    }
+}
+
+/// Like [`spawn_responding_provider`], but the answer to request `hold` is
+/// held back until `release` is notified, so a test can act while that
+/// request (a summary, say) is in flight. `reached` is notified once the
+/// held request has arrived.
+pub async fn spawn_holding_provider(
+    count: usize,
+    hold: usize,
+    reached: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    respond: impl Fn(usize, &str) -> Vec<u8> + Send + 'static,
+) -> CapturingProvider {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock bind");
+    let addr = listener.local_addr().expect("mock addr");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = requests.clone();
+    tokio::spawn(async move {
+        for i in 0..count {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                break;
+            };
+            let request = read_http_request(&mut sock).await;
+            let response = respond(i, &request);
+            captured.lock().expect("requests").push(request);
+            if i == hold {
+                reached.notify_one();
+                release.notified().await;
+            }
+            let _ = sock.write_all(&response).await;
+            let _ = sock.flush().await;
+            let _ = sock.shutdown().await;
+        }
+    });
+    CapturingProvider {
+        url: format!("http://{addr}/v1"),
+        requests,
+    }
+}
+
+/// A provider whose answers the test writes piece by piece: every request it accepts comes out
+/// of `requests` as its body and a sender; each string sent is written as one SSE `data:` frame,
+/// and dropping the sender ends the answer with `[DONE]`.
+pub struct StreamingProvider {
+    pub url: String,
+    pub requests: tokio::sync::mpsc::Receiver<(String, tokio::sync::mpsc::UnboundedSender<String>)>,
+}
+
+pub async fn spawn_streaming_provider() -> StreamingProvider {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock bind");
+    let addr = listener.local_addr().expect("mock addr");
+    let (tx, requests) = tokio::sync::mpsc::channel(16);
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let request = read_http_request(&mut sock).await;
+                let (chunks, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                if tx.send((request, chunks)).await.is_err() {
+                    return;
+                }
+                let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+                if sock.write_all(head.as_bytes()).await.is_err() {
+                    return;
+                }
+                while let Some(chunk) = rx.recv().await {
+                    let frame = format!("data: {chunk}\n\n");
+                    if sock.write_all(frame.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    let _ = sock.flush().await;
+                }
+                let _ = sock.write_all(b"data: [DONE]\n\n").await;
+                let _ = sock.flush().await;
+                let _ = sock.shutdown().await;
+            });
+        }
+    });
+    StreamingProvider {
         url: format!("http://{addr}/v1"),
         requests,
     }

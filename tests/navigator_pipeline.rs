@@ -6,9 +6,9 @@
 
 use std::collections::BTreeMap;
 
-use rust_agent::navigator::pipeline::{Pipeline, PipelineSnapshot, SnapshotSource};
-use rust_agent::navigator::ports::Answer;
-use rust_agent::navigator::{TriggerInputs, TriggerKind};
+use navai::navigator::pipeline::{Pipeline, PipelineSnapshot, SnapshotSource};
+use navai::navigator::ports::Answer;
+use navai::navigator::{TriggerInputs, TriggerKind};
 use tokio_util::sync::CancellationToken;
 
 mod common;
@@ -61,7 +61,7 @@ fn prompts() -> BTreeMap<String, String> {
     ])
 }
 
-fn snapshot_with(toml: &str) -> Result<PipelineSnapshot, rust_agent::navigator::PipelineError> {
+fn snapshot_with(toml: &str) -> Result<PipelineSnapshot, navai::navigator::PipelineError> {
     PipelineSnapshot::from_parts(toml, prompts(), SnapshotSource::Builtin)
 }
 
@@ -77,6 +77,8 @@ fn inputs(changed: i64) -> TriggerInputs {
     TriggerInputs {
         changed_lines: changed,
         since_last_remark_ms: 120_000,
+        since_last_wake_ms: 120_000,
+        called_for_help: false,
         has_errors: false,
         has_intent: true,
         has_conversation: false,
@@ -111,7 +113,7 @@ fn valid_pipeline_loads() {
 /// error out.
 #[test]
 fn a_bad_pipeline_is_rejected_at_load() {
-    use rust_agent::navigator::PipelineError;
+    use navai::navigator::PipelineError;
 
     // (case, toml, state prompt override, is a TOML parse error, message fragment)
     let cases: Vec<(&str, String, Option<&str>, bool, &str)> = vec![
@@ -527,18 +529,27 @@ fn builtin_default_pipeline_loads_and_is_the_spec_shape() {
     let triggers = snap.triggers();
     assert_eq!(triggers.len(), 2);
     assert_eq!(triggers[0].on.len(), 2);
-    assert_eq!(triggers[0].prefilters.min_changed_lines, 3);
-    assert_eq!(triggers[0].prefilters.cooldown_ms, 45_000);
-    assert_eq!(triggers[0].questions.len(), 4);
+    assert_eq!(triggers[0].prefilters.min_changed_lines, 1);
+    assert_eq!(triggers[0].prefilters.cooldown_ms, 0);
+    assert_eq!(triggers[0].questions.len(), 6);
+    assert!(triggers[0].questions.contains_key("unfinished"));
+    assert!(triggers[0].questions.contains_key("stuck"));
     assert!(triggers[0]
         .questions
         .contains_key("contradicts_conversation"));
     let specs = triggers[0].branch_specs();
-    assert_eq!(specs.len(), 3);
-    assert_eq!(specs[0].0.as_str(), "wake_cognition");
-    assert_eq!(specs[1].0.as_str(), "remark");
-    assert_eq!(specs[1].1, Some("prompts/remark.md"));
-    assert_eq!(specs[2].0.as_str(), "silent");
+    assert_eq!(specs.len(), 5);
+    assert_eq!(specs[0].0.as_str(), "remark");
+    assert_eq!(specs[0].1, Some("prompts/help_remark.md"));
+    assert_eq!(specs[1].0.as_str(), "wake_cognition", "stuck");
+    assert_eq!(
+        specs[2].0.as_str(),
+        "wake_cognition",
+        "drift or contradiction"
+    );
+    assert_eq!(specs[3].0.as_str(), "remark");
+    assert_eq!(specs[3].1, Some("prompts/remark.md"));
+    assert_eq!(specs[4].0.as_str(), "silent");
 
     // The conversation trigger: one question, a remark or silence.
     assert_eq!(triggers[1].on, vec![TriggerKind::Conversation]);
@@ -609,4 +620,277 @@ async fn builtin_conversation_trigger_ignores_changed_lines_and_remarks_on_contr
         .await
         .unwrap();
     assert_eq!(eval.prefilter.skip_reason(), Some("cooldown"));
+}
+
+// ---------- built-in pipeline: wake guard, wake cooldown, routing ----------
+
+fn builtin_answers(worth: f64, route: &str, drift: f64) -> BTreeMap<String, Answer> {
+    BTreeMap::from([
+        ("worth_attention".to_string(), Answer::Noul { noul: worth }),
+        (
+            "route".to_string(),
+            Answer::Choice {
+                choice: route.to_string(),
+                probabilities: BTreeMap::from([(route.to_string(), 0.9)]),
+                confidence: 0.9,
+            },
+        ),
+        ("drift".to_string(), Answer::Noul { noul: drift }),
+        (
+            "contradicts_conversation".to_string(),
+            Answer::Noul { noul: 0.1 },
+        ),
+        ("unfinished".to_string(), Answer::Noul { noul: 0.1 }),
+        ("stuck".to_string(), Answer::Noul { noul: 0.1 }),
+    ])
+}
+
+/// `answers` with the noul question `name` set to `value`.
+fn with_noul(
+    mut answers: BTreeMap<String, Answer>,
+    name: &str,
+    value: f64,
+) -> BTreeMap<String, Answer> {
+    answers.insert(name.to_string(), Answer::Noul { noul: value });
+    answers
+}
+
+async fn builtin_action(answers: BTreeMap<String, Answer>, i: TriggerInputs) -> String {
+    let pipeline = Pipeline::new(PipelineSnapshot::builtin().unwrap());
+    let model = ScriptedDecision::fixed(answers);
+    let eval = pipeline
+        .evaluate(
+            TriggerKind::Save,
+            i,
+            &tvars(),
+            &model,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    eval.requested_action.as_str().to_string()
+}
+
+/// Compile errors are no criterion: the instinct judges whether the edit is
+/// unfinished (still being typed) or the driver stuck. With errors and a high
+/// drift the navigator wakes unless the edit is unfinished.
+#[tokio::test]
+async fn builtin_judges_unfinished_edits_not_compile_errors() {
+    let mut with_errors = inputs(5);
+    with_errors.has_errors = true;
+    let drifting = builtin_answers(0.5, "silent", 0.95);
+
+    assert_eq!(
+        builtin_action(drifting.clone(), with_errors).await,
+        "wake_cognition",
+        "errors present, drift high, edit finished: wake"
+    );
+    let unfinished = with_noul(drifting, "unfinished", 0.9);
+    assert_eq!(
+        builtin_action(unfinished, with_errors).await,
+        "silent",
+        "the edit is still being typed"
+    );
+
+    // The remark branch is not gated by it: unfinished code can still
+    // merit a concrete local correction.
+    let worth_it = builtin_answers(0.95, "cognition", 0.3);
+    assert_eq!(
+        builtin_action(worth_it.clone(), with_errors).await,
+        "remark"
+    );
+    for unfinished in [0.5, 0.9] {
+        assert_eq!(
+            builtin_action(
+                with_noul(worth_it.clone(), "unfinished", unfinished),
+                with_errors
+            )
+            .await,
+            "remark",
+            "unfinished at {unfinished}"
+        );
+    }
+}
+
+/// The remark branch carries the remark rate limit itself (45 s), so the
+/// wake branch never waits on it.
+#[tokio::test]
+async fn builtin_remark_branch_has_the_remark_cooldown_and_a_wake_ignores_it() {
+    let worth_it = builtin_answers(0.95, "cognition", 0.3);
+    let mut recent = inputs(5);
+    recent.since_last_remark_ms = 44_999;
+    assert_eq!(builtin_action(worth_it.clone(), recent).await, "silent");
+    recent.since_last_remark_ms = 45_000;
+    assert_eq!(builtin_action(worth_it, recent).await, "remark");
+
+    // A wake right after a remark is not skipped.
+    let drifting = builtin_answers(0.95, "cognition", 0.95);
+    let mut after_remark = inputs(5);
+    after_remark.since_last_remark_ms = 1_000;
+    assert_eq!(
+        builtin_action(drifting.clone(), after_remark).await,
+        "wake_cognition"
+    );
+    // ... and still needs the edit to be finished.
+    let typing = with_noul(drifting, "unfinished", 0.9);
+    assert_eq!(builtin_action(typing, after_remark).await, "silent");
+}
+
+/// A one-line addition, replacement or deletion passes the size pre-filter
+/// and reaches the instinct; an unchanged text still does not.
+#[tokio::test]
+async fn builtin_one_line_edits_pass_the_size_prefilter() {
+    use navai::navigator::document::count_changed_lines;
+    let base = "a\nb\nc\n";
+    let pipeline = Pipeline::new(PipelineSnapshot::builtin().unwrap());
+    for (what, new) in [
+        ("addition", "a\nb\nc\nd\n"),
+        ("replacement", "a\nB\nc\n"),
+        ("deletion", "a\nc\n"),
+        ("unchanged", base),
+    ] {
+        let mut i = inputs(count_changed_lines(base, new) as i64);
+        // A remark was just written: the save/idle pre-filter has no cooldown.
+        i.since_last_remark_ms = 1_000;
+        let eval = pipeline
+            .evaluate(
+                TriggerKind::Save,
+                i,
+                &tvars(),
+                &ScriptedDecision::fixed(builtin_answers(0.1, "silent", 0.1)),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let expected = (what == "unchanged").then_some("too_few_changed_lines");
+        assert_eq!(eval.prefilter.skip_reason(), expected, "{what}");
+    }
+}
+
+/// A stuck driver gets the chat whether the code compiles or not, and even
+/// when the edit looks unfinished; a score at the threshold does not.
+#[tokio::test]
+async fn builtin_wakes_a_stuck_driver_with_or_without_errors() {
+    let stuck = with_noul(builtin_answers(0.1, "silent", 0.1), "stuck", 0.87);
+    let mut with_errors = inputs(5);
+    with_errors.has_errors = true;
+    for i in [inputs(5), with_errors] {
+        assert_eq!(builtin_action(stuck.clone(), i).await, "wake_cognition");
+    }
+    let stuck_and_typing = with_noul(stuck.clone(), "unfinished", 0.9);
+    assert_eq!(
+        builtin_action(stuck_and_typing, with_errors).await,
+        "wake_cognition"
+    );
+    // Intent-less: stuck does not need an intent.
+    let mut no_intent = inputs(5);
+    no_intent.has_intent = false;
+    assert_eq!(builtin_action(stuck, no_intent).await, "wake_cognition");
+
+    let at_threshold = with_noul(builtin_answers(0.1, "silent", 0.1), "stuck", 0.8);
+    assert_eq!(builtin_action(at_threshold, with_errors).await, "silent");
+
+    // The wake has its own cooldown: inside it, stuck falls through.
+    let mut just_woke = inputs(5);
+    just_woke.since_last_wake_ms = 1_000;
+    let stuck_and_worth = with_noul(builtin_answers(0.95, "cognition", 0.1), "stuck", 0.9);
+    assert_eq!(builtin_action(stuck_and_worth, just_woke).await, "remark");
+}
+
+/// Route `cognition` under the wake thresholds is a remark: only `silent`
+/// routing keeps the metacognition quiet.
+#[tokio::test]
+async fn builtin_remarks_on_cognition_route_below_the_wake_thresholds() {
+    for (route, expected) in [
+        ("cognition", "remark"),
+        ("metacognition", "remark"),
+        ("silent", "silent"),
+    ] {
+        assert_eq!(
+            builtin_action(builtin_answers(0.9, route, 0.3), inputs(5)).await,
+            expected,
+            "route {route}"
+        );
+    }
+    // Worth under the threshold stays silent whatever the route.
+    assert_eq!(
+        builtin_action(builtin_answers(0.8, "cognition", 0.3), inputs(5)).await,
+        "silent"
+    );
+}
+
+/// A wake inside its cooldown does not match: the trigger falls through to
+/// the remark branch (or silence) instead of skipping the instinct, and the
+/// remark cooldown plays no part in it.
+#[tokio::test]
+async fn builtin_wake_has_its_own_cooldown() {
+    let drifting = builtin_answers(0.95, "cognition", 0.95);
+    let mut just_woke = inputs(5);
+    just_woke.since_last_wake_ms = 119_999;
+    assert_eq!(
+        builtin_action(drifting.clone(), just_woke).await,
+        "remark",
+        "second wake inside 120 s falls through"
+    );
+    let mut long_ago = inputs(5);
+    long_ago.since_last_wake_ms = 120_000;
+    assert_eq!(builtin_action(drifting, long_ago).await, "wake_cognition");
+
+    let snap = PipelineSnapshot::builtin().unwrap();
+    assert_eq!(snap.triggers()[0].prefilters.wake_cooldown_ms, 120_000);
+    assert_eq!(snap.triggers()[1].prefilters.wake_cooldown_ms, 0);
+}
+
+// ---------- built-in pipeline: an explicit call for help ----------
+
+/// A comment that calls on the navigator is answered with a remark (never a
+/// wake) whatever the instinct's scores, and past a recent remark.
+#[tokio::test]
+async fn builtin_a_call_for_help_bypasses_the_small_change_filter_and_remarks() {
+    let pipeline = Pipeline::new(PipelineSnapshot::builtin().unwrap());
+    let run = |i: TriggerInputs, answers| {
+        let pipeline = pipeline.clone();
+        async move {
+            pipeline
+                .evaluate(
+                    TriggerKind::Idle,
+                    i,
+                    &tvars(),
+                    &ScriptedDecision::fixed(answers),
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap()
+        }
+    };
+
+    // An unchanged text is skipped without paying for the instinct.
+    let mut unchanged = inputs(0);
+    unchanged.since_last_remark_ms = 1_000;
+    let skipped = run(unchanged, builtin_answers(0.1, "silent", 0.1)).await;
+    assert_eq!(
+        skipped.prefilter.skip_reason(),
+        Some("too_few_changed_lines")
+    );
+    assert!(skipped.answers.is_none(), "the instinct is not paid for");
+
+    let mut one_line = inputs(1);
+    one_line.since_last_remark_ms = 1_000;
+
+    one_line.called_for_help = true;
+    // Scores that would be silent, and scores that would wake: both remark.
+    for answers in [
+        builtin_answers(0.1, "silent", 0.1),
+        builtin_answers(0.95, "cognition", 0.95),
+    ] {
+        let eval = run(one_line, answers).await;
+        assert_eq!(eval.prefilter.skip_reason(), None);
+        assert_eq!(eval.requested_action.as_str(), "remark");
+        assert_eq!(eval.branch_index, Some(0));
+    }
+
+    // The conversation trigger has no such bypass.
+    let snap = PipelineSnapshot::builtin().unwrap();
+    assert!(snap.triggers()[0].prefilters.bypass_on_help_call);
+    assert!(!snap.triggers()[1].prefilters.bypass_on_help_call);
 }

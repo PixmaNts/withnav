@@ -1,0 +1,34 @@
+---
+source: tests/tui_view.rs
+expression: snapshot
+---
+ Conversations       │ ◆ navai  ~/dev/project   ▌build  opus · cc/claude-opus-5-5 · high · — / 200k 
+▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
+▌  build · running   │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+            ┌──────────────────────────────── Variant ─────────────────────────────────┐            
+            │ ❯ filter…                                                                │            
+            │ applies next turn                                                        │            
+            │   low                                                                    │            
+            │▌● high                                                                   │            
+            │   max                                                                    │            
+            │   off                 no variant                                         │            
+            │                                                                          │            
+            │ ↑↓ move  enter choose  esc close                                         │            
+            └──────────────────────────────────────────────────────────────────────────┘            
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │──────────────────────────────────────────────────────────────────────────────
+                     │ ◐ running                                                      session — tok 
+                     │┌ Message ───────────────────────────────────────────────────────────────────┐
+ alt+1…9 switch      ││                                                                            │
+ alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
+ alt+b hide bar      │ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model · /compact · esc stop

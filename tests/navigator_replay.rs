@@ -9,9 +9,9 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use rust_agent::navigator::pipeline::Pipeline;
-use rust_agent::navigator::ports::Answer;
-use rust_agent::navigator::replay::{load_candidate, ReplayLog, Replayer};
+use navai::navigator::pipeline::Pipeline;
+use navai::navigator::ports::Answer;
+use navai::navigator::replay::{load_candidate, ReplayLog, Replayer};
 
 mod common;
 use common::navigator::ScriptedDecision;

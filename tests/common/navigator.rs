@@ -13,16 +13,16 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio_util::sync::CancellationToken;
 
-use rust_agent::bus::event::{EventEnvelope, EventKind};
-use rust_agent::error::ProviderError;
-use rust_agent::navigator::conversation::SessionPost;
-use rust_agent::navigator::metacognition::RemarkContext;
-use rust_agent::navigator::ports::{
+use navai::bus::event::{EventEnvelope, EventKind};
+use navai::error::ProviderError;
+use navai::navigator::conversation::SessionPost;
+use navai::navigator::metacognition::RemarkContext;
+use navai::navigator::ports::{
     Answer, Answers, DecisionModel, FimAnswer, FimModel, FimRequest, Metacognition, ModelError,
     Question, Questions, ReflexContextModel, ReflexContextRequest,
 };
-use rust_agent::navigator::{self, NavigatorDeps, Remark};
-use rust_agent::provider::Usage;
+use navai::navigator::{self, NavigatorDeps, Remark};
+use navai::provider::Usage;
 
 // ---------- fixtures ----------
 
@@ -81,6 +81,7 @@ pub enum RemarkAnswer {
 pub struct ScriptedCommenter {
     answers: Arc<Mutex<Vec<RemarkAnswer>>>,
     calls: Arc<Mutex<usize>>,
+    tool_rounds: Arc<Mutex<Vec<usize>>>,
     gate: Option<Arc<CancellationToken>>,
 }
 
@@ -103,12 +104,17 @@ impl ScriptedCommenter {
     pub fn calls(&self) -> usize {
         *self.calls.lock().unwrap()
     }
+
+    /// The tool rounds each call was allowed, in call order.
+    pub fn tool_rounds(&self) -> Vec<usize> {
+        self.tool_rounds.lock().unwrap().clone()
+    }
 }
 
 impl Metacognition for ScriptedCommenter {
     fn remark<'a>(
         &'a self,
-        _ctx: &'a RemarkContext,
+        ctx: &'a RemarkContext,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<Option<Remark>, ModelError>> {
         Box::pin(async move {
@@ -116,6 +122,7 @@ impl Metacognition for ScriptedCommenter {
             // still consumes its answer (it is discarded), like a real LLM
             // request whose tokens are thrown away.
             *self.calls.lock().unwrap() += 1;
+            self.tool_rounds.lock().unwrap().push(ctx.tool_rounds);
             let answer = {
                 let mut answers = self.answers.lock().unwrap();
                 if answers.is_empty() {
@@ -183,7 +190,8 @@ impl ScriptedDecision {
     }
 
     /// Answers every question the way the default pipeline's scenarios need:
-    /// noul 0.9 (worth a remark, drifting), choice `metacognition` when
+    /// noul 0.9 (worth a remark, drifting; but 0.1 for `unfinished` and
+    /// `stuck`), choice `metacognition` when
     /// offered (else the first option), score level 0.
     pub fn routing_to_metacognition() -> Self {
         Self::with_mode(DecisionMode::Routing)
@@ -257,7 +265,14 @@ impl DecisionModel for ScriptedDecision {
                 .unwrap_or_default()),
             DecisionMode::Routing => Ok(questions
                 .iter()
-                .map(|(name, question)| (name.clone(), routed_answer(question)))
+                .map(|(name, question)| {
+                    let answer = match name.as_str() {
+                        // The edit is finished and the driver not stuck.
+                        "unfinished" | "stuck" => Answer::Noul { noul: 0.1 },
+                        _ => routed_answer(question),
+                    };
+                    (name.clone(), answer)
+                })
                 .collect()),
             DecisionMode::Failing(message) => Err(ModelError::Malformed(message.clone())),
         };
@@ -755,6 +770,36 @@ pub fn with_intent_and_feed(
     .unwrap();
     deps.with_conversation(feed)
         .with_dirs(Some(workspace.to_path_buf()), None)
+}
+
+/// A project pipeline under `workspace`: the built-in one with its
+/// `min_changed_lines` replaced, for scenarios about the size pre-filter.
+pub fn with_min_changed_lines(
+    deps: NavigatorDeps,
+    workspace: &Path,
+    lines: usize,
+) -> NavigatorDeps {
+    use navai::navigator::default_pipeline as built_in;
+    let dir = workspace.join(".navigator");
+    std::fs::create_dir_all(dir.join("prompts")).unwrap();
+    let toml = built_in::PIPELINE_TOML.replace(
+        "min_changed_lines = 1",
+        &format!("min_changed_lines = {lines}"),
+    );
+    std::fs::write(dir.join("pipeline.toml"), toml).unwrap();
+    for (name, text) in [
+        ("state.md", built_in::STATE_PROMPT),
+        ("remark.md", built_in::REMARK_PROMPT),
+        ("help_remark.md", built_in::HELP_REMARK_PROMPT),
+        ("conversation_state.md", built_in::CONVERSATION_STATE_PROMPT),
+        (
+            "conversation_remark.md",
+            built_in::CONVERSATION_REMARK_PROMPT,
+        ),
+    ] {
+        std::fs::write(dir.join("prompts").join(name), text).unwrap();
+    }
+    deps.with_dirs(Some(workspace.to_path_buf()), None)
 }
 
 /// A driver message observed by a conversation feed.

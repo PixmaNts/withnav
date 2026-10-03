@@ -14,7 +14,9 @@
 //! after a yield answers the pending `ask`, and a navigator message must
 //! never become that answer. So while the active conversation waits on the
 //! driver, wakes are queued — coalesced, latest wins — and delivered right
-//! after the next driver message has been accepted. A navigator-sourced
+//! after the next driver message has been accepted. (An open permission
+//! request is guarded by the session runtime, not here: it holds a
+//! navigator-sourced message until nothing is pending.) A navigator-sourced
 //! message is also never a conversation trigger: the digest marks it as the
 //! navigator's own words, and the turn it provokes is reported as not
 //! driver-caused, so a wake never becomes a conversation trigger (no
@@ -214,7 +216,7 @@ impl ConversationFeed {
     /// runs a subscriber per navigator session; replays flow through here
     /// too, so a resumed conversation rebuilds its digest and active flag.
     ///
-    /// Of the whole envelope stream only four kinds carry meaning:
+    /// Of the whole envelope stream only a few kinds carry meaning:
     /// `message.received` (who wrote what, and the end of a pending ask),
     /// `llm.response` (the cognition's own words), `agent.yield` (the
     /// cognition now waits on the driver) and `turn.end` (announced to
@@ -369,9 +371,11 @@ impl ConversationFeed {
     }
 
     /// Posts a wake to the active conversation as a navigator-sourced
-    /// message. The ask guard: while the cognition waits on the driver the
+    /// message. The ask guard: while the cognition waits on the driver, the
     /// wake is queued instead (coalesced, latest wins) and delivered by the
-    /// next driver message.
+    /// next driver message. A permission request needs no guard here: the
+    /// session runtime holds a navigator message while a request or an ask
+    /// is pending, and delivers it once the turn has nothing left to wait on.
     pub async fn post_wake(&self, text: &str) -> WakeOutcome {
         let (session_id, post) = {
             let mut state = self.lock();

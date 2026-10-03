@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::ProviderError;
-use crate::provider::config::ProviderConfig;
+use crate::provider::config::{ProviderConfig, Variant, RESERVED_VARIANT_KEYS};
 use crate::provider::Usage;
 
 #[derive(Debug, Clone, Serialize)]
@@ -20,6 +20,22 @@ pub struct ChatRequest {
     pub max_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
+    /// The selected variant's override object, merged shallowly into the
+    /// body. Empty (the default) adds nothing to the wire bytes.
+    #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, Value>,
+}
+
+impl ChatRequest {
+    /// Merges `variant` into the body. A key the request owns is skipped, so
+    /// no key is ever written twice (config loading rejects such variants).
+    pub fn apply_variant(&mut self, variant: &Variant) {
+        for (k, v) in variant {
+            if !RESERVED_VARIANT_KEYS.contains(&k.as_str()) {
+                self.extra.insert(k.clone(), v.clone());
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -153,7 +169,35 @@ pub struct ApiErrorBody {
 }
 
 pub fn build_client(provider: &ProviderConfig) -> Result<reqwest::Client, ProviderError> {
+    build_client_with(provider, reqwest::redirect::Policy::default())
+}
+
+/// A client that follows only same-origin redirects (same scheme, host and
+/// port, at most three), so credentials and custom headers never reach
+/// another origin.
+fn build_same_origin_client(provider: &ProviderConfig) -> Result<reqwest::Client, ProviderError> {
+    build_client_with(
+        provider,
+        reqwest::redirect::Policy::custom(|attempt| {
+            let same = attempt
+                .previous()
+                .last()
+                .is_some_and(|p| p.origin() == attempt.url().origin());
+            if same && attempt.previous().len() <= 3 {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }),
+    )
+}
+
+fn build_client_with(
+    provider: &ProviderConfig,
+    redirect: reqwest::redirect::Policy,
+) -> Result<reqwest::Client, ProviderError> {
     reqwest::Client::builder()
+        .redirect(redirect)
         .connect_timeout(Duration::from_millis(provider.connect_timeout_ms))
         // Total deadline covering send and body: the configured
         // request_timeout_ms must actually be applied to the client.
@@ -191,6 +235,7 @@ pub fn build_request(
 #[derive(Default)]
 pub struct ClientCache {
     clients: std::sync::Mutex<std::collections::HashMap<(String, u64, u64), reqwest::Client>>,
+    same_origin: std::sync::Mutex<std::collections::HashMap<(String, u64, u64), reqwest::Client>>,
 }
 
 impl ClientCache {
@@ -217,6 +262,27 @@ impl ClientCache {
             return Ok(c.clone());
         }
         let built = build_client(provider)?;
+        clients.insert(key, built.clone());
+        Ok(built)
+    }
+
+    /// [`Self::get`] for a client that never follows a redirect to another
+    /// origin (see [`build_same_origin_client`]).
+    pub fn get_same_origin(
+        &self,
+        provider_name: &str,
+        provider: &ProviderConfig,
+    ) -> Result<reqwest::Client, ProviderError> {
+        let key = (
+            provider_name.to_string(),
+            provider.connect_timeout_ms,
+            provider.request_timeout_ms,
+        );
+        let mut clients = self.same_origin.lock().expect("client cache poisoned");
+        if let Some(c) = clients.get(&key) {
+            return Ok(c.clone());
+        }
+        let built = build_same_origin_client(provider)?;
         clients.insert(key, built.clone());
         Ok(built)
     }
@@ -292,6 +358,7 @@ mod tests {
             headers: Default::default(),
             connect_timeout_ms: 100,
             request_timeout_ms: 250,
+            catalog_format: None,
         };
         let cache = ClientCache::new();
         let _ = cache.get("p", &provider).unwrap();
@@ -331,6 +398,7 @@ mod tests {
             headers: Default::default(),
             connect_timeout_ms: 1_000,
             request_timeout_ms,
+            catalog_format: None,
         }
     }
 

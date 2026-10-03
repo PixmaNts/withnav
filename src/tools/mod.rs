@@ -86,6 +86,21 @@ impl ToolResult {
         }
     }
 
+    /// A call a driver refused: the model reads `message` back.
+    pub fn permission_denied(message: impl Into<String>) -> Self {
+        Self {
+            status: ToolStatus::Denied,
+            output: String::new(),
+            truncated: None,
+            error: Some(ToolErrorObj {
+                code: "permission_denied".into(),
+                plugin_id: None,
+                message: message.into(),
+            }),
+            metadata: Value::Null,
+        }
+    }
+
     pub fn interrupted() -> Self {
         Self {
             status: ToolStatus::Interrupted,

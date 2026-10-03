@@ -89,6 +89,16 @@ impl PermissionRequest {
     }
 }
 
+/// Why a decision was not applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PermissionError {
+    /// No permission request with that id is waiting: it was already
+    /// answered, it was settled by a stop or a new message, or it never
+    /// existed.
+    #[error("no such permission request is waiting")]
+    Stale,
+}
+
 /// What a grant allows: `write` and `edit` share one capability, `bash` and
 /// `fetch` each have their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

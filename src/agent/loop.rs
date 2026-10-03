@@ -1,6 +1,8 @@
 use crate::agent::actor::{AgentActor, AgentState, PendingInteraction};
 use crate::agent::context::Breakdown;
-use crate::agent::permissions::{needs_permission, PermissionRequest};
+use crate::agent::permissions::{
+    needs_permission, PermissionDecision, PermissionError, PermissionRequest,
+};
 use crate::agent::prompt::{assistant_history_message, build_request};
 use crate::agent::response::{classify, HumanRequest, StepOutcome};
 use crate::error::{AgentError, ProviderError};
@@ -147,6 +149,84 @@ pub async fn run_agent(
 
     actor.state = AgentState::Yielded;
     Ok(RunOutcome::StepBudgetExhausted)
+}
+
+/// Why [`resolve_permission`] did not resume the turn.
+#[derive(Debug, thiserror::Error)]
+pub enum ResolveError {
+    /// The decision matched nothing waiting: nothing was run or recorded.
+    #[error(transparent)]
+    Rejected(#[from] PermissionError),
+    /// The turn resumed and then failed.
+    #[error(transparent)]
+    Agent(#[from] AgentError),
+}
+
+/// Applies a driver's `decision` on the permission request `request_id`, then
+/// carries the turn on, BEFORE any new model request:
+///
+/// * `AllowOnce` / `AllowFolder`: the held call runs exactly once and its real
+///   result is appended (`AllowFolder` also records the grant first);
+/// * `Deny`: nothing runs; a `denied` result with code `permission_denied`
+///   and the driver's message is appended.
+///
+/// The calls that were behind it then go through the gate in order (any of
+/// them may ask again: the outcome is then `PermissionRequired`), and once
+/// all are settled the turn continues as [`run_agent`] does.
+///
+/// `request_id` must be the id of the request the actor waits on; a stale or
+/// repeated id is [`PermissionError::Stale`] and changes nothing.
+pub async fn resolve_permission(
+    actor: &mut AgentActor,
+    request_id: ulid::Ulid,
+    decision: PermissionDecision,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+) -> Result<RunOutcome, ResolveError> {
+    match &actor.pending {
+        Some(PendingInteraction::Permission { request, .. }) if request.id == request_id => {}
+        Some(PendingInteraction::Permission { .. }) | Some(PendingInteraction::Ask { .. }) => {
+            return Err(PermissionError::Stale.into());
+        }
+        None => return Err(PermissionError::Stale.into()),
+    }
+    let Some(PendingInteraction::Permission {
+        request,
+        call,
+        remaining_calls,
+    }) = actor.pending.take()
+    else {
+        return Err(PermissionError::Stale.into());
+    };
+    actor.state = AgentState::Running;
+
+    if actor.cancel.is_cancelled() {
+        append_interrupted(actor, &call.id);
+        for rest in &remaining_calls {
+            append_interrupted(actor, &rest.id);
+        }
+        actor.state = AgentState::Idle;
+        return Ok(RunOutcome::Interrupted);
+    }
+    match decision {
+        PermissionDecision::AllowOnce | PermissionDecision::AllowFolder => {
+            if decision == PermissionDecision::AllowFolder {
+                actor
+                    .grants
+                    .grant(&request.agent, &request.tool, request.scope.clone());
+            }
+            let result = execute_call(actor, &call, observe).await;
+            append_tool_result(actor, &call.id, &result);
+        }
+        PermissionDecision::Deny { message } => {
+            append_tool_result(actor, &call.id, &ToolResult::permission_denied(message));
+        }
+    }
+    match run_calls(actor, remaining_calls, observe).await {
+        Calls::Finished => {}
+        Calls::Interrupted => return Ok(RunOutcome::Interrupted),
+        Calls::Permission(request) => return Ok(RunOutcome::PermissionRequired(request)),
+    }
+    Ok(run_agent(actor, observe).await?)
 }
 
 /// How a pass over a message's tool calls ended.
@@ -719,5 +799,232 @@ mod tests {
         assert!(matches!(outcome, RunOutcome::Done(_)));
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
         assert!(!actor.has_pending());
+    }
+
+    /// A build actor with a scripted provider, yielded on a pending `write`
+    /// of `a.txt` followed by a second `write` of `b.txt` in the same message.
+    /// Returns the two targets and the mock server.
+    async fn yielded_on_two_writes(
+        then: Vec<Vec<u8>>,
+    ) -> (
+        AgentActor,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        MockServer,
+    ) {
+        let mut actor = make_actor(
+            "http://127.0.0.1:1/v1".into(),
+            registry_gated(),
+            CancellationToken::new(),
+        );
+        as_build(&mut actor);
+        let ws = actor.tool_context.workspace.canonicalize().unwrap();
+        let (a, b) = (ws.join("a.txt"), ws.join("sub").join("b.txt"));
+        let mut responses = vec![http_sse(&sse_body(&[&calls_chunk(&[
+            (
+                "w1",
+                "write",
+                serde_json::json!({"path": a, "content": "A"}),
+            ),
+            (
+                "w2",
+                "write",
+                serde_json::json!({"path": b, "content": "B"}),
+            ),
+        ])]))];
+        responses.extend(then);
+        let server = spawn_mock(responses).await;
+        actor.provider.base_url = server.url.clone();
+        actor.push_user("go");
+        let mut noop = |_e: AgentEvent| {};
+        let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
+        assert!(matches!(outcome, RunOutcome::PermissionRequired(_)));
+        (actor, a, b, server)
+    }
+
+    fn pending_id(actor: &AgentActor) -> ulid::Ulid {
+        actor.pending_permission().unwrap().id
+    }
+
+    #[tokio::test]
+    async fn allow_once_runs_that_call_once_then_asks_again_for_the_sibling() {
+        let (mut actor, a, b, server) = yielded_on_two_writes(vec![]).await;
+        let first = pending_id(&actor);
+        let mut precalls = Vec::new();
+        let mut observe = |e: AgentEvent| {
+            if let AgentEvent::PreCall { tool_call_id, .. } = e {
+                precalls.push(tool_call_id.to_string());
+            }
+        };
+        let outcome = resolve_permission(
+            &mut actor,
+            first,
+            PermissionDecision::AllowOnce,
+            &mut observe,
+        )
+        .await
+        .unwrap();
+        let RunOutcome::PermissionRequired(second) = outcome else {
+            panic!("the sibling write must ask again");
+        };
+        assert_eq!(second.tool_call_id, "w2");
+        assert_ne!(second.id, first);
+        assert_eq!(precalls, ["w1"]);
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "A");
+        assert!(!b.exists());
+        assert_eq!(tool_result_of(&actor, "w1").unwrap(), "wrote 1 bytes");
+        assert_eq!(tool_result_of(&actor, "w2"), None);
+        // No model request was made by the resume.
+        assert_eq!(server.requests.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn allow_folder_lets_the_sibling_through_and_the_turn_continues() {
+        let done = http_sse(&sse_body(&[&text_chunk("all written")]));
+        let (mut actor, a, b, server) = yielded_on_two_writes(vec![done]).await;
+        let id = pending_id(&actor);
+        let mut noop = |_e: AgentEvent| {};
+        let outcome =
+            resolve_permission(&mut actor, id, PermissionDecision::AllowFolder, &mut noop)
+                .await
+                .unwrap();
+        // `a.txt` sits in the workspace, `sub/b.txt` below it: one grant.
+        assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "all written"));
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "A");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "B");
+        assert!(!actor.has_pending());
+        let requests = server.requests.lock().await;
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].contains("\"tool_call_id\":\"w1\""));
+        assert!(requests[1].contains("\"tool_call_id\":\"w2\""));
+    }
+
+    #[tokio::test]
+    async fn deny_appends_a_denied_result_and_goes_on_with_the_siblings() {
+        let done = http_sse(&sse_body(&[&text_chunk("understood")]));
+        let (mut actor, a, _b, _server) = yielded_on_two_writes(vec![done]).await;
+        let first = pending_id(&actor);
+        let mut noop = |_e: AgentEvent| {};
+        let outcome = resolve_permission(
+            &mut actor,
+            first,
+            PermissionDecision::Deny {
+                message: "not in this repo".into(),
+            },
+            &mut noop,
+        )
+        .await
+        .unwrap();
+        // The sibling is gated on its own and asks.
+        let RunOutcome::PermissionRequired(second) = outcome else {
+            panic!("the sibling write must ask");
+        };
+        assert!(!a.exists(), "a denied call never runs");
+        let denied: serde_json::Value =
+            serde_json::from_str(&tool_result_of(&actor, "w1").unwrap()).unwrap();
+        assert_eq!(denied["status"], "denied");
+        assert_eq!(denied["error"]["code"], "permission_denied");
+        assert_eq!(denied["error"]["message"], "not in this repo");
+
+        let outcome = resolve_permission(
+            &mut actor,
+            second.id,
+            PermissionDecision::Deny {
+                message: "no".into(),
+            },
+            &mut noop,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "understood"));
+    }
+
+    #[tokio::test]
+    async fn a_stale_wrong_or_repeated_request_id_is_rejected_and_changes_nothing() {
+        let done = http_sse(&sse_body(&[&text_chunk("ok")]));
+        let (mut actor, a, _b, _server) = yielded_on_two_writes(vec![done]).await;
+        let id = pending_id(&actor);
+        let before = actor.transcript.len();
+        let mut noop = |_e: AgentEvent| {};
+
+        let wrong = ulid::Ulid::new();
+        let rejected =
+            resolve_permission(&mut actor, wrong, PermissionDecision::AllowOnce, &mut noop).await;
+        assert!(matches!(
+            rejected,
+            Err(ResolveError::Rejected(PermissionError::Stale))
+        ));
+        assert_eq!(actor.transcript.len(), before);
+        assert_eq!(pending_id(&actor), id, "the real request still waits");
+        assert!(!a.exists());
+
+        resolve_permission(&mut actor, id, PermissionDecision::AllowOnce, &mut noop)
+            .await
+            .unwrap();
+        // The same id again: it was answered already.
+        let again =
+            resolve_permission(&mut actor, id, PermissionDecision::AllowOnce, &mut noop).await;
+        assert!(matches!(
+            again,
+            Err(ResolveError::Rejected(PermissionError::Stale))
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_idle_actor_or_a_pending_ask_rejects_any_decision() {
+        let mut actor = make_actor(
+            "http://127.0.0.1:1/v1".into(),
+            registry_gated(),
+            CancellationToken::new(),
+        );
+        let mut noop = |_e: AgentEvent| {};
+        let idle = resolve_permission(
+            &mut actor,
+            ulid::Ulid::new(),
+            PermissionDecision::AllowOnce,
+            &mut noop,
+        )
+        .await;
+        assert!(matches!(idle, Err(ResolveError::Rejected(_))));
+
+        actor.pending = Some(PendingInteraction::Ask {
+            tool_call_id: "ask_1".into(),
+        });
+        let asked = resolve_permission(
+            &mut actor,
+            ulid::Ulid::new(),
+            PermissionDecision::AllowOnce,
+            &mut noop,
+        )
+        .await;
+        assert!(matches!(asked, Err(ResolveError::Rejected(_))));
+        assert!(matches!(
+            actor.pending,
+            Some(PendingInteraction::Ask { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn user_text_never_answers_a_permission_and_settles_its_calls() {
+        let (mut actor, a, b, _server) = yielded_on_two_writes(vec![]).await;
+        actor.push_user("yes, go ahead");
+        assert!(!actor.has_pending());
+        assert!(!a.exists() && !b.exists(), "text is never an approval");
+        assert_eq!(tool_result_of(&actor, "w1").unwrap(), "");
+        assert_eq!(tool_result_of(&actor, "w2").unwrap(), "");
+        assert!(matches!(
+            actor.transcript.last(),
+            Some(ChatMessage::User { content }) if content == "yes, go ahead"
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_stop_settles_every_held_call_as_interrupted() {
+        let (mut actor, a, b, _server) = yielded_on_two_writes(vec![]).await;
+        actor.interrupt_pending_permission();
+        assert!(!actor.has_pending());
+        assert!(!a.exists() && !b.exists());
+        assert!(tool_result_of(&actor, "w1").is_some());
+        assert!(tool_result_of(&actor, "w2").is_some());
     }
 }

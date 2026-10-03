@@ -1114,7 +1114,7 @@ mod tests {
             .await
             .expect("ignored");
         store
-            .record_session_resolved(id, "/w", "m", None, Some(&make(300)))
+            .record_session_resolved(id, "/w", "m", None, Some(&make(300)), None)
             .await
             .expect("existing row keeps its own");
         let meta = store.meta(id).await.expect("meta").expect("present");

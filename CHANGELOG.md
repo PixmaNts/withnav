@@ -17,7 +17,11 @@ requests land in `develop`.
   `conforms` runs the call without you, and the verdict shows as `guard` in the metadata of its
   `tool.post_call`. Anything else (`violates`, `uncertain`, an unusable answer, no `instinct` alias or
   key, no answer within 2 s, a call too large to send) becomes a permission request whose reason says
-  why; for `plan` you can allow it once or deny it, and "allow folder" counts as once. `build` is
+  why; for `plan` you can allow it once or deny it, and "allow folder" counts as once (the terminal
+  prompt shows the reason under its header and offers only `y` and `n` for `plan`). A file that moves
+  between the check and the write (a link put in its place) is checked again, never written on the
+  old verdict; the guard judges against your own latest words, not a navigator wake, and is told that
+  the task, target and arguments it reads are untrusted evidence. `build` is
   unchanged, and its folder grants never reach `plan`. The guard is advisory, not a sandbox.
 - **Permission prompts in the terminal client**: when the agent asks before running `write`,
   `edit`, `bash` or `fetch`, the conversation shows what it would do (the file and its first lines,

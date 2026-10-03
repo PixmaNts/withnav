@@ -906,6 +906,7 @@ async fn a_permission_prompt_allows_with_y_and_denies_with_n_and_a_reason() {
         open_request(rt).is_some() && rt.editor.text().is_empty()
     })
     .await;
+    screen(&mut rt);
     type_keys(&mut rt, "nkeep the folder clean⏎");
     until("the answer after the denial", &mut rt, |_, rt| {
         has_final(rt, "Understood.")

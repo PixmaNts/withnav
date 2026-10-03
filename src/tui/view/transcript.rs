@@ -224,6 +224,7 @@ fn block_text(
     Text::from(lines)
 }
 
+/// Draws the transcript; returns the open permission request whose keys line is on screen.
 pub fn draw(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -231,10 +232,12 @@ pub fn draw(
     ui: &UiState,
     theme: &Theme,
     cache: &mut MarkdownCache,
-) {
+) -> Option<String> {
     if area.width < 4 || area.height == 0 {
-        return;
+        return None;
     }
+    let open = state.open_permission().map(|p| p.request_id.as_str());
+    let mut shown = None;
     let width = area.width.saturating_sub(3);
     let blocks: Vec<_> = state
         .conversation
@@ -348,6 +351,14 @@ pub fn draw(
     for (block, height) in blocks {
         let from = cursor;
         cursor += height;
+        if let BlockKind::Permission(p) = &block.kind {
+            // The keys line is the prompt's last; a blank row follows it.
+            let keys_row = cursor.saturating_sub(2);
+            if open == Some(p.request_id.as_str()) && (start..start + viewport).contains(&keys_row)
+            {
+                shown = Some(p.request_id.clone());
+            }
+        }
         if cursor <= start || from >= start + viewport {
             continue;
         }
@@ -402,4 +413,5 @@ pub fn draw(
             rect,
         );
     }
+    shown
 }

@@ -1970,6 +1970,7 @@ fn n_asks_for_a_message_then_enter_denies_with_it() {
     ));
     let mut ui = UiState {
         follow_bottom: true,
+        prompt_shown: Some("R1".into()),
         ..UiState::default()
     };
     let mut editor = Editor::new();
@@ -2043,6 +2044,7 @@ fn a_deny_message_does_not_carry_over_to_the_next_request() {
     let s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
     let mut ui = UiState {
         follow_bottom: true,
+        prompt_shown: Some("R1".into()),
         ..UiState::default()
     };
     let mut editor = Editor::new();
@@ -2062,16 +2064,23 @@ fn a_deny_message_does_not_carry_over_to_the_next_request() {
     );
     assert_eq!(ui.deny_message, None);
     // a paste is not added to R1's message either
-    let mut ui = UiState::default();
+    let mut ui = UiState {
+        prompt_shown: Some("R1".into()),
+        ..UiState::default()
+    };
     let mut editor = Editor::new();
     keys("nold", &s, &mut ui, &mut editor);
     route_paste("pasted".into(), &s2, &mut ui, &mut editor);
     assert_eq!(ui.deny_message, None);
     assert_eq!(editor.text(), "pasted", "it goes to the editor");
     // on R2, n starts a message of its own
-    let mut ui = UiState::default();
+    let mut ui = UiState {
+        prompt_shown: Some("R1".into()),
+        ..UiState::default()
+    };
     let mut editor = Editor::new();
     keys("nold", &s, &mut ui, &mut editor);
+    ui.prompt_shown = Some("R2".into());
     keys("nnew", &s2, &mut ui, &mut editor);
     assert_eq!(ui.deny_draft("R2"), Some("new"));
     assert_eq!(
@@ -2084,6 +2093,51 @@ fn a_deny_message_does_not_carry_over_to_the_next_request() {
             },
         }]
     );
+}
+
+/// Draws `s` like the runtime does, and keeps what the keys need to know of the screen.
+fn draw_into(s: &State, ui: &mut UiState, size: (u16, u16)) {
+    let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
+    let mut cache = RenderCache::default();
+    terminal
+        .draw(|f| view::draw(f, s, ui, &Editor::new(), &mut cache))
+        .unwrap();
+    ui.prompt_shown = cache.prompt_shown.clone();
+}
+
+#[test]
+fn a_key_on_a_prompt_scrolled_out_of_view_first_brings_it_back() {
+    let s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
+    let mut ui = UiState {
+        follow_bottom: false,
+        scroll: 200,
+        ..UiState::default()
+    };
+    let mut editor = Editor::new();
+    draw_into(&s, &mut ui, (100, 16));
+    assert_eq!(ui.prompt_shown, None, "scrolled to the top");
+    assert!(keys("a", &s, &mut ui, &mut editor).is_empty(), "no grant");
+    assert_eq!(editor.text(), "");
+    assert_eq!(ui.selected_block.as_deref(), Some("permission:R1"));
+    draw_into(&s, &mut ui, (100, 16));
+    assert_eq!(ui.prompt_shown.as_deref(), Some("R1"), "now in view");
+    assert_eq!(
+        keys("a", &s, &mut ui, &mut editor),
+        [Action::AnswerPermission {
+            request_id: "R1".into(),
+            answer: navai::tui::protocol::PermissionAnswer {
+                decision: "allow_folder".into(),
+                message: None,
+            },
+        }]
+    );
+    // in view from the start: the first key answers
+    let mut ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    draw_into(&s, &mut ui, (100, 30));
+    assert_eq!(keys("y", &s, &mut ui, &mut editor).len(), 1);
 }
 
 #[test]

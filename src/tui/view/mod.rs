@@ -23,6 +23,8 @@ use ratatui::{
 #[derive(Debug, Default)]
 pub struct RenderCache {
     markdown: std::collections::HashMap<u64, markdown::MarkdownCache>,
+    /// The open permission request whose keys line was on screen at the last draw.
+    pub prompt_shown: Option<String>,
 }
 
 fn shorten(path: &str, width: usize) -> String {
@@ -78,6 +80,7 @@ pub fn draw(
     let area = frame.area();
     frame.buffer_mut().set_style(area, theme.base());
     if area.width < 24 || area.height < 9 {
+        cache.prompt_shown = None;
         let bottom = area.bottom().saturating_sub(3);
         frame.render_widget(
             Paragraph::new(" resize terminal to see conversation").style(theme.warning()),
@@ -158,7 +161,7 @@ pub fn draw(
         Paragraph::new("─".repeat(usize::from(area.width))).style(theme.border()),
         rule,
     );
-    transcript::draw(frame, transcript, state, ui, &theme, markdown);
+    cache.prompt_shown = transcript::draw(frame, transcript, state, ui, &theme, markdown);
     frame.render_widget(
         Paragraph::new("─".repeat(usize::from(area.width))).style(theme.border()),
         separator,

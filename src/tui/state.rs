@@ -362,4 +362,8 @@ pub struct UiState {
     pub variant_pick: Option<VariantPick>,
     /// The tab sidebar is hidden by the driver (it also hides itself on narrow terminals).
     pub sidebar_hidden: bool,
+    /// The open permission request whose keys were on screen at the last draw. For any other
+    /// (scrolled away, or not drawn yet), the first `y`, `a` or `n` brings it into view instead
+    /// of answering it.
+    pub prompt_shown: Option<String>,
 }

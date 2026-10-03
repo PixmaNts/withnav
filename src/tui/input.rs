@@ -454,6 +454,15 @@ fn permission_key(
     if state.answered_permission.as_deref() == Some(request_id.as_str()) {
         return matches!(key.code, KeyCode::Char('y' | 'a' | 'n')).then_some(None);
     }
+    // Not on screen: the first key shows the prompt, the next one answers it.
+    if matches!(key.code, KeyCode::Char('y' | 'a' | 'n'))
+        && ui.prompt_shown.as_deref() != Some(request_id.as_str())
+    {
+        ui.prompt_shown = Some(request_id.clone());
+        ui.selected_block = Some(format!("permission:{request_id}"));
+        ui.follow_bottom = false;
+        return Some(None);
+    }
     match key.code {
         KeyCode::Char('y') => Some(Some(answer("allow_once", None))),
         KeyCode::Char('a') => Some(Some(answer("allow_folder", None))),

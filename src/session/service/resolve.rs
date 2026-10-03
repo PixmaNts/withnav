@@ -251,13 +251,30 @@ impl Service {
     }
 
     /// Reads the offer of a live session's alias again, for a session that
-    /// started while it was unknown.
+    /// started while it was unknown. The alias is resolved from today's
+    /// configuration while the session keeps talking to the model it started
+    /// on: when the alias now names another model, its offer is refused
+    /// (`ModelIdentityChanged`) rather than applied to the running one.
     pub(crate) async fn reread_offer(
         &self,
+        session: &str,
         workspace: &Path,
         alias: &str,
+        running: Option<&ModelResolution>,
     ) -> Result<Offer, ServerError> {
-        let (resolved, _) = self.resolve_model(workspace, alias)?;
+        let (resolved, models_file) = self.resolve_model(workspace, alias)?;
+        if let Some(running) = running {
+            let current = identity_of(&resolved);
+            if !running.same_identity(&current) {
+                return Err(ServerError::ModelIdentityChanged {
+                    session: session.to_string(),
+                    alias: alias.to_string(),
+                    saved: running.identity(),
+                    current: current.identity(),
+                    models_path: models_file.display().to_string(),
+                });
+            }
+        }
         let api_key = auth::resolve_key(
             &self.config.config_dir,
             &resolved.provider_name,

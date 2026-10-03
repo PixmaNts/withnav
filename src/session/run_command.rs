@@ -182,11 +182,27 @@ impl Service {
         // An offer that was unknown when the session started is read again
         // now: the provider may be back.
         if word != CLEAR_WORD && !offer.known {
-            if let Ok(fresh) = self.reread_offer(&handle.workspace, &handle.model).await {
-                if fresh.known {
+            match self
+                .reread_offer(
+                    &session_id.to_string(),
+                    &handle.workspace,
+                    &handle.model,
+                    handle.resolution.as_deref(),
+                )
+                .await
+            {
+                Ok(fresh) if fresh.known => {
                     handle.replace_offer(fresh);
                     offer = handle.current_offer();
                 }
+                // The alias now names another model: its variants are not
+                // this session's, and nothing is changed.
+                Err(e @ ServerError::ModelIdentityChanged { .. }) => {
+                    return Err(CommandFailure::Refused(e.to_string()));
+                }
+                // Still unknown, or unreadable for now: the retryable
+                // refusal below applies.
+                Ok(_) | Err(_) => {}
             }
         }
         let chosen = if word == CLEAR_WORD {

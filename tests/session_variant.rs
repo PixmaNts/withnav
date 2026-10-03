@@ -887,3 +887,35 @@ async fn variant_works_after_the_provider_recovers() {
     let out = state.run_command(id, "variant", "").await.unwrap();
     assert_eq!(out.data.unwrap()["offered"], json!(["high", "low"]));
 }
+
+// Given a session started on one model while its variant offer was unknown
+// When the alias is then pointed at another model that has explicit variants,
+//      and `/variant high` runs in the same live session
+// Then the other model's offer is refused (the session still talks to the
+//      first model), and neither the variant nor the saved override changes
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reread_offer_of_a_retargeted_alias_is_refused() {
+    let server = wiremock::MockServer::start().await;
+    let (tmp, ws) = tmp_ws();
+    serve_down(&server).await;
+    let cfg = TestServerConfig::mock(tmp.path(), &format!("{}/v1", server.uri())).omniroute();
+    let state = cfg.state();
+    let id = state.create_session(&ws, None, None).await.unwrap();
+
+    let path = cfg.models_path();
+    let mut models: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    models["models"]["default"]["model"] = json!("other-model");
+    models["models"]["default"]["variants"] = json!({"high": {"reasoning_effort": "high"}});
+    std::fs::write(&path, models.to_string()).unwrap();
+
+    let out = state.run_command(id, "variant", "high").await.unwrap();
+    assert!(!out.ok, "{out:?}");
+    let error = out.error.unwrap();
+    assert!(error.contains("mock-model"), "{error}");
+    assert!(error.contains("other-model"), "{error}");
+    let meta = state.history().meta(id).await.unwrap().unwrap();
+    assert_eq!(meta.variant, None);
+    assert_eq!(meta.variant_override, None);
+    let out = state.run_command(id, "variant", "").await.unwrap();
+    assert_eq!(out.data.unwrap()["offered"], json!([]));
+}

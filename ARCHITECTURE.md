@@ -65,6 +65,19 @@ The terminal client of the session server: HTTP for commands, SSE for events, no
 imports the serialized bus types and no runtime internals. Several conversations can be open at
 once; each is shown in the left sidebar and streams in the background.
 
+Subagents are real, read-only child sessions nested under their parent. Parent events reconstruct
+their agent, delegated goal, completion and permission state; session lists seed known links without
+inventing goals. Lightweight child-stream watches read budget yields even before a transcript is
+opened. `alt+s` opens a searchable list using the same popup style, also when the sidebar is hidden
+below 80 columns. Opening a child only reads metadata and subscribes to replay plus live events:
+it never resumes the child or sends it messages or commands. Its header names its parent, agent
+and reported model; the message box is disabled. `alt+w` closes it and returns to its open parent.
+Child stop and `alt+c` continue requests are confirmed in a popup; refusals keep the reported state
+and show the server's error. Child permissions remain in the parent's conversation and use its
+permission endpoint. A completion is one short notice; messages sourced from `user:subagent` are
+labelled as untrusted subagent output. Optional delivery fields and `subagent.watchdog` payloads
+are read without depending on a newer server event enum. Missing data is not guessed.
+
 | File | Responsibility |
 |---|---|
 | `mod.rs` | `TuiOptions`, `TuiError`, `run` |

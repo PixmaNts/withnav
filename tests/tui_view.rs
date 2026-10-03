@@ -2119,6 +2119,9 @@ fn a_key_on_a_prompt_scrolled_out_of_view_first_brings_it_back() {
     assert!(keys("a", &s, &mut ui, &mut editor).is_empty(), "no grant");
     assert_eq!(editor.text(), "");
     assert_eq!(ui.selected_block.as_deref(), Some("permission:R1"));
+    // keys queued before the next frame never answer an unseen prompt
+    assert!(keys("aay", &s, &mut ui, &mut editor).is_empty(), "no grant");
+    assert_eq!(ui.prompt_shown, None, "only a drawn frame marks it shown");
     draw_into(&s, &mut ui, (100, 16));
     assert_eq!(ui.prompt_shown.as_deref(), Some("R1"), "now in view");
     assert_eq!(

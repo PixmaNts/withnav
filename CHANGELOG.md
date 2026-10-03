@@ -8,11 +8,15 @@ requests land in `develop`.
 
 ### Added
 
-- **Server commands in the terminal client**: a line starting with `/` runs on the server
-  (`/context`, `/agent`, `/variant`, `/model`, `/help`…) unless the client handles it itself
-  (`/sessions`, `/theme`, `/new`, `/quit`…). Each result shows in the conversation as a short
-  `/name · ok` or `/name · error` line with the answer under it. To send a message that starts with
-  a slash, type two: `//context` sends `/context`.
+- **Server commands in the terminal client**: typing `/` opens a list of every command, the
+  client's and the server's (`/context`, `/agent`, `/compact`…), with their arguments; what you type
+  after the slash narrows it, enter runs the highlighted one, and a space or an argument puts the
+  list away so enter sends the line as typed. A line starting with `/` runs on the server unless the
+  client handles it itself (`/sessions`, `/theme`, `/new`, `/quit`…); a client command given an
+  argument it does not take says so. `/model <alias>` opens a new conversation on that model, like
+  `/new <alias>`. Each result shows in the conversation as a short `/name · ok` or `/name · error`
+  line with the answer under it. To send a message that starts with a slash, type two: `//context`
+  sends `/context`.
 - **Build and plan in the terminal client**: tab, on an empty message, switches the conversation
   between the build and plan agents (shift+tab now moves between the message and the
   conversation). The agent shows at the start of the status line (`▌build`, or `▌plan` in blue) and
@@ -23,8 +27,8 @@ requests land in `develop`.
   variants it offers; typing filters on alias or model name. After choosing a model you pick the
   variant to start on (its default is preselected, `off` for none); a model without variants says
   so and starts without one. Choosing a model still opens a new conversation.
-- **`/variant` in the terminal client** lists the conversation's variants, starting on the one in
-  use, and switches through the server; while a turn runs it tells you the change applies from the
+- **`/variant` in the terminal client** lists the variants the server offers this conversation
+  (and `off`), starting on the one in use, and switches through the server; while a turn runs it tells you the change applies from the
   next turn.
 
 ### Changed

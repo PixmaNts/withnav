@@ -78,7 +78,7 @@ one per tab; each tab streams its own session in the background.
 | `reducer/actions.rs` | `handle_action`: `Action` to `UiState`/`State` changes and `Effect`s; opening (at most nine), switching and closing tabs; server commands, the build/plan switch, the model and variant picks |
 | `reducer/text.rs` | `strip_controls`, applied to every piece of model and tool text |
 | `input.rs` | the `Editor` and `route_key`/`route_paste`: keys to editor edits or `Action`s |
-| `commands.rs` | the command catalog, the key help and the key to `Action` map; `route`, which sends a typed `/name` to the server unless the client handles it (`//text` is the literal `/text`); `variant_choices`, the rows of the variant list |
+| `commands.rs` | the command catalog, the key help and the key to `Action` map; `palette`, the client's and the server's commands in one list; `route`, the server's prefix rule (a slash in the first column, `//text` is the literal `/text`) with the client's own commands kept local and their arguments checked; `variant_choices`, the rows of the variant list |
 | `runtime.rs` | `Runtime`: owns state, editor, client and streams; runs an event's effects for the tab it reached; the event loop with its frame tick |
 | `runtime/effects.rs` | `Executor`: runs each `Effect` in a task and reports a tagged `ClientEvent`; owns one live stream per tab generation and stops those no tab holds |
 | `runtime/tests.rs` | executor and loop tests with no terminal and a dead server |
@@ -104,14 +104,19 @@ into `State` (envelopes become blocks) and may return more effects. After each b
 generation, so late results of the old conversation are ignored. A conversation is created on the
 first message, not before.
 
-**Commands and agent controls (terminal client).** Enter on a line starting with `/` goes through
-`commands::route`: the client's own commands (`/sessions`, `/theme`, `/new`, `/quit`…) act locally,
+**Commands and agent controls (terminal client).** Typing `/` on an empty message puts the slash in
+the editor and opens the palette, which follows the line: it lists the client's commands and the
+server's (`GET /v1/commands`), filtered by the name typed so far, and puts itself away as soon as the
+line holds more than a name (a space, an argument, `//`, a name nothing starts with). Enter on a line
+starting with `/` goes through `commands::route`: the client's own commands (`/sessions`, `/theme`, `/new`, `/quit`…) act locally,
 `//text` is sent as the message `/text`, and every other `/name` becomes `Effect::RunCommand`, a
 `POST /v1/sessions/{id}/commands`. The editor is cleared once the server took it; the outcome comes back
 on the stream as `command.result` and becomes a `BlockKind::Command`. The build/plan switch (tab on an
-empty message) and `/variant` are `/agent` and `/variant` runs; the tab's agent and variant change only
+empty message) and `/variant` are `/agent` and `/variant` runs; the `/variant` list opens on the answer
+to a bare `/variant`, so it shows the conversation's own offer. The tab's agent and variant change only
 when the server says so (`session.agent_changed`, the `/variant` result, the session summary), so a
-refusal leaves them as they were. Before a conversation exists, the agent and the variant picked with
+refusal leaves them as they were; each keeps the seq that last set it, and a summary read at an older
+seq does not overwrite it. Before a conversation exists, the agent and the variant picked with
 the model are sent in the create request instead.
 
 **Tabs (terminal client).** Every tab has its own generation, never shared, and the executor keeps one

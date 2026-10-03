@@ -9,7 +9,7 @@ use super::commands::{self, CommandOutcome, CommandSpec};
 use super::service::{exact_variant, Service, SessionHandle, SessionId, VariantChoice, CLEAR_WORD};
 use crate::agent::selection::SwitchError;
 use crate::bus::event::{CommandResult, EventKind, SessionAgentChanged};
-use crate::bus::runtime::CompactReply;
+use crate::bus::runtime::{CompactReply, ModelReply};
 use crate::bus::sequencer::Candidate;
 use crate::error::ServerError;
 
@@ -21,6 +21,10 @@ const COMPACTING_ERROR: &str =
     "a compaction is running: wait for it to finish, then change the agent or variant";
 
 /// Why an agent, variant, compaction or model change waits for a model switch.
+/// Why a model switch waits for a compaction to finish.
+const COMPACTING_MODEL_ERROR: &str =
+    "a compaction is running: wait for it to finish, then switch model";
+
 const SWITCHING_ERROR: &str = "a model switch is running: wait for it to finish, then retry";
 
 /// Longest unknown command name echoed into the result.
@@ -176,16 +180,15 @@ impl Service {
             )));
         }
         if spec.args_hint.is_empty() && !arguments.is_empty() {
-            return Err(CommandFailure::Refused(match spec.name {
-                "model" => "switching model inside a conversation is not available yet: \
-                            use /new <alias>"
-                    .to_string(),
-                name => format!("usage: /{name}"),
-            }));
+            return Err(CommandFailure::Refused(format!("usage: /{}", spec.name)));
         }
         match spec.name {
             "help" => Ok(Done::data(json!({ "commands": commands::COMMANDS }))),
-            "model" => Ok(Done::data(self.model_data(handle))),
+            "model" if arguments.is_empty() => Ok(Done::data(self.model_data(handle))),
+            "model" => {
+                self.model_command(handle, arguments, operation_id, gate)
+                    .await
+            }
             "context" => handle
                 .status
                 .context_snapshot()
@@ -219,6 +222,9 @@ impl Service {
         operation_id: Ulid,
         gate: &mut Option<tokio::sync::MutexGuard<'_, ()>>,
     ) -> Result<Done, CommandFailure> {
+        if handle.status.selection.switching() {
+            return Err(CommandFailure::Refused(SWITCHING_ERROR.to_string()));
+        }
         let focus = (!arguments.is_empty()).then(|| arguments.to_string());
         if focus
             .as_deref()
@@ -237,6 +243,46 @@ impl Service {
                 Ok(Done::published(crate::bus::runtime::deferred_wire()))
             }
             Some(CompactReply::Refused(why)) => Err(CommandFailure::Published(why)),
+            None => Err(CommandFailure::Server(ServerError::SessionStopping)),
+        }
+    }
+
+    /// `/model <alias>`: moves the conversation to another model. The runtime
+    /// does it between turns: at once when the session is idle, after the
+    /// running turn otherwise (the answer says so). Refused while an `ask` or
+    /// a permission request waits (before this is reached), and while a
+    /// compaction is preparing its summary.
+    async fn model_command(
+        &self,
+        handle: &SessionHandle,
+        arguments: &str,
+        operation_id: Ulid,
+        gate: &mut Option<tokio::sync::MutexGuard<'_, ()>>,
+    ) -> Result<Done, CommandFailure> {
+        let mut words = arguments.split_whitespace();
+        let (Some(alias), None) = (words.next(), words.next()) else {
+            return Err(CommandFailure::Refused("usage: /model [alias]".to_string()));
+        };
+        let selection = &handle.status.selection;
+        if selection.compacting() {
+            return Err(CommandFailure::Refused(COMPACTING_MODEL_ERROR.to_string()));
+        }
+        if selection.switching() {
+            return Err(CommandFailure::Refused(SWITCHING_ERROR.to_string()));
+        }
+        // Resolving the target is a provider lookup: nothing else may wait
+        // for it.
+        drop(gate.take());
+        match handle
+            .status
+            .request_model_switch(alias.to_string(), operation_id)
+            .await
+        {
+            Some(ModelReply::Done(done)) => Ok(Done::published(done.wire("now"))),
+            Some(ModelReply::Deferred) => Ok(Done::published(
+                json!({ "accepted": true, "applies": "after_turn" }),
+            )),
+            Some(ModelReply::Refused(why)) => Err(CommandFailure::Published(why)),
             None => Err(CommandFailure::Server(ServerError::SessionStopping)),
         }
     }
@@ -356,8 +402,8 @@ impl Service {
                 .reread_offer(
                     &session_id.to_string(),
                     &handle.workspace,
-                    &handle.model,
-                    handle.resolution.as_deref(),
+                    &handle.model(),
+                    handle.resolution().as_deref(),
                 )
                 .await
             {
@@ -380,13 +426,13 @@ impl Service {
         } else if !offer.known && !offer.variants.contains_key(word) {
             return Err(CommandFailure::Refused(
                 ServerError::VariantOfferUnknown {
-                    alias: handle.model.clone(),
+                    alias: handle.model(),
                     variant: word.to_string(),
                 }
                 .to_string(),
             ));
         } else {
-            exact_variant(&handle.model, word, &offer.variants)
+            exact_variant(&handle.model(), word, &offer.variants)
                 .map_err(|e| CommandFailure::Refused(e.to_string()))?
         };
         let name = chosen.as_ref().map(|(name, _)| name.clone());
@@ -435,10 +481,11 @@ impl Service {
         if words.next().is_some() {
             return Err(CommandFailure::Refused("usage: /new [alias]".to_string()));
         }
-        let alias = alias.unwrap_or(&handle.model).to_string();
+        let current = handle.model();
+        let alias = alias.unwrap_or(&current).to_string();
         // The same alias keeps this session's variant; another alias starts
         // on its own default.
-        let variant = if alias == handle.model {
+        let variant = if alias == current {
             match handle.status.selected_variant() {
                 Some(name) => VariantChoice::Exact(name),
                 None => VariantChoice::Clear,
@@ -540,16 +587,17 @@ impl Service {
     /// `/model`: the alias, what the saved resolution says about it, and a
     /// bounded view of the chat aliases a new session could use.
     fn model_data(&self, handle: &SessionHandle) -> Value {
-        let mut data = match &handle.resolution {
+        let alias = handle.model();
+        let mut data = match &handle.resolution() {
             Some(r) => json!({
-                "alias": handle.model,
+                "alias": alias,
                 "model": r.model,
                 "provider": r.provider,
                 "window": r.bounds.context_window,
                 "window_source": r.provenance.context_window,
                 "max_input_tokens": r.bounds.max_input_tokens,
             }),
-            None => json!({ "alias": handle.model }),
+            None => json!({ "alias": alias }),
         };
         if let Ok(models) = self.list_models(&handle.workspace) {
             let mut names: Vec<String> = models.into_iter().map(|(alias, _)| alias).collect();

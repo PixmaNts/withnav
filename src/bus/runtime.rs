@@ -198,7 +198,11 @@ impl RuntimeStatus {
     /// waits for its answer: the result when it ran now, `Deferred` when a
     /// turn is running and it runs when that turn ends. `None` when the
     /// runtime is gone.
-    pub async fn request_model_switch(&self, alias: String, operation_id: Ulid) -> Option<ModelReply> {
+    pub async fn request_model_switch(
+        &self,
+        alias: String,
+        operation_id: Ulid,
+    ) -> Option<ModelReply> {
         let (reply, answer) = tokio::sync::oneshot::channel();
         self.controls
             .tx

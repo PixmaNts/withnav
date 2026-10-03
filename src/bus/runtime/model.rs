@@ -19,9 +19,7 @@ use ulid::Ulid;
 use super::{RuntimeStatus, SelectedVariant};
 use crate::agent::actor::AgentActor;
 use crate::agent::context::{ContextLimits, ContextTracker};
-use crate::bus::event::{
-    CommandResult, EventKind, ModelChangeReason, ModelChanged, ModelIdentity,
-};
+use crate::bus::event::{CommandResult, EventKind, ModelChangeReason, ModelChanged, ModelIdentity};
 use crate::bus::sequencer::{Candidate, Sequencer};
 use crate::provider::catalog::ModelResolution;
 use crate::provider::config::{ProviderConfig, ReasoningHistory, Variants};
@@ -147,7 +145,8 @@ pub(super) async fn run(
         .controls
         .switcher()
         .ok_or_else(|| "this session cannot switch model".to_string())?;
-    if (switcher.current_alias)() == alias {
+    let current = (switcher.current_alias)();
+    if current == alias {
         return Ok(Switched {
             data: json!({ "alias": alias, "changed": false }),
         });
@@ -158,7 +157,8 @@ pub(super) async fn run(
     if actor.role.is_some() {
         actor.role = Some(status.selection.current());
     }
-    let target = (switcher.resolve)(alias.to_string()).await?;
+    let mut target = (switcher.resolve)(alias.to_string()).await?;
+    target.previous.alias = current;
     let estimate = actor.context_breakdown().total();
     let budget = target.limits.budget.input_budget;
     if estimate > budget {
@@ -187,7 +187,10 @@ pub(super) async fn run(
     actor.variant = target.variant.clone().map(|(_, variant)| variant);
     status.replace_variant(target.variant.clone());
     let variant_name = target.variant.as_ref().map(|(name, _)| name.clone());
-    let limits = target.limits.clone().with_sources(&actor.rules, &actor.skills);
+    let limits = target
+        .limits
+        .clone()
+        .with_sources(&actor.rules, &actor.skills);
     let snapshot = status.replace_context(ContextTracker::new(limits, actor.context_breakdown()));
 
     let window = target.resolution.bounds.context_window;

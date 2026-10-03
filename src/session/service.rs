@@ -95,8 +95,9 @@ pub struct SessionHandle {
     /// Last state the manager knows about ("idle" at creation).
     pub actor_state: String,
     pub workspace: PathBuf,
-    /// The alias the session was created with.
-    pub model: String,
+    /// The alias and saved resolution the session talks to now: they change
+    /// when `/model` switches it.
+    pub selected: Arc<Mutex<SelectedModel>>,
     /// Typed decisions on permission requests, read by the runtime.
     pub permissions: mpsc::Sender<crate::bus::inbox::PermissionAnswer>,
     /// The runtime's view of its actor: pending `ask`, running turn.
@@ -104,12 +105,37 @@ pub struct SessionHandle {
     /// What the session's model offers as variants; replaced when an offer
     /// that was unknown at the start becomes known.
     pub offer: Arc<Mutex<Arc<resolve::Offer>>>,
-    /// The saved model resolution (identity, window, where the window came
-    /// from) the session runs on.
+}
+
+/// The model selection of a live session, as the service sees it.
+#[derive(Debug, Clone)]
+pub struct SelectedModel {
+    pub alias: String,
+    /// The saved resolution (identity, window, where the window came from)
+    /// the session runs on.
     pub resolution: Option<Arc<crate::provider::catalog::ModelResolution>>,
+    /// 1 for the first selection of the conversation, +1 for each switch.
+    pub revision: u64,
 }
 
 impl SessionHandle {
+    fn selected(&self) -> SelectedModel {
+        match self.selected.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// The alias the session talks to now.
+    pub fn model(&self) -> String {
+        self.selected().alias
+    }
+
+    /// The saved resolution the session runs on.
+    pub fn resolution(&self) -> Option<Arc<crate::provider::catalog::ModelResolution>> {
+        self.selected().resolution
+    }
+
     /// The session's current variant offer.
     pub(crate) fn current_offer(&self) -> Arc<resolve::Offer> {
         match self.offer.lock() {
@@ -134,7 +160,7 @@ impl std::fmt::Debug for SessionHandle {
             .field("lifecycle", &self.lifecycle)
             .field("actor_state", &self.actor_state)
             .field("workspace", &self.workspace)
-            .field("model", &self.model)
+            .field("model", &self.model())
             .finish_non_exhaustive()
     }
 }
@@ -511,7 +537,7 @@ impl Service {
             session_id: id.to_string(),
             actor_state: handle.actor_state.clone(),
             workspace: handle.workspace.display().to_string(),
-            model: handle.model.clone(),
+            model: handle.model(),
             agent: handle.status.selection.current().id.to_string(),
             variant: handle.status.selected_variant(),
             current_seq,
@@ -841,6 +867,31 @@ impl Service {
                     .await
             })
         }));
+        // The selection history is the stored `model.changed` events: a
+        // resumed conversation goes on counting from the last one.
+        let revision = if is_resume {
+            self.history
+                .model_events(session_id)
+                .await
+                .map_err(ServerError::History)?
+                .last()
+                .and_then(|event| event.payload["revision"].as_u64())
+                .unwrap_or(1)
+        } else {
+            1
+        };
+        let selected_model = Arc::new(Mutex::new(SelectedModel {
+            alias: alias.clone(),
+            resolution: Some(Arc::new(snapshot.clone())),
+            revision,
+        }));
+        let offer = Arc::new(Mutex::new(Arc::new(offered)));
+        status.install_model_switcher(self.model_switcher(
+            session_id,
+            workspace.clone(),
+            selected_model.clone(),
+            offer.clone(),
+        ));
         let limits = limits.with_sources(&actor.rules, &actor.skills);
         // The role is on the actor before the first estimate: a session that
         // starts as `plan` counts plan's role before any turn runs.
@@ -869,10 +920,9 @@ impl Service {
             lifecycle: Lifecycle::Active,
             actor_state: "idle".to_string(),
             workspace: workspace.clone(),
-            model: alias,
+            selected: selected_model,
             status,
-            offer: Arc::new(Mutex::new(Arc::new(offered))),
-            resolution: Some(Arc::new(snapshot)),
+            offer,
         };
         let sender = SessionSender::new(session_id, handle.clone());
         let cancel = handle.session_cancel.clone();

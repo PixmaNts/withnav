@@ -231,15 +231,21 @@ impl Agents {
         let mut agents = Self::builtin();
         if let Some(home) = &roots.home {
             let dir = home.join(".config").join("opencode").join("agents");
-            agents.load_dir(&dir, AgentSource::OpenCode);
+            agents.load_dir(&dir, None, AgentSource::OpenCode);
         }
         if let Some(config_dir) = &roots.config_dir {
-            agents.load_dir(&config_dir.join("agents"), AgentSource::User);
+            agents.load_dir(&config_dir.join("agents"), None, AgentSource::User);
         }
         let workspace =
             std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
         for dir in directories_from_root(&workspace) {
-            agents.load_dir(&dir.join(".navai").join("agents"), AgentSource::Project);
+            // A project's agents stay inside the project: a link out of it
+            // would let a repository pull a prompt from anywhere.
+            agents.load_dir(
+                &dir.join(".navai").join("agents"),
+                Some(&dir),
+                AgentSource::Project,
+            );
         }
         agents
     }
@@ -262,10 +268,36 @@ impl Agents {
         &self.diagnostics
     }
 
-    fn load_dir(&mut self, dir: &Path, source: fn(PathBuf) -> AgentSource) {
+    /// Reads the agent files of `dir`. Every file, and the directory itself,
+    /// must resolve (links followed) to a place inside `boundary`: the
+    /// directory's own resolved path when `None`. Whatever leaves it is
+    /// skipped with a diagnostic.
+    fn load_dir(
+        &mut self,
+        dir: &Path,
+        boundary: Option<&Path>,
+        source: fn(PathBuf) -> AgentSource,
+    ) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return; // an absent directory is normal
         };
+        let Ok(root) = std::fs::canonicalize(dir) else {
+            return;
+        };
+        let boundary = match boundary {
+            Some(path) => std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
+            None => root.clone(),
+        };
+        if !root.starts_with(&boundary) {
+            self.diagnostics.push(Diagnostic {
+                path: dir.to_path_buf(),
+                message: format!(
+                    "links outside {}: the directory is not read",
+                    boundary.display()
+                ),
+            });
+            return;
+        }
         let mut files: Vec<PathBuf> = entries
             .take(MAX_SCANNED_ENTRIES)
             .filter_map(Result::ok)
@@ -284,7 +316,27 @@ impl Agents {
             });
         }
         for path in files {
-            match read_file(&path, source(dir.to_path_buf())) {
+            let target = match std::fs::canonicalize(&path) {
+                Ok(target) if target.starts_with(&boundary) => target,
+                Ok(_) => {
+                    self.diagnostics.push(Diagnostic {
+                        path,
+                        message: format!(
+                            "links outside {}: the file is not read",
+                            boundary.display()
+                        ),
+                    });
+                    continue;
+                }
+                Err(e) => {
+                    self.diagnostics.push(Diagnostic {
+                        path,
+                        message: format!("cannot be resolved: {e}"),
+                    });
+                    continue;
+                }
+            };
+            match read_file(&path, &target, source(dir.to_path_buf())) {
                 Ok(definition) => self.add(&path, definition),
                 Err(message) => self.diagnostics.push(Diagnostic { path, message }),
             }
@@ -393,14 +445,15 @@ struct Header {
     extra: BTreeMap<String, serde_json::Value>,
 }
 
-/// Reads and parses one agent file; the id is the file name without `.md`.
-fn read_file(path: &Path, source: AgentSource) -> Result<AgentDefinition, String> {
+/// Reads and parses one agent file; the id is the name of `path` without
+/// `.md`, and the content is read from `target`, where `path` resolves.
+fn read_file(path: &Path, target: &Path, source: AgentSource) -> Result<AgentDefinition, String> {
     let stem = path
         .file_stem()
         .and_then(|s| s.to_str())
         .ok_or("the file name is not valid text")?;
     let id = AgentId::parse(stem)?;
-    let file = std::fs::File::open(path).map_err(|e| format!("cannot be read: {e}"))?;
+    let file = std::fs::File::open(target).map_err(|e| format!("cannot be read: {e}"))?;
     let mut text = String::new();
     file.take(MAX_FILE_BYTES as u64 + 1)
         .read_to_string(&mut text)

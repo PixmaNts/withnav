@@ -185,4 +185,3 @@ pub fn compose_role_message(agent: Option<&str>, profile: Option<&str>) -> Optio
         (None, None) => None,
     }
 }
-

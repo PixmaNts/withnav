@@ -266,3 +266,62 @@ fn no_directories_means_only_the_builtins() {
     assert_eq!(agents.all().count(), 4);
     assert!(agents.diagnostics().is_empty());
 }
+
+#[cfg(unix)]
+mod links {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    const OUTSIDE: &str = "---\ndescription: d\n---\nSecret prompt.\n";
+
+    #[test]
+    fn a_file_link_or_a_directory_link_leaving_the_root_is_skipped_with_a_diagnostic() {
+        let f = fixture();
+        let elsewhere = f.repo.parent().unwrap().join("elsewhere");
+        write(&elsewhere, "stolen.md", OUTSIDE);
+        let dir = f.repo.join(".navai/agents");
+        fs::create_dir_all(&dir).unwrap();
+        symlink(elsewhere.join("stolen.md"), dir.join("stolen.md")).unwrap();
+
+        // A linked directory: the whole agents directory of the parent
+        // directory of the repository lives elsewhere.
+        let outer = f.repo.join("pkg/.navai");
+        fs::create_dir_all(&outer).unwrap();
+        symlink(&elsewhere, outer.join("agents")).unwrap();
+
+        let agents = load(&f);
+        assert!(agents.get("stolen").is_none());
+        let messages: Vec<String> = agents
+            .diagnostics()
+            .iter()
+            .map(|d| format!("{}: {}", d.path.display(), d.message))
+            .collect();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("stolen.md") && m.contains("links outside")),
+            "{messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("pkg/.navai/agents") && m.contains("links outside")),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn a_link_that_stays_inside_the_root_is_loaded() {
+        let f = fixture();
+        let dir = f.repo.join(".navai/agents");
+        write(&dir.join("shared"), "real.md", OUTSIDE);
+        symlink(dir.join("shared/real.md"), dir.join("alias.md")).unwrap();
+
+        let agents = load(&f);
+        assert_eq!(
+            agents.get("alias").map(|a| a.prompt.as_str()),
+            Some("Secret prompt.")
+        );
+        assert!(agents.diagnostics().is_empty(), "{:?}", agents.diagnostics());
+    }
+}

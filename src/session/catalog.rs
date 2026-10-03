@@ -75,7 +75,7 @@ impl Service {
             .await
             .map_err(ServerError::History)?;
         if let Some(parent) = parent {
-            let _ = self.reset_child_slots_for_delete(parent).await;
+            self.reset_child_slots_for_delete(parent).await?;
         }
         Ok(())
     }

@@ -417,18 +417,23 @@ impl Service {
             self.close_session(child).await?;
             return Err(error);
         }
-        let parent_candidate = Candidate::new(
-            EventKind::SubagentSpawned,
-            serde_json::to_value(crate::bus::event::SubagentSpawned {
-                parent_session_id: parent,
-                child_session_id: child,
-                agent: agent.to_string(),
-                goal: crate::tools::bound_output(prompt, 1024).0,
-                tool_call_id: "server".into(),
-            })
-            .unwrap_or(serde_json::Value::Null),
-        );
-        let _ = parent_handle.sequencer.publish(parent_candidate);
+        let spawned_payload = serde_json::to_value(crate::bus::event::SubagentSpawned {
+            parent_session_id: parent,
+            child_session_id: child,
+            agent: agent.to_string(),
+            goal: crate::tools::bound_output(prompt, 1024).0,
+            tool_call_id: "server".into(),
+        })
+        .unwrap_or(serde_json::Value::Null);
+        if let Some(handle) = self.handle(child) {
+            let _ = handle.sequencer.publish(Candidate::new(
+                EventKind::SubagentSpawned,
+                spawned_payload.clone(),
+            ));
+        }
+        let _ = parent_handle
+            .sequencer
+            .publish(Candidate::new(EventKind::SubagentSpawned, spawned_payload));
         Ok(child)
     }
 

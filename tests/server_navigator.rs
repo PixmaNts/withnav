@@ -160,9 +160,8 @@ async fn wake_through_the_feed_lands_as_a_navigator_sourced_message_and_turn() {
         navai::navigator::WakeOutcome::NoSession
     );
 
-    let sub = state.subscribe(id, None).await.expect("subscribe");
-
     send_text(&state, id, "add an auth remove command").await;
+    wait_for_completed_message_turn(&state, id, "user:http", "add an auth remove command").await;
     // The subscriber task needs a beat to observe the driver message.
     wait_for("the driver message to activate the session", || {
         feed.active_session() == Some(id)
@@ -181,9 +180,12 @@ async fn wake_through_the_feed_lands_as_a_navigator_sourced_message_and_turn() {
 
     // The wake drives a REAL turn that ends done, and the durable event
     // carries the navigator as its source.
-    let events = collect_until(sub, |e| {
-        e.kind == "turn.end" && e.payload["outcome"] == "done"
-    })
+    let events = wait_for_completed_message_turn(
+        &state,
+        id,
+        "navigator",
+        "wake: this edit drifts from the intent",
+    )
     .await;
     let wake_received = events
         .iter()
@@ -207,6 +209,11 @@ async fn wake_through_the_feed_lands_as_a_navigator_sourced_message_and_turn() {
 
     // The provider saw the wake as the second turn's user message.
     let requests = server.received_requests().await.expect("wiremock retains");
+    assert_eq!(
+        requests.len(),
+        2,
+        "driver and wake each completed a provider turn"
+    );
     let body: Value = serde_json::from_slice(&requests[1].body).expect("second request body");
     let last_user = body["messages"]
         .as_array()
@@ -446,16 +453,20 @@ async fn a_wake_never_cancels_an_open_permission_request() {
         .expect("create");
 
     send_text(&state, id, "write the note").await;
-    let requested = loop {
-        state.history().flush().await.expect("flush");
-        let sub = subscribe(&state, id).await;
-        if let navai::bus::ResumeOutcome::Replay(all) = sub.replay {
-            if let Some(found) = all.into_iter().find(|e| e.kind == "permission.requested") {
-                break found;
+    let requested = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            state.history().flush().await.expect("flush");
+            let sub = subscribe(&state, id).await;
+            if let navai::bus::ResumeOutcome::Replay(all) = sub.replay {
+                if let Some(found) = all.into_iter().find(|e| e.kind == "permission.requested") {
+                    break found;
+                }
             }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    };
+    })
+    .await
+    .expect("the child's write must reach its permission request");
     let request_id: ulid::Ulid = requested.payload["request_id"]
         .as_str()
         .and_then(|id| id.parse().ok())
@@ -506,6 +517,53 @@ async fn a_wake_never_cancels_an_open_permission_request() {
 /// the same shape `collect_until` drains.
 async fn subscribe(state: &AppState, id: ulid::Ulid) -> navai::session::Subscription {
     state.subscribe(id, None).await.expect("subscribe")
+}
+
+/// Stored history is authoritative even if a fast turn finished before
+/// subscription. Match the message's own turn, not an earlier driver's end.
+async fn wait_for_completed_message_turn(
+    state: &AppState,
+    id: ulid::Ulid,
+    source: &str,
+    content: &str,
+) -> Vec<navai::bus::event::EventEnvelope> {
+    let mut seen = Vec::new();
+    let result = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            state.history().flush().await.expect("flush");
+            let sub = subscribe(state, id).await;
+            if let navai::bus::ResumeOutcome::Replay(events) = sub.replay {
+                seen = events;
+                let message = seen.iter().find(|e| {
+                    e.kind == "message.received"
+                        && e.payload["source"] == source
+                        && e.payload["content"] == content
+                });
+                if let Some(message) = message {
+                    if let Some(start) = seen
+                        .iter()
+                        .find(|e| e.kind == "turn.start" && e.seq > message.seq)
+                    {
+                        if seen.iter().any(|e| {
+                            e.kind == "turn.end"
+                                && e.seq > start.seq
+                                && e.payload["turn_id"] == start.payload["turn_id"]
+                                && e.payload["outcome"] == "done"
+                        }) {
+                            break;
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        result.is_ok(),
+        "timed out waiting for {source} message's completed turn; seen: {seen:?}"
+    );
+    seen
 }
 
 // Given a navigator conversation with one completed driver turn, stopped

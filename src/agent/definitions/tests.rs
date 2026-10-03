@@ -322,6 +322,10 @@ mod links {
             agents.get("alias").map(|a| a.prompt.as_str()),
             Some("Secret prompt.")
         );
-        assert!(agents.diagnostics().is_empty(), "{:?}", agents.diagnostics());
+        assert!(
+            agents.diagnostics().is_empty(),
+            "{:?}",
+            agents.diagnostics()
+        );
     }
 }

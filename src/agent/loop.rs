@@ -80,7 +80,7 @@ pub async fn run_agent(
             actor.system_prompt.as_deref(),
             actor.rules.message(),
             actor.skills.catalog(),
-            actor.transcript.clone(),
+            actor.effective_history(),
             actor.registry.schemas(),
             actor.max_tokens,
         );
@@ -453,5 +453,132 @@ mod tests {
         let mut noop = |_e: AgentEvent| {};
         let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
         assert!(matches!(outcome, RunOutcome::StepBudgetExhausted));
+    }
+
+    fn history_of_turns(turns: usize) -> Vec<ChatMessage> {
+        use crate::provider::openai::{RequestFunction, RequestToolCall};
+        let mut t = Vec::new();
+        for n in 0..turns {
+            t.push(ChatMessage::User {
+                content: format!("request {n}"),
+            });
+            t.push(ChatMessage::Assistant {
+                content: None,
+                reasoning_content: None,
+                tool_calls: vec![RequestToolCall {
+                    id: format!("c{n}"),
+                    kind: "function".into(),
+                    function: RequestFunction {
+                        name: "read".into(),
+                        arguments: "{}".into(),
+                    },
+                }],
+            });
+            t.push(ChatMessage::Tool {
+                tool_call_id: format!("c{n}"),
+                content: "output ".repeat(200),
+            });
+            t.push(ChatMessage::Assistant {
+                content: Some(format!("done {n}")),
+                reasoning_content: None,
+                tool_calls: vec![],
+            });
+        }
+        t
+    }
+
+    fn compaction_through(
+        through: usize,
+        pruned: Vec<usize>,
+    ) -> crate::agent::compaction::Compaction {
+        crate::agent::compaction::Compaction {
+            checkpoint: crate::agent::compaction::Checkpoint {
+                through_message: through,
+                summary: "the gist of the early work".into(),
+                generation: 1,
+            },
+            pruned_message_indices: pruned,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_resumed_checkpoint_sends_the_effective_prompt() {
+        let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;
+        let server = spawn_mock(vec![http_sse(&sse_body(&[done]))]).await;
+        let mut actor = make_actor(server.url.clone(), registry_all(), CancellationToken::new());
+        actor.transcript = history_of_turns(4);
+        let before = actor.context_breakdown().total();
+        actor.compaction = Some(compaction_through(7, vec![10]));
+        let after = actor.context_breakdown().total();
+        assert!(after < before, "{after} < {before}");
+
+        actor.push_user("and now?");
+        let mut noop = |_e: AgentEvent| {};
+        run_agent(&mut actor, &mut noop).await.unwrap();
+
+        let reqs = server.requests.lock().await;
+        let body = reqs[0].split("\r\n\r\n").nth(1).unwrap();
+        let v: serde_json::Value = serde_json::from_str(body).unwrap();
+        let contents: Vec<String> = v["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["content"].as_str().unwrap_or("").to_string())
+            .collect();
+        let all = contents.join("\n");
+        assert!(all.contains("the gist of the early work"));
+        assert!(all.contains("<conversation_summary>"));
+        assert!(!all.contains("request 0") && !all.contains("request 1"));
+        assert!(all.contains("request 2") && all.contains("and now?"));
+        // Message 10 is turn 2's output: its call stays, its text is a marker.
+        assert!(all.contains("[output elided to save context: 1400 bytes]"));
+        // Turn 3's output is whole, turn 2's is the marker.
+        assert_eq!(all.matches(&"output ".repeat(200)).count(), 1);
+        // The transcript itself is untouched.
+        assert_eq!(actor.transcript.len(), 18);
+    }
+
+    #[tokio::test]
+    async fn commit_persists_then_installs_and_a_failed_write_installs_nothing() {
+        let mut actor = make_actor(
+            "http://127.0.0.1:1/v1".into(),
+            registry_all(),
+            CancellationToken::new(),
+        );
+        actor.transcript = history_of_turns(4);
+        let before = actor.context_breakdown();
+
+        let refused = actor
+            .commit_compaction(compaction_through(7, vec![]), |_, _| async {
+                Err("disk full".to_string())
+            })
+            .await;
+        assert_eq!(refused.unwrap_err(), "disk full");
+        assert!(actor.compaction.is_none());
+        assert_eq!(actor.context_breakdown(), before);
+
+        let saved = std::sync::Mutex::new(None);
+        actor
+            .commit_compaction(compaction_through(7, vec![10]), |transcript, k| {
+                *saved.lock().unwrap() = Some((transcript.len(), k));
+                async { Ok(()) }
+            })
+            .await
+            .unwrap();
+        let (len, k) = saved.into_inner().unwrap().unwrap();
+        assert_eq!(len, 16);
+        assert_eq!(actor.compaction.as_ref(), Some(&k));
+        assert!(actor.context_breakdown().total() < before.total());
+        assert_eq!(actor.context_breakdown().system, before.system);
+
+        // A compaction that does not fit the transcript is refused unwritten.
+        let mut called = false;
+        let bad = actor
+            .commit_compaction(compaction_through(99, vec![]), |_, _| {
+                called = true;
+                async { Ok(()) }
+            })
+            .await;
+        assert!(bad.is_err() && !called);
     }
 }

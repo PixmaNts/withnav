@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::compaction::Compaction;
+use crate::agent::compaction::{
+    effective_history, validate as validate_compaction, Compaction, Components,
+};
 use crate::agent::instructions::Instructions;
 use crate::agent::skills::{SkillTool, Skills};
 use crate::provider::config::{ProviderConfig, ReasoningHistory};
@@ -104,16 +106,55 @@ impl AgentActor {
         self.skills = skills;
     }
 
+    /// The parts of the request besides the history.
+    pub fn components<'a>(
+        &'a self,
+        tools: &'a [crate::provider::openai::ToolDef],
+    ) -> Components<'a> {
+        Components {
+            system_prompt: self.system_prompt.as_deref(),
+            rules: self.rules.message(),
+            skills: self.skills.catalog(),
+            tools,
+        }
+    }
+
+    /// The history the next request carries: the transcript as it is, or,
+    /// with a compaction installed, the labelled summary then the messages
+    /// after its boundary with the pruned outputs as markers.
+    pub fn effective_history(&self) -> Vec<ChatMessage> {
+        effective_history(&self.transcript, self.compaction.as_ref())
+    }
+
     /// The estimated size of the request this actor would send now, by
-    /// category (see [`crate::agent::context`]).
+    /// category (see [`crate::agent::context`]): the effective prompt.
     pub fn context_breakdown(&self) -> crate::agent::context::Breakdown {
         crate::agent::context::estimate(
             self.system_prompt.as_deref(),
             self.rules.message(),
             self.skills.catalog(),
-            &self.transcript,
+            &self.effective_history(),
             &self.registry.schemas(),
         )
+    }
+
+    /// Persists `compaction` through `persist`, which is handed the full
+    /// transcript and must return only once the write is durable, then
+    /// installs it. A failed write installs nothing. The compaction is
+    /// validated against the transcript first.
+    pub async fn commit_compaction<F, Fut>(
+        &mut self,
+        compaction: Compaction,
+        persist: F,
+    ) -> Result<(), String>
+    where
+        F: FnOnce(Vec<ChatMessage>, Compaction) -> Fut,
+        Fut: std::future::Future<Output = Result<(), String>>,
+    {
+        validate_compaction(&compaction, &self.transcript).map_err(|e| e.to_string())?;
+        persist(self.transcript.clone(), compaction.clone()).await?;
+        self.compaction = Some(compaction);
+        Ok(())
     }
 
     /// Re-derives `pending_ask_id` from a restored transcript: the `ask` call

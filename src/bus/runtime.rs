@@ -91,6 +91,7 @@ struct PermissionSlot {
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
     delivery: Mutex<Option<delivery::DeliveryCell>>,
+    delivery_wake: tokio::sync::Notify,
     variant: Mutex<VariantSlot>,
     /// The session's context gauge: written by the runtime at each boundary,
     /// read on demand by the service.
@@ -109,6 +110,9 @@ pub struct RuntimeStatus {
 }
 
 impl RuntimeStatus {
+    pub fn wake_delivery(&self) {
+        self.delivery_wake.notify_one();
+    }
     pub fn install_delivery(&self, delivery: Delivery) {
         *self.delivery.lock().unwrap_or_else(|e| e.into_inner()) =
             Some(delivery::DeliveryCell(delivery));
@@ -609,6 +613,7 @@ async fn runtime_loop(
     let on_turn_end: SharedHook = Arc::new(Mutex::new(on_turn_end));
     let mut active_task_id: Option<Ulid> = None;
     let mut control = status.controls.take_receiver();
+    let mut delivery_waiting = false;
 
     loop {
         let inbound = tokio::select! {
@@ -616,6 +621,19 @@ async fn runtime_loop(
             _ = session_cancel.cancelled() => {
                 actor.cancel.cancel();
                 break;
+            }
+            _ = async {
+                if delivery_waiting && !actor.has_pending() { return; }
+                status.delivery_wake.notified().await;
+            } => {
+                delivery_waiting = true;
+                if actor.has_pending() { continue; }
+                delivery_waiting = false;
+                match delivery::apply(&mut actor, &status).await {
+                    Ok(true) => Some(Inbound::Completion),
+                    Ok(false) => continue,
+                    Err(error) => { tracing::error!(%error, "subagent wake delivery failed"); break; }
+                }
             }
             Some(control) = recv_control(&mut control) => {
                 // Between turns: run it now, publish its result, then answer.
@@ -663,6 +681,10 @@ async fn runtime_loop(
         // A decision resumes the held call; a batch of commands starts a
         // turn the usual way.
         let resume: Option<(Ulid, PermissionDecision)> = match inbound {
+            Inbound::Completion => {
+                active_task_id = Some(Ulid::new());
+                None
+            }
             Inbound::Batch(_) => {
                 let held = actor.pending_permission().cloned();
                 let applied = inbox.apply_batch_to_actor(&mut actor);

@@ -829,6 +829,11 @@ impl Service {
             self.release_child_slot(parent);
         }
         self.drain_completions(parent).await;
+        if let Some(owner) = self.handle(parent) {
+            if owner.lifecycle == Lifecycle::Active {
+                owner.status.wake_delivery();
+            }
+        }
         Ok(())
     }
 
@@ -1873,6 +1878,9 @@ impl Service {
         }
         if child_parent.is_none() {
             self.drain_completions(session_id).await;
+            if let Some(owner) = self.handle(session_id) {
+                owner.status.wake_delivery();
+            }
         }
         // The host learns of the session once it is routable. A session
         // already closing hands back a subscription that ends at once.

@@ -55,6 +55,11 @@ pub struct AgentActor {
     pub api_key: String,
     pub model: String,
     pub reasoning_history: ReasoningHistory,
+    /// Transcript messages before this index were written by a model the
+    /// session no longer talks to: the request projection drops their
+    /// reasoning (it is only replayed to the model that produced it). The
+    /// transcript itself keeps it.
+    pub reasoning_floor: usize,
     pub max_tokens: Option<u64>,
     /// The variant merged into every chat request of the next run; `None`
     /// sends the request as built. The session runtime sets it at each turn
@@ -106,6 +111,7 @@ impl AgentActor {
             api_key,
             model,
             reasoning_history,
+            reasoning_floor: 0,
             max_tokens,
             variant: None,
             max_steps: crate::agent::run_loop::max_steps(),
@@ -168,8 +174,36 @@ impl AgentActor {
     /// The history the next request carries: the transcript as it is, or,
     /// with a compaction installed, the labelled summary then the messages
     /// after its boundary with the pruned outputs as markers.
+    ///
+    /// Reasoning written by an earlier model (before `reasoning_floor`) is
+    /// left out, and so is an assistant message that held nothing else.
     pub fn effective_history(&self) -> Vec<ChatMessage> {
-        effective_history(&self.transcript, self.compaction.as_ref())
+        if self.reasoning_floor == 0 {
+            return effective_history(&self.transcript, self.compaction.as_ref());
+        }
+        let mut projected = self.transcript.clone();
+        for message in projected.iter_mut().take(self.reasoning_floor) {
+            if let ChatMessage::Assistant {
+                reasoning_content, ..
+            } = message
+            {
+                *reasoning_content = None;
+            }
+        }
+        let mut history = effective_history(&projected, self.compaction.as_ref());
+        history.retain(|message| match message {
+            ChatMessage::Assistant {
+                content,
+                reasoning_content,
+                tool_calls,
+            } => {
+                content.as_deref().is_some_and(|c| !c.is_empty())
+                    || reasoning_content.is_some()
+                    || !tool_calls.is_empty()
+            }
+            _ => true,
+        });
+        history
     }
 
     /// The estimated size of the request this actor would send now, by

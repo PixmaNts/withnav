@@ -143,6 +143,13 @@ enum Write {
         id: Ulid,
         resolution: String,
     },
+    SwitchModel {
+        id: Ulid,
+        model: String,
+        resolution: String,
+        variant: Option<String>,
+        variant_override: Option<String>,
+    },
     FillEndpoint {
         id: Ulid,
         expected: String,
@@ -327,6 +334,29 @@ impl HistoryStore {
         let (variant, variant_override) = split_variant(variant)?;
         self.acked(Write::SetVariant {
             id,
+            variant,
+            variant_override,
+        })
+        .await
+    }
+
+    /// Moves a session to another model alias in ONE transaction: the alias,
+    /// its resolution and its variant (with the override object) change
+    /// together or not at all. Waits for the commit.
+    pub async fn switch_model(
+        &self,
+        id: Ulid,
+        alias: &str,
+        resolution: &crate::provider::catalog::ModelResolution,
+        variant: Option<&(String, crate::provider::config::Variant)>,
+    ) -> Result<(), String> {
+        let (variant, variant_override) = split_variant(variant)?;
+        let resolution = serde_json::to_string(resolution)
+            .map_err(|e| format!("serialize model resolution: {e}"))?;
+        self.acked(Write::SwitchModel {
+            id,
+            model: alias.to_string(),
+            resolution,
             variant,
             variant_override,
         })
@@ -535,6 +565,23 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                     )
                     .map(|v| v != 0)?
             {
+                return Err(WriteError::UnknownSession(id));
+            }
+        }
+        Write::SwitchModel {
+            id,
+            model,
+            resolution,
+            variant,
+            variant_override,
+        } => {
+            let touched = tx.execute(
+                "UPDATE sessions
+                 SET model = ?2, model_resolution = ?3, variant = ?4, variant_override = ?5
+                 WHERE id = ?1",
+                params![id.to_string(), model, resolution, variant, variant_override],
+            )?;
+            if touched == 0 {
                 return Err(WriteError::UnknownSession(id));
             }
         }

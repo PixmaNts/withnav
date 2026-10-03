@@ -10,12 +10,18 @@
 //! [`Sequencer::close_session`] — never on a natural turn end.
 
 mod compact;
+mod model;
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 pub use compact::{
-    deferred_wire, CheckpointSaver, CompactReply, CompactRequest, Compacted, FOCUS_MAX_CHARS,
+    deferred_wire, CheckpointSaver, CompactReply, CompactRequest, Compacted, Control,
+    FOCUS_MAX_CHARS,
+};
+pub use model::{
+    BoxFuture, ModelReply, ModelRequest, ModelSwitch, ModelSwitcher, ModelTarget,
+    PENDING_MODEL_ERROR,
 };
 
 use tokio_util::sync::CancellationToken;
@@ -173,13 +179,52 @@ impl RuntimeStatus {
         let (reply, answer) = tokio::sync::oneshot::channel();
         self.controls
             .tx
-            .send(CompactRequest {
+            .send(Control::Compact(CompactRequest {
                 focus,
                 operation_id,
                 reply,
-            })
+            }))
             .ok()?;
         answer.await.ok()
+    }
+
+    /// Supplies how the runtime resolves a model alias and commits a switch
+    /// to it, so the bus never imports the session service or the store.
+    pub fn install_model_switcher(&self, switcher: ModelSwitcher) {
+        self.controls.set_switcher(switcher);
+    }
+
+    /// Asks the runtime to move the conversation to the model `alias` and
+    /// waits for its answer: the result when it ran now, `Deferred` when a
+    /// turn is running and it runs when that turn ends. `None` when the
+    /// runtime is gone.
+    pub async fn request_model_switch(&self, alias: String, operation_id: Ulid) -> Option<ModelReply> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        self.controls
+            .tx
+            .send(Control::Model(ModelRequest {
+                alias,
+                operation_id,
+                reply,
+            }))
+            .ok()?;
+        answer.await.ok()
+    }
+
+    /// Replaces the variant the session runs with, dropping a change that was
+    /// waiting for the running turn: a model switch starts on its own default.
+    fn replace_variant(&self, variant: SelectedVariant) {
+        let mut slot = self.slot();
+        slot.active = variant;
+        slot.pending = None;
+    }
+
+    /// Installs the context tracker of a new model selection.
+    fn replace_context(&self, tracker: ContextTracker) -> ContextSnapshot {
+        let mut guard = self.lock_context();
+        let snapshot = tracker.snapshot().clone();
+        *guard = Some(tracker);
+        snapshot
     }
 
     /// The variant name that is selected: the pending one when a change is
@@ -520,17 +565,33 @@ async fn runtime_loop(
                 actor.cancel.cancel();
                 break;
             }
-            Some(request) = recv_control(&mut control) => {
+            Some(control) = recv_control(&mut control) => {
                 // Between turns: run it now, publish its result, then answer.
-                let outcome = compact::run(
-                    &mut actor,
-                    &status,
-                    &sequencer,
-                    &session_cancel,
-                    request.focus.as_deref(),
-                )
-                .await;
-                compact::answer(&status, &sequencer, request, outcome).await;
+                match control {
+                    Control::Compact(request) => {
+                        let outcome = compact::run(
+                            &mut actor,
+                            &status,
+                            &sequencer,
+                            &session_cancel,
+                            request.focus.as_deref(),
+                        )
+                        .await;
+                        compact::answer(&status, &sequencer, request, outcome).await;
+                    }
+                    Control::Model(request) => {
+                        let outcome = model::run(
+                            &mut actor,
+                            &status,
+                            &sequencer,
+                            &session_cancel,
+                            &request.alias,
+                            request.operation_id,
+                        )
+                        .await;
+                        model::answer(&status, &sequencer, request, outcome).await;
+                    }
+                }
                 continue;
             }
             inbound = async {
@@ -617,6 +678,7 @@ async fn runtime_loop(
         turn.publish_context(actor.context_breakdown());
 
         let mut deferred: compact::Waiting = Vec::new();
+        let mut deferred_switches: model::Waiting = Vec::new();
         let started = Instant::now();
         // Session cancellation must interrupt a MID-FLIGHT turn too: the
         // select cancels the ACTOR token (cloned handle avoids aliasing the
@@ -655,11 +717,23 @@ async fn runtime_loop(
                         break (&mut turn_fut).await;
                     }
                     outcome = &mut turn_fut => break outcome,
-                    Some(request) = recv_control(&mut control) => {
+                    Some(control) = recv_control(&mut control) => {
                         // A turn is running: accept now, run it at its end.
-                        let (operation_id, focus) = (request.operation_id, request.focus.clone());
-                        if compact::accept_deferred(&sequencer, request).await {
-                            deferred.push((operation_id, focus));
+                        match control {
+                            Control::Compact(request) => {
+                                let (operation_id, focus) =
+                                    (request.operation_id, request.focus.clone());
+                                if compact::accept_deferred(&sequencer, request).await {
+                                    deferred.push((operation_id, focus));
+                                }
+                            }
+                            Control::Model(request) => {
+                                let (operation_id, alias) =
+                                    (request.operation_id, request.alias.clone());
+                                if model::accept_deferred(&sequencer, request).await {
+                                    deferred_switches.push((operation_id, alias));
+                                }
+                            }
                         }
                     }
                 }
@@ -690,6 +764,7 @@ async fn runtime_loop(
             emit_agent_state(&mut turn, "idle");
             snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
             compact::report_failure(&sequencer, &deferred, compact::CANCELLED);
+            model::report_failure(&sequencer, &deferred_switches, compact::CANCELLED);
             break;
         }
 
@@ -810,6 +885,7 @@ async fn runtime_loop(
             // The stop wins: a `/compact` accepted during this turn is told
             // it will not happen, before `session.end`.
             compact::report_failure(&sequencer, &deferred, compact::CANCELLED);
+            model::report_failure(&sequencer, &deferred_switches, compact::CANCELLED);
             break;
         }
 
@@ -828,6 +904,20 @@ async fn runtime_loop(
                 Ok(done) => compact::report_done(&sequencer, &deferred, &done),
                 Err(why) => compact::report_failure(&sequencer, &deferred, &why),
             }
+        }
+        // A `/model` that arrived during the turn runs after it, one switch
+        // after the other in the order they came.
+        for (operation_id, alias) in std::mem::take(&mut deferred_switches) {
+            let outcome = model::run(
+                &mut actor,
+                &status,
+                &sequencer,
+                &session_cancel,
+                &alias,
+                operation_id,
+            )
+            .await;
+            model::report(&sequencer, operation_id, outcome);
         }
     }
 
@@ -870,8 +960,8 @@ pub(crate) fn publish_resolved(
 
 /// The next compaction request; waits forever once there is no channel.
 async fn recv_control(
-    control: &mut Option<tokio::sync::mpsc::UnboundedReceiver<CompactRequest>>,
-) -> Option<CompactRequest> {
+    control: &mut Option<tokio::sync::mpsc::UnboundedReceiver<Control>>,
+) -> Option<Control> {
     match control {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,

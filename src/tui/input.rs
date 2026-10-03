@@ -84,6 +84,13 @@ pub fn route_key(
     if matches!(key.kind, KeyEventKind::Release) {
         return None;
     }
+    if ui.child_confirm.is_some() {
+        return match key.code {
+            KeyCode::Enter | KeyCode::Char('y') => Some(Action::ConfirmChildControl),
+            KeyCode::Esc | KeyCode::Char('n') => Some(Action::CancelChildControl),
+            _ => None,
+        };
+    }
     if ui.overlay == Some(Overlay::Commands) && ui.palette_typed {
         return typed_palette_key(key, state, ui, editor);
     }
@@ -148,6 +155,7 @@ pub fn route_key(
                     }
                     Overlay::Variants => Action::PickVariant(name.clone()),
                     Overlay::Sessions => Action::ResumeSession(name.clone()),
+                    Overlay::Children => Action::OpenChild(name.clone()),
                     Overlay::Commands => {
                         let row = commands::palette_rows(state, &ui.filter, false)
                             .into_iter()
@@ -197,8 +205,10 @@ pub fn route_key(
         }
         return None;
     }
-    if let Some(action) = permission_key(key, state, ui, editor) {
-        return action;
+    if !state.read_only() {
+        if let Some(action) = permission_key(key, state, ui, editor) {
+            return action;
+        }
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -208,6 +218,7 @@ pub fn route_key(
         && !key.modifiers.contains(KeyModifiers::SHIFT)
         && ui.focus == Focus::Editor
         && editor.text().is_empty()
+        && !state.read_only()
     {
         return Some(Action::ToggleAgent);
     }
@@ -254,7 +265,7 @@ pub fn route_key(
         }
         return Some(action);
     }
-    if ui.focus == Focus::Transcript {
+    if ui.focus == Focus::Transcript || state.read_only() {
         match key.code {
             KeyCode::Up | KeyCode::Down => {
                 let blocks = &state.conversation.blocks;
@@ -568,6 +579,11 @@ fn overlay_names(overlay: Overlay, state: &State, ui: &UiState) -> Vec<String> {
             .map(|x| x.id().to_string())
             .collect(),
         Overlay::Help => Vec::new(),
+        Overlay::Children => state
+            .child_rows(&ui.filter)
+            .iter()
+            .map(|c| c.session_id.clone())
+            .collect(),
         Overlay::Variants => ui
             .variant_pick
             .as_ref()
@@ -587,6 +603,9 @@ pub fn route_paste(
     ui: &mut UiState,
     editor: &mut Editor,
 ) -> Option<Action> {
+    if state.read_only() {
+        return None;
+    }
     // While a deny message is typed, a paste goes into it (one line); a message left from a
     // request that is no longer the open one is dropped.
     let open = state.open_permission().map(|p| p.request_id.as_str());

@@ -67,7 +67,7 @@ pub fn tab_title(state: &State, tab: &Tab) -> String {
 
 /// Rows one tab takes: title, state, one per nested agent.
 fn tab_height(tab: &Tab) -> u16 {
-    2 + tab.children.len() as u16
+    2 + tab.children.len() as u16 * 3
 }
 
 /// The first tab to draw in `height` rows: the top of the list when the active tab fits below it,
@@ -96,7 +96,16 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
             .set_symbol("│")
             .set_style(theme.border());
     }
-    let keys = ["alt+1…9 switch", "alt+w close", "alt+b hide bar"];
+    let keys: &[&str] = if state.tabs.iter().any(|t| !t.children.is_empty()) {
+        &[
+            "alt+1…9 switch",
+            "alt+s subagents",
+            "alt+w close",
+            "alt+b hide bar",
+        ]
+    } else {
+        &["alt+1…9 switch", "alt+w close", "alt+b hide bar"]
+    };
     let keys_height = if inner.height >= 8 {
         keys.len() as u16 + 1
     } else {
@@ -112,12 +121,17 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     let label_width = usize::from(inner.width).saturating_sub(5);
     let first = first_shown(state, rows_bottom.saturating_sub(y));
     for (index, tab) in state.tabs.iter().enumerate().skip(first) {
-        let children = tab.children.len() as u16;
-        if y + 2 + children > rows_bottom {
+        let children = tab.children.len() as u16 * 3;
+        if y + 2 > rows_bottom {
             break;
         }
         let active = index == state.active;
-        let rows = Rect::new(inner.x, y, inner.width, 2 + children);
+        let rows = Rect::new(
+            inner.x,
+            y,
+            inner.width,
+            (2 + children).min(rows_bottom.saturating_sub(y)),
+        );
         if active {
             frame
                 .buffer_mut()
@@ -161,13 +175,42 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
             Rect::new(inner.x, y + 1, inner.width, 1),
         );
         for (n, child) in tab.children.iter().enumerate() {
+            if y + 2 + n as u16 * 3 >= rows_bottom {
+                break;
+            }
             frame.render_widget(
                 Paragraph::new(Span::styled(
                     fit(&format!("   └ {}", child.name), usize::from(inner.width)),
                     theme.subagent(),
                 )),
-                Rect::new(inner.x, y + 2 + n as u16, inner.width, 1),
+                Rect::new(inner.x, y + 2 + n as u16 * 3, inner.width, 1),
             );
+            for (offset, text) in [child.status.label(), child.goal.as_str()]
+                .iter()
+                .enumerate()
+            {
+                if y + 3 + n as u16 * 3 + offset as u16 >= rows_bottom {
+                    break;
+                }
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        fit(
+                            &format!(
+                                "     {}",
+                                text.split_whitespace().collect::<Vec<_>>().join(" ")
+                            ),
+                            usize::from(inner.width),
+                        ),
+                        theme.muted(),
+                    )),
+                    Rect::new(
+                        inner.x,
+                        y + 3 + n as u16 * 3 + offset as u16,
+                        inner.width,
+                        1,
+                    ),
+                );
+            }
         }
         if active {
             for row in rows.top()..rows.bottom() {

@@ -38,6 +38,7 @@ pub struct Context {
 struct ActiveStream {
     cancel: CancellationToken,
     generation: Generation,
+    child_session_id: Option<String>,
 }
 
 /// Owns the client, the event channel and the live event streams, one per open tab.
@@ -105,6 +106,69 @@ impl Executor {
     pub fn execute(&mut self, effect: Effect, ctx: &Context, editor: &mut Editor) -> Flow {
         let generation = ctx.generation.clone();
         match effect {
+            Effect::UnwatchChild(child_session_id) => {
+                self.streams.retain(|s| {
+                    let gone = s.child_session_id.as_ref() == Some(&child_session_id);
+                    if gone {
+                        s.cancel.cancel();
+                    }
+                    !gone
+                });
+            }
+            Effect::WatchChild {
+                child_session_id,
+                generation,
+                ..
+            } => {
+                if self
+                    .streams
+                    .iter()
+                    .any(|s| s.child_session_id.as_ref() == Some(&child_session_id))
+                {
+                    return Flow::Continue;
+                }
+                let cancel = CancellationToken::new();
+                let mut events = stream::subscribe(
+                    self.client.clone(),
+                    child_session_id.clone(),
+                    None,
+                    generation.clone(),
+                    cancel.clone(),
+                );
+                let (tx, stop, child, tag) = (
+                    self.tx.clone(),
+                    cancel.clone(),
+                    child_session_id.clone(),
+                    generation.clone(),
+                );
+                tokio::spawn(async move {
+                    loop {
+                        let next = tokio::select! { _ = stop.cancelled() => break, next = events.next() => next };
+                        match next {
+                            Some(ClientEvent::Envelope { envelope, .. }) => {
+                                if tx
+                                    .send(ClientEvent::ChildEnvelope {
+                                        generation: tag.clone(),
+                                        child_session_id: child.clone(),
+                                        envelope,
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            None => break,
+                            _ => {}
+                        }
+                    }
+                });
+                self.streams.push(ActiveStream {
+                    cancel,
+                    generation,
+                    child_session_id: Some(child_session_id),
+                });
+            }
             Effect::FetchModels => {
                 let (client, workspace) = (self.client.clone(), ctx.workspace.clone());
                 self.spawn_event(async move {
@@ -148,6 +212,37 @@ impl Executor {
                         generation,
                         result: client.summary(&id).await,
                     }
+                });
+            }
+            Effect::FetchChildTerminalMetadata(id) => {
+                let client = self.client.clone();
+                self.spawn_event(async move {
+                    let mut result = Err("could not refresh the subagent's terminal state".into());
+                    for attempt in 0..4 {
+                        result = match tokio::time::timeout(
+                            std::time::Duration::from_secs(1),
+                            client.summary(&id),
+                        )
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(_) => {
+                                Err("timed out refreshing the subagent's terminal state".into())
+                            }
+                        };
+                        if result.as_ref().is_ok_and(|m| {
+                            crate::tui::state::ChildStatus::from_wire(
+                                m.child_status.as_deref().unwrap_or(""),
+                            )
+                            .terminal()
+                        }) {
+                            break;
+                        }
+                        if attempt < 3 {
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        }
+                    }
+                    ClientEvent::Metadata { generation, result }
                 });
             }
             Effect::FetchContext { session_id, epoch } => {
@@ -221,6 +316,37 @@ impl Executor {
             Effect::ClearEditor { revision } => {
                 editor.clear_if_revision(revision);
             }
+            Effect::ControlChild {
+                parent_session_id,
+                child_session_id,
+                control,
+            } => {
+                let client = self.client.clone();
+                self.spawn_event(async move {
+                    let result = match control {
+                        crate::tui::protocol::ChildControl::Stop => {
+                            client.stop(&child_session_id).await.and_then(|response| {
+                                if response.accepted {
+                                    Ok(())
+                                } else {
+                                    Err(format!("stop was refused: {}", response.actor_state))
+                                }
+                            })
+                        }
+                        crate::tui::protocol::ChildControl::Continue => {
+                            client
+                                .continue_child(&parent_session_id, &child_session_id)
+                                .await
+                        }
+                    };
+                    ClientEvent::ChildControlled {
+                        generation,
+                        child_session_id,
+                        control,
+                        result,
+                    }
+                });
+            }
             Effect::SetEditor { text, revision } => editor.restore(&text, revision),
             Effect::SaveTheme(theme) => {
                 // A few bytes written once per pick: done inline. A failure is shown, not fatal:
@@ -282,7 +408,13 @@ impl Executor {
 
     /// Starts the stream of the tab tagged `generation`, replacing the one it had.
     fn subscribe(&mut self, session_id: String, cursor: Option<u64>, generation: Generation) {
-        self.cancel_stream(&generation);
+        self.streams.retain(|s| {
+            let gone = s.generation == generation && s.child_session_id.is_none();
+            if gone {
+                s.cancel.cancel();
+            }
+            !gone
+        });
         let cancel = CancellationToken::new();
         let mut events = stream::subscribe(
             self.client.clone(),
@@ -308,7 +440,11 @@ impl Executor {
                 }
             }
         });
-        self.streams.push(ActiveStream { cancel, generation });
+        self.streams.push(ActiveStream {
+            cancel,
+            generation,
+            child_session_id: None,
+        });
     }
 
     fn spawn_event(&self, work: impl Future<Output = ClientEvent> + Send + 'static) {

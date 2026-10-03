@@ -17,6 +17,846 @@ use ulid::Ulid;
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
+#[test]
+fn interrupted_steering_keeps_watched_and_open_children_running_then_parked() {
+    for opened in [false, true] {
+        for close_parent in [false, true] {
+            if !opened && close_parent {
+                continue;
+            }
+            let mut s = subagent_parent();
+            spawn_subagent(&mut s, None);
+            let mut ui = UiState::default();
+            if opened {
+                handle_action(&mut s, &mut ui, Action::OpenChild(Ulid(2).to_string()));
+                let metadata = serde_json::from_value(json!({"session_id":Ulid(2),"workspace":"/ws","model":"fast","actor_state":"active","agent":"explore","current_seq":0,"parent_session_id":Ulid(1),"promptable":false,"child_status":"running"})).unwrap();
+                let generation = s.generation.clone();
+                update(
+                    &mut s,
+                    ClientEvent::Metadata {
+                        generation,
+                        result: Ok(metadata),
+                    },
+                )
+                .unwrap();
+                if close_parent {
+                    s.active = 0;
+                    handle_action(&mut s, &mut ui, Action::CloseTab);
+                }
+            }
+            let mut script = Script::new();
+            script.seq = 10;
+            script.raw("turn.end", json!({"outcome":"interrupted"}));
+            script.raw("turn.start", json!({"turn_id":"steered-turn"}));
+            script.raw(
+                "agent.yield",
+                json!({"kind":"budget","question":"step budget exhausted"}),
+            );
+            for replay in [false, true] {
+                if replay && opened {
+                    let generation = s.generation.clone();
+                    update(&mut s, ClientEvent::Resync { generation }).unwrap();
+                }
+                for (index, envelope) in script.out.iter().enumerate() {
+                    let generation = s.generation.clone();
+                    let event = if opened {
+                        ClientEvent::Envelope {
+                            generation,
+                            envelope: envelope.clone(),
+                        }
+                    } else {
+                        ClientEvent::ChildEnvelope {
+                            generation,
+                            child_session_id: Ulid(2).to_string(),
+                            envelope: envelope.clone(),
+                        }
+                    };
+                    let effects = update(&mut s, event).unwrap();
+                    assert!(!effects.iter().any(|e| matches!(
+                        e,
+                        Effect::FetchChildTerminalMetadata(_) | Effect::UnwatchChild(_)
+                    )));
+                    let status = if opened {
+                        s.active_child_status()
+                    } else {
+                        s.children[0].status
+                    };
+                    assert!(!status.terminal());
+                    if !replay {
+                        assert_eq!(
+                            status,
+                            if index == 2 {
+                                ChildStatus::OutOfSteps
+                            } else {
+                                ChildStatus::Running
+                            }
+                        );
+                    }
+                }
+                if opened {
+                    handle_action(&mut s, &mut ui, Action::ContinueChild);
+                    assert!(ui.child_confirm.is_some());
+                    handle_action(&mut s, &mut ui, Action::CancelChildControl);
+                } else {
+                    assert_eq!(s.children[0].status, ChildStatus::OutOfSteps);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_child_finishes_after_its_parent_closes_and_refreshes_its_outcome() {
+    for (kind, payload, expected) in [
+        ("turn.end", json!({"outcome":"done"}), ChildStatus::Done),
+        ("turn.end", json!({"outcome":"error"}), ChildStatus::Failed),
+        (
+            "session.end",
+            json!({"reason":"stopped_by_owner"}),
+            ChildStatus::Stopped,
+        ),
+    ] {
+        let mut s = subagent_parent();
+        spawn_subagent(&mut s, None);
+        let mut ui = UiState::default();
+        handle_action(&mut s, &mut ui, Action::OpenChild(Ulid(2).to_string()));
+        s.active = 0;
+        handle_action(&mut s, &mut ui, Action::CloseTab);
+        assert_eq!(s.tabs.len(), 1);
+        let effects = subagent_event(&mut s, 10, kind, payload);
+        let projected = if kind == "session.end" {
+            expected
+        } else {
+            ChildStatus::Running
+        };
+        assert_eq!(s.active_child_status(), projected);
+        assert!(effects.contains(&Effect::FetchChildTerminalMetadata(Ulid(2).to_string())));
+        assert!(
+            !subagent_event(&mut s, 10, "turn.start", json!({"turn_id":"late"}))
+                .contains(&Effect::FetchChildTerminalMetadata(Ulid(2).to_string()))
+        );
+        assert_eq!(s.active_child_status(), projected);
+        subagent_event(&mut s, 11, "turn.start", json!({"turn_id":"late"}));
+        assert_eq!(s.active_child_status(), projected);
+        let metadata: SessionMetadata = serde_json::from_value(json!({"session_id":Ulid(2),"workspace":"/ws","model":"fast","agent":"explore","actor_state":"stopped","current_seq":11,"parent_session_id":Ulid(1),"promptable":false,"child_status":expected.label()})).unwrap();
+        let generation = s.generation.clone();
+        update(
+            &mut s,
+            ClientEvent::Metadata {
+                generation,
+                result: Ok(metadata),
+            },
+        )
+        .unwrap();
+        assert_eq!(s.active_child_status(), expected);
+    }
+}
+
+#[tokio::test]
+async fn terminal_metadata_refresh_retries_until_the_persisted_outcome_arrives() {
+    use navai::tui::{
+        client::Client,
+        input::Editor,
+        runtime::{Context, Executor},
+    };
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
+    let server = MockServer::start().await;
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let count = attempts.clone();
+    Mock::given(method("GET")).and(path("/v1/sessions/child"))
+        .respond_with(move |_: &wiremock::Request| {
+            let status = if count.fetch_add(1, Ordering::SeqCst) == 0 { "running" } else { "done" };
+            ResponseTemplate::new(200).set_body_json(json!({"session_id":"child","workspace":"/ws","model":"fast","actor_state":"stopped","current_seq":10,"parent_session_id":"parent","promptable":false,"child_status":status}))
+        }).expect(2).mount(&server).await;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let mut executor = Executor::new(Client::new(server.uri(), None), tx);
+    executor.execute(
+        Effect::FetchChildTerminalMetadata("child".into()),
+        &Context {
+            generation: Generation(7),
+            session_id: Some("child".into()),
+            workspace: "/ws".into(),
+            config_dir: None,
+        },
+        &mut Editor::new(),
+    );
+    let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(event, ClientEvent::Metadata { generation:Generation(7), result:Ok(m) } if m.child_status.as_deref() == Some("done"))
+    );
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn old_initialization_never_overwrites_ordered_or_terminal_child_facts() {
+    let mut s = subagent_parent();
+    let entry: SessionListEntry = serde_json::from_value(json!({"id":Ulid(2),"created_at":"now","updated_at":"now","message_count":0,"live":true,"agent":"explore","parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
+    let list = ClientEvent::Sessions {
+        generation: Generation(0),
+        result: Ok(SessionListBody {
+            sessions: vec![entry.clone()],
+        }),
+    };
+    update(&mut s, list.clone()).unwrap();
+    let mut script = Script::new();
+    script.seq = 10;
+    script.raw("agent.yield", json!({"kind":"budget"}));
+    update(
+        &mut s,
+        ClientEvent::ChildEnvelope {
+            generation: Generation(0),
+            child_session_id: Ulid(2).to_string(),
+            envelope: script.out[0].clone(),
+        },
+    )
+    .unwrap();
+    update(&mut s, list.clone()).unwrap();
+    assert_eq!(s.children[0].status, ChildStatus::OutOfSteps);
+    spawn_subagent(&mut s, None);
+    assert_eq!(s.children[0].status, ChildStatus::OutOfSteps);
+    let mut terminal = entry;
+    terminal.child_status = Some("done".into());
+    update(
+        &mut s,
+        ClientEvent::Sessions {
+            generation: Generation(0),
+            result: Ok(SessionListBody {
+                sessions: vec![terminal],
+            }),
+        },
+    )
+    .unwrap();
+    update(&mut s, list).unwrap();
+    subagent_event(
+        &mut s,
+        2,
+        "subagent.spawned",
+        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"explore","goal":"Read tests"}),
+    );
+    assert_eq!(s.children[0].status, ChildStatus::Done);
+}
+
+#[test]
+fn parent_resync_keeps_a_parked_child_and_its_continue_control() {
+    let mut s = subagent_parent();
+    spawn_subagent(&mut s, None);
+    let mut script = Script::new();
+    script.seq = 10;
+    script.raw(
+        "agent.yield",
+        json!({"kind":"budget","question":"step budget exhausted"}),
+    );
+    update(
+        &mut s,
+        ClientEvent::ChildEnvelope {
+            generation: Generation(0),
+            child_session_id: Ulid(2).to_string(),
+            envelope: script.out[0].clone(),
+        },
+    )
+    .unwrap();
+    update(
+        &mut s,
+        ClientEvent::Resync {
+            generation: Generation(0),
+        },
+    )
+    .unwrap();
+    spawn_subagent(&mut s, None);
+    assert_eq!(s.children[0].status, ChildStatus::OutOfSteps);
+    assert_eq!(s.children[0].child_seq, Some(10));
+    let mut ui = UiState::default();
+    handle_action(&mut s, &mut ui, Action::OpenChild(Ulid(2).to_string()));
+    let generation = s.generation.clone();
+    let mut metadata = s.tabs[0].session.clone().unwrap();
+    metadata.session_id = Ulid(2).to_string();
+    metadata.parent_session_id = Some(Ulid(1).to_string());
+    metadata.promptable = false;
+    update(
+        &mut s,
+        ClientEvent::Metadata {
+            generation,
+            result: Ok(metadata),
+        },
+    )
+    .unwrap();
+    handle_action(&mut s, &mut ui, Action::ContinueChild);
+    assert!(ui.child_confirm.is_some());
+}
+
+#[test]
+fn completion_keeps_the_child_terminal_after_its_parent_tab_closes() {
+    let mut s = subagent_parent();
+    spawn_subagent(&mut s, None);
+    let mut ui = UiState::default();
+    handle_action(&mut s, &mut ui, Action::OpenChild(Ulid(2).to_string()));
+    s.active = 0;
+    subagent_event(
+        &mut s,
+        2,
+        "subagent.done",
+        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"explore","outcome":"failed"}),
+    );
+    assert!(
+        matches!(&s.conversation.blocks.last().unwrap().kind, BlockKind::Notice(text) if text.contains("alt+s open transcript"))
+    );
+    handle_action(&mut s, &mut ui, Action::CloseTab);
+    assert!(s.read_only());
+    assert_eq!(s.active_child_status(), ChildStatus::Failed);
+}
+
+#[test]
+fn session_list_and_metadata_strip_terminal_controls_before_display() {
+    let mut s = subagent_parent();
+    let entry = serde_json::from_value(json!({"id":Ulid(2),"title":"\u{1b}[31mGoal\u{1b}[0m","created_at":"now","updated_at":"now","message_count":1,"live":true,"agent":"\u{1b}[31mexplore\u{1b}[0m","parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
+    update(
+        &mut s,
+        ClientEvent::Sessions {
+            generation: Generation(0),
+            result: Ok(SessionListBody {
+                sessions: vec![entry],
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.children[0].name, "explore");
+    assert_eq!(s.sessions[0].title.as_deref(), Some("Goal"));
+    let mut metadata = s.session.clone().unwrap();
+    metadata.agent = Some("\u{1b}[31mreview\u{1b}[0m".into());
+    metadata.model = "\u{1b}[31mfast\u{1b}[0m".into();
+    update(
+        &mut s,
+        ClientEvent::Metadata {
+            generation: Generation(0),
+            result: Ok(metadata),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.agent_name(), "review");
+    assert_eq!(s.selected_model_alias.as_deref(), Some("fast"));
+}
+
+#[test]
+fn late_permission_mirrors_and_replayed_child_events_do_not_hide_continue() {
+    let mut s = subagent_parent();
+    spawn_subagent(&mut s, None);
+    let mut script = Script::new();
+    script.seq = 10;
+    script.raw(
+        "agent.yield",
+        json!({"kind":"budget","question":"step budget exhausted"}),
+    );
+    update(
+        &mut s,
+        ClientEvent::ChildEnvelope {
+            generation: Generation(0),
+            child_session_id: Ulid(2).to_string(),
+            envelope: script.out[0].clone(),
+        },
+    )
+    .unwrap();
+    subagent_event(
+        &mut s,
+        2,
+        "permission.resolved",
+        json!({"request_id":"old","resolution":"allow_once","child_session_id":Ulid(2)}),
+    );
+    assert_eq!(s.children[0].status, ChildStatus::OutOfSteps);
+    script.seq = 5;
+    script.raw(
+        "permission.resolved",
+        json!({"request_id":"old","resolution":"allow_once"}),
+    );
+    update(
+        &mut s,
+        ClientEvent::ChildEnvelope {
+            generation: Generation(0),
+            child_session_id: Ulid(2).to_string(),
+            envelope: script.out[1].clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.children[0].status, ChildStatus::OutOfSteps);
+}
+
+#[test]
+fn a_terminal_list_status_updates_a_child_without_an_open_parent() {
+    let mut s = subagent_parent();
+    s.session.as_mut().unwrap().session_id = Ulid(2).to_string();
+    s.parent_session_id = Some(Ulid(1).to_string());
+    s.child_status = ChildStatus::Running;
+    let entry = serde_json::from_value(json!({"id":Ulid(2),"created_at":"now","updated_at":"now","message_count":1,"live":false,"parent_session_id":Ulid(1),"child_status":"done","promptable":false})).unwrap();
+    update(
+        &mut s,
+        ClientEvent::Sessions {
+            generation: Generation(0),
+            result: Ok(SessionListBody {
+                sessions: vec![entry],
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.active_child_status(), ChildStatus::Done);
+}
+
+#[tokio::test]
+async fn child_watches_keep_the_parent_owner_are_idempotent_and_end_on_completion() {
+    use navai::tui::{
+        client::Client,
+        input::Editor,
+        runtime::{Context, Executor},
+    };
+    let mut s = subagent_parent();
+    s.tabs[0].id = 11;
+    s.tabs.push(Tab {
+        id: 22,
+        generation: Generation(8),
+        ..Default::default()
+    });
+    s.active = 1;
+    let entry = serde_json::from_value(json!({"id":Ulid(2),"created_at":"now","updated_at":"now","message_count":0,"agent":"explore","live":true,"parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
+    let effects = update(
+        &mut s,
+        ClientEvent::Sessions {
+            generation: Generation(0),
+            result: Ok(SessionListBody {
+                sessions: vec![entry],
+            }),
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(&effects[0], Effect::WatchChild { tab_id:11, generation:Generation(0), parent_session_id, .. } if parent_session_id == &Ulid(1).to_string())
+    );
+    let (tx, _) = tokio::sync::mpsc::channel(16);
+    let mut exec = Executor::new(Client::new("http://127.0.0.1:1", None), tx);
+    let ctx = Context {
+        generation: Generation(8),
+        session_id: None,
+        workspace: "/ws".into(),
+        config_dir: None,
+    };
+    let mut editor = Editor::new();
+    exec.execute(effects[0].clone(), &ctx, &mut editor);
+    exec.execute(effects[0].clone(), &ctx, &mut editor);
+    assert_eq!(exec.stream_count(), 1);
+    s.active = 0;
+    let effects = subagent_event(
+        &mut s,
+        1,
+        "subagent.done",
+        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"explore","outcome":"done"}),
+    );
+    assert!(effects.contains(&Effect::UnwatchChild(Ulid(2).to_string())));
+    for effect in effects {
+        exec.execute(effect, &ctx, &mut editor);
+    }
+    assert_eq!(exec.stream_count(), 0);
+}
+
+#[test]
+fn a_child_spawn_event_on_its_own_stream_adds_no_self_child() {
+    let mut s = subagent_parent();
+    s.session.as_mut().unwrap().session_id = Ulid(2).to_string();
+    s.parent_session_id = Some(Ulid(1).to_string());
+    let effects = subagent_event(
+        &mut s,
+        1,
+        "subagent.spawned",
+        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"explore","goal":"Read tests"}),
+    );
+    assert!(s.children.is_empty());
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn startup_child_metadata_opens_read_only_without_resume() {
+    let mut s = State::default();
+    let effects = handle_action(
+        &mut s,
+        &mut UiState::default(),
+        Action::ResumeSession("child".into()),
+    );
+    assert_eq!(effects, vec![Effect::FetchMetadata("child".into())]);
+    let metadata = serde_json::from_value(json!({"session_id":"child","actor_state":"active","workspace":"/ws","model":"fast","agent":"explore","current_seq":0,"parent_session_id":"parent","promptable":false,"child_status":"running"})).unwrap();
+    let generation = s.generation.clone();
+    let effects = update(
+        &mut s,
+        ClientEvent::Metadata {
+            generation,
+            result: Ok(metadata),
+        },
+    )
+    .unwrap();
+    assert!(s.read_only());
+    assert!(effects.contains(&Effect::Subscribe {
+        session_id: "child".into(),
+        cursor: None
+    }));
+    assert!(!effects
+        .iter()
+        .any(|e| matches!(e, Effect::Resume(_) | Effect::Create(_))));
+}
+
+#[tokio::test]
+async fn child_controls_and_permission_answers_use_the_owner_routes() {
+    use navai::tui::client::Client;
+    use wiremock::{
+        matchers::{body_json, method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/sessions/child/stop"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"accepted":true,"actor_state":"stopped"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/sessions/parent/children/child/continue"))
+        .respond_with(ResponseTemplate::new(409).set_body_json(json!({"error":"child_not_parked"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/sessions/parent/permissions/request"))
+        .and(body_json(
+            json!({"decision":"deny","message":"Stay in the workspace"}),
+        ))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri(), None);
+    assert!(client.stop("child").await.unwrap().accepted);
+    assert!(client
+        .continue_child("parent", "child")
+        .await
+        .unwrap_err()
+        .contains("child_not_parked"));
+    client
+        .answer_permission(
+            "parent",
+            "request",
+            PermissionAnswer {
+                decision: "deny".into(),
+                message: Some("Stay in the workspace".into()),
+            },
+        )
+        .await
+        .unwrap();
+}
+
+fn subagent_parent() -> State {
+    let tab = Tab {
+        session: Some(SessionMetadata {
+            session_id: Ulid(1).to_string(),
+            actor_state: "idle".into(),
+            workspace: "/ws".into(),
+            model: "fast".into(),
+            agent: Some("build".into()),
+            variant: None,
+            parent_session_id: None,
+            promptable: true,
+            child_status: None,
+            current_seq: 0,
+        }),
+        ..Default::default()
+    };
+    State {
+        tabs: vec![tab],
+        ..Default::default()
+    }
+}
+
+fn subagent_event(s: &mut State, seq: u64, kind: &str, payload: Value) -> Vec<Effect> {
+    update(
+        s,
+        ClientEvent::Envelope {
+            generation: s.generation.clone(),
+            envelope: EventEnvelope {
+                schema_version: 1,
+                event_id: Ulid(seq as u128 + 10),
+                seq,
+                session_id: Ulid(1),
+                actor_id: ROOT_ACTOR_ID.into(),
+                kind: kind.into(),
+                occurred_at: "2026-10-04T00:00:00Z".into(),
+                causation_id: None,
+                correlation_id: None,
+                payload,
+            },
+        },
+    )
+    .unwrap()
+}
+
+fn spawn_subagent(s: &mut State, delivery: Option<&str>) {
+    let mut payload = json!({"parent_session_id": Ulid(1), "child_session_id": Ulid(2), "agent":"explore", "goal":"Read the parser tests", "tool_call_id":"task-1"});
+    if let Some(delivery) = delivery {
+        payload["delivery"] = json!(delivery);
+    }
+    assert!(subagent_event(s, 1, "subagent.spawned", payload)
+        .iter().any(|e| matches!(e, Effect::WatchChild { child_session_id, .. } if child_session_id == &Ulid(2).to_string())));
+}
+
+#[test]
+fn subagents_replay_running_and_every_terminal_outcome() {
+    for outcome in ["done", "failed", "stopped"] {
+        let mut s = subagent_parent();
+        spawn_subagent(&mut s, None);
+        assert_eq!(s.children[0].status, ChildStatus::Running);
+        let payload = json!({"parent_session_id": Ulid(1), "child_session_id": Ulid(2), "agent":"explore", "outcome":outcome,"notification_id":Ulid(3), "reason":"server reported this"});
+        subagent_event(&mut s, 2, "subagent.done", payload.clone());
+        let children = s.children.clone();
+        let blocks = s.conversation.blocks.clone();
+        update(
+            &mut s,
+            ClientEvent::Resync {
+                generation: Generation(0),
+            },
+        )
+        .unwrap();
+        assert_eq!(s.children, children);
+        spawn_subagent(&mut s, None);
+        subagent_event(&mut s, 2, "subagent.done", payload);
+        assert_eq!(s.children, children);
+        assert_eq!(s.conversation.blocks, blocks);
+        assert_eq!(s.children[0].status.label(), outcome);
+        assert_eq!(s.conversation.blocks.len(), 1);
+    }
+}
+
+#[test]
+fn optional_subagent_delivery_and_watchdog_fields_are_tolerated() {
+    for delivery in [None, Some("next_turn"), Some("steer"), Some("interrupt")] {
+        let mut s = subagent_parent();
+        spawn_subagent(&mut s, delivery);
+        assert_eq!(s.children[0].delivery.as_deref(), delivery);
+        subagent_event(
+            &mut s,
+            2,
+            "subagent.watchdog",
+            json!({"child_session_id":Ulid(2),"verdict":"doubt","reason":"No recent progress","checked_at":"2026-10-04T00:00:00Z"}),
+        );
+        assert_eq!(s.children[0].status, ChildStatus::Doubt);
+        subagent_event(
+            &mut s,
+            3,
+            "subagent.watchdog",
+            json!({"child_session_id":Ulid(2),"verdict":"active"}),
+        );
+        assert_eq!(s.children[0].status, ChildStatus::Running);
+        subagent_event(
+            &mut s,
+            4,
+            "subagent.done",
+            json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"explore","outcome":"done","delivery":delivery}),
+        );
+        subagent_event(
+            &mut s,
+            5,
+            "subagent.watchdog",
+            json!({"child_session_id":Ulid(2),"verdict":"doubt"}),
+        );
+        assert_eq!(s.children[0].status, ChildStatus::Done);
+    }
+}
+
+#[test]
+fn opening_and_closing_a_child_never_resumes_or_writes_to_it() {
+    let mut s = subagent_parent();
+    spawn_subagent(&mut s, None);
+    let mut ui = UiState::default();
+    let id = Ulid(2).to_string();
+    let effects = handle_action(&mut s, &mut ui, Action::OpenChild(id.clone()));
+    assert!(effects.contains(&Effect::FetchMetadata(id.clone())));
+    assert!(effects.contains(&Effect::Subscribe {
+        session_id: id.clone(),
+        cursor: None
+    }));
+    assert!(!effects
+        .iter()
+        .any(|e| matches!(e, Effect::Resume(_) | Effect::Create(_))));
+    assert!(s.read_only());
+    assert!(handle_action(&mut s, &mut ui, Action::Submit("hello".into())).is_empty());
+    assert!(handle_action(
+        &mut s,
+        &mut ui,
+        Action::RunCommand {
+            name: "compact".into(),
+            arguments: String::new(),
+            revision: None
+        }
+    )
+    .is_empty());
+    handle_action(&mut s, &mut ui, Action::CloseTab);
+    assert_eq!(s.active, 0);
+    assert_eq!(s.session.as_ref().unwrap().session_id, Ulid(1).to_string());
+    assert!(!s.read_only());
+}
+
+#[test]
+fn subagent_controls_confirm_effects_and_show_server_refusals() {
+    for (status, action, control) in [
+        (ChildStatus::Running, Action::Stop, ChildControl::Stop),
+        (
+            ChildStatus::OutOfSteps,
+            Action::ContinueChild,
+            ChildControl::Continue,
+        ),
+    ] {
+        let mut s = subagent_parent();
+        spawn_subagent(&mut s, None);
+        s.children[0].status = status;
+        let mut ui = UiState::default();
+        handle_action(&mut s, &mut ui, Action::OpenChild(Ulid(2).to_string()));
+        let generation = s.generation.clone();
+        update(
+            &mut s,
+            ClientEvent::Metadata {
+                generation: generation.clone(),
+                result: Ok(SessionMetadata {
+                    session_id: Ulid(2).to_string(),
+                    actor_state: "active".into(),
+                    workspace: "/ws".into(),
+                    model: "fast".into(),
+                    agent: Some("explore".into()),
+                    variant: None,
+                    parent_session_id: None,
+                    promptable: true,
+                    child_status: None,
+                    current_seq: 0,
+                }),
+            },
+        )
+        .unwrap();
+        assert!(handle_action(&mut s, &mut ui, action).is_empty());
+        assert!(ui.child_confirm.is_some());
+        assert_eq!(
+            handle_action(&mut s, &mut ui, Action::ConfirmChildControl),
+            vec![Effect::ControlChild {
+                parent_session_id: Ulid(1).to_string(),
+                child_session_id: Ulid(2).to_string(),
+                control
+            }]
+        );
+        update(
+            &mut s,
+            ClientEvent::ChildControlled {
+                generation,
+                child_session_id: Ulid(2).to_string(),
+                control,
+                result: Err("HTTP 409 Conflict: child_not_parked".into()),
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(&s.conversation.blocks.last().unwrap().kind, BlockKind::Error(text) if text.contains("child_not_parked"))
+        );
+        assert_eq!(s.active_child_status(), status);
+    }
+}
+
+#[test]
+fn child_permission_is_labelled_and_answered_on_the_parent() {
+    let mut s = subagent_parent();
+    spawn_subagent(&mut s, None);
+    subagent_event(
+        &mut s,
+        2,
+        "permission.requested",
+        json!({"request_id":"request-1","tool_call_id":"child-call","tool":"bash","arguments":"{\"command\":\"cargo test\"}","scope":{"kind":"folder","value":"/ws"},"agent":"explore","reason":"needs approval","child_session_id":Ulid(2)}),
+    );
+    assert_eq!(s.children[0].status, ChildStatus::Permission);
+    assert!(s
+        .open_permission()
+        .unwrap()
+        .reason
+        .contains("subagent explore"));
+    let answer = PermissionAnswer {
+        decision: "allow_once".into(),
+        message: None,
+    };
+    assert_eq!(
+        handle_action(
+            &mut s,
+            &mut UiState::default(),
+            Action::AnswerPermission {
+                request_id: "request-1".into(),
+                answer: answer.clone()
+            }
+        ),
+        vec![Effect::AnswerPermission {
+            session_id: Ulid(1).to_string(),
+            request_id: "request-1".into(),
+            answer
+        }]
+    );
+    subagent_event(
+        &mut s,
+        3,
+        "permission.resolved",
+        json!({"request_id":"request-1","tool_call_id":"child-call","resolution":"allow_once","child_session_id":Ulid(2)}),
+    );
+    assert_eq!(s.children[0].status, ChildStatus::Running);
+    assert!(s.open_permission().is_none());
+}
+
+#[test]
+fn child_budget_events_update_the_sidebar_without_opening_a_transcript() {
+    let mut s = subagent_parent();
+    spawn_subagent(&mut s, None);
+    let mut script = Script::new();
+    script.raw(
+        "agent.yield",
+        json!({"kind":"budget","question":"step budget exhausted"}),
+    );
+    update(
+        &mut s,
+        ClientEvent::ChildEnvelope {
+            generation: Generation(0),
+            child_session_id: Ulid(2).to_string(),
+            envelope: script.out[0].clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.children[0].status, ChildStatus::OutOfSteps);
+    assert!(s.conversation.blocks.is_empty());
+}
+
+#[test]
+fn session_list_seeds_real_children_without_inventing_goals() {
+    let mut s = subagent_parent();
+    let entry: SessionListEntry = serde_json::from_value(json!({"id":Ulid(2),"title":"Not a delegated goal","created_at":"now","updated_at":"now","message_count":1,"agent":"review","live":false,"parent_session_id":Ulid(1),"child_status":"stopped","promptable":false})).unwrap();
+    update(
+        &mut s,
+        ClientEvent::Sessions {
+            generation: Generation(0),
+            result: Ok(SessionListBody {
+                sessions: vec![entry],
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.children[0].name, "review");
+    assert_eq!(s.children[0].status, ChildStatus::Stopped);
+    assert!(s.children[0].goal.is_empty());
+}
+
 // ---------------------------------------------------------------- fixture generator
 
 struct Script {
@@ -610,6 +1450,9 @@ fn with_session(s: &mut State, id: &str) {
         model: "a".into(),
         agent: None,
         variant: None,
+        parent_session_id: None,
+        promptable: true,
+        child_status: None,
         current_seq: 0,
     });
 }
@@ -1023,7 +1866,7 @@ fn resume_other_id_opens_a_tab_same_stopped_id_keeps_cursor() {
     }));
     // another id: a new tab, fresh start
     let fx = handle_action(&mut s, &mut ui(), Action::ResumeSession("S2".into()));
-    assert_eq!(fx.last(), Some(&Effect::Resume("S2".into())));
+    assert_eq!(fx.last(), Some(&Effect::FetchMetadata("S2".into())));
     assert_eq!((s.tabs.len(), s.active), (2, 1));
     assert_ne!(s.generation, gen);
     assert_eq!(s.last_applied_seq, None);
@@ -1299,6 +2142,9 @@ fn bug9_metadata_refreshes_display_and_stale_metadata_cannot_clobber_a_pick() {
             model: model.into(),
             agent: None,
             variant: None,
+            parent_session_id: None,
+            promptable: true,
+            child_status: None,
             current_seq: 3,
         }),
     };
@@ -2077,7 +2923,7 @@ fn each_tab_keeps_its_own_context_epoch() {
 /// A tab that asked to resume `id` and has no answer yet.
 fn resuming(s: &mut State, ui: &mut UiState, id: &str) -> Generation {
     let fx = handle_action(s, ui, Action::ResumeSession(id.into()));
-    assert!(fx.contains(&Effect::Resume(id.into())), "{fx:?}");
+    assert!(fx.contains(&Effect::FetchMetadata(id.into())), "{fx:?}");
     s.generation.clone()
 }
 
@@ -2579,6 +3425,9 @@ fn the_session_summary_and_a_background_change_set_each_tabs_agent() {
             model: "a".into(),
             agent: Some("plan".into()),
             variant: Some("high".into()),
+            parent_session_id: None,
+            promptable: true,
+            child_status: None,
             current_seq: 0,
         }),
     };
@@ -2704,6 +3553,9 @@ fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server
             model: "opus".into(),
             agent: None,
             variant: Some("high".into()),
+            parent_session_id: None,
+            promptable: true,
+            child_status: None,
             current_seq: 0,
         }),
     };
@@ -2834,6 +3686,9 @@ fn a_summary_read_before_a_confirmed_change_does_not_undo_it() {
             model: "a".into(),
             agent: Some(agent.into()),
             variant: variant.map(str::to_string),
+            parent_session_id: None,
+            promptable: true,
+            child_status: None,
             current_seq: seq,
         }),
     };
@@ -3692,6 +4547,9 @@ fn model_changed_moves_the_tab_to_the_new_model_live_and_on_replay() {
             model: "opus".into(),
             agent: None,
             variant: None,
+            parent_session_id: None,
+            promptable: true,
+            child_status: None,
             current_seq: 1,
         }),
     };

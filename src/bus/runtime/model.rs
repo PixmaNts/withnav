@@ -121,9 +121,6 @@ pub struct ModelRequest {
     pub reply: oneshot::Sender<ModelReply>,
 }
 
-/// Requests accepted while a turn ran, each with its operation id.
-pub(super) type Waiting = Vec<(Ulid, String)>;
-
 fn identity_json(identity: &ModelIdentity) -> Value {
     json!({
         "alias": identity.alias,
@@ -316,12 +313,4 @@ pub(super) async fn accept_deferred(sequencer: &Sequencer, request: ModelRequest
 /// Tells the stream how a request that waited for the turn ended.
 pub(super) fn report(sequencer: &Sequencer, operation_id: Ulid, outcome: Result<Switched, String>) {
     let _ = sequencer.publish(result(operation_id, &outcome, "after_turn"));
-}
-
-/// Tells the stream that each request that waited for the turn did not
-/// happen.
-pub(super) fn report_failure(sequencer: &Sequencer, waiting: &Waiting, why: &str) {
-    for (operation_id, _) in waiting {
-        report(sequencer, *operation_id, Err(why.to_string()));
-    }
 }

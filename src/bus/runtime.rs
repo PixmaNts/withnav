@@ -10,6 +10,7 @@
 //! [`Sequencer::close_session`] — never on a natural turn end.
 
 mod compact;
+mod deferred;
 mod model;
 
 use std::sync::{Arc, Mutex};
@@ -683,8 +684,7 @@ async fn runtime_loop(
         // The gauge with the new message in it, before the first request.
         turn.publish_context(actor.context_breakdown());
 
-        let mut deferred: compact::Waiting = Vec::new();
-        let mut deferred_switches: model::Waiting = Vec::new();
+        let mut deferred: deferred::Queue = Vec::new();
         let started = Instant::now();
         // Session cancellation must interrupt a MID-FLIGHT turn too: the
         // select cancels the ACTOR token (cloned handle avoids aliasing the
@@ -730,14 +730,20 @@ async fn runtime_loop(
                                 let (operation_id, focus) =
                                     (request.operation_id, request.focus.clone());
                                 if compact::accept_deferred(&sequencer, request).await {
-                                    deferred.push((operation_id, focus));
+                                    deferred.push(deferred::Deferred::Compact {
+                                        operation_id,
+                                        focus,
+                                    });
                                 }
                             }
                             Control::Model(request) => {
                                 let (operation_id, alias) =
                                     (request.operation_id, request.alias.clone());
                                 if model::accept_deferred(&sequencer, request).await {
-                                    deferred_switches.push((operation_id, alias));
+                                    deferred.push(deferred::Deferred::Model {
+                                        operation_id,
+                                        alias,
+                                    });
                                 }
                             }
                         }
@@ -769,8 +775,7 @@ async fn runtime_loop(
             );
             emit_agent_state(&mut turn, "idle");
             snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
-            compact::report_failure(&sequencer, &deferred, compact::CANCELLED);
-            model::report_failure(&sequencer, &deferred_switches, compact::CANCELLED);
+            deferred::report_cancelled(&sequencer, &deferred, compact::CANCELLED);
             break;
         }
 
@@ -890,41 +895,20 @@ async fn runtime_loop(
         if actor.cancel.is_cancelled() || session_cancel.is_cancelled() {
             // The stop wins: a `/compact` accepted during this turn is told
             // it will not happen, before `session.end`.
-            compact::report_failure(&sequencer, &deferred, compact::CANCELLED);
-            model::report_failure(&sequencer, &deferred_switches, compact::CANCELLED);
+            deferred::report_cancelled(&sequencer, &deferred, compact::CANCELLED);
             break;
         }
 
-        // A `/compact` that arrived during the turn runs now, between turns.
-        if !deferred.is_empty() {
-            let focus = compact::merge_focus(&deferred);
-            match compact::run(
-                &mut actor,
-                &status,
-                &sequencer,
-                &session_cancel,
-                focus.as_deref(),
-            )
-            .await
-            {
-                Ok(done) => compact::report_done(&sequencer, &deferred, &done),
-                Err(why) => compact::report_failure(&sequencer, &deferred, &why),
-            }
-        }
-        // A `/model` that arrived during the turn runs after it, one switch
-        // after the other in the order they came.
-        for (operation_id, alias) in std::mem::take(&mut deferred_switches) {
-            let outcome = model::run(
-                &mut actor,
-                &status,
-                &sequencer,
-                &session_cancel,
-                &alias,
-                operation_id,
-            )
-            .await;
-            model::report(&sequencer, operation_id, outcome);
-        }
+        // The controls that arrived during the turn run now, between turns,
+        // in the order they came.
+        deferred::run(
+            std::mem::take(&mut deferred),
+            &mut actor,
+            &status,
+            &sequencer,
+            &session_cancel,
+        )
+        .await;
     }
 
     // A stop (or the end of the inbox) while a request waits: its calls never

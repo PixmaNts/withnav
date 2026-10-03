@@ -597,3 +597,103 @@ async fn a_switch_whose_event_cannot_be_stored_changes_nothing() {
     assert!(retry.ok, "{retry:?}");
     assert_eq!(stored(&state, id, "model.changed").await.len(), 1);
 }
+
+/// The `command.result` events, in stream order, as (name, ok, operation id).
+async fn results(state: &AppState, id: ulid::Ulid) -> Vec<(String, bool, String)> {
+    stored(state, id, "command.result")
+        .await
+        .into_iter()
+        .map(|e| {
+            (
+                e.payload["name"].as_str().unwrap().to_string(),
+                e.payload["ok"].as_bool().unwrap(),
+                e.payload["operation_id"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+// Given a turn in flight
+// When /model other and then /compact are accepted
+// Then they run in that order after the turn: the summary is written by the
+//      new model, not the old one
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_controls_run_in_the_order_they_were_accepted() {
+    let env = env();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let a = spawn_gated_provider(vec![answer("turn answer")], release.clone()).await;
+    let b = spawn_capturing_provider(vec![answer(SUMMARY)]).await;
+    let state = state(&env, &a, &b, 20_000, 20_000);
+    let id = seeded(&state, &env.ws, 4, false).await;
+    let sub = state.subscribe(id, None).await.unwrap();
+
+    send_text(&state, id, "go").await;
+    wait_for("the turn's request", || a.bodies().len() == 1).await;
+    let switch = state.run_command(id, "model", "other").await.unwrap();
+    let compact = state.run_command(id, "compact", "").await.unwrap();
+    assert_eq!(switch.data.as_ref().unwrap()["applies"], "after_turn");
+    assert_eq!(compact.data.as_ref().unwrap()["applies"], "after_turn");
+
+    release.notify_one();
+    collect_until(sub, |e| e.kind == "context.compacted").await;
+    assert_eq!(a.bodies().len(), 1, "the old model wrote no summary");
+    let summary = body(&b, 0);
+    assert_eq!(summary["model"], "model-b");
+    assert!(summary.get("tools").is_none());
+    assert_eq!(state.session_summary(id).await.unwrap().model, "other");
+
+    let done: Vec<(String, bool, String)> = results(&state, id)
+        .await
+        .into_iter()
+        .filter(|(_, _, op)| {
+            *op == switch.operation_id.to_string() || *op == compact.operation_id.to_string()
+        })
+        .collect();
+    let names: Vec<&str> = done.iter().map(|(n, _, _)| n.as_str()).collect();
+    assert_eq!(names, ["model", "compact", "model", "compact"], "{done:?}");
+    assert!(done.iter().all(|(_, ok, _)| *ok));
+}
+
+// Given a /compact and a /model accepted while a turn runs
+// When the session is stopped before the turn ends
+// Then each is told it will not happen, under its own id and in the order it
+//      was accepted, before session.end
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_controls_are_cancelled_in_order_before_session_end() {
+    let env = env();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let a = spawn_gated_provider(vec![answer("never read")], release.clone()).await;
+    let b = spawn_capturing_provider(vec![]).await;
+    let state = state(&env, &a, &b, 20_000, 20_000);
+    let id = seeded(&state, &env.ws, 4, false).await;
+
+    send_text(&state, id, "go").await;
+    wait_for("the turn's request", || a.bodies().len() == 1).await;
+    let compact = state.run_command(id, "compact", "").await.unwrap();
+    let switch = state.run_command(id, "model", "other").await.unwrap();
+
+    state.close_session(id).await.unwrap();
+    state.history().flush().await.unwrap();
+
+    let all = results(&state, id).await;
+    let cancelled: Vec<&(String, bool, String)> = all.iter().filter(|(_, ok, _)| !*ok).collect();
+    assert_eq!(cancelled.len(), 2, "{all:?}");
+    assert_eq!(
+        (cancelled[0].0.as_str(), cancelled[0].2.as_str()),
+        ("compact", compact.operation_id.to_string().as_str())
+    );
+    assert_eq!(
+        (cancelled[1].0.as_str(), cancelled[1].2.as_str()),
+        ("model", switch.operation_id.to_string().as_str())
+    );
+    let events = stored(&state, id, "command.result").await;
+    let end = stored(&state, id, "session.end").await;
+    let last_result = events.iter().map(|e| e.seq).max().unwrap();
+    assert!(last_result < end.last().expect("session.end").seq);
+    assert!(stored(&state, id, "model.changed").await.is_empty());
+    assert_eq!(
+        state.history().meta(id).await.unwrap().unwrap().model,
+        "default"
+    );
+    assert!(b.bodies().is_empty());
+}

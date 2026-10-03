@@ -9,7 +9,6 @@
 //! inbox wait; `session.end` is sequenced ONLY at teardown via
 //! [`Sequencer::close_session`] — never on a natural turn end.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -56,17 +55,30 @@ struct VariantSlot {
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
-    pending_ask: AtomicBool,
     variant: Mutex<VariantSlot>,
     /// The session's context gauge: written by the runtime at each boundary,
     /// read on demand by the service.
     context: Mutex<Option<ContextTracker>>,
+    /// The profile's instructions, which the role message carries after the
+    /// agent's prompt; needed to re-estimate the role when the agent changes.
+    profile_prompt: Mutex<Option<String>>,
+    /// The primary agent the session runs as, and the agents it may switch
+    /// to. A turn reads it at its start.
+    pub selection: crate::agent::selection::AgentSelection,
 }
 
 impl RuntimeStatus {
+    /// A status that runs as the agent `selection` names.
+    pub fn with_selection(selection: crate::agent::selection::AgentSelection) -> Self {
+        Self {
+            selection,
+            ..Self::default()
+        }
+    }
+
     /// The agent asked the human something and waits for the answer.
     pub fn pending_ask(&self) -> bool {
-        self.pending_ask.load(Ordering::SeqCst)
+        self.selection.ask_pending()
     }
 
     fn slot(&self) -> std::sync::MutexGuard<'_, VariantSlot> {
@@ -104,25 +116,59 @@ impl RuntimeStatus {
         }
     }
 
-    /// A turn starts: a waiting change is applied, and the variant the whole
-    /// turn runs with is returned.
-    fn begin_turn(&self) -> SelectedVariant {
+    /// A turn starts: a waiting variant change is applied, and the agent and
+    /// the variant the whole turn runs with are returned. The agent is
+    /// `None` for a status that sends no role.
+    async fn begin_turn(
+        &self,
+    ) -> (
+        Option<Arc<crate::agent::definitions::AgentDefinition>>,
+        SelectedVariant,
+    ) {
+        let role = self.selection.begin_turn().await;
         let mut slot = self.slot();
         if let Some(pending) = slot.pending.take() {
             slot.active = pending;
         }
         slot.running = true;
-        slot.active.clone()
+        (role, slot.active.clone())
     }
 
-    fn end_turn(&self) {
+    /// The turn is over: an agent or variant change may apply.
+    fn end_turn(&self, actor: &AgentActor) {
+        self.selection.end_turn(actor.pending_ask_id.is_some());
         self.slot().running = false;
     }
 
     /// Installs the session's context tracker before the runtime starts.
     /// Without one the runtime publishes no `context.updated`.
-    pub fn install_context(&self, tracker: ContextTracker) {
+    pub fn install_context(&self, tracker: ContextTracker, profile_prompt: Option<String>) {
         *self.lock_context() = Some(tracker);
+        *match self.profile_prompt.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        } = profile_prompt;
+    }
+
+    /// Re-estimates the system category for a session now running as `role`;
+    /// the new snapshot when the estimate changed. Only between turns: the
+    /// other categories stay as the last turn left them.
+    pub fn set_context_role(
+        &self,
+        role: &crate::agent::definitions::AgentDefinition,
+    ) -> Option<ContextSnapshot> {
+        let profile = match self.profile_prompt.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+        .clone();
+        let message =
+            crate::agent::actor::compose_role_message(Some(&role.prompt), profile.as_deref());
+        let mut tracker = self.lock_context();
+        let tracker = tracker.as_mut()?;
+        let mut breakdown = tracker.snapshot().breakdown;
+        breakdown.system = crate::agent::context::system_tokens(message.as_deref());
+        tracker.update(breakdown).cloned()
     }
 
     /// The latest context snapshot, `None` for a session without a tracker.
@@ -158,9 +204,10 @@ impl RuntimeStatus {
             .and_then(|t| t.update(breakdown).cloned())
     }
 
-    fn sync_ask(&self, actor: &AgentActor) {
-        self.pending_ask
-            .store(actor.pending_ask_id.is_some(), Ordering::SeqCst);
+    /// Records that the session starts with `actor`'s unanswered `ask`, if any.
+    pub fn init_ask(&self, actor: &AgentActor) {
+        self.selection
+            .set_ask_pending(actor.pending_ask_id.is_some());
     }
 }
 
@@ -344,7 +391,7 @@ pub fn spawn_with_status(
     on_turn_end: Option<TurnEndHook>,
     status: Arc<RuntimeStatus>,
 ) -> tokio::task::JoinHandle<AgentActor> {
-    status.sync_ask(&actor);
+    status.init_ask(&actor);
     tokio::spawn(runtime_loop(
         session_id,
         actor,
@@ -387,8 +434,11 @@ async fn runtime_loop(
         }
 
         inbox.apply_batch_to_actor(&mut actor);
-        status.sync_ask(&actor);
-        actor.variant = status.begin_turn().map(|(_, variant)| variant);
+        // The turn runs as the agent and the variant selected now; a later
+        // change waits for the turn to end.
+        let (role, variant) = status.begin_turn().await;
+        actor.role = role;
+        actor.variant = variant.map(|(_, variant)| variant);
 
         let task_id = active_task_id.unwrap_or_default();
         let turn_id = Ulid::new();
@@ -433,8 +483,7 @@ async fn runtime_loop(
         // The turn's last word on the gauge: it also covers a cancelled turn
         // and the usage of a final response.
         turn.publish_context(actor.context_breakdown());
-        status.sync_ask(&actor);
-        status.end_turn();
+        status.end_turn(&actor);
 
         // A collapsed session surfaces its first publish failure as the turn
         // error (checked BEFORE translating the natural outcome).

@@ -57,9 +57,9 @@ async fn help_lists_commands_and_publishes_a_result() {
         .collect();
     assert_eq!(
         names,
-        ["help", "model", "new", "stop", "context", "variant", "compact"]
+        ["help", "model", "new", "stop", "context", "variant", "compact", "agent"]
     );
-    assert_eq!(state.list_commands().len(), 7);
+    assert_eq!(state.list_commands().len(), 8);
 
     let events = results(&state, id).await;
     assert_eq!(events.len(), 1);

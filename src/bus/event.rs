@@ -1,6 +1,6 @@
-//! Frozen `EventEnvelope` shape and the 14-kind `EventKind`
+//! Frozen `EventEnvelope` shape and the 15-kind `EventKind`
 //! catalog (the twelve original kinds plus `command.result` and
-//! `context.updated`).
+//! `context.updated` and `session.agent_changed`).
 //!
 //! Reserved-but-deferred kind names (NOT in the enum, never emitted this slice):
 //! `prompt.pre_llm`, `tool.progress`, `context.pre_compact` (Phase 3),
@@ -22,11 +22,12 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// The single root actor id for this slice (all events are published by it).
 pub const ROOT_ACTOR_ID: &str = "agent:main";
 
-/// The catalog emits EXACTLY 14 kinds: 2 session +
+/// The catalog emits EXACTLY 15 kinds: 2 session +
 /// message + 2 turn + 2 llm + 2 tool + 2 agent + task + command result +
-/// context update = 14. The first twelve are frozen; `command.result` and
-/// `context.updated` were added without changing the envelope version.
-pub const EVENT_KIND_COUNT: usize = 14;
+/// context update + agent change = 15. The first twelve are frozen; `command.result`,
+/// `context.updated` and `session.agent_changed` were added without changing the
+/// envelope version.
+pub const EVENT_KIND_COUNT: usize = 15;
 
 /// Durable kinds are retained in the reconnect ring and the history store;
 /// `llm.delta` and `context.updated` are live-only (the latter is a
@@ -40,7 +41,7 @@ const fn is_durable(kind: EventKind) -> bool {
 /// [`EventKind::all_variants`], an exhaustive match whose single or-pattern
 /// arms name EVERY variant with no `_` wildcard — so adding a 15th variant
 /// without editing that match is error[E0004] (non-exhaustive patterns) and
-/// the crate does not compile. The array's type `[EventKind; 14]` plus the
+/// the crate does not compile. The array's type `[EventKind; 15]` plus the
 /// `const _` assert below additionally pin the frozen catalog size, so the
 /// list itself cannot silently grow or shrink either. A runtime name/order
 /// test still guards the wire spellings, but completeness is enforced HERE,
@@ -61,7 +62,8 @@ impl EventKind {
             | Self::AgentYield
             | Self::TaskDone
             | Self::CommandResult
-            | Self::ContextUpdated => [
+            | Self::ContextUpdated
+            | Self::SessionAgentChanged => [
                 Self::SessionStart,
                 Self::SessionEnd,
                 Self::MessageReceived,
@@ -76,18 +78,19 @@ impl EventKind {
                 Self::TaskDone,
                 Self::CommandResult,
                 Self::ContextUpdated,
+                Self::SessionAgentChanged,
             ],
         }
     }
 
-    /// The 14 emitted kinds, in catalog order. The bus iterates this to seed
+    /// The 15 emitted kinds, in catalog order. The bus iterates this to seed
     /// the ring/fan-out.
     pub const ALL: [EventKind; EVENT_KIND_COUNT] = Self::all_variants();
 }
 
 const _: () = assert!(EventKind::ALL.len() == EVENT_KIND_COUNT);
 
-/// Typed catalog of the 14 emitted event kinds; the wire name is the dotted
+/// Typed catalog of the 15 emitted event kinds; the wire name is the dotted
 /// string (serialized verbatim, e.g. `"llm.delta"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventKind {
@@ -119,6 +122,8 @@ pub enum EventKind {
     CommandResult,
     #[serde(rename = "context.updated")]
     ContextUpdated,
+    #[serde(rename = "session.agent_changed")]
+    SessionAgentChanged,
 }
 
 impl EventKind {
@@ -139,6 +144,7 @@ impl EventKind {
             EventKind::TaskDone => "task.done",
             EventKind::CommandResult => "command.result",
             EventKind::ContextUpdated => "context.updated",
+            EventKind::SessionAgentChanged => "session.agent_changed",
         }
     }
 
@@ -159,6 +165,7 @@ impl EventKind {
             "task.done" => Some(EventKind::TaskDone),
             "command.result" => Some(EventKind::CommandResult),
             "context.updated" => Some(EventKind::ContextUpdated),
+            "session.agent_changed" => Some(EventKind::SessionAgentChanged),
             _ => None,
         }
     }
@@ -363,6 +370,16 @@ pub struct TaskDone {
     pub status: TaskStatus,
 }
 
+/// The primary agent of a session changed (`/agent`). Published after the
+/// new agent is stored, so a stream that shows it never outlives a restart.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionAgentChanged {
+    /// The agent the session runs as from now on.
+    pub agent: String,
+    /// The agent it ran as until now.
+    pub previous: String,
+}
+
 /// Largest serialized `data` a `command.result` carries.
 pub const COMMAND_RESULT_DATA_MAX_BYTES: usize = 16 * 1024;
 
@@ -522,7 +539,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const KIND_NAMES: [&str; 14] = [
+    const KIND_NAMES: [&str; 15] = [
         "session.start",
         "session.end",
         "message.received",
@@ -537,13 +554,14 @@ mod tests {
         "task.done",
         "command.result",
         "context.updated",
+        "session.agent_changed",
     ];
 
     #[test]
-    fn event_kind_catalog_is_exactly_the_fourteen() {
+    fn event_kind_catalog_is_exactly_the_fifteen() {
         let kinds = EventKind::ALL;
-        assert_eq!(EVENT_KIND_COUNT, 14);
-        assert_eq!(kinds.len(), 14);
+        assert_eq!(EVENT_KIND_COUNT, 15);
+        assert_eq!(kinds.len(), 15);
         assert_eq!(SCHEMA_VERSION, 1);
         let names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
         assert_eq!(names, KIND_NAMES);
@@ -772,6 +790,14 @@ mod tests {
                     rule_files: 0,
                     incarnation: Ulid::new(),
                     revision: 3,
+                })
+                .unwrap(),
+            ),
+            (
+                "session.agent_changed",
+                serde_json::to_value(&SessionAgentChanged {
+                    agent: "plan".into(),
+                    previous: "build".into(),
                 })
                 .unwrap(),
             ),

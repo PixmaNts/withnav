@@ -26,7 +26,7 @@ struct Raw {
 }
 
 /// Splits `text` into the YAML header and the body that follows it.
-pub(super) fn split(text: &str) -> Result<(&str, &str), String> {
+pub(crate) fn split(text: &str) -> Result<(&str, &str), String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut lines = text.split_inclusive('\n');
     if lines.next().map(str::trim_end) != Some("---") {

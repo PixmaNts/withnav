@@ -70,6 +70,7 @@ fn save_view(s: &mut State, ui: &UiState) {
 
 /// Brings the tab at `index` forward: its transcript position, and its draft in the editor.
 fn show(s: &mut State, ui: &mut UiState, index: usize) -> Vec<Effect> {
+    ui.child_confirm = None;
     save_view(s, ui);
     // A deny message belongs to the request on screen.
     ui.deny_message = None;
@@ -455,6 +456,27 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
         Action::NewConversation => blank_tab(s, ui).unwrap_or_default(),
         Action::ResumeSession(id) => resume(s, ui, id),
         Action::OpenChild(id) => open_child(s, ui, id),
+        Action::ContinueChild => confirm_child(s, ui, crate::tui::protocol::ChildControl::Continue),
+        Action::ConfirmChildControl => {
+            let Some((parent_session_id, child_session_id, control)) = ui.child_confirm.take()
+            else {
+                return vec![];
+            };
+            if s.parent_session_id.as_ref() != Some(&parent_session_id)
+                || s.session.as_ref().map(|m| &m.session_id) != Some(&child_session_id)
+            {
+                return vec![];
+            }
+            vec![Effect::ControlChild {
+                parent_session_id,
+                child_session_id,
+                control,
+            }]
+        }
+        Action::CancelChildControl => {
+            ui.child_confirm = None;
+            vec![]
+        }
         Action::PickModel(alias) => pick_model(s, ui, alias, None).unwrap_or_default(),
         Action::SwitchModel(alias) => switch_model(s, ui, alias),
         Action::PickVariant(name) => {
@@ -522,6 +544,9 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             // Flips what the driver saw, whether the width or an earlier toggle decided it.
             ui.panel_shown = Some(!ui.panel_drawn);
             vec![]
+        }
+        Action::Stop if s.read_only() => {
+            confirm_child(s, ui, crate::tui::protocol::ChildControl::Stop)
         }
         Action::Stop => s
             .session
@@ -592,4 +617,30 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             vec![]
         }
     }
+}
+
+fn confirm_child(
+    s: &State,
+    ui: &mut UiState,
+    control: crate::tui::protocol::ChildControl,
+) -> Vec<Effect> {
+    let status = s.active_child_status();
+    let allowed = match control {
+        crate::tui::protocol::ChildControl::Stop => matches!(
+            status,
+            crate::tui::state::ChildStatus::Running
+                | crate::tui::state::ChildStatus::Permission
+                | crate::tui::state::ChildStatus::Doubt
+                | crate::tui::state::ChildStatus::OutOfSteps
+        ),
+        crate::tui::protocol::ChildControl::Continue => {
+            status == crate::tui::state::ChildStatus::OutOfSteps
+        }
+    };
+    if allowed {
+        if let (Some(parent), Some(child)) = (&s.parent_session_id, &s.session) {
+            ui.child_confirm = Some((parent.clone(), child.session_id.clone(), control));
+        }
+    }
+    vec![]
 }

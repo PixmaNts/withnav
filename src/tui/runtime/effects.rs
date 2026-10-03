@@ -221,6 +221,37 @@ impl Executor {
             Effect::ClearEditor { revision } => {
                 editor.clear_if_revision(revision);
             }
+            Effect::ControlChild {
+                parent_session_id,
+                child_session_id,
+                control,
+            } => {
+                let client = self.client.clone();
+                self.spawn_event(async move {
+                    let result = match control {
+                        crate::tui::protocol::ChildControl::Stop => {
+                            client.stop(&child_session_id).await.and_then(|response| {
+                                if response.accepted {
+                                    Ok(())
+                                } else {
+                                    Err(format!("stop was refused: {}", response.actor_state))
+                                }
+                            })
+                        }
+                        crate::tui::protocol::ChildControl::Continue => {
+                            client
+                                .continue_child(&parent_session_id, &child_session_id)
+                                .await
+                        }
+                    };
+                    ClientEvent::ChildControlled {
+                        generation,
+                        child_session_id,
+                        control,
+                        result,
+                    }
+                });
+            }
             Effect::SetEditor { text, revision } => editor.restore(&text, revision),
             Effect::SaveTheme(theme) => {
                 // A few bytes written once per pick: done inline. A failure is shown, not fatal:

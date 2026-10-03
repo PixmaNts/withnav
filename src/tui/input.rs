@@ -84,6 +84,13 @@ pub fn route_key(
     if matches!(key.kind, KeyEventKind::Release) {
         return None;
     }
+    if ui.child_confirm.is_some() {
+        return match key.code {
+            KeyCode::Enter | KeyCode::Char('y') => Some(Action::ConfirmChildControl),
+            KeyCode::Esc | KeyCode::Char('n') => Some(Action::CancelChildControl),
+            _ => None,
+        };
+    }
     if ui.overlay == Some(Overlay::Commands) && ui.palette_typed {
         return typed_palette_key(key, state, ui, editor);
     }

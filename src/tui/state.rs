@@ -201,6 +201,7 @@ pub struct Tab {
     pub children: Vec<ChildAgent>,
     /// Read-only transcript opened from a parent's reported child link.
     pub parent_session_id: Option<String>,
+    pub child_status: ChildStatus,
     /// The workspace's branch and changes at the last read; `None` until read, or when the
     /// workspace is not a git repository.
     pub git: Option<super::git::GitStatus>,
@@ -362,6 +363,22 @@ impl Default for State {
 }
 
 impl State {
+    pub fn active_child_status(&self) -> ChildStatus {
+        self.parent_session_id
+            .as_deref()
+            .and_then(|id| self.tab_of_session(id))
+            .and_then(|i| {
+                self.tabs[i].children.iter().find(|c| {
+                    self.session
+                        .as_ref()
+                        .map(|m| m.session_id.as_str())
+                        .or(self.resuming.as_deref())
+                        == Some(c.session_id.as_str())
+                })
+            })
+            .map(|c| c.status)
+            .unwrap_or(self.child_status)
+    }
     pub fn child_rows(&self, filter: &str) -> Vec<&ChildAgent> {
         let parent = self.parent_session_id.as_deref();
         let tab = parent
@@ -450,6 +467,7 @@ pub enum Focus {
 }
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UiState {
+    pub child_confirm: Option<(String, String, super::protocol::ChildControl)>,
     pub focus: Focus,
     pub overlay: Option<super::protocol::Overlay>,
     pub selection: HashMap<String, usize>,

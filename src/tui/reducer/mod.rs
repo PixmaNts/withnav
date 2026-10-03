@@ -51,6 +51,7 @@ pub fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::PermissionAnswered { generation, .. }
         | ClientEvent::CommandRan { generation, .. }
         | ClientEvent::Stopped { generation, .. }
+        | ClientEvent::ChildControlled { generation, .. }
         | ClientEvent::DeliveryUncertain { generation }
         | ClientEvent::ProtocolError { generation, .. }
         | ClientEvent::Git { generation, .. }
@@ -252,7 +253,39 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         ClientEvent::Envelope { envelope, .. } => {
             // A turn may have changed files: the branch and the changes are read again.
             let turn_end = envelope.kind == crate::bus::event::EventKind::TurnEnd.as_str();
+            let child_status = if s.read_only() {
+                match envelope.kind.as_str() {
+                    "turn.start" => Some(super::state::ChildStatus::Running),
+                    "agent.yield" if envelope.payload["kind"] == "budget" => {
+                        Some(super::state::ChildStatus::OutOfSteps)
+                    }
+                    "permission.requested" => Some(super::state::ChildStatus::Permission),
+                    "permission.resolved" => Some(super::state::ChildStatus::Running),
+                    _ => None,
+                }
+            } else {
+                None
+            };
             envelope::apply_envelope(s, envelope)?;
+            if let Some(status) = child_status {
+                s.child_status = status;
+                let child_id = s
+                    .session
+                    .as_ref()
+                    .map(|m| m.session_id.clone())
+                    .or(s.resuming.clone());
+                if let Some(child_id) = child_id {
+                    for tab in &mut s.tabs {
+                        if let Some(child) = tab
+                            .children
+                            .iter_mut()
+                            .find(|c| c.session_id == child_id && !c.status.terminal())
+                        {
+                            child.status = status;
+                        }
+                    }
+                }
+            }
             if turn_end {
                 effects.extend(read_git(s));
             }
@@ -529,10 +562,45 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 ),
             );
         }
-        ClientEvent::Stopped { .. } => {
-            s.activity = Activity::Stopped;
-            s.model_switch = None;
-        }
+        ClientEvent::ChildControlled {
+            child_session_id,
+            control,
+            result,
+            ..
+        } => match result {
+            Ok(()) => {
+                let text = match control {
+                    super::protocol::ChildControl::Stop => {
+                        "stop accepted; waiting for the subagent to finish"
+                    }
+                    super::protocol::ChildControl::Continue => {
+                        "continue accepted; waiting for the subagent"
+                    }
+                };
+                push_local(s, BlockKind::Notice(text.into()));
+            }
+            Err(error) => push_local(
+                s,
+                BlockKind::Error(format!(
+                    "subagent {child_session_id}: {}",
+                    strip_controls(&error)
+                )),
+            ),
+        },
+        ClientEvent::Stopped { result, .. } => match result {
+            Ok(response) if response.accepted => {
+                s.activity = Activity::Stopped;
+                s.model_switch = None;
+            }
+            Ok(response) => push_local(
+                s,
+                BlockKind::Error(format!(
+                    "stop was refused: {}",
+                    strip_controls(&response.actor_state)
+                )),
+            ),
+            Err(error) => push_local(s, BlockKind::Error(strip_controls(&error))),
+        },
         ClientEvent::SettingsNotSaved { message, .. } => push_local(s, BlockKind::Notice(message)),
     }
     Ok(effects)

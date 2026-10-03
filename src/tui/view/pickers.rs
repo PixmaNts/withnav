@@ -102,7 +102,11 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
             .collect(),
         Overlay::Help => commands::KEYS
             .iter()
-            .filter(|(key, _)| *key != "alt+s" || state.tabs.iter().any(|t| !t.children.is_empty()))
+            .filter(|(key, _)| match *key {
+                "alt+s" => state.tabs.iter().any(|t| !t.children.is_empty()),
+                "alt+c" => state.read_only(),
+                _ => true,
+            })
             .map(|(key, description)| {
                 Line::from(vec![
                     Span::styled(format!("{key:<24}"), theme.accent()),
@@ -270,6 +274,43 @@ fn dim(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
             buffer[(x, y)].set_fg(faded);
         }
     }
+}
+
+pub fn confirm_child(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    agent: &str,
+    control: crate::tui::protocol::ChildControl,
+    theme: &Theme,
+) {
+    dim(frame, area, theme);
+    let width = area.width.saturating_sub(4).min(60);
+    let height = area.height.saturating_sub(2).min(5);
+    let rect = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, rect);
+    let verb = match control {
+        crate::tui::protocol::ChildControl::Stop => "Stop",
+        crate::tui::protocol::ChildControl::Continue => "Continue",
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.accent_line())
+        .title(format!(" {verb} subagent "))
+        .title_alignment(Alignment::Center);
+    frame.render_widget(
+        Paragraph::new(format!(
+            " {verb} {}?\n\n enter / y confirm · esc / n cancel",
+            fit(agent, usize::from(width.saturating_sub(14)))
+        ))
+        .style(theme.surface())
+        .block(block),
+        rect,
+    );
 }
 
 /// A line under the filter: what picking does to the live conversation (switched after the

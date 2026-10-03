@@ -78,6 +78,17 @@ fn key_bar(choices: &[Hints], width: usize, theme: &Theme) -> Vec<Span<'static>>
 /// else the everyday ones.
 fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
     if state.read_only() {
+        if state.active_child_status() == crate::tui::state::ChildStatus::OutOfSteps {
+            return &[Hints {
+                hints: &[
+                    "alt+c continue",
+                    "alt+w parent",
+                    "alt+s subagents",
+                    "esc stop",
+                ],
+                required: 1,
+            }];
+        }
         return &[Hints {
             hints: &[
                 "alt+w parent",
@@ -309,4 +320,7 @@ pub fn draw(
         frame.render_widget(Paragraph::new(Line::from(bar)), hints);
     }
     pickers::draw(frame, full, state, ui, &theme);
+    if let Some((_, _, control)) = &ui.child_confirm {
+        pickers::confirm_child(frame, full, state.agent_name(), *control, &theme);
+    }
 }

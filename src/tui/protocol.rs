@@ -247,6 +247,12 @@ pub enum ClientEvent {
         generation: Generation,
         result: Result<StopResponse, String>,
     },
+    ChildControlled {
+        generation: Generation,
+        child_session_id: String,
+        control: ChildControl,
+        result: Result<(), String>,
+    },
     DeliveryUncertain {
         generation: Generation,
     },
@@ -281,6 +287,9 @@ pub enum Action {
     NewConversation,
     ResumeSession(String),
     OpenChild(String),
+    ContinueChild,
+    ConfirmChildControl,
+    CancelChildControl,
     PickModel(String),
     /// Moves the active conversation to `alias` (`/model <alias>`); on a tab with no
     /// conversation yet, the conversation will start on it.
@@ -338,6 +347,12 @@ pub enum Overlay {
     Variants,
     Children,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildControl {
+    Stop,
+    Continue,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     FetchModels,
@@ -374,6 +389,11 @@ pub enum Effect {
     Unsubscribe,
     Send(SubmitRequest),
     Stop(String),
+    ControlChild {
+        parent_session_id: String,
+        child_session_id: String,
+        control: ChildControl,
+    },
     Quit,
     /// Writes the theme id to the user settings.
     SaveTheme(crate::tui::theme::ThemeId),

@@ -62,6 +62,11 @@ pub struct AgentActor {
     /// transcript itself keeps it.
     pub reasoning_floor: usize,
     pub max_tokens: Option<u64>,
+    /// The input budget a request must fit, in tokens, set by the session
+    /// runtime at each turn start. With one, a run stops before a request
+    /// that would exceed it ([`crate::agent::run_loop::RunOutcome::NeedsCompaction`]);
+    /// without one (a run outside a session) requests are never held back.
+    pub input_budget: Option<u64>,
     /// The variant merged into every chat request of the next run; `None`
     /// sends the request as built. The session runtime sets it at each turn
     /// start.
@@ -125,6 +130,7 @@ impl AgentActor {
             reasoning_history,
             reasoning_floor: 0,
             max_tokens,
+            input_budget: None,
             variant: None,
             max_steps: crate::agent::run_loop::max_steps(),
             system_prompt: None,

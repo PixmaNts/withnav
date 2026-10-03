@@ -2258,6 +2258,7 @@ fn context_compacted_pushes_a_one_line_notice() {
             pruned: 2,
             estimate_before: 120_000,
             estimate_after: 18_000,
+            reason: None,
         },
     );
     let mut s = st();
@@ -2282,6 +2283,7 @@ fn context_compacted_pushes_a_one_line_notice() {
             pruned: 0,
             estimate_before: 1_000_000,
             estimate_after: 1_500,
+            reason: None,
         },
     );
     let mut s = st();

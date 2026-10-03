@@ -2474,6 +2474,7 @@ fn with_panel_data() -> State {
         pruned: 6,
         estimate_before: 150_000,
         estimate_after: 38_000,
+        reason: None,
     });
     let files = (0..14)
         .map(|n| navai::tui::git::Change {

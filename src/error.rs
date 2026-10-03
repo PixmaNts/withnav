@@ -97,6 +97,10 @@ pub enum AgentError {
     Bus(#[from] BusError),
     #[error(transparent)]
     Server(#[from] ServerError),
+    /// The conversation outgrew the model's context window and the automatic
+    /// compaction could not make room.
+    #[error("{0}")]
+    Compaction(String),
 }
 
 #[derive(Debug, Error)]

@@ -34,6 +34,15 @@ pub enum RunOutcome {
     PermissionRequired(PermissionRequest),
     Interrupted,
     StepBudgetExhausted,
+    /// The next request would not fit the model's input budget. Internal, like
+    /// `StepBudgetExhausted`: it never reaches the wire. The run stopped at a
+    /// safe boundary (every tool result of the last step is in the
+    /// transcript, nothing is pending) with `steps_left` model steps still
+    /// to take. The caller compacts the conversation and carries the same
+    /// turn on with [`continue_run`]; the budget is not renewed.
+    NeedsCompaction {
+        steps_left: usize,
+    },
 }
 
 /// Pure observer events of a run, in the order the loop produces them. The
@@ -73,6 +82,16 @@ pub async fn run_agent(
     run_steps(actor, observe, budget).await
 }
 
+/// Carries a turn on after a compaction: [`run_agent`] with the `steps_left`
+/// a [`RunOutcome::NeedsCompaction`] reported, not a fresh budget.
+pub async fn continue_run(
+    actor: &mut AgentActor,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+    steps_left: usize,
+) -> Result<RunOutcome, AgentError> {
+    run_steps(actor, observe, steps_left).await
+}
+
 /// [`run_agent`] with at most `budget` more model steps. A run resumed after a
 /// permission decision gets what is left of its turn, not a fresh budget.
 async fn run_steps(
@@ -93,6 +112,18 @@ async fn run_steps(
         if actor.cancel.is_cancelled() {
             actor.state = AgentState::Idle;
             return Ok(RunOutcome::Interrupted);
+        }
+
+        // The safe boundary before a request: every tool result of the last
+        // step is in, nothing waits for a human. A prompt over the input
+        // budget is compacted by the caller before it is sent.
+        if actor
+            .input_budget
+            .is_some_and(|budget| actor.context_breakdown().total() > budget)
+        {
+            return Ok(RunOutcome::NeedsCompaction {
+                steps_left: budget - step,
+            });
         }
 
         observe(AgentEvent::StepStarted);

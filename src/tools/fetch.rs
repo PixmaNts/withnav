@@ -6,9 +6,10 @@
 //! declared length is never trusted.
 
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use reqwest::header::{ACCEPT, CONTENT_TYPE, LOCATION};
 use reqwest::{Client, Url};
@@ -54,7 +55,12 @@ impl Format {
 
 pub struct FetchTool {
     client: Client,
+    /// The program that converts HTML in a child process; see `converter`.
+    converter: Option<PathBuf>,
 }
+
+/// Environment override of the converter program.
+pub const HTML_CONVERTER_ENV: &str = "NAVAI_HTML_CONVERTER";
 
 impl Default for FetchTool {
     fn default() -> Self {
@@ -75,7 +81,25 @@ impl FetchTool {
                     .expect("the fetch client configuration is valid")
             })
             .clone();
-        Self { client }
+        Self {
+            client,
+            converter: None,
+        }
+    }
+
+    /// Converts HTML with this program (the `navai` binary or a copy of it)
+    /// instead of the running executable.
+    pub fn with_converter(mut self, program: impl Into<PathBuf>) -> Self {
+        self.converter = Some(program.into());
+        self
+    }
+
+    /// The field, else `NAVAI_HTML_CONVERTER`, else the running executable.
+    fn converter(&self) -> Option<PathBuf> {
+        self.converter
+            .clone()
+            .or_else(|| std::env::var_os(HTML_CONVERTER_ENV).map(PathBuf::from))
+            .or_else(|| std::env::current_exe().ok())
     }
 }
 
@@ -166,7 +190,8 @@ impl Tool for FetchTool {
                 Err(message) => return Ok(fail("invalid_url", message)),
             };
 
-            let work = fetch(&self.client, url, format);
+            let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+            let work = fetch(&self.client, url, format, self.converter(), deadline);
             tokio::select! {
                 _ = cancel.cancelled() => Ok(ToolResult::interrupted()),
                 res = tokio::time::timeout(Duration::from_secs(timeout_secs), work) => {
@@ -207,7 +232,13 @@ fn same_origin(a: &Url, b: &Url) -> bool {
         && a.port_or_known_default() == b.port_or_known_default()
 }
 
-async fn fetch(client: &Client, start: Url, format: Format) -> ToolResult {
+async fn fetch(
+    client: &Client,
+    start: Url,
+    format: Format,
+    converter: Option<PathBuf>,
+    deadline: Instant,
+) -> ToolResult {
     let mut url = start.clone();
     let mut hops = 0usize;
     let response = loop {
@@ -232,12 +263,8 @@ async fn fetch(client: &Client, start: Url, format: Format) -> ToolResult {
         };
         let target = match url.join(location) {
             Ok(t) => t,
-            Err(e) => {
-                return fail(
-                    "network",
-                    format!("bad redirect target {}: {e}", shown(location)),
-                )
-            }
+            // The raw value may carry credentials: it is not echoed.
+            Err(_) => return fail("network", "invalid redirect target"),
         };
         if let Err(message) = check_url(&target) {
             return fail(
@@ -329,26 +356,19 @@ async fn fetch(client: &Client, start: Url, format: Format) -> ToolResult {
     let text = decode(&body, charset.as_deref(), is_html(&mime) || mime.is_empty());
     let original_len = body.len();
 
-    let converted = if is_html(&mime) || (mime.is_empty() && looks_like_html(&text)) {
+    let text = if is_html(&mime) || (mime.is_empty() && looks_like_html(&text)) {
         match format {
-            Format::Html => Ok(text),
-            Format::Markdown | Format::Text => convert_isolated(text, format).await,
+            Format::Html => text,
+            Format::Markdown | Format::Text => {
+                let budget = deadline
+                    .saturating_duration_since(Instant::now())
+                    .saturating_sub(Duration::from_millis(500))
+                    .min(CONVERT_MAX_DURATION);
+                convert_html(text, format, converter.as_deref(), budget).await
+            }
         }
     } else {
-        Ok(text)
-    };
-    let text = match converted {
-        Ok(t) => t,
-        Err(e) => {
-            return fail(
-                "unsupported_content",
-                format!(
-                    "{}: the HTML could not be converted: {}",
-                    shown(url.as_str()),
-                    clip(&e)
-                ),
-            )
-        }
+        text
     };
 
     let (out, elided) = bound_output(&text, DEFAULT_MAX_OUTPUT_BYTES);
@@ -459,32 +479,88 @@ fn meta_charset(body: &[u8]) -> Option<String> {
 
 /// Largest HTML handed to a converter; the rest is dropped with a note.
 const CONVERT_MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
-/// Deepest tag nesting and most elements a converter is trusted with.
+/// Deepest tag nesting and most elements the fast path hands to a converter.
 const CONVERT_MAX_DEPTH: usize = 256;
 const CONVERT_MAX_ELEMENTS: usize = 200_000;
-/// The converters recurse over the DOM; their thread gets room for it.
-const CONVERT_STACK_BYTES: usize = 64 * 1024 * 1024;
+/// Longest a conversion child may run, whatever time the call has left.
+const CONVERT_MAX_DURATION: Duration = Duration::from_secs(10);
+/// Address-space and CPU limits of the conversion child.
+#[cfg(unix)]
+const CONVERT_MAX_ADDRESS_SPACE: u64 = 512 * 1024 * 1024;
+#[cfg(unix)]
+const CONVERT_MAX_CPU_SECS: u64 = 10;
+/// Output read from the child: the tool output bound plus a margin for the
+/// note and for the cut.
+const CONVERT_MAX_OUTPUT_BYTES: usize = DEFAULT_MAX_OUTPUT_BYTES + 4096;
+/// The subcommand of the `navai` binary that runs the converter.
+pub const CONVERT_SUBCOMMAND: &str = "internal-html-convert";
 
-/// Runs the conversion on its own thread with a large stack, so a deep but
-/// accepted document cannot overflow the worker stack of the runtime.
-async fn convert_isolated(html: String, format: Format) -> Result<String, String> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    std::thread::Builder::new()
-        .name("fetch-convert".into())
-        .stack_size(CONVERT_STACK_BYTES)
-        .spawn(move || {
-            let _ = tx.send(convert_html(&html, format));
-        })
-        .map_err(|e| format!("no conversion thread: {e}"))?;
-    rx.await
-        .map_err(|_| "the conversion thread failed".to_string())?
+const UNSAFE_NOTE: &str = "the page could not be converted safely; plain text shown";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ConvertFormat {
+    Markdown,
+    Text,
 }
 
-/// Converts HTML, within limits: oversized input is cut, and a document too
-/// deep or too large is flattened to plain text without building a DOM.
-fn convert_html(html: &str, format: Format) -> Result<String, String> {
+impl ConvertFormat {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Markdown => "markdown",
+            Self::Text => "text",
+        }
+    }
+}
+
+/// The converter itself, as the `internal-html-convert` child runs it: HTML
+/// on stdin, converted text on stdout. It builds a DOM, so it only ever runs
+/// in a child whose memory, CPU and time are limited by the parent.
+pub fn convert_stdio(format: ConvertFormat) -> i32 {
+    use std::io::{Read, Write};
+    let mut raw = Vec::new();
+    if std::io::stdin().read_to_end(&mut raw).is_err() {
+        return 1;
+    }
+    let html = String::from_utf8_lossy(&raw);
+    let converted = match format {
+        ConvertFormat::Markdown => htmd::HtmlToMarkdown::builder()
+            .skip_tags(vec!["script", "style", "noscript", "template", "head"])
+            .build()
+            .convert(&html)
+            .map_err(|e| e.to_string()),
+        ConvertFormat::Text => html2text::config::plain_no_decorate()
+            .string_from_read(html.as_bytes(), TEXT_WIDTH)
+            .map_err(|e| e.to_string()),
+    };
+    match converted {
+        Ok(text) => {
+            let mut out = std::io::stdout().lock();
+            if out
+                .write_all(text.as_bytes())
+                .and_then(|_| out.flush())
+                .is_ok()
+            {
+                0
+            } else {
+                1
+            }
+        }
+        Err(_) => 1,
+    }
+}
+
+/// Converts HTML to markdown or text; never fails and never builds a DOM in
+/// this process. Input past the cap is cut, a page the fast path finds too
+/// deep or too large is flattened, the rest goes to a limited child process
+/// and falls back to the flattened text if the child fails.
+async fn convert_html(
+    html: String,
+    format: Format,
+    converter: Option<&Path>,
+    budget: Duration,
+) -> String {
     let mut notes = Vec::new();
-    let mut input = html;
+    let mut input = html.as_str();
     if input.len() > CONVERT_MAX_INPUT_BYTES {
         let mut end = CONVERT_MAX_INPUT_BYTES;
         while !input.is_char_boundary(end) {
@@ -496,29 +572,134 @@ fn convert_html(html: &str, format: Format) -> Result<String, String> {
             CONVERT_MAX_INPUT_BYTES / (1024 * 1024)
         ));
     }
+    let child_format = match format {
+        Format::Markdown => ConvertFormat::Markdown,
+        _ => ConvertFormat::Text,
+    };
     let body = match measure(input) {
-        Ok(()) => match format {
-            Format::Markdown => htmd::HtmlToMarkdown::builder()
-                .skip_tags(vec!["script", "style", "noscript", "template", "head"])
-                .build()
-                .convert(input)
-                .map_err(|e| e.to_string())?,
-            Format::Text => html2text::config::plain_no_decorate()
-                .string_from_read(input.as_bytes(), TEXT_WIDTH)
-                .map_err(|e| e.to_string())?,
-            Format::Html => input.to_string(),
-        },
         Err(why) => {
             notes.push(format!(
                 "{why}; the page was reduced to plain text without structure"
             ));
             flatten(input)
         }
+        Ok(()) => {
+            let converted = match converter {
+                Some(program) => convert_in_child(program, input, child_format, budget).await,
+                None => Err("no converter program".to_string()),
+            };
+            match converted {
+                Ok(text) => text,
+                Err(_) => {
+                    notes.push(UNSAFE_NOTE.to_string());
+                    flatten(input)
+                }
+            }
+        }
     };
     if notes.is_empty() {
-        return Ok(body);
+        return body;
     }
-    Ok(format!("[note: {}]\n\n{body}", notes.join("; ")))
+    format!("[note: {}]\n\n{body}", notes.join("; "))
+}
+
+/// Runs the converter child on `html`. Any failure (spawn, exit status,
+/// signal, limit, timeout) is an `Err`; the child is killed on every path,
+/// including when this future is dropped by a cancellation or the tool
+/// timeout.
+async fn convert_in_child(
+    program: &Path,
+    html: &str,
+    format: ConvertFormat,
+    budget: Duration,
+) -> Result<String, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::process::Command;
+
+    let mut cmd = Command::new(program);
+    cmd.arg(CONVERT_SUBCOMMAND)
+        .arg("--format")
+        .arg(format.name())
+        .env_clear()
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    {
+        use nix::sys::resource::{setrlimit, Resource};
+        // SAFETY: the closure only calls setrlimit(2), which is
+        // async-signal-safe, between fork and exec.
+        unsafe {
+            cmd.pre_exec(|| {
+                setrlimit(
+                    Resource::RLIMIT_AS,
+                    CONVERT_MAX_ADDRESS_SPACE,
+                    CONVERT_MAX_ADDRESS_SPACE,
+                )
+                .map_err(std::io::Error::from)?;
+                setrlimit(
+                    Resource::RLIMIT_CPU,
+                    CONVERT_MAX_CPU_SECS,
+                    CONVERT_MAX_CPU_SECS,
+                )
+                .map_err(std::io::Error::from)?;
+                Ok(())
+            });
+        }
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("spawn: {e}"))?;
+    let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        let _ = child.kill().await;
+        return Err("no pipes".into());
+    };
+    let input = html.as_bytes().to_vec();
+    let deadline = tokio::time::Instant::now() + budget;
+
+    let io = async {
+        let write = async move {
+            // A child that stops reading early is judged by its exit status.
+            let _ = stdin.write_all(&input).await;
+            let _ = stdin.shutdown().await;
+        };
+        let read = async {
+            let mut buf = Vec::new();
+            (&mut stdout)
+                .take(CONVERT_MAX_OUTPUT_BYTES as u64 + 1)
+                .read_to_end(&mut buf)
+                .await
+                .map(|_| buf)
+        };
+        tokio::join!(write, read).1
+    };
+    let buf = match tokio::time::timeout_at(deadline, io).await {
+        Ok(Ok(buf)) => buf,
+        Ok(Err(e)) => {
+            let _ = child.kill().await;
+            return Err(format!("read: {e}"));
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            return Err("the conversion timed out".into());
+        }
+    };
+    let overflow = buf.len() > CONVERT_MAX_OUTPUT_BYTES;
+    if overflow {
+        // More than the tool will ever show: stop the child, keep the head.
+        let _ = child.kill().await;
+    } else {
+        match tokio::time::timeout_at(deadline, child.wait()).await {
+            Ok(Ok(status)) if status.success() => {}
+            Ok(Ok(status)) => return Err(format!("the converter failed: {status}")),
+            Ok(Err(e)) => return Err(format!("wait: {e}")),
+            Err(_) => {
+                let _ = child.kill().await;
+                return Err("the conversion timed out".into());
+            }
+        }
+    }
+    let kept = &buf[..buf.len().min(CONVERT_MAX_OUTPUT_BYTES)];
+    Ok(String::from_utf8_lossy(kept).into_owned())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -565,7 +746,14 @@ fn scan<'a>(html: &'a str, mut f: impl FnMut(Tok<'a>) -> bool) {
         let next = b.get(lt + 1).copied();
         match next {
             Some(b'!') if b[lt..].starts_with(b"<!--") => {
-                i = html[lt + 4..].find("-->").map_or(len, |e| lt + 4 + e + 3);
+                // `<!-->` and `<!--->` are complete, empty comments.
+                i = if b[lt + 4..].starts_with(b">") {
+                    lt + 5
+                } else if b[lt + 4..].starts_with(b"->") {
+                    lt + 6
+                } else {
+                    html[lt + 4..].find("-->").map_or(len, |e| lt + 4 + e + 3)
+                };
             }
             Some(b'!' | b'?') => {
                 i = b[lt..]
@@ -603,12 +791,13 @@ fn scan<'a>(html: &'a str, mut f: impl FnMut(Tok<'a>) -> bool) {
                     }
                     j += 1;
                 }
-                let self_closing = closed && j > end && b[j - 1] == b'/';
                 i = if closed { j + 1 } else { len };
                 if !f(Tok::Open(name)) {
                     return;
                 }
-                if self_closing || is_one_of(name, VOID_TAGS) {
+                // HTML ignores a trailing `/` on any element that is not
+                // void: `<div/>` opens a div.
+                if is_one_of(name, VOID_TAGS) {
                     if !f(Tok::Close(name)) {
                         return;
                     }
@@ -656,7 +845,10 @@ fn scan<'a>(html: &'a str, mut f: impl FnMut(Tok<'a>) -> bool) {
 }
 
 /// Maximum nesting depth and element count of `html`, in one linear pass.
-/// Err says which limit is exceeded.
+/// Err says which limit is exceeded. This is only a fast path to the
+/// flattened text: the tokenizer is not a full HTML parser, so a page can
+/// pass it and still be hostile. Safety comes from the limited child process
+/// that does the real conversion, not from this check.
 fn measure(html: &str) -> Result<(), String> {
     const IMPLIED_END: &[&str] = &["p", "li", "dt", "dd", "tr", "td", "th", "option"];
     let mut stack: Vec<&str> = Vec::new();
@@ -747,8 +939,11 @@ mod tests {
         }
     }
 
+    /// Unit tests have no `navai` binary to convert with; HTML comes back as
+    /// flattened text. The conversion child is covered by `tests/fetch_convert.rs`.
     async fn call(args: Value) -> ToolResult {
         FetchTool::new()
+            .with_converter("/nonexistent/navai")
             .call(args, CancellationToken::new(), &cx())
             .await
             .unwrap()
@@ -773,33 +968,13 @@ mod tests {
     }
 
     // Given an HTML page with a style and a script
-    // When fetched as markdown (default), text and html
-    // Then markdown and text drop script and style, html is raw
+    // When fetched as html
+    // Then it is returned raw (markdown and text go through the converter
+    // child, covered in tests/fetch_convert.rs)
     #[tokio::test]
-    async fn formats_markdown_text_html() {
+    async fn html_format_is_returned_raw() {
         let server = html_server().await;
         let url = format!("{}/page", server.uri());
-
-        let md = call(json!({"url": url})).await;
-        assert_eq!(md.status, ToolStatus::Ok, "{:?}", md.error);
-        assert!(md.output.contains("# Heading"), "{}", md.output);
-        assert!(md.output.contains("**bold**"), "{}", md.output);
-        assert!(
-            md.output.contains("[link](https://e.test/x)"),
-            "{}",
-            md.output
-        );
-        assert!(!md.output.contains("SCRIPTBODY"), "{}", md.output);
-        assert!(!md.output.contains("color:red"), "{}", md.output);
-        assert_eq!(md.metadata["format"], "markdown");
-
-        let text = call(json!({"url": url, "format": "text"})).await;
-        assert_eq!(text.status, ToolStatus::Ok, "{:?}", text.error);
-        assert!(text.output.contains("Heading"), "{}", text.output);
-        assert!(text.output.contains("Some bold text"), "{}", text.output);
-        assert!(!text.output.contains("SCRIPTBODY"), "{}", text.output);
-        assert!(!text.output.contains("color:red"), "{}", text.output);
-        assert!(!text.output.contains('<'), "{}", text.output);
 
         let html = call(json!({"url": url, "format": "html"})).await;
         assert_eq!(html.output, PAGE);
@@ -1211,44 +1386,64 @@ mod tests {
         }
     }
 
-    // Given a normal page
-    // When converted
-    // Then markdown is produced, with no fallback note
+    // Given hostile markup the tokenizer must read as a browser does
+    // When measured
+    // Then `<div/>` counts as nesting and `<!-->` closes its comment
     #[test]
-    fn a_normal_page_converts_to_markdown() {
-        let out = convert_html(PAGE, Format::Markdown).unwrap();
-        assert!(out.contains("# Heading"), "{out}");
-        assert!(!out.contains("[note:"), "{out}");
+    fn the_fast_path_reads_slashes_and_short_comments_like_html() {
+        assert!(measure(&"<div/>".repeat(100_000)).is_err());
+        let page = format!("<!-->{}", "<div>".repeat(1000));
+        assert!(measure(&page).is_err());
+        let page = format!("<!--->{}", "<div>".repeat(1000));
+        assert!(measure(&page).is_err());
+        assert!(measure("<p>a</p><!-- <div> --><br/><img src=x/>").is_ok());
+    }
+
+    // Given HTML past the converter input cap and no converter
+    // When converted
+    // Then it is cut on a char boundary, and the plain text carries both notes
+    #[tokio::test]
+    async fn oversized_html_is_cut_with_a_note() {
+        let page = format!("<p>{}</p>", "é".repeat(CONVERT_MAX_INPUT_BYTES));
+        let out = convert_html(page, Format::Markdown, None, Duration::from_secs(5)).await;
+        assert!(out.starts_with("[note: the HTML was cut"), "{}", &out[..80]);
+        assert!(out.contains(UNSAFE_NOTE));
+    }
+
+    // Given a converter that cannot start
+    // When a page is converted
+    // Then the flattened text is returned with the unsafe-conversion note
+    #[tokio::test]
+    async fn a_missing_converter_falls_back_to_plain_text() {
+        let out = convert_html(
+            PAGE.to_string(),
+            Format::Markdown,
+            Some(Path::new("/nonexistent/navai")),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(out.contains(UNSAFE_NOTE), "{out}");
+        assert!(out.contains("Heading"), "{out}");
         assert!(!out.contains("SCRIPTBODY"), "{out}");
     }
 
-    // Given 50,000 empty script elements and tag-like text in comments and attributes
-    // When converted
-    // Then it is quick and the surrounding content survives
-    #[test]
-    fn many_scripts_convert_quickly_and_tag_like_text_is_harmless() {
-        let page = format!(
-            "<p>start</p>{}<p title=\"<script>\">middle</p><!-- <script> --><p>end</p>",
-            "<script></script>".repeat(50_000)
-        );
-        for format in [Format::Markdown, Format::Text] {
-            let t = std::time::Instant::now();
-            let out = convert_html(&page, format).unwrap();
-            assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
-            for word in ["start", "middle", "end"] {
-                assert!(out.contains(word), "{word} missing: {out}");
-            }
-        }
-    }
-
-    // Given HTML past the converter input cap
-    // When converted
-    // Then it is cut on a char boundary and a note says so
-    #[test]
-    fn oversized_html_is_cut_with_a_note() {
-        let page = format!("<p>{}</p>", "é".repeat(CONVERT_MAX_INPUT_BYTES));
-        let out = convert_html(&page, Format::Markdown).unwrap();
-        assert!(out.starts_with("[note: the HTML was cut"), "{}", &out[..80]);
+    // Given a Location that does not parse and carries credentials
+    // When fetched
+    // Then nothing of it is echoed
+    #[tokio::test]
+    async fn an_unparsable_location_is_never_echoed() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("location", "//user:secret@[bad]/"),
+            )
+            .mount(&server)
+            .await;
+        let res = call(json!({"url": server.uri()})).await;
+        let dump = format!("{res:?}");
+        assert_eq!(code(&res), "network", "{dump}");
+        assert!(dump.contains("invalid redirect target"), "{dump}");
+        assert!(!dump.contains("secret") && !dump.contains("user"), "{dump}");
     }
 
     #[test]

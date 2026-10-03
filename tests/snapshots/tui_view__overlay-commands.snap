@@ -10,24 +10,24 @@ expression: snapshot
                      │ │ ASSISTANT                                                                  
                      │ │ ▸ Reasoning                                                                
                      │ │  The parser treats an empty argument as a missing value.                   
-                     │ │                                                                            
             ┌──────────────────────────────── Commands ────────────────────────────────┐            
             │ filter:                                                                  │            
-            │▌/new         new conversation in a new tab                               │            
-            │ /sessions    browse conversations                                        │            
-            │ /model       choose model for a new conversation                         │            
-            │ /stop        stop generation                                             │            
-            │ /mode        cycle delivery mode (steer and interrupt send as next-turn) │            
-            │ /theme       choose the colour theme                                     │            
-            │ /help        show keyboard shortcuts                                     │            
-            │ /quit        quit terminal client                                        │            
+            │▌/new [alias]          new conversation in a new tab                      │            
+            │ /sessions             browse conversations                               │            
+            │ /model [alias]        choose model for a new conversation                │            
+            │ /variant [name|off]   choose the model variant for this conversation     │            
+            │ /stop                 stop generation                                    │            
+            │ /mode                 cycle delivery mode (steer and interrupt send as n │            
+            │ /theme                choose the colour theme                            │            
+            │ /help                 show keyboard shortcuts                            │            
+            │ /quit                 quit terminal client                               │            
             │                                                                          │            
             └──────────────────────────────────────────────────────────────────────────┘            
                      │                                                                              
                      │                                                                              
                      │                                                                              
                      │──────────────────────────────────────────────────────────────────────────────
-                     │ cognition · claude-opus-5-5   ctx 12.4k / 200k   ready                       
+                     │▌build  cognition · claude-opus-5-5 · 12.4k / 200k   ready                    
                      │┌ Message ───────────────────────────────────────────────────────────────────┐
  alt+1…9 switch      ││                                                                            │
  alt+w close         │└────────────────────────────────────────────────────────────────────────────┘

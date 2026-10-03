@@ -56,6 +56,8 @@ fn state() -> State {
             actor_state: "idle".into(),
             workspace: "/home/pixma/dev/project".into(),
             model: "cognition".into(),
+            agent: None,
+            variant: None,
             current_seq: 42,
         }),
         ..Tab::default()
@@ -82,6 +84,7 @@ fn state() -> State {
             created_at: "2026-10-01T08:00:00Z".into(),
             updated_at: "2026-10-02T10:00:00Z".into(),
             message_count: 3,
+            agent: None,
             live: true,
         }],
         ..State::default()
@@ -238,12 +241,12 @@ fn unicode_paste_paths_and_unclosed_fence() {
         message("u", "user:http", "你好 e\u{301} 👩‍💻 café"),
         step("```rust\nfn main() { println!(\"hi\"); }", ""),
     ];
-    let ui = UiState {
+    let mut ui = UiState {
         follow_bottom: true,
         ..UiState::default()
     };
     let mut editor = Editor::new();
-    route_paste("line one\nline two".into(), &ui, &mut editor);
+    route_paste("line one\nline two".into(), &s, &mut ui, &mut editor);
     assert_eq!(editor.text(), "line one\nline two");
     render("unicode-paste-fence", (60, 20), &s, &ui, &editor);
     render("tiny", (20, 6), &s, &ui, &editor);
@@ -302,7 +305,7 @@ fn overlay_precedence_and_empty_slash() {
         ),
         Some(Action::OpenOverlay(Overlay::Commands))
     );
-    assert!(editor.text().is_empty());
+    assert_eq!(editor.text(), "/", "the slash is typed into the editor");
     assert_eq!(
         route_key(
             key(KeyCode::Enter, KeyModifiers::NONE),
@@ -311,6 +314,10 @@ fn overlay_precedence_and_empty_slash() {
             &mut editor
         ),
         Some(Action::NewConversation)
+    );
+    assert!(
+        editor.text().is_empty(),
+        "a client command clears the line it ran from"
     );
     editor.set_text("abc");
     assert_eq!(
@@ -324,6 +331,8 @@ fn overlay_precedence_and_empty_slash() {
     );
     assert_eq!(editor.text(), "/abc");
     ui.overlay = Some(Overlay::Models);
+    let enter = key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(route_key(enter, &s, &mut ui, &mut editor), None);
     assert_eq!(
         route_key(
             key(KeyCode::Enter, KeyModifiers::NONE),
@@ -412,13 +421,15 @@ fn pickers_filter_and_keep_draft() {
         &mut editor,
     );
     assert_eq!(ui.filter, "f");
+    let enter = key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(
-        route_key(
-            key(KeyCode::Enter, KeyModifiers::NONE),
-            &s,
-            &mut ui,
-            &mut editor
-        ),
+        route_key(enter, &s, &mut ui, &mut editor),
+        None,
+        "the variant step"
+    );
+    assert_eq!(ui.overlay, Some(Overlay::Variants));
+    assert_eq!(
+        route_key(enter, &s, &mut ui, &mut editor),
         Some(Action::PickModel("fast".into()))
     );
     assert_eq!(editor.text(), "draft");
@@ -445,7 +456,7 @@ fn pickers_filter_and_keep_draft() {
 fn the_status_gauge_shows_the_server_estimate_with_its_percent() {
     let mut s = done();
     // Before any snapshot: the provider's last prompt count over the window.
-    assert!(buffer_text(&s).contains("ctx 12.4k / 200k"));
+    assert!(buffer_text(&s).contains("· 12.4k / 200k"));
     s.conversation.context = Some(navai::bus::event::ContextSnapshot {
         alias: "cognition".into(),
         variant: None,
@@ -465,7 +476,7 @@ fn the_status_gauge_shows_the_server_estimate_with_its_percent() {
         revision: 1,
     });
     let text = buffer_text(&s);
-    assert!(text.contains("ctx ~42k / 1M · 4%"), "{text}");
+    assert!(text.contains("· ~42k / 1M · 4%"), "{text}");
     assert!(!text.contains("12.4k"), "{text}");
 }
 
@@ -987,11 +998,11 @@ fn the_gauge_follows_the_active_tab() {
             .join("\n")
     };
     let text = screen(&s);
-    assert!(text.contains("ctx ~42k / 1M · 4%"), "{text}");
+    assert!(text.contains("· ~42k / 1M · 4%"), "{text}");
     assert!(!text.contains("120k"), "{text}");
     s.active = 1;
     let text = screen(&s);
-    assert!(text.contains("ctx ~120k / 1M · 12%"), "{text}");
+    assert!(text.contains("· ~120k / 1M · 12%"), "{text}");
 }
 
 #[test]
@@ -1073,4 +1084,661 @@ fn a_short_sidebar_scrolls_to_keep_the_active_tab_in_view() {
         &ui,
         &Editor::new(),
     );
+}
+
+#[test]
+fn command_outcomes_render_as_compact_blocks() {
+    let mut s = done();
+    s.conversation.blocks.push(Block {
+        id: "c1".into(),
+        kind: BlockKind::Command {
+            name: "variant".into(),
+            ok: true,
+            text: "variant high; on offer: low, high".into(),
+        },
+    });
+    s.conversation.blocks.push(Block {
+        id: "c2".into(),
+        kind: BlockKind::Command {
+            name: "agent".into(),
+            ok: false,
+            text: "the agent is working: wait for the turn to end".into(),
+        },
+    });
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    let screen = render("command-results", (100, 30), &s, &ui, &Editor::new());
+    assert!(screen.contains("/variant · ok"), "{screen}");
+    assert!(screen.contains("/agent · error"), "{screen}");
+    let t = cells(&s, &ui, (100, 30));
+    let theme = Theme::ayu_dark();
+    let row = (0..30)
+        .find(|y| row_text(&t, *y, 100).contains("/agent · error"))
+        .unwrap();
+    let line = row_text(&t, row, 100);
+    let x = line[..line.find("error").unwrap()].chars().count() as u16;
+    assert_eq!(t.backend().buffer()[(x, row)].fg, theme.red);
+    let row = (0..30)
+        .find(|y| row_text(&t, *y, 100).contains("/variant · ok"))
+        .unwrap();
+    let line = row_text(&t, row, 100);
+    let x = line[..line.find("· ok").unwrap()].chars().count() as u16 + 2;
+    assert_eq!(t.backend().buffer()[(x, row)].fg, theme.green);
+}
+
+#[test]
+fn enter_on_a_server_command_runs_it_and_a_double_slash_sends_text() {
+    let s = state();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    editor.set_text("/context");
+    let action = route_key(
+        key(KeyCode::Enter, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(
+        action,
+        Some(Action::RunCommand {
+            name: "context".into(),
+            arguments: String::new(),
+            revision: Some(editor.revision()),
+        })
+    );
+    assert_eq!(editor.text(), "/context", "kept until the server took it");
+    editor.set_text("//context is a word");
+    let action = route_key(
+        key(KeyCode::Enter, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(
+        action,
+        Some(Action::SubmitAt {
+            text: "/context is a word".into(),
+            revision: editor.revision(),
+        })
+    );
+}
+
+#[test]
+fn tab_on_an_empty_message_switches_the_agent_otherwise_it_moves_the_focus() {
+    let s = state();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    let tab = key(KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(
+        route_key(tab, &s, &mut ui, &mut editor),
+        Some(Action::ToggleAgent)
+    );
+    editor.set_text("draft");
+    assert_eq!(route_key(tab, &s, &mut ui, &mut editor), None);
+    assert_eq!(ui.focus, navai::tui::state::Focus::Transcript);
+    assert_eq!(route_key(tab, &s, &mut ui, &mut editor), None);
+    assert_eq!(ui.focus, navai::tui::state::Focus::Editor);
+    editor.set_text("");
+    let back = key(KeyCode::BackTab, KeyModifiers::SHIFT);
+    assert_eq!(route_key(back, &s, &mut ui, &mut editor), None);
+    assert_eq!(ui.focus, navai::tui::state::Focus::Transcript);
+    let help: Vec<_> = navai::tui::commands::KEYS.iter().map(|(k, _)| *k).collect();
+    assert!(
+        help.contains(&"tab") && help.contains(&"shift+tab"),
+        "{help:?}"
+    );
+}
+
+#[test]
+fn the_agent_shows_in_the_status_line_and_the_sidebar() {
+    let theme = Theme::ayu_dark();
+    let mut s = done();
+    let ui = UiState::default();
+    let t = cells(&s, &ui, (100, 30));
+    let status = (0..30)
+        .find(|y| row_text(&t, *y, 100).contains("▌build  cognition"))
+        .expect("status line");
+    let x = row_text(&t, status, 100)
+        .chars()
+        .position(|c| c == '▌')
+        .unwrap() as u16;
+    assert_eq!(t.backend().buffer()[(x, status)].fg, theme.accent);
+    assert_eq!(t.backend().buffer()[(x + 1, status)].fg, theme.accent_text);
+    s.agent = Some("plan".into());
+    s.variant = Some("high".into());
+    s.conversation.context = None;
+    render("agent-plan", (100, 30), &s, &ui, &Editor::new());
+    let t = cells(&s, &ui, (100, 30));
+    let status = (0..30)
+        .find(|y| row_text(&t, *y, 100).contains("▌plan  cognition"))
+        .expect("status line");
+    let line = row_text(&t, status, 100);
+    assert!(line.contains("· high · 12.4k / 200k"), "{line}");
+    let x = line.chars().position(|c| c == '▌').unwrap() as u16;
+    assert_eq!(t.backend().buffer()[(x, status)].fg, theme.blue);
+    assert!(row_text(&t, 2, 22).contains("plan · idle"));
+    let x = row_text(&t, 2, 22).find("plan").unwrap() as u16;
+    let x = row_text(&t, 2, 22)[..x as usize].chars().count() as u16;
+    assert_eq!(t.backend().buffer()[(x, 2)].fg, theme.blue);
+}
+
+/// A catalog of 295 aliases; `opus` offers variants with `high` as default, `flash` none.
+fn big_catalog() -> State {
+    let mut s = state();
+    s.catalog = (0..293)
+        .map(|n| ModelEntry {
+            alias: format!("alias-{n:03}"),
+            model: format!("vendor/model-{n:03}"),
+            context_window: Some(128_000),
+            ..Default::default()
+        })
+        .collect();
+    s.catalog.push(ModelEntry {
+        alias: "opus".into(),
+        model: "cc/claude-opus-5-5".into(),
+        context_window: Some(1_000_000),
+        variants: vec!["low".into(), "high".into(), "max".into()],
+        default_variant: Some("high".into()),
+        ..Default::default()
+    });
+    s.catalog.push(ModelEntry {
+        alias: "flash".into(),
+        model: "cc/flash".into(),
+        context_window: None,
+        ..Default::default()
+    });
+    s
+}
+
+fn type_text(text: &str, s: &State, ui: &mut UiState, editor: &mut Editor) {
+    for c in text.chars() {
+        route_key(key(KeyCode::Char(c), KeyModifiers::NONE), s, ui, editor);
+    }
+}
+
+#[test]
+fn the_model_picker_filters_a_long_catalog_and_shows_window_and_variants() {
+    let s = big_catalog();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    route_key(
+        key(KeyCode::F(2), KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(ui.overlay, Some(Overlay::Models));
+    // the selection can walk the whole list; the popup scrolls to keep it in view
+    for _ in 0..300 {
+        route_key(
+            key(KeyCode::Down, KeyModifiers::NONE),
+            &s,
+            &mut ui,
+            &mut editor,
+        );
+    }
+    let t = cells(&s, &ui, (100, 30));
+    let all: String = (0..30).map(|y| row_text(&t, y, 100) + "\n").collect();
+    assert!(
+        all.contains("▌flash"),
+        "the last row is shown selected: {all}"
+    );
+    type_text("opus", &s, &mut ui, &mut editor);
+    render("model-picker-filtered", (100, 30), &s, &ui, &editor);
+    let t = cells(&s, &ui, (100, 30));
+    let row = (0..30)
+        .map(|y| row_text(&t, y, 100))
+        .find(|r| r.contains("▌opus"))
+        .expect("the filtered row");
+    assert!(row.contains("cc/claude-opus-5-5"), "{row}");
+    assert!(row.contains("1M"), "{row}");
+    assert!(row.contains("low high max"), "{row}");
+    assert!(!all.contains("alias-") || !row.contains("alias-"));
+    // the filter also matches the model name
+    ui.filter = "model-29".into();
+    let t = cells(&s, &ui, (100, 30));
+    let shown: Vec<String> = (0..30)
+        .map(|y| row_text(&t, y, 100))
+        .filter(|r| r.contains("alias-29"))
+        .collect();
+    assert_eq!(shown.len(), 3, "alias-290 … alias-292: {shown:?}");
+}
+
+#[test]
+fn picking_a_model_with_variants_asks_which_one_default_first() {
+    let s = big_catalog();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    route_key(
+        key(KeyCode::F(2), KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    type_text("opus", &s, &mut ui, &mut editor);
+    let enter = key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(route_key(enter, &s, &mut ui, &mut editor), None);
+    assert_eq!(ui.overlay, Some(Overlay::Variants));
+    assert_eq!(ui.filter, "", "the step starts unfiltered");
+    render("variant-step", (100, 30), &s, &ui, &editor);
+    let t = cells(&s, &ui, (100, 30));
+    let rows: Vec<String> = (0..30).map(|y| row_text(&t, y, 100)).collect();
+    let selected = rows
+        .iter()
+        .find(|r| r.contains('▌') && r.contains("high"))
+        .cloned();
+    assert!(selected.is_some_and(|r| r.contains("default")), "{rows:#?}");
+    assert!(rows
+        .iter()
+        .any(|r| r.contains("off") && r.contains("no variant")));
+    assert!(rows.iter().any(|r| r.contains("Start on variant")));
+    // esc goes back to the models with the same one selected
+    route_key(
+        key(KeyCode::Esc, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(ui.overlay, Some(Overlay::Models));
+    assert_eq!(route_key(enter, &s, &mut ui, &mut editor), None);
+    route_key(
+        key(KeyCode::Down, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(
+        route_key(enter, &s, &mut ui, &mut editor),
+        Some(Action::PickVariant("max".into()))
+    );
+}
+
+#[test]
+fn a_model_without_variants_shows_a_note_and_starts_without_one() {
+    let s = big_catalog();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    route_key(
+        key(KeyCode::F(2), KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    type_text("flash", &s, &mut ui, &mut editor);
+    let enter = key(KeyCode::Enter, KeyModifiers::NONE);
+    route_key(enter, &s, &mut ui, &mut editor);
+    assert_eq!(ui.overlay, Some(Overlay::Variants));
+    let t = cells(&s, &ui, (100, 30));
+    let all: String = (0..30).map(|y| row_text(&t, y, 100) + "\n").collect();
+    assert!(all.contains("this model has no variants"), "{all}");
+    assert!(!all.contains("off "), "nothing to choose: {all}");
+    assert_eq!(
+        route_key(enter, &s, &mut ui, &mut editor),
+        Some(Action::PickModel("flash".into()))
+    );
+    assert_eq!(ui.overlay, None);
+}
+
+#[test]
+fn the_variant_list_of_a_running_conversation_says_it_applies_next_turn() {
+    let mut s = big_catalog();
+    s.selected_model_alias = Some("opus".into());
+    s.variant = Some("high".into());
+    s.variant_offer = Some(vec!["low".into(), "high".into(), "max".into()]);
+    s.activity = Activity::Running;
+    let mut ui = UiState {
+        overlay: Some(Overlay::Variants),
+        variant_pick: Some(navai::tui::state::VariantPick::Current),
+        ..UiState::default()
+    };
+    // opened as `/variant` opens it: on the variant in use
+    let (_, start) =
+        navai::tui::commands::variant_choices(&s, &navai::tui::state::VariantPick::Current);
+    ui.selection.insert("Variants".into(), start);
+    render(
+        "variant-current-running",
+        (100, 30),
+        &s,
+        &ui,
+        &Editor::new(),
+    );
+    let t = cells(&s, &ui, (100, 30));
+    let rows: Vec<String> = (0..30).map(|y| row_text(&t, y, 100)).collect();
+    assert!(rows.iter().any(|r| r.contains(" Variant ")));
+    assert!(
+        rows.iter().any(|r| r.contains("applies next turn")),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.iter().any(|r| r.contains("● high")),
+        "the one in use is marked"
+    );
+    s.activity = Activity::Idle;
+    let t = cells(&s, &ui, (100, 30));
+    assert!(!(0..30).any(|y| row_text(&t, y, 100).contains("applies next turn")));
+}
+
+#[test]
+fn the_status_line_reads_model_variant_and_gauge() {
+    let mut s = done();
+    s.variant = Some("high".into());
+    s.conversation.context = Some(navai::bus::event::ContextSnapshot {
+        alias: "cognition".into(),
+        variant: Some("high".into()),
+        window: 1_000_000,
+        window_source: "models.json".into(),
+        estimated: true,
+        estimate_total: 42_000,
+        breakdown: Default::default(),
+        output_reserve: 8192,
+        margin: 50_000,
+        input_budget: 941_808,
+        percent: 4,
+        last_usage: None,
+        skills: Default::default(),
+        rule_files: 0,
+        incarnation: ulid::Ulid::new(),
+        revision: 1,
+    });
+    let t = cells(&s, &UiState::default(), (120, 30));
+    let line = (0..30)
+        .map(|y| row_text(&t, y, 120))
+        .find(|r| r.contains("▌build"))
+        .unwrap();
+    assert!(
+        line.contains("cognition · cc/claude-opus-5-5 · high · ~42k / 1M · 4%"),
+        "{line}"
+    );
+    // on a narrow screen the model name is cut before the variant or the gauge
+    let t = cells(&s, &UiState::default(), (70, 20));
+    let line = (0..20)
+        .map(|y| row_text(&t, y, 70))
+        .find(|r| r.contains("▌build"))
+        .unwrap();
+    assert!(line.contains("· high · ~42k / 1M · 4%"), "{line}");
+}
+
+// ---------------------------------------------------------------- typing commands
+
+fn with_server_commands() -> State {
+    let mut s = state();
+    s.server_commands = [
+        "help", "model", "new", "stop", "context", "variant", "compact", "agent",
+    ]
+    .iter()
+    .map(|n| navai::tui::protocol::ServerCommand {
+        name: n.to_string(),
+        description: format!("Server {n}"),
+        args_hint: match *n {
+            "variant" => "[name|off]".into(),
+            "agent" => "[id]".into(),
+            _ => String::new(),
+        },
+    })
+    .collect();
+    s
+}
+
+/// Types `keys` (a char per key; `⏎` is enter) through the input handler; returns the actions.
+fn keys(text: &str, s: &State, ui: &mut UiState, editor: &mut Editor) -> Vec<Action> {
+    text.chars()
+        .filter_map(|c| {
+            let code = if c == '⏎' {
+                KeyCode::Enter
+            } else {
+                KeyCode::Char(c)
+            };
+            route_key(key(code, KeyModifiers::NONE), s, ui, editor)
+        })
+        .collect()
+}
+
+#[test]
+fn typing_a_slash_shows_client_and_server_commands_and_filters_by_name() {
+    let s = with_server_commands();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    keys("/", &s, &mut ui, &mut editor);
+    assert_eq!(ui.overlay, Some(Overlay::Commands));
+    render("palette-typed", (100, 30), &s, &ui, &editor);
+    let t = cells(&s, &ui, (100, 30));
+    let all: String = (0..30).map(|y| row_text(&t, y, 100) + "\n").collect();
+    for row in ["/context", "/agent [id]", "/compact", "/sessions"] {
+        assert!(all.contains(row), "{row}: {all}");
+    }
+    assert_eq!(
+        all.matches("/variant [name|off]").count(),
+        1,
+        "listed once: {all}"
+    );
+    keys("co", &s, &mut ui, &mut editor);
+    assert_eq!(editor.text(), "/co");
+    assert_eq!(ui.filter, "co");
+    let t = cells(&s, &ui, (100, 30));
+    let all: String = (0..30).map(|y| row_text(&t, y, 100) + "\n").collect();
+    assert!(
+        all.contains("/context") && all.contains("/compact"),
+        "{all}"
+    );
+    assert!(!all.contains("/sessions"), "{all}");
+}
+
+#[test]
+fn slash_context_enter_runs_it_on_the_server() {
+    let s = with_server_commands();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    let actions = keys("/context⏎", &s, &mut ui, &mut editor);
+    assert_eq!(
+        actions.last(),
+        Some(&Action::RunCommand {
+            name: "context".into(),
+            arguments: String::new(),
+            revision: Some(editor.revision()),
+        })
+    );
+    assert_eq!(editor.text(), "/context", "kept until the server took it");
+    assert_eq!(ui.overlay, None);
+}
+
+#[test]
+fn an_argument_closes_the_palette_and_enter_sends_the_line() {
+    let s = with_server_commands();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    keys("/variant", &s, &mut ui, &mut editor);
+    assert_eq!(ui.overlay, Some(Overlay::Commands));
+    keys(" ", &s, &mut ui, &mut editor);
+    assert_eq!(
+        ui.overlay, None,
+        "a space after the name puts the list away"
+    );
+    let actions = keys("high⏎", &s, &mut ui, &mut editor);
+    assert_eq!(
+        actions.last(),
+        Some(&Action::RunCommand {
+            name: "variant".into(),
+            arguments: "high".into(),
+            revision: Some(editor.revision()),
+        })
+    );
+}
+
+#[test]
+fn an_unknown_name_closes_the_palette_and_goes_to_the_server() {
+    let s = with_server_commands();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    keys("/contx", &s, &mut ui, &mut editor);
+    assert_eq!(ui.overlay, None, "no command starts with it");
+    let actions = keys("t⏎", &s, &mut ui, &mut editor);
+    assert_eq!(
+        actions.last(),
+        Some(&Action::RunCommand {
+            name: "contxt".into(),
+            arguments: String::new(),
+            revision: Some(editor.revision()),
+        })
+    );
+}
+
+#[test]
+fn a_double_slash_types_a_literal_slash_and_sends_a_message() {
+    let s = with_server_commands();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    keys("//", &s, &mut ui, &mut editor);
+    assert_eq!(ui.overlay, None);
+    assert_eq!(editor.text(), "//");
+    let actions = keys("hello⏎", &s, &mut ui, &mut editor);
+    assert_eq!(
+        actions.last(),
+        Some(&Action::SubmitAt {
+            text: "/hello".into(),
+            revision: editor.revision(),
+        })
+    );
+}
+
+#[test]
+fn ctrl_p_opens_the_palette_and_enter_runs_a_server_row() {
+    let s = with_server_commands();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    editor.set_text("a draft");
+    let action = route_key(
+        key(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(action, Some(Action::OpenOverlay(Overlay::Commands)));
+    assert!(!ui.palette_typed);
+    keys("context", &s, &mut ui, &mut editor);
+    assert_eq!(
+        editor.text(),
+        "a draft",
+        "the palette filter is not the editor"
+    );
+    let actions = keys("⏎", &s, &mut ui, &mut editor);
+    assert_eq!(
+        actions,
+        [Action::RunCommand {
+            name: "context".into(),
+            arguments: String::new(),
+            revision: None,
+        }]
+    );
+    assert_eq!(editor.text(), "a draft");
+    // a row that needs an argument is put in the editor to finish
+    let mut editor = Editor::new();
+    route_key(
+        key(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    keys("compact", &s, &mut ui, &mut editor);
+    // `/compact` takes an optional focus: it runs bare
+    assert!(matches!(
+        keys("⏎", &s, &mut ui, &mut editor).as_slice(),
+        [Action::RunCommand { name, .. }] if name == "compact"
+    ));
+}
+
+#[test]
+fn esc_and_backspace_in_the_typed_palette_keep_the_line() {
+    let s = with_server_commands();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    keys("/ag", &s, &mut ui, &mut editor);
+    route_key(
+        key(KeyCode::Backspace, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!((editor.text().as_str(), ui.filter.as_str()), ("/a", "a"));
+    assert_eq!(ui.overlay, Some(Overlay::Commands));
+    route_key(
+        key(KeyCode::Esc, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(ui.overlay, None);
+    assert_eq!(editor.text(), "/a");
+    // backspace over the slash leaves an empty line and no list
+    let mut editor = Editor::new();
+    keys("/", &s, &mut ui, &mut editor);
+    route_key(
+        key(KeyCode::Backspace, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(editor.text(), "");
+    assert_eq!(ui.overlay, None);
+}
+
+#[test]
+fn a_typed_local_command_with_an_argument_is_refused_with_a_notice() {
+    let s = with_server_commands();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    let actions = keys("/stop now⏎", &s, &mut ui, &mut editor);
+    assert_eq!(
+        actions.last(),
+        Some(&Action::ShowNotice("/stop takes no arguments".into()))
+    );
+    assert_eq!(editor.text(), "/stop now", "the line stays to fix");
+    let mut editor = Editor::new();
+    let actions = keys("/model fast⏎", &s, &mut ui, &mut editor);
+    assert_eq!(actions.last(), Some(&Action::PickModel("fast".into())));
+    assert_eq!(editor.text(), "", "a client command clears its line");
+}
+
+#[test]
+fn a_paste_after_a_typed_slash_edits_the_line_the_palette_follows() {
+    let s = with_server_commands();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    keys("/", &s, &mut ui, &mut editor);
+    assert_eq!(
+        route_paste("context".into(), &s, &mut ui, &mut editor),
+        None
+    );
+    assert_eq!(editor.text(), "/context");
+    assert_eq!(
+        (ui.overlay, ui.filter.as_str()),
+        (Some(Overlay::Commands), "context")
+    );
+    let actions = keys("⏎", &s, &mut ui, &mut editor);
+    assert_eq!(
+        actions,
+        [Action::RunCommand {
+            name: "context".into(),
+            arguments: String::new(),
+            revision: Some(editor.revision()),
+        }]
+    );
+    // a pasted path is not a command name: the list goes away, the whole line stays
+    let (mut ui, mut editor) = (UiState::default(), Editor::new());
+    keys("/", &s, &mut ui, &mut editor);
+    let action = route_paste("etc/hosts is wrong".into(), &s, &mut ui, &mut editor);
+    assert_eq!(action, Some(Action::CloseOverlay));
+    assert_eq!(ui.overlay, None);
+    assert_eq!(editor.text(), "/etc/hosts is wrong");
+    // another overlay still keeps pastes out
+    let (mut ui, mut editor) = (UiState::default(), Editor::new());
+    route_key(
+        key(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    route_paste("context".into(), &s, &mut ui, &mut editor);
+    assert_eq!(editor.text(), "");
 }

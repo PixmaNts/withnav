@@ -44,6 +44,12 @@ pub enum BlockKind {
     YieldQuestion(String),
     Error(String),
     Notice(String),
+    /// The outcome of a server command: its name, whether it ran, and what it answered.
+    Command {
+        name: String,
+        ok: bool,
+        text: String,
+    },
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
@@ -117,6 +123,22 @@ pub struct Tab {
     pub pending_submit_text: Option<String>,
     pub pending_model_pick: bool,
     pub editor_revision: u64,
+    /// The primary agent the conversation runs as, or starts as; `None` is build.
+    pub agent: Option<String>,
+    /// The model variant the conversation runs with, or starts with; `None` is none.
+    pub variant: Option<String>,
+    /// The variants the conversation's server offers (`/variant` answered `offered`); `None` until
+    /// asked. The `/variant` list shows these, not the catalog's.
+    pub variant_offer: Option<Vec<String>>,
+    /// `/variant` was asked to open its list: the server's answer opens it.
+    pub variant_list_wanted: bool,
+    /// The seq of the last event that set `agent` / `variant`: a session summary read at an
+    /// older seq does not overwrite them.
+    pub agent_seq: Option<u64>,
+    pub variant_seq: Option<u64>,
+    /// The variant chosen in the model picker for a conversation not created yet: `None` leaves
+    /// the alias's default, `Some(None)` asks for none.
+    pub start_variant: Option<Option<String>>,
     /// Something arrived while another tab was shown.
     pub unread: bool,
     /// The editor text while another tab is shown, and the editor revision it was saved at.
@@ -128,7 +150,17 @@ pub struct Tab {
     pub children: Vec<ChildAgent>,
 }
 
+/// The agent a conversation runs as when nothing else is known.
+pub const DEFAULT_AGENT: &str = "build";
+/// The other primary agent the build/plan switch goes to.
+pub const PLAN_AGENT: &str = "plan";
+
 impl Tab {
+    /// The primary agent's name for display.
+    pub fn agent_name(&self) -> &str {
+        self.agent.as_deref().unwrap_or(DEFAULT_AGENT)
+    }
+
     /// True when the tab holds nothing yet: no session, nothing being created or resumed, no block.
     pub fn is_blank(&self) -> bool {
         self.session.is_none()
@@ -156,6 +188,8 @@ pub struct State {
     pub issued: u64,
     pub catalog: Vec<ModelEntry>,
     pub sessions: Vec<SessionListEntry>,
+    /// The commands the server runs; empty until it answered (or for a server without them).
+    pub server_commands: Vec<super::protocol::ServerCommand>,
     pub last_protocol_error: Option<String>,
     pub notice: Option<String>,
     /// Workspace path sent in create requests; filled by the runtime at startup.
@@ -172,6 +206,7 @@ impl Default for State {
             issued: 0,
             catalog: Vec::new(),
             sessions: Vec::new(),
+            server_commands: Vec::new(),
             last_protocol_error: None,
             notice: None,
             workspace: String::new(),
@@ -215,6 +250,18 @@ impl std::ops::DerefMut for State {
         &mut self.tabs[self.active]
     }
 }
+/// What a choice in the variant list applies to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VariantPick {
+    /// The second step of the model picker: the variant a new conversation on `alias` starts on.
+    NewConversation(String),
+    /// `/variant`: the active conversation's variant, changed through the server.
+    Current,
+}
+
+/// The word for "no variant" in the list and in `/variant off`.
+pub const NO_VARIANT: &str = "off";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Focus {
     #[default]
@@ -238,6 +285,11 @@ pub struct UiState {
     pub theme: crate::tui::theme::ThemeId,
     /// The theme in effect when the theme picker opened; `esc` goes back to it.
     pub theme_on_open: Option<crate::tui::theme::ThemeId>,
+    /// The command palette was opened by typing `/` in the editor: the editor holds the line and
+    /// the filter follows it.
+    pub palette_typed: bool,
+    /// What the variant list is choosing for, while it is open.
+    pub variant_pick: Option<VariantPick>,
     /// The tab sidebar is hidden by the driver (it also hides itself on narrow terminals).
     pub sidebar_hidden: bool,
 }

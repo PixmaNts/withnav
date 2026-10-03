@@ -1,0 +1,34 @@
+---
+source: tests/tui_view.rs
+expression: snapshot
+---
+ Conversations       │ navai  ~/dev/project                                Fix parser · 01JABCDEFGH 
+▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
+▌  build · idle      │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+            ┌──────────────────────────────── Commands ────────────────────────────────┐            
+            │ filter:                                                                  │            
+            │▌/new [alias]          new conversation in a new tab                      │            
+            │ /sessions             browse conversations                               │            
+            │ /model [alias]        choose model for a new conversation                │            
+            │ /variant [name|off]   choose the model variant for this conversation     │            
+            │ /stop                 stop generation                                    │            
+            │ /mode                 cycle delivery mode (steer and interrupt send as n │            
+            │ /theme                choose the colour theme                            │            
+            │ /help                 show keyboard shortcuts                            │            
+            │ /quit                 quit terminal client                               │            
+            │ /context              server context                                     │            
+            │ /compact              server compact                                     │            
+            │ /agent [id]           server agent                                       │            
+            │                                                                          │            
+            └──────────────────────────────────────────────────────────────────────────┘            
+                     │                                                                              
+                     │──────────────────────────────────────────────────────────────────────────────
+                     │▌build  cognition · claude-opus-5-5 · — / 200k   ready                        
+                     │┌ Message ───────────────────────────────────────────────────────────────────┐
+ alt+1…9 switch      ││/                                                                           │
+ alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
+ alt+b hide bar      │ enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help

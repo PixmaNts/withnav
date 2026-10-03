@@ -60,12 +60,21 @@ struct Env {
 
 impl Env {
     async fn start(root: tempfile::TempDir, provider_url: &str) -> Self {
+        Self::start_with(root, provider_url, |config| config).await
+    }
+
+    /// Like [`Env::start`], with the server config adjusted by `adjust` first.
+    async fn start_with(
+        root: tempfile::TempDir,
+        provider_url: &str,
+        adjust: impl FnOnce(TestServerConfig) -> TestServerConfig,
+    ) -> Self {
         isolate_xdg();
-        let state = TestServerConfig::mock(root.path(), provider_url)
+        let config = TestServerConfig::mock(root.path(), provider_url)
             .model_alias("alpha", "mock-alpha")
             .extra_alias("beta", "mock-beta")
-            .chat_tools(100_000)
-            .state();
+            .chat_tools(100_000);
+        let state = adjust(config).state();
         let (addr, task) = spawn_server(state).await;
         let ws = workspace_of(&root);
         std::fs::create_dir_all(&ws).expect("workspace dir");
@@ -123,6 +132,18 @@ async fn until(
 
 fn press(rt: &mut Runtime, code: KeyCode) {
     rt.handle_terminal_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+}
+
+/// Types `text` key by key through the terminal input (`⏎` is enter).
+fn type_keys(rt: &mut Runtime, text: &str) {
+    for c in text.chars() {
+        let code = if c == '⏎' {
+            KeyCode::Enter
+        } else {
+            KeyCode::Char(c)
+        };
+        press(rt, code);
+    }
 }
 
 fn type_and_send(rt: &mut Runtime, text: &str) {
@@ -217,12 +238,14 @@ fn rate_limited() -> Vec<u8> {
     .into_bytes()
 }
 
-/// Opens the model picker with F2, moves to the entry at `index` and chooses it.
+/// Opens the model picker with F2, moves to the entry at `index`, chooses it and takes the
+/// preselected variant (the default, or none) in the second step.
 fn pick_model(rt: &mut Runtime, index: usize) {
     press(rt, KeyCode::F(2));
     for _ in 0..index {
         press(rt, KeyCode::Down);
     }
+    press(rt, KeyCode::Enter);
     press(rt, KeyCode::Enter);
 }
 
@@ -586,4 +609,234 @@ async fn two_tabs_stream_their_own_conversations_at_once() {
         .await
         .expect("session list");
     assert!(listed.sessions.iter().any(|s| s.id == second_id));
+}
+
+fn command_blocks(tab: &navai::tui::state::Tab) -> Vec<(String, bool, String)> {
+    tab.conversation
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.kind {
+            BlockKind::Command { name, ok, text } => Some((name.clone(), *ok, text.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+// Given a conversation that answered once
+// When the driver types, key by key, `/context`, then an unknown `/contxt`, then `//context`
+// Then the first two run on the server and come back as command blocks (the editor cleared once
+//      the server took them), and the third is sent as the message "/context"
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn typed_server_commands_run_and_show_their_outcome() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let provider = spawn_capturing_provider(vec![
+        final_answer("Hi.", usage(10, 2)),
+        final_answer("A literal slash.", usage(12, 2)),
+    ])
+    .await;
+    let env = Env::start(root, &provider.url).await;
+    let mut rt = started(&env).await;
+    until("the command list read at start", &mut rt, |_, rt| {
+        rt.state.server_commands.iter().any(|c| c.name == "context")
+    })
+    .await;
+    pick_model(&mut rt, 0);
+    type_and_send(&mut rt, "hello");
+    until("the first answer", &mut rt, |_, rt| has_final(rt, "Hi.")).await;
+
+    type_keys(&mut rt, "/context⏎");
+    until("the context outcome", &mut rt, |_, rt| {
+        command_blocks(&rt.state)
+            .iter()
+            .any(|(n, _, _)| n == "context")
+    })
+    .await;
+    let (_, ok, text) = command_blocks(&rt.state).pop().unwrap();
+    assert!(ok, "{text}");
+    assert!(text.contains(" / ") && text.contains('%'), "{text}");
+    until("the editor to clear", &mut rt, |_, rt| {
+        rt.editor.text().is_empty()
+    })
+    .await;
+
+    type_keys(&mut rt, "/contxt⏎");
+    until("the unknown command's answer", &mut rt, |_, rt| {
+        command_blocks(&rt.state)
+            .iter()
+            .any(|(n, _, _)| n == "contxt")
+    })
+    .await;
+    let (_, ok, text) = command_blocks(&rt.state).pop().unwrap();
+    assert!(!ok);
+    assert!(text.contains("/context"), "names the close one: {text}");
+    let shown = screen(&mut rt);
+    assert!(shown.contains("/contxt · error"), "{shown}");
+    until("the editor to clear", &mut rt, |_, rt| {
+        rt.editor.text().is_empty()
+    })
+    .await;
+
+    type_keys(&mut rt, "//context⏎");
+    until("the literal message's answer", &mut rt, |_, rt| {
+        has_final(rt, "A literal slash.")
+    })
+    .await;
+    assert!(user_messages(&rt)
+        .iter()
+        .any(|(_, text)| text == "/context"));
+}
+
+fn press_tab(rt: &mut Runtime) {
+    press(rt, KeyCode::Tab);
+}
+
+// Given a conversation that answered once
+// When tab is pressed on an empty message
+// Then the server switches it to plan and the status line says so; tab again goes back to build
+// And while a turn is running the switch is refused and the refusal shows, the agent unchanged
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tab_switches_build_and_plan_through_the_server() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let mut provider = spawn_streaming_provider().await;
+    let env = Env::start(root, &provider.url).await;
+    let mut rt = started(&env).await;
+    pick_model(&mut rt, 0);
+    type_and_send(&mut rt, "hello");
+    let (_, answer) = next_request(&mut rt, &mut provider).await;
+
+    // a turn is running: the server refuses the switch
+    // tab switches the agent only on an empty message: the sent one must be cleared first
+    until(
+        "the turn to run and the editor to clear",
+        &mut rt,
+        |_, rt| rt.state.activity == Activity::Running && rt.editor.text().is_empty(),
+    )
+    .await;
+    press_tab(&mut rt);
+    until("the refusal", &mut rt, |_, rt| {
+        command_blocks(&rt.state)
+            .iter()
+            .any(|(n, ok, _)| n == "agent" && !ok)
+    })
+    .await;
+    assert_eq!(rt.state.agent_name(), "build");
+    answer.send(chunk(json!({"content": "Hi."}))).unwrap();
+    answer.send(usage_chunk("stop", usage(10, 2))).unwrap();
+    drop(answer);
+    until("the answer", &mut rt, |_, rt| has_final(rt, "Hi.")).await;
+
+    press_tab(&mut rt);
+    until("the switch to plan", &mut rt, |_, rt| {
+        rt.state.agent_name() == "plan"
+    })
+    .await;
+    let shown = screen(&mut rt);
+    assert!(shown.contains("▌plan"), "{shown}");
+    assert!(shown.contains("plan · idle"), "{shown}");
+    let summary = Client::new(env.base.clone(), None)
+        .summary(&session_id(&rt))
+        .await
+        .expect("summary");
+    assert_eq!(summary.agent.as_deref(), Some("plan"));
+
+    press_tab(&mut rt);
+    until("the switch back", &mut rt, |_, rt| {
+        rt.state.agent_name() == "build"
+    })
+    .await;
+}
+
+// Given an alias `alpha` offering `low` and `high`, `high` its default
+// When `alpha` is picked with `low` in the variant step and a message is sent
+// Then the conversation starts on `low` (the status line and the provider request say so)
+// And `/variant` from the palette, moved to `high`, switches it through the server: the status
+//      line follows the answer
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn variant_step_and_slash_variant_drive_the_server() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let provider = spawn_capturing_provider(vec![
+        final_answer("On low.", usage(10, 2)),
+        final_answer("On high.", usage(10, 2)),
+    ])
+    .await;
+    let variants = json!({
+        "low": {"reasoning_effort": "low"},
+        "high": {"reasoning_effort": "high"},
+    });
+    let env = Env::start_with(root, &provider.url, |c| c.variants(variants, Some("high"))).await;
+    let mut rt = started(&env).await;
+    let alpha = rt
+        .state
+        .catalog
+        .iter()
+        .find(|m| m.alias == "alpha")
+        .expect("alpha")
+        .clone();
+    assert_eq!(alpha.variants, ["high", "low"]);
+    assert_eq!(alpha.default_variant.as_deref(), Some("high"));
+
+    // F2, alpha, then the variant step (high, low, off): the default is preselected; down is `low`.
+    press(&mut rt, KeyCode::F(2));
+    press(&mut rt, KeyCode::Enter);
+    press(&mut rt, KeyCode::Down);
+    press(&mut rt, KeyCode::Enter);
+    assert_eq!(rt.state.variant.as_deref(), Some("low"));
+    type_and_send(&mut rt, "hello");
+    until("the first answer", &mut rt, |_, rt| {
+        has_final(rt, "On low.")
+    })
+    .await;
+    let body: serde_json::Value = serde_json::from_str(&provider.bodies()[0]).expect("body");
+    assert_eq!(body["reasoning_effort"], "low", "{body}");
+    until("the summary's variant", &mut rt, |_, rt| {
+        rt.state.session.as_ref().and_then(|m| m.variant.as_deref()) == Some("low")
+    })
+    .await;
+    assert!(screen(&mut rt).contains("· low ·"));
+
+    // /variant from the palette: the list starts on `low`; up is `high`.
+    rt.handle_terminal_event(Event::Key(KeyEvent::new(
+        KeyCode::Char('p'),
+        KeyModifiers::CONTROL,
+    )));
+    for c in "variant".chars() {
+        press(&mut rt, KeyCode::Char(c));
+    }
+    press(&mut rt, KeyCode::Enter);
+    // the list opens on the server's answer: what this conversation offers
+    until("the variant list", &mut rt, |_, rt| {
+        rt.ui.overlay == Some(navai::tui::protocol::Overlay::Variants)
+    })
+    .await;
+    assert_eq!(
+        navai::tui::commands::variant_choices(&rt.state, &navai::tui::state::VariantPick::Current),
+        (vec!["high".into(), "low".into(), "off".into()], 1)
+    );
+    press(&mut rt, KeyCode::Up);
+    press(&mut rt, KeyCode::Enter);
+    until("the switch to high", &mut rt, |_, rt| {
+        rt.state.variant.as_deref() == Some("high")
+    })
+    .await;
+    let shown = screen(&mut rt);
+    assert!(shown.contains("/variant · ok"), "{shown}");
+    assert!(shown.contains("· high ·"), "{shown}");
+    type_and_send(&mut rt, "again");
+    until("the second answer", &mut rt, |_, rt| {
+        has_final(rt, "On high.")
+    })
+    .await;
+    let body: serde_json::Value = serde_json::from_str(&provider.bodies()[1]).expect("body");
+    assert_eq!(body["reasoning_effort"], "high", "{body}");
+
+    // typed key by key: `/variant low⏎` switches back
+    until("the editor to clear", &mut rt, |_, rt| {
+        rt.editor.text().is_empty()
+    })
+    .await;
+    type_keys(&mut rt, "/variant low⏎");
+    until("the switch to low", &mut rt, |_, rt| {
+        rt.state.variant.as_deref() == Some("low")
+    })
+    .await;
 }

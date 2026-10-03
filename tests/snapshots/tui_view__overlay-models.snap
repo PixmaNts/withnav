@@ -16,8 +16,8 @@ expression: snapshot
                      │ │ ASSISTANT                                                                  
             ┌───────────────────── Start a new conversation with… ─────────────────────┐            
             │ filter:                                                                  │            
-            │▌cognition        cc/claude-opus-5-5  ·  200k ctx                         │            
-            │ fast             cc/flash  ·  — ctx                                      │            
+            │▌cognition         cc/claude-opus-5-5                              200k   │            
+            │ fast              cc/flash                                           —   │            
             │                                                                          │            
             └──────────────────────────────────────────────────────────────────────────┘            
                      │                                                                              
@@ -27,7 +27,7 @@ expression: snapshot
                      │                                                                              
                      │                                                                              
                      │──────────────────────────────────────────────────────────────────────────────
-                     │ cognition · claude-opus-5-5   ctx 12.4k / 200k   ready                       
+                     │▌build  cognition · claude-opus-5-5 · 12.4k / 200k   ready                    
                      │┌ Message ───────────────────────────────────────────────────────────────────┐
  alt+1…9 switch      ││                                                                            │
  alt+w close         │└────────────────────────────────────────────────────────────────────────────┘

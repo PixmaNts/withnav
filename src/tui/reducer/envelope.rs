@@ -251,6 +251,40 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 settle_turn_tools(s, &actor, t, outcome);
             }
         }
+        Some(EventKind::SessionAgentChanged) => {
+            let agent = e.payload["agent"].as_str().ok_or_else(bad)?;
+            s.agent = Some(strip_controls(agent));
+            s.agent_seq = Some(e.seq);
+        }
+        Some(EventKind::CommandResult) => {
+            let v = e.payload;
+            let name = v["name"].as_str().ok_or_else(bad)?.to_string();
+            let ok = v["ok"].as_bool().ok_or_else(bad)?;
+            // `/variant` answers with the variant in use, after a change or not.
+            if name == "variant" && ok {
+                if let Some(data) = v.get("data") {
+                    if let Some(variant) = data.get("variant") {
+                        s.variant = variant.as_str().map(strip_controls);
+                        s.variant_seq = Some(e.seq);
+                    }
+                    super::set_variant_offer(s, data);
+                }
+            }
+            let text = super::command::outcome_text(
+                &name,
+                ok,
+                v.get("data").filter(|d| !d.is_null()),
+                v["error"].as_str(),
+            );
+            s.conversation.blocks.push(block(
+                e.seq.to_string(),
+                BlockKind::Command {
+                    name,
+                    ok,
+                    text: strip_controls(&text),
+                },
+            ));
+        }
         Some(EventKind::ContextUpdated) => {
             let snapshot = serde_json::from_value(e.payload).map_err(|_| bad())?;
             keep_newer_context(s, snapshot);

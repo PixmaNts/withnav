@@ -1,8 +1,12 @@
 //! UI action → effects.
 use super::{push_local, refresh_model, send_effect, start_conversation};
 use crate::tui::{
-    protocol::{Action, CreateSessionRequest, Effect, Generation, Overlay},
-    state::{Activity, BlockKind, State, Tab, TabView, UiState, MAX_TABS},
+    commands,
+    protocol::{Action, CommandRequest, CreateSessionRequest, Effect, Generation, Overlay},
+    state::{
+        Activity, BlockKind, State, Tab, TabView, UiState, VariantPick, DEFAULT_AGENT, MAX_TABS,
+        NO_VARIANT, PLAN_AGENT,
+    },
     theme::ThemeId,
 };
 
@@ -38,6 +42,8 @@ fn submit(s: &mut State, text: String, revision: u64) -> Vec<Effect> {
                 workspace: s.workspace.clone(),
                 model: s.selected_model_alias.clone(),
                 resume: None,
+                agent: s.agent.clone(),
+                variant: s.start_variant.clone(),
             })]
         }
     }
@@ -206,26 +212,134 @@ fn resume(s: &mut State, ui: &mut UiState, id: String) -> Vec<Effect> {
     effects
 }
 
+/// Points the active tab at `alias` (a new tab when the active one holds a conversation: a
+/// conversation keeps its model). `variant` is the start variant chosen in the picker; `None`
+/// leaves the alias's default. `None` when the tab limit refused a new tab.
+fn pick_model(
+    s: &mut State,
+    ui: &mut UiState,
+    alias: String,
+    variant: Option<Option<String>>,
+) -> Option<Vec<Effect>> {
+    // A tab with a conversation, or one being created or resumed, keeps its model.
+    let occupied = s.session.is_some() || s.resuming.is_some() || s.pending_submit_text.is_some();
+    let effects = if occupied { open_tab(s, ui)? } else { vec![] };
+    s.selected_model_alias = Some(alias);
+    refresh_model(s);
+    let default = s
+        .catalog
+        .iter()
+        .find(|m| Some(&m.alias) == s.selected_model_alias.as_ref())
+        .and_then(|m| m.default_variant.clone());
+    s.variant = variant.clone().unwrap_or(default);
+    s.start_variant = variant;
+    Some(effects)
+}
+
+/// Opens the `/variant` list on `current` (the variant in use, `None` for none), unless another
+/// overlay took the screen.
+pub fn show_variants(s: &State, ui: &mut UiState, current: Option<&str>) {
+    if ui.overlay.is_some() {
+        return;
+    }
+    let pick = VariantPick::Current;
+    let (rows, _) = commands::variant_choices(s, &pick);
+    let wanted = current.unwrap_or(NO_VARIANT);
+    let start = rows
+        .iter()
+        .position(|r| r == wanted)
+        .unwrap_or(rows.len().saturating_sub(1));
+    ui.overlay = Some(Overlay::Variants);
+    ui.filter.clear();
+    ui.selection
+        .insert(format!("{:?}", Overlay::Variants), start);
+    ui.variant_pick = Some(pick);
+}
+
+/// Build to plan and back. A conversation switches through `/agent` (the server may refuse, and
+/// says why in its `command.result`); one not created yet just starts as the other agent.
+fn toggle_agent(s: &mut State) -> Vec<Effect> {
+    let next = if s.agent_name() == PLAN_AGENT {
+        DEFAULT_AGENT
+    } else {
+        PLAN_AGENT
+    };
+    if s.session.is_none() && s.resuming.is_none() && s.pending_submit_text.is_none() {
+        s.agent = (next != DEFAULT_AGENT).then(|| next.to_string());
+        return vec![];
+    }
+    run_command(s, "agent".into(), next.into(), None)
+}
+
+/// Sends a server command to the active conversation. With no conversation yet (or one being
+/// started or resumed) there is nothing to run it in, and the driver is told so.
+fn run_command(
+    s: &mut State,
+    name: String,
+    arguments: String,
+    revision: Option<u64>,
+) -> Vec<Effect> {
+    let live = s
+        .session
+        .as_ref()
+        .filter(|_| s.resuming.is_none() && s.activity != Activity::Stopped)
+        .map(|m| m.session_id.clone());
+    let Some(session_id) = live else {
+        let why = if s.activity == Activity::Stopped {
+            "the conversation is stopped; send a message to resume it, then run the command"
+        } else {
+            "no conversation yet; send a message first, then run the command"
+        };
+        push_local(
+            s,
+            BlockKind::Command {
+                name,
+                ok: false,
+                text: why.into(),
+            },
+        );
+        return vec![];
+    };
+    vec![Effect::RunCommand {
+        session_id,
+        request: CommandRequest { name, arguments },
+        revision,
+    }]
+}
+
 pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> {
     match a {
         Action::Submit(text) => submit(s, text, 0),
         Action::SubmitAt { text, revision } => submit(s, text, revision),
         Action::NewConversation => blank_tab(s, ui).unwrap_or_default(),
         Action::ResumeSession(id) => resume(s, ui, id),
-        Action::PickModel(alias) => {
-            if s.session.is_some() {
-                // A conversation keeps its model: the picked one starts a new conversation.
-                let Some(effects) = open_tab(s, ui) else {
-                    return vec![];
-                };
-                s.selected_model_alias = Some(alias);
-                refresh_model(s);
-                effects
-            } else {
-                s.selected_model_alias = Some(alias);
-                refresh_model(s);
-                vec![]
+        Action::PickModel(alias) => pick_model(s, ui, alias, None).unwrap_or_default(),
+        Action::PickVariant(name) => {
+            let pick = ui.variant_pick.take();
+            ui.overlay = None;
+            let chosen = (name != NO_VARIANT).then_some(name);
+            match pick {
+                Some(VariantPick::NewConversation(alias)) => {
+                    pick_model(s, ui, alias, Some(chosen)).unwrap_or_default()
+                }
+                Some(VariantPick::Current) => run_command(
+                    s,
+                    "variant".into(),
+                    chosen.unwrap_or_else(|| NO_VARIANT.into()),
+                    None,
+                ),
+                None => vec![],
             }
+        }
+        Action::RunCommand {
+            name,
+            arguments,
+            revision,
+        } => run_command(s, name, arguments, revision),
+        Action::ToggleAgent => toggle_agent(s),
+        Action::ShowNotice(text) => {
+            push_local(s, BlockKind::Notice(text));
+            vec![]
         }
         Action::SwitchTab(index) => {
             if index < s.tabs.len() && index != s.active {
@@ -248,7 +362,18 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
         Action::OpenOverlay(o) => {
             ui.overlay = Some(o);
             match o {
-                Overlay::Models => vec![Effect::FetchModels],
+                Overlay::Models => {
+                    ui.variant_pick = None;
+                    vec![Effect::FetchModels]
+                }
+                Overlay::Variants => {
+                    // `/variant` asks the server what this conversation offers; its answer opens
+                    // the list. With no live conversation `run_command` says why.
+                    ui.overlay = None;
+                    let effects = run_command(s, "variant".into(), String::new(), None);
+                    s.variant_list_wanted = !effects.is_empty();
+                    effects
+                }
                 Overlay::Sessions => vec![Effect::ListSessions],
                 Overlay::Themes => {
                     ui.theme_on_open = Some(ui.theme);
@@ -262,6 +387,7 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
         }
         Action::CloseOverlay => {
             ui.overlay = None;
+            ui.variant_pick = None;
             // Leaving the theme picker without choosing puts back the theme it opened with.
             if let Some(theme) = ui.theme_on_open.take() {
                 ui.theme = theme;

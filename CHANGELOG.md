@@ -16,7 +16,7 @@ requests land in `develop`.
   a `navai/<version>` User-Agent and no provider credentials; URLs with credentials are refused. Only
   same-origin redirects are followed (at most 10): a redirect to another origin comes back as the target
   URL for a new call. The body is streamed and capped at 5 MiB after decompression, text types only
-  (images and binaries are refused), decoded by its charset, output bounded to 64 KiB. Errors carry a
+  (images and binaries are refused), decoded by its charset, output bounded to 64 KiB. HTML is converted in a child process limited to 512 MiB of memory, 10 s of CPU and the call's time budget; if it fails the page comes back as plain text with a note. Errors carry a
   code: `invalid_url`, `timeout`, `http_status`, `unsupported_content`, `too_large`, `network`. Any
   address is reachable, localhost and private networks included.
 - **Model catalog**: a chat alias without `context_window` in models.json gets its window from the

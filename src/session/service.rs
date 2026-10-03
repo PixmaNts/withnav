@@ -1041,7 +1041,7 @@ impl Service {
                 session_cancel.child_token(),
             ),
         };
-        if root_tools_enabled {
+        if root_tools_enabled && role.mode.is_primary() {
             actor
                 .registry
                 .register(Box::new(crate::tools::task::TaskTool::new(

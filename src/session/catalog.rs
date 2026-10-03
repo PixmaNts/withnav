@@ -65,6 +65,7 @@ impl Service {
     /// in memory nor on disk.
     pub async fn delete(&self, id: SessionId) -> Result<(), ServerError> {
         let _gate = self.lifecycle_gate().await;
+        let parent = self.handle(id).and_then(|handle| handle.parent_session_id);
         // A live session is closed; a stored one is a no-op; an id the store
         // does not know is a 404.
         self.close_session_gated(id).await?;
@@ -73,6 +74,16 @@ impl Service {
             .delete(id)
             .await
             .map_err(ServerError::History)?;
+        if let Some(parent) = parent {
+            if let Some(count) = self
+                .subagent_slots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_mut(&parent)
+            {
+                *count = count.saturating_sub(1);
+            }
+        }
         Ok(())
     }
 }

@@ -167,6 +167,30 @@ impl Executor {
             // Legacy variant (never emitted by the reducer): no editor revision to echo.
             Effect::Send(request) => self.send(request, 0, ctx),
             Effect::SendAt { request, revision } => self.send(request, revision, ctx),
+            Effect::FetchCommands => {
+                let client = self.client.clone();
+                self.spawn_event(async move {
+                    ClientEvent::Commands {
+                        generation,
+                        result: client.commands().await,
+                    }
+                });
+            }
+            Effect::RunCommand {
+                session_id,
+                request,
+                revision,
+            } => {
+                let client = self.client.clone();
+                self.spawn_event(async move {
+                    ClientEvent::CommandRan {
+                        generation,
+                        name: request.name.clone(),
+                        revision,
+                        result: client.run_command(&session_id, request).await,
+                    }
+                });
+            }
             Effect::Stop(id) => {
                 let client = self.client.clone();
                 self.spawn_event(async move {
@@ -199,6 +223,8 @@ impl Executor {
                     }
                 }
             }
+            // Applied by the runtime before it reaches here.
+            Effect::ShowVariants { .. } => {}
             Effect::Quit => return Flow::Quit,
         }
         Flow::Continue

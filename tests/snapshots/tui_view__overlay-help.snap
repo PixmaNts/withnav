@@ -17,7 +17,8 @@ expression: snapshot
             │ alt+b                   hide / show the tab bar                          │            
             │ f2                      models                                           │            
             │ f1                      help                                             │            
-            │ tab / shift+tab         switch focus                                     │            
+            │ tab                     build / plan (empty message)                     │            
+            │ shift+tab               switch focus                                     │            
             │ page up / page down     scroll                                           │            
             │ up / down               select transcript block                          │            
             │ space / enter           expand selected block                            │            
@@ -25,9 +26,8 @@ expression: snapshot
             │ esc / ctrl+c            stop / close                                     │            
             │ ctrl+q                  quit                                             │            
             │                                                                          │            
-            │                                                                          │            
-            └──────────────────────────────────────────────────────────────────────────┘────────────
-                     │ cognition · claude-opus-5-5   ctx 12.4k / 200k   ready                       
+            │                                                                          │────────────
+            └──────────────────────────────────────────────────────────────────────────┘            
                      │┌ Message ───────────────────────────────────────────────────────────────────┐
  alt+1…9 switch      ││                                                                            │
  alt+w close         │└────────────────────────────────────────────────────────────────────────────┘

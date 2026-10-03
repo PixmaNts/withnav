@@ -4,6 +4,7 @@ use crate::tui::{
 };
 use ratatui::{
     layout::Rect,
+    style::Modifier,
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
@@ -20,18 +21,7 @@ pub fn number(n: Option<u64>) -> String {
 
 /// A token count for the gauge: `842`, `42k`, `1M`, `1.5M`.
 pub fn gauge_number(n: u64) -> String {
-    if n >= 1_000_000 {
-        let tenths = (n + 50_000) / 100_000;
-        return if tenths.is_multiple_of(10) {
-            format!("{}M", tenths / 10)
-        } else {
-            format!("{}.{}M", tenths / 10, tenths % 10)
-        };
-    }
-    if n >= 1000 {
-        return format!("{}k", (n + 500) / 1000);
-    }
-    n.to_string()
+    crate::tui::reducer::tokens(n)
 }
 
 /// What the status line shows for the context: used, window, percent.
@@ -87,48 +77,88 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
         ""
     };
     let (context, window, percent) = context_gauge(state);
-    let percent_text = percent.clone().unwrap_or_default();
-    let metrics = format!("   ctx {context} / {window}{percent_text}");
+    let percent_text = percent.unwrap_or_default();
     let session_tokens = number(state.conversation.session_tokens);
-    let session = format!("   session {session_tokens} tok");
     let fixed = format!("   {connection}   {activity}{warning}")
         .chars()
         .count();
     let available = usize::from(area.width).saturating_sub(fixed);
-    let mut parts = vec![Span::styled(format!(" {alias}"), theme.title())];
-    let model_label = format!(" · {model}");
-    let remaining = available.saturating_sub(alias.chars().count() + 1);
-    if remaining >= 5 {
-        let model = if model_label.chars().count() > remaining {
-            format!(
-                " · {}…",
-                model
-                    .chars()
-                    .take(remaining.saturating_sub(4))
-                    .collect::<String>()
-            )
-        } else {
-            model_label
-        };
-        parts.push(Span::styled(model, theme.muted()));
-    }
-    let mut used: usize = parts.iter().map(|part| part.content.chars().count()).sum();
-    if area.width >= 52 && used + metrics.chars().count() <= available {
-        used += metrics.chars().count();
-        parts.extend([
-            Span::styled("   ctx ", theme.muted()),
+    let agent = state.agent_name();
+    let agent_style = super::sidebar::agent_style(agent, theme);
+    // `▌build  alias · model · variant · ~42k / 1M · 4%`: the agent and the alias always; then the
+    // gauge, the variant, the model (shortened first) and the session count as room allows.
+    let lead = vec![
+        Span::styled("▌", agent_style),
+        Span::styled(agent.to_string(), agent_style.add_modifier(Modifier::BOLD)),
+        Span::styled(format!("  {alias}"), theme.title()),
+    ];
+    let variant = state.variant.as_deref().map(|v| {
+        vec![
+            Span::styled(" · ", theme.muted()),
+            Span::styled(v.to_string(), theme.text()),
+        ]
+    });
+    let gauge = (area.width >= 52).then(|| {
+        vec![
+            Span::styled(" · ", theme.muted()),
             Span::styled(context, theme.number()),
             Span::styled(" / ", theme.muted()),
             Span::styled(window, theme.text()),
             Span::styled(percent_text, theme.muted()),
-        ]);
-    }
-    if area.width >= 90 && used + session.chars().count() <= available {
-        parts.extend([
+        ]
+    });
+    let session = (area.width >= 90).then(|| {
+        vec![
             Span::styled("   session ", theme.muted()),
             Span::styled(session_tokens, theme.number()),
             Span::styled(" tok", theme.muted()),
-        ]);
+        ]
+    });
+    let width = |spans: &[Span<'_>]| {
+        spans
+            .iter()
+            .map(|p| p.content.chars().count())
+            .sum::<usize>()
+    };
+    let mut used = width(&lead);
+    let mut fits = |spans: &Option<Vec<Span<'static>>>| match spans {
+        Some(spans) if used + width(spans) <= available => {
+            used += width(spans);
+            true
+        }
+        _ => false,
+    };
+    let gauge_fits = fits(&gauge);
+    let variant_fits = fits(&variant);
+    let session_fits = fits(&session);
+    // The model takes what is left, cut with `…`, and is dropped below five columns.
+    let room = available.saturating_sub(used);
+    let model_label = format!(" · {model}");
+    let model = if room < 5 {
+        None
+    } else if model_label.chars().count() > room {
+        Some(format!(
+            " · {}…",
+            model
+                .chars()
+                .take(room.saturating_sub(4))
+                .collect::<String>()
+        ))
+    } else {
+        Some(model_label)
+    };
+    let mut parts = lead;
+    if let Some(model) = model {
+        parts.push(Span::styled(model, theme.muted()));
+    }
+    for (shown, spans) in [
+        (variant_fits, variant),
+        (gauge_fits, gauge),
+        (session_fits, session),
+    ] {
+        if shown {
+            parts.extend(spans.unwrap_or_default());
+        }
     }
     if !connection.is_empty() {
         parts.push(Span::styled(format!("   {connection}"), theme.warning()));

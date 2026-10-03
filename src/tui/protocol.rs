@@ -28,6 +28,12 @@ pub struct ModelEntry {
     pub max_input_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discrepancy: Option<Discrepancy>,
+    /// The variant names the alias offers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<String>,
+    /// The variant a new conversation starts on when none is chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_variant: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Discrepancy {
@@ -46,6 +52,9 @@ pub struct SessionListEntry {
     pub created_at: String,
     pub updated_at: String,
     pub message_count: u64,
+    /// The primary agent; absent from an older server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     pub live: bool,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -59,6 +68,13 @@ pub struct CreateSessionRequest {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume: Option<String>,
+    /// The primary agent a new conversation starts as; the server's default (build) when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// The variant a new conversation starts on: absent for the alias's default, `null` for none,
+    /// else a name the alias offers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<Option<String>>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CreateSessionResponse {
@@ -72,6 +88,12 @@ pub struct SessionMetadata {
     pub actor_state: String,
     pub workspace: String,
     pub model: String,
+    /// The primary agent; absent from an older server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// The model variant; `None` for none or an older server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
     pub current_seq: u64,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -92,6 +114,35 @@ pub struct SubmitResponse {
 pub struct StopResponse {
     pub accepted: bool,
     pub actor_state: String,
+}
+/// One command the server runs for a session (`GET /v1/commands`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ServerCommand {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub args_hint: String,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommandsBody {
+    pub commands: Vec<ServerCommand>,
+}
+/// `POST /v1/sessions/{id}/commands` request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandRequest {
+    pub name: String,
+    pub arguments: String,
+}
+/// `POST /v1/sessions/{id}/commands` answer; the same outcome also arrives as `command.result`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommandResponse {
+    pub operation_id: String,
+    pub ok: bool,
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientEvent {
@@ -142,6 +193,18 @@ pub enum ClientEvent {
         revision: u64,
         result: Result<SubmitResponse, String>,
     },
+    /// The server's command list.
+    Commands {
+        generation: Generation,
+        result: Result<CommandsBody, String>,
+    },
+    /// A command request came back; `revision` is the editor revision it was typed at, if typed.
+    CommandRan {
+        generation: Generation,
+        name: String,
+        revision: Option<u64>,
+        result: Result<CommandResponse, String>,
+    },
     Stopped {
         generation: Generation,
         result: Result<StopResponse, String>,
@@ -189,6 +252,20 @@ pub enum Action {
         text: String,
         revision: u64,
     },
+    /// Runs a server command in the active conversation; `revision` is the editor revision when
+    /// it was typed, so the editor is cleared once the server took it.
+    RunCommand {
+        name: String,
+        arguments: String,
+        revision: Option<u64>,
+    },
+    /// A row of the variant list: a variant name, or `off` for none. What it applies to is the
+    /// list's `UiState::variant_pick`.
+    PickVariant(String),
+    /// Shows a notice in the active conversation; nothing else happens.
+    ShowNotice(String),
+    /// Switches the active conversation between the build and plan agents.
+    ToggleAgent,
     /// Shows the tab at this index (0 is the first).
     SwitchTab(usize),
     /// Closes the active tab; its conversation stays on the server.
@@ -203,11 +280,21 @@ pub enum Overlay {
     Commands,
     Help,
     Themes,
+    /// The variants of a model: the second step of the model picker, or `/variant`.
+    Variants,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     FetchModels,
     ListSessions,
+    /// Reads the server's command list.
+    FetchCommands,
+    /// Runs a command in a session; the outcome comes back as `ClientEvent::CommandRan`.
+    RunCommand {
+        session_id: String,
+        request: CommandRequest,
+        revision: Option<u64>,
+    },
     Create(CreateSessionRequest),
     Resume(String),
     FetchMetadata(String),
@@ -235,6 +322,11 @@ pub enum Effect {
     SendAt {
         request: SubmitRequest,
         revision: u64,
+    },
+    /// Opens the variant list of the active conversation, from the offer the server just gave.
+    ShowVariants {
+        /// The variant in use according to that same answer; the list starts on it.
+        current: Option<String>,
     },
     /// Puts the draft of the tab that came forward in the editor, at the revision it was kept at,
     /// so a send still in flight from that tab can clear it.

@@ -621,19 +621,6 @@ async fn runtime_loop(
                 actor.cancel.cancel();
                 break;
             }
-            _ = async {
-                if delivery_waiting && !actor.has_pending() { return; }
-                std::future::pending::<()>().await;
-            } => {
-                delivery_waiting = true;
-                if actor.has_pending() { continue; }
-                delivery_waiting = false;
-                match delivery::apply(&mut actor, &status, &sequencer).await {
-                    Ok(true) => Some(Inbound::Completion),
-                    Ok(false) => continue,
-                    Err(error) => { tracing::error!(%error, "subagent wake delivery failed"); break; }
-                }
-            }
             Some(control) = recv_control(&mut control) => {
                 // Between turns: run it now, publish its result, then answer.
                 match control {
@@ -672,6 +659,20 @@ async fn runtime_loop(
                 }
                 inbox.next_inbound().await
             } => inbound,
+            _ = async {
+                if delivery_waiting && !actor.has_pending() { return; }
+                std::future::pending::<()>().await;
+            } => {
+                delivery_waiting = true;
+                if actor.has_pending() { continue; }
+                delivery_waiting = false;
+                match delivery::apply(&mut actor, &status, &sequencer).await {
+                    Ok(true) => Some(Inbound::Completion),
+                    Ok(false) => continue,
+                    Err(error) => { tracing::error!(%error, "subagent wake delivery failed"); break; }
+                }
+            }
+
         };
 
         let Some(inbound) = inbound else {

@@ -8,6 +8,65 @@ use serde_json::{json, Value};
 mod common;
 
 #[tokio::test]
+async fn queued_driver_correction_precedes_completion_only_wake() {
+    let mut provider = common::sse::spawn_streaming_provider().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let state = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(128_000)
+        .state();
+    let parent = state.create_session(&ws, None, None).await.unwrap();
+    state
+        .send(Command::child_prompt(parent, "original instruction".into()))
+        .await
+        .unwrap();
+    let (_, parent_stream) = provider.requests.recv().await.unwrap();
+    state
+        .create_child_session(parent, "explore", "inspect")
+        .await
+        .unwrap();
+    let (_, child_stream) = provider.requests.recv().await.unwrap();
+    child_stream.send(text_chunk("child answer")).unwrap();
+    drop(child_stream);
+    notice_count(&state, parent, 1).await;
+    state
+        .send(Command::child_prompt(parent, "driver correction".into()))
+        .await
+        .unwrap();
+    parent_stream.send(text_chunk("old turn done")).unwrap();
+    drop(parent_stream);
+    let (request, stream) = tokio::time::timeout(Duration::from_secs(2), provider.requests.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let body: Value = serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let messages = body["messages"].as_array().unwrap();
+    let driver = messages
+        .iter()
+        .position(|m| m["content"] == "driver correction")
+        .unwrap();
+    let notice = messages
+        .iter()
+        .position(|m| {
+            m["content"]
+                .as_str()
+                .is_some_and(|s| s.contains("untrusted_subagent_output"))
+        })
+        .unwrap();
+    assert!(driver < notice);
+    assert_eq!(request_outputs(&request).len(), 1);
+    stream.send(text_chunk("corrected")).unwrap();
+    drop(stream);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), provider.requests.recv())
+            .await
+            .is_err()
+    );
+    state.close_all().await;
+}
+
+#[tokio::test]
 async fn mirrored_child_permission_is_resolved_after_parent_stop_and_resume() {
     let mut provider = common::sse::spawn_streaming_provider().await;
     let tmp = tempfile::tempdir().unwrap();

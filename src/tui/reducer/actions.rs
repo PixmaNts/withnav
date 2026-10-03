@@ -276,7 +276,14 @@ fn switch_model(s: &mut State, ui: &mut UiState, alias: String) -> Vec<Effect> {
         return vec![];
     }
     let effects = run_command(s, "model".into(), alias.clone(), None);
-    s.model_request = (!effects.is_empty()).then_some(alias);
+    // A new switch replaces the one shown, whatever became of it.
+    if !effects.is_empty() {
+        s.model_switch = Some(crate::tui::state::ModelSwitch {
+            alias,
+            operation_id: None,
+            deferred: false,
+        });
+    }
     effects
 }
 

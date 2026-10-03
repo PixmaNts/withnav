@@ -76,6 +76,47 @@ pub(crate) fn read_git(s: &mut State) -> Option<Effect> {
     Some(Effect::ReadGit)
 }
 
+/// The settled `/model` operations kept, at most.
+const SETTLED_MODEL_OPS: usize = 16;
+
+/// Records that the `/model` operation `id` is settled; ends the switch waiting on it.
+pub(crate) fn settle_model_op(s: &mut State, id: &str) {
+    if !s.settled_model_ops.iter().any(|o| o == id) {
+        s.settled_model_ops.push_back(id.to_string());
+        while s.settled_model_ops.len() > SETTLED_MODEL_OPS {
+            s.settled_model_ops.pop_front();
+        }
+    }
+    if s.model_switch
+        .as_ref()
+        .is_some_and(|m| m.operation_id.as_deref() == Some(id))
+    {
+        s.model_switch = None;
+    }
+}
+
+/// The HTTP answer to this client's `/model`: it names the operation the switch waits on. An
+/// acceptance for after the turn waits for that operation to settle on the stream, unless it
+/// already did; anything else is settled now.
+fn model_answered(s: &mut State, response: &crate::tui::protocol::CommandResponse) {
+    let id = response.operation_id.clone();
+    let deferred = response.ok
+        && response
+            .data
+            .as_ref()
+            .is_some_and(|d| d["accepted"].as_bool() == Some(true) && d["applies"] == "after_turn");
+    let settled = s.settled_model_ops.contains(&id);
+    let Some(switch) = s.model_switch.as_mut().filter(|m| m.operation_id.is_none()) else {
+        return;
+    };
+    if deferred && !settled {
+        switch.operation_id = Some(id);
+        switch.deferred = true;
+    } else {
+        s.model_switch = None;
+    }
+}
+
 /// Forgets that an answer was sent for `request_id`, if it was the one.
 pub(crate) fn clear_answered(s: &mut State, request_id: &str) {
     if s.answered_permission.as_deref() == Some(request_id) {
@@ -108,8 +149,7 @@ pub(crate) fn start_conversation(s: &mut State) {
     s.agent_seq = None;
     s.variant_seq = None;
     s.model_seq = None;
-    s.model_request = None;
-    s.model_pending = None;
+    s.model_switch = None;
     s.variant_offer = None;
     s.variant_list_wanted = false;
     s.pending_submit_text = None;
@@ -218,6 +258,11 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             // live-only), so it stays; the reconnect that follows refreshes it.
             let context = envelope::take_context(s);
             reset_projection(s);
+            // The replay says again whether the switch still waits: hidden until its acceptance
+            // comes back and nothing settles it.
+            if let Some(m) = s.model_switch.as_mut() {
+                m.deferred = false;
+            }
             envelope::restore_context(s, context);
             effects.push(Effect::Subscribe {
                 session_id: s
@@ -321,6 +366,9 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         } => match result {
             // The outcome itself arrives as `command.result` on the stream.
             Ok(response) => {
+                if name == "model" {
+                    model_answered(s, &response);
+                }
                 if name == "variant" {
                     if let Some(data) = response.data.as_ref().filter(|_| response.ok) {
                         set_variant_offer(s, data);
@@ -350,6 +398,15 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 if name == "variant" {
                     s.variant_list_wanted = false;
                 }
+                // The command never reached the server, or its answer was lost: the switch it
+                // asked for is not waiting.
+                if name == "model"
+                    && s.model_switch
+                        .as_ref()
+                        .is_some_and(|m| m.operation_id.is_none())
+                {
+                    s.model_switch = None;
+                }
                 push_local(
                     s,
                     BlockKind::Command {
@@ -368,6 +425,8 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         ClientEvent::Created { result, .. } | ClientEvent::Resumed { result, .. } => match result {
             Ok(r) => {
                 s.resuming = None;
+                // A fresh runtime has no switch waiting for a turn.
+                s.model_switch = None;
                 // A fetch issued before this (re)start may describe the old runtime.
                 s.conversation.context_epoch += 1;
                 s.session = Some(SessionMetadata {
@@ -452,7 +511,10 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 ),
             );
         }
-        ClientEvent::Stopped { .. } => s.activity = Activity::Stopped,
+        ClientEvent::Stopped { .. } => {
+            s.activity = Activity::Stopped;
+            s.model_switch = None;
+        }
         ClientEvent::SettingsNotSaved { message, .. } => push_local(s, BlockKind::Notice(message)),
     }
     Ok(effects)

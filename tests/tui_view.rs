@@ -2855,7 +2855,11 @@ fn the_three_permission_choices_stay_on_a_narrow_key_bar() {
 fn the_header_shows_the_model_in_use_and_a_switch_waiting_for_the_turn() {
     let mut s = done();
     s.activity = Activity::Running;
-    s.model_pending = Some("luna".into());
+    s.model_switch = Some(navai::tui::state::ModelSwitch {
+        alias: "luna".into(),
+        operation_id: Some("op".into()),
+        deferred: true,
+    });
     let ui = UiState {
         follow_bottom: true,
         ..UiState::default()

@@ -1210,7 +1210,7 @@ async fn a_switch_typed_during_a_turn_waits_for_it_and_shows_in_the_header() {
 
     type_and_send(&mut rt, "/model luna");
     until("the acceptance", &mut rt, |_, rt| {
-        rt.state.model_pending.as_deref() == Some("luna")
+        rt.state.pending_model() == Some("luna")
     })
     .await;
     assert_eq!(rt.state.selected_model_alias.as_deref(), Some("alpha"));
@@ -1225,7 +1225,8 @@ async fn a_switch_typed_during_a_turn_waits_for_it_and_shows_in_the_header() {
     answer.send(usage_chunk("stop", usage(10, 2))).unwrap();
     drop(answer);
     until("the switch after the turn", &mut rt, |_, rt| {
-        rt.state.selected_model_alias.as_deref() == Some("luna") && rt.state.model_pending.is_none()
+        rt.state.selected_model_alias.as_deref() == Some("luna")
+            && rt.state.pending_model().is_none()
     })
     .await;
     let header = screen(&mut rt)

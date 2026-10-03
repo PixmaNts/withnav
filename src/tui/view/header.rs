@@ -80,12 +80,8 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     });
 
     // A switch the server accepted for after this turn, beside the model still in use.
-    let pending = state.model_pending.as_deref().map(|alias| {
-        let target = if alias.is_empty() {
-            "→ new model".to_string()
-        } else {
-            format!("→ {}", fit_end(alias, (total / 6).max(4)))
-        };
+    let pending = state.pending_model().map(|alias| {
+        let target = format!("→ {}", fit_end(alias, (total / 6).max(4)));
         vec![
             Span::raw("  "),
             Span::styled(target, theme.warning()),

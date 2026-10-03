@@ -3478,7 +3478,7 @@ fn switching_a_live_conversation_sends_model_and_opens_no_tab() {
     let fx = handle_action(&mut s, &mut ui, Action::SwitchModel("b".into()));
     assert_eq!(fx, vec![model_command("b")]);
     assert_eq!(s.tabs.len(), 1, "no new tab");
-    assert_eq!(s.model_request.as_deref(), Some("b"));
+    assert_eq!(s.model_switch.as_ref().map(|m| m.alias.as_str()), Some("b"));
     assert_eq!(
         s.selected_model_alias.as_deref(),
         Some("a"),
@@ -3504,7 +3504,7 @@ fn no_switch_is_sent_while_the_agent_waits_for_the_driver() {
         &s.conversation.blocks.last().unwrap().kind,
         BlockKind::Command { ok: false, text, .. } if text.contains("waiting for approval")
     ));
-    assert_eq!(s.model_request, None);
+    assert_eq!(s.model_switch, None);
     // a question
     let mut s = st();
     created_now(&mut s, "S1").unwrap();
@@ -3516,10 +3516,9 @@ fn no_switch_is_sent_while_the_agent_waits_for_the_driver() {
     ));
 }
 
-fn model_changed(
+fn model_changed_op(
     s: &mut Script,
-    revision: u64,
-    reason: ModelChangeReason,
+    op: Option<u128>,
     from: Option<&str>,
     to: &str,
     variant: Option<&str>,
@@ -3533,9 +3532,13 @@ fn model_changed(
     s.push(
         EventKind::ModelChanged,
         &ModelChanged {
-            operation_id: None,
-            revision,
-            reason,
+            operation_id: op.map(Ulid),
+            revision: 2,
+            reason: if from.is_some() {
+                ModelChangeReason::Switch
+            } else {
+                ModelChangeReason::Initial
+            },
             previous: from.map(identity),
             new: identity(to),
             variant: variant.map(str::to_string),
@@ -3546,11 +3549,11 @@ fn model_changed(
     );
 }
 
-fn command_result(s: &mut Script, ok: bool, data: Option<Value>, error: Option<&str>) {
+fn model_result(s: &mut Script, op: u128, ok: bool, data: Option<Value>, error: Option<&str>) {
     s.push(
         EventKind::CommandResult,
         &CommandResult {
-            operation_id: Ulid(77),
+            operation_id: Ulid(op),
             name: "model".into(),
             ok,
             data,
@@ -3559,30 +3562,65 @@ fn command_result(s: &mut Script, ok: bool, data: Option<Value>, error: Option<&
     );
 }
 
+fn deferred() -> Option<Value> {
+    Some(json!({"accepted": true, "applies": "after_turn"}))
+}
+
+/// The HTTP answer to the tab's `/model`, carrying operation `op`.
+fn model_answered(s: &mut State, op: u128, result: Result<Option<Value>, &str>) {
+    let ev = ClientEvent::CommandRan {
+        generation: s.generation.clone(),
+        name: "model".into(),
+        revision: None,
+        result: match result {
+            Ok(data) => Ok(CommandResponse {
+                operation_id: Ulid(op).to_string(),
+                ok: true,
+                data,
+                error: None,
+            }),
+            Err(e) => Err(e.into()),
+        },
+    };
+    update(s, ev).unwrap();
+}
+
+/// A live conversation on `a`, its turn running, that just asked to switch to `b`.
+fn switching() -> (State, UiState) {
+    let (mut s, mut ui) = (st(), ui());
+    models_now(&mut s, Some("a".into())).unwrap();
+    created_now(&mut s, "S1").unwrap();
+    s.activity = Activity::Running;
+    assert_eq!(
+        handle_action(&mut s, &mut ui, Action::SwitchModel("b".into())),
+        vec![model_command("b")]
+    );
+    (s, ui)
+}
+
+/// `script`'s events renumbered after `from`, so they are new to a state that applied `from`.
+fn after(script: &mut Script, from: u64) {
+    for e in &mut script.out {
+        e.seq += from;
+    }
+}
+
 #[test]
 fn model_changed_moves_the_tab_to_the_new_model_live_and_on_replay() {
     let mut script = Script::new();
     script.start();
-    model_changed(
+    model_changed_op(&mut script, None, None, "opus", None, 200_000);
+    model_changed_op(
         &mut script,
-        1,
-        ModelChangeReason::Initial,
-        None,
-        "opus",
-        None,
-        200_000,
-    );
-    model_changed(
-        &mut script,
-        2,
-        ModelChangeReason::Switch,
+        Some(77),
         Some("opus"),
         "luna",
         Some("high"),
         872_000,
     );
-    command_result(
+    model_result(
         &mut script,
+        77,
         true,
         Some(json!({"alias": "luna", "changed": true, "applies": "now"})),
         None,
@@ -3608,7 +3646,6 @@ fn model_changed_moves_the_tab_to_the_new_model_live_and_on_replay() {
         ["model: opus → luna · high · 872k"],
         "one compact notice; the start and the done result add none"
     );
-    // replay gives the same tab
     let mut again = st();
     feed(&mut again, &script.out);
     assert_eq!(again.conversation.blocks, s.conversation.blocks);
@@ -3632,21 +3669,18 @@ fn model_changed_moves_the_tab_to_the_new_model_live_and_on_replay() {
 }
 
 #[test]
-fn an_accepted_switch_waits_beside_the_model_in_use_until_it_is_made() {
-    let (mut s, mut ui) = (st(), ui());
-    models_now(&mut s, Some("a".into())).unwrap();
-    created_now(&mut s, "S1").unwrap();
-    s.activity = Activity::Running;
-    handle_action(&mut s, &mut ui, Action::SwitchModel("b".into()));
-    let mut script = Script::new();
-    command_result(
-        &mut script,
-        true,
-        Some(json!({"accepted": true, "applies": "after_turn"})),
+fn an_accepted_switch_waits_until_the_selection_of_its_own_operation() {
+    let (mut s, _) = switching();
+    assert_eq!(
+        s.pending_model(),
         None,
+        "not shown before the server accepted it"
     );
+    model_answered(&mut s, 77, Ok(deferred()));
+    let mut script = Script::new();
+    model_result(&mut script, 77, true, deferred(), None);
     feed(&mut s, &script.out);
-    assert_eq!(s.model_pending.as_deref(), Some("b"));
+    assert_eq!(s.pending_model(), Some("b"));
     assert_eq!(
         s.selected_model_alias.as_deref(),
         Some("a"),
@@ -3656,43 +3690,152 @@ fn an_accepted_switch_waits_beside_the_model_in_use_until_it_is_made() {
         &s.conversation.blocks.last().unwrap().kind,
         BlockKind::Command { text, .. } if text == "switches to b after this turn"
     ));
-    let mut script = Script::new();
-    model_changed(
-        &mut script,
-        2,
-        ModelChangeReason::Switch,
-        Some("a"),
-        "b",
-        None,
-        1000,
-    );
-    for e in &mut script.out {
-        e.seq += 50;
-    }
-    feed(&mut s, &script.out);
-    assert_eq!(s.model_pending, None);
+    // a model.changed of another operation (another client's switch) does not end it
+    let mut other = Script::new();
+    model_changed_op(&mut other, Some(99), Some("a"), "c", None, 1000);
+    after(&mut other, 50);
+    feed(&mut s, &other.out);
+    assert_eq!(s.pending_model(), Some("b"));
+    // its own selection does
+    let mut own = Script::new();
+    model_changed_op(&mut own, Some(77), Some("c"), "b", None, 1000);
+    after(&mut own, 60);
+    feed(&mut s, &own.out);
+    assert_eq!(s.pending_model(), None);
     assert_eq!(s.selected_model_alias.as_deref(), Some("b"));
 }
 
 #[test]
-fn a_refused_switch_shows_the_servers_reason_and_changes_nothing() {
-    let (mut s, mut ui) = (st(), ui());
-    models_now(&mut s, Some("a".into())).unwrap();
-    created_now(&mut s, "S1").unwrap();
-    handle_action(&mut s, &mut ui, Action::SwitchModel("b".into()));
+fn the_result_of_its_operation_settles_the_switch_whatever_the_order() {
+    // refused after the turn: the result of that operation clears the mark
+    let (mut s, _) = switching();
+    model_answered(&mut s, 77, Ok(deferred()));
+    assert_eq!(s.pending_model(), Some("b"));
     let mut script = Script::new();
-    command_result(
+    model_result(&mut script, 78, false, None, Some("not this one"));
+    model_result(
         &mut script,
+        77,
+        false,
+        None,
+        Some("the session stopped before the switch"),
+    );
+    feed(&mut s, &script.out);
+    assert_eq!(s.pending_model(), None);
+    assert_eq!(s.model_switch, None);
+    // the stream's result before the HTTP answer: the answer marks nothing
+    let (mut s, _) = switching();
+    let mut script = Script::new();
+    model_result(&mut script, 77, true, deferred(), None);
+    model_changed_op(&mut script, Some(77), Some("a"), "b", None, 1000);
+    feed(&mut s, &script.out);
+    model_answered(&mut s, 77, Ok(deferred()));
+    assert_eq!(s.pending_model(), None);
+    assert_eq!(s.selected_model_alias.as_deref(), Some("b"));
+    // a switch made at once is settled by its answer
+    let (mut s, _) = switching();
+    model_answered(
+        &mut s,
+        77,
+        Ok(Some(json!({"changed": true, "applies": "now"}))),
+    );
+    assert_eq!(s.model_switch, None);
+}
+
+#[test]
+fn a_new_switch_replaces_the_waiting_one() {
+    let (mut s, mut ui) = switching();
+    model_answered(&mut s, 77, Ok(deferred()));
+    handle_action(&mut s, &mut ui, Action::SwitchModel("c".into()));
+    assert_eq!(s.pending_model(), None, "the new one is not accepted yet");
+    model_answered(&mut s, 88, Ok(deferred()));
+    assert_eq!(s.pending_model(), Some("c"));
+    // the old operation settling later does not clear the new one
+    let mut script = Script::new();
+    model_result(&mut script, 77, false, None, Some("superseded"));
+    feed(&mut s, &script.out);
+    assert_eq!(s.pending_model(), Some("c"));
+}
+
+#[test]
+fn the_switch_mark_ends_with_a_failed_request_a_stop_a_session_end_and_a_closed_tab() {
+    // the request never reached the server
+    let (mut s, _) = switching();
+    model_answered(&mut s, 0, Err("connection refused"));
+    assert_eq!(s.model_switch, None);
+    // a stop
+    let (mut s, _) = switching();
+    model_answered(&mut s, 77, Ok(deferred()));
+    let stopped = ClientEvent::Stopped {
+        generation: s.generation.clone(),
+        result: Ok(StopResponse {
+            accepted: true,
+            actor_state: "stopped".into(),
+        }),
+    };
+    update(&mut s, stopped).unwrap();
+    assert_eq!(s.model_switch, None);
+    // the session ended
+    let (mut s, _) = switching();
+    model_answered(&mut s, 77, Ok(deferred()));
+    let mut end = Script::new();
+    end.push(EventKind::SessionEnd, &json!({"reason": "stopped"}));
+    after(&mut end, 40);
+    feed(&mut s, &end.out);
+    assert_eq!(s.model_switch, None);
+    // the tab was closed: the tab that comes forward shows none
+    let (mut s, mut ui) = switching();
+    model_answered(&mut s, 77, Ok(deferred()));
+    handle_action(&mut s, &mut ui, Action::CloseTab);
+    assert_eq!(s.model_switch, None);
+}
+
+#[test]
+fn after_a_reconnect_the_mark_shows_only_if_the_replay_still_reports_it() {
+    // the replay holds the acceptance and nothing that settles it: still waiting
+    let (mut s, _) = switching();
+    model_answered(&mut s, 77, Ok(deferred()));
+    let resync = ClientEvent::Resync {
+        generation: s.generation.clone(),
+    };
+    update(&mut s, resync.clone()).unwrap();
+    assert_eq!(s.pending_model(), None, "hidden until the replay says so");
+    let mut replay = Script::new();
+    replay.start();
+    model_result(&mut replay, 77, true, deferred(), None);
+    feed(&mut s, &replay.out);
+    assert_eq!(s.pending_model(), Some("b"));
+    // the replay also holds its selection: settled
+    update(&mut s, resync.clone()).unwrap();
+    model_changed_op(&mut replay, Some(77), Some("a"), "b", None, 1000);
+    feed(&mut s, &replay.out);
+    assert_eq!(s.pending_model(), None);
+    assert_eq!(s.model_switch, None);
+    // the replay holds no acceptance at all (a restarted server): it stays hidden
+    let (mut s, _) = switching();
+    model_answered(&mut s, 77, Ok(deferred()));
+    update(&mut s, resync).unwrap();
+    let mut empty = Script::new();
+    empty.start();
+    feed(&mut s, &empty.out);
+    assert_eq!(s.pending_model(), None);
+}
+
+#[test]
+fn a_refused_switch_shows_the_servers_reason_and_changes_nothing() {
+    let (mut s, _) = switching();
+    let mut script = Script::new();
+    model_result(
+        &mut script,
+        77,
         false,
         None,
         Some("the conversation does not fit b's window: /compact first"),
     );
     feed(&mut s, &script.out);
+    model_answered(&mut s, 77, Ok(None));
     assert_eq!(s.selected_model_alias.as_deref(), Some("a"));
-    assert_eq!(
-        (s.model_request.clone(), s.model_pending.clone()),
-        (None, None)
-    );
+    assert_eq!(s.model_switch, None);
     assert!(matches!(
         &s.conversation.blocks.last().unwrap().kind,
         BlockKind::Command { ok: false, text, .. }
@@ -3702,41 +3845,19 @@ fn a_refused_switch_shows_the_servers_reason_and_changes_nothing() {
 
 #[test]
 fn events_replays_and_a_resync_never_send_a_command() {
-    let (mut s, mut ui) = (st(), ui());
-    models_now(&mut s, Some("a".into())).unwrap();
-    created_now(&mut s, "S1").unwrap();
-    s.activity = Activity::Running;
-    assert_eq!(
-        handle_action(&mut s, &mut ui, Action::SwitchModel("b".into())),
-        vec![model_command("b")]
-    );
+    let (mut s, _) = switching();
+    model_answered(&mut s, 77, Ok(deferred()));
     let mut script = Script::new();
-    command_result(
-        &mut script,
-        true,
-        Some(json!({"accepted": true, "applies": "after_turn"})),
-        None,
-    );
-    model_changed(
-        &mut script,
-        2,
-        ModelChangeReason::Switch,
-        Some("a"),
-        "b",
-        Some("high"),
-        1000,
-    );
+    model_result(&mut script, 77, true, deferred(), None);
+    model_changed_op(&mut script, Some(77), Some("a"), "b", Some("high"), 1000);
     // each event, then the same events again (a duplicate delivery), send nothing
     for e in script.out.iter().chain(script.out.iter()) {
         let ev = envelope(&s, e);
         assert_eq!(update(&mut s, ev).unwrap(), vec![], "{}", e.kind);
     }
     // a resync while a switch is pending re-subscribes, and asks the server for nothing else
-    let mut s = st();
-    models_now(&mut s, Some("a".into())).unwrap();
-    created_now(&mut s, "S1").unwrap();
-    s.activity = Activity::Running;
-    handle_action(&mut s, &mut ui, Action::SwitchModel("b".into()));
+    let (mut s, _) = switching();
+    model_answered(&mut s, 77, Ok(deferred()));
     let resync = ClientEvent::Resync {
         generation: s.generation.clone(),
     };
@@ -3745,7 +3866,6 @@ fn events_replays_and_a_resync_never_send_a_command() {
         fx.iter().all(|e| matches!(e, Effect::Subscribe { .. })),
         "{fx:?}"
     );
-    // and the replay that follows sends nothing either
     for e in &script.out {
         let ev = envelope(&s, e);
         assert_eq!(update(&mut s, ev).unwrap(), vec![]);

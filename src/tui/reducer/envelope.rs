@@ -68,6 +68,8 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         Some(EventKind::SessionStart) => s.activity = Activity::Idle,
         Some(EventKind::SessionEnd) => {
             s.activity = Activity::Stopped;
+            // A stopped session switches nothing after its turn.
+            s.model_switch = None;
             for b in &mut s.conversation.blocks {
                 interrupt_block(b);
             }
@@ -359,10 +361,11 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             s.variant = changed.variant.as_deref().map(strip_controls);
             s.model_seq = Some(e.seq);
             s.variant_seq = Some(e.seq);
-            // The selection is committed: nothing waits any more.
-            s.model_pending = None;
+            // Only the switch this selection came from stops waiting.
+            if let Some(op) = changed.operation_id {
+                super::settle_model_op(s, &op.to_string());
+            }
             if changed.reason == ModelChangeReason::Switch {
-                s.model_request = None;
                 let from = changed
                     .previous
                     .as_ref()
@@ -387,8 +390,9 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             let v = e.payload;
             let name = v["name"].as_str().ok_or_else(bad)?.to_string();
             let ok = v["ok"].as_bool().ok_or_else(bad)?;
-            // `/model`: a switch that was made already shows as its `model.changed` notice; an
-            // acceptance for after the turn is kept for the header; a refusal says why.
+            // `/model`: the result of an operation settles the switch waiting on it (a deferred
+            // acceptance excepted: that one keeps waiting). A switch already made shows as its
+            // `model.changed` notice; a refusal says why, in the block below.
             if name == "model" {
                 let data = v.get("data").filter(|d| !d.is_null());
                 let deferred = ok
@@ -396,17 +400,27 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                         d["accepted"].as_bool() == Some(true) && d["applies"] == "after_turn"
                     });
                 let made = ok && data.is_some_and(|d| d["changed"].as_bool() == Some(true));
-                if deferred {
-                    s.model_pending = Some(s.model_request.take().unwrap_or_default());
-                } else {
-                    s.model_request = None;
-                    s.model_pending = None;
+                let op = v["operation_id"].as_str().map(str::to_string);
+                if let (false, Some(op)) = (deferred, op.as_deref()) {
+                    super::settle_model_op(s, op);
                 }
                 if made {
                     return Ok(());
                 }
                 if deferred {
-                    let target = s.model_pending.clone().filter(|a| !a.is_empty());
+                    // This tab's own switch, accepted: it waits for its operation (a replay of
+                    // an acceptance already settled marks nothing).
+                    let settled = op.as_ref().is_some_and(|o| s.settled_model_ops.contains(o));
+                    if let Some(m) = s.model_switch.as_mut() {
+                        if op.is_some() && m.operation_id == op && !settled {
+                            m.deferred = true;
+                        }
+                    }
+                    let target = s
+                        .model_switch
+                        .as_ref()
+                        .filter(|m| m.operation_id.is_none() || m.operation_id == op)
+                        .map(|m| m.alias.clone());
                     let text = match target {
                         Some(alias) => format!("switches to {alias} after this turn"),
                         None => "the switch applies after this turn".into(),

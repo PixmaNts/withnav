@@ -480,6 +480,7 @@ impl Service {
                 &alias,
                 profile,
                 Some(&snapshot),
+                None,
             )
             .await
             .map_err(ServerError::History)?;

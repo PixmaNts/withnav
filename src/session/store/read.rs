@@ -28,7 +28,7 @@ impl HistoryStore {
             with_read_tx(&path, |tx| {
                 tx.query_row(
                     "SELECT id, workspace, model, profile, title, created_at, updated_at, last_seq,
-                            model_resolution
+                            model_resolution, variant
                      FROM sessions WHERE id = ?1",
                     params![id.to_string()],
                     row_to_session,
@@ -135,6 +135,7 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSession> {
         updated_at: row.get(6)?,
         last_seq: row.get::<_, i64>(7)?.max(0) as u64,
         model_resolution: row.get(8)?,
+        variant: row.get(9)?,
     })
 }
 
@@ -144,7 +145,7 @@ fn list_sync(path: &Path, workspace: &str) -> Result<Vec<ListedSession>, String>
             .prepare(
                 "SELECT s.id, s.workspace, s.model, s.profile, s.title,
                         s.created_at, s.updated_at, s.last_seq,
-                        s.model_resolution,
+                        s.model_resolution, s.variant,
                         (SELECT COUNT(*) FROM events e
                          WHERE e.session_id = s.id AND e.kind = 'message.received')
                  FROM sessions s WHERE s.workspace = ?1
@@ -155,7 +156,7 @@ fn list_sync(path: &Path, workspace: &str) -> Result<Vec<ListedSession>, String>
             .query_map(params![workspace], |row| {
                 Ok(ListedSession {
                     meta: row_to_session(row)?,
-                    message_count: row.get::<_, i64>(9)?.max(0) as u64,
+                    message_count: row.get::<_, i64>(10)?.max(0) as u64,
                 })
             })
             .map_err(|e| format!("query: {e}"))?;
@@ -177,12 +178,12 @@ fn resume_tx(
     let Some((meta, transcript)) = tx
         .query_row(
             "SELECT id, workspace, model, profile, title, created_at, updated_at, last_seq,
-                    model_resolution, transcript
+                    model_resolution, variant, transcript
              FROM sessions WHERE id = ?1",
             params![id.to_string()],
             |row| {
                 let meta = row_to_session(row)?;
-                let transcript: Option<String> = row.get(9)?;
+                let transcript: Option<String> = row.get(10)?;
                 Ok((meta, transcript))
             },
         )

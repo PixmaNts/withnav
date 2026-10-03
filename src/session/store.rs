@@ -476,6 +476,83 @@ impl HistoryStore {
         }).await.map_err(|e| e.to_string())?
     }
 
+    pub async fn repair_permission_mirrors(&self, parent: Ulid) -> Result<(), String> {
+        let events = self.permission_events(parent).await?;
+        let mut open = std::collections::BTreeMap::new();
+        for event in events {
+            if event.kind == "permission.requested" {
+                if let Some(child) = event.payload["child_session_id"].as_str() {
+                    open.insert(
+                        event.payload["request_id"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                        (child.to_string(), event.payload),
+                    );
+                }
+            } else {
+                open.remove(event.payload["request_id"].as_str().unwrap_or_default());
+            }
+        }
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            for (request, (child, payload)) in open {
+                let terminal = tx.query_row("SELECT status FROM child_links WHERE child_id=?1", [&child], |row| row.get::<_, String>(0)).optional().map_err(|e| e.to_string())?;
+                let resolution = tx.query_row("SELECT envelope FROM events WHERE session_id=?1 AND kind='permission.resolved' AND json_extract(envelope,'$.payload.request_id')=?2 ORDER BY seq DESC LIMIT 1", params![child, request], |row| row.get::<_, String>(0)).optional().map_err(|e| e.to_string())?;
+                let mut resolved = if let Some(event) = resolution {
+                    serde_json::from_str::<EventEnvelope>(&event).map_err(|e| e.to_string())?.payload
+                } else if terminal.as_deref().is_none_or(|state| !matches!(state,"running"|"starting")) {
+                    serde_json::json!({"request_id":request,"tool_call_id":payload["tool_call_id"],"resolution":"expired"})
+                } else { continue; };
+                resolved["child_session_id"] = serde_json::json!(child);
+                queue_permission_resolution(&tx, parent, &resolved).map_err(|e| e.to_string())?;
+            }
+            tx.commit().map_err(|e| e.to_string())
+        }).await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn pending_permission_mirrors(
+        &self,
+        parent: Ulid,
+    ) -> Result<Vec<(String, serde_json::Value)>, String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare("SELECT request_id,payload FROM permission_outbox WHERE parent_id=?1 AND delivered=0 ORDER BY rowid").map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([parent.to_string()], |row| Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
+            rows.map(|row| { let (id,payload) = row.map_err(|e| e.to_string())?; Ok((id,serde_json::from_str(&payload).map_err(|e| e.to_string())?)) }).collect()
+        }).await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn drain_permission_mirrors(
+        &self,
+        parent: Ulid,
+        sequencer: crate::bus::sequencer::Sequencer,
+    ) -> Result<(), String> {
+        self.repair_permission_mirrors(parent).await?;
+        for (id, payload) in self.pending_permission_mirrors(parent).await? {
+            let path = self.path.clone();
+            let result = sequencer.commit_acked(crate::bus::sequencer::Candidate::new(EventKind::PermissionResolved,payload), Box::new(move |event| Box::pin(async move {
+                tokio::task::spawn_blocking(move || {
+                    let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+                    let tx = conn.transaction().map_err(|e| e.to_string())?;
+                    let changed = tx.execute("UPDATE permission_outbox SET delivered=1 WHERE parent_id=?1 AND request_id=?2 AND delivered=0",params![parent.to_string(),id]).map_err(|e| e.to_string())?;
+                    if changed == 0 { return Err("permission mirror already delivered".into()); }
+                    insert_committed_event(&tx,&event)?;
+                    tx.commit().map_err(|e| e.to_string())
+                }).await.map_err(|e| e.to_string())?
+            }))).await;
+            if let Err(error) = result {
+                if error != "permission mirror already delivered" {
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub async fn deliver_completion(
         &self,
         child: Ulid,
@@ -852,6 +929,22 @@ fn insert_committed_event(
     Ok(())
 }
 
+fn queue_permission_resolution(
+    tx: &rusqlite::Transaction<'_>,
+    parent: Ulid,
+    payload: &serde_json::Value,
+) -> Result<(), WriteError> {
+    tx.execute(
+        "INSERT OR IGNORE INTO permission_outbox (parent_id,request_id,payload) VALUES (?1,?2,?3)",
+        params![
+            parent.to_string(),
+            payload["request_id"].as_str().unwrap_or_default(),
+            serde_json::to_string(payload)?
+        ],
+    )?;
+    Ok(())
+}
+
 fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
     let tx = conn.transaction()?;
     match write {
@@ -985,6 +1078,21 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             }
         }
         Write::AppendEvent { id, envelope } => {
+            if envelope.kind == "permission.resolved" {
+                let parent = tx
+                    .query_row(
+                        "SELECT parent_id FROM child_links WHERE child_id=?1",
+                        [id.to_string()],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?;
+                if let Some(parent) = parent {
+                    let mut payload = envelope.payload.clone();
+                    payload["child_session_id"] = serde_json::json!(id);
+                    let parent = parent.parse().map_err(|_| WriteError::UnknownSession(id))?;
+                    queue_permission_resolution(&tx, parent, &payload)?;
+                }
+            }
             let payload = serde_json::to_string(&envelope)?;
             tx.execute(
                 "INSERT OR IGNORE INTO events (session_id, seq, kind, envelope)
@@ -1033,6 +1141,10 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             )?;
         }
         Write::Delete { id } => {
+            tx.execute(
+                "DELETE FROM permission_outbox WHERE parent_id=?1",
+                [id.to_string()],
+            )?;
             tx.execute(
                 "DELETE FROM completion_outbox WHERE parent_id=?1",
                 [id.to_string()],
@@ -1099,6 +1211,13 @@ fn migrate(path: &Path) -> Result<(), String> {
             FOREIGN KEY(child_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS child_links_parent ON child_links(parent_id, created_at);
+        CREATE TABLE IF NOT EXISTS permission_outbox (
+            parent_id TEXT NOT NULL,
+            request_id TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            delivered INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(parent_id,request_id)
+        );
         CREATE TABLE IF NOT EXISTS completion_outbox (
             child_id TEXT PRIMARY KEY REFERENCES child_links(child_id) ON DELETE CASCADE,
             parent_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -1211,7 +1330,7 @@ use crate::bus::SubscribeReply;
 /// (`llm.delta`, `context.updated`; never stored), `session.end` included — to the writer thread, in seq order, synchronously inside the single sequencer task. The
 /// hand-off is a channel send: the sequencer never waits on SQLite.
 pub struct PersistingEmitter {
-    mirror: Option<(Ulid, crate::bus::sequencer::Sequencer)>,
+    mirror: Option<(Ulid, Ulid, crate::bus::sequencer::Sequencer)>,
     bus: crate::bus::SessionBus,
     session_id: Ulid,
     store: HistoryStore,
@@ -1221,9 +1340,10 @@ impl PersistingEmitter {
     pub fn with_permission_mirror(
         mut self,
         child: Ulid,
+        parent_id: Ulid,
         parent: crate::bus::sequencer::Sequencer,
     ) -> Self {
-        self.mirror = Some((child, parent));
+        self.mirror = Some((child, parent_id, parent));
         self
     }
     pub fn new(session_id: Ulid, bus: crate::bus::SessionBus, store: HistoryStore) -> Self {
@@ -1242,10 +1362,11 @@ impl Emitter for PersistingEmitter {
             envelope.kind.as_str(),
             "permission.requested" | "permission.resolved"
         ) {
-            if let Some((child, parent)) = &self.mirror {
+            if let Some((child, _, parent)) = &self.mirror {
                 let mut payload = envelope.payload.clone();
                 payload["child_session_id"] = serde_json::json!(child);
-                if let Some(kind) = EventKind::from_wire(&envelope.kind) {
+                if envelope.kind == "permission.requested" {
+                    let kind = EventKind::PermissionRequested;
                     let _ = parent.publish(crate::bus::sequencer::Candidate::new(kind, payload));
                 }
             }
@@ -1262,6 +1383,17 @@ impl Emitter for PersistingEmitter {
                 }
             }
             self.store.append_event(self.session_id, envelope.clone());
+            if envelope.kind == "permission.resolved" {
+                if let Some((_, parent_id, parent)) = &self.mirror {
+                    let (store, parent_id, parent) =
+                        (self.store.clone(), *parent_id, parent.clone());
+                    tokio::spawn(async move {
+                        if store.flush().await.is_ok() {
+                            let _ = store.drain_permission_mirrors(parent_id, parent).await;
+                        }
+                    });
+                }
+            }
         }
         self.bus.emit(envelope);
     }

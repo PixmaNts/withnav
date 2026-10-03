@@ -1741,8 +1741,10 @@ impl Service {
                 .insert(session_id);
         }
         let mut emitter = super::store::PersistingEmitter::new(session_id, bus, (*history).clone());
-        if let Some(parent) = child_parent.and_then(|id| self.handle(id)) {
-            emitter = emitter.with_permission_mirror(session_id, parent.sequencer);
+        if let Some((parent_id, parent)) =
+            child_parent.and_then(|id| self.handle(id).map(|h| (id, h)))
+        {
+            emitter = emitter.with_permission_mirror(session_id, parent_id, parent.sequencer);
         }
         let sequencer = Sequencer::spawn(session_id, emitter, next_seq);
 
@@ -1920,6 +1922,12 @@ impl Service {
             self.lock_sessions().insert(session_id, handle);
         }
         if child_parent.is_none() {
+            if let Some(owner) = self.handle(session_id) {
+                self.history
+                    .drain_permission_mirrors(session_id, owner.sequencer)
+                    .await
+                    .map_err(ServerError::History)?;
+            }
             self.drain_completions(session_id).await;
             if let Some(owner) = self.handle(session_id) {
                 owner.status.wake_delivery();

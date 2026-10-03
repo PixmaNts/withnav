@@ -8,6 +8,140 @@ use serde_json::{json, Value};
 mod common;
 
 #[tokio::test]
+async fn mirrored_child_permission_is_resolved_after_parent_stop_and_resume() {
+    let mut provider = common::sse::spawn_streaming_provider().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    std::fs::create_dir_all(ws.join(".navai/agents")).unwrap();
+    std::fs::write(
+        ws.join(".navai/agents/writer.md"),
+        "---\nmode: subagent\naccess: full\n---\nWrite.",
+    )
+    .unwrap();
+    let state = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(128_000)
+        .state();
+    let parent = state.create_session(&ws, None, None).await.unwrap();
+    let child = state
+        .create_child_session(parent, "writer", "write")
+        .await
+        .unwrap();
+    let (_, stream) = provider.requests.recv().await.unwrap();
+    stream
+        .send(tool_call_chunk(
+            "pending",
+            "bash",
+            &json!({"command":"true"}),
+        ))
+        .unwrap();
+    drop(stream);
+    let request = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let navai::bus::ResumeOutcome::Replay(events) =
+                state.subscribe(parent, None).await.unwrap().replay
+            {
+                if let Some(e) = events
+                    .into_iter()
+                    .find(|e| e.kind == "permission.requested")
+                {
+                    break e.payload["request_id"].clone();
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    state.close_session(parent).await.unwrap();
+    state
+        .create_or_resume_session(&ws, None, None, Some(parent))
+        .await
+        .unwrap();
+    let navai::bus::ResumeOutcome::Replay(events) =
+        state.subscribe(parent, None).await.unwrap().replay
+    else {
+        panic!("replay");
+    };
+    let resolved = events
+        .iter()
+        .filter(|e| e.kind == "permission.resolved" && e.payload["request_id"] == request)
+        .collect::<Vec<_>>();
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].payload["child_session_id"], child.to_string());
+    assert_eq!(resolved[0].payload["resolution"], "cancelled");
+    state.close_all().await;
+}
+
+#[tokio::test]
+async fn abandoned_mirrored_permission_is_expired_on_resume() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let config = TestServerConfig::unreachable(tmp.path())
+        .chat_tools(128_000)
+        .config();
+    let store = navai::session::store::HistoryStore::open(&config.history_db).unwrap();
+    let parent = ulid::Ulid::new();
+    let child = ulid::Ulid::new();
+    let request = ulid::Ulid::new();
+    store
+        .record_session(parent, &ws.display().to_string(), "default", None)
+        .await
+        .unwrap();
+    store
+        .record_session(child, &ws.display().to_string(), "default", None)
+        .await
+        .unwrap();
+    store
+        .create_child_link(
+            child,
+            "writer".into(),
+            "write".into(),
+            "{}".into(),
+            4,
+            navai::bus::event::EventEnvelope::new(
+                parent,
+                0,
+                navai::bus::event::EventKind::SubagentSpawned,
+                json!({}),
+            ),
+        )
+        .await
+        .unwrap();
+    store.append_event(
+        parent,
+        navai::bus::event::EventEnvelope::new(
+            parent,
+            1,
+            navai::bus::event::EventKind::PermissionRequested,
+            json!({"request_id":request,"child_session_id":child,"tool_call_id":"pending"}),
+        ),
+    );
+    store.flush().await.unwrap();
+    drop(store);
+    let state = AppState::new(config).unwrap();
+    state
+        .create_or_resume_session(&ws, None, None, Some(parent))
+        .await
+        .unwrap();
+    let navai::bus::ResumeOutcome::Replay(events) =
+        state.subscribe(parent, None).await.unwrap().replay
+    else {
+        panic!("replay");
+    };
+    let resolved = events
+        .iter()
+        .filter(|e| {
+            e.kind == "permission.resolved" && e.payload["request_id"] == request.to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].payload["resolution"], "expired");
+    state.close_all().await;
+}
+
+#[tokio::test]
 async fn recovery_leaves_live_instance_children_and_recovers_stale_owner() {
     let tmp = tempfile::tempdir().unwrap();
     let config = TestServerConfig::unreachable(tmp.path())

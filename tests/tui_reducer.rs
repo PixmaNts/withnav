@@ -3393,3 +3393,40 @@ fn the_git_state_is_read_at_start_and_after_each_turn_one_read_at_a_time() {
     git_now(&mut s, None);
     assert_eq!(s.git, None);
 }
+
+#[test]
+fn a_git_result_reaches_the_tab_that_asked_and_a_stale_one_is_dropped() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    let first = s.generation.clone();
+    handle_action(&mut s, &mut ui, Action::NewConversation);
+    assert_eq!(s.active, 1);
+    let status = |branch: &str| navai::tui::git::GitStatus {
+        branch: Some(branch.into()),
+        dirty: 1,
+        files: vec![],
+    };
+    // the first tab, now in the background, gets its own result
+    update(
+        &mut s,
+        ClientEvent::Git {
+            generation: first.clone(),
+            status: Some(status("one")),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.tabs[0].git, Some(status("one")));
+    assert!(!s.tabs[0].git_reading);
+    assert_eq!(s.git, None, "the tab on screen is untouched");
+    // a result for a generation no tab holds (the tab was closed or moved on) changes nothing
+    let before = s.clone();
+    update(
+        &mut s,
+        ClientEvent::Git {
+            generation: Generation(9_999),
+            status: Some(status("gone")),
+        },
+    )
+    .unwrap();
+    assert_eq!(s, before);
+}

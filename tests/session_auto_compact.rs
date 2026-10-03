@@ -304,3 +304,169 @@ async fn nothing_is_compacted_while_a_permission_request_waits() {
         "the held call did not run"
     );
 }
+
+/// Two providers: `default` is a/model-a with a 128k window, `small` is
+/// b/model-b with `window_b`.
+fn two_models(env: &Env, a: &CapturingProvider, b: &CapturingProvider, window_b: u64) -> AppState {
+    let config = TestServerConfig::mock(&env.root, &a.url)
+        .chat_tools(128_000)
+        .config();
+    let entry = |provider: &str, model: &str, window: u64| {
+        json!({"provider": provider, "model": model, "supports_tools": true,
+               "context_window": window, "reasoning_history": "preserve"})
+    };
+    let provider = |url: &str| {
+        json!({"base_url": url, "api_key_env": "NAVAI_TEST_KEY", "headers": {},
+               "connect_timeout_ms": 2000, "request_timeout_ms": 600_000})
+    };
+    std::fs::write(
+        config.models_path.as_ref().expect("models path"),
+        json!({
+            "providers": {"a": provider(&a.url), "b": provider(&b.url)},
+            "models": {
+                "default": entry("a", "model-a", 128_000),
+                "small": entry("b", "model-b", window_b),
+            }
+        })
+        .to_string(),
+    )
+    .expect("models.json");
+    std::fs::write(
+        config.config_dir.join("auth.json"),
+        json!({"a": {"api_key": "key-a"}, "b": {"api_key": "key-b"}}).to_string(),
+    )
+    .expect("auth.json");
+    AppState::new(config).expect("state")
+}
+
+// Given a long conversation on a large window
+// When /model moves it to a window it does not fit
+// Then the OLD model writes the summary (the target is never asked to read the
+//      conversation), the checkpoint is stored, the switch then goes through,
+//      and the next request goes to the new model with the summary and the
+//      recent turns; the stored events say `switch` and the switch follows
+//      the compaction
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_switch_to_a_smaller_window_compacts_with_the_old_model_then_switches() {
+    let env = env();
+    let a = spawn_capturing_provider(vec![answer(SUMMARY)]).await;
+    let b = spawn_capturing_provider(vec![answer("from the small model")]).await;
+    let state = two_models(&env, &a, &b, 20_000);
+    let id = seeded(&state, &env.ws, 8).await;
+    let sub = state.subscribe(id, None).await.unwrap();
+
+    let out = state.run_command(id, "model", "small").await.unwrap();
+    assert!(out.ok, "{out:?}");
+    let data = out.data.unwrap();
+    assert_eq!(data["changed"], true);
+    assert_eq!(data["compacted"]["generation"], 1);
+    assert!(
+        data["compacted"]["estimate_after"].as_u64().unwrap()
+            < data["compacted"]["estimate_before"].as_u64().unwrap()
+    );
+
+    // The summary was written by model-a, with no tools; b saw nothing yet.
+    assert_eq!(a.bodies().len(), 1);
+    let summary_request = body(&a, 0);
+    assert_eq!(summary_request["model"], "model-a");
+    assert!(summary_request.get("tools").is_none());
+    assert!(b.bodies().is_empty());
+
+    let events = collect_until(sub, |e| e.kind == "model.changed").await;
+    let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
+    let compacted = kinds
+        .iter()
+        .position(|k| *k == "context.compacted")
+        .unwrap();
+    let switched = kinds.iter().position(|k| *k == "model.changed").unwrap();
+    assert!(compacted < switched, "{kinds:?}");
+    let notice = events
+        .iter()
+        .find(|e| e.kind == "context.compacted")
+        .unwrap();
+    assert_eq!(notice.payload["reason"], "switch");
+    assert_eq!(stored(&state, id, "context.compacted").await.len(), 1);
+    assert_eq!(state.session_summary(id).await.unwrap().model, "small");
+
+    let sub = state.subscribe(id, None).await.unwrap();
+    send_text(&state, id, "go on").await;
+    collect_until(sub, |e| e.kind == "turn.end").await;
+    assert_eq!(a.bodies().len(), 1, "the old model is not used again");
+    let next = body(&b, 0);
+    assert_eq!(next["model"], "model-b");
+    let text = all_text(&next);
+    assert!(text.contains("Goal: finish the parser."));
+    assert!(text.contains("go on"));
+    assert!(text.contains("answer 7"), "the recent turns stay");
+    assert!(!text.contains("answer 0 "), "the old ones were summarized");
+}
+
+// Given a conversation whose recent turns alone are bigger than the target
+// When /model moves it there
+// Then no summary is asked for, the switch is refused with the way out, and
+//      the conversation stays on the old model, uncompacted
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_switch_that_cannot_be_made_to_fit_is_refused_without_compacting() {
+    let env = env();
+    let a = spawn_capturing_provider(vec![]).await;
+    let b = spawn_capturing_provider(vec![]).await;
+    let state = two_models(&env, &a, &b, 8_000);
+    let id = seeded(&state, &env.ws, 8).await;
+
+    let out = state.run_command(id, "model", "small").await.unwrap();
+    assert!(!out.ok, "{out:?}");
+    let error = out.error.unwrap();
+    assert!(error.contains("cannot be compacted to fit it"), "{error}");
+    assert!(error.contains("larger context window"), "{error}");
+    assert!(a.bodies().is_empty() && b.bodies().is_empty());
+    assert_eq!(state.session_summary(id).await.unwrap().model, "default");
+    assert!(stored(&state, id, "context.compacted").await.is_empty());
+    assert!(stored(&state, id, "model.changed").await.is_empty());
+    let (_, _, checkpoint) = state.history().load_for_resume(id).await.unwrap().unwrap();
+    assert!(checkpoint.is_none());
+}
+
+// Given a switch whose summary the old model cannot write
+// Then the switch fails, nothing changed, and the conversation is unchanged
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_switch_whose_summary_fails_changes_nothing() {
+    let env = env();
+    let a = spawn_responding_provider(1, |_, _| {
+        b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\n\r\n".to_vec()
+    })
+    .await;
+    let b = spawn_capturing_provider(vec![]).await;
+    let state = two_models(&env, &a, &b, 20_000);
+    let id = seeded(&state, &env.ws, 8).await;
+
+    let out = state.run_command(id, "model", "small").await.unwrap();
+    assert!(!out.ok, "{out:?}");
+    assert!(out
+        .error
+        .unwrap()
+        .contains("compaction before the switch failed"));
+    assert_eq!(state.session_summary(id).await.unwrap().model, "default");
+    assert!(stored(&state, id, "model.changed").await.is_empty());
+    assert!(stored(&state, id, "context.compacted").await.is_empty());
+}
+
+// Given a manual /compact
+// Then the stored event says `manual`; an event stored without the field
+//      still reads
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_reason_is_stored_and_an_old_event_without_it_still_reads() {
+    let env = env();
+    let provider = spawn_capturing_provider(vec![answer(SUMMARY)]).await;
+    let state = state(&env, &provider, WINDOW);
+    let id = seeded(&state, &env.ws, 4).await;
+    let out = state.run_command(id, "compact", "").await.unwrap();
+    assert!(out.ok, "{out:?}");
+    let events = stored(&state, id, "context.compacted").await;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].payload["reason"], "manual");
+
+    let old = json!({"generation": 1, "through_message": 3, "pruned": 0,
+                     "estimate_before": 100, "estimate_after": 50});
+    let parsed: navai::bus::event::ContextCompacted = serde_json::from_value(old).unwrap();
+    assert_eq!(parsed.reason, None);
+}

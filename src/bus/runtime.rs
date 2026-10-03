@@ -957,8 +957,7 @@ async fn compact_when_full(
         if last_asked == Some(steps_left) {
             actor.state = AgentState::Idle;
             return Err(crate::error::AgentError::Compaction(format!(
-                "the conversation still does not fit the model's context window after a \
-                 compaction; {}",
+                "{} (the prompt still does not fit after a compaction)",
                 compact::CAPACITY_HINT
             )));
         }

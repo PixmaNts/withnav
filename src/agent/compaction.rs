@@ -241,9 +241,13 @@ pub fn validate(
             "the boundary {through} separates the tool call {id} from its result"
         ));
     }
-    if next > protected_start(transcript) {
+    // Planning keeps the recent turns verbatim (`/compact`, a switch) or, for a
+    // turn that outgrew the budget on its own, the latest exchange only
+    // (`Aim::FitMidTurn`). A saved checkpoint must restore whichever made it,
+    // also after that turn has been answered: the check is the weaker bound.
+    if next > latest_exchange_start(transcript) {
         return invalid(format!(
-            "the boundary {through} reaches into the recent turns that stay verbatim"
+            "the boundary {through} reaches into the latest exchange, which stays verbatim"
         ));
     }
     if compaction.checkpoint.generation == 0 {
@@ -258,7 +262,7 @@ pub fn validate(
             "the summary is over the {SUMMARY_MAX_BYTES} byte cap"
         ));
     }
-    let protected = protected_start(transcript);
+    let protected = latest_exchange_start(transcript);
     let kept = never_elided(transcript);
     let mut last = None;
     for &i in &compaction.pruned_message_indices {
@@ -272,7 +276,7 @@ pub fn validate(
         };
         if i >= protected {
             return invalid(format!(
-                "pruned index {i} is in the recent turns that stay verbatim"
+                "pruned index {i} is in the latest exchange, which stays verbatim"
             ));
         }
         if kept.contains(tool_call_id.as_str()) {
@@ -372,6 +376,13 @@ pub enum Aim {
     /// Everything the protected recent turns allow: what the user asks for
     /// with `/compact`, whether or not the prompt already fits.
     Shrink,
+    /// As [`Aim::Fit`], for a turn that outgrew the budget on its own: the
+    /// recent turns are not protected any more, only the latest exchange (the
+    /// last assistant step and its tool results) stays verbatim, so older
+    /// tool outputs of the unfinished turn can be cut down to markers, and its
+    /// earlier steps summarized. The latest user request is summarized only
+    /// when keeping it would not fit.
+    FitMidTurn,
 }
 
 /// Plans a compaction of `transcript` for a prompt that must fit `budget`.
@@ -389,7 +400,10 @@ pub fn plan(
     aim: Aim,
 ) -> Result<Plan, CompactionError> {
     let floor = current.map_or(0, |c| c.checkpoint.through_message + 1);
-    let tail_start = protected_start(transcript);
+    let tail_start = match aim {
+        Aim::FitMidTurn => latest_exchange_start(transcript),
+        Aim::Fit | Aim::Shrink => protected_start(transcript),
+    };
     if tail_start <= floor {
         return Err(CompactionError::NothingToCompact);
     }
@@ -440,7 +454,7 @@ pub fn plan(
     // The latest cut always fits (checked above).
     let boundary = match aim {
         Aim::Shrink => latest_cut,
-        Aim::Fit => cuts
+        Aim::Fit | Aim::FitMidTurn => cuts
             .iter()
             .copied()
             .find(|&c| suffix(&cost, c) <= budget)
@@ -502,6 +516,16 @@ pub fn protected_start(transcript: &[ChatMessage]) -> usize {
         }
     }
     0
+}
+
+/// Index of the last assistant step, which stays with its tool results: the
+/// work the model has just done and is about to continue from. Zero when the
+/// transcript holds none.
+fn latest_exchange_start(transcript: &[ChatMessage]) -> usize {
+    transcript
+        .iter()
+        .rposition(|m| matches!(m, ChatMessage::Assistant { .. }))
+        .unwrap_or(0)
 }
 
 /// Whether a summary may end just before message `at`: the next message

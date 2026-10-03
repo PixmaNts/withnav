@@ -449,21 +449,30 @@ fn pruning_a_skill_body_or_an_ask_answer_is_refused() {
 }
 
 #[test]
-fn pruning_inside_the_protected_recent_turns_is_refused() {
-    let t = five_turns(10);
-    // Messages 12.. are the last two turns; message 14 is a tool output there.
-    assert!(invalid(&k(3, "s", vec![14]), &t).contains("stay verbatim"));
+fn pruning_inside_the_latest_exchange_is_refused() {
+    // An unfinished turn: the last assistant step called a tool and its output
+    // (message 18) is the latest exchange.
+    let mut t = five_turns(10);
+    t.push(user("one more"));
+    t.push(call("c9", "read", "{}"));
+    t.push(result("c9", 10));
+    let last_result = t.len() - 1;
+    assert!(invalid(&k(3, "s", vec![last_result]), &t).contains("stays verbatim"));
+    // Earlier outputs, even of the recent turns, may be cut down by a plan
+    // that had to cross them (a turn that outgrew the budget on its own).
+    assert!(validate(&k(3, "s", vec![14]), &t).is_ok());
     assert!(validate(&k(3, "s", vec![6]), &t).is_ok());
 }
 
 #[test]
-fn a_boundary_inside_the_protected_tail_is_refused() {
+fn a_boundary_inside_the_latest_exchange_is_refused() {
     let t = five_turns(10);
-    // The tail starts at message 12; a boundary right before it is fine,
-    // one after it is a clean turn boundary but reaches into the tail.
+    // The latest exchange is the last answer (message 19). A boundary that
+    // leaves it is fine, one that leaves nothing is not.
     assert!(validate(&k(11, "s", vec![]), &t).is_ok());
-    assert!(invalid(&k(15, "s", vec![]), &t).contains("stay verbatim"));
-    assert!(invalid(&k(18, "s", vec![]), &t).contains("stay verbatim"));
+    assert!(validate(&k(15, "s", vec![]), &t).is_ok());
+    assert!(validate(&k(18, "s", vec![]), &t).is_ok());
+    assert!(invalid(&k(19, "s", vec![]), &t).contains("leaves nothing"));
 }
 
 #[test]
@@ -519,4 +528,36 @@ fn a_plan_always_validates() {
         pruned_message_indices: p.kept_pruned(),
     };
     validate(&k, &t).unwrap();
+}
+
+// Given one long unfinished turn: a request, then many read exchanges
+// When a plan must fit a budget the recent-turns rule cannot meet
+// Then `Fit` refuses (the unfinished turn is protected whole) and
+//      `FitMidTurn` summarizes its earlier steps, keeping only the latest one
+#[test]
+fn a_mid_turn_plan_may_cross_the_unfinished_turn_but_keeps_its_latest_exchange() {
+    let mut t = vec![user("do a long task")];
+    for n in 0..12 {
+        t.push(call(&format!("c{n}"), "read", "{}"));
+        t.push(result(&format!("c{n}"), 8_000));
+    }
+    let c = components();
+    let budget = 3_000 + summary_reserve_tokens();
+    assert!(matches!(
+        plan(&t, None, &c, budget, Aim::Fit),
+        Err(CompactionError::NothingToCompact | CompactionError::Capacity { .. })
+    ));
+    let p = plan(&t, None, &c, budget, Aim::FitMidTurn).unwrap();
+    // Everything before the last assistant step (message 23) can go.
+    assert!(p.through_message < 23);
+    assert!(p.estimated_after <= budget);
+    let compaction = Compaction {
+        checkpoint: Checkpoint {
+            through_message: p.through_message,
+            summary: "s".into(),
+            generation: 1,
+        },
+        pruned_message_indices: p.kept_pruned(),
+    };
+    assert!(validate(&compaction, &t).is_ok());
 }

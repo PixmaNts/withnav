@@ -199,8 +199,8 @@ pub(super) async fn run(
             Some(compact_for_target(actor, status, sequencer, cancel, alias, floor, budget).await?);
         if actor.context_breakdown_at(floor).total() > budget {
             return Err(format!(
-                "the conversation still does not fit {alias}'s window after a compaction; {}",
-                super::compact::CAPACITY_HINT
+                "the conversation still does not fit {alias}'s window after a compaction: \
+                 choose a model with a larger context window, or start a new conversation"
             ));
         }
     }

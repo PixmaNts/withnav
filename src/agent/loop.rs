@@ -927,6 +927,60 @@ mod tests {
         assert!(matches!(outcome, RunOutcome::StepBudgetExhausted));
     }
 
+    // Given an input budget the next request would exceed
+    // When the run reaches a step boundary
+    // Then it stops with NeedsCompaction and the steps it has left, sending
+    //      nothing; continue_run carries on with exactly those steps
+    #[tokio::test]
+    async fn a_prompt_over_the_budget_stops_at_the_boundary_and_keeps_the_step_budget() {
+        let toolcall = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"bash","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let done = r#"{"choices":[{"index":0,"delta":{"content":"fin"},"finish_reason":"stop"}]}"#;
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[toolcall])),
+            http_sse(&sse_body(&[done])),
+        ])
+        .await;
+        let cancel = CancellationToken::new();
+        let mut actor = make_actor(server.url.clone(), registry_all(), cancel);
+        actor.max_steps = 5;
+        actor.push_user("go");
+        // Room for the first request, not for the second.
+        let first = actor.context_breakdown().total();
+        actor.input_budget = Some(first);
+        let mut noop = |_e: AgentEvent| {};
+
+        let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
+        // One step taken (step 0), so four are left.
+        assert!(
+            matches!(outcome, RunOutcome::NeedsCompaction { steps_left: 4 }),
+            "{outcome:?}"
+        );
+        assert_eq!(server.requests.lock().await.len(), 1, "nothing was sent");
+        assert!(matches!(
+            actor.transcript.last(),
+            Some(ChatMessage::Tool { .. })
+        ));
+
+        actor.input_budget = None;
+        let outcome = continue_run(&mut actor, &mut noop, 4).await.unwrap();
+        assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "fin"));
+    }
+
+    // Given a model that keeps calling tools and a prompt over the budget at
+    //       the first step
+    // Then the run is held before any request, with the whole budget left
+    #[tokio::test]
+    async fn without_a_budget_a_run_is_never_held_back() {
+        let done = r#"{"choices":[{"index":0,"delta":{"content":"fin"},"finish_reason":"stop"}]}"#;
+        let server = spawn_mock(vec![http_sse(&sse_body(&[done]))]).await;
+        let mut actor = make_actor(server.url.clone(), registry_all(), CancellationToken::new());
+        actor.push_user("go");
+        assert!(actor.input_budget.is_none());
+        let mut noop = |_e: AgentEvent| {};
+        let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
+        assert!(matches!(outcome, RunOutcome::Done(_)));
+    }
+
     /// One assistant message holding the given `(id, tool, arguments)` calls.
     fn calls_chunk(calls: &[(&str, &str, serde_json::Value)]) -> String {
         let calls: Vec<serde_json::Value> = calls

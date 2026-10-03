@@ -411,8 +411,9 @@ pub(super) async fn install(
 
 /// What an automatic compaction before a request could not do, worded for the
 /// turn's error.
-pub(super) const CAPACITY_HINT: &str = "/compact cannot help either; \
-    use a model with a larger context window, or start a new conversation";
+pub(super) const CAPACITY_HINT: &str = "the conversation outgrew the model's context window: \
+    /compact cannot help either; use a model with a larger context window, or start a new \
+    conversation";
 
 /// Compacts the conversation of `actor` because the next request would not
 /// fit its input budget: the summary is written by the session's own model
@@ -426,44 +427,62 @@ pub(super) async fn run_automatic(
     sequencer: &Sequencer,
     cancel: &CancellationToken,
 ) -> Result<Compacted, Option<String>> {
+    // Never while a human is being waited for: such a turn ends by asking, and
+    // the cut would not be a safe one.
+    if actor.has_pending() {
+        return Err(Some(
+            "automatic compaction does not run while the agent waits for an answer or a decision"
+                .to_string(),
+        ));
+    }
     let budget = status
         .context_snapshot()
         .map(|snapshot| snapshot.input_budget)
         .ok_or_else(|| Some("this session has no context budget".to_string()))?;
-    let capacity = |why: String| Some(format!("{why}; {CAPACITY_HINT}"));
+    // The turn's error is cut short on the wire: the advice goes first.
+    let capacity = |why: String| Some(format!("{CAPACITY_HINT} ({why})"));
     let _preparing = status.selection.begin_compaction().await;
     let transcript = actor.transcript.clone();
-    let mut aim_at = budget / 10 * 7;
-    let summarized = loop {
+    // Cheapest first: keep the recent turns verbatim and aim below 70% of the
+    // budget, then take the whole budget; only then give up the recent turns
+    // and keep just the latest exchange, again below 70%, then the whole
+    // budget. A plan that cannot fit costs no provider call.
+    let attempts = [
+        (Aim::Fit, budget / 10 * 7),
+        (Aim::Fit, budget),
+        (Aim::FitMidTurn, budget / 10 * 7),
+        (Aim::FitMidTurn, budget),
+    ];
+    let mut last = None;
+    let mut summarized = None;
+    for (aim, destination_budget) in attempts {
         let goal = Goal {
             focus: None,
-            aim: Aim::Fit,
-            destination_budget: aim_at,
+            aim,
+            destination_budget,
             source_budget: budget,
         };
         match summarize(actor, status, cancel, &transcript, goal).await {
-            Ok(done) => break done,
-            // The recent turns need more than 70% of the budget: take all of it.
-            Err(Failure::Compaction(CompactionError::Capacity { .. })) if aim_at < budget => {
-                aim_at = budget;
+            Ok(done) => {
+                summarized = Some(done);
+                break;
             }
             Err(Failure::Compaction(CompactionError::Cancelled)) => return Err(None),
             Err(Failure::Compaction(
                 e @ (CompactionError::Capacity { .. }
                 | CompactionError::NothingToCompact
                 | CompactionError::SummaryInputTooLarge { .. }),
-            )) => {
-                return Err(capacity(match e {
-                    CompactionError::NothingToCompact => {
-                        "the conversation outgrew the model's context window and nothing older \
-                     than the recent turns is left to summarize"
-                            .to_string()
-                    }
-                    other => other.to_string(),
-                }))
-            }
+            )) => last = Some(e),
             Err(e) => return Err(Some(format!("automatic compaction failed: {e}"))),
         }
+    }
+    let Some(summarized) = summarized else {
+        return Err(capacity(match last {
+            Some(CompactionError::NothingToCompact) | None => {
+                "nothing older than the latest exchange is left to summarize".to_string()
+            }
+            Some(other) => other.to_string(),
+        }));
     };
     install(
         actor,

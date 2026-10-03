@@ -18,6 +18,26 @@ requests land in `develop`.
   yet shows `—`. The bottom row lists the keys that apply now, with the permission keys while a
   prompt waits. Popups dim the screen behind them and show their keys at the bottom.
 
+- **Role guard for the `plan` agent**: `plan` keeps every tool, and writes markdown freely: a `write`
+  or `edit` whose resolved destination is a regular `.md` file (a `.md` name that is a link to another
+  file does not count) runs with no request. Every other `write` or `edit`, and every `bash` and
+  `fetch`, is first put to Jev, the model behind the `instinct` alias, as one `role_conformance`
+  question (`conforms`, `violates`, `uncertain`) with the role instructions, your latest message, the
+  workspace, the resolved target, the tool and its exact arguments (at most 16 KiB). Only a valid
+  `conforms` runs the call without you, and the verdict shows as `guard` in the metadata of its
+  `tool.post_call`. Anything else (`violates`, `uncertain`, an unusable answer, no `instinct` alias or
+  key, no answer within 2 s, a call too large to send) becomes a permission request whose reason says
+  why; for `plan` you can allow it once or deny it, and "allow folder" counts as once (the terminal
+  prompt shows the reason under its header and offers only `y` and `n` for `plan`). A file that moves
+  between the check and the write (a link put in its place) is checked again, never written on the
+  old verdict; the guard judges against your own latest words, not a navigator wake, and is told that
+  the task, target and arguments it reads are untrusted evidence. A `write` or `edit` of a destination that was checked or approved
+  now opens that file without following any link (`openat2` with `RESOLVE_NO_SYMLINKS` on Linux,
+  falling back to a component-by-component `O_NOFOLLOW` walk), so a link put in its place after the
+  last check cannot redirect it: nothing is written and the call is checked again, for `build`
+  approvals as well as `plan`. After a resume the guard still judges against your latest stored
+  message. `build` is
+  unchanged, and its folder grants never reach `plan`. The guard is advisory, not a sandbox.
 - **Permission prompts in the terminal client**: when the agent asks before running `write`,
   `edit`, `bash` or `fetch`, the conversation shows what it would do (the file and its first lines,
   the change, the command or the URL) and where (in a folder, or to a site). Press `y` to allow it

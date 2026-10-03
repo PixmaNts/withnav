@@ -749,6 +749,13 @@ impl Service {
         if let Some(loaded) = &resumed {
             actor.transcript = loaded.transcript.clone();
             actor.compaction = loaded.compaction.clone();
+            // The task the role guard judges against: the driver's latest
+            // stored words, not a navigator wake.
+            actor.driver_task = self
+                .history
+                .latest_driver_message(session_id)
+                .await
+                .map_err(ServerError::History)?;
         }
         actor.rules = self
             .load_rules(&workspace, session_id, resumed.is_some())
@@ -757,6 +764,11 @@ impl Service {
             .load_skills(&workspace, session_id, resumed.is_some())
             .await;
         actor.set_skills(skills);
+        actor.guard = super::guard::jev_guard(
+            self.config.models_path.as_deref(),
+            &workspace,
+            &self.config.config_dir,
+        );
         self.hooks.configure_actor(profile, &mut actor);
         // A permission request does not outlive the process that asked it:
         // its calls are settled as interrupted and never run again.

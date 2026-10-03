@@ -15,6 +15,44 @@ pub mod control;
 pub mod fetch;
 pub mod glob;
 pub mod native;
+pub mod nofollow;
+
+/// The argument the agent loop adds to a `write` or `edit` whose destination
+/// was reviewed: `path` is then that canonical file, and the tool opens it
+/// without following any link ([`nofollow`]). Never part of a tool's schema;
+/// the loop strips what a model puts under this name.
+pub const BOUND_ARG: &str = "navai_bound_destination";
+
+/// The canonical file a bound call is for, checked against the writable roots
+/// as a plain path: it must be absolute, free of `..`, and under a root. No
+/// link is resolved here; the no-follow open refuses any that is there.
+pub fn bound_destination(args: &Value, roots: &[PathBuf]) -> Result<Option<PathBuf>, ToolError> {
+    if args.get(BOUND_ARG).and_then(Value::as_bool) != Some(true) {
+        return Ok(None);
+    }
+    let path = args
+        .get("path")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .ok_or_else(|| ToolError::Denied {
+            code: "invalid_args".into(),
+            message: "missing string argument: path".into(),
+        })?;
+    let plain = path.is_absolute()
+        && path
+            .components()
+            .all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
+    let inside = roots.iter().any(|root| {
+        root.canonicalize()
+            .map(|root| path.starts_with(root))
+            .unwrap_or(false)
+    });
+    if plain && inside {
+        Ok(Some(path))
+    } else {
+        Err(ToolError::PathTraversal(path))
+    }
+}
 
 pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 64 * 1024;
 pub const DEFAULT_BASH_TIMEOUT_MS: u64 = 120_000;

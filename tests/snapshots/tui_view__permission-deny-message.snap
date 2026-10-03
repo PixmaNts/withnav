@@ -17,11 +17,11 @@ expression: snapshot
                      │ │  I found the failing test. The empty argument is discarded.                
                      │ │                                                                            
                      │ │ PERMISSION · build wants to run bash in /ws                                
+                     │ │  it changes files                                                          
                      │ │  $ rm -rf target                                                           
                      │ │  deny with a message: use cargo clean▏                                     
                      │ │  enter send · esc deny without a message                                   
                      │ │                                                                            
-                     │                                                                              
                      │                                                                              
                      │                                                                              
                      │                                                                              

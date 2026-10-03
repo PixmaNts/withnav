@@ -17,6 +17,7 @@ expression: snapshot
                      │ │  I found the failing test. The empty argument is discarded.                
                      │ │                                                                            
                      │ │ PERMISSION · build wants to run write in /home/pixma/dev/project/src       
+                     │ │  it changes files                                                          
                      │ │  /home/pixma/dev/project/src/a.rs                                          
                      │ │  + line 1                                                                  
                      │ │  + line 2                                                                  
@@ -27,7 +28,6 @@ expression: snapshot
                      │ │    … 3 more lines                                                          
                      │ │  y allow once   a always for this folder   n deny                          
                      │ │                                                                            
-                     │                                                                              
                      │                                                                              
                      │                                                                              
                      │                                                                              

@@ -22,7 +22,9 @@ say what the agent may execute.
   deadline, whether a `write`, `edit` or `bash` of the `plan` agent conforms to its role (a write of a
   `*.md` file is exempt). Only a clear "conforms" lets the call run without the driver; anything else,
   including a timeout or no answer, becomes a permission request. It is advisory, never a block and never
-  a sandbox.
+  a sandbox. Status: built as the **role guard** (`agent/guard.rs`). It also covers `fetch`, sends the
+  exact call (at most 16 KiB; a larger call goes straight to the driver), never accepts a folder grant for
+  `plan`, and records a `conforms` verdict on the call's `tool.post_call`.
 - **Selection is a session property.** The session stores the primary agent (`sessions.primary_agent`,
   `NULL` meaning `build`); `/agent <id>` switches it between turns, with no pending `ask`, stored before
   it is reported, and published as a durable `session.agent_changed`. The role prompt is composed with the
@@ -38,6 +40,6 @@ say what the agent may execute.
 
 - A role cannot be bypassed by prompt text, and a permission cannot be obtained by persuasion: the two
   are enforced in different places and fail separately.
-- Until the permission gate lands, `build` and `plan` run effects without asking, as the tools always
-  have. The `plan` role then rests on its prompt alone.
+- The permission gate and the role guard have landed: `build` asks for every effect, and `plan` asks
+  Jev first about the ones its prompt does not allow.
 - The event catalog grows by one kind (`session.agent_changed`), and later by the permission events.

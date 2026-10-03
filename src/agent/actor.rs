@@ -2,6 +2,9 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::compaction::{
+    effective_history, validate as validate_compaction, Compaction, Components,
+};
 use crate::agent::definitions::AgentDefinition;
 use crate::agent::instructions::Instructions;
 use crate::agent::permissions::{Grants, PermissionRequest};
@@ -32,11 +35,20 @@ pub enum PendingInteraction {
         request: Box<PermissionRequest>,
         call: ToolCall,
         remaining_calls: Vec<ToolCall>,
+        /// For `write` and `edit`: the canonical file the request was made
+        /// for. The call runs on an approval only if it still resolves there.
+        destination: Option<std::path::PathBuf>,
+        /// The model steps left in the turn when the call was held.
+        steps_left: usize,
     },
 }
 
 pub struct AgentActor {
     pub transcript: Vec<ChatMessage>,
+    /// The installed compaction: what stands for the start of `transcript`
+    /// and which tool outputs the prompt shows as markers. `transcript`
+    /// itself stays the full history.
+    pub compaction: Option<Compaction>,
     pub registry: Registry,
     pub tool_context: ToolContext,
     pub provider: ProviderConfig,
@@ -87,6 +99,7 @@ impl AgentActor {
     ) -> Self {
         Self {
             transcript: Vec::new(),
+            compaction: None,
             registry,
             tool_context,
             provider,
@@ -137,8 +150,30 @@ impl AgentActor {
         self.skills = skills;
     }
 
+    /// The parts of the request besides the history. `role` is
+    /// [`AgentActor::role_message`], which the caller keeps alive.
+    pub fn components<'a>(
+        &'a self,
+        role: Option<&'a str>,
+        tools: &'a [crate::provider::openai::ToolDef],
+    ) -> Components<'a> {
+        Components {
+            system_prompt: role,
+            rules: self.rules.message(),
+            skills: self.skills.catalog(),
+            tools,
+        }
+    }
+
+    /// The history the next request carries: the transcript as it is, or,
+    /// with a compaction installed, the labelled summary then the messages
+    /// after its boundary with the pruned outputs as markers.
+    pub fn effective_history(&self) -> Vec<ChatMessage> {
+        effective_history(&self.transcript, self.compaction.as_ref())
+    }
+
     /// The estimated size of the request this actor would send now, by
-    /// category (see [`crate::agent::context`]).
+    /// category (see [`crate::agent::context`]): the effective prompt.
     pub fn context_breakdown(&self) -> crate::agent::context::Breakdown {
         // The same role message `build_request` sends: the selected agent's
         // prompt composed with the profile's.
@@ -147,7 +182,7 @@ impl AgentActor {
             role.as_deref(),
             self.rules.message(),
             self.skills.catalog(),
-            &self.transcript,
+            &self.effective_history(),
             &self.registry.schemas(),
         )
     }
@@ -163,6 +198,25 @@ impl AgentActor {
             Some(PendingInteraction::Permission { request, .. }) => Some(request),
             _ => None,
         }
+    }
+
+    /// Persists `compaction` through `persist`, which is handed the full
+    /// transcript and must return only once the write is durable, then
+    /// installs it. A failed write installs nothing. The compaction is
+    /// validated against the transcript first.
+    pub async fn commit_compaction<F, Fut>(
+        &mut self,
+        compaction: Compaction,
+        persist: F,
+    ) -> Result<(), String>
+    where
+        F: FnOnce(Vec<ChatMessage>, Compaction) -> Fut,
+        Fut: std::future::Future<Output = Result<(), String>>,
+    {
+        validate_compaction(&compaction, &self.transcript).map_err(|e| e.to_string())?;
+        persist(self.transcript.clone(), compaction.clone()).await?;
+        self.compaction = Some(compaction);
+        Ok(())
     }
 
     /// Re-derives the pending `ask` from a restored transcript: the `ask` call

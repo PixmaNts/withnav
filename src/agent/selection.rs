@@ -21,6 +21,9 @@ struct State {
     /// The last turn ended asking the human something that is not answered
     /// yet.
     ask_pending: bool,
+    /// A compaction is preparing its summary: the agent and the variant it
+    /// measures against must not change until it commits or gives up.
+    compacting: bool,
 }
 
 /// Why a switch did not happen.
@@ -30,8 +33,22 @@ pub enum SwitchError {
     Busy,
     /// The agent waits for the answer to an `ask`.
     AskPending,
+    /// A compaction is preparing its summary.
+    Compacting,
     /// The choice could not be stored.
     Persist(String),
+}
+
+/// Clears the compacting mark when dropped.
+#[derive(Debug)]
+pub struct CompactionGuard<'a> {
+    selection: &'a AgentSelection,
+}
+
+impl Drop for CompactionGuard<'_> {
+    fn drop(&mut self) {
+        self.selection.state().compacting = false;
+    }
 }
 
 /// The agents a session can use and the one it runs as.
@@ -68,6 +85,7 @@ impl AgentSelection {
                 current,
                 running: false,
                 ask_pending: false,
+                compacting: false,
             }),
             send_role: true,
         }
@@ -113,6 +131,28 @@ impl AgentSelection {
         state.ask_pending = ask_pending;
     }
 
+    /// Marks a compaction as preparing, so no agent or variant switch lands
+    /// while its summary is in flight; the flag clears when the returned
+    /// guard drops. The agent is read after this returns.
+    pub async fn begin_compaction(&self) -> CompactionGuard<'_> {
+        let _gate = self.gate.lock().await;
+        self.state().compacting = true;
+        CompactionGuard { selection: self }
+    }
+
+    /// Holds the switch gate for a change that is not an agent switch (a
+    /// variant), so no compaction starts while it applies. `Err` while one
+    /// is preparing.
+    pub async fn exclusive_unless_compacting(
+        &self,
+    ) -> Result<tokio::sync::MutexGuard<'_, ()>, SwitchError> {
+        let gate = self.gate.lock().await;
+        if self.state().compacting {
+            return Err(SwitchError::Compacting);
+        }
+        Ok(gate)
+    }
+
     /// Switches to `target` once `persist` has stored it, and returns the
     /// agent it replaces. Refused while a turn runs or an `ask` waits.
     pub async fn switch(
@@ -129,7 +169,9 @@ impl AgentSelection {
 
     fn check_idle(&self) -> Result<(), SwitchError> {
         let state = self.state();
-        if state.running {
+        if state.compacting {
+            Err(SwitchError::Compacting)
+        } else if state.running {
             Err(SwitchError::Busy)
         } else if state.ask_pending {
             Err(SwitchError::AskPending)
@@ -255,6 +297,27 @@ mod tests {
             );
             assert_eq!(selection.current().id.as_str(), "build");
         }
+    }
+
+    #[tokio::test]
+    async fn a_switch_and_a_variant_change_are_refused_while_a_compaction_prepares() {
+        let selection = AgentSelection::new(
+            Arc::new(Agents::builtin()),
+            Agents::builtin().get("build").cloned().unwrap(),
+        );
+        let guard = selection.begin_compaction().await;
+        let refused = selection.switch(plan(), async { Ok(()) }).await;
+        assert_eq!(refused.unwrap_err(), SwitchError::Compacting);
+        assert_eq!(
+            selection.exclusive_unless_compacting().await.unwrap_err(),
+            SwitchError::Compacting
+        );
+        assert_eq!(selection.current().id.as_str(), "build");
+
+        drop(guard);
+        assert!(selection.exclusive_unless_compacting().await.is_ok());
+        selection.switch(plan(), async { Ok(()) }).await.unwrap();
+        assert_eq!(selection.current().id.as_str(), "plan");
     }
 
     #[tokio::test]

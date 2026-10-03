@@ -1,7 +1,7 @@
-//! Frozen `EventEnvelope` shape and the 17-kind `EventKind`
+//! Frozen `EventEnvelope` shape and the 18-kind `EventKind`
 //! catalog (the twelve original kinds plus `command.result`,
-//! `context.updated`, `session.agent_changed`, `permission.requested` and
-//! `permission.resolved`).
+//! `context.updated`, `session.agent_changed`, `context.compacted`,
+//! `permission.requested` and `permission.resolved`).
 //!
 //! Reserved-but-deferred kind names (NOT in the enum, never emitted this slice):
 //! `prompt.pre_llm`, `tool.progress`, `context.pre_compact` (Phase 3),
@@ -23,13 +23,13 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// The single root actor id for this slice (all events are published by it).
 pub const ROOT_ACTOR_ID: &str = "agent:main";
 
-/// The catalog emits EXACTLY 17 kinds: 2 session +
+/// The catalog emits EXACTLY 18 kinds: 2 session +
 /// message + 2 turn + 2 llm + 2 tool + 2 agent + task + command result +
-/// context update + agent change + 2 permission = 17. The first twelve are
-/// frozen; `command.result`, `context.updated`, `session.agent_changed`,
-/// `permission.requested` and `permission.resolved` were added without
-/// changing the envelope version.
-pub const EVENT_KIND_COUNT: usize = 17;
+/// context update + agent change + context compacted + 2 permission = 18. The
+/// first twelve are frozen; `command.result`, `context.updated`,
+/// `session.agent_changed`, `context.compacted`, `permission.requested` and
+/// `permission.resolved` were added without changing the envelope version.
+pub const EVENT_KIND_COUNT: usize = 18;
 
 /// Durable kinds are retained in the reconnect ring and the history store;
 /// `llm.delta` and `context.updated` are live-only (the latter is a
@@ -66,6 +66,7 @@ impl EventKind {
             | Self::CommandResult
             | Self::ContextUpdated
             | Self::SessionAgentChanged
+            | Self::ContextCompacted
             | Self::PermissionRequested
             | Self::PermissionResolved => [
                 Self::SessionStart,
@@ -83,20 +84,21 @@ impl EventKind {
                 Self::CommandResult,
                 Self::ContextUpdated,
                 Self::SessionAgentChanged,
+                Self::ContextCompacted,
                 Self::PermissionRequested,
                 Self::PermissionResolved,
             ],
         }
     }
 
-    /// The 17 emitted kinds, in catalog order. The bus iterates this to seed
+    /// The 18 emitted kinds, in catalog order. The bus iterates this to seed
     /// the ring/fan-out.
     pub const ALL: [EventKind; EVENT_KIND_COUNT] = Self::all_variants();
 }
 
 const _: () = assert!(EventKind::ALL.len() == EVENT_KIND_COUNT);
 
-/// Typed catalog of the 17 emitted event kinds; the wire name is the dotted
+/// Typed catalog of the 18 emitted event kinds; the wire name is the dotted
 /// string (serialized verbatim, e.g. `"llm.delta"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventKind {
@@ -130,6 +132,8 @@ pub enum EventKind {
     ContextUpdated,
     #[serde(rename = "session.agent_changed")]
     SessionAgentChanged,
+    #[serde(rename = "context.compacted")]
+    ContextCompacted,
     #[serde(rename = "permission.requested")]
     PermissionRequested,
     #[serde(rename = "permission.resolved")]
@@ -155,6 +159,7 @@ impl EventKind {
             EventKind::CommandResult => "command.result",
             EventKind::ContextUpdated => "context.updated",
             EventKind::SessionAgentChanged => "session.agent_changed",
+            EventKind::ContextCompacted => "context.compacted",
             EventKind::PermissionRequested => "permission.requested",
             EventKind::PermissionResolved => "permission.resolved",
         }
@@ -178,6 +183,7 @@ impl EventKind {
             "command.result" => Some(EventKind::CommandResult),
             "context.updated" => Some(EventKind::ContextUpdated),
             "session.agent_changed" => Some(EventKind::SessionAgentChanged),
+            "context.compacted" => Some(EventKind::ContextCompacted),
             "permission.requested" => Some(EventKind::PermissionRequested),
             "permission.resolved" => Some(EventKind::PermissionResolved),
             _ => None,
@@ -394,6 +400,24 @@ pub struct SessionAgentChanged {
     pub previous: String,
 }
 
+/// The conversation was compacted: a summary now stands for its start. A
+/// notice published after the checkpoint is stored; the stored checkpoint,
+/// not this event, is what a resume restores from. The events before it are
+/// untouched.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextCompacted {
+    /// 1 for the first compaction of the conversation, +1 for each later one.
+    pub generation: u64,
+    /// Index, in the full transcript, of the last message the summary
+    /// replaces.
+    pub through_message: u64,
+    /// Tool outputs the prompt now shows as markers.
+    pub pruned: u64,
+    /// The estimated prompt size before and after, in tokens.
+    pub estimate_before: u64,
+    pub estimate_after: u64,
+}
+
 /// A gated tool call waits for a driver's decision. The call has not run.
 /// `arguments` is the call's JSON text cut to 4 KiB, for review only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -606,7 +630,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const KIND_NAMES: [&str; 17] = [
+    const KIND_NAMES: [&str; 18] = [
         "session.start",
         "session.end",
         "message.received",
@@ -622,15 +646,16 @@ mod tests {
         "command.result",
         "context.updated",
         "session.agent_changed",
+        "context.compacted",
         "permission.requested",
         "permission.resolved",
     ];
 
     #[test]
-    fn event_kind_catalog_is_exactly_the_seventeen() {
+    fn event_kind_catalog_is_exactly_the_eighteen() {
         let kinds = EventKind::ALL;
-        assert_eq!(EVENT_KIND_COUNT, 17);
-        assert_eq!(kinds.len(), 17);
+        assert_eq!(EVENT_KIND_COUNT, 18);
+        assert_eq!(kinds.len(), 18);
         assert_eq!(SCHEMA_VERSION, 1);
         let names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
         assert_eq!(names, KIND_NAMES);
@@ -867,6 +892,17 @@ mod tests {
                 serde_json::to_value(&SessionAgentChanged {
                     agent: "plan".into(),
                     previous: "build".into(),
+                })
+                .unwrap(),
+            ),
+            (
+                "context.compacted",
+                serde_json::to_value(&ContextCompacted {
+                    generation: 1,
+                    through_message: 7,
+                    pruned: 2,
+                    estimate_before: 120_000,
+                    estimate_after: 18_000,
                 })
                 .unwrap(),
             ),

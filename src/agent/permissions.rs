@@ -15,6 +15,7 @@ use serde_json::Value;
 use ulid::Ulid;
 
 use crate::agent::definitions::AgentDefinition;
+use crate::error::ToolError;
 use crate::provider::ToolCall;
 use crate::tools::{bound_output, validate_path, ToolContext};
 
@@ -177,15 +178,38 @@ fn folder_covers(grant: &Path, target: &Path, cx: &ToolContext) -> bool {
         .all(|root| !target.starts_with(&root) || grant.starts_with(&root))
 }
 
-/// The scope a call needs approval for, or `None` when it runs without.
+/// What a gated call needs, as decided before it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Needed {
+    pub scope: Scope,
+    /// For `write` and `edit`: the canonical file the call will change, as
+    /// resolved when the request was made. An approval covers this file only;
+    /// a call that resolves elsewhere when it runs needs a new approval.
+    pub destination: Option<PathBuf>,
+}
+
+/// What the gate decides about a call, with no side effect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Gate {
+    /// The call runs without approval.
+    Ungated,
+    /// The call is refused before it runs; the string is the tool error the
+    /// model reads back.
+    Rejected(String),
+    /// The call waits for approval.
+    Needs(Needed),
+}
+
+/// What a call needs approval for.
 ///
-/// * `write`, `edit`: the canonical parent folder of the validated path. A
-///   path `validate_path` refuses needs no approval: the tool will refuse it.
+/// * `write`, `edit`: the canonical parent folder of the validated path, and
+///   the canonical file itself. A missing path argument or a path
+///   `validate_path` refuses is [`Gate::Rejected`]: the tool never runs.
 /// * `bash`: the working directory, which is the workspace. This is the scope
 ///   the driver approves, NOT a confinement: the command can touch anything
 ///   the process can.
 /// * `fetch`: the URL's origin. An unusable URL needs no approval: the tool
-///   will refuse it.
+///   will refuse it without side effect.
 /// * everything else, and every call of a bare runtime (`role` is `None`):
 ///   never.
 pub fn needs_permission(
@@ -193,23 +217,54 @@ pub fn needs_permission(
     tool: &str,
     args: &Value,
     cx: &ToolContext,
-) -> Option<Scope> {
-    role?;
+) -> Gate {
+    if role.is_none() {
+        return Gate::Ungated;
+    }
     match tool {
         "write" | "edit" => {
-            let path = args.get("path")?.as_str()?;
-            let resolved = validate_path(&cx.writable_roots, Path::new(path)).ok()?;
-            Some(Scope::Folder(resolved.parent()?.to_path_buf()))
+            let Some(path) = args.get("path").and_then(Value::as_str) else {
+                return Gate::Rejected(
+                    ToolError::Denied {
+                        code: "invalid_args".into(),
+                        message: "missing string argument: path".into(),
+                    }
+                    .to_string(),
+                );
+            };
+            let resolved = match validate_path(&cx.writable_roots, Path::new(path)) {
+                Ok(resolved) => resolved,
+                Err(e) => return Gate::Rejected(e.to_string()),
+            };
+            let Some(parent) = resolved.parent() else {
+                return Gate::Rejected(ToolError::PathTraversal(resolved.clone()).to_string());
+            };
+            Gate::Needs(Needed {
+                scope: Scope::Folder(parent.to_path_buf()),
+                destination: Some(resolved),
+            })
         }
-        "bash" => Some(Scope::Folder(canonical(&cx.workspace))),
+        "bash" => Gate::Needs(Needed {
+            scope: Scope::Folder(canonical(&cx.workspace)),
+            destination: None,
+        }),
         "fetch" => {
-            let url = reqwest::Url::parse(args.get("url")?.as_str()?.trim()).ok()?;
+            let Some(url) = args
+                .get("url")
+                .and_then(Value::as_str)
+                .and_then(|url| reqwest::Url::parse(url.trim()).ok())
+            else {
+                return Gate::Ungated;
+            };
             if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-                return None;
+                return Gate::Ungated;
             }
-            Some(Scope::Origin(url.origin().ascii_serialization()))
+            Gate::Needs(Needed {
+                scope: Scope::Origin(url.origin().ascii_serialization()),
+                destination: None,
+            })
         }
-        _ => None,
+        _ => Gate::Ungated,
     }
 }
 
@@ -249,8 +304,16 @@ mod tests {
         }
     }
 
-    fn need(f: &Fixture, tool: &str, args: Value) -> Option<Scope> {
+    fn gate(f: &Fixture, tool: &str, args: Value) -> Gate {
         needs_permission(Some(&f.role), tool, &args, &f.cx)
+    }
+
+    /// The scope of a call that needs approval, `None` for any other gate.
+    fn need(f: &Fixture, tool: &str, args: Value) -> Option<Scope> {
+        match gate(f, tool, args) {
+            Gate::Needs(needed) => Some(needed.scope),
+            _ => None,
+        }
     }
 
     #[test]
@@ -275,27 +338,49 @@ mod tests {
     }
 
     #[test]
-    fn a_symlink_out_of_the_roots_needs_no_approval_the_tool_refuses_it() {
+    fn a_symlink_out_of_the_roots_is_rejected_not_ungated() {
         let f = fixture();
         let outside = f.ws.parent().unwrap().join("outside");
         std::fs::create_dir_all(&outside).unwrap();
         std::os::unix::fs::symlink(&outside, f.ws.join("link")).unwrap();
-        assert_eq!(
-            need(&f, "write", json!({"path": f.ws.join("link/a.txt")})),
-            None
-        );
+        assert!(matches!(
+            gate(&f, "write", json!({"path": f.ws.join("link/a.txt")})),
+            Gate::Rejected(_)
+        ));
     }
 
     #[test]
-    fn paths_the_tool_would_refuse_and_missing_arguments_need_nothing() {
+    fn a_needed_write_names_the_canonical_destination() {
         let f = fixture();
-        assert_eq!(need(&f, "write", json!({"path": "/etc/passwd"})), None);
-        assert_eq!(need(&f, "write", json!({})), None);
-        assert_eq!(need(&f, "edit", json!({"path": 3})), None);
-        assert_eq!(need(&f, "fetch", json!({"url": "not a url"})), None);
+        let file = f.ws.join("src/main.rs");
+        let Gate::Needs(needed) = gate(&f, "write", json!({"path": file})) else {
+            panic!("a write inside the roots needs approval");
+        };
+        assert_eq!(needed.destination, Some(file));
+        let Gate::Needs(bash) = gate(&f, "bash", json!({"command": "ls"})) else {
+            panic!("bash needs approval");
+        };
+        assert_eq!(bash.destination, None);
+    }
+
+    #[test]
+    fn paths_the_tool_would_refuse_are_rejected_and_unusable_urls_need_nothing() {
+        let f = fixture();
+        for args in [
+            json!({"path": "/etc/passwd"}),
+            json!({}),
+            json!({"path": 3}),
+        ] {
+            assert!(matches!(gate(&f, "write", args.clone()), Gate::Rejected(_)));
+            assert!(matches!(gate(&f, "edit", args), Gate::Rejected(_)));
+        }
         assert_eq!(
-            need(&f, "fetch", json!({"url": "file:///etc/passwd"})),
-            None
+            gate(&f, "fetch", json!({"url": "not a url"})),
+            Gate::Ungated
+        );
+        assert_eq!(
+            gate(&f, "fetch", json!({"url": "file:///etc/passwd"})),
+            Gate::Ungated
         );
     }
 
@@ -327,7 +412,11 @@ mod tests {
             );
         }
         let args = json!({"command": "ls"});
-        assert_eq!(needs_permission(None, "bash", &args, &f.cx), None);
+        assert_eq!(needs_permission(None, "bash", &args, &f.cx), Gate::Ungated);
+        assert_eq!(
+            needs_permission(None, "write", &json!({}), &f.cx),
+            Gate::Ungated
+        );
     }
 
     #[test]

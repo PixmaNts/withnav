@@ -14,7 +14,10 @@ use navai::server::{app, AppState};
 
 mod common;
 use common::server::{request_json, TestServerConfig};
-use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_chunk, CapturingProvider};
+use common::sse::{
+    http_sse, spawn_capturing_provider, spawn_streaming_provider, sse_body, text_chunk,
+    tool_call_chunk, CapturingProvider,
+};
 
 struct Env {
     _tmp: tempfile::TempDir,
@@ -522,4 +525,154 @@ async fn navai_run_stops_on_a_permission_request_unless_yes() {
     .unwrap();
     assert_eq!(approved.status.code(), Some(0), "{approved:?}");
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "from w2");
+}
+
+// Given a decision already taken in while the resumed turn stalls
+// When a second decision arrives for the same request
+// Then it is refused at once, not after the turn
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_answer_is_refused_at_once_while_the_resumed_turn_runs() {
+    let env = env();
+    let target = env.ws.join("a.txt");
+    let mut provider = spawn_streaming_provider().await;
+    let state = TestServerConfig::mock(&env.root, &provider.url)
+        .rules_home(&env.root.join("home"))
+        .state();
+    let router = app(state.clone());
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+
+    say(&state, id, "write it").await;
+    let (_, first) = provider.requests.recv().await.expect("first request");
+    first
+        .send(tool_call_chunk(
+            "w1",
+            "write",
+            &json!({"path": target, "content": "x"}),
+        ))
+        .unwrap();
+    drop(first);
+    let requested = wait_events(&state, id, "permission.requested", 1).await;
+    let request = request_id(&requested[0]);
+
+    let (status, body) = answer(&router, id, &request, json!({"decision": "allow_once"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The continuation asks the model and stalls there.
+    let (_, stalled) = provider.requests.recv().await.expect("continuation");
+
+    let second = tokio::time::timeout(
+        Duration::from_secs(2),
+        answer(&router, id, &request, json!({"decision": "deny"})),
+    )
+    .await
+    .expect("the duplicate must not wait for the resumed turn");
+    assert_eq!(second.0, StatusCode::CONFLICT, "{}", second.1);
+    assert_eq!(second.1["reason"], "permission_stale");
+
+    stalled.send(text_chunk("done")).unwrap();
+    drop(stalled);
+    wait_events(&state, id, "task.done", 1).await;
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
+}
+
+// Given a pending request
+// When `/stop` is sent as a command
+// Then it is accepted, the request ends as cancelled and nothing runs
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_stop_command_is_accepted_while_a_request_is_pending() {
+    let env = env();
+    let target = env.ws.join("a.txt");
+    let provider = provider(vec![one_write("w1", &target)]).await;
+    let state = config(&env, &provider).state();
+    let router = app(state.clone());
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+
+    say(&state, id, "write it").await;
+    let requested = wait_events(&state, id, "permission.requested", 1).await;
+    wait_events(&state, id, "turn.end", 1).await;
+
+    let (_, stop) = request_json(
+        &router,
+        "POST",
+        &format!("/v1/sessions/{id}/commands"),
+        Some(&json!({"name": "stop", "arguments": ""})),
+    )
+    .await;
+    assert_eq!(stop["ok"], true, "{stop}");
+
+    assert!(!target.exists());
+    let resolved = events(&state, id, "permission.resolved").await;
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].payload["resolution"], "cancelled");
+    assert_eq!(
+        resolved[0].payload["request_id"],
+        requested[0].payload["request_id"]
+    );
+}
+
+// Given a permission request that waits for a decision
+// When /compact runs, now or accepted behind the turn that raised the request
+// Then it is refused, nothing is summarized, and a deferred one is refused
+//      under the operation id it was accepted with
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_while_a_permission_request_is_open_is_refused() {
+    let env = env();
+    let target = env.ws.join("a.txt");
+    let provider = provider(vec![one_write("w1", &target), done("written")]).await;
+    let state = config(&env, &provider).chat_tools(20_000).state();
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+
+    say(&state, id, "write a.txt").await;
+    wait_events(&state, id, "permission.requested", 1).await;
+    wait_events(&state, id, "turn.end", 1).await;
+
+    let out = state.run_command(id, "compact", "").await.unwrap();
+    assert!(!out.ok, "{out:?}");
+    let error = out.error.unwrap();
+    assert!(
+        error.contains("permission request"),
+        "the reason names the pending request: {error}"
+    );
+    assert_eq!(provider.bodies().len(), 1, "no summary request");
+    assert!(events(&state, id, "context.compacted").await.is_empty());
+    assert!(!target.exists(), "the held call did not run");
+}
+
+// Given a /compact accepted while a turn runs
+// When the turn ends on a permission request
+// Then the deferred run is refused under its own operation id
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deferred_compact_is_refused_when_the_turn_ends_on_a_permission_request() {
+    let env = env();
+    let target = env.ws.join("a.txt");
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let provider = common::sse::spawn_gated_provider(
+        vec![one_write("w1", &target), done("written")],
+        release.clone(),
+    )
+    .await;
+    let state = config(&env, &provider).chat_tools(20_000).state();
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+
+    say(&state, id, "write a.txt").await;
+    common::server::wait_for("the turn's request", || provider.bodies().len() == 1).await;
+    let accepted = state.run_command(id, "compact", "").await.unwrap();
+    assert_eq!(accepted.data.as_ref().unwrap()["accepted"], true);
+    release.notify_one();
+    wait_events(&state, id, "permission.requested", 1).await;
+
+    let results = wait_events(&state, id, "command.result", 2).await;
+    let refusal = results
+        .iter()
+        .find(|e| e.payload["ok"] == false)
+        .expect("a refusal");
+    assert_eq!(
+        refusal.payload["operation_id"],
+        accepted.operation_id.to_string()
+    );
+    assert!(refusal.payload["error"]
+        .as_str()
+        .unwrap()
+        .contains("permission request"));
+    assert_eq!(provider.bodies().len(), 1, "no summary request");
+    assert!(events(&state, id, "context.compacted").await.is_empty());
 }

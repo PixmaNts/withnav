@@ -296,6 +296,18 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             let call_id = strip_controls(v["tool_call_id"].as_str().unwrap_or_default());
             settle_held_tools(s, &call_id, &resolution);
         }
+        Some(EventKind::ContextCompacted) => {
+            let v = e.payload;
+            let tokens = |key: &str| crate::agent::context::tokens_k(v[key].as_u64().unwrap_or(0));
+            s.conversation.blocks.push(block(
+                format!("notice:{}", e.seq),
+                BlockKind::Notice(format!(
+                    "context compacted: ~{} -> ~{}",
+                    tokens("estimate_before"),
+                    tokens("estimate_after")
+                )),
+            ));
+        }
         Some(EventKind::SessionAgentChanged) => {
             let agent = e.payload["agent"].as_str().ok_or_else(bad)?;
             s.agent = Some(strip_controls(agent));

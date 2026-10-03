@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
 use crate::agent::actor::{AgentActor, AgentState};
+use crate::agent::context::{Breakdown, ContextSnapshot, ContextTracker};
 use crate::agent::run_loop::{run_agent, AgentEvent, RunOutcome};
 use crate::bus::event::{
     AgentStateChanged, AgentYield, EventKind, TaskDone, TaskStatus, ToolPostCall, ToolPreCall,
@@ -44,6 +45,9 @@ const ERROR_SUMMARY_CAP: usize = 256;
 pub struct RuntimeStatus {
     pending_ask: AtomicBool,
     running: AtomicBool,
+    /// The session's context gauge: written by the runtime at each boundary,
+    /// read on demand by the service.
+    context: Mutex<Option<ContextTracker>>,
 }
 
 impl RuntimeStatus {
@@ -55,6 +59,38 @@ impl RuntimeStatus {
     /// A turn is in flight.
     pub fn running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
+    }
+
+    /// Installs the session's context tracker before the runtime starts.
+    /// Without one the runtime publishes no `context.updated`.
+    pub fn install_context(&self, tracker: ContextTracker) {
+        *self.lock_context() = Some(tracker);
+    }
+
+    /// The latest context snapshot, `None` for a session without a tracker.
+    pub fn context_snapshot(&self) -> Option<ContextSnapshot> {
+        self.lock_context().as_ref().map(|t| t.snapshot().clone())
+    }
+
+    fn lock_context(&self) -> std::sync::MutexGuard<'_, Option<ContextTracker>> {
+        match self.context.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    /// Records the provider's count for `step`.
+    fn record_usage(&self, step: Ulid, usage: crate::provider::Usage) {
+        if let Some(tracker) = self.lock_context().as_mut() {
+            tracker.record_usage(step, usage);
+        }
+    }
+
+    /// Moves the gauge to `breakdown`; the new snapshot when it changed.
+    fn update_context(&self, breakdown: Breakdown) -> Option<ContextSnapshot> {
+        self.lock_context()
+            .as_mut()
+            .and_then(|t| t.update(breakdown).cloned())
     }
 
     fn sync_ask(&self, actor: &AgentActor) {
@@ -72,6 +108,7 @@ impl RuntimeStatus {
 /// (the session is collapsed; the runtime tears it down).
 struct TurnPublisher {
     sequencer: Sequencer,
+    status: Arc<RuntimeStatus>,
     turn_id: Ulid,
     task_id: Ulid,
     step_id: Ulid,
@@ -83,9 +120,10 @@ struct TurnPublisher {
 }
 
 impl TurnPublisher {
-    fn new(sequencer: Sequencer, turn_id: Ulid, task_id: Ulid) -> Self {
+    fn new(sequencer: Sequencer, status: Arc<RuntimeStatus>, turn_id: Ulid, task_id: Ulid) -> Self {
         Self {
             sequencer,
+            status,
             turn_id,
             task_id,
             step_id: Ulid::new(),
@@ -106,6 +144,15 @@ impl TurnPublisher {
         }
     }
 
+    /// Moves the context gauge to `breakdown` and publishes `context.updated`
+    /// when it changed.
+    fn publish_context(&mut self, breakdown: Breakdown) {
+        if let Some(snapshot) = self.status.update_context(breakdown) {
+            let payload = to_value(&snapshot);
+            self.publish(EventKind::ContextUpdated, payload);
+        }
+    }
+
     fn take_error(&mut self) -> Option<crate::error::BusError> {
         self.error.take()
     }
@@ -123,7 +170,11 @@ impl TurnPublisher {
                 });
                 self.publish(EventKind::LlmDelta, payload);
             }
+            AgentEvent::ContextEstimated(breakdown) => self.publish_context(breakdown),
             AgentEvent::Response(message) => {
+                if let Some(usage) = message.usage {
+                    self.status.record_usage(self.step_id, usage);
+                }
                 self.message_id = Ulid::new();
                 let payload = to_value(&crate::bus::event::LlmResponse {
                     turn_id: self.turn_id,
@@ -275,7 +326,7 @@ async fn runtime_loop(
 
         let task_id = active_task_id.unwrap_or_default();
         let turn_id = Ulid::new();
-        let mut turn = TurnPublisher::new(sequencer.clone(), turn_id, task_id);
+        let mut turn = TurnPublisher::new(sequencer.clone(), status.clone(), turn_id, task_id);
 
         turn.publish(
             EventKind::TurnStart,
@@ -285,6 +336,9 @@ async fn runtime_loop(
                 task_id,
             }),
         );
+
+        // The gauge with the new message in it, before the first request.
+        turn.publish_context(actor.context_breakdown());
 
         let started = Instant::now();
         // Session cancellation must interrupt a MID-FLIGHT turn too: the
@@ -310,6 +364,9 @@ async fn runtime_loop(
         };
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let result_message_id = turn.message_id;
+        // The turn's last word on the gauge: it also covers a cancelled turn
+        // and the usage of a final response.
+        turn.publish_context(actor.context_breakdown());
         status.sync_ask(&actor);
         status.running.store(false, Ordering::SeqCst);
 

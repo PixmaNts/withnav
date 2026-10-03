@@ -1,5 +1,6 @@
-//! Frozen `EventEnvelope` shape and the 13-kind `EventKind`
-//! catalog (the twelve original kinds plus `command.result`).
+//! Frozen `EventEnvelope` shape and the 14-kind `EventKind`
+//! catalog (the twelve original kinds plus `command.result` and
+//! `context.updated`).
 //!
 //! Reserved-but-deferred kind names (NOT in the enum, never emitted this slice):
 //! `prompt.pre_llm`, `tool.progress`, `context.pre_compact` (Phase 3),
@@ -21,23 +22,25 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// The single root actor id for this slice (all events are published by it).
 pub const ROOT_ACTOR_ID: &str = "agent:main";
 
-/// The catalog emits EXACTLY 13 kinds: 2 session +
-/// message + 2 turn + 2 llm + 2 tool + 2 agent + task + command result = 13.
-/// The first twelve are frozen; `command.result` was added without changing
-/// the envelope version.
-pub const EVENT_KIND_COUNT: usize = 13;
+/// The catalog emits EXACTLY 14 kinds: 2 session +
+/// message + 2 turn + 2 llm + 2 tool + 2 agent + task + command result +
+/// context update = 14. The first twelve are frozen; `command.result` and
+/// `context.updated` were added without changing the envelope version.
+pub const EVENT_KIND_COUNT: usize = 14;
 
-/// Durable kinds are retained in the reconnect ring; only `llm.delta` is
-/// live-only. Kept with the catalog it guards.
+/// Durable kinds are retained in the reconnect ring and the history store;
+/// `llm.delta` and `context.updated` are live-only (the latter is a
+/// recomputable gauge, readable at any time from the session's context
+/// endpoint). Kept with the catalog it guards.
 const fn is_durable(kind: EventKind) -> bool {
-    !matches!(kind, EventKind::LlmDelta)
+    !matches!(kind, EventKind::LlmDelta | EventKind::ContextUpdated)
 }
 
 /// DRIFT GUARD (compile-authoritative): `ALL` is DERIVED from
 /// [`EventKind::all_variants`], an exhaustive match whose single or-pattern
-/// arms name EVERY variant with no `_` wildcard — so adding a 14th variant
+/// arms name EVERY variant with no `_` wildcard — so adding a 15th variant
 /// without editing that match is error[E0004] (non-exhaustive patterns) and
-/// the crate does not compile. The array's type `[EventKind; 13]` plus the
+/// the crate does not compile. The array's type `[EventKind; 14]` plus the
 /// `const _` assert below additionally pin the frozen catalog size, so the
 /// list itself cannot silently grow or shrink either. A runtime name/order
 /// test still guards the wire spellings, but completeness is enforced HERE,
@@ -57,7 +60,8 @@ impl EventKind {
             | Self::AgentState
             | Self::AgentYield
             | Self::TaskDone
-            | Self::CommandResult => [
+            | Self::CommandResult
+            | Self::ContextUpdated => [
                 Self::SessionStart,
                 Self::SessionEnd,
                 Self::MessageReceived,
@@ -71,18 +75,19 @@ impl EventKind {
                 Self::AgentYield,
                 Self::TaskDone,
                 Self::CommandResult,
+                Self::ContextUpdated,
             ],
         }
     }
 
-    /// The 13 emitted kinds, in catalog order. The bus iterates this to seed
+    /// The 14 emitted kinds, in catalog order. The bus iterates this to seed
     /// the ring/fan-out.
     pub const ALL: [EventKind; EVENT_KIND_COUNT] = Self::all_variants();
 }
 
 const _: () = assert!(EventKind::ALL.len() == EVENT_KIND_COUNT);
 
-/// Typed catalog of the 13 emitted event kinds; the wire name is the dotted
+/// Typed catalog of the 14 emitted event kinds; the wire name is the dotted
 /// string (serialized verbatim, e.g. `"llm.delta"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventKind {
@@ -112,6 +117,8 @@ pub enum EventKind {
     TaskDone,
     #[serde(rename = "command.result")]
     CommandResult,
+    #[serde(rename = "context.updated")]
+    ContextUpdated,
 }
 
 impl EventKind {
@@ -131,6 +138,7 @@ impl EventKind {
             EventKind::AgentYield => "agent.yield",
             EventKind::TaskDone => "task.done",
             EventKind::CommandResult => "command.result",
+            EventKind::ContextUpdated => "context.updated",
         }
     }
 
@@ -150,11 +158,13 @@ impl EventKind {
             "agent.yield" => Some(EventKind::AgentYield),
             "task.done" => Some(EventKind::TaskDone),
             "command.result" => Some(EventKind::CommandResult),
+            "context.updated" => Some(EventKind::ContextUpdated),
             _ => None,
         }
     }
 
-    /// Durable = retained in the reconnect ring (all but `llm.delta`).
+    /// Durable = retained in the reconnect ring and stored (all but
+    /// `llm.delta` and `context.updated`).
     pub const fn is_durable(self) -> bool {
         is_durable(self)
     }
@@ -427,7 +437,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const KIND_NAMES: [&str; 13] = [
+    const KIND_NAMES: [&str; 14] = [
         "session.start",
         "session.end",
         "message.received",
@@ -441,13 +451,14 @@ mod tests {
         "agent.yield",
         "task.done",
         "command.result",
+        "context.updated",
     ];
 
     #[test]
-    fn event_kind_catalog_is_exactly_the_thirteen() {
+    fn event_kind_catalog_is_exactly_the_fourteen() {
         let kinds = EventKind::ALL;
-        assert_eq!(EVENT_KIND_COUNT, 13);
-        assert_eq!(kinds.len(), 13);
+        assert_eq!(EVENT_KIND_COUNT, 14);
+        assert_eq!(kinds.len(), 14);
         assert_eq!(SCHEMA_VERSION, 1);
         let names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
         assert_eq!(names, KIND_NAMES);
@@ -462,10 +473,11 @@ mod tests {
     }
 
     #[test]
-    fn event_kind_durability_marks_only_llm_delta_live_only() {
+    fn event_kind_durability_marks_only_llm_delta_and_context_updated_live_only() {
         let durable: Vec<bool> = EventKind::ALL.iter().map(|k| k.is_durable()).collect();
-        assert_eq!(durable.iter().filter(|d| !**d).count(), 1);
+        assert_eq!(durable.iter().filter(|d| !**d).count(), 2);
         assert!(!EventKind::LlmDelta.is_durable());
+        assert!(!EventKind::ContextUpdated.is_durable());
         assert!(EventKind::TurnEnd.is_durable());
         assert!(EventKind::SessionStart.is_durable());
     }
@@ -653,6 +665,24 @@ mod tests {
                     ok: true,
                     data: Some(json!({"commands": []})),
                     error: None,
+                })
+                .unwrap(),
+            ),
+            (
+                "context.updated",
+                serde_json::to_value(&crate::agent::context::ContextSnapshot {
+                    alias: "default".into(),
+                    variant: None,
+                    window: 200_000,
+                    window_source: "models.json".into(),
+                    estimate_total: 42_000,
+                    breakdown: Default::default(),
+                    output_reserve: 8192,
+                    margin: 10_000,
+                    input_budget: 181_808,
+                    percent: 21,
+                    last_usage: None,
+                    revision: 3,
                 })
                 .unwrap(),
             ),

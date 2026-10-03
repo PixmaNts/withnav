@@ -435,7 +435,8 @@ pub fn event_to_ui(envelope: &EventEnvelope) -> Option<UiEvent> {
         | EventKind::ToolPostCall
         | EventKind::AgentState
         | EventKind::TaskDone
-        | EventKind::CommandResult => None,
+        | EventKind::CommandResult
+        | EventKind::ContextUpdated => None,
     }
 }
 

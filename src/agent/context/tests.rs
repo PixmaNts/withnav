@@ -86,10 +86,7 @@ fn categories_sum_exactly_to_the_total() {
         b.total(),
         b.system + b.rules + b.skills_catalog + b.tools + b.messages
     );
-    assert_eq!(
-        b.messages,
-        history.iter().map(message_tokens).sum::<u64>()
-    );
+    assert_eq!(b.messages, history.iter().map(message_tokens).sum::<u64>());
 }
 
 #[test]
@@ -113,7 +110,13 @@ fn absent_components_weigh_nothing_and_the_contract_always_counts() {
 fn the_estimate_matches_the_assembled_request() {
     let history = vec![user("hello"), assistant_call()];
     let tools = tool_defs();
-    let b = estimate(Some("role"), Some("rules"), Some("skills"), &history, &tools);
+    let b = estimate(
+        Some("role"),
+        Some("rules"),
+        Some("skills"),
+        &history,
+        &tools,
+    );
     let req = build_request(
         "m",
         Some("role"),
@@ -123,8 +126,8 @@ fn the_estimate_matches_the_assembled_request() {
         tools,
         None,
     );
-    let from_request: u64 = req.messages.iter().map(message_tokens).sum::<u64>()
-        + tools_tokens(&req.tools);
+    let from_request: u64 =
+        req.messages.iter().map(message_tokens).sum::<u64>() + tools_tokens(&req.tools);
     assert_eq!(b.total(), from_request);
 }
 
@@ -173,7 +176,10 @@ fn an_impossible_budget_is_a_clear_error() {
     let err = Budget::compute(4096, None, None, None).unwrap_err();
     assert_eq!(err.window, 4096);
     let text = err.to_string();
-    assert!(text.contains("4096") && text.contains("models.json"), "{text}");
+    assert!(
+        text.contains("4096") && text.contains("models.json"),
+        "{text}"
+    );
     // An output limit as large as the window.
     assert!(Budget::compute(100_000, None, Some(100_000), None).is_err());
     assert!(Budget::compute(100_000, None, Some(500_000), None).is_err());
@@ -193,4 +199,82 @@ fn percent_rounds_to_the_nearest_whole_number() {
     assert_eq!(percent(500, 1000), 50);
     assert_eq!(percent(2000, 1000), 200);
     assert_eq!(percent(5, 0), 0);
+}
+
+fn limits() -> ContextLimits {
+    ContextLimits {
+        alias: "default".into(),
+        variant: None,
+        window_source: "models.json".into(),
+        budget: Budget::compute(1_000_000, None, None, None).unwrap(),
+    }
+}
+
+#[test]
+fn a_snapshot_never_mixes_the_estimate_with_the_provider_count() {
+    let b = estimate(None, None, None, &[user("hi")], &[]);
+    let mut tracker = ContextTracker::new(limits(), b);
+    let first = tracker.snapshot().clone();
+    assert_eq!(first.revision, 0);
+    assert_eq!(first.last_usage, None);
+    assert_eq!(first.estimate_total, b.total());
+    assert_eq!(first.window, 1_000_000);
+    assert_eq!(first.input_budget, 1_000_000 - 8192 - 50_000);
+
+    let step = ulid::Ulid::new();
+    tracker.record_usage(
+        step,
+        crate::provider::Usage {
+            prompt_tokens: 900,
+            completion_tokens: 30,
+            total_tokens: 930,
+        },
+    );
+    let next = estimate(None, None, None, &[user("hi"), user("more")], &[]);
+    let snap = tracker.update(next).expect("changed").clone();
+    assert_eq!(snap.revision, 1);
+    assert_eq!(snap.estimate_total, next.total());
+    let usage = snap.last_usage.expect("usage");
+    assert_eq!(
+        (usage.prompt_tokens, usage.completion_tokens, usage.step),
+        (900, 30, step)
+    );
+    // Same estimate, same usage: nothing to publish.
+    assert!(tracker.update(next).is_none());
+    assert_eq!(tracker.snapshot().revision, 1);
+}
+
+#[test]
+fn a_new_usage_alone_makes_a_new_snapshot() {
+    let b = estimate(None, None, None, &[], &[]);
+    let mut tracker = ContextTracker::new(limits(), b);
+    tracker.record_usage(ulid::Ulid::new(), crate::provider::Usage::default());
+    assert_eq!(tracker.update(b).map(|s| s.revision), Some(1));
+}
+
+#[test]
+fn tokens_are_shown_in_thousands_with_separators() {
+    assert_eq!(tokens_k(0), "0");
+    assert_eq!(tokens_k(999), "999");
+    assert_eq!(tokens_k(1_000), "1k");
+    assert_eq!(tokens_k(41_600), "42k");
+    assert_eq!(tokens_k(1_000_000), "1,000k");
+    assert_eq!(tokens_k(12_345_678), "12,346k");
+}
+
+#[test]
+fn the_text_view_shows_the_gauge_and_every_category() {
+    let history = vec![user(&"x".repeat(168_000))];
+    let b = estimate(Some("role"), Some("rules"), None, &history, &tool_defs());
+    let text = ContextTracker::new(limits(), b).snapshot().render_text();
+    let first = text.lines().next().unwrap();
+    assert!(
+        first.starts_with("~42k / 1,000k · 4% · input budget 942k"),
+        "{first}"
+    );
+    for name in ["system", "rules", "skills catalog", "tools", "messages"] {
+        assert!(text.contains(name), "{text}");
+    }
+    assert!(text.contains("window from models.json"));
+    assert!(!text.contains("last request"));
 }

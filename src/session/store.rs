@@ -38,7 +38,7 @@
 //! Recording it keeps `last_seq` at the highest seq any client has seen, so a
 //! resumed session continues after it and never reuses a seq; the resume path
 //! (not the store) keeps it from replaying to subscribers, so the resumed
-//! stream does not look closed. `llm.delta` is live-only and never stored.
+//! stream does not look closed. `llm.delta` and `context.updated` are live-only and never stored.
 //! `transcript` is the JSON of the actor's `Vec<ChatMessage>`, snapshotted
 //! after every turn end.
 //!
@@ -58,7 +58,7 @@ use rusqlite::{params, Connection};
 use tokio::sync::oneshot;
 use ulid::Ulid;
 
-use crate::bus::event::EventEnvelope;
+use crate::bus::event::{EventEnvelope, EventKind};
 use crate::provider::openai::ChatMessage;
 
 /// The stored session row's client-facing projection (the HTTP list shape,
@@ -293,7 +293,7 @@ impl HistoryStore {
         .await
     }
 
-    /// Appends one durable envelope (the caller filters `llm.delta`) and
+    /// Appends one durable envelope (the caller filters the live-only kinds) and
     /// bumps `last_seq` in the same transaction. Fire-and-forget: a failure
     /// surfaces at the next [`HistoryStore::flush`].
     pub fn append_event(&self, id: Ulid, envelope: EventEnvelope) {
@@ -517,8 +517,8 @@ use crate::bus::sequencer::Emitter;
 use crate::bus::SubscribeReply;
 
 /// Wraps a session's [`SessionBus`] as the sequencer's emitter and forwards
-/// every DURABLE envelope — everything except `llm.delta` (live-only, never
-/// stored), `session.end` included — to the writer thread, in seq order, synchronously inside the single sequencer task. The
+/// every DURABLE envelope — everything except the live-only kinds
+/// (`llm.delta`, `context.updated`; never stored), `session.end` included — to the writer thread, in seq order, synchronously inside the single sequencer task. The
 /// hand-off is a channel send: the sequencer never waits on SQLite.
 pub struct PersistingEmitter {
     bus: crate::bus::SessionBus,
@@ -539,7 +539,8 @@ impl PersistingEmitter {
 impl Emitter for PersistingEmitter {
     fn emit(&mut self, envelope: EventEnvelope) {
         let kind = envelope.kind.as_str();
-        if kind != "llm.delta" {
+        // An unknown name is stored: only a catalog kind marked live-only is not.
+        if EventKind::from_wire(kind).is_none_or(EventKind::is_durable) {
             // The first driver message becomes the title (the store guards:
             // only when the title is still NULL).
             if kind == "message.received" {

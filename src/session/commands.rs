@@ -58,7 +58,7 @@ pub const COMMANDS: [CommandSpec; 7] = [
 ];
 
 /// Commands that are registered but have no implementation yet.
-pub const NOT_AVAILABLE: [&str; 3] = ["context", "variant", "compact"];
+pub const NOT_AVAILABLE: [&str; 2] = ["variant", "compact"];
 
 /// The error text of a registered command with no implementation.
 pub fn not_available_error(name: &str) -> String {
@@ -208,6 +208,11 @@ impl CommandOutcome {
                     text("window"),
                     text("window_source")
                 )
+            }
+            "context" => {
+                serde_json::from_value::<crate::agent::context::ContextSnapshot>(data.clone())
+                    .map(|snapshot| snapshot.render_text())
+                    .unwrap_or_else(|_| data.to_string())
             }
             "stop" => "stopped".to_string(),
             _ => data.to_string(),

@@ -91,6 +91,11 @@ impl Service {
         match spec.name {
             "help" => Ok(json!({ "commands": commands::COMMANDS })),
             "model" => Ok(model_data(handle)),
+            "context" => handle
+                .status
+                .context_snapshot()
+                .and_then(|snapshot| serde_json::to_value(snapshot).ok())
+                .ok_or_else(|| CommandFailure::Refused("no context snapshot yet".to_string())),
             "new" => self.new_conversation(session_id, handle, arguments).await,
             // The stop itself is done by `run_command` after the result is
             // published: the stream ends with the session.

@@ -53,12 +53,24 @@ async fn concurrent_terminal_winners_release_exactly_their_reservations() {
         service
             .history()
             .create_child_link(
-                parent,
                 child,
                 "explore".into(),
                 "goal".into(),
                 "{}".into(),
                 4,
+                crate::bus::event::EventEnvelope::new(
+                    parent,
+                    service
+                        .history
+                        .meta(parent)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .last_seq
+                        + 1,
+                    EventKind::SubagentSpawned,
+                    serde_json::json!({}),
+                ),
             )
             .await
             .unwrap();
@@ -106,12 +118,17 @@ async fn listing_hides_child_until_relationship_commits() {
     service
         .history()
         .create_child_link(
-            parent,
             child,
             "explore".into(),
             "inspect".into(),
             "{}".into(),
             4,
+            crate::bus::event::EventEnvelope::new(
+                parent,
+                0,
+                EventKind::SubagentSpawned,
+                serde_json::json!({}),
+            ),
         )
         .await
         .unwrap();

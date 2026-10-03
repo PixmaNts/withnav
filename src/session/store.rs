@@ -308,15 +308,16 @@ impl HistoryStore {
     /// Commits the parent/child relationship after both sessions are stored.
     pub async fn create_child_link(
         &self,
-        parent_id: Ulid,
         child_id: Ulid,
         agent: String,
         goal: String,
         policy_snapshot: String,
         capacity: usize,
+        envelope: EventEnvelope,
     ) -> Result<(), String> {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
+            let parent_id = envelope.session_id;
             let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
             let tx = conn.transaction().map_err(|e| e.to_string())?;
             let inserted = tx.execute(
@@ -329,6 +330,7 @@ impl HistoryStore {
                     policy_snapshot, now_rfc3339(), capacity as i64],
             ).map_err(|e| e.to_string())?;
             if inserted == 0 { return Err("subagent capacity reached or parent/child session is missing".into()); }
+            insert_committed_event(&tx, &envelope)?;
             tx.commit().map_err(|e| e.to_string())?;
             Ok(())
         }).await.map_err(|e| e.to_string())?
@@ -362,13 +364,14 @@ impl HistoryStore {
     }
 
     /// Performs the single terminal compare-and-set for a child. Only the
-    /// first completion wins; callers publish the matching notice afterward.
+    /// first completion wins, together with its sequenced parent notice.
     pub async fn finish_child_link(
         &self,
         child_id: Ulid,
         status: String,
         reason: Option<String>,
         result: String,
+        envelope: EventEnvelope,
     ) -> Result<Option<ChildLink>, String> {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
@@ -389,6 +392,7 @@ impl HistoryStore {
                     row.get::<_, String>(5)?, row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?,
                     row.get::<_, Option<String>>(8)?, row.get::<_, Option<String>>(9)?)),
             ).map_err(|e| e.to_string())?;
+            insert_committed_event(&tx, &envelope)?;
             tx.commit().map_err(|e| e.to_string())?;
             Ok(Some(ChildLink {
                 parent_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
@@ -653,6 +657,36 @@ fn writer_loop(mut conn: Connection, rx: mpsc::Receiver<Msg>) {
 
 /// Applies one write as ONE transaction: it commits whole or leaves the
 /// database untouched.
+fn insert_committed_event(
+    tx: &rusqlite::Transaction<'_>,
+    envelope: &EventEnvelope,
+) -> Result<(), String> {
+    tx.execute(
+        "INSERT INTO events (session_id, seq, kind, envelope) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            envelope.session_id.to_string(),
+            envelope.seq as i64,
+            envelope.kind,
+            serde_json::to_string(envelope).map_err(|e| e.to_string())?
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    let touched = tx
+        .execute(
+            "UPDATE sessions SET updated_at=?2, last_seq=MAX(last_seq, ?3) WHERE id=?1",
+            params![
+                envelope.session_id.to_string(),
+                now_rfc3339(),
+                envelope.seq as i64
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    if touched != 1 {
+        return Err("event owner session is missing".into());
+    }
+    Ok(())
+}
+
 fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
     let tx = conn.transaction()?;
     match write {
@@ -1318,17 +1352,23 @@ mod tests {
         store.record_session(child, "/w", "m", None).await.unwrap();
         store
             .create_child_link(
-                parent,
                 child,
                 "explore".into(),
                 "goal".into(),
                 "{}".into(),
                 4,
+                EventEnvelope::new(parent, 0, EventKind::SubagentSpawned, serde_json::json!({})),
             )
             .await
             .unwrap();
         let first = store
-            .finish_child_link(child, "done".into(), None, "answer".into())
+            .finish_child_link(
+                child,
+                "done".into(),
+                None,
+                "answer".into(),
+                EventEnvelope::new(parent, 1, EventKind::SubagentDone, serde_json::json!({})),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -1336,7 +1376,13 @@ mod tests {
             Some("done")
         );
         assert!(store
-            .finish_child_link(child, "failed".into(), Some("late".into()), "wrong".into())
+            .finish_child_link(
+                child,
+                "failed".into(),
+                Some("late".into()),
+                "wrong".into(),
+                EventEnvelope::new(parent, 2, EventKind::SubagentDone, serde_json::json!({}))
+            )
             .await
             .unwrap()
             .is_none());
@@ -1350,6 +1396,53 @@ mod tests {
                 .as_deref(),
             Some("answer")
         );
+    }
+
+    #[tokio::test]
+    async fn terminal_child_notice_survives_failed_live_publication() {
+        use crate::bus::sequencer::{Candidate, Sequencer};
+        let (_dir, store) = temp_store();
+        let parent = Ulid::new();
+        let child = Ulid::new();
+        store.record_session(parent, "/w", "m", None).await.unwrap();
+        store.record_session(child, "/w", "m", None).await.unwrap();
+        store
+            .create_child_link(
+                child,
+                "explore".into(),
+                "goal".into(),
+                "{}".into(),
+                4,
+                EventEnvelope::new(parent, 0, EventKind::SubagentSpawned, serde_json::json!({})),
+            )
+            .await
+            .unwrap();
+        let mut bus = crate::bus::SessionBus::default();
+        let rx = bus.subscribe_live();
+        drop(rx);
+        let sequencer = Sequencer::spawn(parent, bus, 1);
+        let history = store.clone();
+        sequencer
+            .commit_acked(
+                Candidate::new(EventKind::SubagentDone, serde_json::json!({})),
+                Box::new(move |event| {
+                    Box::pin(async move {
+                        history
+                            .finish_child_link(child, "done".into(), None, "answer".into(), event)
+                            .await?;
+                        Ok(())
+                    })
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store.child_link(child).await.unwrap().unwrap().status,
+            "done"
+        );
+        let replay = store.replay(parent, None, 1).await.unwrap();
+        assert_eq!(replay.len(), 2);
+        assert_eq!(replay[1].kind, "subagent.done");
     }
 
     // Given a store whose events table has been destroyed underneath it

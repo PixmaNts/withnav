@@ -459,15 +459,28 @@ impl Service {
             return Err(error);
         }
         let frozen = serde_json::to_string(&policy).unwrap_or_else(|_| "{}".into());
-        if let Err(error) = self
-            .history
-            .create_child_link(
-                parent,
-                child,
-                agent.to_string(),
-                prompt.to_string(),
-                frozen,
-                cap,
+        let spawned_payload = serde_json::to_value(crate::bus::event::SubagentSpawned {
+            parent_session_id: parent,
+            child_session_id: child,
+            agent: agent.to_string(),
+            goal: crate::tools::bound_output(prompt, 1024).0,
+            tool_call_id: "server".into(),
+        })
+        .map_err(|e| ServerError::History(e.to_string()))?;
+        let history = self.history.clone();
+        let agent = agent.to_string();
+        let goal = prompt.to_string();
+        if let Err(error) = parent_handle
+            .sequencer
+            .commit_acked(
+                Candidate::new(EventKind::SubagentSpawned, spawned_payload.clone()),
+                Box::new(move |envelope| {
+                    Box::pin(async move {
+                        history
+                            .create_child_link(child, agent, goal, frozen, cap, envelope)
+                            .await
+                    })
+                }),
             )
             .await
         {
@@ -488,31 +501,16 @@ impl Service {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&child);
-        let start_result = if let Some(handle) = self.handle(child) {
-            accept(&handle, Command::child_prompt(child, prompt.to_string()))
-                .await
-                .map(|_| ())
-        } else {
-            Err(ServerError::SessionStopping)
-        };
-        start_result?;
-        let spawned_payload = serde_json::to_value(crate::bus::event::SubagentSpawned {
-            parent_session_id: parent,
-            child_session_id: child,
-            agent: agent.to_string(),
-            goal: crate::tools::bound_output(prompt, 1024).0,
-            tool_call_id: "server".into(),
-        })
-        .unwrap_or(serde_json::Value::Null);
         if let Some(handle) = self.handle(child) {
-            let _ = handle.sequencer.publish(Candidate::new(
-                EventKind::SubagentSpawned,
-                spawned_payload.clone(),
-            ));
+            handle
+                .sequencer
+                .publish_acked(Candidate::new(EventKind::SubagentSpawned, spawned_payload))
+                .await
+                .map_err(|e| ServerError::History(e.to_string()))?;
+            accept(&handle, Command::child_prompt(child, prompt.to_string())).await?;
+        } else {
+            return Err(ServerError::SessionStopping);
         }
-        let _ = parent_handle
-            .sequencer
-            .publish(Candidate::new(EventKind::SubagentSpawned, spawned_payload));
         Ok(child)
     }
 
@@ -536,32 +534,81 @@ impl Service {
     ) -> Result<(), ServerError> {
         let Some(link) = self
             .history
-            .finish_child_link(child, status.to_string(), reason, result)
+            .child_link(child)
             .await
             .map_err(ServerError::History)?
         else {
             return Ok(());
         };
+        if link.status != "running" {
+            return Ok(());
+        }
+        let owner = self.handle(parent);
         let outcome = match status {
             "done" => crate::bus::event::SubagentOutcome::Done,
             "failed" => crate::bus::event::SubagentOutcome::Failed,
             _ => crate::bus::event::SubagentOutcome::Stopped,
         };
-        if let Some(owner) = self.handle(parent) {
-            let payload = serde_json::to_value(crate::bus::event::SubagentDone {
-                parent_session_id: parent,
-                child_session_id: child,
-                agent: link.agent,
-                outcome,
-                reason: link.terminal_reason,
-                notification_id: Ulid::new(),
-            })
-            .unwrap_or(serde_json::Value::Null);
-            let _ = owner
-                .sequencer
-                .publish(Candidate::new(EventKind::SubagentDone, payload));
+        let payload = serde_json::to_value(crate::bus::event::SubagentDone {
+            parent_session_id: parent,
+            child_session_id: child,
+            agent: link.agent,
+            outcome,
+            reason: reason.clone(),
+            notification_id: Ulid::new(),
+        })
+        .map_err(|e| ServerError::History(e.to_string()))?;
+        let history = self.history.clone();
+        let service = self.clone();
+        let status = status.to_string();
+        let Some(owner) = owner else {
+            let _admission = self.admission_gate.lock().await;
+            let meta = history
+                .meta(parent)
+                .await
+                .map_err(ServerError::History)?
+                .ok_or_else(|| ServerError::SessionNotFound(parent.to_string()))?;
+            let envelope = crate::bus::event::EventEnvelope::new(
+                parent,
+                meta.last_seq + 1,
+                EventKind::SubagentDone,
+                payload,
+            );
+            if history
+                .finish_child_link(child, status, reason, result, envelope)
+                .await
+                .map_err(ServerError::History)?
+                .is_some()
+            {
+                self.release_child_slot(parent);
+            }
+            return Ok(());
+        };
+        let committed = owner
+            .sequencer
+            .commit_acked(
+                Candidate::new(EventKind::SubagentDone, payload),
+                Box::new(move |envelope| {
+                    Box::pin(async move {
+                        if history
+                            .finish_child_link(child, status, reason, result, envelope)
+                            .await?
+                            .is_some()
+                        {
+                            service.release_child_slot(parent);
+                            Ok(())
+                        } else {
+                            Err("child already terminal".into())
+                        }
+                    })
+                }),
+            )
+            .await;
+        if let Err(error) = committed {
+            if error != "child already terminal" {
+                return Err(ServerError::History(error));
+            }
         }
-        self.release_child_slot(parent);
         Ok(())
     }
 

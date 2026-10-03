@@ -4,54 +4,50 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-04
+
+Background subagents: a conversation's agent can delegate work to other agents that run on their
+own, report back, can be steered or interrupted, and are watched by Jev. The terminal client shows
+them under their conversation.
+
 ### Added
 
-- **Terminal subagents**: real child sessions appear under their parent with the delegated goal
-  and reported state. `alt+s` opens a searchable subagent list, including below 80 columns;
-  transcripts open read-only with replay and live events, and `alt+w` returns to the parent.
-  Stop and `alt+c` continue (out of steps) ask for confirmation and show server refusals.
-  Child permissions use the parent's existing approval prompt and endpoint. Completion notices
-  are compact, delivered subagent messages are labelled as untrusted output, and optional delivery
-  and watchdog fields are accepted without requiring a newer server.
-
-- **Background subagents**: a conversation's agent can start a subagent with the `task`
-  tool (`task(agent, prompt)`, for agents whose mode is `subagent` or `all`, such as `explore` and
-  `review`). The subagent is a separate conversation that runs in the background: the tool answers at
-  once with its id, and at most 4 run per conversation (`subagents.max_concurrent`). It gets the
-  workspace, rules and skills but not the parent's history, never gets `ask` or `task`, and cannot
-  write when it or its parent is read-only or `plan`. Session lists show `parent_session_id`,
-  `child_status` and `promptable: false`; you can read and stop a subagent but not write to it (403
-  `child_read_only`). `subagent.spawned`, `subagent.done` and `subagent.watchdog` are stored on the parent's stream (the event catalog now has 22 kinds). The
-  subagent's result is delivered exactly once as a bounded, labelled untrusted user message at the
-  parent's next turn boundary. Each delivered result (including watchdog stop/doubt notices) also
-  appears live and on reconnect as `message.received` with `source: "subagent"`, child identity,
-  agent and outcome, plus a watchdog marker when applicable. The event, transcript entry and
-  consumption marker commit together, so a crash cannot hide or duplicate the delivered text;
-  the event catalog stays at 22 kinds. A finished child wakes an idle parent; results wait while the parent
-  is busy or has a pending interaction, and survive restart and deletion of the child. Child tool
-  permissions appear on the parent's stream and are answered through the parent's permission API,
-  without occupying the parent actor's pending interaction. Grants remain child-local. Stopping a
-  parent stops its children, deleting it removes the tree, and startup terminalizes unfinished
-  children as stopped without replaying tools. Root cognition sessions also get
-  `steer_subagent(child_id, message, mode)`: `steer` (default) injects parent guidance before the
-  child's next provider request, after its complete tool batch; `interrupt` cancels only the
-  current turn and starts a fresh one, keeping the child session. Pending permissions are
-  cancelled and mirrored on interrupt; steer waits rather than answering a pending interaction.
-  `task` accepts `delivery: "next_turn" | "steer" | "interrupt"` for result delivery to the parent.
-  Result interrupts fall back to next-turn delivery while the parent waits for a human, and queued
-  driver messages precede automatic wakes. Jev checks running children every 300 seconds
-  (`subagents.watchdog_interval_secs`; 0 disables): bounded goal, message/tool inactivity, last
-  tool call/result and step count, never reasoning. `active` leaves the child alone; `stuck`
-  stops it with reason `watchdog` and delivers partial output marked "stopped by watchdog";
-  `doubt` holds its next safe provider boundary and wakes the parent with the evidence. Two
-  consecutive unavailable, timed-out or invalid answers also mean doubt. Root cognition gets
-  `decide_subagent(child_id, decision: "continue" | "stop", note?)` for owned watchdog doubts
-  only. Permission-, budget- and doubt-parked children are skipped, and missed ticks never pile up.
-  Watchdog verdict events are durable; the first unavailable/invalid answer is silent. The event catalog has 22 kinds.
-  A driver can renew a budget-parked child's step budget once through
-  `POST /v1/sessions/{parent}/children/{child}/continue`; foreign owners are refused and a child
-  that is neither budget-parked nor in watchdog doubt returns 409. It can also release a watchdog
-  doubt. This is distinct from permission answers; the model decision tool cannot renew a budget.
+- **Subagents**: a conversation's agent can start a subagent with the `task` tool
+  (`task(agent, prompt, delivery?)`, for agents whose mode is `subagent` or `all`, such as `explore`
+  and `review`). The subagent is a separate conversation that runs in the background; the tool
+  answers at once with its id. At most 4 run per conversation (`subagents.max_concurrent` in
+  `config.json`). A subagent gets the workspace, rules and skills but not the parent's history,
+  runs on the parent's model and variant unless its definition names one, never gets `ask` or
+  `task`, and cannot write when it or its parent is read-only or `plan`.
+- **Results back to the parent**: a finished subagent's result is added once to the parent
+  conversation as a bounded message marked as untrusted subagent output, and published on the
+  parent's stream as `message.received` with `source: "subagent"`. By default it arrives at the
+  parent's next turn; `delivery: "steer"` adds it to the running turn at its next safe point, and
+  `delivery: "interrupt"` restarts the parent's turn on it. A parent waiting for your answer is
+  never interrupted, and your own queued messages always come first. An idle parent starts a turn
+  as soon as a subagent finishes. Results survive a restart and the deletion of the subagent.
+- **Steering a subagent**: the parent's agent can use `steer_subagent(child_id, message, mode)`.
+  `steer` adds guidance to the subagent's running turn before its next model request, after all
+  the tool results of its current step; `interrupt` cancels that turn and starts a new one with the
+  message, keeping the same subagent.
+- **Jev watchdog**: every 5 minutes (`subagents.watchdog_interval_secs`, 0 turns it off) Jev checks
+  each running subagent from its goal, how long it has been quiet, its last tool call and its step
+  count. `stuck` stops it and hands its partial work to the parent; `doubt` pauses it and asks the
+  parent's agent, which answers with `decide_subagent(child_id, continue|stop)`. Jev failing to
+  answer twice in a row counts as doubt.
+- **You stay in control**: a subagent's permission requests appear in the parent conversation and
+  are answered there; approvals stay with that subagent. You can read and stop a subagent but not
+  write to it. `POST /v1/sessions/{parent}/children/{child}/continue` gives a subagent that ran out
+  of steps one more budget, or releases a watchdog pause. Stopping a conversation stops its
+  subagents; deleting it deletes them.
+- **Subagents in the terminal client**: subagents are listed under their conversation with their
+  goal and state (running, waiting for permission, out of steps, in doubt, done, failed, stopped).
+  `alt+s` opens a searchable list, also below 80 columns; `enter` opens a subagent's conversation
+  read-only, `alt+w` goes back. Stop and `alt+c` (continue) ask for confirmation. A finished
+  subagent shows as one line in the parent conversation.
+- **Events**: `subagent.spawned`, `subagent.done` and `subagent.watchdog` on the parent's stream;
+  the event catalog has 22 kinds. Session lists show `parent_session_id`, `child_status` and
+  `promptable: false` for subagents.
 
 ## [0.3.0] - 2026-10-03
 

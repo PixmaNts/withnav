@@ -282,11 +282,7 @@ async fn fetch(client: &Client, start: Url, format: Format) -> ToolResult {
     let converted = if is_html(&mime) || (mime.is_empty() && looks_like_html(&text)) {
         match format {
             Format::Html => Ok(text),
-            Format::Markdown | Format::Text => {
-                tokio::task::spawn_blocking(move || convert_html(&text, format))
-                    .await
-                    .unwrap_or_else(|e| Err(e.to_string()))
-            }
+            Format::Markdown | Format::Text => convert_isolated(text, format).await,
         }
     } else {
         Ok(text)
@@ -407,57 +403,278 @@ fn meta_charset(body: &[u8]) -> Option<String> {
     (end > 0).then(|| rest[..end].to_string())
 }
 
+/// Largest HTML handed to a converter; the rest is dropped with a note.
+const CONVERT_MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
+/// Deepest tag nesting and most elements a converter is trusted with.
+const CONVERT_MAX_DEPTH: usize = 256;
+const CONVERT_MAX_ELEMENTS: usize = 200_000;
+/// The converters recurse over the DOM; their thread gets room for it.
+const CONVERT_STACK_BYTES: usize = 64 * 1024 * 1024;
+
+/// Runs the conversion on its own thread with a large stack, so a deep but
+/// accepted document cannot overflow the worker stack of the runtime.
+async fn convert_isolated(html: String, format: Format) -> Result<String, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("fetch-convert".into())
+        .stack_size(CONVERT_STACK_BYTES)
+        .spawn(move || {
+            let _ = tx.send(convert_html(&html, format));
+        })
+        .map_err(|e| format!("no conversion thread: {e}"))?;
+    rx.await
+        .map_err(|_| "the conversion thread failed".to_string())?
+}
+
+/// Converts HTML, within limits: oversized input is cut, and a document too
+/// deep or too large is flattened to plain text without building a DOM.
 fn convert_html(html: &str, format: Format) -> Result<String, String> {
-    match format {
-        Format::Markdown => htmd::HtmlToMarkdown::builder()
-            .skip_tags(vec!["script", "style", "noscript", "template", "head"])
-            .build()
-            .convert(html)
-            .map_err(|e| e.to_string()),
-        Format::Text => {
-            let stripped = strip_blocks(html, &["script", "style", "noscript", "template"]);
-            html2text::config::plain_no_decorate()
-                .string_from_read(stripped.as_bytes(), TEXT_WIDTH)
-                .map_err(|e| e.to_string())
+    let mut notes = Vec::new();
+    let mut input = html;
+    if input.len() > CONVERT_MAX_INPUT_BYTES {
+        let mut end = CONVERT_MAX_INPUT_BYTES;
+        while !input.is_char_boundary(end) {
+            end -= 1;
         }
-        Format::Html => Ok(html.to_string()),
+        input = &input[..end];
+        notes.push(format!(
+            "the HTML was cut to its first {} MiB before conversion",
+            CONVERT_MAX_INPUT_BYTES / (1024 * 1024)
+        ));
+    }
+    let body = match measure(input) {
+        Ok(()) => match format {
+            Format::Markdown => htmd::HtmlToMarkdown::builder()
+                .skip_tags(vec!["script", "style", "noscript", "template", "head"])
+                .build()
+                .convert(input)
+                .map_err(|e| e.to_string())?,
+            Format::Text => html2text::config::plain_no_decorate()
+                .string_from_read(input.as_bytes(), TEXT_WIDTH)
+                .map_err(|e| e.to_string())?,
+            Format::Html => input.to_string(),
+        },
+        Err(why) => {
+            notes.push(format!(
+                "{why}; the page was reduced to plain text without structure"
+            ));
+            flatten(input)
+        }
+    };
+    if notes.is_empty() {
+        return Ok(body);
+    }
+    Ok(format!("[note: {}]\n\n{body}", notes.join("; ")))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Tok<'a> {
+    Text(&'a str),
+    Open(&'a str),
+    Close(&'a str),
+    /// The body of a script, style or similar element.
+    Raw,
+}
+
+const VOID_TAGS: &[&str] = &[
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track",
+    "wbr", "param",
+];
+const RAW_TAGS: &[&str] = &["script", "style", "textarea", "title", "xmp"];
+
+fn is_one_of(name: &str, set: &[&str]) -> bool {
+    set.iter().any(|t| name.eq_ignore_ascii_case(t))
+}
+
+/// Linear, tolerant HTML tokenizer: never recurses, never backtracks. `f`
+/// returns false to stop.
+fn scan<'a>(html: &'a str, mut f: impl FnMut(Tok<'a>) -> bool) {
+    let b = html.as_bytes();
+    let len = b.len();
+    let name_end = |from: usize| {
+        let mut j = from;
+        while j < len && (b[j].is_ascii_alphanumeric() || matches!(b[j], b'-' | b':' | b'_')) {
+            j += 1;
+        }
+        j
+    };
+    let mut i = 0;
+    while i < len {
+        let Some(off) = b[i..].iter().position(|&c| c == b'<') else {
+            f(Tok::Text(&html[i..]));
+            return;
+        };
+        let lt = i + off;
+        if lt > i && !f(Tok::Text(&html[i..lt])) {
+            return;
+        }
+        let next = b.get(lt + 1).copied();
+        match next {
+            Some(b'!') if b[lt..].starts_with(b"<!--") => {
+                i = html[lt + 4..].find("-->").map_or(len, |e| lt + 4 + e + 3);
+            }
+            Some(b'!' | b'?') => {
+                i = b[lt..]
+                    .iter()
+                    .position(|&c| c == b'>')
+                    .map_or(len, |e| lt + e + 1);
+            }
+            Some(b'/') if b.get(lt + 2).is_some_and(u8::is_ascii_alphabetic) => {
+                let end = name_end(lt + 2);
+                if !f(Tok::Close(&html[lt + 2..end])) {
+                    return;
+                }
+                i = b[end..]
+                    .iter()
+                    .position(|&c| c == b'>')
+                    .map_or(len, |e| end + e + 1);
+            }
+            Some(c) if c.is_ascii_alphabetic() => {
+                let end = name_end(lt + 1);
+                let name = &html[lt + 1..end];
+                // Attributes, honouring quotes, up to the closing `>`.
+                let mut j = end;
+                let mut quote = None;
+                let mut closed = false;
+                while j < len {
+                    match (quote, b[j]) {
+                        (Some(q), c) if c == q => quote = None,
+                        (Some(_), _) => {}
+                        (None, q @ (b'"' | b'\'')) => quote = Some(q),
+                        (None, b'>') => {
+                            closed = true;
+                            break;
+                        }
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                let self_closing = closed && j > end && b[j - 1] == b'/';
+                i = if closed { j + 1 } else { len };
+                if !f(Tok::Open(name)) {
+                    return;
+                }
+                if self_closing || is_one_of(name, VOID_TAGS) {
+                    if !f(Tok::Close(name)) {
+                        return;
+                    }
+                } else if is_one_of(name, RAW_TAGS) {
+                    // Everything up to the matching close tag is not markup.
+                    let mut k = i;
+                    let close_at = loop {
+                        let Some(p) = b[k..].windows(2).position(|w| w == b"</") else {
+                            break None;
+                        };
+                        let at = k + p;
+                        let tail = &b[at + 2..];
+                        if tail.len() >= name.len()
+                            && tail[..name.len()].eq_ignore_ascii_case(name.as_bytes())
+                        {
+                            break Some(at);
+                        }
+                        k = at + 2;
+                    };
+                    let body_end = close_at.unwrap_or(len);
+                    if body_end > i && !f(Tok::Raw) {
+                        return;
+                    }
+                    if close_at.is_some() {
+                        if !f(Tok::Close(name)) {
+                            return;
+                        }
+                        i = b[body_end..]
+                            .iter()
+                            .position(|&c| c == b'>')
+                            .map_or(len, |e| body_end + e + 1);
+                    } else {
+                        i = len;
+                    }
+                }
+            }
+            _ => {
+                if !f(Tok::Text("<")) {
+                    return;
+                }
+                i = lt + 1;
+            }
+        }
     }
 }
 
-/// Drops `<tag ...>...</tag>` blocks (case-insensitively) so their contents
-/// never reach the text rendering.
-fn strip_blocks(html: &str, tags: &[&str]) -> String {
-    let lower = html.to_ascii_lowercase();
-    let mut out = String::with_capacity(html.len());
-    let mut pos = 0;
-    'outer: while pos < html.len() {
-        let mut next: Option<(usize, &str)> = None;
-        for tag in tags {
-            let open = format!("<{tag}");
-            let mut from = pos;
-            while let Some(i) = lower[from..].find(&open).map(|i| i + from) {
-                let after = lower.as_bytes().get(i + open.len()).copied();
-                if matches!(after, Some(b'>' | b'/' | b' ' | b'\t' | b'\n' | b'\r')) {
-                    if next.is_none_or(|(n, _)| i < n) {
-                        next = Some((i, tag));
-                    }
-                    break;
+/// Maximum nesting depth and element count of `html`, in one linear pass.
+/// Err says which limit is exceeded.
+fn measure(html: &str) -> Result<(), String> {
+    const IMPLIED_END: &[&str] = &["p", "li", "dt", "dd", "tr", "td", "th", "option"];
+    let mut stack: Vec<&str> = Vec::new();
+    let mut elements = 0usize;
+    let mut verdict = Ok(());
+    scan(html, |tok| {
+        match tok {
+            Tok::Open(name) => {
+                elements += 1;
+                if elements > CONVERT_MAX_ELEMENTS {
+                    verdict = Err(format!(
+                        "the page has more than {CONVERT_MAX_ELEMENTS} elements"
+                    ));
+                    return false;
                 }
-                from = i + open.len();
+                if stack.last().is_some_and(|top| {
+                    top.eq_ignore_ascii_case(name) && is_one_of(name, IMPLIED_END)
+                }) {
+                    stack.pop();
+                }
+                stack.push(name);
+                if stack.len() > CONVERT_MAX_DEPTH {
+                    verdict = Err(format!(
+                        "the page nests elements deeper than {CONVERT_MAX_DEPTH} levels"
+                    ));
+                    return false;
+                }
             }
+            Tok::Close(name) => {
+                if let Some(at) = stack.iter().rposition(|t| t.eq_ignore_ascii_case(name)) {
+                    stack.truncate(at);
+                }
+            }
+            Tok::Text(_) | Tok::Raw => {}
         }
-        let Some((start, tag)) = next else {
-            break 'outer;
-        };
-        out.push_str(&html[pos..start]);
-        let close = format!("</{tag}>");
-        match lower[start..].find(&close) {
-            Some(i) => pos = start + i + close.len(),
-            None => return out,
+        true
+    });
+    verdict
+}
+
+/// Plain text of `html` by dropping every tag, comment and script/style
+/// body; linear, no DOM.
+fn flatten(html: &str) -> String {
+    let mut out = String::new();
+    let mut hidden = 0usize;
+    scan(html, |tok| {
+        match tok {
+            Tok::Text(t) if hidden == 0 => out.push_str(t),
+            Tok::Open(name) => {
+                if is_one_of(name, &["script", "style"]) {
+                    hidden += 1;
+                }
+                out.push(' ');
+            }
+            Tok::Close(name) => {
+                if is_one_of(name, &["script", "style"]) {
+                    hidden = hidden.saturating_sub(1);
+                }
+                out.push(' ');
+            }
+            _ => {}
         }
-    }
-    out.push_str(&html[pos.min(html.len())..]);
-    out
+        true
+    });
+    let out = out
+        .replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&");
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -871,14 +1088,70 @@ mod tests {
         assert_eq!(code(&res), "network", "{:?}", res.error);
     }
 
-    #[test]
-    fn strip_blocks_drops_script_and_style_only() {
-        let out = strip_blocks(
-            "a<SCRIPT type=x>bad</SCRIPT>b<style>c{}</style>c<scripture>keep</scripture>d",
-            &["script", "style"],
+    // Given 100,000 nested divs
+    // When fetched as markdown and as text
+    // Then the plain-text fallback is returned, without a crash
+    #[tokio::test]
+    async fn deeply_nested_html_gets_the_plain_text_fallback() {
+        let server = MockServer::start().await;
+        let page = format!(
+            "<html><body>{}deep text{}</body></html>",
+            "<div>".repeat(100_000),
+            "</div>".repeat(100_000)
         );
-        assert_eq!(out, "abc<scripture>keep</scripture>d");
-        assert_eq!(strip_blocks("x<script>unterminated", &["script"]), "x");
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(page, "text/html"))
+            .mount(&server)
+            .await;
+        for format in ["markdown", "text"] {
+            let res = call(json!({"url": server.uri(), "format": format})).await;
+            assert_eq!(res.status, ToolStatus::Ok, "{:?}", res.error);
+            assert!(res.output.contains("deep text"), "{format}");
+            assert!(
+                res.output.contains("plain text without structure"),
+                "{format}"
+            );
+        }
+    }
+
+    // Given a normal page
+    // When converted
+    // Then markdown is produced, with no fallback note
+    #[test]
+    fn a_normal_page_converts_to_markdown() {
+        let out = convert_html(PAGE, Format::Markdown).unwrap();
+        assert!(out.contains("# Heading"), "{out}");
+        assert!(!out.contains("[note:"), "{out}");
+        assert!(!out.contains("SCRIPTBODY"), "{out}");
+    }
+
+    // Given 50,000 empty script elements and tag-like text in comments and attributes
+    // When converted
+    // Then it is quick and the surrounding content survives
+    #[test]
+    fn many_scripts_convert_quickly_and_tag_like_text_is_harmless() {
+        let page = format!(
+            "<p>start</p>{}<p title=\"<script>\">middle</p><!-- <script> --><p>end</p>",
+            "<script></script>".repeat(50_000)
+        );
+        for format in [Format::Markdown, Format::Text] {
+            let t = std::time::Instant::now();
+            let out = convert_html(&page, format).unwrap();
+            assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+            for word in ["start", "middle", "end"] {
+                assert!(out.contains(word), "{word} missing: {out}");
+            }
+        }
+    }
+
+    // Given HTML past the converter input cap
+    // When converted
+    // Then it is cut on a char boundary and a note says so
+    #[test]
+    fn oversized_html_is_cut_with_a_note() {
+        let page = format!("<p>{}</p>", "é".repeat(CONVERT_MAX_INPUT_BYTES));
+        let out = convert_html(&page, Format::Markdown).unwrap();
+        assert!(out.starts_with("[note: the HTML was cut"), "{}", &out[..80]);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 pub mod actor;
+pub mod compaction;
 pub mod context;
 pub mod definitions;
 pub mod instructions;

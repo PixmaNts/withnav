@@ -154,3 +154,14 @@ next request (UTF-8 bytes / 4 plus a fixed framing per message), split into syst
 catalog, tools and messages, and it is shown as an estimate (`~42k`). It is never the provider's count
 of the last request (`last_usage`), and never the session's cumulative usage.
 _Avoid_: token limit, quota
+
+**Checkpoint**:
+The summary that stands for the start of a conversation once it was compacted: `{through_message,
+summary, generation}` plus the tool outputs the prompt shows as elision markers. The full
+transcript is never rewritten: `sessions.transcript` keeps every message, and the checkpoint is a
+boundary the request builder applies. The prompt is then the fresh system components, the summary
+as labelled conversation data (never as instructions), and the messages after the boundary. The
+system components, the latest user request, the unfinished turn with any pending `ask` and the last
+two completed turns are always kept verbatim, and a cut never splits a tool call from its results.
+`/compact [focus]` makes one by asking the session's own model and variant for a summary.
+_Avoid_: snapshot (that is the context gauge), history rewrite

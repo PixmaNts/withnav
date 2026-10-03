@@ -144,6 +144,7 @@ impl std::fmt::Debug for SessionHandle {
 struct ResumedSession {
     meta: super::store::StoredSession,
     transcript: Vec<ChatMessage>,
+    compaction: Option<crate::agent::compaction::Compaction>,
 }
 
 /// Frozen `GET /v1/sessions/:id` body.
@@ -449,14 +450,18 @@ impl Service {
             // still be queued: the load must see them, or the resumed
             // sequence could restart below a seq a client already saw.
             store.flush().await.map_err(ServerError::History)?;
-            let Some((meta, transcript)) = store
+            let Some((meta, transcript, compaction)) = store
                 .load_for_resume(id)
                 .await
                 .map_err(ServerError::History)?
             else {
                 return Err(ServerError::SessionNotFound(id.to_string()));
             };
-            let loaded = ResumedSession { meta, transcript };
+            let loaded = ResumedSession {
+                meta,
+                transcript,
+                compaction,
+            };
             self.spawn_session(
                 workspace,
                 None,
@@ -743,6 +748,7 @@ impl Service {
         );
         if let Some(loaded) = &resumed {
             actor.transcript = loaded.transcript.clone();
+            actor.compaction = loaded.compaction.clone();
         }
         actor.rules = self
             .load_rules(&workspace, session_id, resumed.is_some())
@@ -817,6 +823,7 @@ impl Service {
         // the interrupted turn's events before the session.end fence.
         let (inbox_tx, inbox) = ActorInbox::channel();
         let permissions = inbox.permission_sender();
+        let saver_history = history.clone();
         let on_turn_end: Option<crate::bus::runtime::TurnEndHook> =
             Some(Box::new(move |transcript: &[ChatMessage]| {
                 history.save_transcript(session_id, transcript.to_vec());
@@ -825,6 +832,15 @@ impl Service {
             agents, role,
         )));
         status.init_variant(selected);
+        // A compaction is saved with the transcript, in one acknowledged write.
+        status.install_checkpoint_saver(Arc::new(move |transcript, compaction| {
+            let history = saver_history.clone();
+            Box::pin(async move {
+                history
+                    .save_checkpoint(session_id, transcript, &compaction)
+                    .await
+            })
+        }));
         let limits = limits.with_sources(&actor.rules, &actor.skills);
         // The role is on the actor before the first estimate: a session that
         // starts as `plan` counts plan's role before any turn runs.

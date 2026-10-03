@@ -9,8 +9,14 @@
 //! inbox wait; `session.end` is sequenced ONLY at teardown via
 //! [`Sequencer::close_session`] — never on a natural turn end.
 
+mod compact;
+
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+pub use compact::{
+    deferred_wire, CheckpointSaver, CompactReply, CompactRequest, Compacted, FOCUS_MAX_CHARS,
+};
 
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
@@ -78,6 +84,8 @@ pub struct RuntimeStatus {
     /// The primary agent the session runs as, and the agents it may switch
     /// to. A turn reads it at its start.
     pub selection: crate::agent::selection::AgentSelection,
+    /// Compaction requests to the runtime, and how it saves their result.
+    controls: compact::Controls,
 }
 
 impl RuntimeStatus {
@@ -143,6 +151,37 @@ impl RuntimeStatus {
         self.slot().active = variant;
     }
 
+    /// The variant the session runs with between turns.
+    fn active_variant(&self) -> SelectedVariant {
+        self.slot().active.clone()
+    }
+
+    /// Supplies how the runtime saves a compaction: the transcript and the
+    /// checkpoint in one acknowledged write.
+    pub fn install_checkpoint_saver(&self, saver: CheckpointSaver) {
+        self.controls.set_saver(saver);
+    }
+
+    /// Asks the runtime to compact the conversation and waits for its
+    /// answer: the result when it ran now, `Deferred` when a turn is running
+    /// and it runs when that turn ends. `None` when the runtime is gone.
+    pub async fn request_compact(
+        &self,
+        focus: Option<String>,
+        operation_id: Ulid,
+    ) -> Option<CompactReply> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        self.controls
+            .tx
+            .send(CompactRequest {
+                focus,
+                operation_id,
+                reply,
+            })
+            .ok()?;
+        answer.await.ok()
+    }
+
     /// The variant name that is selected: the pending one when a change is
     /// waiting for the running turn to end, else the active one.
     pub fn selected_variant(&self) -> Option<String> {
@@ -200,6 +239,13 @@ impl RuntimeStatus {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         } = profile_prompt;
+    }
+
+    /// Parks the runtime after its next compaction and before the result is
+    /// published.
+    #[cfg(test)]
+    pub(crate) fn arm_result_barrier(&self) -> Arc<compact::ResultBarrier> {
+        self.controls.arm_barrier()
     }
 
     /// Re-estimates the system category for a session now running as `role`;
@@ -465,6 +511,7 @@ async fn runtime_loop(
 ) -> AgentActor {
     let on_turn_end: SharedHook = Arc::new(Mutex::new(on_turn_end));
     let mut active_task_id: Option<Ulid> = None;
+    let mut control = status.controls.take_receiver();
 
     loop {
         let inbound = tokio::select! {
@@ -472,6 +519,19 @@ async fn runtime_loop(
             _ = session_cancel.cancelled() => {
                 actor.cancel.cancel();
                 break;
+            }
+            Some(request) = recv_control(&mut control) => {
+                // Between turns: run it now, publish its result, then answer.
+                let outcome = compact::run(
+                    &mut actor,
+                    &status,
+                    &sequencer,
+                    &session_cancel,
+                    request.focus.as_deref(),
+                )
+                .await;
+                compact::answer(&status, &sequencer, request, outcome).await;
+                continue;
             }
             inbound = inbox.next_inbound() => inbound,
         };
@@ -545,6 +605,7 @@ async fn runtime_loop(
         // The gauge with the new message in it, before the first request.
         turn.publish_context(actor.context_breakdown());
 
+        let mut deferred: compact::Waiting = Vec::new();
         let started = Instant::now();
         // Session cancellation must interrupt a MID-FLIGHT turn too: the
         // select cancels the ACTOR token (cloned handle avoids aliasing the
@@ -575,13 +636,22 @@ async fn runtime_loop(
                 }
             };
             tokio::pin!(turn_fut);
-            tokio::select! {
-                biased;
-                _ = session_cancel.cancelled() => {
-                    actor_cancel.cancel();
-                    (&mut turn_fut).await
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = session_cancel.cancelled() => {
+                        actor_cancel.cancel();
+                        break (&mut turn_fut).await;
+                    }
+                    outcome = &mut turn_fut => break outcome,
+                    Some(request) = recv_control(&mut control) => {
+                        // A turn is running: accept now, run it at its end.
+                        let (operation_id, focus) = (request.operation_id, request.focus.clone());
+                        if compact::accept_deferred(&sequencer, request).await {
+                            deferred.push((operation_id, focus));
+                        }
+                    }
                 }
-                outcome = &mut turn_fut => outcome,
             }
         };
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -608,6 +678,7 @@ async fn runtime_loop(
             );
             emit_agent_state(&mut turn, "idle");
             snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
+            compact::report_failure(&sequencer, &deferred, compact::CANCELLED);
             break;
         }
 
@@ -725,7 +796,27 @@ async fn runtime_loop(
         snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
 
         if actor.cancel.is_cancelled() || session_cancel.is_cancelled() {
+            // The stop wins: a `/compact` accepted during this turn is told
+            // it will not happen, before `session.end`.
+            compact::report_failure(&sequencer, &deferred, compact::CANCELLED);
             break;
+        }
+
+        // A `/compact` that arrived during the turn runs now, between turns.
+        if !deferred.is_empty() {
+            let focus = compact::merge_focus(&deferred);
+            match compact::run(
+                &mut actor,
+                &status,
+                &sequencer,
+                &session_cancel,
+                focus.as_deref(),
+            )
+            .await
+            {
+                Ok(done) => compact::report_done(&sequencer, &deferred, &done),
+                Err(why) => compact::report_failure(&sequencer, &deferred, &why),
+            }
         }
     }
 
@@ -764,6 +855,16 @@ pub(crate) fn publish_resolved(
         candidate = candidate.with_correlation_id(task);
     }
     let _ = sequencer.publish(candidate);
+}
+
+/// The next compaction request; waits forever once there is no channel.
+async fn recv_control(
+    control: &mut Option<tokio::sync::mpsc::UnboundedReceiver<CompactRequest>>,
+) -> Option<CompactRequest> {
+    match control {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 type SharedHook = Arc<Mutex<TurnEndHook>>;

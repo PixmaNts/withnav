@@ -1034,3 +1034,43 @@ fn tabs_with_the_same_block_id_render_their_own_text_and_height() {
     assert!(again.contains("first tab line"), "{again}");
     assert!(!again.contains("second tab"), "{again}");
 }
+
+#[test]
+fn a_short_sidebar_scrolls_to_keep_the_active_tab_in_view() {
+    let mut s = done();
+    for n in 2..=9 {
+        s.tabs.push(Tab {
+            pending_submit_text: Some(format!("tab {n}")),
+            ..Tab::default()
+        });
+    }
+    s.active = 8;
+    let ui = UiState::default();
+    // 14 rows: the title row and 4 key rows leave room for 4 tabs of 2 rows
+    let t = cells(&s, &ui, (100, 14));
+    let bar: Vec<String> = (0..14).map(|y| row_text(&t, y, 22)).collect();
+    let all = bar.join("\n");
+    assert!(all.contains("▌9 starting…"), "{all}");
+    assert!(!all.contains(" 1 Fix parser"), "{all}");
+    let theme = Theme::ayu_dark();
+    let row = bar.iter().position(|r| r.starts_with("▌9")).unwrap() as u16;
+    assert_eq!(
+        t.backend().buffer()[(5, row)].bg,
+        theme.selection_bg_on_panel()
+    );
+    // with the first tab active, the list starts at the top again
+    s.active = 0;
+    let t = cells(&s, &ui, (100, 14));
+    assert!(row_text(&t, 1, 22).starts_with("▌1 Fix parser"));
+    render(
+        "sidebar-scrolled",
+        (100, 14),
+        &{
+            let mut s = s.clone();
+            s.active = 8;
+            s
+        },
+        &ui,
+        &Editor::new(),
+    );
+}

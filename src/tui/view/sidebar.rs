@@ -74,6 +74,23 @@ fn fit(text: &str, width: usize) -> String {
     out
 }
 
+/// Rows one tab takes: title, state, one per nested agent.
+fn tab_height(tab: &Tab) -> u16 {
+    2 + tab.children.len() as u16
+}
+
+/// The first tab to draw in `height` rows: the top of the list when the active tab fits below it,
+/// else the earliest tab from which the active one still fits.
+fn first_shown(state: &State, height: u16) -> usize {
+    let mut first = 0;
+    let used =
+        |from: usize| -> u16 { state.tabs[from..=state.active].iter().map(tab_height).sum() };
+    while first < state.active && used(first) > height {
+        first += 1;
+    }
+    first
+}
+
 pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     if area.width < 4 || area.height == 0 {
         return;
@@ -102,7 +119,8 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     );
     y += 1;
     let label_width = usize::from(inner.width).saturating_sub(5);
-    for (index, tab) in state.tabs.iter().enumerate() {
+    let first = first_shown(state, rows_bottom.saturating_sub(y));
+    for (index, tab) in state.tabs.iter().enumerate().skip(first) {
         let children = tab.children.len() as u16;
         if y + 2 + children > rows_bottom {
             break;

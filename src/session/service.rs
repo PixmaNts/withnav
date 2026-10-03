@@ -952,6 +952,39 @@ impl Service {
         Ok(())
     }
 
+    pub async fn steer_child(
+        &self,
+        parent: SessionId,
+        child: SessionId,
+        message: &str,
+        interrupt: bool,
+    ) -> Result<(), ServerError> {
+        let owner = self.routable_handle(parent).await?;
+        if owner.parent_session_id.is_some() {
+            return Err(ServerError::ChildReadOnly);
+        }
+        let handle = self.routable_handle(child).await?;
+        if handle.parent_session_id != Some(parent) {
+            return Err(ServerError::ChildReadOnly);
+        }
+        let link = self
+            .child_metadata(child)
+            .await?
+            .ok_or_else(|| ServerError::SessionNotFound(child.to_string()))?;
+        if !matches!(link.status.as_str(), "running" | "starting") {
+            return Err(ServerError::ChildNotParked);
+        }
+        if message.trim().is_empty() || message.len() > 16 * 1024 {
+            return Err(ServerError::MalformedBody(
+                "steering message must be nonempty and at most 16 KiB".into(),
+            ));
+        }
+        if !handle.status.steer(message.to_string(), interrupt) {
+            return Err(ServerError::SessionStopping);
+        }
+        Ok(())
+    }
+
     /// The permission requests of a stored session that never got a
     /// `permission.resolved`: `(request id, tool call id)`, oldest first.
     async fn unresolved_permissions(
@@ -1614,6 +1647,12 @@ impl Service {
         if root_tools_enabled && role.mode.is_primary() {
             actor
                 .registry
+                .register(Box::new(crate::tools::steer_subagent::SteerSubagent::new(
+                    self.clone(),
+                    session_id,
+                )));
+            actor
+                .registry
                 .register(Box::new(crate::tools::task::TaskTool::new(
                     self.clone(),
                     session_id,
@@ -1985,7 +2024,7 @@ fn child_tool_allowed(tool: &str, child: &AgentDefinition, parent: &AgentDefinit
         && parent.tools.get(tool).copied().unwrap_or(true)
         && parent_ceiling
         && child_access
-        && !matches!(tool, "ask" | "task")
+        && !matches!(tool, "ask" | "task" | "steer_subagent")
 }
 
 #[cfg(test)]

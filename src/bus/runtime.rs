@@ -12,6 +12,7 @@
 mod compact;
 mod deferred;
 mod delivery;
+mod steering;
 pub use delivery::Delivery;
 mod model;
 
@@ -90,6 +91,7 @@ struct PermissionSlot {
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
+    steering: Arc<steering::Steering>,
     budget_parked: std::sync::atomic::AtomicBool,
     delivery: Mutex<Option<delivery::DeliveryCell>>,
     variant: Mutex<VariantSlot>,
@@ -110,6 +112,21 @@ pub struct RuntimeStatus {
 }
 
 impl RuntimeStatus {
+    pub fn steer(&self, text: String, interrupt: bool) -> bool {
+        self.steering
+            .queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back(text);
+        self.controls
+            .tx
+            .send(if interrupt {
+                Control::Interrupt
+            } else {
+                Control::Steer
+            })
+            .is_ok()
+    }
     pub fn continue_budget(&self) -> bool {
         if self
             .budget_parked
@@ -629,6 +646,7 @@ async fn runtime_loop(
     let mut active_task_id: Option<Ulid> = None;
     let mut control = status.controls.take_receiver();
     let mut delivery_waiting = false;
+    actor.safe_boundary = Some(status.steering.boundary());
 
     loop {
         let inbound = tokio::select! {
@@ -640,6 +658,24 @@ async fn runtime_loop(
             Some(control) = recv_control(&mut control) => {
                 // Between turns: run it now, publish its result, then answer.
                 match control {
+                    Control::Steer => {
+                        if actor.has_pending() || status.budget_parked.load(std::sync::atomic::Ordering::Acquire)
+                            || status.steering.queue.lock().unwrap_or_else(|e| e.into_inner()).is_empty() { continue; }
+                        actor.transcript = status.steering.apply(actor.transcript.clone());
+                        Some(Inbound::Continue)
+                    }
+                    Control::Interrupt => {
+                        if let Some(request) = actor.pending_permission().cloned() {
+                            actor.interrupt_pending_permission();
+                            publish_resolved(&sequencer, active_task_id, &request, PermissionResolution::Cancelled);
+                        } else if actor.has_pending() {
+                            actor.pending = None;
+                            actor.settle_unanswered_calls();
+                        }
+                        actor.cancel = session_cancel.child_token();
+                        actor.transcript = status.steering.apply(actor.transcript.clone());
+                        Some(Inbound::Continue)
+                    }
                     Control::Continue => Some(Inbound::Continue),
                     Control::Delivery => { delivery_waiting = true; continue; }
                     Control::Compact(request) => {
@@ -792,6 +828,7 @@ async fn runtime_loop(
         // block scope drops the future (+ its &mut actor borrow) BEFORE the
         // outcome handling below assigns actor.state.
         let actor_cancel = actor.cancel.clone();
+        let mut interrupted_for_input = false;
         let outcome = {
             let mut observe = |event: AgentEvent<'_>| turn.observe(event);
             let turn_fut = async {
@@ -825,6 +862,12 @@ async fn runtime_loop(
                     Some(control) = recv_control(&mut control) => {
                         // A turn is running: accept now, run it at its end.
                         match control {
+                            Control::Steer => {}
+                            Control::Interrupt => {
+                                interrupted_for_input = true;
+                                actor_cancel.cancel();
+                                break (&mut turn_fut).await;
+                            }
                             Control::Continue => {}
                             Control::Delivery => { delivery_waiting = true; }
                             Control::Compact(request) => {
@@ -960,7 +1003,7 @@ async fn runtime_loop(
                 emit_agent_state(&mut turn, "yielded");
             }
             Ok(RunOutcome::Interrupted) => {
-                if let Some(done) = &completion {
+                if let Some(done) = completion.as_ref().filter(|_| !interrupted_for_input) {
                     done(
                         crate::provider::AssistantMessage {
                             text: "stopped".into(),
@@ -1044,6 +1087,11 @@ async fn runtime_loop(
 
         // Every terminal outcome saves the transcript, a cancelled turn too.
         snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
+
+        if interrupted_for_input && !session_cancel.is_cancelled() {
+            actor.cancel = session_cancel.child_token();
+            let _ = status.controls.tx.send(Control::Steer);
+        }
 
         if actor.cancel.is_cancelled() || session_cancel.is_cancelled() {
             // The stop wins: a `/compact` accepted during this turn is told

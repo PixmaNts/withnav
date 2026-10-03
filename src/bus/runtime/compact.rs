@@ -95,6 +95,8 @@ pub struct CompactRequest {
 pub enum Control {
     Delivery,
     Continue,
+    Steer,
+    Interrupt,
     Compact(CompactRequest),
     Model(super::model::ModelRequest),
 }

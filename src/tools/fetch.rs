@@ -79,6 +79,40 @@ impl FetchTool {
     }
 }
 
+/// Longest URL or header text echoed in an output, error or metadata.
+const ECHO_MAX_BYTES: usize = 2048;
+
+/// `s` cut to `ECHO_MAX_BYTES` on a char boundary, with a marker.
+fn clip(s: &str) -> String {
+    if s.len() <= ECHO_MAX_BYTES {
+        return s.to_string();
+    }
+    let mut end = ECHO_MAX_BYTES;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}... [{} bytes cut]", &s[..end], s.len() - end)
+}
+
+/// A URL (or URL-looking header value) fit to print: userinfo replaced by
+/// `***@`, length bounded.
+fn shown(raw: &str) -> String {
+    let redacted = match raw.find("://") {
+        Some(i) => {
+            let auth_start = i + 3;
+            let auth_end = raw[auth_start..]
+                .find(['/', '?', '#'])
+                .map_or(raw.len(), |e| auth_start + e);
+            match raw[auth_start..auth_end].rfind('@') {
+                Some(at) => format!("{}***@{}", &raw[..auth_start], &raw[auth_start + at + 1..]),
+                None => raw.to_string(),
+            }
+        }
+        None => raw.to_string(),
+    };
+    clip(&redacted)
+}
+
 fn fail(code: &str, message: impl Into<String>) -> ToolResult {
     ToolResult::error(code, message)
 }
@@ -198,24 +232,30 @@ async fn fetch(client: &Client, start: Url, format: Format) -> ToolResult {
         };
         let target = match url.join(location) {
             Ok(t) => t,
-            Err(e) => return fail("network", format!("bad redirect target {location:?}: {e}")),
+            Err(e) => {
+                return fail(
+                    "network",
+                    format!("bad redirect target {}: {e}", shown(location)),
+                )
+            }
         };
         if let Err(message) = check_url(&target) {
             return fail(
                 "network",
-                format!("redirect to {target} refused: {message}"),
+                format!("redirect to {} refused: {message}", shown(target.as_str())),
             );
         }
         if !same_origin(&start, &target) {
             return ToolResult::ok(format!(
-                "Redirected (HTTP {}) to another origin: {target}\nNothing was fetched from it; call fetch again with that URL if you want it.",
-                status.as_u16()
+                "Redirected (HTTP {}) to another origin: {}\nNothing was fetched from it; call fetch again with that URL if you want it.",
+                status.as_u16(),
+                shown(target.as_str())
             ))
             .with_metadata(json!({
                 "code": "redirect_cross_origin",
                 "status": status.as_u16(),
-                "url": url.as_str(),
-                "target": target.as_str(),
+                "url": shown(url.as_str()),
+                "target": shown(target.as_str()),
             }));
         }
         hops += 1;
@@ -230,7 +270,10 @@ async fn fetch(client: &Client, start: Url, format: Format) -> ToolResult {
 
     let status = response.status();
     if !status.is_success() {
-        return fail("http_status", format!("{url} answered HTTP {status}"));
+        return fail(
+            "http_status",
+            format!("{} answered HTTP {status}", shown(url.as_str())),
+        );
     }
     let content_type = response
         .headers()
@@ -239,12 +282,15 @@ async fn fetch(client: &Client, start: Url, format: Format) -> ToolResult {
         .map(str::to_string);
     let mime = content_type
         .as_deref()
-        .map(|ct| essence(ct).to_string())
+        .map(|ct| clip(essence(ct)))
         .unwrap_or_default();
     if !mime.is_empty() && !is_textual(&mime) {
         return fail(
             "unsupported_content",
-            format!("{url} is {mime}, not a text type; only text is fetched"),
+            format!(
+                "{} is {mime}, not a text type; only text is fetched",
+                shown(url.as_str())
+            ),
         );
     }
 
@@ -257,7 +303,8 @@ async fn fetch(client: &Client, start: Url, format: Format) -> ToolResult {
                     return fail(
                         "too_large",
                         format!(
-                            "{url} body exceeds {} MiB; the download was stopped",
+                            "{} body exceeds {} MiB; the download was stopped",
+                            shown(url.as_str()),
                             FETCH_MAX_BODY_BYTES / (1024 * 1024)
                         ),
                     );
@@ -271,7 +318,10 @@ async fn fetch(client: &Client, start: Url, format: Format) -> ToolResult {
     if mime.is_empty() && body.contains(&0) {
         return fail(
             "unsupported_content",
-            format!("{url} has no content type and looks binary"),
+            format!(
+                "{} has no content type and looks binary",
+                shown(url.as_str())
+            ),
         );
     }
 
@@ -292,14 +342,18 @@ async fn fetch(client: &Client, start: Url, format: Format) -> ToolResult {
         Err(e) => {
             return fail(
                 "unsupported_content",
-                format!("{url}: the HTML could not be converted: {e}"),
+                format!(
+                    "{}: the HTML could not be converted: {}",
+                    shown(url.as_str()),
+                    clip(&e)
+                ),
             )
         }
     };
 
     let (out, elided) = bound_output(&text, DEFAULT_MAX_OUTPUT_BYTES);
     let mut result = ToolResult::ok(out).with_metadata(json!({
-        "url": url.as_str(),
+        "url": shown(url.as_str()),
         "status": status.as_u16(),
         "content_type": mime,
         "format": match format { Format::Markdown => "markdown", Format::Text => "text", Format::Html => "html" },
@@ -324,7 +378,7 @@ fn net_error(e: reqwest::Error) -> ToolResult {
         message.push_str(&s.to_string());
         source = s.source();
     }
-    fail("network", message)
+    fail("network", clip(&message))
 }
 
 /// `text/html; charset=x` to `text/html`, lowercased.
@@ -1058,6 +1112,49 @@ mod tests {
         let res = call(json!({"url": server.uri()})).await;
         assert_eq!(code(&res), "network", "{:?}", res.error);
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    // Given a redirect to a target with credentials, and a 100 KiB Location
+    // When fetched
+    // Then credentials never appear, and every echo is bounded
+    #[tokio::test]
+    async fn redirect_echoes_are_redacted_and_bounded() {
+        let server = MockServer::start().await;
+        let to = format!("http://user:s3cret@{}/x", server.address());
+        Mock::given(method("GET"))
+            .and(path("/cred"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", to.as_str()))
+            .mount(&server)
+            .await;
+        let res = call(json!({"url": format!("{}/cred", server.uri())})).await;
+        let dump = format!("{res:?}");
+        assert_eq!(code(&res), "network");
+        assert!(
+            !dump.contains("s3cret") && !dump.contains("user:"),
+            "{dump}"
+        );
+        assert!(dump.contains("***@"), "{dump}");
+
+        let other = MockServer::start().await;
+        let long = format!("{}/{}", other.uri(), "a".repeat(100 * 1024));
+        Mock::given(method("GET"))
+            .and(path("/long"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", long.as_str()))
+            .mount(&server)
+            .await;
+        let res = call(json!({"url": format!("{}/long", server.uri())})).await;
+        assert_eq!(res.status, ToolStatus::Ok);
+        assert!(res.output.len() < 4096, "{}", res.output.len());
+        assert!(res.output.contains("bytes cut"));
+        assert!(res.metadata.to_string().len() < 4096);
+    }
+
+    #[test]
+    fn shown_redacts_userinfo_and_clips() {
+        assert_eq!(shown("http://u:p@h.test/p@q"), "http://***@h.test/p@q");
+        assert_eq!(shown("https://h.test/a@b"), "https://h.test/a@b");
+        assert_eq!(shown("http://a@b@h.test"), "http://***@h.test");
+        assert!(shown(&"é".repeat(5000)).len() < 2200);
     }
 
     // Given error statuses

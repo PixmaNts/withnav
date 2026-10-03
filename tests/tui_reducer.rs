@@ -17,6 +17,61 @@ use ulid::Ulid;
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
+#[tokio::test]
+async fn child_watches_keep_the_parent_owner_are_idempotent_and_end_on_completion() {
+    use navai::tui::{
+        client::Client,
+        input::Editor,
+        runtime::{Context, Executor},
+    };
+    let mut s = subagent_parent();
+    s.tabs[0].id = 11;
+    s.tabs.push(Tab {
+        id: 22,
+        generation: Generation(8),
+        ..Default::default()
+    });
+    s.active = 1;
+    let entry = serde_json::from_value(json!({"id":Ulid(2),"created_at":"now","updated_at":"now","message_count":0,"agent":"explore","live":true,"parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();
+    let effects = update(
+        &mut s,
+        ClientEvent::Sessions {
+            generation: Generation(0),
+            result: Ok(SessionListBody {
+                sessions: vec![entry],
+            }),
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(&effects[0], Effect::WatchChild { tab_id:11, generation:Generation(0), parent_session_id, .. } if parent_session_id == &Ulid(1).to_string())
+    );
+    let (tx, _) = tokio::sync::mpsc::channel(16);
+    let mut exec = Executor::new(Client::new("http://127.0.0.1:1", None), tx);
+    let ctx = Context {
+        generation: Generation(8),
+        session_id: None,
+        workspace: "/ws".into(),
+        config_dir: None,
+    };
+    let mut editor = Editor::new();
+    exec.execute(effects[0].clone(), &ctx, &mut editor);
+    exec.execute(effects[0].clone(), &ctx, &mut editor);
+    assert_eq!(exec.stream_count(), 1);
+    s.active = 0;
+    let effects = subagent_event(
+        &mut s,
+        1,
+        "subagent.done",
+        json!({"parent_session_id":Ulid(1),"child_session_id":Ulid(2),"agent":"explore","outcome":"done"}),
+    );
+    assert!(effects.contains(&Effect::UnwatchChild(Ulid(2).to_string())));
+    for effect in effects {
+        exec.execute(effect, &ctx, &mut editor);
+    }
+    assert_eq!(exec.stream_count(), 0);
+}
+
 #[test]
 fn a_child_spawn_event_on_its_own_stream_adds_no_self_child() {
     let mut s = subagent_parent();
@@ -163,7 +218,7 @@ fn spawn_subagent(s: &mut State, delivery: Option<&str>) {
         payload["delivery"] = json!(delivery);
     }
     assert!(subagent_event(s, 1, "subagent.spawned", payload)
-        .contains(&Effect::WatchChild(Ulid(2).to_string())));
+        .iter().any(|e| matches!(e, Effect::WatchChild { child_session_id, .. } if child_session_id == &Ulid(2).to_string())));
 }
 
 #[test]

@@ -306,8 +306,14 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 None
             };
             envelope::apply_envelope(s, envelope)?;
+            effects.extend(
+                s.children
+                    .iter()
+                    .filter(|c| c.status.terminal())
+                    .map(|c| Effect::UnwatchChild(c.session_id.clone())),
+            );
             if let Some(child) = spawned {
-                effects.push(Effect::WatchChild(child));
+                effects.push(watch_child(s, child));
             }
             if let Some(status) = child_status {
                 s.child_status = status;
@@ -505,12 +511,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             if let Ok(b) = result {
                 s.sessions = b.sessions;
                 seed_children(s);
-                effects.extend(
-                    s.children
-                        .iter()
-                        .filter(|c| !c.status.terminal())
-                        .map(|c| Effect::WatchChild(c.session_id.clone())),
-                );
+                effects.extend(child_watches(s));
             }
         }
         ClientEvent::Created { result, .. } | ClientEvent::Resumed { result, .. } => match result {
@@ -591,12 +592,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 }
                 s.session = Some(m);
                 seed_children(s);
-                effects.extend(
-                    s.children
-                        .iter()
-                        .filter(|c| !c.status.terminal())
-                        .map(|c| Effect::WatchChild(c.session_id.clone())),
-                );
+                effects.extend(child_watches(s));
             } else {
                 s.inspecting = false;
                 s.resuming = None;
@@ -682,6 +678,35 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         ClientEvent::SettingsNotSaved { message, .. } => push_local(s, BlockKind::Notice(message)),
     }
     Ok(effects)
+}
+
+fn watch_child(tab: &super::state::Tab, child_session_id: String) -> Effect {
+    Effect::WatchChild {
+        parent_session_id: tab
+            .session
+            .as_ref()
+            .map(|m| m.session_id.clone())
+            .or(tab.resuming.clone())
+            .unwrap_or_default(),
+        tab_id: tab.id,
+        generation: tab.generation.clone(),
+        child_session_id,
+    }
+}
+
+fn child_watches(s: &State) -> Vec<Effect> {
+    s.tabs
+        .iter()
+        .flat_map(|tab| {
+            tab.children.iter().map(|child| {
+                if child.status.terminal() {
+                    Effect::UnwatchChild(child.session_id.clone())
+                } else {
+                    watch_child(tab, child.session_id.clone())
+                }
+            })
+        })
+        .collect()
 }
 
 fn seed_children(s: &mut State) {

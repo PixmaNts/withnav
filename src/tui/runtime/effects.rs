@@ -106,15 +106,27 @@ impl Executor {
     pub fn execute(&mut self, effect: Effect, ctx: &Context, editor: &mut Editor) -> Flow {
         let generation = ctx.generation.clone();
         match effect {
-            Effect::WatchChild(child_session_id) => {
+            Effect::UnwatchChild(child_session_id) => {
                 self.streams.retain(|s| {
-                    let gone = s.generation == generation
-                        && s.child_session_id.as_ref() == Some(&child_session_id);
+                    let gone = s.child_session_id.as_ref() == Some(&child_session_id);
                     if gone {
                         s.cancel.cancel();
                     }
                     !gone
                 });
+            }
+            Effect::WatchChild {
+                child_session_id,
+                generation,
+                ..
+            } => {
+                if self
+                    .streams
+                    .iter()
+                    .any(|s| s.child_session_id.as_ref() == Some(&child_session_id))
+                {
+                    return Flow::Continue;
+                }
                 let cancel = CancellationToken::new();
                 let mut events = stream::subscribe(
                     self.client.clone(),

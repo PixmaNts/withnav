@@ -366,7 +366,13 @@ pub enum ChildControl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
-    WatchChild(String),
+    WatchChild {
+        parent_session_id: String,
+        tab_id: u64,
+        generation: Generation,
+        child_session_id: String,
+    },
+    UnwatchChild(String),
     FetchModels,
     ListSessions,
     /// Reads the server's command list.

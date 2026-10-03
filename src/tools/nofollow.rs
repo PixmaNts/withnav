@@ -52,7 +52,9 @@ fn changed(path: &Path) -> ToolError {
 
 /// What an errno during a no-follow walk means: a link (or something that is
 /// not a directory) where the reviewed path had a directory or file, or a
-/// path that is gone: all of them "the destination changed".
+/// path that is gone: all of them "the destination changed". The one
+/// exception is an `edit` whose final file is gone: it is reported as not
+/// found, like any edit of a missing file, and nothing is written.
 fn walk_error(errno: Errno, path: &Path) -> ToolError {
     match errno {
         Errno::ELOOP

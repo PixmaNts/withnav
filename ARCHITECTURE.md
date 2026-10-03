@@ -34,7 +34,7 @@ Dependencies point down this list. A module never imports one above it.
 | `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
 | `provider/` | `models.json` aliases (`config.rs`, `load_models`), keys (`auth.rs`), one `ModelClient` per endpoint (`client.rs`: auth header, deadline, cancellation, status errors), the chat SSE decoder (`sse.rs`, `mod.rs`), the FIM and System One wire clients | anything navigator-specific: no `crate::navigator` import |
 | `tools/` | the tool trait, the registry, path validation (`validate_path`), the eight tools (`glob.rs`: bounded, link-free file search; `fetch.rs`: HTTP(S) GET with its own credential-free client, same-origin redirects, a 5 MiB streamed cap; HTML is converted by a memory- and CPU-limited child, `navai internal-html-convert`, killed on cancel or timeout); `ToolContext` with the writable roots and the read-only ones (`read`/`grep`/`glob` accept both, `write`/`edit`/`bash` only the first) | which tools a session gets |
-| `agent/` | `AgentActor` (transcript, pending `ask`, optional role prompt, the rules and skills snapshots), `run_agent` with one `AgentEvent` observer, request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`explore`/`review` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
+| `agent/` | `AgentActor` (transcript, pending `ask`, optional role prompt, the rules and skills snapshots), `run_agent` with one `AgentEvent` observer, request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`explore`/`review` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events | HTTP, storage |
 | `session/` | the `Service` (registry and router, `service.rs`), teardown and close (`lifecycle.rs`), actor construction (`actor.rs`), subscriptions, the `SessionHooks` seam (`hooks.rs`: default model, actor setup, a `started` callback with a `SessionSender` that can only post) the SQLite history (`store.rs`), the primary agent of each session (`sessions.primary_agent`, `/agent`) and the session commands (`commands.rs`: the registry and line routing; `run_command.rs`: `Service::list_commands` / `run_command`, each run publishing a `command.result`; `Service::context`), and the session variant (saved in `sessions.variant`, chosen in `service/resolve.rs`, held by the runtime's `RuntimeStatus` and applied at each turn start) | HTTP, SSE, any profile by name |
 | `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service` | session state, the model layers |
@@ -171,6 +171,19 @@ it is and that run keeps using it.
   `Service::context` (`GET /v1/sessions/{id}/context`, `/context`), never the actor. Compaction asks
   `ContextLimits::from_resolution` and `Budget::compute` for the budget and compares the estimate
   against `input_budget`; a client shows the server's estimate and never re-derives it.
+- Compaction (a summary standing for the start of a long conversation): `agent/compaction.rs` plans
+  it (pure: the protected tail, which old tool outputs become markers, the boundary `through_message`,
+  sized with `context::estimate`), `agent/compaction/summary.rs` builds and validates the summary
+  request and `prepare` returns a `Checkpoint` against a requested destination budget without saving
+  anything. The runtime (`bus/runtime/compact.rs`) is the only caller: `/compact` reaches it through
+  `RuntimeStatus::request_compact`, between turns or deferred to the end of a running one, and
+  `AgentActor::commit_compaction` persists through the saver the session service supplied
+  (`HistoryStore::save_checkpoint`: transcript and the nullable versioned `sessions.checkpoint`
+  column in one transaction), then installs. `AgentActor::effective_history` and
+  `context_breakdown` are what `run_agent` sends and what the gauge measures. A resume validates the
+  stored checkpoint against the transcript and fails clearly when it does not fit. The durable
+  `context.compacted` notice is explanatory; the stored checkpoint is the recovery source. Automatic
+  compaction reuses `plan` and `prepare` with `Aim::Fit` and the same commit path.
 - A helper you need probably exists. Look first in: `provider/client.rs` (any HTTP call to a model),
   `provider/config.rs` (`load_models`), `navigator/log.rs` (`excerpt`, `new_ulid_string`),
   `bus/event.rs` (`now_rfc3339`), `navigator/lsp/uri.rs`, `navigator/document.rs` (diffs and

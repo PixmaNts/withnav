@@ -48,10 +48,27 @@ requests land in `develop`.
   turns (refused while the agent works or waits for an answer) and publishes a durable
   `session.agent_changed` `{agent, previous}`, so the event catalog has 15 kinds with `context.updated`. Both agents keep every
   tool; the permission gate comes next.
+- **Manual compaction**: `/compact [focus]` summarizes the older part of a long conversation with
+  the session's own model and variant (no tools; the optional focus is added to the summary prompt as
+  "pay particular attention to") and keeps the system components, the latest request, the unfinished
+  turn, any pending `ask` and the last two completed turns verbatim. Old tool outputs outside that tail
+  can become elision markers (ids and call/result pairs kept; never an `ask` answer or a loaded skill).
+  The summary is validated (non-empty, no tool call, at most 8 KiB). A running turn is not interrupted:
+  the command answers "accepted, runs after this turn" and runs when the turn ends; it is refused while
+  an `ask` waits, and answers a clear error when there is nothing to compact or the recent turns cannot
+  fit the input budget. The result is saved with the transcript in one transaction, in a new nullable
+  versioned `sessions.checkpoint` column (older conversations resume as before; a stored checkpoint that
+  does not fit its transcript fails the resume with an explicit error); `sessions.transcript` still
+  holds the whole history. The prompt sent afterwards is the fresh system components, the summary as
+  labelled conversation data and the messages after the boundary, and the context gauge measures that
+  prompt. A durable `context.compacted` `{generation, through_message, pruned, estimate_before,
+  estimate_after}` follows the save, with a live `context.updated`, so the event catalog has 16 kinds;
+  the envelope version, the other kinds and every earlier event are unchanged. The TUI shows
+  `context compacted: ~120k -> ~18k` in the conversation.
 - **Session commands**: `GET /v1/commands` lists them; `POST /v1/sessions/{id}/commands` with
   `{name, arguments}` runs one and answers `{operation_id, ok, data?, error?}`. Built in: `/help`,
   `/model` (alias, window and where the window comes from), `/new [alias]` (a fresh session; the old one
-  stays) and `/stop`; `/compact` is listed and answers "not available yet" (`/context` and `/variant` are built, below).
+  stays) and `/stop`; `/compact` (above), `/context` and `/variant` (below) are built too.
   An unknown name is an error that lists the close names, and a command sent while the agent waits for
   an answer to its `ask` is refused, never queued. Each run publishes a durable `command.result` event
   (`operation_id`, `name`, `ok`, `data` of at most 16 KiB, `error`), so the event catalog has 13 kinds;

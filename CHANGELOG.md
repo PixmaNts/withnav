@@ -11,11 +11,21 @@ requests land in `develop`.
 - **Session commands**: `GET /v1/commands` lists them; `POST /v1/sessions/{id}/commands` with
   `{name, arguments}` runs one and answers `{operation_id, ok, data?, error?}`. Built in: `/help`,
   `/model` (alias, window and where the window comes from), `/new [alias]` (a fresh session; the old one
-  stays) and `/stop`; `/context`, `/variant` and `/compact` are listed and answer "not available yet".
+  stays) and `/stop`; `/context` and `/compact` are listed and answer "not available yet".
   An unknown name is an error that lists the close names, and a command sent while the agent waits for
   an answer to its `ask` is refused, never queued. Each run publishes a durable `command.result` event
   (`operation_id`, `name`, `ok`, `data` of at most 16 KiB, `error`), so the event catalog has 13 kinds;
   the envelope version and the other kinds are unchanged. `/messages` is unchanged.
+- **Session variant**: a session runs with one model variant, and its chat requests carry that variant
+  (not the alias default). `POST /v1/sessions` takes an optional `variant` (a name the alias offers, or
+  `none`), as does `navai run --variant`; without it the alias's `default_variant` is resolved once and
+  saved in the new nullable `sessions.variant` column (old rows have none). `GET /v1/sessions/{id}` shows
+  `variant`. `/variant` lists the current variant and the names on offer; `/variant <name>` or
+  `/variant none` is checked against the offer, saved before it answers, and takes effect at the next
+  turn (a running turn finishes on the old one). An unknown name is an error listing the offer. A
+  resumed session whose saved variant the alias no longer offers fails with an error naming the alias,
+  the variant and the models.json to fix; it never falls back silently. `/new` keeps the variant when it
+  stays on the same alias.
 - **`navai run --prompt "/help"`** runs the command and prints its result; `//text` sends the literal
   message `/text`.
 - **Model catalog**: a chat alias without `context_window` in models.json gets its window from the

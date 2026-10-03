@@ -188,9 +188,16 @@ impl ActorInbox {
     pub fn apply_batch_to_actor(&mut self, actor: &mut AgentActor) -> BatchOutcome {
         let mut outcome = BatchOutcome::default();
         for cmd in std::mem::take(&mut self.commands) {
-            if !cmd.from_driver() && actor.has_pending() {
-                self.held = Some(cmd);
-                continue;
+            if !cmd.from_driver() {
+                if actor.has_pending() {
+                    self.held = Some(cmd);
+                    continue;
+                }
+                // A newer navigator command supersedes a held older one, even
+                // when driver text in the same batch just cleared what was
+                // pending: releasing the older one later would put stale
+                // guidance after the newer.
+                self.held = None;
             }
             if outcome.downgrade_notice.is_none() {
                 outcome.downgrade_notice = cmd.downgrade_notice();
@@ -550,5 +557,26 @@ mod tests {
         assert!(!actor.has_pending(), "the driver's text settled it");
         assert_eq!(user_texts(&actor), vec!["never mind"]);
         assert!(inbox.has_held());
+    }
+
+    // Given a pending permission request
+    // When one batch brings an older navigator command, driver text (which
+    //      cancels the request) and a newer navigator command
+    // Then the newer navigator command is applied after the driver text and
+    //      the older one is dropped: it is never released after the newer
+    #[tokio::test]
+    async fn a_newer_navigator_command_supersedes_a_held_older_one() {
+        let (tx, mut inbox) = ActorInbox::channel();
+        send(&tx, command_from("navigator", "wake A"));
+        send(&tx, command_from("user:http", "never mind"));
+        send(&tx, command_from("navigator", "wake B"));
+        inbox.drain_transport();
+        let mut actor = pending_permission_actor();
+        let outcome = inbox.apply_batch_to_actor(&mut actor);
+        assert_eq!(outcome.applied, 2);
+        assert_eq!(user_texts(&actor), vec!["never mind", "wake B"]);
+        assert!(!inbox.has_held(), "the older wake is superseded");
+        inbox.release_held();
+        assert!(!inbox.has_buffered());
     }
 }

@@ -1694,6 +1694,9 @@ impl Service {
             ),
         };
         if root_tools_enabled && role.mode.is_primary() {
+            actor.registry.register(Box::new(
+                crate::tools::decide_subagent::DecideSubagent::new(self.clone(), session_id),
+            ));
             actor
                 .registry
                 .register(Box::new(crate::tools::steer_subagent::SteerSubagent::new(

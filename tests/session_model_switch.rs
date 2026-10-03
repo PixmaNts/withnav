@@ -1,0 +1,444 @@
+//! `/model <alias>` through the service: between turns, after the running
+//! turn, refused while something waits or the conversation does not fit, the
+//! stored and replayed `model.changed`, and a resume on the new model.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use serde_json::{json, Value};
+
+use navai::bus::event::EventEnvelope;
+use navai::provider::openai::ChatMessage;
+use navai::server::AppState;
+
+mod common;
+use common::server::{collect_until, send_text, wait_for, TestServerConfig};
+use common::sse::{
+    http_sse, spawn_capturing_provider, spawn_gated_provider, sse_body, text_chunk,
+    tool_call_chunk, CapturingProvider,
+};
+
+const SUMMARY: &str = "Goal: finish the parser.\nNext: run the tests.";
+
+struct Env {
+    _tmp: tempfile::TempDir,
+    root: PathBuf,
+    ws: PathBuf,
+}
+
+fn env() -> Env {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    let ws = root.join("ws");
+    std::fs::create_dir_all(&ws).expect("ws");
+    Env {
+        _tmp: tmp,
+        root,
+        ws,
+    }
+}
+
+fn answer(text: &str) -> Vec<u8> {
+    http_sse(&sse_body(&[&text_chunk(text)]))
+}
+
+/// Two providers (`a`, `b`), each scripted: `default` is a/model-a, `twin` the
+/// same model under another alias, `other` is b/model-b with variants and a
+/// default one, and a window of `window_b`.
+fn state(
+    env: &Env,
+    a: &CapturingProvider,
+    b: &CapturingProvider,
+    window_a: u64,
+    window_b: u64,
+) -> AppState {
+    let config = TestServerConfig::mock(&env.root, &a.url)
+        .chat_tools(window_a)
+        .config();
+    let entry = |provider: &str, model: &str, window: u64| {
+        json!({
+            "provider": provider, "model": model, "supports_tools": true,
+            "context_window": window, "reasoning_history": "preserve"
+        })
+    };
+    let mut other = entry("b", "model-b", window_b);
+    other["variants"] = json!({
+        "low": {"reasoning_effort": "low"},
+        "high": {"reasoning_effort": "high"}
+    });
+    other["default_variant"] = json!("high");
+    let provider = |url: &str| {
+        json!({"base_url": url, "api_key_env": "NAVAI_TEST_KEY", "headers": {},
+               "connect_timeout_ms": 2000, "request_timeout_ms": 600_000})
+    };
+    std::fs::write(
+        config.models_path.as_ref().expect("models path"),
+        json!({
+            "providers": {"a": provider(&a.url), "b": provider(&b.url)},
+            "models": {
+                "default": entry("a", "model-a", window_a),
+                "twin": entry("a", "model-a", window_a),
+                "other": other,
+            }
+        })
+        .to_string(),
+    )
+    .expect("models.json");
+    std::fs::write(
+        config.config_dir.join("auth.json"),
+        json!({"a": {"api_key": "key-a"}, "b": {"api_key": "key-b"}}).to_string(),
+    )
+    .expect("auth.json");
+    AppState::new(config).expect("state")
+}
+
+fn history(turns: usize, reasoning: bool) -> Vec<ChatMessage> {
+    (0..turns)
+        .flat_map(|n| {
+            [
+                ChatMessage::User {
+                    content: format!("request {n}"),
+                },
+                ChatMessage::Assistant {
+                    content: Some(format!("answer {n} {}", "word ".repeat(1200))),
+                    reasoning_content: reasoning.then(|| format!("thinking {n}")),
+                    tool_calls: vec![],
+                },
+            ]
+        })
+        .collect()
+}
+
+/// A live session that resumed from a stored conversation of `turns` turns.
+async fn seeded(state: &AppState, ws: &Path, turns: usize, reasoning: bool) -> ulid::Ulid {
+    let id = state.create_session(ws, None, None).await.expect("create");
+    state.close_session(id).await.expect("close");
+    state.history().flush().await.expect("flush");
+    state
+        .history()
+        .save_transcript(id, history(turns, reasoning));
+    state.history().flush().await.expect("flush");
+    state
+        .create_or_resume_session(ws, None, None, Some(id))
+        .await
+        .expect("resume");
+    id
+}
+
+async fn stored(state: &AppState, id: ulid::Ulid, kind: &str) -> Vec<EventEnvelope> {
+    state.history().flush().await.expect("flush");
+    let sub = state.subscribe(id, None).await.expect("subscribe");
+    match sub.replay {
+        navai::bus::ResumeOutcome::Replay(events) => {
+            events.into_iter().filter(|e| e.kind == kind).collect()
+        }
+        other => panic!("expected replay, got {other:?}"),
+    }
+}
+
+fn body(provider: &CapturingProvider, index: usize) -> Value {
+    serde_json::from_str(&provider.bodies()[index]).expect("request body")
+}
+
+fn all_text(request: &Value) -> String {
+    request["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .filter_map(|m| m["content"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+async fn turn_done(state: &AppState, id: ulid::Ulid, text: &str) {
+    let sub = state.subscribe(id, None).await.unwrap();
+    send_text(state, id, text).await;
+    collect_until(sub, |e| e.kind == "task.done" || e.kind == "turn.end").await;
+}
+
+// Given an idle conversation on `default`
+// When /model other runs
+// Then the next request goes to the other provider and model, with its default
+//      variant and the whole history; the choice is saved and `model.changed`
+//      is stored and replayed
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_idle_switch_sends_the_next_request_to_the_new_model_with_its_default_variant() {
+    let env = env();
+    let a = spawn_capturing_provider(vec![]).await;
+    let b = spawn_capturing_provider(vec![answer("from b")]).await;
+    let state = state(&env, &a, &b, 128_000, 128_000);
+    let id = seeded(&state, &env.ws, 2, true).await;
+    let sub = state.subscribe(id, None).await.unwrap();
+
+    let out = state.run_command(id, "model", "other").await.unwrap();
+    assert!(out.ok, "{out:?}");
+    let data = out.data.clone().unwrap();
+    assert_eq!(data["changed"], true);
+    assert_eq!(data["applies"], "now");
+    assert_eq!(data["variant"], "high");
+    assert_eq!(data["previous"]["alias"], "default");
+    assert_eq!(data["new"]["model"], "model-b");
+
+    let live = collect_until(sub, |e| e.kind == "model.changed").await;
+    let changed = live.iter().find(|e| e.kind == "model.changed").unwrap();
+    assert_eq!(changed.payload["reason"], "switch");
+    assert_eq!(changed.payload["operation_id"], json!(out.operation_id));
+    assert_eq!(changed.payload["previous"]["alias"], "default");
+    assert_eq!(changed.payload["previous"]["provider"], "a");
+    assert_eq!(changed.payload["new"]["alias"], "other");
+    assert_eq!(changed.payload["new"]["provider"], "b");
+    assert_eq!(changed.payload["new"]["model"], "model-b");
+    assert_eq!(changed.payload["variant"], "high");
+    assert_eq!(changed.payload["window"], 128_000);
+    assert_eq!(changed.payload["from_message"], 4);
+    assert_eq!(changed.payload["revision"], 2);
+    assert!(changed.payload["input_budget"].as_u64().unwrap() > 0);
+
+    // Saved: the row, the summary and the command.
+    let meta = state.history().meta(id).await.unwrap().unwrap();
+    assert_eq!(meta.model, "other");
+    assert_eq!(meta.variant.as_deref(), Some("high"));
+    assert!(meta.model_resolution.unwrap().contains("model-b"));
+    let summary = state.session_summary(id).await.unwrap();
+    assert_eq!(summary.model, "other");
+    assert_eq!(summary.variant.as_deref(), Some("high"));
+    let model = state.run_command(id, "model", "").await.unwrap();
+    assert_eq!(model.data.unwrap()["alias"], "other");
+    assert_eq!(stored(&state, id, "model.changed").await.len(), 1);
+
+    turn_done(&state, id, "go on").await;
+    assert!(a.bodies().is_empty(), "the old provider is not used again");
+    let request = body(&b, 0);
+    assert_eq!(request["model"], "model-b");
+    assert_eq!(request["reasoning_effort"], "high");
+    let text = all_text(&request);
+    assert!(text.contains("request 0") && text.contains("answer 1") && text.contains("go on"));
+    // Another model never sees the first one's reasoning; the transcript keeps it.
+    assert!(!provider_saw_reasoning(&request));
+}
+
+fn provider_saw_reasoning(request: &Value) -> bool {
+    request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m.get("reasoning_content").is_some())
+}
+
+// Given a conversation with reasoning in its history
+// When /model moves it to another alias of the same model
+// Then the reasoning is still replayed
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reasoning_is_kept_for_the_same_resolved_identity() {
+    let env = env();
+    let a = spawn_capturing_provider(vec![answer("ok")]).await;
+    let b = spawn_capturing_provider(vec![]).await;
+    let state = state(&env, &a, &b, 128_000, 128_000);
+    let id = seeded(&state, &env.ws, 2, true).await;
+
+    let out = state.run_command(id, "model", "twin").await.unwrap();
+    assert!(out.ok, "{out:?}");
+    turn_done(&state, id, "go on").await;
+    assert!(provider_saw_reasoning(&body(&a, 0)));
+}
+
+// Given a conversation on `default`
+// When /model names the current alias
+// Then it is a no-op: nothing is saved or published
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_same_alias_is_a_no_op() {
+    let env = env();
+    let a = spawn_capturing_provider(vec![]).await;
+    let b = spawn_capturing_provider(vec![]).await;
+    let state = state(&env, &a, &b, 128_000, 128_000);
+    let id = seeded(&state, &env.ws, 1, false).await;
+
+    let out = state.run_command(id, "model", "default").await.unwrap();
+    assert!(out.ok, "{out:?}");
+    assert_eq!(out.data.unwrap()["changed"], false);
+    assert!(stored(&state, id, "model.changed").await.is_empty());
+    assert_eq!(
+        state.history().meta(id).await.unwrap().unwrap().model,
+        "default"
+    );
+}
+
+// Given a turn in flight
+// When /model other runs
+// Then it is accepted for after the turn, the turn finishes on the old model,
+//      and the next one goes to the new
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_switch_during_a_turn_applies_after_it() {
+    let env = env();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let a = spawn_gated_provider(vec![answer("old model")], release.clone()).await;
+    let b = spawn_capturing_provider(vec![answer("new model")]).await;
+    let state = state(&env, &a, &b, 128_000, 128_000);
+    let id = seeded(&state, &env.ws, 1, false).await;
+    let sub = state.subscribe(id, None).await.unwrap();
+
+    send_text(&state, id, "first").await;
+    wait_for("the turn's request", || a.bodies().len() == 1).await;
+    let out = state.run_command(id, "model", "other").await.unwrap();
+    assert!(out.ok, "{out:?}");
+    assert_eq!(out.data.as_ref().unwrap()["accepted"], true);
+    assert_eq!(out.data.as_ref().unwrap()["applies"], "after_turn");
+    assert!(b.bodies().is_empty());
+    assert_eq!(state.session_summary(id).await.unwrap().model, "default");
+
+    release.notify_one();
+    let events = collect_until(sub, |e| e.kind == "model.changed").await;
+    let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
+    let end = kinds.iter().position(|k| *k == "turn.end").unwrap();
+    let changed = kinds.iter().position(|k| *k == "model.changed").unwrap();
+    assert!(end < changed, "after the turn: {kinds:?}");
+    assert_eq!(state.session_summary(id).await.unwrap().model, "other");
+
+    turn_done(&state, id, "second").await;
+    assert_eq!(a.bodies().len(), 1);
+    assert_eq!(body(&b, 0)["model"], "model-b");
+    assert!(all_text(&body(&b, 0)).contains("old model"));
+}
+
+// Given an agent waiting on its `ask`
+// When /model runs
+// Then it is refused and nothing changes
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_switch_is_refused_while_an_ask_waits() {
+    let env = env();
+    let ask = tool_call_chunk("ask_1", "ask", &json!({"question": "which scope?"}));
+    let a = spawn_capturing_provider(vec![http_sse(&sse_body(&[&ask]))]).await;
+    let b = spawn_capturing_provider(vec![]).await;
+    let state = state(&env, &a, &b, 128_000, 128_000);
+    let id = seeded(&state, &env.ws, 1, false).await;
+    let sub = state.subscribe(id, None).await.unwrap();
+    send_text(&state, id, "go").await;
+    collect_until(sub, |e| {
+        e.kind == "agent.state" && e.payload["to"] == "yielded"
+    })
+    .await;
+
+    let out = state.run_command(id, "model", "other").await.unwrap();
+    assert!(!out.ok);
+    assert!(out.error.unwrap().contains("waiting for"));
+    assert_eq!(state.session_summary(id).await.unwrap().model, "default");
+    assert!(stored(&state, id, "model.changed").await.is_empty());
+}
+
+// Given a gated tool call waiting for a decision
+// When /model runs
+// Then it is refused and nothing changes
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_switch_is_refused_while_a_permission_request_waits() {
+    let env = env();
+    let target = env.ws.join("out.txt");
+    let write = tool_call_chunk("w1", "write", &json!({"path": target, "content": "hello"}));
+    let a = spawn_capturing_provider(vec![http_sse(&sse_body(&[&write]))]).await;
+    let b = spawn_capturing_provider(vec![]).await;
+    let state = state(&env, &a, &b, 128_000, 128_000);
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let sub = state.subscribe(id, None).await.unwrap();
+    send_text(&state, id, "write it").await;
+    collect_until(sub, |e| e.kind == "permission.requested").await;
+
+    let out = state.run_command(id, "model", "other").await.unwrap();
+    assert!(!out.ok);
+    assert_eq!(state.session_summary(id).await.unwrap().model, "default");
+    assert!(stored(&state, id, "model.changed").await.is_empty());
+}
+
+// Given a /compact whose summary is still in flight
+// When /model runs
+// Then it is refused as a compaction is running, and goes through afterwards
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_switch_is_refused_during_a_compaction() {
+    let env = env();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let a = spawn_gated_provider(vec![answer(SUMMARY)], release.clone()).await;
+    let b = spawn_capturing_provider(vec![]).await;
+    let state = state(&env, &a, &b, 20_000, 128_000);
+    let id = seeded(&state, &env.ws, 4, false).await;
+
+    let compacting = {
+        let state = state.clone();
+        tokio::spawn(async move { state.run_command(id, "compact", "").await })
+    };
+    wait_for("the summary request", || a.bodies().len() == 1).await;
+    let refused = state.run_command(id, "model", "other").await.unwrap();
+    assert!(!refused.ok, "{refused:?}");
+    assert!(refused.error.unwrap().contains("a compaction is running"));
+
+    release.notify_one();
+    assert!(compacting.await.unwrap().unwrap().ok);
+    let out = state.run_command(id, "model", "other").await.unwrap();
+    assert!(out.ok, "{out:?}");
+}
+
+// Given a conversation larger than the target's input budget
+// When /model runs
+// Then it is refused with the /compact hint and nothing changes
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_target_too_small_for_the_conversation_is_refused_and_nothing_changes() {
+    let env = env();
+    let a = spawn_capturing_provider(vec![]).await;
+    let b = spawn_capturing_provider(vec![]).await;
+    let state = state(&env, &a, &b, 128_000, 8_000);
+    let id = seeded(&state, &env.ws, 4, false).await;
+    let before = serde_json::to_value(state.context(id).await.unwrap()).unwrap();
+
+    let out = state.run_command(id, "model", "other").await.unwrap();
+    assert!(!out.ok);
+    assert_eq!(
+        out.error.unwrap(),
+        "the conversation does not fit other's window: /compact first"
+    );
+    let meta = state.history().meta(id).await.unwrap().unwrap();
+    assert_eq!(meta.model, "default");
+    assert!(!meta.model_resolution.unwrap().contains("model-b"));
+    assert!(stored(&state, id, "model.changed").await.is_empty());
+    let after = serde_json::to_value(state.context(id).await.unwrap()).unwrap();
+    assert_eq!(after, before);
+    assert_eq!(state.session_summary(id).await.unwrap().model, "default");
+}
+
+// Given a switch to another alias and a stop
+// When the conversation is resumed
+// Then it runs on the new model with its variant, and `model.changed` replays
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resume_after_a_switch_uses_the_new_model() {
+    let env = env();
+    let a = spawn_capturing_provider(vec![]).await;
+    let b = spawn_capturing_provider(vec![answer("still b")]).await;
+    let state = state(&env, &a, &b, 128_000, 128_000);
+    let id = seeded(&state, &env.ws, 2, false).await;
+    let out = state.run_command(id, "model", "other").await.unwrap();
+    assert!(out.ok, "{out:?}");
+    state.close_session(id).await.unwrap();
+    state.history().flush().await.unwrap();
+
+    let (resumed, was_resumed) = state
+        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .await
+        .unwrap();
+    assert!(was_resumed);
+    assert_eq!(resumed, id);
+    let summary = state.session_summary(id).await.unwrap();
+    assert_eq!(summary.model, "other");
+    assert_eq!(summary.variant.as_deref(), Some("high"));
+    assert_eq!(stored(&state, id, "model.changed").await.len(), 1);
+
+    turn_done(&state, id, "after the restart").await;
+    assert!(a.bodies().is_empty());
+    let request = body(&b, 0);
+    assert_eq!(request["model"], "model-b");
+    assert_eq!(request["reasoning_effort"], "high");
+    assert!(all_text(&request).contains("answer 1"));
+
+    // A second switch counts on from the stored one.
+    let back = state.run_command(id, "model", "default").await.unwrap();
+    assert!(back.ok, "{back:?}");
+    let events = stored(&state, id, "model.changed").await;
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].payload["revision"], 2);
+    assert_eq!(events[1].payload["revision"], 3);
+}

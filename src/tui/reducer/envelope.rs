@@ -103,6 +103,24 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             },
             _ => child.status,
         };
+        if e.kind == "subagent.done" {
+            let text = format!(
+                "subagent {} · {} · {}",
+                child.name,
+                child.status.label(),
+                child
+                    .goal
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .chars()
+                    .take(100)
+                    .collect::<String>()
+            );
+            s.conversation
+                .blocks
+                .push(block(e.seq.to_string(), BlockKind::Notice(text)));
+        }
         return Ok(());
     }
     match kind {

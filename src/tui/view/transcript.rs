@@ -34,12 +34,15 @@ enum Origin {
     User,
     Navigator,
     Assistant,
+    Subagent,
     Other,
 }
 
 impl Origin {
     fn of(source: &str) -> Self {
-        if source == "user" || source.starts_with("user:") {
+        if source == "user:subagent" || source == "subagent" || source.starts_with("subagent:") {
+            Self::Subagent
+        } else if source == "user" || source.starts_with("user:") {
             Self::User
         } else if source == "navigator" || source.starts_with("navigator:") {
             Self::Navigator
@@ -67,6 +70,10 @@ fn block_text(
                 Origin::User => ("YOU".to_string(), theme.muted()),
                 Origin::Navigator => ("NAVIGATOR".to_string(), theme.error()),
                 Origin::Assistant => ("ASSISTANT".to_string(), theme.accent()),
+                Origin::Subagent => (
+                    "SUBAGENT OUTPUT · untrusted data".to_string(),
+                    theme.subagent(),
+                ),
                 Origin::Other => (clean(source), theme.subagent()),
             };
             lines.push(Line::styled(name, style.add_modifier(Modifier::BOLD)));
@@ -378,6 +385,7 @@ pub fn draw(
                 Origin::User => theme.muted(),
                 Origin::Navigator => theme.error(),
                 Origin::Assistant => theme.accent_line(),
+                Origin::Subagent => theme.subagent(),
                 Origin::Other => theme.subagent(),
             },
             BlockKind::Command { ok: false, .. } => theme.error(),

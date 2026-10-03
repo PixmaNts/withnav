@@ -340,12 +340,8 @@ pub struct SessionListEntry {
     pub parent_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub child_status: Option<String>,
-    #[serde(default = "default_promptable", skip_serializing_if = "is_promptable")]
+    #[serde(skip_serializing_if = "is_promptable")]
     pub promptable: bool,
-}
-
-fn default_promptable() -> bool {
-    true
 }
 
 fn is_promptable(value: &bool) -> bool {

@@ -60,6 +60,11 @@ pub enum ToolError {
     Canceled,
     #[error("tool denied [{code}]: {message}")]
     Denied { code: String, message: String },
+    /// A `write` or `edit` was bound to the canonical file a reviewer saw, and
+    /// a link (or another kind of file) is there now. Nothing was touched; the
+    /// call is checked again.
+    #[error("the destination changed since it was checked: {0}")]
+    DestinationChanged(PathBuf),
     #[error("tool I/O error: {0}")]
     Io(#[from] std::io::Error),
 }

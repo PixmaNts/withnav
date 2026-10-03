@@ -7,7 +7,7 @@ use crate::agent::permissions::{
 };
 use crate::agent::prompt::{assistant_history_message, build_request};
 use crate::agent::response::{classify, HumanRequest, StepOutcome};
-use crate::error::{AgentError, ProviderError};
+use crate::error::{AgentError, ProviderError, ToolError};
 use crate::provider::client::ModelClient;
 use crate::provider::openai::{ChatMessage, ClientCache};
 use crate::provider::{AssistantMessage, StreamDelta, ToolCall};
@@ -542,13 +542,21 @@ async fn execute_call(
         args: &call.args,
     });
     let mut args = call.args.clone();
-    if let (Some(destination), Some(object)) = (destination, args.as_object_mut()) {
-        object.insert(
-            "path".into(),
-            serde_json::Value::String(destination.to_string_lossy().into_owned()),
-        );
+    if let Some(object) = args.as_object_mut() {
+        // Only the loop binds a call to a destination, never the model.
+        object.remove(crate::tools::BOUND_ARG);
+        if let Some(destination) = destination {
+            object.insert(
+                "path".into(),
+                serde_json::Value::String(destination.to_string_lossy().into_owned()),
+            );
+            object.insert(
+                crate::tools::BOUND_ARG.into(),
+                serde_json::Value::Bool(true),
+            );
+        }
     }
-    let mut result = actor
+    let dispatched = actor
         .registry
         .dispatch(
             &call.name,
@@ -556,8 +564,28 @@ async fn execute_call(
             actor.cancel.child_token(),
             &actor.tool_context,
         )
-        .await
-        .unwrap_or_else(|e| ToolResult::error("tool_error", e.to_string()));
+        .await;
+    let mut result = match dispatched {
+        // The tool opened the reviewed file without following links and found
+        // one (or another kind of file) there: nothing was touched, and the
+        // call is checked again. The attempt stays visible, closed as an error.
+        Err(ToolError::DestinationChanged(path)) => {
+            observe(AgentEvent::PostCall {
+                tool_call_id: &call.id,
+                name: &call.name,
+                result: &ToolResult::error(
+                    "destination_changed",
+                    format!(
+                        "{} changed after it was checked; nothing was written, the call is checked again",
+                        path.display()
+                    ),
+                ),
+            });
+            return None;
+        }
+        Ok(result) => result,
+        Err(e) => ToolResult::error("tool_error", e.to_string()),
+    };
     // The role guard let this call run: the durable `tool.post_call` says so.
     if let Some(note) = guard_note {
         match &mut result.metadata {

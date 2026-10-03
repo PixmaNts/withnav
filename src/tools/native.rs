@@ -8,7 +8,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::ToolError;
 use crate::tools::{
-    bound_output, validate_path, Tool, ToolContext, ToolResult, DEFAULT_MAX_OUTPUT_BYTES,
+    bound_destination, bound_output, nofollow, validate_path, Tool, ToolContext, ToolResult,
+    DEFAULT_MAX_OUTPUT_BYTES,
 };
 
 const GREP_MAX_MATCHES: usize = 1000;
@@ -125,6 +126,12 @@ impl Tool for WriteTool {
             let path = arg_str(&args, "path")?;
             let content = arg_str(&args, "content")?;
 
+            // A reviewed destination is opened without following any link.
+            if let Some(destination) = bound_destination(&args, &cx.writable_roots)? {
+                nofollow::write_atomic(&destination, content.as_bytes())?;
+                return Ok(ToolResult::ok(format!("wrote {} bytes", content.len())));
+            }
+
             // Validate first: a refused path must leave nothing on disk, not
             // even the folders leading to it.
             let resolved = validate_path(&cx.writable_roots, Path::new(&path))?;
@@ -189,25 +196,36 @@ impl Tool for EditTool {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
+            let change = |content: String| {
+                let count = content.matches(&old).count();
+                if count == 0 {
+                    return Err(ToolError::NoMatch);
+                }
+                if count > 1 && !replace_all {
+                    return Err(ToolError::AmbiguousMatch { count });
+                }
+                let updated = if replace_all {
+                    content.replace(&old, &new)
+                } else {
+                    content.replacen(&old, &new, 1)
+                };
+                Ok((updated, format!("replaced {count} occurrence(s)")))
+            };
+            // A reviewed destination is read and written back without
+            // following any link.
+            if let Some(destination) = bound_destination(&args, &cx.writable_roots)? {
+                let report = nofollow::edit_atomic(&destination, change)?;
+                return Ok(ToolResult::ok(report));
+            }
+
             let resolved = validate_path(&cx.writable_roots, Path::new(&path))?;
             if !resolved.is_file() {
                 return Err(ToolError::NotFound(resolved));
             }
             let content = tokio::fs::read_to_string(&resolved).await?;
-            let count = content.matches(&old).count();
-            if count == 0 {
-                return Err(ToolError::NoMatch);
-            }
-            if count > 1 && !replace_all {
-                return Err(ToolError::AmbiguousMatch { count });
-            }
-            let updated = if replace_all {
-                content.replace(&old, &new)
-            } else {
-                content.replacen(&old, &new, 1)
-            };
+            let (updated, report) = change(content)?;
             atomic_write(&resolved, updated.as_bytes())?;
-            Ok(ToolResult::ok(format!("replaced {count} occurrence(s)")))
+            Ok(ToolResult::ok(report))
         })
     }
 }

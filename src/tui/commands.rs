@@ -140,7 +140,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ("alt+w", "close tab (the conversation is kept)"),
     ("alt+b", "hide / show the tab bar"),
     ("alt+r", "hide / show the side panel"),
-    ("f2", "models: switch this conversation"),
+    ("f2", "models: switch this conversation (the model only)"),
     ("ctrl+n (in models)", "open that model in a new tab"),
     ("f1", "help"),
     ("tab", "build / plan (empty message)"),

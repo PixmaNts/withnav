@@ -175,6 +175,25 @@ struct ResumedSession {
     compaction: Option<crate::agent::compaction::Compaction>,
 }
 
+struct PreparedSession {
+    session_id: SessionId,
+    workspace: PathBuf,
+    alias: String,
+    profile: Option<String>,
+    resumed: Option<ResumedSession>,
+    actor: AgentActor,
+    agents: Arc<Agents>,
+    role: Arc<AgentDefinition>,
+    snapshot: crate::provider::catalog::ModelResolution,
+    selected: runtime::SelectedVariant,
+    offered: resolve::Offer,
+    limits: ContextLimits,
+    session_cancel: CancellationToken,
+    expired: Vec<(Ulid, String)>,
+    save_late: bool,
+    child_parent: Option<SessionId>,
+}
+
 /// Frozen `GET /v1/sessions/:id` body.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionSummary {
@@ -1026,6 +1045,37 @@ impl Service {
         child_parent: Option<SessionId>,
         inherited: Option<SelectedModel>,
     ) -> Result<SessionId, ServerError> {
+        let prepared = self
+            .prepare_session_kind(
+                workspace,
+                model,
+                profile,
+                agent,
+                resumed,
+                resume_workspace,
+                variant,
+                child_policy,
+                child_parent,
+                inherited,
+            )
+            .await?;
+        self.publish_session(prepared).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare_session_kind(
+        &self,
+        workspace: &Path,
+        model: Option<&str>,
+        profile: Option<&str>,
+        agent: Option<&str>,
+        resumed: Option<ResumedSession>,
+        resume_workspace: &Path,
+        variant: &VariantChoice,
+        child_policy: Option<(BTreeMap<String, bool>, bool)>,
+        child_parent: Option<SessionId>,
+        inherited: Option<SelectedModel>,
+    ) -> Result<PreparedSession, ServerError> {
         // Resume keeps the stored model/profile/workspace (the stored row is
         // the authority); a fresh session honors the request's.
         let session_id = match &resumed {
@@ -1217,6 +1267,46 @@ impl Service {
             None => Vec::new(),
         };
 
+        Ok(PreparedSession {
+            session_id,
+            workspace,
+            alias,
+            profile: profile.map(str::to_string),
+            resumed,
+            actor,
+            agents,
+            role,
+            snapshot,
+            selected,
+            offered,
+            limits,
+            session_cancel,
+            expired,
+            save_late,
+            child_parent,
+        })
+    }
+
+    async fn publish_session(&self, prepared: PreparedSession) -> Result<SessionId, ServerError> {
+        let PreparedSession {
+            session_id,
+            workspace,
+            alias,
+            profile,
+            resumed,
+            mut actor,
+            agents,
+            role,
+            snapshot,
+            selected,
+            offered,
+            limits,
+            session_cancel,
+            expired,
+            save_late,
+            child_parent,
+        } = prepared;
+        let profile = profile.as_deref();
         let next_seq = resumed
             .as_ref()
             .map(|loaded| loaded.meta.last_seq + 1)

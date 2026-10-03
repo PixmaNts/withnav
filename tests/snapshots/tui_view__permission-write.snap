@@ -37,4 +37,4 @@ expression: snapshot
                      │┌ Message ───────────────────────────────────────────────────────────────────┐
  alt+1…9 switch      ││                                                                            │
  alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
- alt+b hide bar      │ y allow once  a always  n deny  esc stop  ctrl+p commands
+ alt+b hide bar      │ y allow once · a always · n deny · esc stop · ctrl+p palette

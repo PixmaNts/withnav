@@ -2472,3 +2472,57 @@ fn the_right_column_hides_under_140_columns_and_alt_r_toggles_it() {
     ui.panel_shown = Some(true);
     assert!(!screen_text(&s, &ui, (90, 30)).contains("AGENTS"));
 }
+
+// ---------------------------------------------------------------- key bar
+
+fn bottom_row(s: &State, ui: &UiState, editor: &Editor, size: (u16, u16)) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
+    terminal
+        .draw(|f| view::draw(f, s, ui, editor, &mut RenderCache::default()))
+        .unwrap();
+    row_text(&terminal, size.1 - 1, size.0)
+}
+
+#[test]
+fn the_key_bar_follows_what_the_keys_do_now() {
+    let s = done();
+    let ui = UiState::default();
+    let mut editor = Editor::new();
+    let bar = bottom_row(&s, &ui, &editor, (200, 20));
+    assert!(
+        bar.contains(
+            "tab build/plan · ctrl+p palette · alt+1…9 tabs · /model · /compact · esc stop · alt+r panel · f1 help"
+        ),
+        "{bar}"
+    );
+    // narrow: whole hints only, the first ones kept
+    let bar = bottom_row(&s, &ui, &editor, (60, 20));
+    assert!(bar.trim_end().ends_with("/model"), "{bar}");
+    // typing: sending and newlines
+    editor.set_text("hello");
+    let bar = bottom_row(&s, &ui, &editor, (200, 20));
+    assert!(bar.contains("enter send · alt+enter newline"), "{bar}");
+    // a prompt waits: its keys first
+    let s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
+    let bar = bottom_row(&s, &ui, &Editor::new(), (200, 30));
+    assert!(
+        bar.contains("y allow once · a always · n deny · esc stop · ctrl+p palette"),
+        "{bar}"
+    );
+    let theme = Theme::ayu_dark();
+    let mut terminal = Terminal::new(TestBackend::new(200, 30)).unwrap();
+    terminal
+        .draw(|f| view::draw(f, &s, &ui, &Editor::new(), &mut RenderCache::default()))
+        .unwrap();
+    let x = bar[..bar.find("y allow").unwrap()].chars().count() as u16;
+    assert_eq!(
+        terminal.backend().buffer()[(x, 29)].fg,
+        theme.text,
+        "the key"
+    );
+    assert_eq!(
+        terminal.backend().buffer()[(x + 2, 29)].fg,
+        theme.muted,
+        "its label"
+    );
+}

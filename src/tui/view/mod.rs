@@ -31,25 +31,65 @@ pub struct RenderCache {
     pub panel_drawn: bool,
 }
 
-/// Splits a hint line (`key label  key label`) into keys in text colour and labels in muted.
-fn hint_spans(hint: &str, theme: &Theme) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    for (index, part) in hint.split("  ").enumerate() {
-        if index > 0 {
-            spans.push(Span::raw("  "));
+/// The key bar: `key label` pairs, keys in text colour and labels muted, as many as fit in
+/// `width` columns; they are in order of use, so the last ones give way first.
+fn key_bar(hints: &[&str], width: usize, theme: &Theme) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::raw(" ")];
+    let mut used = 1;
+    for (index, hint) in hints.iter().enumerate() {
+        let sep = if index == 0 { "" } else { " · " };
+        let wanted = sep.chars().count() + hint.chars().count();
+        if used + wanted > width {
+            break;
         }
-        let lead = part.len() - part.trim_start().len();
-        spans.push(Span::raw(part[..lead].to_string()));
-        let part = &part[lead..];
-        match part.split_once(' ') {
+        used += wanted;
+        spans.push(Span::styled(sep, theme.border()));
+        match hint.split_once(' ') {
             Some((key, label)) => {
                 spans.push(Span::styled(key.to_string(), theme.text()));
                 spans.push(Span::styled(format!(" {label}"), theme.muted()));
             }
-            None => spans.push(Span::styled(part.to_string(), theme.text())),
+            None => spans.push(Span::styled(hint.to_string(), theme.text())),
         }
     }
     spans
+}
+
+/// The keys that apply now: a permission prompt's while one waits for an answer, the deny
+/// message's while one is typed, else the everyday ones.
+fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [&'static str] {
+    // An answered request takes no keys: the usual hints come back.
+    let answerable = state
+        .open_permission()
+        .filter(|p| state.answered_permission.as_deref() != Some(p.request_id.as_str()));
+    let draft = answerable.and_then(|p| ui.deny_draft(&p.request_id));
+    match (answerable, draft) {
+        (Some(_), Some(_)) => &["enter deny with this message", "esc deny without one"],
+        (Some(_), None) if editor.text().is_empty() => &[
+            "y allow once",
+            "a always",
+            "n deny",
+            "esc stop",
+            "ctrl+p palette",
+        ],
+        _ if editor.text().is_empty() => &[
+            "tab build/plan",
+            "ctrl+p palette",
+            "alt+1…9 tabs",
+            "/model",
+            "/compact",
+            "esc stop",
+            "alt+r panel",
+            "f1 help",
+        ],
+        _ => &[
+            "enter send",
+            "alt+enter newline",
+            "ctrl+p palette",
+            "esc stop",
+            "f1 help",
+        ],
+    }
 }
 
 pub fn draw(
@@ -162,19 +202,12 @@ pub fn draw(
             hints,
         );
     } else {
-        // An answered request takes no keys: the usual hints come back.
-        let answerable = state
-            .open_permission()
-            .filter(|p| state.answered_permission.as_deref() != Some(p.request_id.as_str()));
-        let draft = answerable.and_then(|p| ui.deny_draft(&p.request_id));
-        let hint = match (answerable, draft) {
-            (Some(_), Some(_)) => " enter deny with this message  esc deny without one",
-            (Some(_), None) if editor.text().is_empty() => {
-                " y allow once  a always  n deny  esc stop  ctrl+p commands"
-            }
-            _ => " enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help",
-        };
-        frame.render_widget(Paragraph::new(Line::from(hint_spans(hint, &theme))), hints);
+        let bar = key_bar(
+            self::hints(state, ui, editor),
+            usize::from(hints.width),
+            &theme,
+        );
+        frame.render_widget(Paragraph::new(Line::from(bar)), hints);
     }
     pickers::draw(frame, full, state, ui, &theme);
 }

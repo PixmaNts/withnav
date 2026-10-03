@@ -21,4 +21,4 @@ expression: snapshot
 │line one                                                  │
 │line two                                                  │
 └──────────────────────────────────────────────────────────┘
- enter send  alt+enter newline  esc stop  ctrl+p commands  f
+ enter send · alt+enter newline · ctrl+p palette · esc stop

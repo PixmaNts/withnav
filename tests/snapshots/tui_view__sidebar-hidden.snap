@@ -25,4 +25,4 @@ expression: snapshot
 ┌ Message ─────────────────────────────────────────────────────────────────────────────────────────┐
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
- enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help
+ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model · /compact · esc stop · alt+r panel

@@ -31,4 +31,4 @@ expression: snapshot
                      │┌ Message ───────────────────────────────────────────────────────────────────┐
  alt+1…9 switch      ││                                                                            │
  alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
- alt+b hide bar      │ enter deny with this message  esc deny without one
+ alt+b hide bar      │ enter deny with this message · esc deny without one

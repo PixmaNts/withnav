@@ -41,4 +41,4 @@ expression: snapshot
                      │┌ Message ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
  alt+1…9 switch      ││                                                                                                                                        │
  alt+w close         │└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
- alt+b hide bar      │ enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help
+ alt+b hide bar      │ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model · /compact · esc stop · alt+r panel · f1 help

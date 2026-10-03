@@ -114,4 +114,5 @@ into `develop`. A release merges `develop` into `main` and is tagged `vX.Y.Z`. D
 
 ## License
 
-The crates declare `MIT OR Apache-2.0` (`Cargo.toml`). No `LICENSE` file is in the repository yet.
+Navai is dual-licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option
+(`license = "MIT OR Apache-2.0"` in `Cargo.toml`).

@@ -395,6 +395,8 @@ pub enum Effect {
     Create(CreateSessionRequest),
     Resume(String),
     FetchMetadata(String),
+    /// Briefly retry the persisted outcome after a child's terminal stream event.
+    FetchChildTerminalMetadata(String),
     /// Reads the session's context snapshot; `epoch` is echoed in `ClientEvent::Context`.
     FetchContext {
         session_id: String,

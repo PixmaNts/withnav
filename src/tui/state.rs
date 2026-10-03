@@ -298,11 +298,28 @@ pub enum ChildStatus {
 }
 
 impl ChildStatus {
+    pub fn terminal_event(event: &EventEnvelope) -> Option<Self> {
+        match event.kind.as_str() {
+            "turn.end" => match event.payload["outcome"].as_str() {
+                Some("done") => Some(Self::Done),
+                Some("error") => Some(Self::Failed),
+                Some("interrupted") => Some(Self::Stopped),
+                _ => None,
+            },
+            "session.end" => Some(Self::Stopped),
+            _ => None,
+        }
+    }
+
     pub fn project(status: &mut Self, seq: &mut Option<u64>, event: &EventEnvelope) {
         if status.terminal() || seq.is_some_and(|held| event.seq <= held) {
             return;
         }
         *seq = Some(event.seq);
+        if let Some(terminal) = Self::terminal_event(event) {
+            *status = terminal;
+            return;
+        }
         *status = match event.kind.as_str() {
             "turn.start" => Self::Running,
             "agent.yield" if event.payload["kind"] == "budget" => Self::OutOfSteps,

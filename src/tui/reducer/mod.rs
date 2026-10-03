@@ -281,6 +281,9 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     .map(|m| m.session_id.clone())
                     .or(s.resuming.clone())
                 {
+                    if super::state::ChildStatus::terminal_event(&envelope).is_some() {
+                        effects.push(Effect::FetchChildTerminalMetadata(id.clone()));
+                    }
                     project_child(s, &id, &envelope);
                 }
             }
@@ -580,6 +583,15 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     );
                     if status.terminal() {
                         s.child_status = status;
+                        for tab in &mut s.tabs {
+                            if let Some(child) = tab
+                                .children
+                                .iter_mut()
+                                .find(|c| c.session_id == m.session_id)
+                            {
+                                child.status = status;
+                            }
+                        }
                     }
                 }
                 // Only reached for the current generation, so `m` describes this conversation.

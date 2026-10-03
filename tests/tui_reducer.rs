@@ -18,6 +18,93 @@ use ulid::Ulid;
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
 #[test]
+fn a_child_finishes_after_its_parent_closes_and_refreshes_its_outcome() {
+    for (kind, payload, expected) in [
+        ("turn.end", json!({"outcome":"done"}), ChildStatus::Done),
+        ("turn.end", json!({"outcome":"error"}), ChildStatus::Failed),
+        (
+            "session.end",
+            json!({"reason":"stopped_by_owner"}),
+            ChildStatus::Stopped,
+        ),
+    ] {
+        let mut s = subagent_parent();
+        spawn_subagent(&mut s, None);
+        let mut ui = UiState::default();
+        handle_action(&mut s, &mut ui, Action::OpenChild(Ulid(2).to_string()));
+        s.active = 0;
+        handle_action(&mut s, &mut ui, Action::CloseTab);
+        assert_eq!(s.tabs.len(), 1);
+        let effects = subagent_event(&mut s, 10, kind, payload);
+        assert_eq!(s.active_child_status(), expected);
+        assert!(effects.contains(&Effect::FetchChildTerminalMetadata(Ulid(2).to_string())));
+        assert!(
+            !subagent_event(&mut s, 10, "turn.start", json!({"turn_id":"late"}))
+                .contains(&Effect::FetchChildTerminalMetadata(Ulid(2).to_string()))
+        );
+        assert_eq!(s.active_child_status(), expected);
+        subagent_event(&mut s, 11, "turn.start", json!({"turn_id":"late"}));
+        assert_eq!(s.active_child_status(), expected);
+        let metadata: SessionMetadata = serde_json::from_value(json!({"session_id":Ulid(2),"workspace":"/ws","model":"fast","agent":"explore","actor_state":"stopped","current_seq":11,"parent_session_id":Ulid(1),"promptable":false,"child_status":expected.label()})).unwrap();
+        let generation = s.generation.clone();
+        update(
+            &mut s,
+            ClientEvent::Metadata {
+                generation,
+                result: Ok(metadata),
+            },
+        )
+        .unwrap();
+        assert_eq!(s.active_child_status(), expected);
+    }
+}
+
+#[tokio::test]
+async fn terminal_metadata_refresh_retries_until_the_persisted_outcome_arrives() {
+    use navai::tui::{
+        client::Client,
+        input::Editor,
+        runtime::{Context, Executor},
+    };
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
+    let server = MockServer::start().await;
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let count = attempts.clone();
+    Mock::given(method("GET")).and(path("/v1/sessions/child"))
+        .respond_with(move |_: &wiremock::Request| {
+            let status = if count.fetch_add(1, Ordering::SeqCst) == 0 { "running" } else { "done" };
+            ResponseTemplate::new(200).set_body_json(json!({"session_id":"child","workspace":"/ws","model":"fast","actor_state":"stopped","current_seq":10,"parent_session_id":"parent","promptable":false,"child_status":status}))
+        }).expect(2).mount(&server).await;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let mut executor = Executor::new(Client::new(server.uri(), None), tx);
+    executor.execute(
+        Effect::FetchChildTerminalMetadata("child".into()),
+        &Context {
+            generation: Generation(7),
+            session_id: Some("child".into()),
+            workspace: "/ws".into(),
+            config_dir: None,
+        },
+        &mut Editor::new(),
+    );
+    let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(event, ClientEvent::Metadata { generation:Generation(7), result:Ok(m) } if m.child_status.as_deref() == Some("done"))
+    );
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+#[test]
 fn old_initialization_never_overwrites_ordered_or_terminal_child_facts() {
     let mut s = subagent_parent();
     let entry: SessionListEntry = serde_json::from_value(json!({"id":Ulid(2),"created_at":"now","updated_at":"now","message_count":0,"live":true,"agent":"explore","parent_session_id":Ulid(1),"child_status":"running","promptable":false})).unwrap();

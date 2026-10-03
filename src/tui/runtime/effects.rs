@@ -214,6 +214,37 @@ impl Executor {
                     }
                 });
             }
+            Effect::FetchChildTerminalMetadata(id) => {
+                let client = self.client.clone();
+                self.spawn_event(async move {
+                    let mut result = Err("could not refresh the subagent's terminal state".into());
+                    for attempt in 0..4 {
+                        result = match tokio::time::timeout(
+                            std::time::Duration::from_secs(1),
+                            client.summary(&id),
+                        )
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(_) => {
+                                Err("timed out refreshing the subagent's terminal state".into())
+                            }
+                        };
+                        if result.as_ref().is_ok_and(|m| {
+                            crate::tui::state::ChildStatus::from_wire(
+                                m.child_status.as_deref().unwrap_or(""),
+                            )
+                            .terminal()
+                        }) {
+                            break;
+                        }
+                        if attempt < 3 {
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        }
+                    }
+                    ClientEvent::Metadata { generation, result }
+                });
+            }
             Effect::FetchContext { session_id, epoch } => {
                 let client = self.client.clone();
                 self.spawn_event(async move {

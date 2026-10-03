@@ -125,6 +125,11 @@ async fn run_steps(
             }
         }
 
+        if actor.cancel.is_cancelled() {
+            actor.state = AgentState::Idle;
+            return Ok(RunOutcome::Interrupted);
+        }
+
         // The safe boundary before a request: every tool result of the last
         // step is in, nothing waits for a human. A prompt over the input
         // budget is compacted by the caller before it is sent.

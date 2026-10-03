@@ -77,9 +77,17 @@ impl Service {
                     }
                     .bounded()
                 };
-                let _ = watchdog
+                if let Some(checked) = watchdog
                     .check(judge.as_deref(), &evidence, &handle.session_cancel)
-                    .await;
+                    .await
+                {
+                    if let Err(error) = service
+                        .apply_watchdog(link.parent_id, child, checked, evidence)
+                        .await
+                    {
+                        tracing::error!(%child, %error, "child watchdog outcome failed");
+                    }
+                }
             }
         });
     }

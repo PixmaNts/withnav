@@ -573,6 +573,24 @@ impl HistoryStore {
         }).await.map_err(|e| e.to_string())?
     }
 
+    /// Uses the same durable outbox and sequencer commit as child completion.
+    pub async fn enqueue_watchdog(
+        &self,
+        parent: Ulid,
+        payload: serde_json::Value,
+        result: String,
+        consume: bool,
+    ) -> Result<(), String> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
+            conn.execute("INSERT INTO completion_outbox (child_id,parent_id,outcome,result_ref,payload,result_text,consumed) VALUES (?1,?2,'watchdog',?1,?3,?4,?5)",
+                params![Ulid::new().to_string(), parent.to_string(), payload.to_string(), result, !consume]).map_err(|e| e.to_string())?;
+            Ok(())
+        }).await.map_err(|e| e.to_string())?
+    }
+
     pub async fn unconsumed_completions(
         &self,
         parent: Ulid,

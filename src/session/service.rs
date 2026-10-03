@@ -890,7 +890,7 @@ impl Service {
         Ok(())
     }
 
-    async fn drain_completions(&self, parent: SessionId) {
+    pub(crate) async fn drain_completions(&self, parent: SessionId) {
         let Some(owner) = self.handle(parent) else {
             return;
         };
@@ -902,11 +902,16 @@ impl Service {
             }
         };
         for (child, payload) in pending {
+            let kind = if payload["notice_kind"] == "watchdog" {
+                EventKind::SubagentWatchdog
+            } else {
+                EventKind::SubagentDone
+            };
             let history = self.history.clone();
             if let Err(error) = owner
                 .sequencer
                 .commit_acked(
-                    Candidate::new(EventKind::SubagentDone, payload),
+                    Candidate::new(kind, payload),
                     Box::new(move |envelope| {
                         Box::pin(async move { history.deliver_completion(child, envelope).await })
                     }),
@@ -990,7 +995,7 @@ impl Service {
         if handle.parent_session_id != Some(parent) {
             return Err(ServerError::ChildReadOnly);
         }
-        if !handle.status.continue_budget() {
+        if !handle.status.watchdog.resume() && !handle.status.continue_budget() {
             return Err(ServerError::ChildNotParked);
         }
         Ok(())
@@ -1887,6 +1892,14 @@ impl Service {
                     };
                     let service = service.clone();
                     tokio::spawn(async move {
+                        if service.handle(session_id).is_some_and(|h| {
+                            h.status
+                                .watchdog
+                                .stopped
+                                .load(std::sync::atomic::Ordering::Acquire)
+                        }) {
+                            return;
+                        }
                         let result = message.text.clone();
                         let (text, _) = crate::tools::bound_output(&result, 16 * 1024);
                         let _ = service
@@ -1923,10 +1936,11 @@ impl Service {
                         let mut result = crate::tools::bound_output(&result, 15 * 1024).0;
                         let mut text = serde_json::json!({
                             "untrusted_subagent_output": true,
-                            "child_session_id": child,
+                            "child_session_id": payload.get("child_session_id").cloned().unwrap_or(serde_json::json!(child)),
                             "agent": payload["agent"],
                             "outcome": payload["outcome"],
                             "result": result,
+                            "reason": payload.get("reason"),
                         })
                         .to_string();
                         while text.len() > 16 * 1024 {

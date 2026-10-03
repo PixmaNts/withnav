@@ -14,6 +14,7 @@ mod deferred;
 mod delivery;
 pub mod progress;
 mod steering;
+mod watchdog;
 pub use delivery::Delivery;
 mod model;
 
@@ -92,6 +93,7 @@ struct PermissionSlot {
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
+    pub watchdog: watchdog::WatchdogPark,
     pub activity: progress::Activity,
     steering: Arc<steering::Steering>,
     budget_parked: std::sync::atomic::AtomicBool,
@@ -115,9 +117,10 @@ pub struct RuntimeStatus {
 
 impl RuntimeStatus {
     pub fn watchdog_eligible(&self) -> bool {
-        !self
-            .budget_parked
-            .load(std::sync::atomic::Ordering::Acquire)
+        !self.watchdog.is_doubt()
+            && !self
+                .budget_parked
+                .load(std::sync::atomic::Ordering::Acquire)
             && self.pending_permission().is_none()
             && !self.selection.ask_pending()
     }
@@ -665,9 +668,12 @@ async fn runtime_loop(
     let mut control = status.controls.take_receiver();
     let mut delivery_waiting = false;
     let boundary_status = status.clone();
+    let boundary_cancel = session_cancel.clone();
     actor.safe_boundary = Some(Arc::new(move |transcript| {
         let status = boundary_status.clone();
+        let cancel = boundary_cancel.clone();
         Box::pin(async move {
+            status.watchdog.boundary(&cancel).await;
             let mut transcript = status.steering.apply(transcript);
             let callback = status
                 .delivery

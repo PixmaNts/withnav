@@ -1,0 +1,34 @@
+---
+source: tests/tui_view.rs
+expression: snapshot
+---
+ Conversations       │ navai  ~/dev/project                                Fix parser · 01JABCDEFGH 
+▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
+▌  build · idle      │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+            ┌───────────────────── Start a new conversation with… ─────────────────────┐            
+            │ filter: opus                                                             │            
+            │▌opus              cc/claude-opus-5-5                  1M  low high max   │            
+            │                                                                          │            
+            └──────────────────────────────────────────────────────────────────────────┘            
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │──────────────────────────────────────────────────────────────────────────────
+                     │▌build  cognition · claude-opus-5-5 · — / 200k   ready                        
+                     │┌ Message ───────────────────────────────────────────────────────────────────┐
+ alt+1…9 switch      ││                                                                            │
+ alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
+ alt+b hide bar      │ enter send  alt+enter newline  esc stop  ctrl+p commands  f1 help

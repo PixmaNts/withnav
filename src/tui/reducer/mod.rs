@@ -288,6 +288,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 if m.agent.is_some() {
                     s.agent = m.agent.clone();
                 }
+                s.variant = m.variant.clone();
                 s.selected_model_alias = Some(m.model.clone());
                 refresh_model(s);
                 s.session = Some(m)

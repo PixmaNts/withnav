@@ -29,6 +29,7 @@ fn http_dtos_roundtrip_server_shapes() {
         model: Some("fast".into()),
         resume: None,
         agent: None,
+        variant: None,
     };
     let body = serde_json::json!({"workspace":"/tmp","model":"fast"});
     assert_eq!(serde_json::to_value(&request).unwrap(), body);

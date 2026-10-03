@@ -1,5 +1,8 @@
 //! Command catalog and key mapping; no I/O or rendering.
-use super::protocol::{Action, Mode, Overlay};
+use super::{
+    protocol::{Action, Mode, Overlay},
+    state::{State, VariantPick, NO_VARIANT},
+};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 #[derive(Debug, Clone, Copy)]
 pub struct Command {
@@ -18,6 +21,10 @@ pub const CATALOG: &[Command] = &[
     Command {
         name: "/model",
         description: "choose model for a new conversation",
+    },
+    Command {
+        name: "/variant",
+        description: "choose the model variant for this conversation",
     },
     Command {
         name: "/stop",
@@ -61,6 +68,30 @@ pub const KEYS: &[(&str, &str)] = &[
     ("esc / ctrl+c", "stop / close"),
     ("ctrl+q", "quit"),
 ];
+
+/// The rows of the variant list for `pick` (the model's variants, then `off`; none when the model
+/// has no variants) and the row to start on: the default variant for a new conversation, the variant in use for `/variant`.
+pub fn variant_choices(state: &State, pick: &VariantPick) -> (Vec<String>, usize) {
+    let alias = match pick {
+        VariantPick::NewConversation(alias) => Some(alias.as_str()),
+        VariantPick::Current => state.selected_model_alias.as_deref(),
+    };
+    let entry = alias.and_then(|a| state.catalog.iter().find(|m| m.alias == a));
+    let mut rows: Vec<String> = entry.map(|m| m.variants.clone()).unwrap_or_default();
+    if rows.is_empty() {
+        // Nothing to choose: the list shows a note instead.
+        return (rows, 0);
+    }
+    rows.push(NO_VARIANT.to_string());
+    let wanted = match pick {
+        VariantPick::NewConversation(_) => entry.and_then(|m| m.default_variant.clone()),
+        VariantPick::Current => state.variant.clone(),
+    };
+    let start = wanted
+        .and_then(|w| rows.iter().position(|r| *r == w))
+        .unwrap_or(rows.len() - 1);
+    (rows, start)
+}
 
 /// How a typed line is handled: the server's rule (`//text` sends the literal `/text`, `/name args`
 /// is a command, anything else a message), with the client's own commands kept local.
@@ -116,6 +147,7 @@ pub fn command_action(name: &str, mode: Mode) -> Option<Action> {
         "/new" => Action::NewConversation,
         "/sessions" => Action::OpenOverlay(Overlay::Sessions),
         "/model" => Action::OpenOverlay(Overlay::Models),
+        "/variant" => Action::OpenOverlay(Overlay::Variants),
         "/stop" => Action::Stop,
         "/mode" => Action::SetMode(match mode {
             Mode::NextTurn => Mode::Steer,

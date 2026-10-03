@@ -2547,3 +2547,88 @@ fn the_session_summary_and_a_background_change_set_each_tabs_agent() {
     .unwrap();
     assert_eq!(s.tabs[0].agent_name(), "build");
 }
+
+// ---------------------------------------------------------------- model and variant pick
+
+fn variant_catalog() -> Vec<ModelEntry> {
+    vec![
+        ModelEntry {
+            alias: "opus".into(),
+            model: "vendor/opus".into(),
+            context_window: Some(1_000_000),
+            variants: vec!["low".into(), "high".into()],
+            default_variant: Some("high".into()),
+            ..Default::default()
+        },
+        ModelEntry {
+            alias: "flash".into(),
+            model: "vendor/flash".into(),
+            context_window: Some(100_000),
+            ..Default::default()
+        },
+    ]
+}
+
+fn with_variants() -> State {
+    let mut s = st();
+    s.catalog = variant_catalog();
+    s
+}
+
+#[test]
+fn the_variant_picked_with_a_model_is_sent_when_the_conversation_starts() {
+    let (mut s, mut ui) = (with_variants(), ui());
+    ui.variant_pick = Some(VariantPick::NewConversation("opus".into()));
+    handle_action(&mut s, &mut ui, Action::PickVariant("low".into()));
+    assert_eq!(ui.variant_pick, None);
+    assert_eq!(s.selected_model_alias.as_deref(), Some("opus"));
+    assert_eq!(
+        s.variant.as_deref(),
+        Some("low"),
+        "shown before the conversation exists"
+    );
+    let fx = handle_action(&mut s, &mut ui, Action::Submit("hi".into()));
+    let Effect::Create(request) = &fx[0] else {
+        panic!("{fx:?}")
+    };
+    assert_eq!(request.variant, Some(Some("low".into())));
+    assert_eq!(
+        serde_json::to_value(request).unwrap()["variant"],
+        json!("low")
+    );
+    // `off` asks for none: an explicit null
+    let (mut s, mut ui) = (with_variants(), self::ui());
+    ui.variant_pick = Some(VariantPick::NewConversation("opus".into()));
+    handle_action(&mut s, &mut ui, Action::PickVariant("off".into()));
+    assert_eq!(s.variant, None);
+    let fx = handle_action(&mut s, &mut ui, Action::Submit("hi".into()));
+    let Effect::Create(request) = &fx[0] else {
+        panic!("{fx:?}")
+    };
+    let body = serde_json::to_value(request).unwrap();
+    assert!(body.get("variant").is_some_and(Value::is_null), "{body}");
+    // a model picked without the step leaves the server's default: no field
+    let (mut s, mut ui) = (with_variants(), self::ui());
+    handle_action(&mut s, &mut ui, Action::PickModel("opus".into()));
+    assert_eq!(s.variant.as_deref(), Some("high"), "the default is shown");
+    let fx = handle_action(&mut s, &mut ui, Action::Submit("hi".into()));
+    let Effect::Create(request) = &fx[0] else {
+        panic!("{fx:?}")
+    };
+    assert!(serde_json::to_value(request)
+        .unwrap()
+        .get("variant")
+        .is_none());
+}
+
+#[test]
+fn picking_a_model_in_a_conversation_still_opens_a_new_tab() {
+    let (mut s, mut ui) = (with_variants(), ui());
+    s.selected_model_alias = Some("flash".into());
+    created_now(&mut s, "S1").unwrap();
+    ui.variant_pick = Some(VariantPick::NewConversation("opus".into()));
+    handle_action(&mut s, &mut ui, Action::PickVariant("high".into()));
+    assert_eq!((s.tabs.len(), s.active), (2, 1));
+    assert_eq!(s.selected_model_alias.as_deref(), Some("opus"));
+    assert_eq!(s.tabs[0].selected_model_alias.as_deref(), Some("flash"));
+}

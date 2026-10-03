@@ -92,6 +92,7 @@ impl Client {
             model: None,
             resume: Some(id.to_string()),
             agent: None,
+            variant: None,
         })
         .await
     }

@@ -10,12 +10,12 @@ expression: snapshot
                      │ │ ASSISTANT                                                                  
                      │ │ ▸ Reasoning                                                                
                      │ │  The parser treats an empty argument as a missing value.                   
-                     │ │                                                                            
             ┌──────────────────────────────── Commands ────────────────────────────────┐            
             │ filter:                                                                  │            
             │▌/new         new conversation in a new tab                               │            
             │ /sessions    browse conversations                                        │            
             │ /model       choose model for a new conversation                         │            
+            │ /variant     choose the model variant for this conversation              │            
             │ /stop        stop generation                                             │            
             │ /mode        cycle delivery mode (steer and interrupt send as next-turn) │            
             │ /theme       choose the colour theme                                     │            

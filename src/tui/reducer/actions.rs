@@ -1,9 +1,11 @@
 //! UI action → effects.
 use super::{push_local, refresh_model, send_effect, start_conversation};
 use crate::tui::{
+    commands,
     protocol::{Action, CommandRequest, CreateSessionRequest, Effect, Generation, Overlay},
     state::{
-        Activity, BlockKind, State, Tab, TabView, UiState, DEFAULT_AGENT, MAX_TABS, PLAN_AGENT,
+        Activity, BlockKind, State, Tab, TabView, UiState, VariantPick, DEFAULT_AGENT, MAX_TABS,
+        NO_VARIANT, PLAN_AGENT,
     },
     theme::ThemeId,
 };
@@ -41,6 +43,7 @@ fn submit(s: &mut State, text: String, revision: u64) -> Vec<Effect> {
                 model: s.selected_model_alias.clone(),
                 resume: None,
                 agent: s.agent.clone(),
+                variant: s.start_variant.clone(),
             })]
         }
     }
@@ -209,6 +212,32 @@ fn resume(s: &mut State, ui: &mut UiState, id: String) -> Vec<Effect> {
     effects
 }
 
+/// Points the active tab at `alias` (a new tab when the active one holds a conversation: a
+/// conversation keeps its model). `variant` is the start variant chosen in the picker; `None`
+/// leaves the alias's default. `None` when the tab limit refused a new tab.
+fn pick_model(
+    s: &mut State,
+    ui: &mut UiState,
+    alias: String,
+    variant: Option<Option<String>>,
+) -> Option<Vec<Effect>> {
+    let effects = if s.session.is_some() || s.resuming.is_some() {
+        open_tab(s, ui)?
+    } else {
+        vec![]
+    };
+    s.selected_model_alias = Some(alias);
+    refresh_model(s);
+    let default = s
+        .catalog
+        .iter()
+        .find(|m| Some(&m.alias) == s.selected_model_alias.as_ref())
+        .and_then(|m| m.default_variant.clone());
+    s.variant = variant.clone().unwrap_or(default);
+    s.start_variant = variant;
+    Some(effects)
+}
+
 /// Build to plan and back. A conversation switches through `/agent` (the server may refuse, and
 /// says why in its `command.result`); one not created yet just starts as the other agent.
 fn toggle_agent(s: &mut State) -> Vec<Effect> {
@@ -266,19 +295,22 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
         Action::SubmitAt { text, revision } => submit(s, text, revision),
         Action::NewConversation => blank_tab(s, ui).unwrap_or_default(),
         Action::ResumeSession(id) => resume(s, ui, id),
-        Action::PickModel(alias) => {
-            if s.session.is_some() {
-                // A conversation keeps its model: the picked one starts a new conversation.
-                let Some(effects) = open_tab(s, ui) else {
-                    return vec![];
-                };
-                s.selected_model_alias = Some(alias);
-                refresh_model(s);
-                effects
-            } else {
-                s.selected_model_alias = Some(alias);
-                refresh_model(s);
-                vec![]
+        Action::PickModel(alias) => pick_model(s, ui, alias, None).unwrap_or_default(),
+        Action::PickVariant(name) => {
+            let pick = ui.variant_pick.take();
+            ui.overlay = None;
+            let chosen = (name != NO_VARIANT).then_some(name);
+            match pick {
+                Some(VariantPick::NewConversation(alias)) => {
+                    pick_model(s, ui, alias, Some(chosen)).unwrap_or_default()
+                }
+                Some(VariantPick::Current) => run_command(
+                    s,
+                    "variant".into(),
+                    chosen.unwrap_or_else(|| NO_VARIANT.into()),
+                    None,
+                ),
+                None => vec![],
             }
         }
         Action::RunCommand {
@@ -308,7 +340,24 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
         Action::OpenOverlay(o) => {
             ui.overlay = Some(o);
             match o {
-                Overlay::Models => vec![Effect::FetchModels],
+                Overlay::Models => {
+                    ui.variant_pick = None;
+                    vec![Effect::FetchModels]
+                }
+                Overlay::Variants => {
+                    // `/variant` lists the variants of the conversation's model; with no live
+                    // conversation there is nothing to change.
+                    let live = s.session.is_some() && s.resuming.is_none();
+                    if !live {
+                        ui.overlay = None;
+                        return run_command(s, "variant".into(), String::new(), None);
+                    }
+                    let pick = VariantPick::Current;
+                    let (_, start) = commands::variant_choices(s, &pick);
+                    ui.selection.insert(format!("{o:?}"), start);
+                    ui.variant_pick = Some(pick);
+                    vec![]
+                }
                 Overlay::Sessions => vec![Effect::ListSessions],
                 Overlay::Themes => {
                     ui.theme_on_open = Some(ui.theme);
@@ -322,6 +371,7 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
         }
         Action::CloseOverlay => {
             ui.overlay = None;
+            ui.variant_pick = None;
             // Leaving the theme picker without choosing puts back the theme it opened with.
             if let Some(theme) = ui.theme_on_open.take() {
                 ui.theme = theme;

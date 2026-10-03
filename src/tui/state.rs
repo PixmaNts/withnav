@@ -127,6 +127,9 @@ pub struct Tab {
     pub agent: Option<String>,
     /// The model variant the conversation runs with, or starts with; `None` is none.
     pub variant: Option<String>,
+    /// The variant chosen in the model picker for a conversation not created yet: `None` leaves
+    /// the alias's default, `Some(None)` asks for none.
+    pub start_variant: Option<Option<String>>,
     /// Something arrived while another tab was shown.
     pub unread: bool,
     /// The editor text while another tab is shown, and the editor revision it was saved at.
@@ -238,6 +241,18 @@ impl std::ops::DerefMut for State {
         &mut self.tabs[self.active]
     }
 }
+/// What a choice in the variant list applies to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VariantPick {
+    /// The second step of the model picker: the variant a new conversation on `alias` starts on.
+    NewConversation(String),
+    /// `/variant`: the active conversation's variant, changed through the server.
+    Current,
+}
+
+/// The word for "no variant" in the list and in `/variant off`.
+pub const NO_VARIANT: &str = "off";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Focus {
     #[default]
@@ -261,6 +276,8 @@ pub struct UiState {
     pub theme: crate::tui::theme::ThemeId,
     /// The theme in effect when the theme picker opened; `esc` goes back to it.
     pub theme_on_open: Option<crate::tui::theme::ThemeId>,
+    /// What the variant list is choosing for, while it is open.
+    pub variant_pick: Option<VariantPick>,
     /// The tab sidebar is hidden by the driver (it also hides itself on narrow terminals).
     pub sidebar_hidden: bool,
 }

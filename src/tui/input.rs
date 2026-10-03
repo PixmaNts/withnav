@@ -3,7 +3,7 @@
 use super::{
     commands,
     protocol::{Action, Overlay},
-    state::{Activity, Focus, State, UiState},
+    state::{Activity, Focus, State, UiState, VariantPick},
     theme::ThemeId,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -88,18 +88,51 @@ pub fn route_key(
         let selected = ui.selection.entry(format!("{overlay:?}")).or_default();
         match key.code {
             KeyCode::Esc => {
-                ui.overlay = None;
                 ui.filter.clear();
+                // esc in the second step of the model picker goes back to the models.
+                if let Some(VariantPick::NewConversation(alias)) = ui.variant_pick.take() {
+                    ui.overlay = Some(Overlay::Models);
+                    let back = overlay_names(Overlay::Models, state, ui)
+                        .iter()
+                        .position(|a| *a == alias)
+                        .unwrap_or(0);
+                    ui.selection.insert(format!("{:?}", Overlay::Models), back);
+                    return None;
+                }
+                ui.overlay = None;
                 return Some(Action::CloseOverlay);
             }
             KeyCode::Up => *selected = selected.saturating_sub(1),
             KeyCode::Down => *selected = (*selected + 1).min(names.len().saturating_sub(1)),
             KeyCode::PageUp => *selected = selected.saturating_sub(8),
             KeyCode::PageDown => *selected = (*selected + 8).min(names.len().saturating_sub(1)),
+            KeyCode::Enter if overlay == Overlay::Variants && names.is_empty() => {
+                // No variant to choose: a new conversation starts as it is; `/variant` closes.
+                if !ui.filter.is_empty() {
+                    return None;
+                }
+                let pick = ui.variant_pick.take();
+                ui.overlay = None;
+                return Some(match pick {
+                    Some(VariantPick::NewConversation(alias)) => Action::PickModel(alias),
+                    _ => Action::CloseOverlay,
+                });
+            }
             KeyCode::Enter => {
                 let name = names.get(*selected)?;
                 let action = match overlay {
-                    Overlay::Models => Action::PickModel(name.clone()),
+                    Overlay::Models => {
+                        // The second step: which variant to start on (a note when there is none).
+                        let pick = VariantPick::NewConversation(name.clone());
+                        let (_, start) = commands::variant_choices(state, &pick);
+                        ui.overlay = Some(Overlay::Variants);
+                        ui.variant_pick = Some(pick);
+                        ui.filter.clear();
+                        ui.selection
+                            .insert(format!("{:?}", Overlay::Variants), start);
+                        return None;
+                    }
+                    Overlay::Variants => Action::PickVariant(name.clone()),
                     Overlay::Sessions => Action::ResumeSession(name.clone()),
                     Overlay::Commands => commands::command_action(name, ui.mode)?,
                     Overlay::Themes => Action::PickTheme(ThemeId::from_id(name)?),
@@ -303,6 +336,14 @@ fn overlay_names(overlay: Overlay, state: &State, ui: &UiState) -> Vec<String> {
             .map(|x| x.id().to_string())
             .collect(),
         Overlay::Help => Vec::new(),
+        Overlay::Variants => ui
+            .variant_pick
+            .as_ref()
+            .map(|pick| commands::variant_choices(state, pick).0)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|v| v.to_lowercase().contains(&ui.filter.to_lowercase()))
+            .collect(),
     }
 }
 

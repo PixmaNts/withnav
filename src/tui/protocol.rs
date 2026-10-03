@@ -28,6 +28,12 @@ pub struct ModelEntry {
     pub max_input_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discrepancy: Option<Discrepancy>,
+    /// The variant names the alias offers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<String>,
+    /// The variant a new conversation starts on when none is chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_variant: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Discrepancy {
@@ -65,6 +71,10 @@ pub struct CreateSessionRequest {
     /// The primary agent a new conversation starts as; the server's default (build) when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// The variant a new conversation starts on: absent for the alias's default, `null` for none,
+    /// else a name the alias offers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<Option<String>>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CreateSessionResponse {
@@ -249,6 +259,9 @@ pub enum Action {
         arguments: String,
         revision: Option<u64>,
     },
+    /// A row of the variant list: a variant name, or `off` for none. What it applies to is the
+    /// list's `UiState::variant_pick`.
+    PickVariant(String),
     /// Switches the active conversation between the build and plan agents.
     ToggleAgent,
     /// Shows the tab at this index (0 is the first).
@@ -265,6 +278,8 @@ pub enum Overlay {
     Commands,
     Help,
     Themes,
+    /// The variants of a model: the second step of the model picker, or `/variant`.
+    Variants,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {

@@ -49,6 +49,7 @@ async fn create(client: &Client, server: &TestServer) -> String {
             model: Some("default".into()),
             resume: None,
             agent: None,
+            variant: None,
         })
         .await
         .expect("create")
@@ -580,6 +581,7 @@ async fn create_without_a_known_window_shows_the_refusal() {
             model: None,
             resume: None,
             agent: None,
+            variant: None,
         })
         .await
         .expect_err("a window-less alias is refused");

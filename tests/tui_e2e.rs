@@ -217,12 +217,14 @@ fn rate_limited() -> Vec<u8> {
     .into_bytes()
 }
 
-/// Opens the model picker with F2, moves to the entry at `index` and chooses it.
+/// Opens the model picker with F2, moves to the entry at `index`, chooses it and takes the
+/// preselected variant (the default, or none) in the second step.
 fn pick_model(rt: &mut Runtime, index: usize) {
     press(rt, KeyCode::F(2));
     for _ in 0..index {
         press(rt, KeyCode::Down);
     }
+    press(rt, KeyCode::Enter);
     press(rt, KeyCode::Enter);
 }
 
@@ -613,11 +615,10 @@ async fn typed_server_commands_run_and_show_their_outcome() {
     .await;
     let env = Env::start(root, &provider.url).await;
     let mut rt = started(&env).await;
-    assert!(
-        rt.state.server_commands.iter().any(|c| c.name == "context"),
-        "the command list is read at start: {:?}",
-        rt.state.server_commands
-    );
+    until("the command list read at start", &mut rt, |_, rt| {
+        rt.state.server_commands.iter().any(|c| c.name == "context")
+    })
+    .await;
     pick_model(&mut rt, 0);
     type_and_send(&mut rt, "hello");
     until("the first answer", &mut rt, |_, rt| has_final(rt, "Hi.")).await;

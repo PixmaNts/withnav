@@ -327,6 +327,8 @@ fn overlay_precedence_and_empty_slash() {
     );
     assert_eq!(editor.text(), "/abc");
     ui.overlay = Some(Overlay::Models);
+    let enter = key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(route_key(enter, &s, &mut ui, &mut editor), None);
     assert_eq!(
         route_key(
             key(KeyCode::Enter, KeyModifiers::NONE),
@@ -415,13 +417,15 @@ fn pickers_filter_and_keep_draft() {
         &mut editor,
     );
     assert_eq!(ui.filter, "f");
+    let enter = key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(
-        route_key(
-            key(KeyCode::Enter, KeyModifiers::NONE),
-            &s,
-            &mut ui,
-            &mut editor
-        ),
+        route_key(enter, &s, &mut ui, &mut editor),
+        None,
+        "the variant step"
+    );
+    assert_eq!(ui.overlay, Some(Overlay::Variants));
+    assert_eq!(
+        route_key(enter, &s, &mut ui, &mut editor),
         Some(Action::PickModel("fast".into()))
     );
     assert_eq!(editor.text(), "draft");
@@ -1214,4 +1218,161 @@ fn the_agent_shows_in_the_status_line_and_the_sidebar() {
     let x = row_text(&t, 2, 22).find("plan").unwrap() as u16;
     let x = row_text(&t, 2, 22)[..x as usize].chars().count() as u16;
     assert_eq!(t.backend().buffer()[(x, 2)].fg, theme.blue);
+}
+
+/// A catalog of 295 aliases; `opus` offers variants with `high` as default, `flash` none.
+fn big_catalog() -> State {
+    let mut s = state();
+    s.catalog = (0..293)
+        .map(|n| ModelEntry {
+            alias: format!("alias-{n:03}"),
+            model: format!("vendor/model-{n:03}"),
+            context_window: Some(128_000),
+            ..Default::default()
+        })
+        .collect();
+    s.catalog.push(ModelEntry {
+        alias: "opus".into(),
+        model: "cc/claude-opus-5-5".into(),
+        context_window: Some(1_000_000),
+        variants: vec!["low".into(), "high".into(), "max".into()],
+        default_variant: Some("high".into()),
+        ..Default::default()
+    });
+    s.catalog.push(ModelEntry {
+        alias: "flash".into(),
+        model: "cc/flash".into(),
+        context_window: None,
+        ..Default::default()
+    });
+    s
+}
+
+fn type_text(text: &str, s: &State, ui: &mut UiState, editor: &mut Editor) {
+    for c in text.chars() {
+        route_key(key(KeyCode::Char(c), KeyModifiers::NONE), s, ui, editor);
+    }
+}
+
+#[test]
+fn the_model_picker_filters_a_long_catalog_and_shows_window_and_variants() {
+    let s = big_catalog();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    route_key(
+        key(KeyCode::F(2), KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(ui.overlay, Some(Overlay::Models));
+    // the selection can walk the whole list; the popup scrolls to keep it in view
+    for _ in 0..300 {
+        route_key(
+            key(KeyCode::Down, KeyModifiers::NONE),
+            &s,
+            &mut ui,
+            &mut editor,
+        );
+    }
+    let t = cells(&s, &ui, (100, 30));
+    let all: String = (0..30).map(|y| row_text(&t, y, 100) + "\n").collect();
+    assert!(
+        all.contains("▌flash"),
+        "the last row is shown selected: {all}"
+    );
+    type_text("opus", &s, &mut ui, &mut editor);
+    render("model-picker-filtered", (100, 30), &s, &ui, &editor);
+    let t = cells(&s, &ui, (100, 30));
+    let row = (0..30)
+        .map(|y| row_text(&t, y, 100))
+        .find(|r| r.contains("▌opus"))
+        .expect("the filtered row");
+    assert!(row.contains("cc/claude-opus-5-5"), "{row}");
+    assert!(row.contains("1M"), "{row}");
+    assert!(row.contains("low high max"), "{row}");
+    assert!(!all.contains("alias-") || !row.contains("alias-"));
+    // the filter also matches the model name
+    ui.filter = "model-29".into();
+    let t = cells(&s, &ui, (100, 30));
+    let shown: Vec<String> = (0..30)
+        .map(|y| row_text(&t, y, 100))
+        .filter(|r| r.contains("alias-29"))
+        .collect();
+    assert_eq!(shown.len(), 3, "alias-290 … alias-292: {shown:?}");
+}
+
+#[test]
+fn picking_a_model_with_variants_asks_which_one_default_first() {
+    let s = big_catalog();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    route_key(
+        key(KeyCode::F(2), KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    type_text("opus", &s, &mut ui, &mut editor);
+    let enter = key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(route_key(enter, &s, &mut ui, &mut editor), None);
+    assert_eq!(ui.overlay, Some(Overlay::Variants));
+    assert_eq!(ui.filter, "", "the step starts unfiltered");
+    render("variant-step", (100, 30), &s, &ui, &editor);
+    let t = cells(&s, &ui, (100, 30));
+    let rows: Vec<String> = (0..30).map(|y| row_text(&t, y, 100)).collect();
+    let selected = rows
+        .iter()
+        .find(|r| r.contains('▌') && r.contains("high"))
+        .cloned();
+    assert!(selected.is_some_and(|r| r.contains("default")), "{rows:#?}");
+    assert!(rows
+        .iter()
+        .any(|r| r.contains("off") && r.contains("no variant")));
+    assert!(rows.iter().any(|r| r.contains("Start on variant")));
+    // esc goes back to the models with the same one selected
+    route_key(
+        key(KeyCode::Esc, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(ui.overlay, Some(Overlay::Models));
+    assert_eq!(route_key(enter, &s, &mut ui, &mut editor), None);
+    route_key(
+        key(KeyCode::Down, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(
+        route_key(enter, &s, &mut ui, &mut editor),
+        Some(Action::PickVariant("max".into()))
+    );
+}
+
+#[test]
+fn a_model_without_variants_shows_a_note_and_starts_without_one() {
+    let s = big_catalog();
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    route_key(
+        key(KeyCode::F(2), KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    type_text("flash", &s, &mut ui, &mut editor);
+    let enter = key(KeyCode::Enter, KeyModifiers::NONE);
+    route_key(enter, &s, &mut ui, &mut editor);
+    assert_eq!(ui.overlay, Some(Overlay::Variants));
+    let t = cells(&s, &ui, (100, 30));
+    let all: String = (0..30).map(|y| row_text(&t, y, 100) + "\n").collect();
+    assert!(all.contains("this model has no variants"), "{all}");
+    assert!(!all.contains("off "), "nothing to choose: {all}");
+    assert_eq!(
+        route_key(enter, &s, &mut ui, &mut editor),
+        Some(Action::PickModel("flash".into()))
+    );
+    assert_eq!(ui.overlay, None);
 }

@@ -259,6 +259,12 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             let v = e.payload;
             let name = v["name"].as_str().ok_or_else(bad)?.to_string();
             let ok = v["ok"].as_bool().ok_or_else(bad)?;
+            // `/variant` answers with the variant in use, after a change or not.
+            if name == "variant" && ok {
+                if let Some(v) = v.get("data").and_then(|d| d.get("variant")) {
+                    s.variant = v.as_str().map(strip_controls);
+                }
+            }
             let text = super::command::outcome_text(
                 &name,
                 ok,

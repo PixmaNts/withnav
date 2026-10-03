@@ -1,7 +1,7 @@
 use crate::tui::{
     commands,
-    protocol::Overlay,
-    state::{State, UiState},
+    protocol::{ModelEntry, Overlay},
+    state::{Activity, State, UiState, VariantPick, NO_VARIANT},
     theme::{Theme, ThemeId},
 };
 use ratatui::{
@@ -21,7 +21,14 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
         Overlay::Commands => " Commands ",
         Overlay::Help => " Keyboard shortcuts ",
         Overlay::Themes => " Theme ",
+        Overlay::Variants => match &ui.variant_pick {
+            Some(VariantPick::NewConversation(_)) => " Start on variant… ",
+            _ => " Variant ",
+        },
     };
+    let width = area.width.saturating_sub(4).clamp(4, 76);
+    // The popup's inner width, less its margins: what a row can take.
+    let row_width = usize::from(width.saturating_sub(6));
     let rows: Vec<Line<'static>> = match overlay {
         Overlay::Models => state
             .catalog
@@ -36,14 +43,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
                         .to_lowercase()
                         .contains(&ui.filter.to_lowercase())
             })
-            .map(|entry| {
-                Line::from(vec![
-                    Span::styled(format!("{:<17}", entry.alias), theme.accent()),
-                    Span::raw(format!("{}  ·  ", entry.model)),
-                    Span::styled(super::status::number(entry.context_window), theme.number()),
-                    Span::styled(" ctx", theme.muted()),
-                ])
-            })
+            .map(|entry| model_row(entry, row_width, theme))
             .collect(),
         Overlay::Sessions => state
             .sessions
@@ -93,6 +93,47 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
                 ])
             })
             .collect(),
+        Overlay::Variants => {
+            let pick = ui.variant_pick.clone().unwrap_or(VariantPick::Current);
+            let (names, _) = commands::variant_choices(state, &pick);
+            let (default, current) = match &pick {
+                VariantPick::NewConversation(alias) => (
+                    state
+                        .catalog
+                        .iter()
+                        .find(|m| &m.alias == alias)
+                        .and_then(|m| m.default_variant.clone()),
+                    None,
+                ),
+                VariantPick::Current => (
+                    None,
+                    Some(state.variant.clone().unwrap_or_else(|| NO_VARIANT.into())),
+                ),
+            };
+            names
+                .into_iter()
+                .filter(|v| v.to_lowercase().contains(&ui.filter.to_lowercase()))
+                .map(|name| {
+                    let mark = if current.as_deref() == Some(name.as_str()) {
+                        "● "
+                    } else {
+                        "  "
+                    };
+                    let note = if default.as_deref() == Some(name.as_str()) {
+                        "default"
+                    } else if name == NO_VARIANT {
+                        "no variant"
+                    } else {
+                        ""
+                    };
+                    Line::from(vec![
+                        Span::styled(mark, theme.accent()),
+                        Span::styled(format!("{name:<20}"), theme.text()),
+                        Span::styled(note, theme.muted()),
+                    ])
+                })
+                .collect()
+        }
         Overlay::Themes => ThemeId::ALL
             .iter()
             .filter(|entry| {
@@ -105,10 +146,10 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
             .map(|entry| theme_row(*entry, ui.theme_on_open.unwrap_or(ui.theme), theme))
             .collect(),
     };
-    let height = (rows.len() + 4)
+    let note = note(overlay, state, ui, rows.is_empty());
+    let height = (rows.len() + 4 + usize::from(note.is_some()))
         .min(usize::from(area.height.saturating_sub(2)))
         .max(3) as u16;
-    let width = area.width.saturating_sub(4).clamp(4, 76);
     let box_area = Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
         area.y + area.height.saturating_sub(height) / 2,
@@ -136,17 +177,29 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
             Rect { height: 1, ..inner },
         );
     }
-    let offset = u16::from(overlay != Overlay::Help);
+    let mut offset = u16::from(overlay != Overlay::Help);
+    if let Some(note) = note {
+        frame.render_widget(
+            Paragraph::new(Span::styled(note, theme.muted())),
+            Rect::new(inner.x, inner.y + offset, inner.width, 1),
+        );
+        offset += 1;
+    }
     let selected = ui
         .selection
         .get(&format!("{overlay:?}"))
         .copied()
         .unwrap_or(0);
-    for (index, row) in rows.into_iter().enumerate() {
-        if index as u16 >= inner.height.saturating_sub(offset) {
-            break;
-        }
-        let rect = Rect::new(inner.x, inner.y + offset + index as u16, inner.width, 1);
+    // A list longer than the popup scrolls so the selected row stays in view.
+    let visible = usize::from(inner.height.saturating_sub(offset));
+    let first = (selected + 1).saturating_sub(visible);
+    for (index, row) in rows.into_iter().enumerate().skip(first).take(visible) {
+        let rect = Rect::new(
+            inner.x,
+            inner.y + offset + (index - first) as u16,
+            inner.width,
+            1,
+        );
         if selected == index && overlay != Overlay::Help {
             // The tint spans the popup's inner width, margins included, like a list highlight.
             let row_area = Rect::new(box_area.x + 1, rect.y, box_area.width.saturating_sub(2), 1);
@@ -160,6 +213,67 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
         }
         frame.render_widget(Paragraph::new(row), rect);
     }
+}
+
+/// A line under the filter: why the variant list is empty, or that a change waits for the turn.
+fn note(overlay: Overlay, state: &State, ui: &UiState, empty: bool) -> Option<&'static str> {
+    if overlay != Overlay::Variants {
+        return None;
+    }
+    if empty && ui.filter.is_empty() {
+        return Some(match ui.variant_pick {
+            Some(VariantPick::NewConversation(_)) => {
+                "this model has no variants · enter starts without one"
+            }
+            _ => "this model has no variants",
+        });
+    }
+    let current = matches!(ui.variant_pick, Some(VariantPick::Current) | None);
+    (current && state.activity == Activity::Running).then_some("applies next turn")
+}
+
+/// One model in the picker: alias, model, context window and variant names, cut to `width`.
+fn model_row(entry: &ModelEntry, width: usize, theme: &Theme) -> Line<'static> {
+    let window = entry
+        .context_window
+        .map(crate::tui::reducer::tokens)
+        .unwrap_or_else(|| "—".into());
+    let variants = if entry.variants.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", entry.variants.join(" "))
+    };
+    // alias (18) + model + "  " + window + variants; the model gives way first, then variants.
+    let alias = format!("{:<18}", fit(&entry.alias, 17));
+    let fixed = alias.chars().count() + 2 + window.chars().count();
+    let variants = fit(&variants, width.saturating_sub(fixed + 12));
+    let model_room = width.saturating_sub(fixed + variants.chars().count());
+    let model = format!("{:<model_room$}", fit(&entry.model, model_room));
+    let mut spans = vec![
+        Span::styled(alias, theme.accent()),
+        Span::styled(model, theme.text()),
+        Span::raw("  "),
+        Span::styled(window, theme.number()),
+        Span::styled(variants, theme.subagent()),
+    ];
+    if entry.enabled == Some(false) {
+        for span in &mut spans {
+            span.style = theme.muted();
+        }
+    }
+    Line::from(spans)
+}
+
+/// `text` cut to `width` characters, with `…` when cut.
+fn fit(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let mut cut: String = text.chars().take(width.saturating_sub(1)).collect();
+    if width > 0 {
+        cut.push('…');
+    }
+    cut
 }
 
 /// One theme in the picker: a mark for the one in effect, its name and id, and swatches of its

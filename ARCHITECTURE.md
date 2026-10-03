@@ -139,8 +139,8 @@ SSE stream per generation. An event is applied to the tab that holds its generat
 screen or not (a background tab is then marked unread), and the effects it returns run with that tab's
 session. New-conversation actions such as `/new`, `ctrl+n`, and `ctrl+n` in the model picker allocate
 or reset a generation; `/sessions` opens or resumes a selected session in a tab. Picking a model for
-  a live conversation keeps its tab, generation and session and sends `/model <alias>`; on an empty tab,
-  the model pick only sets its starting model and variant. Closing a tab drops its generation, so the runtime
+a live conversation keeps its tab, generation and session and sends `/model <alias>`; on an empty tab,
+the model pick only sets its starting model and variant. Closing a tab drops its generation, so the runtime
 cancels its stream and its late results are ignored; nothing is sent to the server. Before each action the runtime copies the editor into the active tab's draft; the
 reducer puts the next tab's draft back with `Effect::SetEditor`. The context gauge is per tab too: each
 conversation keeps its snapshot, its epoch and its retired incarnations, a `context.updated` or a

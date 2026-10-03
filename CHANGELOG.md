@@ -56,9 +56,12 @@ requests land in `develop`.
   The summary is validated (non-empty, no tool call, at most 8 KiB), shown to the summarizer as JSON
   and to the agent as escaped conversation data under a system rule; consecutive user messages
   count as one turn when the last two completed turns are kept, and a stored checkpoint is checked
-  on resume for complete-exchange boundaries, the cap and outputs that may be elided. A running turn is not interrupted:
+  on resume for complete-exchange boundaries (every tool call before the boundary has its result, and the boundary stays before the protected tail), the cap and outputs that may be elided. A running turn is not interrupted:
   the command answers "accepted, runs after this turn" and runs when the turn ends (a stop first answers
-  it with a failed `command.result` under the same operation id, before `session.end`); the summary
+  it with a failed `command.result` under the same operation id, before `session.end`); the session
+  runtime publishes every `command.result` of `/compact` itself (acceptance, completion, refusal), in
+  that order, before it answers the caller and before a stop's `session.end`; `/agent` and `/variant`
+  are refused ("a compaction is running") while a summary is being prepared; the summary
   request never holds the service-wide lifecycle gate, so a stop, a shutdown and other sessions do not
   wait for the provider and a stopped session commits nothing; it is refused while
   an `ask` waits, and answers a clear error when there is nothing to compact or the recent turns cannot

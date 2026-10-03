@@ -21,9 +21,11 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 const TTL: u64 = 86_400;
-/// Version 2 added the effort tiers; a version 1 file is read as absent and
-/// refetched.
+/// Version 2 added the effort tiers. A version 1 file still holds valid
+/// limits: it is read as a fallback (tiers unknown) and refreshed at once to
+/// learn the tiers.
 const CACHE_VERSION: u32 = 2;
+const OLDEST_READABLE_VERSION: u32 = 1;
 const MAX_ENTRIES: usize = 10_000;
 const FETCH_DEADLINE: Duration = Duration::from_secs(3);
 /// After a failed refresh the endpoint is not asked again for this long, so
@@ -249,7 +251,10 @@ impl ModelCatalog {
         let c = self.current(ep, path)?;
         // The list is current, so it is not asked again; a model whose kept
         // values are older than the TTL still reports itself as stale.
-        (now().saturating_sub(c.fetched_at) < TTL).then(|| {
+        // A file from before the tiers were kept is refreshed once even when
+        // young, so the tiers are learned; until that succeeds it is the
+        // fallback.
+        (c.version == CACHE_VERSION && now().saturating_sub(c.fetched_at) < TTL).then(|| {
             let age = c.age_of(model);
             CatalogData {
                 limits: c.models.get(model).cloned(),
@@ -440,12 +445,15 @@ fn effort_tiers(entry: &serde_json::Value) -> Vec<String> {
     }
     tiers
 }
-/// A cache file this build can trust: known version, and no limit of zero
-/// (the parser never writes one, so it means the file was damaged).
+/// A cache file this build can trust: a readable version, and no limit of
+/// zero (the parser never writes one, so it means the file was damaged).
 fn read_cache(path: &Path) -> Option<CacheFile> {
     serde_json::from_slice::<CacheFile>(&std::fs::read(path).ok()?)
         .ok()
-        .filter(|c| c.version == CACHE_VERSION && c.models.values().all(Limits::is_sane))
+        .filter(|c| {
+            (OLDEST_READABLE_VERSION..=CACHE_VERSION).contains(&c.version)
+                && c.models.values().all(Limits::is_sane)
+        })
 }
 fn now() -> u64 {
     SystemTime::now()

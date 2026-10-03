@@ -391,6 +391,39 @@ async fn failure_after_expiry_keeps_the_values_stale_with_age_and_error() {
 }
 
 #[tokio::test]
+async fn a_version_1_cache_stays_usable_while_the_refresh_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let base = format!("{}/v1", server.uri());
+    // A young file written before the tiers were kept.
+    let path = cache_path(&catalog, &base);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let v1 = format!(
+        r#"{{"version":1,"fetched_at":{},"models":{{"{OPUS}":{{"context_length":400000,"max_input_tokens":null,"max_output_tokens":null}}}}}}"#,
+        now() - 60
+    );
+    std::fs::write(&path, v1).unwrap();
+    let r = resolved(&base, OPUS, ApiKind::Chat, None);
+    let chat = resolve_chat(&catalog, &r, "key", &ClientCache::new())
+        .await
+        .unwrap();
+    assert_eq!(chat.window, 400_000, "the known window is kept");
+    assert!(chat.stale, "a file whose refresh failed is stale");
+    assert!(chat.refresh_error.unwrap().contains("503"));
+    assert_eq!(
+        requests(&server).await,
+        1,
+        "the tiers are asked for at once"
+    );
+    assert!(read_cache(&path).is_some(), "the old file is not discarded");
+}
+
+#[tokio::test]
 async fn a_failure_with_nothing_cached_has_no_values() {
     let dir = tempfile::tempdir().unwrap();
     let server = MockServer::start().await;

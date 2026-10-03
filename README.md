@@ -85,9 +85,12 @@ To build `models.json` and `auth.json` from an OpenCode config, run
 of two providers that share a model id, and writes one alias per model, the role aliases, and
 `"catalog_format": "omniroute"` on the omniroute provider. Context windows are left out so Navai
 reads them from the provider; `--with-windows` copies them from OpenCode instead. A literal `apiKey`
-goes to `auth.json` (mode 0600); an `{env:NAME}` key becomes `api_key_env` in `models.json`; other
-references and a `baseURL` that carries credentials are refused. Nothing is written until the whole
-config checks out, and both files are replaced atomically.
+goes to `auth.json` (mode 0600). An `{env:NAME}` key becomes `api_key_env` in `models.json`, and any key
+stored in `auth.json` for that provider is removed, because Navai prefers a stored key over the
+environment (other entries are kept; the script says what it removed). Other references and a
+`baseURL` that carries credentials are refused. Nothing is written until the whole config checks out.
+Each file is replaced atomically; the two are not replaced together. If the second replacement
+fails, the first file has already been updated, and the script says which one was and which was not.
 
 Coming from `rust-agent`? The first start of `navai` or `navai-lsp` moves your data and config from
 `~/.local/share/navigator/`, `~/.local/share/rust-agent/` and `~/.config/rust-agent/` to the new

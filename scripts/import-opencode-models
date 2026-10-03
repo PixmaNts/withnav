@@ -18,14 +18,20 @@ What it imports:
   - The same model id from two providers: the first one is kept, the second
     is skipped with a warning (the alias is the model id, so it must be unique).
   - `apiKey` as a literal goes to auth.json (0600). `apiKey` as `{env:NAME}`
-    becomes `"api_key_env": "NAME"` in models.json and nothing is stored in
-    auth.json. Any other `{...}` reference (such as `{file:...}`) is refused.
+    becomes `"api_key_env": "NAME"` in models.json, nothing is stored for it,
+    and a key already stored in auth.json for that provider is REMOVED (Navai
+    prefers a stored key over the environment, so it would hide `{env:NAME}`).
+    Other providers' entries are kept. Any other `{...}` reference (such as
+    `{file:...}`) is refused.
   - A `baseURL` with credentials (`user:pass@`) or a query string with a
     key-like parameter is refused: Navai would write it to models.json.
 
-Everything is checked before anything is written. The files are written
-through temporary files in the same directory and then renamed, so a failure
-leaves models.json and auth.json as they were.
+Everything is checked before anything is written. Each file is written to a
+temporary file in the same directory and renamed over the old one, so each
+file is replaced atomically. The two files are not replaced together: if the
+second replacement fails, the first file has already been updated and the
+script says which one was and which was not. A failure before the first
+replacement changes nothing.
 
 Usage: import-opencode-models [--config-dir DIR] [--opencode FILE]
                               [--with-windows] [--dry-run] [--self-test]
@@ -180,8 +186,10 @@ def read_api_key(pname: str, raw):
 
 
 def convert(oc: dict, with_windows: bool, warn):
-    """OpenCode config -> (providers, models, keys). Raises ImportError_."""
-    providers, models, keys = {}, {}, {}
+    """OpenCode config -> (providers, models, keys, env_providers): `keys` are the
+    literal keys to store, `env_providers` the providers whose key is an
+    `{env:NAME}` reference. Raises ImportError_."""
+    providers, models, keys, env_providers = {}, {}, {}, set()
     for pname, p in oc.get("provider", {}).items():
         opts = p.get("options", {})
         base = opts.get("baseURL")
@@ -197,6 +205,8 @@ def convert(oc: dict, with_windows: bool, warn):
         }
         if key:
             keys[pname] = key
+        if env:
+            env_providers.add(pname)
         for mid, m in p.get("models", {}).items():
             if mid in models:
                 warn(f"model '{mid}' of provider '{pname}' skipped: already imported from "
@@ -219,7 +229,7 @@ def convert(oc: dict, with_windows: bool, warn):
     for k, v in EXTRA_PROVIDERS.items():
         providers.setdefault(k, v)
     providers["omniroute"]["catalog_format"] = "omniroute"
-    return providers, dict(sorted(models.items())), keys
+    return providers, dict(sorted(models.items())), keys, env_providers
 
 
 def stage(path: Path, text: str, mode: int) -> Path:
@@ -246,21 +256,53 @@ def sync_dir(d: Path) -> None:
         os.close(fd)
 
 
+def update_auth(auth: dict, keys: dict, env_providers: set):
+    """The new auth.json content and the providers whose stored key was removed.
+
+    A provider whose key is an `{env:NAME}` reference loses its stored entry:
+    Navai prefers a stored key over the environment.
+    """
+    new = {k: v for k, v in auth.items() if k not in env_providers}
+    removed = sorted(k for k in env_providers if k in auth)
+    for k, v in keys.items():
+        new[k] = {"api_key": v}
+    return new, removed
+
+
+class PartialWrite(Exception):
+    """A replacement failed after an earlier one succeeded."""
+
+
 def write_files(d: Path, files: dict) -> None:
-    """Stage every file, then rename them all: a failure while staging leaves
-    the directory untouched."""
+    """Stage every file, then rename them one by one. Each rename is atomic;
+    the set is not. A failure while staging, or in the first rename, changes
+    nothing. A later failure raises PartialWrite saying what was replaced."""
     d.mkdir(parents=True, exist_ok=True)
     staged = {}
+    replaced = []
     try:
         for name, (text, mode) in files.items():
             staged[name] = stage(d / name, text, mode)
-        for name, tmp in staged.items():
-            os.replace(tmp, d / name)
-        staged.clear()
+        for name in list(staged):
+            try:
+                os.replace(staged[name], d / name)
+            except OSError as e:
+                if replaced:
+                    left = [n for n in files if n not in replaced]
+                    raise PartialWrite(
+                        f"replaced {', '.join(replaced)}; NOT replaced: {', '.join(left)} ({e})")
+                raise
+            del staged[name]
+            replaced.append(name)
     finally:
         for tmp in staged.values():
             tmp.unlink(missing_ok=True)
-    sync_dir(d)
+    try:
+        sync_dir(d)
+    except OSError as e:
+        raise PartialWrite(
+            f"replaced {', '.join(replaced)}, but syncing the directory failed ({e}); "
+            "the files are in place and may not be durable yet")
 
 
 def self_test() -> int:
@@ -298,10 +340,37 @@ def self_test() -> int:
         "anthropic": {"npm": "@ai-sdk/anthropic", "options": {"baseURL": "http://a/v1"},
                       "models": {"c": {}}}}}
     warnings = []
-    providers, models, keys = convert(oc, False, warnings.append)
+    providers, models, keys, env_providers = convert(oc, False, warnings.append)
     check(keys == {} and providers["omniroute"]["api_key_env"] == "OR_KEY", "env key not stored")
+    check(env_providers == {"omniroute"}, "env provider reported")
+    auth = {"omniroute": {"api_key": "old"}, "unrelated": {"api_key": "x"}}
+    check(update_auth(auth, keys, env_providers)[0] == {"unrelated": {"api_key": "x"}},
+          "a stored key is removed for an env provider, others kept")
     check(models["m"]["provider"] == "omniroute" and "n" in models, "first provider wins")
     check("c" not in models and len(warnings) == 2, "skips and warns")
+    with tempfile.TemporaryDirectory() as tmpd:
+        d = Path(tmpd)
+        (d / "models.json").write_text("old")
+        real, calls = os.replace, []
+
+        def flaky(src, dst):
+            calls.append(dst)
+            if len(calls) == 2:
+                raise OSError("disk full")
+            return real(src, dst)
+
+        os.replace = flaky
+        try:
+            write_files(d, {"models.json": ("new", 0o644), "auth.json": ("{}", 0o600)})
+            errors.append("a failed second replacement was not reported")
+        except PartialWrite as e:
+            check("replaced models.json" in str(e) and "NOT replaced: auth.json" in str(e),
+                  "partial failure names both files")
+        finally:
+            os.replace = real
+        check((d / "models.json").read_text() == "new" and not (d / "auth.json").exists(),
+              "first file replaced, second not")
+        check(sorted(x.name for x in d.iterdir()) == ["models.json"], "no temp files left")
     print("self-test: ok" if not (errors or failed) else f"self-test FAILED: {errors}")
     return 1 if (errors or failed) else 0
 
@@ -329,7 +398,7 @@ def main() -> int:
             oc = json.loads(strip_jsonc(Path(args.opencode).read_text()))
         except ValueError as e:
             raise ImportError_(f"{args.opencode} is not valid JSON/JSONC ({e})")
-        providers, models, keys = convert(oc, args.with_windows, warn)
+        providers, models, keys, env_providers = convert(oc, args.with_windows, warn)
         d = Path(args.config_dir)
         auth_path = d / "auth.json"
         auth = {}
@@ -343,22 +412,29 @@ def main() -> int:
     except (ImportError_, OSError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-    for k, v in keys.items():
-        auth[k] = {"api_key": v}
+    old_auth = auth
+    auth, removed = update_auth(old_auth, keys, env_providers)
     if args.dry_run:
-        print(f"{len(models)} aliases, providers {sorted(providers)}, keys {sorted(keys)}")
+        print(f"{len(models)} aliases, providers {sorted(providers)}, keys {sorted(keys)}"
+              + (f", stored keys that would be removed {removed}" if removed else ""))
         return 0
     cfg = {"providers": providers, "models": models}
     files = {"models.json": (json.dumps(cfg, indent=2) + "\n", 0o644)}
-    if keys or auth_path.exists():
+    if auth != old_auth or (keys and not auth_path.exists()):
         files["auth.json"] = (json.dumps(auth, indent=2) + "\n", 0o600)
     try:
         write_files(d, files)
+    except PartialWrite as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     except OSError as e:
-        print(f"error: {e}; nothing was changed", file=sys.stderr)
+        print(f"error: {e}; nothing was replaced", file=sys.stderr)
         return 1
     print(f"wrote {d/'models.json'} ({len(models)} aliases)"
-          + (f" and {auth_path} ({sorted(keys)})" if "auth.json" in files else ""))
+          + (f" and {auth_path} (keys stored: {sorted(keys)})" if "auth.json" in files else ""))
+    if removed:
+        print(f"removed the stored key of {removed} from {auth_path}: its apiKey is an "
+              "{env:NAME} reference, and Navai prefers a stored key over the environment")
     return 0
 
 

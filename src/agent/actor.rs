@@ -359,9 +359,15 @@ impl AgentActor {
                 ..
             }) => {
                 self.settle_interrupted(&call, &remaining_calls);
-                self.transcript.push(ChatMessage::User { content: text });
+                self.transcript.push(ChatMessage::User {
+                    provenance: Default::default(),
+                    content: text,
+                });
             }
-            None => self.transcript.push(ChatMessage::User { content: text }),
+            None => self.transcript.push(ChatMessage::User {
+                provenance: Default::default(),
+                content: text,
+            }),
         }
     }
 

@@ -334,7 +334,7 @@ impl LlmCommenter {
                 .map(|ws| vec![tool_def_read(ws), tool_def_grep(ws)]);
             let mut messages = vec![
                 ChatMessage::System { content: system },
-                ChatMessage::User {
+                ChatMessage::User { provenance: Default::default(),
                     content: self.build_user_message(ctx),
                 },
             ];
@@ -349,7 +349,7 @@ impl LlmCommenter {
                 // The final round carries no tools, forcing the JSON answer,
                 // and says so.
                 let round_tools = if last {
-                    messages.push(ChatMessage::User {
+                    messages.push(ChatMessage::User { provenance: Default::default(),
                         content: NO_MORE_TOOLS_NOTICE.to_string(),
                     });
                     Vec::new()
@@ -399,7 +399,7 @@ impl LlmCommenter {
             // leaked call is never run; the model is asked once more.
             if tool_attempt_instead_of_answer(&message) {
                 tracing::warn!(raw = %message.text, "navigator: final answer tried a tool, asking again");
-                messages.push(ChatMessage::User {
+                messages.push(ChatMessage::User { provenance: Default::default(),
                     content: format!(
                         "Your last reply tried to call a tool. {NO_MORE_TOOLS_NOTICE}"
                     ),

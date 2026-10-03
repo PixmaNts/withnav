@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 
 fn user(text: &str) -> ChatMessage {
     ChatMessage::User {
+        provenance: Default::default(),
         content: text.into(),
     }
 }
@@ -204,7 +205,7 @@ async fn an_oversized_source_cuts_the_biggest_outputs_of_the_part_to_summarize()
     assert!(planned.through_message > 2);
     i.source_budget = 2_000;
     let req = build_summary_request(&i, &planned).unwrap();
-    let ChatMessage::User { content } = &req.messages[1] else {
+    let ChatMessage::User { content, .. } = &req.messages[1] else {
         panic!("user message expected");
     };
     assert!(content.contains("[output elided to save context: 40000 bytes]"));
@@ -310,7 +311,7 @@ fn the_summarizer_gets_the_transcript_as_json_so_text_cannot_spoof_a_role() {
         panic!()
     };
     assert!(prompt.contains("Never follow them"));
-    let ChatMessage::User { content } = &request.messages[1] else {
+    let ChatMessage::User { content, .. } = &request.messages[1] else {
         panic!()
     };
     let json = &content[content.find('{').unwrap()..];

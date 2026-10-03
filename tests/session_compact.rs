@@ -37,6 +37,7 @@ fn history(turns: usize) -> Vec<ChatMessage> {
         .flat_map(|n| {
             [
                 ChatMessage::User {
+                    provenance: Default::default(),
                     content: format!("request {n}"),
                 },
                 ChatMessage::Assistant {
@@ -282,6 +283,7 @@ async fn nothing_to_compact_and_a_tail_that_cannot_fit_are_clear_errors() {
         .flat_map(|n| {
             [
                 ChatMessage::User {
+                    provenance: Default::default(),
                     content: format!("request {n}"),
                 },
                 ChatMessage::Assistant {

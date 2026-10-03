@@ -89,6 +89,7 @@ async fn send(variant: Option<&navai::provider::config::Variant>) -> String {
         None,
         None,
         vec![ChatMessage::User {
+            provenance: Default::default(),
             content: "hello".into(),
         }],
         Vec::new(),

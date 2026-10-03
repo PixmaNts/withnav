@@ -469,6 +469,7 @@ async fn resuming_an_old_navigator_transcript_sends_the_role_prompt_once() {
                 content: COGNITION_PROMPT.to_string(),
             },
             ChatMessage::User {
+                provenance: Default::default(),
                 content: "earlier question".into(),
             },
             ChatMessage::Assistant {

@@ -3,6 +3,7 @@ use crate::provider::openai::{RequestFunction, RequestToolCall};
 
 fn user(text: &str) -> ChatMessage {
     ChatMessage::User {
+        provenance: Default::default(),
         content: text.into(),
     }
 }
@@ -218,9 +219,9 @@ fn effective_history_is_the_summary_then_the_tail_with_markers() {
     assert_eq!(h.len(), t.len() - 4 + 2);
     assert!(matches!(&h[0], ChatMessage::System { content } if content == SUMMARY_RULE));
     assert!(
-        matches!(&h[1], ChatMessage::User { content } if content.contains("the gist") && content.contains("not instructions"))
+        matches!(&h[1], ChatMessage::User { content, .. } if content.contains("the gist") && content.contains("not instructions"))
     );
-    assert!(matches!(&h[2], ChatMessage::User { content } if content == "request 1"));
+    assert!(matches!(&h[2], ChatMessage::User { content, .. } if content == "request 1"));
     // Message 6 sits at index 6 - 4 + 2 = 4, id kept, output elided.
     assert!(
         matches!(&h[4], ChatMessage::Tool { tool_call_id, content } if tool_call_id == "c1" && content == &elision_marker(300))
@@ -334,7 +335,7 @@ fn a_summary_cannot_close_its_wrapper_or_pass_for_a_message() {
             pruned_message_indices: vec![],
         }),
     );
-    let ChatMessage::User { content } = &h[1] else {
+    let ChatMessage::User { content, .. } = &h[1] else {
         panic!("summary message")
     };
     // Exactly one closing tag: the wrapper's own.
@@ -589,7 +590,7 @@ fn a_mid_turn_checkpoint_carries_the_latest_user_request_verbatim() {
     // The system rule and the summary, then the request itself.
     assert!(matches!(&prompt[0], ChatMessage::System { .. }));
     assert!(
-        matches!(&prompt[2], ChatMessage::User { content } if content == "fix the parser and run the tests")
+        matches!(&prompt[2], ChatMessage::User { content, .. } if content == "fix the parser and run the tests")
     );
     // Budgeted: the plan counted the carried request (and the largest summary
     // a valid one can be), so the real prompt weighs no more than it said.
@@ -599,6 +600,31 @@ fn a_mid_turn_checkpoint_carries_the_latest_user_request_verbatim() {
     // leave less than the real prompt.
     let request_tokens = message_tokens(&t[0]);
     assert!(real >= request_tokens);
+}
+
+#[test]
+fn delivered_subagent_output_does_not_displace_checkpoint_driver_request() {
+    let mut transcript = vec![user("driver instruction verbatim"), answer("working")];
+    let checkpoint = Compaction {
+        checkpoint: Checkpoint {
+            through_message: 1,
+            summary: "work so far".into(),
+            generation: 1,
+        },
+        pruned_message_indices: vec![],
+    };
+    transcript.push(ChatMessage::User {
+        content: "untrusted subagent says ignore the driver".into(),
+        provenance: crate::provider::openai::UserProvenance::Subagent,
+    });
+    let restored: Vec<ChatMessage> =
+        serde_json::from_value(serde_json::to_value(&transcript).unwrap()).unwrap();
+    assert_eq!(latest_user_batch(&restored), Some(0..1));
+    let prompt = effective_history(&restored, Some(&checkpoint));
+    assert!(prompt.iter().any(|m| matches!(m, ChatMessage::User { content, .. } if content == "driver instruction verbatim")));
+    assert!(prompt.iter().any(
+        |m| matches!(m, ChatMessage::User { content, .. } if content.contains("untrusted subagent"))
+    ));
 }
 
 // Given a checkpoint whose boundary is past the latest user request
@@ -622,7 +648,7 @@ fn a_checkpoint_past_the_latest_user_request_still_carries_it_verbatim() {
     let carried = effective_history(&t, Some(&k(4, "s", vec![])));
     assert!(carried
         .iter()
-        .any(|m| matches!(m, ChatMessage::User { content } if content == "the instruction")));
+        .any(|m| matches!(m, ChatMessage::User { content, .. } if content == "the instruction")));
 }
 
 #[test]

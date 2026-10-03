@@ -231,7 +231,7 @@ fn outputs(messages: &[ChatMessage]) -> Vec<Value> {
     messages
         .iter()
         .filter_map(|message| match message {
-            ChatMessage::User { content } => serde_json::from_str::<Value>(content)
+            ChatMessage::User { content, .. } => serde_json::from_str::<Value>(content)
                 .ok()
                 .filter(|v| v["untrusted_subagent_output"] == true),
             _ => None,
@@ -794,6 +794,7 @@ async fn published_notice_is_consumed_after_crash_and_never_consumed_twice() {
         "answer"
     );
     let transcript = vec![ChatMessage::User {
+        provenance: Default::default(),
         content: "untrusted answer".into(),
     }];
     assert!(store

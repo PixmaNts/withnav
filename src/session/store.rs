@@ -1507,6 +1507,7 @@ mod tests {
         store.save_transcript(
             id,
             vec![ChatMessage::User {
+                provenance: Default::default(),
                 content: "hi".into(),
             }],
         );
@@ -1680,6 +1681,7 @@ mod tests {
         store.save_transcript(
             id,
             vec![ChatMessage::User {
+                provenance: Default::default(),
                 content: "hi".into(),
             }],
         );
@@ -2037,6 +2039,7 @@ mod tests {
         use crate::provider::openai::{RequestFunction, RequestToolCall};
         vec![
             ChatMessage::User {
+                provenance: Default::default(),
                 content: format!("request {n}"),
             },
             ChatMessage::Assistant {

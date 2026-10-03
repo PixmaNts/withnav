@@ -1831,7 +1831,7 @@ impl Service {
                             text = serde_json::json!({"untrusted_subagent_output":true,"child_session_id":child,
                                 "agent":payload["agent"],"outcome":payload["outcome"],"result":result}).to_string();
                         }
-                        transcript.push(ChatMessage::User { content: text });
+                        transcript.push(ChatMessage::User { provenance: crate::provider::openai::UserProvenance::Subagent, content: text });
                         children.push(child);
                     }
                     history

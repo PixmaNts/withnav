@@ -29,7 +29,7 @@ fn bytes_tokens(bytes: usize) -> u64 {
 /// One message: its text, reasoning and tool calls, plus the framing.
 pub fn message_tokens(message: &ChatMessage) -> u64 {
     let bytes = match message {
-        ChatMessage::System { content } | ChatMessage::User { content } => content.len(),
+        ChatMessage::System { content } | ChatMessage::User { content, .. } => content.len(),
         ChatMessage::Assistant {
             content,
             reasoning_content,
@@ -81,7 +81,20 @@ pub fn estimate(
 ) -> Breakdown {
     let framed = |text: &str| text_tokens(text) + MESSAGE_FRAMING_TOKENS;
     Breakdown {
-        system: system_tokens(system_prompt),
+        system: system_tokens(system_prompt)
+            + if history.iter().any(|m| {
+                matches!(
+                    m,
+                    ChatMessage::User {
+                        provenance: crate::provider::openai::UserProvenance::Subagent,
+                        ..
+                    }
+                )
+            }) {
+                text_tokens(crate::agent::prompt::SUBAGENT_RULE) + 1
+            } else {
+                0
+            },
         rules: rules.map_or(0, framed),
         skills_catalog: skills.map_or(0, framed),
         tools: tools_tokens(tools),

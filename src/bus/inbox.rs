@@ -276,7 +276,7 @@ mod tests {
             .transcript
             .iter()
             .filter_map(|m| match m {
-                ChatMessage::User { content } => Some(content.clone()),
+                ChatMessage::User { content, .. } => Some(content.clone()),
                 _ => None,
             })
             .collect()
@@ -388,11 +388,11 @@ mod tests {
         // Rest are user messages, FIFO:
         assert!(matches!(
             actor.transcript.get(1),
-            Some(ChatMessage::User { content }) if content == "second"
+            Some(ChatMessage::User { content, .. }) if content == "second"
         ));
         assert!(matches!(
             actor.transcript.get(2),
-            Some(ChatMessage::User { content }) if content == "third"
+            Some(ChatMessage::User { content, .. }) if content == "third"
         ));
         assert_eq!(actor.transcript.len(), 3);
         assert_eq!(actor.pending, None);
@@ -421,7 +421,7 @@ mod tests {
 
         assert!(matches!(
             actor.transcript.last(),
-            Some(ChatMessage::User { content }) if content == "lean left"
+            Some(ChatMessage::User { content, .. }) if content == "lean left"
         ));
         assert_eq!(actor.pending, None);
     }

@@ -151,11 +151,6 @@ impl SessionHandle {
             Err(poisoned) => poisoned.into_inner(),
         }
     }
-
-    /// The session's current variant offer.
-    pub(crate) fn current_offer(&self) -> Arc<resolve::Offer> {
-        self.selected().offer
-    }
 }
 
 impl std::fmt::Debug for SessionHandle {

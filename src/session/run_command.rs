@@ -392,7 +392,7 @@ impl Service {
         // this alias, and is only applied if the selection is still this one
         // once the command holds exclusivity.
         let selected = handle.selected();
-        let mut offer = handle.current_offer();
+        let mut offer = selected.offer.clone();
         let mut words = arguments.split_whitespace();
         let Some(word) = words.next() else {
             let offered: Vec<&String> = offer.variants.keys().collect();
@@ -1013,6 +1013,7 @@ mod tests {
         // The row is written, nothing is installed yet: the old pair. The
         // sequencer of this session is busy with the write, so only what does
         // not queue on it is read here.
+        stored.reached.notified().await;
         let handle = service.handle(id).unwrap();
         let during = handle.selected();
         assert_eq!(

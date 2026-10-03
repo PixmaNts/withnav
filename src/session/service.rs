@@ -426,6 +426,7 @@ impl Service {
         // No fallback: a conversation that cannot be saved is not served.
         let history =
             super::store::HistoryStore::open(&config.history_db).map_err(ServerError::History)?;
+        history.recover_children().map_err(ServerError::History)?;
         let seeded_slots = history
             .active_child_counts()
             .map_err(ServerError::History)?;

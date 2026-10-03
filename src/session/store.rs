@@ -384,43 +384,34 @@ impl HistoryStore {
     ) -> Result<Option<ChildLink>, String> {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
-            let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
-            let tx = conn.transaction().map_err(|e| e.to_string())?;
-            let terminal_at = now_rfc3339();
-            let changed = tx.execute(
-                "UPDATE child_links SET status=?2, terminal_at=?3, terminal_reason=?4, result_text=?5
-                 WHERE child_id=?1 AND status='running'",
-                params![child_id.to_string(), status, terminal_at, reason, result],
-            ).map_err(|e| e.to_string())?;
-            if changed == 0 { tx.rollback().map_err(|e| e.to_string())?; return Ok(None); }
-            let row = tx.query_row(
-                "SELECT parent_id, child_id, agent, goal, policy_snapshot, status, created_at, terminal_at, terminal_reason, result_text
-                 FROM child_links WHERE child_id=?1",
-                [child_id.to_string()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?, row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?,
-                    row.get::<_, Option<String>>(8)?, row.get::<_, Option<String>>(9)?)),
-            ).map_err(|e| e.to_string())?;
-            let outcome = match status.as_str() {
-                "done" => crate::bus::event::SubagentOutcome::Done,
-                "failed" => crate::bus::event::SubagentOutcome::Failed,
-                _ => crate::bus::event::SubagentOutcome::Stopped,
-            };
-            let payload = serde_json::to_string(&crate::bus::event::SubagentDone {
-                parent_session_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
-                child_session_id: child_id, agent: row.2.clone(), outcome,
-                reason: reason.clone(), notification_id: Ulid::new(),
-            }).map_err(|e| e.to_string())?;
-            tx.execute("INSERT INTO completion_outbox (child_id, parent_id, outcome, result_ref, payload, result_text) VALUES (?1, ?2, ?3, ?1, ?4, ?5)",
-                params![child_id.to_string(), row.0, status, payload, result]).map_err(|e| e.to_string())?;
-            tx.commit().map_err(|e| e.to_string())?;
-            Ok(Some(ChildLink {
-                parent_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
-                child_id: row.1.parse().map_err(|e| format!("child id: {e}"))?,
-                agent: row.2, goal: row.3, policy_snapshot: row.4, status: row.5,
-                created_at: row.6, terminal_at: row.7, terminal_reason: row.8, result_text: row.9,
-            }))
-        }).await.map_err(|e| e.to_string())?
+            finish_child_link_sync(&path, child_id, status, reason, result)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+
+    pub fn recover_children(&self) -> Result<(), String> {
+        let conn = Connection::open(&*self.path).map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT child_id FROM child_links WHERE status IN ('starting','running')")
+            .map_err(|e| e.to_string())?;
+        let ids = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        drop(stmt);
+        drop(conn);
+        for id in ids {
+            finish_child_link_sync(
+                &self.path,
+                id.parse().map_err(|e| format!("child id: {e}"))?,
+                "stopped".into(),
+                Some("restart".into()),
+                String::new(),
+            )?;
+        }
+        Ok(())
     }
 
     pub async fn child_link(&self, child_id: Ulid) -> Result<Option<ChildLink>, String> {
@@ -746,6 +737,66 @@ fn writer_loop(mut conn: Connection, rx: mpsc::Receiver<Msg>) {
 
 /// Applies one write as ONE transaction: it commits whole or leaves the
 /// database untouched.
+fn finish_child_link_sync(
+    path: &Path,
+    child_id: Ulid,
+    status: String,
+    reason: Option<String>,
+    result: String,
+) -> Result<Option<ChildLink>, String> {
+    let mut conn = Connection::open(path).map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let terminal_at = now_rfc3339();
+    let changed = tx
+        .execute(
+            "UPDATE child_links SET status=?2, terminal_at=?3, terminal_reason=?4, result_text=?5
+                 WHERE child_id=?1 AND status IN ('starting','running')",
+            params![child_id.to_string(), status, terminal_at, reason, result],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        tx.rollback().map_err(|e| e.to_string())?;
+        return Ok(None);
+    }
+    let row = tx.query_row(
+                "SELECT parent_id, child_id, agent, goal, policy_snapshot, status, created_at, terminal_at, terminal_reason, result_text
+                 FROM child_links WHERE child_id=?1",
+                [child_id.to_string()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?, row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?, row.get::<_, Option<String>>(9)?)),
+            ).map_err(|e| e.to_string())?;
+    let outcome = match status.as_str() {
+        "done" => crate::bus::event::SubagentOutcome::Done,
+        "failed" => crate::bus::event::SubagentOutcome::Failed,
+        _ => crate::bus::event::SubagentOutcome::Stopped,
+    };
+    let payload = serde_json::to_string(&crate::bus::event::SubagentDone {
+        parent_session_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
+        child_session_id: child_id,
+        agent: row.2.clone(),
+        outcome,
+        reason: reason.clone(),
+        notification_id: Ulid::new(),
+    })
+    .map_err(|e| e.to_string())?;
+    tx.execute("INSERT INTO completion_outbox (child_id, parent_id, outcome, result_ref, payload, result_text) VALUES (?1, ?2, ?3, ?1, ?4, ?5)",
+                params![child_id.to_string(), row.0, status, payload, result]).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(Some(ChildLink {
+        parent_id: row.0.parse().map_err(|e| format!("parent id: {e}"))?,
+        child_id: row.1.parse().map_err(|e| format!("child id: {e}"))?,
+        agent: row.2,
+        goal: row.3,
+        policy_snapshot: row.4,
+        status: row.5,
+        created_at: row.6,
+        terminal_at: row.7,
+        terminal_reason: row.8,
+        result_text: row.9,
+    }))
+}
+
 fn insert_committed_event(
     tx: &rusqlite::Transaction<'_>,
     envelope: &EventEnvelope,

@@ -409,8 +409,8 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
 
 // Given a navigator conversation whose cognition waits on a permission request
 // When a wake is posted
-// Then it is queued and the request stays open; once the driver answers, the
-//      wake is delivered
+// Then the session runtime holds it and the request stays open; once the
+//      driver answers and the turn ends, the wake is delivered
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_wake_never_cancels_an_open_permission_request() {
     let server = MockServer::start().await;
@@ -462,8 +462,8 @@ async fn a_wake_never_cancels_an_open_permission_request() {
         .expect("request id");
     assert_eq!(
         feed.post_wake("a wake while asking").await,
-        navai::navigator::WakeOutcome::Queued(id),
-        "an open permission request holds the wake"
+        navai::navigator::WakeOutcome::Posted(id),
+        "the feed posts it; the runtime holds it behind the request"
     );
     tokio::time::sleep(Duration::from_millis(200)).await;
     state.history().flush().await.expect("flush");

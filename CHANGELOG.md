@@ -246,8 +246,10 @@ requests land in `develop`.
 - **Permission gate fixes**: a call that is rejected for its arguments (a path outside the roots, a
   write that would create a folder) is rejected before the gate, without asking; only a valid call asks. An approval is bound to the destination that was reviewed: a call that resolves
   elsewhere when it runs asks again. A held call keeps what is left of the step budget across
-  approvals instead of starting a new one. Navigator wakes are held while a permission request is
-  open. A second answer to the same request is refused with 409 `permission_stale` at once, before
+  approvals instead of starting a new one. A navigator wake is held by the session runtime while a
+  permission request or an `ask` is pending, and delivered only once nothing is pending (the latest
+  one is kept), so it can no longer cancel a later request of the same turn; driver text still
+  cancels a request. A second answer to the same request is refused with 409 `permission_stale` at once, before
   anything is changed. `/stop` goes through while a request waits and cancels it
   (`permission.resolved` `cancelled`).
 - The navigator no longer holds back its advice while your code is still unfinished: a remark worth

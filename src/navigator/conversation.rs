@@ -14,7 +14,9 @@
 //! after a yield answers the pending `ask`, and a navigator message must
 //! never become that answer. So while the active conversation waits on the
 //! driver, wakes are queued — coalesced, latest wins — and delivered right
-//! after the next driver message has been accepted. A navigator-sourced
+//! after the next driver message has been accepted. (An open permission
+//! request is guarded by the session runtime, not here: it holds a
+//! navigator-sourced message until nothing is pending.) A navigator-sourced
 //! message is also never a conversation trigger: the digest marks it as the
 //! navigator's own words, and the turn it provokes is reported as not
 //! driver-caused, so a wake never becomes a conversation trigger (no
@@ -113,9 +115,6 @@ struct Exchange {
 struct SessionConversation {
     post: SessionPost,
     waiting_on_driver: bool,
-    /// A permission request is open: a wake would settle it as cancelled, so
-    /// it waits until `permission.resolved`.
-    permission_open: bool,
     queued_wake: Option<String>,
     exchanges: VecDeque<Exchange>,
     /// A driver message arrived since the last `turn.end`: the next turn
@@ -124,12 +123,6 @@ struct SessionConversation {
 }
 
 impl SessionConversation {
-    /// Whether a wake must wait: the cognition asked the driver something, or
-    /// a permission request is open.
-    fn holds_wakes(&self) -> bool {
-        self.waiting_on_driver || self.permission_open
-    }
-
     fn push_exchange(&mut self, author: Author, text: &str) {
         // Only driver messages carry the editor-context block the editor
         // appends at send time; it describes the editor, not the driver.
@@ -203,7 +196,6 @@ impl ConversationFeed {
             SessionConversation {
                 post,
                 waiting_on_driver: false,
-                permission_open: false,
                 queued_wake: None,
                 exchanges: VecDeque::new(),
                 driver_pending: false,
@@ -227,8 +219,7 @@ impl ConversationFeed {
     /// Of the whole envelope stream only a few kinds carry meaning:
     /// `message.received` (who wrote what, and the end of a pending ask),
     /// `llm.response` (the cognition's own words), `agent.yield` (the
-    /// cognition now waits on the driver), `permission.requested` /
-    /// `permission.resolved` (a request is open) and `turn.end` (announced to
+    /// cognition now waits on the driver) and `turn.end` (announced to
     /// subscribers). A driver message also makes its session the active
     /// conversation and delivers a queued wake.
     pub async fn observe(&self, envelope: &EventEnvelope) {
@@ -281,41 +272,7 @@ impl ConversationFeed {
                     entry.waiting_on_driver = true;
                 }
             }
-            "permission.requested" => {
-                let mut state = self.lock();
-                if let Some(entry) = state.sessions.get_mut(&envelope.session_id) {
-                    entry.permission_open = true;
-                }
-            }
-            "permission.resolved" => self.observe_permission_resolved(envelope).await,
             _ => {}
-        }
-    }
-
-    /// The end of a permission request: wakes held back behind it are
-    /// delivered now, unless an unanswered `ask` still holds them.
-    async fn observe_permission_resolved(&self, envelope: &EventEnvelope) {
-        let flush = {
-            let mut state = self.lock();
-            let Some(entry) = state.sessions.get_mut(&envelope.session_id) else {
-                return;
-            };
-            entry.permission_open = false;
-            if entry.holds_wakes() {
-                None
-            } else {
-                let post = entry.post.clone();
-                entry.queued_wake.take().map(|text| (post, text))
-            }
-        };
-        if let Some((post, text)) = flush {
-            if let Err(error) = post(text).await {
-                tracing::warn!(
-                    session = %envelope.session_id,
-                    error = %error,
-                    "queued wake delivery failed"
-                );
-            }
         }
     }
 
@@ -414,10 +371,11 @@ impl ConversationFeed {
     }
 
     /// Posts a wake to the active conversation as a navigator-sourced
-    /// message. The ask guard: while the cognition waits on the driver, or a
-    /// permission request is open, the wake is queued instead (coalesced,
-    /// latest wins) and delivered by the next driver message or, for a
-    /// permission request, when it is resolved.
+    /// message. The ask guard: while the cognition waits on the driver, the
+    /// wake is queued instead (coalesced, latest wins) and delivered by the
+    /// next driver message. A permission request needs no guard here: the
+    /// session runtime holds a navigator message while a request or an ask
+    /// is pending, and delivers it once the turn has nothing left to wait on.
     pub async fn post_wake(&self, text: &str) -> WakeOutcome {
         let (session_id, post) = {
             let mut state = self.lock();
@@ -428,7 +386,7 @@ impl ConversationFeed {
                 state.active = None;
                 return WakeOutcome::NoSession;
             };
-            if entry.holds_wakes() {
+            if entry.waiting_on_driver {
                 entry.queued_wake = Some(text.to_string());
                 return WakeOutcome::Queued(session_id);
             }
@@ -751,52 +709,5 @@ mod tests {
         assert_eq!(feed.active_session(), None);
         assert!(!feed.is_waiting_on_driver());
         assert_eq!(feed.digest(), "");
-    }
-
-    fn permission_envelope(session: Ulid, kind: EventKind) -> EventEnvelope {
-        EventEnvelope::new(
-            session,
-            0,
-            kind,
-            json!({ "request_id": Ulid::new().to_string(), "tool_call_id": "w1" }),
-        )
-    }
-
-    #[tokio::test]
-    async fn a_wake_waits_behind_an_open_permission_request_and_follows_its_resolution() {
-        let feed = ConversationFeed::new();
-        let id = Ulid::new();
-        let posted = Arc::new(Mutex::new(Vec::new()));
-        feed.register_session(id, recording_poster(posted.clone()));
-        feed.observe(&message_envelope(id, "user:http", "write it"))
-            .await;
-
-        feed.observe(&permission_envelope(id, EventKind::PermissionRequested))
-            .await;
-        assert_eq!(feed.post_wake("drift").await, WakeOutcome::Queued(id));
-        assert_eq!(feed.post_wake("latest").await, WakeOutcome::Queued(id));
-        assert!(posted.lock().unwrap().is_empty(), "the request stays open");
-
-        feed.observe(&permission_envelope(id, EventKind::PermissionResolved))
-            .await;
-        assert_eq!(posted.lock().unwrap().clone(), vec!["latest".to_string()]);
-        assert_eq!(feed.post_wake("after").await, WakeOutcome::Posted(id));
-    }
-
-    #[tokio::test]
-    async fn an_unanswered_ask_still_holds_a_wake_after_a_permission_resolves() {
-        let feed = ConversationFeed::new();
-        let id = Ulid::new();
-        let posted = Arc::new(Mutex::new(Vec::new()));
-        feed.register_session(id, recording_poster(posted.clone()));
-        feed.observe(&message_envelope(id, "user:http", "go")).await;
-        feed.observe(&yield_envelope(id)).await;
-        feed.observe(&permission_envelope(id, EventKind::PermissionRequested))
-            .await;
-        assert_eq!(feed.post_wake("w").await, WakeOutcome::Queued(id));
-        feed.observe(&permission_envelope(id, EventKind::PermissionResolved))
-            .await;
-        assert!(posted.lock().unwrap().is_empty());
-        assert!(feed.is_waiting_on_driver());
     }
 }

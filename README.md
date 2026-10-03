@@ -1,15 +1,62 @@
 # Navai
 
-A personal, minimal-but-complete coding agent in Rust — inspired by `pi` / `oh-my-pi`,
-but not constrained by compatibility with any of them. It does **not** fight its operator
-(no forced todo-completion), owns its core, and stays understandable.
+A pair-programming system in Rust. The human keeps the keyboard and stays the author of the code.
+Several models of different speeds watch, complete, judge and discuss. Under them runs a small,
+owned coding-agent core with a terminal client and a local server.
 
-> **Status:** v0.2.0, first usable release of the **navigator**, a pair-programming assistant in
-> VS Code built on this core. See [`CHANGELOG.md`](CHANGELOG.md), [`ARCHITECTURE.md`](ARCHITECTURE.md)
-> for the code map, and [`CONTEXT.md`](CONTEXT.md) for the vocabulary. The sections below describe
-> the original agent-core design ([`docs/SPEC.md`](docs/SPEC.md)).
+> **Status:** v0.2.0 is released. `develop` holds more: a terminal client, build and plan agents,
+> permissions, skills, rules, model variants, a context budget and manual compaction. See
+> [`CHANGELOG.md`](CHANGELOG.md). [`ARCHITECTURE.md`](ARCHITECTURE.md) maps the code and
+> [`CONTEXT.md`](CONTEXT.md) defines the vocabulary.
 
-## Install the navigator
+## What exists today
+
+**The agent core** (`navai`):
+
+- `navai tui`: a terminal chat client. Several conversations in tabs (up to nine, `alt+1` to
+  `alt+9`), a header with the workspace, git branch, agent and model, a right-hand column with the
+  context breakdown, skills and git changes (`alt+r`), a key bar, a command palette (`ctrl+p` or
+  `/`), a model picker with variants, a session list to resume, and four themes (Ayu Dark and
+  Light, Nord Dark and Light; `/theme`). It starts a private server, or connects to one with
+  `--url`.
+- `navai run -p "<task>"`: one task in a terminal. It never approves a tool call by itself.
+- `navai serve`: the session server alone (HTTP and SSE, loopback by default).
+- `navai auth set|list|remove <provider>`: API keys.
+- **Agents.** `build` (the default: implement, verify, report) and `plan` (research, write markdown
+  plans). The driver switches between turns. Agents can also be defined in Markdown files.
+- **Permissions.** `write`, `edit`, `bash` and `fetch` ask first: allow once, allow the folder, or
+  deny with a message. For `plan`, a second model (Jev) checks every call that is not a markdown
+  write, and what it does not clear is asked to the driver. This is a guard against drift, not a
+  sandbox.
+- **Tools.** `read`, `write`, `edit`, `bash`, `grep`, `glob`, `fetch`, `ask`, and `skill` when
+  skills are found.
+- **Rules and skills.** `AGENTS.md`, `CLAUDE.md` and `rules.md` files, and `SKILL.md` skills, are
+  read when a session starts.
+- **Models.** Aliases in `models.json`. The context window is read from the provider when you do
+  not set it. A model can offer variants (for example reasoning effort), chosen with `/variant`.
+- **Context.** An estimate of the next request and how full the window is. `/compact` summarizes
+  the older part of a long conversation.
+- **Session commands.** `/help`, `/model`, `/new`, `/stop`, `/context`, `/variant`, `/compact`,
+  `/agent`.
+
+**The navigator** (`navai-lsp` and the VS Code extension in `vscode-navigator/`): a Language
+Server that watches your edits. A reflex layer offers ghost-text suggestions, an instinct layer
+decides when to speak, a metacognition layer writes short remarks beside your code, and a
+cognition chat discusses the work with you. See [`vscode-navigator/README.md`](vscode-navigator/README.md).
+
+### Command line
+
+| Command | Main flags |
+|---|---|
+| `navai run` | `-m/--model <alias>`, `-p/--prompt <text>` (a `/command` runs it), `--workspace <dir>`, `--models <file>`, `--agent <build\|plan>`, `--variant <name\|off>`, `--show-thinking`, `--yes` (approve every request once; unsafe) |
+| `navai tui` | `--workspace <dir>`, `--model <alias>` or `--session <id>` (resume), `--models <file>` or `--url <server>` (token in `NAVAI_SERVER_TOKEN`) |
+| `navai serve` | `--bind <addr>` (default `127.0.0.1:7310`), `--allow-non-loopback`, `--models <file>` |
+| `navai auth` | `set <provider>`, `list`, `remove <provider>` |
+
+`navai run` exit codes: `0` done, `1` error, `2` the agent asked a question, `3` a tool call needs
+approval (`permission_required`), `130` interrupted.
+
+## Install
 
 ```bash
 cargo build --release --bins
@@ -18,70 +65,39 @@ install -m755 target/release/navai target/release/navai-lsp ~/.local/bin/
 code --install-extension vscode-navigator/navai-0.2.0.vsix
 ```
 
-Models are aliases in `~/.config/navai/models.json` (`reflex`, `instinct`, `metacognition`,
-`cognition`); keys go in `~/.config/navai/auth.json` (`navai auth set <provider>`). Data (the
-conversation history and the decision log) lives in `~/.local/share/navai/`.
+## Configuration and data
+
+| Where | What |
+|---|---|
+| `~/.config/navai/models.json` | model aliases (`reflex`, `instinct`, `metacognition`, `cognition` and your own); a `models.json` in the workspace or `--models` wins |
+| `~/.config/navai/auth.json` | API keys, mode 0600; write them with `navai auth set <provider>` |
+| `~/.config/navai/config.json` | client settings, such as `tui.theme` |
+| `~/.config/navai/agents/*.md`, `<project>/.navai/agents/*.md` | agent definitions; `~/.config/opencode/agents/` is also read |
+| `~/.config/navai/navigator/pipeline.toml`, `<project>/.navigator/` | the navigator's decision pipeline and intent record |
+| `~/.agents/AGENTS.md`, `~/.agents/rules.md`, `~/.agents/skills/` | user rules and skills (`~/.claude/` is read too); projects add `AGENTS.md`, `rules.md` and `.agents/skills` (also `.claude/` and `.opencode/`) |
+| `~/.local/share/navai/` | conversation history `navai.db`, decision log `navai.jsonl`, `tui.log`, `model-catalog/` |
 
 Coming from `rust-agent`? The first start of `navai` or `navai-lsp` moves your data and config from
 `~/.local/share/navigator/`, `~/.local/share/rust-agent/` and `~/.config/rust-agent/` to the new
 dirs; nothing is overwritten. Remove the old `rust-agent` binaries and the old `Navigator`
 extension (`rust-agent.navigator`) yourself.
 
+## Direction (not built)
+
+The first design ([`docs/SPEC.md`](docs/SPEC.md)) aimed higher: one event bus and actor model under
+everything, with external-process plugins over JSON-RPC, MCP tools, non-blocking subagents, a
+meta-loop co-agent, hot reload and a memory integration. **None of that is built.** The bus, the
+server and the clients are. Subagents are the next large piece; `explore` and `review` are defined
+but cannot be started yet. Automatic compaction and switching the model inside a conversation are
+also not on `develop`. `docs/SPEC.md` says, section by section, what is built.
+
 ## Contributing
 
-`main` holds releases only. Work branches off `develop` as `feat/<name>` or `fix/<name>` and comes
-back through a merge request into `develop`. A release merges `develop` into `main` and is tagged
-`vX.Y.Z`. Details in [`AGENTS.md`](AGENTS.md).
-
-## The idea in one paragraph
-
-An agent is a ~200-line loop: send transcript + tools to an LLM, execute the tools it
-asks for, feed results back, and either **Continue**, **Done**, or **Yield** (pause for a
-human). Everything else — plugins, subagents, a meta-loop co-agent, persistence, MCP tools,
-memory (contextd) — is a facet of **one** unifying primitive: an **event bus + multiprocess
-actor model**. That single mechanism is what makes an ambitious feature set feasible as a
-handful of focused vertical phases.
-
-## Core decisions
-
-- **Rust core, headless, mono-binary.** Server/multi-client: the core exposes an event API
-  (SSE via axum). TUI / WebUI / App are all just clients. Write the brain once, many faces.
-- **5 native tools only** (`read`, `write`, `edit`, `bash`, `grep`). Everything else via **MCP**.
-- **OpenAI-compatible providers only** → the local **OmniRoute** proxy works directly.
-- **Plugins = external processes** speaking JSON-RPC over stdio (Python/TS/bash) — never an
-  embedded interpreter. Free isolation, poly-language, core stays pure Rust.
-- **Mini hook protocol** (`continue` / `modify` / `deny`) over lifecycle events = the plugin
-  system, prompt injection, and security gates unified.
-- **Non-blocking subagents.** `spawn_agent` returns immediately; results arrive as a
-  `subagent.done` event. Never block on the first of N. Never deadlock the conversation.
-- **Delivery modes** per message (`next-turn` / `steer` / `interrupt`) for subagents *and* the user.
-- **Meta-loop / co-agent** = a light plugin on a cheap model that observes the bus from
-  *outside* the main loop → summaries, goal reminders, anti-todo-hacking guard. Makes
-  features like "goal" *emerge* instead of being hard-coded.
-- **Event-sourced SQLite persistence** = a bus subscriber. Replaying events = resume.
-- **Self-awareness (levels 1+2)** comes free: everything is files + hot-reload; the agent
-  edits its own config / `agents/*.md` / plugins and the system reloads live.
-
-## Repo layout
-
-```
-docs/SPEC.md        full v0.1 specification (authoritative)
-refs/               cloned reference projects (inspiration, gitignored)
-  pi_agent_rust/    Dicklesworthstone — Rust port of Pi
-  rig/              0xPlaygrounds — Rust LLM framework (used by contextd)
-```
-
-## Vertical-phase MVP roadmap
-
-- **Phase 1** — single-agent vertical slice: loop + 5 tools + OmniRoute + streaming SSE.
-- **Phase 2** — event bus + plugin JSON-RPC protocol + MCP (rmcp) + hooks + server API.
-- **Phase 3** — non-blocking subagents + event-sourced SQLite persistence.
-- **Phase 4** — co-agent/meta-loop + AGENTS.md/persona loading + Ratatui client.
-
-Strict scope fence: **core + event bus + MCP + server, nothing else in v1.** Every feature
-must be expressible through the four foundational primitives (loop, bus, plugin boundary,
-server API) or the contract is improved — never a feature-specific subsystem.
+The repository is on GitHub: <https://github.com/PixmaNts/Navai>. `main` holds releases only.
+Work branches off `develop` as `feat/<name>` or `fix/<name>` and comes back through a pull request
+into `develop`. A release merges `develop` into `main` and is tagged `vX.Y.Z`. Details in
+[`AGENTS.md`](AGENTS.md).
 
 ## License
 
-TBD.
+The crates declare `MIT OR Apache-2.0` (`Cargo.toml`). No `LICENSE` file is in the repository yet.

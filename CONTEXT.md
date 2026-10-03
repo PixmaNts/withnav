@@ -57,6 +57,19 @@ _Avoid_: autopilot, vibe mode
 The driver's rating of a remark: useful, noise, or dismissed.
 _Avoid_: feedback, vote
 
+## Agents
+
+**Primary agent**:
+The role a session runs as: `build` (implement, verify, report), `plan` (research, write markdown
+plans, delegate) or a custom one. The driver selects it for the session and can switch between turns.
+It sets what the model is told to do, not what it may execute.
+_Avoid_: mode (a mode is where an agent definition may be used), persona
+
+**Agent definition**:
+A role described in a built-in or a markdown file: description, mode (primary, subagent or both),
+role prompt, optional model, tool allow/deny map and access level. `build` and `plan` are reserved.
+_Avoid_: profile (a profile is the kind of session, such as the navigator)
+
 ## Shared context
 
 **Shared context**:

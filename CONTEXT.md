@@ -83,6 +83,8 @@ delete cascade; restart stops unfinished children without replaying their tools.
 _Avoid_: worker, child agent
 
 **Completion notice**:
+Watchdog doubts also use the durable outbox to ask the parent model for a decision, independently
+of terminal completion; their notice ids are distinct from the child's id.
 A durable outbox entry containing the child's id, outcome, agent and result, independent of the
 child's continued existence. `delivered` means its `subagent.done` event was committed to the parent
 stream; `consumed` means its result message was committed atomically into the parent's transcript.
@@ -109,6 +111,23 @@ renew the turn cancellation token and start fresh with the new input. The sessio
 stay live. An explicit parent instruction may cancel a child's pending interaction; a delivered
 child result never cancels the parent's human interaction, instead waiting for the next turn.
 _Avoid_: stop (stop tears down the session)
+
+**Watchdog**:
+The instinct's separate progress check for a running background child, every 300 seconds by
+default (`subagents.watchdog_interval_secs`; 0 disables). It reads a bounded goal, time since
+message/tool activity, last tool call and result, and step count, never reasoning. `active` does
+nothing; `stuck` terminalizes the child with reason `watchdog` and delivers its partial output
+marked "stopped by watchdog". `doubt` holds the child before its next provider request, after the
+whole tool batch, and wakes its parent with "continue or stop?" plus that evidence. Two consecutive
+unavailable, timed-out or invalid answers also yield doubt; one is silent. Permission-, budget-
+and doubt-parked children are not checked, and missed intervals are discarded.
+
+Only the owning root cognition can use `decide_subagent(child_id, decision, note?)` to continue
+or stop a watchdog doubt. This cannot approve a tool or renew a step budget. The driver's existing
+Stop and owner Continue endpoints still work. `subagent.watchdog` is a durable parent-stream
+verdict with `child_session_id`, `verdict`, `reason` and `checked_at`; evidence is untrusted data.
+Recovery stops doubts like any other unfinished child; watchdog state is not restored.
+_Avoid_: role guard (that checks role conformance, not progress), permission request
 
 ## Models and commands
 

@@ -12,6 +12,7 @@ use crate::provider::openai::ToolDef;
 
 pub mod bash;
 pub mod control;
+pub mod decide_subagent;
 pub mod fetch;
 pub mod glob;
 pub mod native;

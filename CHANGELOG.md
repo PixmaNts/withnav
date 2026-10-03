@@ -21,7 +21,7 @@ requests land in `develop`.
   workspace, rules and skills but not the parent's history, never gets `ask` or `task`, and cannot
   write when it or its parent is read-only or `plan`. Session lists show `parent_session_id`,
   `child_status` and `promptable: false`; you can read and stop a subagent but not write to it (403
-  `child_read_only`). `subagent.spawned` and `subagent.done` are stored on the parent's stream (the event catalog now has 21 kinds). The
+  `child_read_only`). `subagent.spawned`, `subagent.done` and `subagent.watchdog` are stored on the parent's stream (the event catalog now has 22 kinds). The
   subagent's result is delivered exactly once as a bounded, labelled untrusted user message at the
   parent's next turn boundary. A finished child wakes an idle parent; results wait while the parent
   is busy or has a pending interaction, and survive restart and deletion of the child. Child tool
@@ -35,11 +35,19 @@ requests land in `develop`.
   cancelled and mirrored on interrupt; steer waits rather than answering a pending interaction.
   `task` accepts `delivery: "next_turn" | "steer" | "interrupt"` for result delivery to the parent.
   Result interrupts fall back to next-turn delivery while the parent waits for a human, and queued
-  driver messages precede automatic wakes. No watchdog yet; the event catalog stays at 21 kinds.
+  driver messages precede automatic wakes. Jev checks running children every 300 seconds
+  (`subagents.watchdog_interval_secs`; 0 disables): bounded goal, message/tool inactivity, last
+  tool call/result and step count, never reasoning. `active` leaves the child alone; `stuck`
+  stops it with reason `watchdog` and delivers partial output marked "stopped by watchdog";
+  `doubt` holds its next safe provider boundary and wakes the parent with the evidence. Two
+  consecutive unavailable, timed-out or invalid answers also mean doubt. Root cognition gets
+  `decide_subagent(child_id, decision: "continue" | "stop", note?)` for owned watchdog doubts
+  only. Permission-, budget- and doubt-parked children are skipped, and missed ticks never pile up.
+  Watchdog verdict events are durable; the first unavailable/invalid answer is silent. The event catalog has 22 kinds.
   A driver can renew a budget-parked child's step budget once through
   `POST /v1/sessions/{parent}/children/{child}/continue`; foreign owners are refused and a child
-  that is not budget-parked returns 409. This is distinct from permission answers and is not a
-  model tool.
+  that is neither budget-parked nor in watchdog doubt returns 409. It can also release a watchdog
+  doubt. This is distinct from permission answers; the model decision tool cannot renew a budget.
 
 ## [0.3.0] - 2026-10-03
 

@@ -12,10 +12,13 @@
 mod compact;
 mod deferred;
 mod delivery;
+pub mod progress;
 mod steering;
+mod watchdog;
 pub use delivery::BoundaryEligible;
 pub use delivery::Delivery;
 pub use delivery::PendingNotice;
+pub use watchdog::TerminalOwner;
 mod model;
 
 use std::sync::{Arc, Mutex};
@@ -93,6 +96,8 @@ struct PermissionSlot {
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
+    pub watchdog: watchdog::WatchdogPark,
+    pub activity: progress::Activity,
     #[cfg(debug_assertions)]
     negative_eligibility_barrier:
         Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
@@ -121,6 +126,15 @@ pub struct RuntimeStatus {
 }
 
 impl RuntimeStatus {
+    pub fn watchdog_eligible(&self) -> bool {
+        !self.watchdog.is_doubt()
+            && !self
+                .budget_parked
+                .load(std::sync::atomic::Ordering::Acquire)
+            && self.pending_permission().is_none()
+            && !self.selection.ask_pending()
+            && self.selection.is_running()
+    }
     #[cfg(debug_assertions)]
     pub(crate) fn pause_negative_eligibility(
         &self,
@@ -386,6 +400,7 @@ impl RuntimeStatus {
         SelectedVariant,
     ) {
         let role = self.selection.begin_turn().await;
+        self.watchdog.transition(true);
         self.set_pending_permission(None);
         let mut slot = self.slot();
         if let Some(pending) = slot.pending.take() {
@@ -397,6 +412,7 @@ impl RuntimeStatus {
 
     /// The turn is over: an agent or variant change may apply.
     fn end_turn(&self, actor: &AgentActor) {
+        self.watchdog.transition(false);
         self.selection.end_turn(actor.has_pending());
         self.set_pending_permission(actor.pending_permission().map(|request| request.id));
         self.slot().running = false;
@@ -547,6 +563,7 @@ impl TurnPublisher {
     /// Translates one run event onto the bus. Pure: never feeds back into
     /// the loop's control flow.
     fn observe(&mut self, event: AgentEvent<'_>) {
+        self.status.activity.observe(&event);
         match event {
             AgentEvent::StepStarted => self.step_id = Ulid::new(),
             AgentEvent::Delta(delta) => {
@@ -721,9 +738,13 @@ async fn runtime_loop(
     let mut restart_waiting = false;
     inbox.track_driver(status.queued_driver.clone());
     let boundary_status = status.clone();
-    actor.safe_boundary = Some(Arc::new(move |transcript| {
+    actor.safe_boundary = Some(Arc::new(move |transcript, cancel| {
         let status = boundary_status.clone();
         Box::pin(async move {
+            status.watchdog.boundary(&cancel).await;
+            if cancel.is_cancelled() {
+                return Ok(None);
+            }
             let driver_queued = status
                 .queued_driver
                 .load(std::sync::atomic::Ordering::Acquire)
@@ -781,6 +802,8 @@ async fn runtime_loop(
                 let (transcript,claimed)=status.steering.claim_replacements(actor.transcript.clone());
                 if !claimed && !restart { continue; }
                 if claimed {
+                    // A claimed replacement supersedes the old turn's progress doubt.
+                    status.watchdog.resume();
                     if let Some(request)=actor.pending_permission().cloned() {
                         actor.interrupt_pending_permission();
                         publish_resolved(&sequencer,active_task_id,&request,PermissionResolution::Cancelled);

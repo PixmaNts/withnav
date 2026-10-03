@@ -116,18 +116,25 @@ async fn run_steps(
 
         if !actor.has_pending() {
             if let Some(boundary) = actor.safe_boundary.clone() {
-                let updated = boundary(actor.transcript.clone()).await.map_err(|error| {
-                    AgentError::Tool(crate::error::ToolError::Denied {
-                        code: "safe_boundary".into(),
-                        message: error,
-                    })
-                })?;
+                let updated = boundary(actor.transcript.clone(), actor.cancel.clone())
+                    .await
+                    .map_err(|error| {
+                        AgentError::Tool(crate::error::ToolError::Denied {
+                            code: "safe_boundary".into(),
+                            message: error,
+                        })
+                    })?;
                 let Some(updated) = updated else {
                     actor.state = AgentState::Idle;
                     return Ok(RunOutcome::Interrupted);
                 };
                 actor.transcript = updated;
             }
+        }
+
+        if actor.cancel.is_cancelled() {
+            actor.state = AgentState::Idle;
+            return Ok(RunOutcome::Interrupted);
         }
 
         // The safe boundary before a request: every tool result of the last

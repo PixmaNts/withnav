@@ -39,6 +39,22 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// Progress-check interval; zero disables child supervision.
+    pub fn subagents_watchdog_interval_secs(&self) -> Result<u64, String> {
+        let Some(value) = self
+            .root
+            .get("subagents")
+            .and_then(|s| s.get("watchdog_interval_secs"))
+        else {
+            return Ok(300);
+        };
+        value
+            .as_u64()
+            .filter(|n| *n <= 365 * 24 * 60 * 60)
+            .ok_or_else(|| {
+                "subagents.watchdog_interval_secs must be an integer from 0 to 31536000".into()
+            })
+    }
     /// The theme id the terminal client saved, `tui.theme`.
     pub fn tui_theme(&self) -> Option<&str> {
         self.root.get("tui")?.get("theme")?.as_str()
@@ -140,6 +156,31 @@ pub fn save_tui_theme(config_dir: &Path, id: &str) -> Result<(), SettingsError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn watchdog_interval_defaults_disables_and_rejects_invalid_values() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.subagents_watchdog_interval_secs(), Ok(300));
+        for n in [0, 1, 300, 31536000] {
+            settings.root.insert(
+                "subagents".into(),
+                serde_json::json!({"watchdog_interval_secs":n}),
+            );
+            assert_eq!(settings.subagents_watchdog_interval_secs(), Ok(n));
+        }
+        for value in [
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("300"),
+            serde_json::Value::Null,
+            serde_json::json!(31536001),
+        ] {
+            settings.root.insert(
+                "subagents".into(),
+                serde_json::json!({"watchdog_interval_secs":value}),
+            );
+            assert!(settings.subagents_watchdog_interval_secs().is_err());
+        }
+    }
 
     #[test]
     fn a_missing_file_gives_the_defaults() {

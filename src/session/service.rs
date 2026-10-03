@@ -213,7 +213,7 @@ impl Drop for Publication {
 // Child ids become visible before runtime registration. Publication owns
 // teardown until this guard completes, so lifecycle callers cannot delete
 // durable ownership underneath registration or failed-start cleanup.
-struct ChildOperation {
+pub(crate) struct ChildOperation {
     child: SessionId,
     operations: Arc<Mutex<HashMap<SessionId, CancellationToken>>>,
     done: CancellationToken,
@@ -286,6 +286,20 @@ fn is_promptable(value: &bool) -> bool {
 /// clone (all fields are `Arc`).
 #[derive(Clone, Debug)]
 pub struct Service {
+    #[cfg(debug_assertions)]
+    pub(crate) shutdown_snapshot_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
+    pub(crate) watchdog_claim_write_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
+    pub(crate) watchdog_ownership_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
+    pub(crate) lifecycle_claim_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
+    pub(crate) watchdog_stop_failure: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(debug_assertions)]
+    pub(crate) watchdog_teardown_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
+    pub(crate) watchdog_test: Arc<Mutex<Option<super::subagents::supervisor::TestWatchdog>>>,
     _instance: Arc<super::instance::Instance>,
     /// The live sessions of this process; a closed session is removed.
     pub(super) sessions: Arc<Mutex<HashMap<SessionId, SessionHandle>>>,
@@ -301,7 +315,7 @@ pub struct Service {
     pub(super) admission_gate: Arc<tokio::sync::Mutex<()>>,
     pub(super) subagent_slots: Arc<Mutex<HashMap<SessionId, usize>>>,
     pub(super) unpublished_children: Arc<Mutex<std::collections::HashSet<SessionId>>>,
-    child_operations: Arc<Mutex<HashMap<SessionId, CancellationToken>>>,
+    pub(crate) child_operations: Arc<Mutex<HashMap<SessionId, CancellationToken>>>,
     #[cfg(debug_assertions)]
     child_registration_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
@@ -326,6 +340,75 @@ pub struct Service {
 }
 
 impl Service {
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_shutdown_snapshot(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .shutdown_snapshot_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub async fn watchdog_natural_retained(&self, child: SessionId) {
+        if let Some(handle) = self.handle(child) {
+            handle.status.watchdog.natural_retained.notified().await;
+        }
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_watchdog_claim_write(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .watchdog_claim_write_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_watchdog_ownership(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .watchdog_ownership_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_lifecycle_claim(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .lifecycle_claim_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn fail_watchdog_stop_write(&self) {
+        self.watchdog_stop_failure
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_watchdog_teardown(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .watchdog_teardown_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+
+    /// Called under admission: teardown retains ownership until its final durable write.
+    pub(crate) fn own_child_operation(&self, child: SessionId) -> ChildOperation {
+        let done = CancellationToken::new();
+        let previous = self
+            .child_operations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(child, done.clone());
+        debug_assert!(previous.is_none(), "child already has a lifecycle owner");
+        ChildOperation {
+            child,
+            operations: self.child_operations.clone(),
+            done,
+        }
+    }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn pause_negative_result_eligibility(
@@ -454,6 +537,20 @@ impl Service {
             .map_err(ServerError::History)?;
         let catalog = crate::provider::catalog::ModelCatalog::new(Some(config.data_dir.clone()));
         Ok(Self {
+            #[cfg(debug_assertions)]
+            shutdown_snapshot_barrier: Arc::default(),
+            #[cfg(debug_assertions)]
+            watchdog_claim_write_barrier: Arc::default(),
+            #[cfg(debug_assertions)]
+            watchdog_ownership_barrier: Arc::default(),
+            #[cfg(debug_assertions)]
+            lifecycle_claim_barrier: Arc::default(),
+            #[cfg(debug_assertions)]
+            watchdog_stop_failure: Arc::default(),
+            #[cfg(debug_assertions)]
+            watchdog_teardown_barrier: Arc::default(),
+            #[cfg(debug_assertions)]
+            watchdog_test: Arc::default(),
             _instance: instance,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             config: Arc::new(config),
@@ -579,8 +676,12 @@ impl Service {
                     .collect::<Vec<_>>()
                     .join(", "),
             })?;
-        let cap = crate::settings::load(&self.config.config_dir)
-            .map_err(|e| ServerError::SubagentSettings(e.to_string()))?
+        let settings = crate::settings::load(&self.config.config_dir)
+            .map_err(|e| ServerError::SubagentSettings(e.to_string()))?;
+        let watchdog_interval = settings
+            .subagents_watchdog_interval_secs()
+            .map_err(ServerError::SubagentSettings)?;
+        let cap = settings
             .subagents_max_concurrent()
             .map_err(ServerError::SubagentSettings)?;
         let _spawn_lock = self.child_admission(&parent_handle.session_cancel).await?;
@@ -845,6 +946,7 @@ impl Service {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&child);
+        self.start_child_watchdog(child, watchdog_interval);
         Ok(child)
     }
 
@@ -905,7 +1007,7 @@ impl Service {
         Ok(())
     }
 
-    async fn drain_completions(&self, parent: SessionId) {
+    pub(crate) async fn drain_completions(&self, parent: SessionId) {
         let Some(owner) = self.handle(parent) else {
             return;
         };
@@ -917,11 +1019,16 @@ impl Service {
             }
         };
         for (child, payload) in pending {
+            let kind = if payload["notice_kind"] == "watchdog" {
+                EventKind::SubagentWatchdog
+            } else {
+                EventKind::SubagentDone
+            };
             let history = self.history.clone();
             if let Err(error) = owner
                 .sequencer
                 .commit_acked(
-                    Candidate::new(EventKind::SubagentDone, payload),
+                    Candidate::new(kind, payload),
                     Box::new(move |envelope| {
                         Box::pin(async move { history.deliver_completion(child, envelope).await })
                     }),
@@ -1005,7 +1112,7 @@ impl Service {
         if handle.parent_session_id != Some(parent) {
             return Err(ServerError::ChildReadOnly);
         }
-        if !handle.status.continue_budget() {
+        if !handle.status.watchdog.resume() && !handle.status.continue_budget() {
             return Err(ServerError::ChildNotParked);
         }
         Ok(())
@@ -1704,6 +1811,9 @@ impl Service {
             ),
         };
         if root_tools_enabled && role.mode.is_primary() {
+            actor.registry.register(Box::new(
+                crate::tools::decide_subagent::DecideSubagent::new(self.clone(), session_id),
+            ));
             actor
                 .registry
                 .register(Box::new(crate::tools::steer_subagent::SteerSubagent::new(
@@ -1902,6 +2012,15 @@ impl Service {
                     };
                     let service = service.clone();
                     tokio::spawn(async move {
+                        let Some(handle) = service.handle(session_id) else {
+                            return;
+                        };
+                        let Some((message, outcome)) =
+                            handle.status.watchdog.natural_outcome((message, outcome))
+                        else {
+                            return;
+                        };
+                        handle.status.watchdog.supervisor_cancel.cancel();
                         let result = message.text.clone();
                         let (text, _) = crate::tools::bound_output(&result, 16 * 1024);
                         let _ = service
@@ -1960,16 +2079,19 @@ impl Service {
                         let mut result = crate::tools::bound_output(&result, 15 * 1024).0;
                         let mut text = serde_json::json!({
                             "untrusted_subagent_output": true,
-                            "child_session_id": child,
+                            "child_session_id": payload.get("child_session_id").cloned().unwrap_or(serde_json::json!(child)),
                             "agent": payload["agent"],
                             "outcome": payload["outcome"],
                             "result": result,
+                            "reason": payload.get("reason"),
                         })
                         .to_string();
                         while text.len() > 16 * 1024 {
                             result = crate::tools::bound_output(&result, result.len() / 2).0;
-                            text = serde_json::json!({"untrusted_subagent_output":true,"child_session_id":child,
-                                "agent":payload["agent"],"outcome":payload["outcome"],"result":result}).to_string();
+                            text = serde_json::json!({"untrusted_subagent_output":true,
+                                "child_session_id":payload.get("child_session_id").cloned().unwrap_or(serde_json::json!(child)),
+                                "agent":payload["agent"],"outcome":payload["outcome"],"result":result,
+                                "reason":payload.get("reason")}).to_string();
                         }
                         transcript.push(ChatMessage::User { provenance: crate::provider::openai::UserProvenance::Subagent, content: text });
                         children.push(child);

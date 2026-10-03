@@ -9,6 +9,7 @@
 //! inbox wait; `session.end` is sequenced ONLY at teardown via
 //! [`Sequencer::close_session`] — never on a natural turn end.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -35,6 +36,32 @@ const CANCEL_REASON: &str = "cancel";
 const END_OF_STREAM_REASON: &str = "inbox_closed";
 /// Wire cap for `turn.end{error}.message` (bounded, no secrets).
 const ERROR_SUMMARY_CAP: usize = 256;
+
+/// What the runtime shares with the session service about its actor, so the
+/// service can decide whether a session command may run without reaching
+/// into the actor.
+#[derive(Debug, Default)]
+pub struct RuntimeStatus {
+    pending_ask: AtomicBool,
+    running: AtomicBool,
+}
+
+impl RuntimeStatus {
+    /// The agent asked the human something and waits for the answer.
+    pub fn pending_ask(&self) -> bool {
+        self.pending_ask.load(Ordering::SeqCst)
+    }
+
+    /// A turn is in flight.
+    pub fn running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
+    fn sync_ask(&self, actor: &AgentActor) {
+        self.pending_ask
+            .store(actor.pending_ask_id.is_some(), Ordering::SeqCst);
+    }
+}
 
 /// One turn's publishing state: identity (turn, task, current step, last
 /// response message) plus the publishing seam. The run observer mutates it;
@@ -178,6 +205,28 @@ pub fn spawn(
     session_cancel: CancellationToken,
     on_turn_end: Option<TurnEndHook>,
 ) -> tokio::task::JoinHandle<AgentActor> {
+    spawn_with_status(
+        session_id,
+        actor,
+        inbox,
+        sequencer,
+        session_cancel,
+        on_turn_end,
+        Arc::new(RuntimeStatus::default()),
+    )
+}
+
+/// [`spawn`] with a status the caller keeps to read the actor's pending
+/// `ask` and running flags.
+pub fn spawn_with_status(
+    session_id: Ulid,
+    actor: AgentActor,
+    inbox: ActorInbox,
+    sequencer: Sequencer,
+    session_cancel: CancellationToken,
+    on_turn_end: Option<TurnEndHook>,
+    status: Arc<RuntimeStatus>,
+) -> tokio::task::JoinHandle<AgentActor> {
     tokio::spawn(runtime_loop(
         session_id,
         actor,
@@ -185,6 +234,7 @@ pub fn spawn(
         sequencer,
         session_cancel,
         on_turn_end.unwrap_or_else(|| Box::new(|_| {})),
+        status,
     ))
 }
 
@@ -195,9 +245,11 @@ async fn runtime_loop(
     sequencer: Sequencer,
     session_cancel: CancellationToken,
     on_turn_end: TurnEndHook,
+    status: Arc<RuntimeStatus>,
 ) -> AgentActor {
     let on_turn_end: SharedHook = Arc::new(Mutex::new(on_turn_end));
     let mut active_task_id: Option<Ulid> = None;
+    status.sync_ask(&actor);
 
     loop {
         let batch = tokio::select! {
@@ -218,6 +270,8 @@ async fn runtime_loop(
         }
 
         inbox.apply_batch_to_actor(&mut actor);
+        status.sync_ask(&actor);
+        status.running.store(true, Ordering::SeqCst);
 
         let task_id = active_task_id.unwrap_or_default();
         let turn_id = Ulid::new();
@@ -256,6 +310,8 @@ async fn runtime_loop(
         };
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let result_message_id = turn.message_id;
+        status.sync_ask(&actor);
+        status.running.store(false, Ordering::SeqCst);
 
         // A collapsed session surfaces its first publish failure as the turn
         // error (checked BEFORE translating the natural outcome).

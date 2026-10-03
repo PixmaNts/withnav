@@ -12,6 +12,7 @@ mod hooks;
 mod lifecycle;
 mod message;
 mod rules_log;
+mod run_command;
 mod sender;
 mod service;
 pub mod store;

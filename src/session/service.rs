@@ -92,6 +92,11 @@ pub struct SessionHandle {
     pub workspace: PathBuf,
     /// The alias the session was created with.
     pub model: String,
+    /// The runtime's view of its actor: pending `ask`, running turn.
+    pub status: Arc<runtime::RuntimeStatus>,
+    /// The saved model resolution (identity, window, where the window came
+    /// from) the session runs on.
+    pub resolution: Option<Arc<crate::provider::catalog::ModelResolution>>,
 }
 
 impl std::fmt::Debug for SessionHandle {
@@ -498,13 +503,15 @@ impl Service {
             Some(Box::new(move |transcript: &[ChatMessage]| {
                 history.save_transcript(session_id, transcript.to_vec());
             }));
-        let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn(
+        let status = Arc::new(runtime::RuntimeStatus::default());
+        let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn_with_status(
             session_id,
             actor,
             inbox,
             sequencer.clone(),
             session_cancel.clone(),
             on_turn_end,
+            status.clone(),
         ))));
 
         let handle = SessionHandle {
@@ -517,6 +524,8 @@ impl Service {
             actor_state: "idle".to_string(),
             workspace: workspace.clone(),
             model: alias,
+            status,
+            resolution: Some(Arc::new(snapshot)),
         };
         let sender = SessionSender::new(session_id, handle.clone());
         let cancel = handle.session_cancel.clone();

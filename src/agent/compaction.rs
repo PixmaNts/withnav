@@ -283,15 +283,10 @@ pub fn plan(
     if tail_start <= floor {
         return Err(CompactionError::NothingToCompact);
     }
-    // Where a summary may end: just before a user message or an assistant
-    // step, which are the starts of exchanges.
+    // Where a summary may end: just before a turn, or before an assistant
+    // step that follows complete tool results.
     let cuts: Vec<usize> = (floor + 1..=tail_start)
-        .filter(|&i| {
-            matches!(
-                transcript[i],
-                ChatMessage::User { .. } | ChatMessage::Assistant { .. }
-            )
-        })
+        .filter(|&i| is_cut(transcript, i))
         .collect();
     let Some(&latest_cut) = cuts.last() else {
         return Err(CompactionError::NothingToCompact);
@@ -351,25 +346,67 @@ pub fn plan(
     })
 }
 
-/// Index of the first message that must stay verbatim: the start of the
-/// unfinished turn (when there is one) and of the last two completed turns.
-pub fn protected_start(transcript: &[ChatMessage]) -> usize {
-    let mut starts: Vec<usize> = transcript
-        .iter()
-        .enumerate()
-        .filter(|(_, m)| matches!(m, ChatMessage::User { .. }))
-        .map(|(i, _)| i)
+/// Where each turn starts. The inbox hands the runtime every message that
+/// arrived before a turn began as one batch, so consecutive user messages are
+/// ONE turn: a turn starts at the first message of such a run, and runs
+/// through the assistant steps and tool exchanges that answer it.
+fn turn_starts(transcript: &[ChatMessage]) -> Vec<usize> {
+    let mut starts: Vec<usize> = (0..transcript.len())
+        .filter(|&i| {
+            matches!(transcript[i], ChatMessage::User { .. })
+                && (i == 0 || !matches!(transcript[i - 1], ChatMessage::User { .. }))
+        })
         .collect();
     if starts.first() != Some(&0) {
         // Messages before the first user message belong to the first turn.
         starts.insert(0, 0);
     }
-    let unfinished = !matches!(
-        transcript.last(),
+    starts
+}
+
+/// Whether a turn that spans `turn` ended with a final answer: its last
+/// message is an assistant message that calls no tool. A turn that failed,
+/// ran out of steps, was interrupted or is still running has none.
+fn answered(turn: &[ChatMessage]) -> bool {
+    matches!(
+        turn.last(),
         Some(ChatMessage::Assistant { tool_calls, .. }) if tool_calls.is_empty()
-    );
-    let keep = PROTECTED_COMPLETED_TURNS + usize::from(unfinished);
-    starts[starts.len().saturating_sub(keep)]
+    )
+}
+
+/// Index of the first message that must stay verbatim: the start of the
+/// second most recent turn that ended with a final answer. Everything after
+/// it stays, so the last two answered turns, any failed or exhausted turn
+/// between or after them and an unfinished turn with its pending `ask` are
+/// all kept. With fewer than two answered turns everything stays.
+pub fn protected_start(transcript: &[ChatMessage]) -> usize {
+    let starts = turn_starts(transcript);
+    let mut kept = 0;
+    for (n, &start) in starts.iter().enumerate().rev() {
+        let end = starts.get(n + 1).copied().unwrap_or(transcript.len());
+        if answered(&transcript[start..end]) {
+            kept += 1;
+            if kept == PROTECTED_COMPLETED_TURNS {
+                return start;
+            }
+        }
+    }
+    0
+}
+
+/// Whether a summary may end just before message `at`: the next message
+/// starts a turn, or is an assistant step that follows complete tool
+/// results. A batch of user messages, a user message and its answer, and a
+/// tool call and its results are never split.
+fn is_cut(transcript: &[ChatMessage], at: usize) -> bool {
+    let Some(previous) = at.checked_sub(1).and_then(|i| transcript.get(i)) else {
+        return false;
+    };
+    match transcript.get(at) {
+        Some(ChatMessage::User { .. }) => !matches!(previous, ChatMessage::User { .. }),
+        Some(ChatMessage::Assistant { .. }) => matches!(previous, ChatMessage::Tool { .. }),
+        _ => false,
+    }
 }
 
 /// The outputs in `range` that may be cut down, biggest first, the oldest of

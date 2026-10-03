@@ -89,8 +89,8 @@ fn a_roomy_budget_summarizes_the_earliest_exchange_after_nothing_is_pruned() {
     let t = five_turns(400);
     let p = plan(&t, None, &components(), 1_000_000, Aim::Fit).unwrap();
     assert!(p.pruned.is_empty());
-    // The earliest cut: the first assistant step.
-    assert_eq!(p.through_message, 0);
+    // The earliest cut: after the first complete tool exchange.
+    assert_eq!(p.through_message, 2);
 }
 
 #[test]
@@ -257,4 +257,63 @@ fn shrink_summarizes_up_to_the_protected_tail_even_when_everything_fits() {
     // The last two completed turns (messages 12..) stay verbatim.
     assert_eq!(shrink.through_message + 1, protected_start(&t));
     assert!(shrink.estimated_after < size(&components(), &t, None));
+}
+
+#[test]
+fn batched_user_messages_are_one_turn() {
+    // Turn A: three messages batched before one answer. Turns B, C: one each.
+    let mut t = vec![user("a1"), user("a2"), user("a3"), answer("done a")];
+    for n in ["b", "c"] {
+        t.push(user(n));
+        t.push(answer("done"));
+    }
+    // The last two completed turns are B and C; A is not protected.
+    assert_eq!(protected_start(&t), 4);
+
+    // Four turns, the oldest batched: the two before the last two are free.
+    let mut t = vec![user("a1"), user("a2"), answer("done a")];
+    for n in ["b", "c", "d"] {
+        t.push(user(n));
+        t.push(answer("done"));
+    }
+    assert_eq!(protected_start(&t), 5);
+    // The batch is never split by a cut.
+    let p = plan(&t, None, &components(), 1_000_000, Aim::Shrink).unwrap();
+    assert_eq!(p.through_message, 4);
+    assert!(!is_cut(&t, 1));
+}
+
+#[test]
+fn a_failed_or_exhausted_turn_does_not_count_as_completed() {
+    // Two answered turns, then a turn that ended after tool results with no
+    // answer (a provider error or the step budget): it stays, with them.
+    let mut t = vec![user("a"), answer("done a"), user("b"), answer("done b")];
+    t.push(user("c"));
+    t.push(call("c1", "read", "{}"));
+    t.push(result("c1", 50));
+    assert_eq!(
+        protected_start(&t),
+        0,
+        "two answered turns and an unfinished one: all stay"
+    );
+}
+
+#[test]
+fn an_exhausted_turn_between_answered_ones_stays_with_the_tail() {
+    let mut t = vec![user("a"), answer("done a")];
+    t.push(user("b"));
+    t.push(call("b1", "read", "{}"));
+    t.push(result("b1", 50)); // budget exhausted: no final answer
+    t.push(user("c"));
+    t.push(answer("done c"));
+    t.push(user("d"));
+    t.push(answer("done d"));
+    // Answered turns from the end: d, c. The unanswered b sits before c.
+    assert_eq!(protected_start(&t), 5);
+    // One more answered turn before them is summarizable, b included.
+    let mut u = vec![user("z"), answer("done z")];
+    u.extend(t);
+    assert_eq!(protected_start(&u), 7);
+    let p = plan(&u, None, &components(), 1_000_000, Aim::Shrink).unwrap();
+    assert_eq!(p.through_message, 6);
 }

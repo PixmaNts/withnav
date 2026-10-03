@@ -1,7 +1,21 @@
 # Navai — VS Code extension
 
 Pair-programming navigator client. Launches the `navai-lsp` language server over stdio,
-renders its end-of-line remarks, forwards diagnostics and user feedback.
+renders its end-of-line remarks, offers inline suggestions from the reflex layer, forwards
+diagnostics and user feedback, and hosts the Cognition chat view.
+
+## What it shows
+
+- **Remarks**: short end-of-line comments from the metacognition, with a verdict (useful, noise,
+  dismissed).
+- **Suggestions**: ghost text from the reflex layer, as native inline completion. Turn them off with
+  `navai.reflex.enabled`.
+- **Cognition chat**: a webview in the Navai activity-bar container (view id `navai.chat`, named
+  "Cognition"). It talks to the session server that `navai-lsp` runs over HTTP and SSE. It streams
+  the conversation, lists past conversations of the workspace to resume, and has a model picker for
+  the next new conversation (an open conversation keeps its model) and a gauge of the context used.
+  Navigator wakes appear in it as messages from the navigator. It sends the open file and selection
+  as editor context.
 
 ## Requirements
 
@@ -43,6 +57,7 @@ package; `.vscodeignore` excludes them). `vsce package` triggers `npm run compil
 | `navai.markNoise` | Ctrl+Alt+N | Rate the current remark "noise", then clear it |
 | `navai.dismiss` | Ctrl+Alt+D | Send "dismissed", then clear it |
 | `navai.setIntent` | click status bar | Tell the navigator your current goal |
+| `navai.focusChat` | command palette ("Navai: Focus Cognition Chat") | Open and focus the Cognition chat view |
 
 Keybindings are active only when a remark is visible (`navai.remarkVisible` context key).
 
@@ -61,4 +76,5 @@ Keybindings are active only when a remark is visible (`navai.remarkVisible` cont
 | `navai.idleMs` | `3000` | Idle delay before the navigator may speak |
 | `navai.minChangedLines` | `3` | Minimum changed lines to consider speaking |
 | `navai.cooldownMs` | `20000` | Cooldown between remarks on one file |
-| `navai.modelAlias` | `fast` | Model alias used for remarks |
+| `navai.modelAlias` | `metacognition` | Model alias (from `models.json`) used for remarks |
+| `navai.reflex.enabled` | `true` | Offer inline suggestions from the reflex layer |

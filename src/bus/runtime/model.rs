@@ -19,7 +19,9 @@ use ulid::Ulid;
 use super::{RuntimeStatus, SelectedVariant};
 use crate::agent::actor::AgentActor;
 use crate::agent::context::{ContextLimits, ContextTracker};
-use crate::bus::event::{CommandResult, EventKind, ModelChangeReason, ModelChanged, ModelIdentity};
+use crate::bus::event::{
+    CommandResult, EventEnvelope, EventKind, ModelChangeReason, ModelChanged, ModelIdentity,
+};
 use crate::bus::sequencer::{Candidate, Sequencer};
 use crate::provider::catalog::ModelResolution;
 use crate::provider::config::{ProviderConfig, ReasoningHistory, Variants};
@@ -65,9 +67,14 @@ pub struct ModelSwitch {
     /// Resolves an alias like a new session does: its window, its offer, its
     /// default variant. The refusal text says why it cannot be used.
     pub resolve: Box<dyn Fn(String) -> BoxFuture<Result<ModelTarget, String>> + Send + Sync>,
-    /// Stores the choice in one transaction and returns the revision of the
-    /// selection. The service's own view of the model changes with it.
-    pub commit: Box<dyn Fn(ModelTarget) -> BoxFuture<Result<u64, String>> + Send + Sync>,
+    /// The revision the next selection will carry.
+    pub next_revision: Box<dyn Fn() -> u64 + Send + Sync>,
+    /// Stores the choice, the reasoning floor and the sequenced `model.changed`
+    /// envelope in ONE transaction and returns once it is durable. The
+    /// service's own view of the model changes with it.
+    pub commit: Box<
+        dyn Fn(ModelTarget, usize, EventEnvelope) -> BoxFuture<Result<(), String>> + Send + Sync,
+    >,
 }
 
 /// The shared form of [`ModelSwitch`].
@@ -159,7 +166,16 @@ pub(super) async fn run(
     }
     let mut target = (switcher.resolve)(alias.to_string()).await?;
     target.previous.alias = current;
-    let estimate = actor.context_breakdown().total();
+    // Reasoning is only replayed to the identity that produced it: against
+    // another one (or a model that omits it) the whole history so far is
+    // projected without it. The check measures exactly that projection.
+    let from_message = actor.transcript.len();
+    let floor = if !target.same_identity || target.reasoning_history == ReasoningHistory::Omit {
+        from_message
+    } else {
+        actor.reasoning_floor
+    };
+    let estimate = actor.context_breakdown_at(floor).total();
     let budget = target.limits.budget.input_budget;
     if estimate > budget {
         return Err(format!(
@@ -170,15 +186,32 @@ pub(super) async fn run(
     if cancel.is_cancelled() {
         return Err(super::compact::CANCELLED.to_string());
     }
-    let revision = (switcher.commit)(target.clone())
+    let window = target.resolution.bounds.context_window;
+    let changed = serde_json::to_value(ModelChanged {
+        operation_id: Some(operation_id),
+        revision: (switcher.next_revision)(),
+        reason: ModelChangeReason::Switch,
+        previous: Some(target.previous.clone()),
+        new: target.new.clone(),
+        variant: target.variant.as_ref().map(|(name, _)| name.clone()),
+        window,
+        input_budget: budget,
+        from_message: from_message as u64,
+    })
+    .unwrap_or(Value::Null);
+    // The selection (row, resolution, variant, floor) and its event are
+    // written in one transaction; the event reaches the stream only once it
+    // is durable, and nothing below runs when it is not.
+    let commit = {
+        let (switcher, target) = (switcher.clone(), target.clone());
+        Box::new(move |envelope: EventEnvelope| (switcher.commit)(target, floor, envelope))
+    };
+    sequencer
+        .commit_acked(Candidate::new(EventKind::ModelChanged, changed), commit)
         .await
         .map_err(|e| format!("the model switch could not be saved: {e}"))?;
 
-    let from_message = actor.transcript.len();
-    // Reasoning is only replayed to the identity that produced it.
-    if !target.same_identity || target.reasoning_history == ReasoningHistory::Omit {
-        actor.reasoning_floor = from_message;
-    }
+    actor.reasoning_floor = floor;
     actor.provider = target.provider.clone();
     actor.api_key = target.api_key.clone();
     actor.model = target.model.clone();
@@ -193,20 +226,6 @@ pub(super) async fn run(
         .with_sources(&actor.rules, &actor.skills);
     let snapshot = status.replace_context(ContextTracker::new(limits, actor.context_breakdown()));
 
-    let window = target.resolution.bounds.context_window;
-    let changed = serde_json::to_value(ModelChanged {
-        operation_id: Some(operation_id),
-        revision,
-        reason: ModelChangeReason::Switch,
-        previous: Some(target.previous.clone()),
-        new: target.new.clone(),
-        variant: variant_name.clone(),
-        window,
-        input_budget: budget,
-        from_message: from_message as u64,
-    })
-    .unwrap_or(Value::Null);
-    let _ = sequencer.publish(Candidate::new(EventKind::ModelChanged, changed));
     if let Ok(payload) = serde_json::to_value(&snapshot) {
         let _ = sequencer.publish(Candidate::new(EventKind::ContextUpdated, payload));
     }

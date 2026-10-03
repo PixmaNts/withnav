@@ -448,11 +448,16 @@ impl Service {
                 }) as crate::bus::runtime::BoxFuture<Result<ModelTarget, String>>
             }
         };
+        let next_revision = {
+            let selected = selected.clone();
+            move || lock(&selected).revision + 1
+        };
         let committer = {
             let (service, selected, offer) = (self.clone(), selected, offer);
-            move |target: ModelTarget| {
+            move |target: ModelTarget, floor: usize, envelope: crate::bus::event::EventEnvelope| {
                 let (service, selected, offer) = (service.clone(), selected.clone(), offer.clone());
                 Box::pin(async move {
+                    let revision = envelope.payload["revision"].as_u64().unwrap_or(0);
                     service
                         .history
                         .switch_model(
@@ -460,24 +465,26 @@ impl Service {
                             &target.alias,
                             &target.resolution,
                             target.variant.as_ref(),
+                            floor,
+                            envelope,
                         )
                         .await?;
                     let mut guard = lock(&selected);
                     guard.alias = target.alias.clone();
                     guard.resolution = Some(Arc::new(target.resolution.clone()));
-                    guard.revision += 1;
-                    let revision = guard.revision;
+                    guard.revision = revision;
                     drop(guard);
                     *lock(&offer) = Arc::new(Offer {
                         variants: target.offer.clone(),
                         known: target.offer_known,
                     });
-                    Ok(revision)
-                }) as crate::bus::runtime::BoxFuture<Result<u64, String>>
+                    Ok(())
+                }) as crate::bus::runtime::BoxFuture<Result<(), String>>
             }
         };
         Arc::new(ModelSwitch {
             current_alias: Box::new(current),
+            next_revision: Box::new(next_revision),
             resolve: Box::new(resolver),
             commit: Box::new(committer),
         })

@@ -192,11 +192,18 @@ impl AgentActor {
     /// Reasoning written by an earlier model (before `reasoning_floor`) is
     /// left out, and so is an assistant message that held nothing else.
     pub fn effective_history(&self) -> Vec<ChatMessage> {
-        if self.reasoning_floor == 0 {
+        self.effective_history_at(self.reasoning_floor)
+    }
+
+    /// [`AgentActor::effective_history`] as it would be with the reasoning
+    /// floor at `floor`, without changing the actor: the history a switch to
+    /// another model would send.
+    pub fn effective_history_at(&self, floor: usize) -> Vec<ChatMessage> {
+        if floor == 0 {
             return effective_history(&self.transcript, self.compaction.as_ref());
         }
         let mut projected = self.transcript.clone();
-        for message in projected.iter_mut().take(self.reasoning_floor) {
+        for message in projected.iter_mut().take(floor) {
             if let ChatMessage::Assistant {
                 reasoning_content, ..
             } = message
@@ -223,6 +230,12 @@ impl AgentActor {
     /// The estimated size of the request this actor would send now, by
     /// category (see [`crate::agent::context`]): the effective prompt.
     pub fn context_breakdown(&self) -> crate::agent::context::Breakdown {
+        self.context_breakdown_at(self.reasoning_floor)
+    }
+
+    /// [`AgentActor::context_breakdown`] for the request with the reasoning
+    /// floor at `floor`.
+    pub fn context_breakdown_at(&self, floor: usize) -> crate::agent::context::Breakdown {
         // The same role message `build_request` sends: the selected agent's
         // prompt composed with the profile's.
         let role = self.role_message();
@@ -230,7 +243,7 @@ impl AgentActor {
             role.as_deref(),
             self.rules.message(),
             self.skills.catalog(),
-            &self.effective_history(),
+            &self.effective_history_at(floor),
             &self.registry.schemas(),
         )
     }

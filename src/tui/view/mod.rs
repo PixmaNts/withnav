@@ -191,7 +191,11 @@ pub fn draw(
             hints,
         );
     } else {
-        let hint = match (state.open_permission(), &ui.deny_message) {
+        // An answered request takes no keys: the usual hints come back.
+        let answerable = state
+            .open_permission()
+            .filter(|p| state.answered_permission.as_deref() != Some(p.request_id.as_str()));
+        let hint = match (answerable, &ui.deny_message) {
             (Some(_), Some(_)) => " enter deny with this message  esc deny without one",
             (Some(_), None) if editor.text().is_empty() => {
                 " y allow once  a always  n deny  esc stop  ctrl+p commands"

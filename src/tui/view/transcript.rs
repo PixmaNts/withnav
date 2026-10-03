@@ -1,5 +1,6 @@
 use super::{
     markdown::{self, MarkdownCache},
+    permission::Keys,
     tool,
 };
 use crate::tui::{
@@ -52,7 +53,7 @@ impl Origin {
 
 fn block_text(
     block: &Block,
-    open_permission: Option<&str>,
+    state: &State,
     ui: &UiState,
     theme: &Theme,
     cache: &mut MarkdownCache,
@@ -177,16 +178,20 @@ fn block_text(
             );
         }
         BlockKind::Permission(prompt) => {
-            let open = open_permission == Some(prompt.request_id.as_str());
-            let answering = if open {
-                ui.deny_message.as_deref()
+            let open = state.open_permission().map(|p| p.request_id.as_str())
+                == Some(prompt.request_id.as_str());
+            let keys = if !open {
+                Keys::Inactive
+            } else if state.answered_permission.as_deref() == Some(prompt.request_id.as_str()) {
+                Keys::Sent
+            } else if let Some(message) = ui.deny_message.as_deref() {
+                Keys::Denying(message)
             } else {
-                None
+                Keys::Ready
             };
             lines.extend(super::permission::lines(
                 prompt,
-                answering,
-                open,
+                keys,
                 theme,
                 usize::from(width.saturating_sub(2)),
             ));
@@ -221,7 +226,6 @@ pub fn draw(
         return;
     }
     let width = area.width.saturating_sub(3);
-    let open_permission = state.open_permission().map(|p| p.request_id.as_str());
     let blocks: Vec<_> = state
         .conversation
         .blocks
@@ -284,10 +288,7 @@ pub fn draw(
                 BlockKind::Message { .. } => 2,
                 // One row per line: the prompt cuts its lines to the width.
                 BlockKind::Permission(_) => {
-                    block_text(b, open_permission, ui, theme, cache, width)
-                        .lines
-                        .len()
-                        + 1
+                    block_text(b, state, ui, theme, cache, width).lines.len() + 1
                 }
                 BlockKind::YieldQuestion(s)
                 | BlockKind::Error(s)
@@ -343,7 +344,7 @@ pub fn draw(
         if height == 0 {
             continue;
         }
-        let text = block_text(block, open_permission, ui, theme, cache, width);
+        let text = block_text(block, state, ui, theme, cache, width);
         let skipped = start.saturating_sub(from);
         let top = from.saturating_sub(start);
         let visible = height.saturating_sub(skipped).min(viewport - top);

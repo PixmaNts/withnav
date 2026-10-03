@@ -9,17 +9,27 @@ use serde_json::Value;
 /// Lines of a file or a command shown before the rest is summed up.
 const PREVIEW_LINES: usize = 6;
 
-/// The prompt's lines, each cut to `width` columns so it takes exactly one row. `answering` is the
-/// deny message being typed (`Some` once `n` was pressed), `active` whether its keys apply now
-/// (the open request of the tab on screen).
+/// What the keys do on an open prompt.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Keys<'a> {
+    /// `y`, `a` and `n` answer it.
+    Ready,
+    /// `n` was pressed: this deny message is being typed.
+    Denying(&'a str),
+    /// An answer was sent: nothing until the server ends the request.
+    Sent,
+    /// Not the request the keys go to (another tab, or an older one waits first).
+    Inactive,
+}
+
+/// The prompt's lines, each cut to `width` columns so it takes exactly one row.
 pub fn lines(
     p: &PermissionPrompt,
-    answering: Option<&str>,
-    active: bool,
+    keys: Keys<'_>,
     theme: &Theme,
     width: usize,
 ) -> Vec<Line<'static>> {
-    build(p, answering, active, theme)
+    build(p, keys, theme)
         .into_iter()
         .map(|line| cut(line, width))
         .collect()
@@ -57,12 +67,7 @@ fn cut(line: Line<'static>, width: usize) -> Line<'static> {
     Line::from(spans).style(line.style)
 }
 
-fn build(
-    p: &PermissionPrompt,
-    answering: Option<&str>,
-    active: bool,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
+fn build(p: &PermissionPrompt, keys: Keys<'_>, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
         Span::styled("PERMISSION", theme.accent().add_modifier(Modifier::BOLD)),
         Span::styled(
@@ -75,8 +80,8 @@ fn build(
     for line in preview(p) {
         lines.push(Line::styled(format!(" {line}"), theme.text()));
     }
-    match (&p.resolution, answering) {
-        (None, Some(message)) => {
+    match (&p.resolution, keys) {
+        (None, Keys::Denying(message)) => {
             lines.push(Line::from(vec![
                 Span::styled(" deny with a message: ", theme.warning()),
                 Span::styled(message.to_string(), theme.text()),
@@ -87,7 +92,7 @@ fn build(
                 theme.muted(),
             ));
         }
-        (None, None) if active => lines.push(Line::from(vec![
+        (None, Keys::Ready) => lines.push(Line::from(vec![
             Span::styled(" y", theme.strong()),
             Span::styled(" allow once   ", theme.muted()),
             Span::styled("a", theme.strong()),
@@ -95,7 +100,12 @@ fn build(
             Span::styled("n", theme.strong()),
             Span::styled(" deny", theme.muted()),
         ])),
-        (None, None) => lines.push(Line::styled(" waiting for your answer", theme.warning())),
+        (None, Keys::Sent) => {
+            lines.push(Line::styled(" sent, waiting for the server", theme.muted()))
+        }
+        (None, Keys::Inactive) => {
+            lines.push(Line::styled(" waiting for your answer", theme.warning()))
+        }
         (Some(resolution), _) => lines.push(outcome(p, resolution, theme)),
     }
     lines

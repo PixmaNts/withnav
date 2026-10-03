@@ -64,6 +64,13 @@ pub(crate) fn block(id: impl Into<String>, kind: BlockKind) -> Block {
     }
 }
 
+/// Forgets that an answer was sent for `request_id`, if it was the one.
+pub(crate) fn clear_answered(s: &mut State, request_id: &str) {
+    if s.answered_permission.as_deref() == Some(request_id) {
+        s.answered_permission = None;
+    }
+}
+
 /// Appends a reducer-made block with a unique, stable id (`local:<n>`).
 pub(crate) fn push_local(s: &mut State, kind: BlockKind) {
     s.local_block_seq += 1;
@@ -233,11 +240,12 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         ClientEvent::PermissionAnswered {
             request_id, result, ..
         } => {
-            s.answering_permission = None;
             match result {
-                // The prompt clears when `permission.resolved` arrives on the stream.
+                // The request stays answered until `permission.resolved` arrives on the stream
+                // (which may already have come).
                 Ok(()) => {}
                 Err(AnswerError::Stale) => {
+                    clear_answered(s, &request_id);
                     let id = format!("permission:{request_id}");
                     s.conversation.open_permissions.retain(|open| open != &id);
                     push_local(
@@ -248,12 +256,16 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                         ),
                     );
                 }
-                Err(AnswerError::Other(error)) => push_local(
-                    s,
-                    BlockKind::Notice(format!(
-                        "the answer to the permission request did not reach the server: {error}"
-                    )),
-                ),
+                Err(AnswerError::Other(error)) => {
+                    // Not taken: the keys answer it again.
+                    clear_answered(s, &request_id);
+                    push_local(
+                        s,
+                        BlockKind::Notice(format!(
+                            "the answer to the permission request did not reach the server: {error}"
+                        )),
+                    )
+                }
             }
         }
         ClientEvent::Commands { result, .. } => {

@@ -446,6 +446,10 @@ fn permission_key(
     if !editor.text().is_empty() || !plain {
         return None;
     }
+    // Answered already: the prompt's keys wait for the server to end it.
+    if state.answered_permission.as_deref() == Some(request_id.as_str()) {
+        return matches!(key.code, KeyCode::Char('y' | 'a' | 'n')).then_some(None);
+    }
     match key.code {
         KeyCode::Char('y') => Some(Some(answer("allow_once", None))),
         KeyCode::Char('a') => Some(Some(answer("allow_folder", None))),

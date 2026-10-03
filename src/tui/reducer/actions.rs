@@ -345,9 +345,10 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             let session = s.session.as_ref().map(|m| m.session_id.clone());
             match (open, session) {
                 (Some(open), Some(session_id))
-                    if open == request_id && s.answering_permission.is_none() =>
+                    if open == request_id
+                        && s.answered_permission.as_deref() != Some(request_id.as_str()) =>
                 {
-                    s.answering_permission = Some(request_id.clone());
+                    s.answered_permission = Some(request_id.clone());
                     vec![Effect::AnswerPermission {
                         session_id,
                         request_id,

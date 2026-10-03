@@ -3184,6 +3184,83 @@ fn a_background_tab_with_an_open_request_waits_and_is_unread() {
     assert!(s.open_permission().is_none(), "the tab on screen has none");
 }
 
+fn answer_effects(s: &mut State, ui: &mut UiState, request: u128, decision: &str) -> Vec<Effect> {
+    handle_action(
+        s,
+        ui,
+        Action::AnswerPermission {
+            request_id: Ulid(request).to_string(),
+            answer: PermissionAnswer {
+                decision: decision.into(),
+                message: None,
+            },
+        },
+    )
+}
+
+#[test]
+fn an_accepted_answer_waiting_for_its_resolution_is_not_sent_again() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    feed(&mut s, &permission_script(30).out);
+    assert_eq!(answer_effects(&mut s, &mut ui, 30, "allow_once").len(), 1);
+    // the server took it; permission.resolved is late
+    let ok = ClientEvent::PermissionAnswered {
+        generation: s.generation.clone(),
+        request_id: Ulid(30).to_string(),
+        result: Ok(()),
+    };
+    update(&mut s, ok).unwrap();
+    for decision in ["allow_once", "allow_folder", "deny"] {
+        assert!(answer_effects(&mut s, &mut ui, 30, decision).is_empty());
+    }
+    // the resolution ends it; a fresh request is answerable at once
+    let mut script = permission_script(30);
+    resolved(&mut script, 30, PermissionResolution::AllowOnce);
+    script.turn_start(2);
+    script.push(
+        EventKind::PermissionRequested,
+        &PermissionRequested {
+            request_id: Ulid(31),
+            tool_call_id: "w1".into(),
+            tool: "write".into(),
+            arguments: "{}".into(),
+            scope: navai::agent::permissions::Scope::Folder("/other".into()),
+            agent: "build".into(),
+            reason: String::new(),
+        },
+    );
+    let skip = permission_script(30).out.len();
+    feed(&mut s, &script.out[skip..]);
+    assert!(s.answered_permission.is_none());
+    assert_eq!(answer_effects(&mut s, &mut ui, 31, "allow_once").len(), 1);
+}
+
+#[test]
+fn a_resolution_before_the_http_reply_leaves_nothing_answered() {
+    let (mut s, mut ui) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    let mut script = permission_script(40);
+    let skip = script.out.len();
+    resolved(&mut script, 40, PermissionResolution::AllowOnce);
+    feed(&mut s, &script.out[..skip]);
+    assert_eq!(answer_effects(&mut s, &mut ui, 40, "allow_once").len(), 1);
+    feed(&mut s, &script.out[skip..]);
+    assert!(s.open_permission().is_none());
+    let ok = ClientEvent::PermissionAnswered {
+        generation: s.generation.clone(),
+        request_id: Ulid(40).to_string(),
+        result: Ok(()),
+    };
+    update(&mut s, ok).unwrap();
+    assert!(s.answered_permission.is_none());
+    assert!(answer_effects(&mut s, &mut ui, 40, "allow_once").is_empty());
+    assert!(s.conversation.blocks.iter().any(|b| matches!(
+        &b.kind,
+        BlockKind::Permission(p) if p.resolution.as_deref() == Some("allow_once")
+    )));
+}
+
 #[test]
 fn answering_posts_once_and_a_stale_answer_drops_the_prompt_with_a_notice() {
     let (mut s, mut ui) = (st(), ui());
@@ -3221,9 +3298,11 @@ fn answering_posts_once_and_a_stale_answer_drops_the_prompt_with_a_notice() {
     };
     update(&mut s, ok).unwrap();
     assert!(s.open_permission().is_some());
-    assert!(s.answering_permission.is_none());
+    assert!(
+        handle_action(&mut s, &mut ui, answer()).is_empty(),
+        "still answered until the server ends it"
+    );
     // stale: dropped with a short notice
-    handle_action(&mut s, &mut ui, answer());
     let stale = ClientEvent::PermissionAnswered {
         generation: s.generation.clone(),
         request_id: request_id.clone(),

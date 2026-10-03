@@ -1921,6 +1921,23 @@ fn n_asks_for_a_message_then_enter_denies_with_it() {
 }
 
 #[test]
+fn an_answered_prompt_says_it_was_sent_and_takes_no_more_keys() {
+    let mut s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
+    s.answered_permission = Some("R1".into());
+    let mut ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    let mut editor = Editor::new();
+    assert!(keys("yyan", &s, &mut ui, &mut editor).is_empty());
+    assert_eq!(editor.text(), "", "the keys are not typed either");
+    assert_eq!(ui.deny_message, None);
+    let shown = screen_text(&s, &ui, (100, 30));
+    assert!(shown.contains("sent, waiting for the server"), "{shown}");
+    assert!(!shown.contains("y allow once"), "{shown}");
+}
+
+#[test]
 fn prompt_keys_type_normally_when_the_message_has_text_or_nothing_is_open() {
     let s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
     let mut ui = UiState::default();

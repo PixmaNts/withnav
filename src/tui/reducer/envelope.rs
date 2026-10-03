@@ -324,6 +324,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             let resolution = strip_controls(v["resolution"].as_str().ok_or_else(bad)?);
             let id = format!("permission:{request_id}");
             s.conversation.open_permissions.retain(|open| open != &id);
+            super::clear_answered(s, request_id);
             if let Some(Block {
                 kind: BlockKind::Permission(prompt),
                 ..

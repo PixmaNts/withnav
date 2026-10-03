@@ -275,6 +275,16 @@ fn switch_model(s: &mut State, ui: &mut UiState, alias: String) -> Vec<Effect> {
         );
         return vec![];
     }
+    // The model in use: nothing to switch (a switch waiting for the turn is left as it is).
+    if s.selected_model_alias.as_deref() == Some(alias.as_str()) && s.pending_model().is_none() {
+        push_local(
+            s,
+            BlockKind::Notice(format!(
+                "already on {alias}; use /variant to change the variant"
+            )),
+        );
+        return vec![];
+    }
     let effects = run_command(s, "model".into(), alias.clone(), None);
     // A new switch replaces the one shown, whatever became of it.
     if !effects.is_empty() {

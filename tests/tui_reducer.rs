@@ -3871,3 +3871,24 @@ fn events_replays_and_a_resync_never_send_a_command() {
         assert_eq!(update(&mut s, ev).unwrap(), vec![]);
     }
 }
+
+#[test]
+fn picking_the_model_in_use_sends_nothing_and_says_so() {
+    let (mut s, mut ui) = (st(), ui());
+    models_now(&mut s, Some("a".into())).unwrap();
+    created_now(&mut s, "S1").unwrap();
+    assert!(handle_action(&mut s, &mut ui, Action::SwitchModel("a".into())).is_empty());
+    assert_eq!(s.model_switch, None);
+    assert!(matches!(
+        &s.conversation.blocks.last().unwrap().kind,
+        BlockKind::Notice(n) if n == "already on a; use /variant to change the variant"
+    ));
+    // with a switch to b waiting for the turn, going back to a is a real switch
+    s.activity = Activity::Running;
+    handle_action(&mut s, &mut ui, Action::SwitchModel("b".into()));
+    model_answered(&mut s, 77, Ok(deferred()));
+    assert_eq!(
+        handle_action(&mut s, &mut ui, Action::SwitchModel("a".into())),
+        vec![model_command("a")]
+    );
+}

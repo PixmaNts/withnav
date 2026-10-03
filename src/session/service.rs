@@ -340,6 +340,10 @@ impl Service {
             policy.insert(tool.into(), true);
         }
         let mut allowed = BTreeMap::new();
+        // A plan-owned child inherits plan's conservative role policy even
+        // when its definition is full-access: no write/edit/bash is exposed.
+        // The role guard is advisory and remains parent-session scoped; child
+        // write-like capabilities are therefore stripped at construction.
         for tool in [
             "read", "write", "edit", "bash", "grep", "glob", "fetch", "skill", "ask", "task",
         ] {
@@ -367,13 +371,7 @@ impl Service {
         let child = match child {
             Ok(id) => id,
             Err(error) => {
-                let mut slots = self
-                    .subagent_slots
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                if let Some(count) = slots.get_mut(&parent) {
-                    *count = count.saturating_sub(1);
-                }
+                self.reset_child_slots(parent).await?;
                 return Err(error);
             }
         };
@@ -392,6 +390,7 @@ impl Service {
             {
                 *count = count.saturating_sub(1);
             }
+            self.reset_child_slots(parent).await?;
             return Err(ServerError::History(error));
         }
         drop(_spawn_lock);
@@ -406,8 +405,16 @@ impl Service {
                 },
             );
         }
-        if let Some(handle) = self.handle(child) {
-            let _ = accept(&handle, Command::child_prompt(child, prompt.to_string())).await;
+        let start_result = if let Some(handle) = self.handle(child) {
+            accept(&handle, Command::child_prompt(child, prompt.to_string()))
+                .await
+                .map(|_| ())
+        } else {
+            Err(ServerError::SessionStopping)
+        };
+        if let Err(error) = start_result {
+            self.close_session(child).await?;
+            return Err(error);
         }
         let parent_candidate = Candidate::new(
             EventKind::SubagentSpawned,
@@ -469,6 +476,11 @@ impl Service {
                 .sequencer
                 .publish(Candidate::new(EventKind::SubagentDone, payload));
         }
+        self.reset_child_slots(parent).await?;
+        Ok(())
+    }
+
+    async fn reset_child_slots(&self, parent: SessionId) -> Result<(), ServerError> {
         let active = self
             .history
             .active_child_count(parent)

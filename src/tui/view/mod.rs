@@ -17,9 +17,11 @@ use ratatui::{
     Frame,
 };
 
+/// Parsed markdown, one cache per tab conversation: block ids are only unique within a session, so
+/// two tabs never share an entry.
 #[derive(Debug, Default)]
 pub struct RenderCache {
-    markdown: markdown::MarkdownCache,
+    markdown: std::collections::HashMap<u64, markdown::MarkdownCache>,
 }
 
 fn shorten(path: &str, width: usize) -> String {
@@ -66,7 +68,12 @@ pub fn draw(
     cache: &mut RenderCache,
 ) {
     let theme = ui.theme.palette();
-    cache.markdown.set_theme(theme);
+    // A tab closed or moved to another conversation drops its cache.
+    cache
+        .markdown
+        .retain(|generation, _| state.tabs.iter().any(|t| t.generation.0 == *generation));
+    let markdown = cache.markdown.entry(state.generation.0).or_default();
+    markdown.set_theme(theme);
     let area = frame.area();
     frame.buffer_mut().set_style(area, theme.base());
     if area.width < 24 || area.height < 9 {
@@ -150,7 +157,7 @@ pub fn draw(
         Paragraph::new("─".repeat(usize::from(area.width))).style(theme.border()),
         rule,
     );
-    transcript::draw(frame, transcript, state, ui, &theme, &mut cache.markdown);
+    transcript::draw(frame, transcript, state, ui, &theme, markdown);
     frame.render_widget(
         Paragraph::new("─".repeat(usize::from(area.width))).style(theme.border()),
         separator,

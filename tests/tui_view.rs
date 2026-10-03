@@ -993,3 +993,44 @@ fn the_gauge_follows_the_active_tab() {
     let text = screen(&s);
     assert!(text.contains("ctx ~120k / 1M · 12%"), "{text}");
 }
+
+#[test]
+fn tabs_with_the_same_block_id_render_their_own_text_and_height() {
+    let mut s = state();
+    s.tabs[0].generation = navai::tui::protocol::Generation(1);
+    s.tabs[0].conversation.blocks = vec![message("7", "assistant", "first tab line")];
+    let mut other = s.tabs[0].clone();
+    other.generation = navai::tui::protocol::Generation(2);
+    other.conversation.blocks = vec![message(
+        "7",
+        "assistant",
+        "second tab one\n\nsecond tab two\n\nsecond tab three",
+    )];
+    s.tabs.push(other);
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    let mut cache = RenderCache::default();
+    let mut screen = |s: &State| {
+        let mut t = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        t.draw(|f| view::draw(f, s, &ui, &Editor::new(), &mut cache))
+            .unwrap();
+        (0..24)
+            .map(|y| row_text(&t, y, 100))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let first = screen(&s);
+    assert!(first.contains("first tab line"), "{first}");
+    s.active = 1;
+    let second = screen(&s);
+    assert!(!second.contains("first tab line"), "{second}");
+    for line in ["second tab one", "second tab two", "second tab three"] {
+        assert!(second.contains(line), "{second}");
+    }
+    s.active = 0;
+    let again = screen(&s);
+    assert!(again.contains("first tab line"), "{again}");
+    assert!(!again.contains("second tab"), "{again}");
+}

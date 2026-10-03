@@ -29,9 +29,13 @@ requests land in `develop`.
   whose saved variant the alias confirmably no longer offers fails with an error naming the alias, the
   variant and the models.json that was loaded; it never falls back silently. When the offer cannot be
   confirmed (generated from the provider's reported tiers, and the list is not cached or only an old copy
-  whose refresh failed), the saved variant is kept, and choosing a new one answers a retryable error
-  (503, `variant_offer_unknown`). `/new` keeps the variant, by exact name, when it stays on the same
-  alias.
+  whose refresh failed), a resume sends the override object saved with the session (new nullable
+  `sessions.variant_override` column, written with `variant` at creation and by `/variant`), so a removed
+  or changed definition does not alter what the session sends; a row saved before that column, or a new
+  choice, answers a retryable error (503, `variant_offer_unknown`) instead of a guess. With a readable
+  offer the saved override is refreshed from the current definition. A session that started while the
+  offer was unknown reads it again when `/variant <name>` is run, so it works once the provider is back.
+  `/new` keeps the variant, by exact name, when it stays on the same alias.
 - **`navai run --prompt "/help"`** runs the command and prints its result; `//text` sends the literal
   message `/text`.
 - **`glob` tool**: finds files by a relative pattern (`**/*.rs`) under the workspace or a readable

@@ -114,6 +114,17 @@ async fn run_steps(
             return Ok(RunOutcome::Interrupted);
         }
 
+        if !actor.has_pending() {
+            if let Some(boundary) = actor.safe_boundary.clone() {
+                actor.transcript = boundary(actor.transcript.clone()).await.map_err(|error| {
+                    AgentError::Tool(crate::error::ToolError::Denied {
+                        code: "safe_boundary".into(),
+                        message: error,
+                    })
+                })?;
+            }
+        }
+
         // The safe boundary before a request: every tool result of the last
         // step is in, nothing waits for a human. A prompt over the input
         // budget is compacted by the caller before it is sent.

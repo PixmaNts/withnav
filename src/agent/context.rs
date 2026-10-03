@@ -204,6 +204,7 @@ impl ContextSnapshot {
         limits: &ContextLimits,
         breakdown: Breakdown,
         last_usage: Option<LastUsage>,
+        incarnation: ulid::Ulid,
         revision: u64,
     ) -> Self {
         let estimate_total = breakdown.total();
@@ -219,6 +220,7 @@ impl ContextSnapshot {
             input_budget: limits.budget.input_budget,
             percent: percent(estimate_total, limits.budget.window),
             last_usage,
+            incarnation,
             revision,
         }
     }
@@ -249,6 +251,7 @@ pub fn percent(total: u64, window: u64) -> u64 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextTracker {
     limits: ContextLimits,
+    incarnation: ulid::Ulid,
     last_usage: Option<LastUsage>,
     current: ContextSnapshot,
 }
@@ -257,9 +260,11 @@ impl ContextTracker {
     /// The first snapshot (revision 0) of a session, from the estimate of the
     /// request its history would produce now.
     pub fn new(limits: ContextLimits, breakdown: Breakdown) -> Self {
-        let current = ContextSnapshot::new(&limits, breakdown, None, 0);
+        let incarnation = ulid::Ulid::new();
+        let current = ContextSnapshot::new(&limits, breakdown, None, incarnation, 0);
         Self {
             limits,
+            incarnation,
             last_usage: None,
             current,
         }
@@ -290,6 +295,7 @@ impl ContextTracker {
             &self.limits,
             breakdown,
             self.last_usage,
+            self.incarnation,
             self.current.revision + 1,
         );
         Some(&self.current)

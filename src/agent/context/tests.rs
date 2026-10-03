@@ -278,3 +278,27 @@ fn the_text_view_shows_the_gauge_and_every_category() {
     assert!(text.contains("window from models.json"));
     assert!(!text.contains("last request"));
 }
+
+#[test]
+fn each_tracker_is_its_own_incarnation_and_revisions_restart() {
+    let b = estimate(None, None, None, &[], &[]);
+    let mut first = ContextTracker::new(limits(), b);
+    let bigger = estimate(None, None, None, &[user("hi")], &[]);
+    first.update(bigger);
+    let old = first.snapshot().clone();
+    let resumed = ContextTracker::new(limits(), bigger);
+    let new = resumed.snapshot().clone();
+    assert_eq!((old.revision, new.revision), (1, 0));
+    assert_ne!(old.incarnation, new.incarnation);
+    // A client holding the old one takes the new one, and not the other way
+    // within an incarnation.
+    assert!(old.superseded_by(&new));
+    assert!(!old.superseded_by(&ContextSnapshot {
+        revision: 0,
+        ..old.clone()
+    }));
+    assert!(old.superseded_by(&ContextSnapshot {
+        revision: 1,
+        ..old.clone()
+    }));
+}

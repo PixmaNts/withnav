@@ -306,12 +306,13 @@ fn upsert(v: &mut Vec<Block>, id: String, kind: BlockKind) {
     }
 }
 
-/// Keeps `snapshot` unless the state already holds a newer revision.
+/// Keeps `snapshot` unless the state already holds a newer revision of the same runtime
+/// incarnation; a snapshot of another incarnation (a resumed session) always replaces it.
 pub(super) fn keep_newer_context(s: &mut State, snapshot: ContextSnapshot) {
     if s.conversation
         .context
         .as_ref()
-        .is_none_or(|held| snapshot.revision >= held.revision)
+        .is_none_or(|held| held.superseded_by(&snapshot))
     {
         s.conversation.context = Some(snapshot);
     }

@@ -247,6 +247,29 @@ async fn the_context_command_renders_the_gauge_and_the_breakdown() {
     }
 }
 
+// Given a conversation stopped after a high revision
+// When it is resumed under the same id
+// Then its snapshot is a new incarnation with revisions starting again
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resumed_session_has_a_new_incarnation() {
+    let (tmp, ws) = tmp_ws();
+    let (state, id, _) = scripted_turn(tmp.path(), &ws).await;
+    let before = serde_json::to_value(state.context(id).await.unwrap()).unwrap();
+    assert!(before["revision"].as_u64().unwrap() >= 3);
+    state.close_session(id).await.expect("close");
+    state.history().flush().await.expect("flush");
+    let (resumed_id, resumed) = state
+        .create_or_resume_session(&ws, None, None, Some(id))
+        .await
+        .expect("resume");
+    assert!(resumed && resumed_id == id);
+    let after = serde_json::to_value(state.context(id).await.unwrap()).unwrap();
+    assert_eq!(after["revision"], 0);
+    assert_ne!(after["incarnation"], before["incarnation"]);
+    // The history is back in the estimate.
+    assert!(after["breakdown"]["messages"].as_u64().unwrap() > 1000);
+}
+
 // Given a session
 // When /context gets an argument
 // Then it is refused with its usage, like every argument-free command

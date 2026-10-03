@@ -1399,6 +1399,7 @@ fn snapshot(revision: u64, estimate_total: u64) -> ContextSnapshot {
         input_budget: 941_808,
         percent: estimate_total * 100 / 1_000_000,
         last_usage: None,
+        incarnation: Ulid(1),
         revision,
     }
 }
@@ -1537,4 +1538,34 @@ fn a_resync_keeps_the_gauge_until_the_reconnect_refreshes_it() {
     };
     update(&mut s, resync).unwrap();
     assert_eq!(s.conversation.context.as_ref().unwrap().revision, 3);
+}
+
+#[test]
+fn a_resumed_session_s_snapshots_replace_the_previous_incarnations() {
+    let mut s = st();
+    let held = ClientEvent::Context {
+        generation: s.generation.clone(),
+        result: Ok(snapshot(40, 400_000)),
+    };
+    update(&mut s, held).unwrap();
+    // Same id, stopped and resumed: a new actor starts its revisions again.
+    let mut resumed = snapshot(0, 12_000);
+    resumed.incarnation = Ulid(2);
+    let fetched = ClientEvent::Context {
+        generation: s.generation.clone(),
+        result: Ok(resumed.clone()),
+    };
+    update(&mut s, fetched).unwrap();
+    assert_eq!(s.conversation.context.as_ref(), Some(&resumed));
+    // Within the new incarnation the revision order applies again.
+    let mut script = Script::new();
+    script.seq = 1_000;
+    let mut next = snapshot(1, 13_000);
+    next.incarnation = Ulid(2);
+    let mut late = snapshot(0, 1);
+    late.incarnation = Ulid(2);
+    script.push(EventKind::ContextUpdated, &next);
+    script.push(EventKind::ContextUpdated, &late);
+    feed(&mut s, &script.out);
+    assert_eq!(s.conversation.context.as_ref().unwrap().revision, 1);
 }

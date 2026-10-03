@@ -454,6 +454,7 @@ fn the_status_gauge_shows_the_server_estimate_with_its_percent() {
         input_budget: 941_808,
         percent: 4,
         last_usage: None,
+        incarnation: ulid::Ulid::new(),
         revision: 1,
     });
     let text = buffer_text(&s);

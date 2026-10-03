@@ -441,9 +441,20 @@ pub struct ContextSnapshot {
     pub percent: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_usage: Option<LastUsage>,
-    /// Counts up with every snapshot of a session; a client keeps the
-    /// highest it has seen.
+    /// The runtime incarnation that produced this snapshot: a session that is
+    /// stopped and resumed gets a fresh actor, whose revisions start again.
+    pub incarnation: Ulid,
+    /// Counts up with every snapshot of one incarnation. A client keeps the
+    /// highest revision of the incarnation it holds and takes any snapshot of a
+    /// new incarnation.
     pub revision: u64,
+}
+
+impl ContextSnapshot {
+    /// Whether a client holding `self` should replace it with `incoming`.
+    pub fn superseded_by(&self, incoming: &ContextSnapshot) -> bool {
+        incoming.incarnation != self.incarnation || incoming.revision >= self.revision
+    }
 }
 
 // --- RFC 3339 timestamp (no chrono dependency; UTC only) ---
@@ -736,6 +747,7 @@ mod tests {
                     input_budget: 181_808,
                     percent: 21,
                     last_usage: None,
+                    incarnation: Ulid::new(),
                     revision: 3,
                 })
                 .unwrap(),

@@ -326,6 +326,9 @@ pub struct UiState {
     pub theme: crate::tui::theme::ThemeId,
     /// The theme in effect when the theme picker opened; `esc` goes back to it.
     pub theme_on_open: Option<crate::tui::theme::ThemeId>,
+    /// Enter was pressed once on a message while this permission request (id, editor revision)
+    /// was open: a second enter on the same text sends it.
+    pub send_over_permission: Option<(String, u64)>,
     /// The message being typed after `n` on a permission prompt; `None` when not denying.
     pub deny_message: Option<String>,
     /// The command palette was opened by typing `/` in the editor: the editor holds the line and

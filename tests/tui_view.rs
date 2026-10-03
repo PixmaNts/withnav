@@ -1972,3 +1972,43 @@ fn the_prompt_reads_on_a_light_theme() {
     let x = line[..line.find("y allow").unwrap()].chars().count() as u16;
     assert_eq!(t.backend().buffer()[(x, keys_row)].fg, theme.text);
 }
+
+#[test]
+fn sending_text_over_an_open_request_asks_for_a_second_enter() {
+    let s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    editor.set_text("no, list src instead");
+    let warn = keys("⏎", &s, &mut ui, &mut editor);
+    assert_eq!(
+        warn,
+        [Action::ShowNotice(
+            "sending text cancels the pending permission; press enter again to send".into()
+        )]
+    );
+    assert_eq!(editor.text(), "no, list src instead");
+    let send = keys("⏎", &s, &mut ui, &mut editor);
+    assert_eq!(
+        send,
+        [Action::SubmitAt {
+            text: "no, list src instead".into(),
+            revision: editor.revision(),
+        }]
+    );
+    // an edit in between asks again
+    let mut ui = UiState::default();
+    keys("⏎", &s, &mut ui, &mut editor);
+    keys("!", &s, &mut ui, &mut editor);
+    assert!(matches!(
+        keys("⏎", &s, &mut ui, &mut editor).as_slice(),
+        [Action::ShowNotice(_)]
+    ));
+    // with nothing open, enter sends at once
+    let mut plain = s.clone();
+    plain.conversation.open_permissions.clear();
+    let mut ui = UiState::default();
+    assert!(matches!(
+        keys("⏎", &plain, &mut ui, &mut editor).as_slice(),
+        [Action::SubmitAt { .. }]
+    ));
+}

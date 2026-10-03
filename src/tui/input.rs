@@ -302,10 +302,25 @@ pub fn route_key(
                 arguments,
                 revision: Some(editor.revision()),
             },
-            commands::Routed::Message(text) => Action::SubmitAt {
-                text,
-                revision: editor.revision(),
-            },
+            commands::Routed::Message(text) => {
+                // Text sent while a permission request waits cancels it: the first enter warns,
+                // a second one on the same text sends.
+                if let Some(open) = state.open_permission() {
+                    let pending = (open.request_id.clone(), editor.revision());
+                    if ui.send_over_permission.as_ref() != Some(&pending) {
+                        ui.send_over_permission = Some(pending);
+                        return Some(Action::ShowNotice(
+                            "sending text cancels the pending permission; press enter again to send"
+                                .into(),
+                        ));
+                    }
+                }
+                ui.send_over_permission = None;
+                Action::SubmitAt {
+                    text,
+                    revision: editor.revision(),
+                }
+            }
             commands::Routed::Refused(why) => Action::ShowNotice(why),
         });
     }

@@ -95,6 +95,24 @@ async fn say(state: &AppState, id: ulid::Ulid, text: &str) {
         .expect("send");
 }
 
+/// Posts `text` into the session as the navigator would (an in-process wake).
+async fn wake(state: &AppState, id: ulid::Ulid, text: &str) {
+    state
+        .send(Command {
+            command_id: ulid::Ulid::new(),
+            session_id: id,
+            source_actor_id: navai::navigator::NAVIGATOR_ACTOR_ID.to_string(),
+            target_actor_id: "agent:main".to_string(),
+            mode: DeliveryMode::NextTurn,
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
+            created_at: std::time::SystemTime::now(),
+        })
+        .await
+        .expect("wake");
+}
+
 /// Every stored event of `kind`, in order.
 async fn events(state: &AppState, id: ulid::Ulid, kind: &str) -> Vec<EventEnvelope> {
     state.history().flush().await.expect("flush");
@@ -675,4 +693,131 @@ async fn a_deferred_compact_is_refused_when_the_turn_ends_on_a_permission_reques
         .contains("permission request"));
     assert_eq!(provider.bodies().len(), 1, "no summary request");
     assert!(events(&state, id, "context.compacted").await.is_empty());
+}
+
+/// Waits for request number `n` (1-based) and returns its id.
+async fn nth_request(state: &AppState, id: ulid::Ulid, n: usize) -> ulid::Ulid {
+    let found = wait_events(state, id, "permission.requested", n).await;
+    request_id(&found[n - 1]).parse().unwrap()
+}
+
+async fn allow(state: &AppState, id: ulid::Ulid, request: ulid::Ulid) {
+    state
+        .answer_permission(
+            id,
+            request,
+            navai::agent::permissions::PermissionDecision::AllowOnce,
+        )
+        .await
+        .expect("answer");
+}
+
+// Given a model message with two writes, and a navigator wake posted while
+//       the first request waits
+// When the driver approves the first, the second raises its own request, and
+//      the driver approves that too
+// Then no request is cancelled, both files are written, and the wake runs
+//      as its own turn only after the turn that held the requests has ended
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wake_held_behind_a_request_does_not_cancel_the_next_request() {
+    let env = env();
+    let (a, b) = (env.ws.join("a.txt"), env.ws.join("b.txt"));
+    let (id_a, args_a) = write_call("w1", &a);
+    let (id_b, args_b) = write_call("w2", &b);
+    let provider = provider(vec![
+        calls(&[(&id_a, "write", args_a), (&id_b, "write", args_b)]),
+        done("both written"),
+        done("wake seen"),
+    ])
+    .await;
+    let state = config(&env, &provider).state();
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+
+    say(&state, id, "write both").await;
+    let first = nth_request(&state, id, 1).await;
+    wake(&state, id, "drift: look at the parser").await;
+    // The wake is accepted (durable) while the request waits...
+    wait_events(&state, id, "message.received", 2).await;
+    assert!(events(&state, id, "permission.resolved").await.is_empty());
+
+    allow(&state, id, first).await;
+    let second = nth_request(&state, id, 2).await;
+    assert_ne!(first, second);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        events(&state, id, "permission.resolved").await.len(),
+        1,
+        "the second request is still open"
+    );
+    assert_eq!(provider.bodies().len(), 1, "the wake did not start a turn");
+
+    allow(&state, id, second).await;
+    wait_events(&state, id, "task.done", 2).await;
+    let resolved = events(&state, id, "permission.resolved").await;
+    assert_eq!(resolved.len(), 2);
+    assert!(resolved
+        .iter()
+        .all(|e| e.payload["resolution"] == "allow_once"));
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "from w1");
+    assert_eq!(std::fs::read_to_string(&b).unwrap(), "from w2");
+    let bodies = provider.bodies();
+    assert_eq!(bodies.len(), 3);
+    assert!(!bodies[1].contains("drift: look at the parser"));
+    assert!(
+        bodies[2].contains("drift: look at the parser"),
+        "{}",
+        bodies[2]
+    );
+}
+
+// Given a write whose destination moves while its approval waits, and a wake
+//       posted behind the request
+// When the driver approves the first request and the call asks again
+// Then the fresh request is not cancelled by the held wake, and the wake runs
+//      after the turn
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wake_held_behind_a_request_does_not_cancel_a_revalidated_request() {
+    let env = env();
+    let reviewed = env.ws.join("reviewed");
+    let moved = env.ws.join("moved");
+    std::fs::create_dir_all(&reviewed).unwrap();
+    std::fs::create_dir_all(&moved).unwrap();
+    let link = env.ws.join("link");
+    std::os::unix::fs::symlink(&reviewed, &link).unwrap();
+    let provider = provider(vec![
+        one_write("w1", &link.join("f.txt")),
+        done("written"),
+        done("wake seen"),
+    ])
+    .await;
+    let state = config(&env, &provider).state();
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+
+    say(&state, id, "write through the link").await;
+    let first = nth_request(&state, id, 1).await;
+    wake(&state, id, "drift: look at the parser").await;
+    wait_events(&state, id, "message.received", 2).await;
+
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(&moved, &link).unwrap();
+    allow(&state, id, first).await;
+    let second = nth_request(&state, id, 2).await;
+    assert_ne!(first, second, "a moved destination asks again");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(events(&state, id, "permission.resolved").await.len(), 1);
+    assert_eq!(provider.bodies().len(), 1, "the wake did not start a turn");
+
+    allow(&state, id, second).await;
+    wait_events(&state, id, "task.done", 2).await;
+    let resolved = events(&state, id, "permission.resolved").await;
+    assert!(resolved
+        .iter()
+        .all(|e| e.payload["resolution"] == "allow_once"));
+    assert_eq!(
+        std::fs::read_to_string(moved.join("f.txt")).unwrap(),
+        "from w1"
+    );
+    assert!(!reviewed.join("f.txt").exists());
+    assert!(provider.bodies()[2].contains("drift: look at the parser"));
 }

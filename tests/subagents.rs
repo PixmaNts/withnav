@@ -312,6 +312,61 @@ async fn child_slot_is_released_after_terminal_result() {
 }
 
 #[tokio::test]
+async fn five_concurrent_children_are_refused_then_slot_frees_on_finish() {
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let provider = spawn_gated_provider(
+        (0..5)
+            .map(|_| http_sse(&sse_body(&[&text_chunk("complete")])))
+            .collect(),
+        release.clone(),
+    )
+    .await;
+    let fx = fixture_at(&provider.url);
+    install_agents(&fx.root, &fx.ws);
+    std::fs::write(
+        fx.root.join("cfg/config.json"),
+        json!({"subagents":{"max_concurrent":4}}).to_string(),
+    )
+    .unwrap();
+    let parent = fx
+        .state
+        .create_session(&fx.ws, Some("default"), None)
+        .await
+        .unwrap();
+    let mut children = Vec::new();
+    for index in 0..4 {
+        children.push(
+            fx.state
+                .create_child_session(parent, "explore", &format!("child {index}"))
+                .await
+                .unwrap(),
+        );
+    }
+    let fifth = fx
+        .state
+        .create_child_session(parent, "explore", "fifth")
+        .await
+        .unwrap_err();
+    release.notify_waiters();
+    assert!(matches!(
+        fifth,
+        navai::error::ServerError::SubagentCapacity { capacity: 4 }
+    ));
+    for _ in 0..100 {
+        let active = fx.state.history().active_child_count(parent).await.unwrap();
+        if active < 4 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(fx
+        .state
+        .create_child_session(parent, "explore", "replacement")
+        .await
+        .is_ok());
+}
+
+#[tokio::test]
 async fn child_prompt_is_not_attributed_as_driver_task_or_transcript_inherited() {
     let fx = fixture();
     install_agents(&fx.root, &fx.ws);

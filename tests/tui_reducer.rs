@@ -2247,6 +2247,27 @@ fn a_tab_holding_a_message_for_a_pending_resume_cannot_be_closed() {
     )));
 }
 
+#[test]
+fn context_compacted_pushes_a_one_line_notice() {
+    let mut script = Script::new();
+    script.start().push(
+        EventKind::ContextCompacted,
+        &ContextCompacted {
+            generation: 1,
+            through_message: 7,
+            pruned: 2,
+            estimate_before: 120_000,
+            estimate_after: 18_000,
+        },
+    );
+    let mut s = st();
+    feed(&mut s, &script.out);
+    assert_eq!(
+        s.conversation.blocks.last().map(|b| b.kind.clone()),
+        Some(BlockKind::Notice("context compacted: ~120k -> ~18k".into()))
+    );
+}
+
 // ---------------------------------------------------------------- server commands
 
 #[test]

@@ -63,7 +63,7 @@ pub const COMMANDS: [CommandSpec; 8] = [
 ];
 
 /// Commands that are registered but have no implementation yet.
-pub const NOT_AVAILABLE: [&str; 1] = ["compact"];
+pub const NOT_AVAILABLE: [&str; 0] = [];
 
 /// The error text of a registered command with no implementation.
 pub fn not_available_error(name: &str) -> String {
@@ -251,6 +251,19 @@ impl CommandOutcome {
                 }
             }
             "agent" => render_agent(data),
+            "compact" => {
+                if data["accepted"].as_bool() == Some(true) {
+                    return "accepted, runs after this turn".to_string();
+                }
+                let tokens = |key: &str| {
+                    crate::agent::context::tokens_k(data[key].as_u64().unwrap_or_default())
+                };
+                format!(
+                    "context compacted: ~{} -> ~{}",
+                    tokens("estimate_before"),
+                    tokens("estimate_after")
+                )
+            }
             _ => data.to_string(),
         }
     }

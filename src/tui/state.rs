@@ -127,6 +127,10 @@ pub struct Tab {
     pub agent: Option<String>,
     /// The model variant the conversation runs with, or starts with; `None` is none.
     pub variant: Option<String>,
+    /// The seq of the last event that set `agent` / `variant`: a session summary read at an
+    /// older seq does not overwrite them.
+    pub agent_seq: Option<u64>,
+    pub variant_seq: Option<u64>,
     /// The variant chosen in the model picker for a conversation not created yet: `None` leaves
     /// the alias's default, `Some(None)` asks for none.
     pub start_variant: Option<Option<String>>,

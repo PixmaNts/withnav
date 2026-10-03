@@ -83,6 +83,8 @@ pub(crate) fn start_conversation(s: &mut State) {
     reset_projection(s);
     s.session = None;
     s.resuming = None;
+    s.agent_seq = None;
+    s.variant_seq = None;
     s.pending_submit_text = None;
     s.pending_submit = None;
     s.delivery_uncertain = false;
@@ -285,10 +287,14 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         ClientEvent::Metadata { result, .. } => {
             if let Ok(m) = result {
                 // Only reached for the current generation, so `m` describes this conversation.
-                if m.agent.is_some() {
+                // A summary read before a change the stream already confirmed is older than it.
+                let newer = |seq: Option<u64>| seq.is_none_or(|seq| m.current_seq >= seq);
+                if m.agent.is_some() && newer(s.agent_seq) {
                     s.agent = m.agent.clone();
                 }
-                s.variant = m.variant.clone();
+                if newer(s.variant_seq) {
+                    s.variant = m.variant.clone();
+                }
                 s.selected_model_alias = Some(m.model.clone());
                 refresh_model(s);
                 s.session = Some(m)

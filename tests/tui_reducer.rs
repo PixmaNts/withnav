@@ -2708,3 +2708,59 @@ fn slash_variant_without_a_conversation_asks_the_server_nothing() {
         BlockKind::Command { ok: false, text, .. } if text.contains("send a message first")
     ));
 }
+
+#[test]
+fn a_summary_read_before_a_confirmed_change_does_not_undo_it() {
+    let (mut s, _) = (st(), ui());
+    created_now(&mut s, "S1").unwrap();
+    let summary = |s: &State, seq: u64, agent: &str, variant: Option<&str>| ClientEvent::Metadata {
+        generation: s.generation.clone(),
+        result: Ok(SessionMetadata {
+            session_id: "S1".into(),
+            actor_state: "idle".into(),
+            workspace: "/ws".into(),
+            model: "a".into(),
+            agent: Some(agent.into()),
+            variant: variant.map(str::to_string),
+            current_seq: seq,
+        }),
+    };
+    let mut script = Script::new();
+    script.seq = 10;
+    script.raw(
+        "session.agent_changed",
+        json!({"agent": "plan", "previous": "build"}),
+    );
+    script.raw(
+        "command.result",
+        json!({"operation_id": Ulid(1).to_string(), "name": "variant", "ok": true,
+               "data": {"variant": "high", "offered": ["low", "high"]}}),
+    );
+    feed(&mut s, &script.out);
+    let (agent_seq, variant_seq) = (script.out[0].seq, script.out[1].seq);
+    assert_eq!(
+        (s.agent_name(), s.variant.as_deref()),
+        ("plan", Some("high"))
+    );
+    // a summary fetched before both, answered after them
+    let stale = summary(&s, agent_seq - 1, "build", None);
+    update(&mut s, stale).unwrap();
+    assert_eq!(
+        (s.agent_name(), s.variant.as_deref()),
+        ("plan", Some("high"))
+    );
+    // one read between the two: the agent is current, the variant is not
+    let between = summary(&s, agent_seq, "plan", Some("low"));
+    update(&mut s, between).unwrap();
+    assert_eq!(
+        (s.agent_name(), s.variant.as_deref()),
+        ("plan", Some("high"))
+    );
+    // one read after both is applied
+    let fresh = summary(&s, variant_seq, "build", Some("low"));
+    update(&mut s, fresh).unwrap();
+    assert_eq!(
+        (s.agent_name(), s.variant.as_deref()),
+        ("build", Some("low"))
+    );
+}

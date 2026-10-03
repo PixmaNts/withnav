@@ -254,6 +254,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         Some(EventKind::SessionAgentChanged) => {
             let agent = e.payload["agent"].as_str().ok_or_else(bad)?;
             s.agent = Some(strip_controls(agent));
+            s.agent_seq = Some(e.seq);
         }
         Some(EventKind::CommandResult) => {
             let v = e.payload;
@@ -263,6 +264,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             if name == "variant" && ok {
                 if let Some(v) = v.get("data").and_then(|d| d.get("variant")) {
                     s.variant = v.as_str().map(strip_controls);
+                    s.variant_seq = Some(e.seq);
                 }
             }
             let text = super::command::outcome_text(

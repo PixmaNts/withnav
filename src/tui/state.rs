@@ -146,6 +146,8 @@ pub struct Tab {
     /// The conversation this tab asked the server to resume, until the answer arrives: the tab
     /// already belongs to it.
     pub resuming: Option<String>,
+    /// Metadata must establish whether this session accepts prompts before a resume is sent.
+    pub inspecting: bool,
     pub selected_model_alias: Option<String>,
     pub selected_model_name: Option<String>,
     pub context_window: Option<u64>,

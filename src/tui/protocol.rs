@@ -110,6 +110,12 @@ pub struct SessionMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant: Option<String>,
     pub current_seq: u64,
+    #[serde(default)]
+    pub parent_session_id: Option<String>,
+    #[serde(default = "promptable_default")]
+    pub promptable: bool,
+    #[serde(default)]
+    pub child_status: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SubmitRequest {

@@ -17,6 +17,35 @@ use ulid::Ulid;
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
+#[test]
+fn startup_child_metadata_opens_read_only_without_resume() {
+    let mut s = State::default();
+    let effects = handle_action(
+        &mut s,
+        &mut UiState::default(),
+        Action::ResumeSession("child".into()),
+    );
+    assert_eq!(effects, vec![Effect::FetchMetadata("child".into())]);
+    let metadata = serde_json::from_value(json!({"session_id":"child","actor_state":"active","workspace":"/ws","model":"fast","agent":"explore","current_seq":0,"parent_session_id":"parent","promptable":false,"child_status":"running"})).unwrap();
+    let generation = s.generation.clone();
+    let effects = update(
+        &mut s,
+        ClientEvent::Metadata {
+            generation,
+            result: Ok(metadata),
+        },
+    )
+    .unwrap();
+    assert!(s.read_only());
+    assert!(effects.contains(&Effect::Subscribe {
+        session_id: "child".into(),
+        cursor: None
+    }));
+    assert!(!effects
+        .iter()
+        .any(|e| matches!(e, Effect::Resume(_) | Effect::Create(_))));
+}
+
 #[tokio::test]
 async fn child_controls_and_permission_answers_use_the_owner_routes() {
     use navai::tui::client::Client;
@@ -78,6 +107,9 @@ fn subagent_parent() -> State {
             model: "fast".into(),
             agent: Some("build".into()),
             variant: None,
+            parent_session_id: None,
+            promptable: true,
+            child_status: None,
             current_seq: 0,
         }),
         ..Default::default()
@@ -242,6 +274,9 @@ fn subagent_controls_confirm_effects_and_show_server_refusals() {
                     model: "fast".into(),
                     agent: Some("explore".into()),
                     variant: None,
+                    parent_session_id: None,
+                    promptable: true,
+                    child_status: None,
                     current_seq: 0,
                 }),
             },
@@ -953,6 +988,9 @@ fn with_session(s: &mut State, id: &str) {
         model: "a".into(),
         agent: None,
         variant: None,
+        parent_session_id: None,
+        promptable: true,
+        child_status: None,
         current_seq: 0,
     });
 }
@@ -1366,7 +1404,7 @@ fn resume_other_id_opens_a_tab_same_stopped_id_keeps_cursor() {
     }));
     // another id: a new tab, fresh start
     let fx = handle_action(&mut s, &mut ui(), Action::ResumeSession("S2".into()));
-    assert_eq!(fx.last(), Some(&Effect::Resume("S2".into())));
+    assert_eq!(fx.last(), Some(&Effect::FetchMetadata("S2".into())));
     assert_eq!((s.tabs.len(), s.active), (2, 1));
     assert_ne!(s.generation, gen);
     assert_eq!(s.last_applied_seq, None);
@@ -1642,6 +1680,9 @@ fn bug9_metadata_refreshes_display_and_stale_metadata_cannot_clobber_a_pick() {
             model: model.into(),
             agent: None,
             variant: None,
+            parent_session_id: None,
+            promptable: true,
+            child_status: None,
             current_seq: 3,
         }),
     };
@@ -2420,7 +2461,7 @@ fn each_tab_keeps_its_own_context_epoch() {
 /// A tab that asked to resume `id` and has no answer yet.
 fn resuming(s: &mut State, ui: &mut UiState, id: &str) -> Generation {
     let fx = handle_action(s, ui, Action::ResumeSession(id.into()));
-    assert!(fx.contains(&Effect::Resume(id.into())), "{fx:?}");
+    assert!(fx.contains(&Effect::FetchMetadata(id.into())), "{fx:?}");
     s.generation.clone()
 }
 
@@ -2922,6 +2963,9 @@ fn the_session_summary_and_a_background_change_set_each_tabs_agent() {
             model: "a".into(),
             agent: Some("plan".into()),
             variant: Some("high".into()),
+            parent_session_id: None,
+            promptable: true,
+            child_status: None,
             current_seq: 0,
         }),
     };
@@ -3047,6 +3091,9 @@ fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server
             model: "opus".into(),
             agent: None,
             variant: Some("high".into()),
+            parent_session_id: None,
+            promptable: true,
+            child_status: None,
             current_seq: 0,
         }),
     };
@@ -3177,6 +3224,9 @@ fn a_summary_read_before_a_confirmed_change_does_not_undo_it() {
             model: "a".into(),
             agent: Some(agent.into()),
             variant: variant.map(str::to_string),
+            parent_session_id: None,
+            promptable: true,
+            child_status: None,
             current_seq: seq,
         }),
     };
@@ -4035,6 +4085,9 @@ fn model_changed_moves_the_tab_to_the_new_model_live_and_on_replay() {
             model: "opus".into(),
             agent: None,
             variant: None,
+            parent_session_id: None,
+            promptable: true,
+            child_status: None,
             current_seq: 1,
         }),
     };

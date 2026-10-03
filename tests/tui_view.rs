@@ -160,6 +160,9 @@ fn state() -> State {
             model: "cognition".into(),
             agent: None,
             variant: None,
+            parent_session_id: None,
+            promptable: true,
+            child_status: None,
             current_seq: 42,
         }),
         ..Tab::default()

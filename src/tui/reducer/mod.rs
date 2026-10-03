@@ -154,6 +154,7 @@ pub(crate) fn start_conversation(s: &mut State) {
     reset_projection(s);
     s.session = None;
     s.resuming = None;
+    s.inspecting = false;
     s.parent_session_id = None;
     s.agent_seq = None;
     s.variant_seq = None;
@@ -521,6 +522,9 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     model: s.selected_model_alias.clone().unwrap_or_default(),
                     agent: s.agent.clone(),
                     variant: None,
+                    parent_session_id: None,
+                    promptable: true,
+                    child_status: None,
                     current_seq: s.last_applied_seq.unwrap_or(0),
                 });
                 if s.activity == Activity::Stopped {
@@ -547,6 +551,23 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         },
         ClientEvent::Metadata { result, .. } => {
             if let Ok(m) = result {
+                if std::mem::take(&mut s.inspecting) {
+                    if m.parent_session_id.is_some() || !m.promptable {
+                        s.parent_session_id = m.parent_session_id.clone();
+                        s.child_status = super::state::ChildStatus::from_wire(
+                            m.child_status.as_deref().unwrap_or(""),
+                        );
+                        s.resuming = None;
+                        s.pending_submit_text = None;
+                        s.pending_submit = None;
+                        effects.push(Effect::Subscribe {
+                            session_id: m.session_id.clone(),
+                            cursor: None,
+                        });
+                    } else {
+                        effects.push(Effect::Resume(m.session_id.clone()));
+                    }
+                }
                 if s.read_only() {
                     s.resuming = None;
                 }
@@ -571,7 +592,11 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                         .filter(|c| !c.status.terminal())
                         .map(|c| Effect::WatchChild(c.session_id.clone())),
                 );
-            } else if s.read_only() {
+            } else {
+                s.inspecting = false;
+                s.resuming = None;
+                s.pending_submit_text = None;
+                s.pending_submit = None;
                 if let Err(error) = result {
                     push_local(s, BlockKind::Error(error));
                 }

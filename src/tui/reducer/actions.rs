@@ -244,7 +244,8 @@ fn resume(s: &mut State, ui: &mut UiState, id: String) -> Vec<Effect> {
     };
     start_conversation(s);
     s.resuming = Some(id.clone());
-    effects.push(Effect::Resume(id));
+    s.inspecting = true;
+    effects.push(Effect::FetchMetadata(id));
     effects
 }
 

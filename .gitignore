@@ -28,3 +28,7 @@ auth.json
 
 # API keys dropped next to the code by hand
 *.key
+
+# A models.json at the repository root would shadow ~/.config/navai/models.json for every
+# session started from this checkout; models.example.json is the committed example.
+/models.json

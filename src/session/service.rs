@@ -44,6 +44,7 @@ use super::hooks::{NoHooks, SessionHooks, StartedSession};
 use super::message::{accept, MessageAccepted};
 use super::sender::SessionSender;
 use crate::agent::actor::AgentActor;
+use crate::agent::context::{ContextLimits, ContextSnapshot, ContextTracker};
 use crate::agent::instructions::Instructions;
 use crate::agent::skills::Skills;
 use crate::bus::command::Command;
@@ -311,6 +312,17 @@ impl Service {
         Ok((id, false))
     }
 
+    /// The session's context snapshot: the estimate of its next request by
+    /// category, the budget, and the provider's count for the last one. The
+    /// same value the last `context.updated` carried.
+    pub async fn context(&self, id: SessionId) -> Result<ContextSnapshot, ServerError> {
+        let handle = self.routable_handle(id).await?;
+        handle
+            .status
+            .context_snapshot()
+            .ok_or_else(|| ServerError::SessionNotFound(id.to_string()))
+    }
+
     /// The frozen `GET /v1/sessions/:id` summary. Unknown id is a structured
     /// 404; a stored conversation with no registry entry answers "stopped"
     /// at its stored `last_seq`. `current_seq` = last EMITTED seq: for a
@@ -442,6 +454,16 @@ impl Service {
         let (resolved, api_key, snapshot, save_late) = self
             .resolve_for_spawn(session_id, resume_workspace, &alias, resumed.as_ref())
             .await?;
+        let limits = ContextLimits::from_resolution(
+            &alias,
+            None,
+            &snapshot,
+            resolved.model.max_output_tokens,
+        )
+        .map_err(|e| ServerError::ImpossibleBudget {
+            alias: alias.clone(),
+            reason: e.to_string(),
+        })?;
         let session_cancel = CancellationToken::new();
         let mut actor = build_actor(
             &workspace,
@@ -510,6 +532,8 @@ impl Service {
                 history.save_transcript(session_id, transcript.to_vec());
             }));
         let status = Arc::new(runtime::RuntimeStatus::default());
+        let limits = limits.with_sources(&actor.rules, &actor.skills);
+        status.install_context(ContextTracker::new(limits, actor.context_breakdown()));
         let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn_with_status(
             session_id,
             actor,

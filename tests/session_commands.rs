@@ -156,13 +156,13 @@ async fn unknown_and_unbuilt_commands_answer_clear_errors() {
     assert!(!out.ok);
     assert!(out.error.unwrap().contains("/help"));
 
-    for name in ["context", "variant", "compact"] {
+    for name in ["variant", "compact"] {
         let out = state.run_command(id, name, "").await.expect("run");
         assert!(!out.ok, "{name}");
         assert_eq!(out.error.unwrap(), format!("/{name} is not available yet"));
     }
     let events = results(&state, id).await;
-    assert_eq!(events.len(), 4, "failures are published too");
+    assert_eq!(events.len(), 3, "failures are published too");
     assert!(events.iter().all(|e| e.payload["ok"] == false));
 }
 

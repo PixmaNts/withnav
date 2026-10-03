@@ -137,6 +137,12 @@ impl Service {
         match spec.name {
             "help" => Ok(Done::data(json!({ "commands": commands::COMMANDS }))),
             "model" => Ok(Done::data(self.model_data(handle))),
+            "context" => handle
+                .status
+                .context_snapshot()
+                .and_then(|snapshot| serde_json::to_value(snapshot).ok())
+                .map(Done::data)
+                .ok_or_else(|| CommandFailure::Refused("no context snapshot yet".to_string())),
             "new" => self.new_conversation(session_id, handle, arguments).await,
             // The stop itself is done by `run_command` after the result is
             // published: the stream ends with the session.
@@ -294,7 +300,7 @@ mod tests {
             r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1","api_key_env":"K",
             "headers":{},"connect_timeout_ms":100,"request_timeout_ms":100}},
             "models":{"default":{"provider":"mock","model":"m","supports_tools":true,
-            "reasoning_history":"preserve","context_window":1000}}}"#,
+            "reasoning_history":"preserve","context_window":128000}}}"#,
         )
         .expect("models");
         Service::new(SessionConfig {

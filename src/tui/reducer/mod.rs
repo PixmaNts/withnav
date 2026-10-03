@@ -33,6 +33,7 @@ fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::Created { generation, .. }
         | ClientEvent::Resumed { generation, .. }
         | ClientEvent::Metadata { generation, .. }
+        | ClientEvent::Context { generation, .. }
         | ClientEvent::Submitted { generation, .. }
         | ClientEvent::Stopped { generation, .. }
         | ClientEvent::DeliveryUncertain { generation }
@@ -104,7 +105,11 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
         ClientEvent::Envelope { envelope, .. } => envelope::apply_envelope(s, envelope)?,
         ClientEvent::Resync { .. } => {
             // Keeps catalog, model, session list, pending submit, notice and the session itself.
+            // The gauge is server state, not derived from the replay (`context.updated` is
+            // live-only), so it stays; the reconnect that follows refreshes it.
+            let context = envelope::take_context(s);
             reset_projection(s);
+            envelope::restore_context(s, context);
             effects.push(Effect::Subscribe {
                 session_id: s
                     .session
@@ -114,7 +119,18 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
                 cursor: None,
             });
         }
-        ClientEvent::StreamConnected { .. } => s.connection = ConnectionStatus::Connected,
+        ClientEvent::StreamConnected { .. } => {
+            s.connection = ConnectionStatus::Connected;
+            // `context.updated` is live-only: what was missed before this subscription (a
+            // reconnect, or the gap since the session was created) is read back here.
+            s.conversation.context_epoch += 1;
+            if let Some(m) = &s.session {
+                effects.push(Effect::FetchContext {
+                    session_id: m.session_id.clone(),
+                    epoch: s.conversation.context_epoch,
+                });
+            }
+        }
         ClientEvent::StreamDisconnected { .. } => s.connection = ConnectionStatus::Disconnected,
         ClientEvent::Reconnecting { .. } => s.connection = ConnectionStatus::Reconnecting,
         ClientEvent::ProtocolError { message, .. } => s.last_protocol_error = Some(message),
@@ -142,6 +158,8 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
         }
         ClientEvent::Created { result, .. } | ClientEvent::Resumed { result, .. } => match result {
             Ok(r) => {
+                // A fetch issued before this (re)start may describe the old runtime.
+                s.conversation.context_epoch += 1;
                 s.session = Some(SessionMetadata {
                     session_id: r.session_id.clone(),
                     actor_state: r.actor_state,
@@ -155,7 +173,7 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
                 effects.push(Effect::FetchMetadata(r.session_id.clone()));
                 // `None` for a fresh conversation; the kept cursor when resuming the same one.
                 effects.push(Effect::Subscribe {
-                    session_id: r.session_id,
+                    session_id: r.session_id.clone(),
                     cursor: s.last_applied_seq,
                 });
                 if let Some(text) = s.pending_submit_text.take() {
@@ -175,6 +193,14 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
                 s.selected_model_alias = Some(m.model.clone());
                 refresh_model(s);
                 s.session = Some(m)
+            }
+        }
+        // An older server has no endpoint: the gauge stays on the provider's count.
+        ClientEvent::Context { epoch, result, .. } => {
+            if let Ok(snapshot) = result {
+                if epoch == s.conversation.context_epoch {
+                    envelope::keep_newer_context(s, snapshot);
+                }
             }
         }
         ClientEvent::Submitted {

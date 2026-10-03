@@ -13,6 +13,7 @@
 //!   A stopped conversation (stopped, or stored only) answers 409
 //!   `{"error", "reason":"resume_required"}`: resume it first.
 //! - `POST /v1/sessions/:id/stop` -> `{accepted:true, actor_state:"stopped"}`
+//! - `GET  /v1/sessions/:id/context` -> the context snapshot (`alias, variant?, window, window_source, estimate_total, breakdown{system,rules,skills_catalog,tools,messages}, output_reserve, margin, input_budget, percent, last_usage?{prompt_tokens,completion_tokens,step}, revision`); an estimate of the NEXT request, `last_usage` is the provider's count for the last one
 //! - `GET  /v1/commands`      -> `{commands:[{name, description, args_hint}]}`
 //! - `POST /v1/sessions/:id/commands` `{name, arguments?}` -> `{operation_id, ok, data?, error?}`
 //!   (a command that cannot run is 200 with `ok:false` and an `error`; the same
@@ -100,6 +101,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/sessions/{id}", get(get_session).delete(delete_session))
         .route("/v1/sessions/{id}/messages", post(post_message))
         .route("/v1/sessions/{id}/stop", post(stop_session))
+        .route("/v1/sessions/{id}/context", get(get_context))
         .route("/v1/commands", get(list_commands))
         .route("/v1/sessions/{id}/commands", post(post_command))
         .route(
@@ -456,6 +458,18 @@ async fn list_models(
     }
 }
 
+/// `GET /v1/sessions/:id/context`: the session's context snapshot.
+async fn get_context(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let parsed: Ulid = match id.parse() {
+        Ok(parsed) => parsed,
+        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+    };
+    match state.context(parsed).await {
+        Ok(snapshot) => Json(snapshot).into_response(),
+        Err(err) => error_response(err),
+    }
+}
+
 /// `GET /v1/commands`: the registered session commands.
 async fn list_commands(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(json!({ "commands": state.list_commands() }))
@@ -587,7 +601,9 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         ServerError::NonLoopbackBind(_) | ServerError::Bind(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::InboxFull => StatusCode::SERVICE_UNAVAILABLE,
         ServerError::NonTextContent | ServerError::MalformedBody(_) => StatusCode::BAD_REQUEST,
-        ServerError::NoContextWindow { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+        ServerError::NoContextWindow { .. } | ServerError::ImpossibleBudget { .. } => {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
         ServerError::ModelIdentityChanged { .. } => StatusCode::CONFLICT,
         ServerError::SavedResolutionInvalid { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::History(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -611,6 +627,13 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         return (
             status,
             Json(json!({ "error": err.to_string(), "reason": "no_context_window" })),
+        )
+            .into_response();
+    }
+    if matches!(err, ServerError::ImpossibleBudget { .. }) {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "impossible_context_budget" })),
         )
             .into_response();
     }

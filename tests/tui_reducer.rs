@@ -1383,3 +1383,327 @@ fn message_source_is_kept_as_the_actor_id() {
         BlockKind::Message { source, .. } if source == "user:http"
     ));
 }
+
+// ---------------------------------------------------------------- context gauge
+
+/// The `FetchContext` the reducer issues for `id` under the conversation's current epoch.
+fn fetch(id: &str, s: &State) -> Effect {
+    Effect::FetchContext {
+        session_id: id.into(),
+        epoch: s.conversation.context_epoch,
+    }
+}
+
+fn of_incarnation(n: u128, mut snapshot: ContextSnapshot) -> ContextSnapshot {
+    snapshot.incarnation = Ulid(n);
+    snapshot
+}
+
+fn snapshot(revision: u64, estimate_total: u64) -> ContextSnapshot {
+    ContextSnapshot {
+        alias: "default".into(),
+        variant: None,
+        window: 1_000_000,
+        window_source: "models.json".into(),
+        estimated: true,
+        estimate_total,
+        breakdown: Default::default(),
+        output_reserve: 8192,
+        margin: 50_000,
+        input_budget: 941_808,
+        percent: estimate_total * 100 / 1_000_000,
+        last_usage: None,
+        skills: Default::default(),
+        rule_files: 0,
+        incarnation: Ulid(1),
+        revision,
+    }
+}
+
+#[test]
+fn context_updated_feeds_the_gauge_and_keeps_the_provider_count_apart() {
+    let mut s = run("tools_replay");
+    assert_eq!(s.conversation.context_tokens, Some(150));
+    assert!(s.conversation.context.is_none());
+    let mut script = Script::new();
+    script.seq = 1_000;
+    script.push(EventKind::ContextUpdated, &snapshot(2, 42_000));
+    feed(&mut s, &script.out);
+    assert_eq!(
+        s.conversation.context.as_ref().unwrap().estimate_total,
+        42_000
+    );
+    assert_eq!(s.conversation.context_tokens, Some(150));
+}
+
+#[test]
+fn an_older_snapshot_never_replaces_a_newer_one() {
+    let mut s = st();
+    let mut script = Script::new();
+    script.push(EventKind::ContextUpdated, &snapshot(5, 50_000));
+    script.push(EventKind::ContextUpdated, &snapshot(4, 10_000));
+    feed(&mut s, &script.out);
+    assert_eq!(s.conversation.context.as_ref().unwrap().revision, 5);
+    let ev = ClientEvent::Context {
+        generation: s.generation.clone(),
+        epoch: s.conversation.context_epoch,
+        result: Ok(snapshot(6, 60_000)),
+    };
+    update(&mut s, ev).unwrap();
+    assert_eq!(
+        s.conversation.context.as_ref().unwrap().estimate_total,
+        60_000
+    );
+    // An error (an older server has no endpoint) changes nothing.
+    let ev = ClientEvent::Context {
+        generation: s.generation.clone(),
+        epoch: s.conversation.context_epoch,
+        result: Err("HTTP 404".into()),
+    };
+    update(&mut s, ev).unwrap();
+    assert_eq!(s.conversation.context.as_ref().unwrap().revision, 6);
+}
+
+#[test]
+fn a_malformed_context_payload_is_a_protocol_error() {
+    let mut s = st();
+    let mut script = Script::new();
+    script.raw("context.updated", json!({"window": "big"}));
+    let ev = envelope(&s, &script.out[0]);
+    assert!(update(&mut s, ev).is_err());
+}
+
+#[test]
+fn every_stream_connection_reads_the_context_back() {
+    let mut s = st();
+    models_now(&mut s, Some("a".into())).unwrap();
+    // Before a session exists there is nothing to fetch.
+    let connected = ClientEvent::StreamConnected {
+        generation: s.generation.clone(),
+    };
+    assert!(update(&mut s, connected).unwrap().is_empty());
+    let created = ClientEvent::Created {
+        generation: s.generation.clone(),
+        result: Ok(CreateSessionResponse {
+            session_id: "s1".into(),
+            root_actor_id: "agent:main".into(),
+            actor_state: "idle".into(),
+        }),
+    };
+    let effects = update(&mut s, created).unwrap();
+    assert!(!effects.contains(&fetch("s1", &s)));
+    let connected = ClientEvent::StreamConnected {
+        generation: s.generation.clone(),
+    };
+    let effects = update(&mut s, connected).unwrap();
+    assert_eq!(effects, vec![fetch("s1", &s)]);
+}
+
+#[test]
+fn a_snapshot_missed_during_a_disconnect_is_read_back_on_reconnect() {
+    let mut s = st();
+    models_now(&mut s, Some("a".into())).unwrap();
+    let created = ClientEvent::Created {
+        generation: s.generation.clone(),
+        result: Ok(CreateSessionResponse {
+            session_id: "s1".into(),
+            root_actor_id: "agent:main".into(),
+            actor_state: "idle".into(),
+        }),
+    };
+    update(&mut s, created).unwrap();
+    let mut script = Script::new();
+    script.seq = 1_000;
+    script.push(EventKind::ContextUpdated, &snapshot(2, 20_000));
+    feed(&mut s, &script.out);
+    assert_eq!(s.conversation.context.as_ref().unwrap().revision, 2);
+
+    // The stream drops; revision 3 is published while nobody listens.
+    for event in [
+        ClientEvent::StreamDisconnected {
+            generation: s.generation.clone(),
+        },
+        ClientEvent::Reconnecting {
+            generation: s.generation.clone(),
+        },
+    ] {
+        update(&mut s, event).unwrap();
+    }
+    let connected = ClientEvent::StreamConnected {
+        generation: s.generation.clone(),
+    };
+    let effects = update(&mut s, connected).unwrap();
+    assert_eq!(effects, vec![fetch("s1", &s)]);
+    let fetched = ClientEvent::Context {
+        generation: s.generation.clone(),
+        epoch: s.conversation.context_epoch,
+        result: Ok(snapshot(3, 30_000)),
+    };
+    update(&mut s, fetched).unwrap();
+    let held = s.conversation.context.as_ref().unwrap();
+    assert_eq!((held.revision, held.estimate_total), (3, 30_000));
+}
+
+#[test]
+fn a_resync_keeps_the_gauge_until_the_reconnect_refreshes_it() {
+    let mut s = st();
+    let held = ClientEvent::Context {
+        generation: s.generation.clone(),
+        epoch: s.conversation.context_epoch,
+        result: Ok(snapshot(3, 30_000)),
+    };
+    update(&mut s, held).unwrap();
+    let resync = ClientEvent::Resync {
+        generation: s.generation.clone(),
+    };
+    update(&mut s, resync).unwrap();
+    assert_eq!(s.conversation.context.as_ref().unwrap().revision, 3);
+}
+
+#[test]
+fn a_resumed_session_s_snapshots_replace_the_previous_incarnations() {
+    let mut s = st();
+    let held = ClientEvent::Context {
+        generation: s.generation.clone(),
+        epoch: s.conversation.context_epoch,
+        result: Ok(snapshot(40, 400_000)),
+    };
+    update(&mut s, held).unwrap();
+    // Same id, stopped and resumed: a new actor starts its revisions again.
+    let mut resumed = snapshot(0, 12_000);
+    resumed.incarnation = Ulid(2);
+    let fetched = ClientEvent::Context {
+        generation: s.generation.clone(),
+        epoch: s.conversation.context_epoch,
+        result: Ok(resumed.clone()),
+    };
+    update(&mut s, fetched).unwrap();
+    assert_eq!(s.conversation.context.as_ref(), Some(&resumed));
+    // Within the new incarnation the revision order applies again.
+    let mut script = Script::new();
+    script.seq = 1_000;
+    let mut next = snapshot(1, 13_000);
+    next.incarnation = Ulid(2);
+    let mut late = snapshot(0, 1);
+    late.incarnation = Ulid(2);
+    script.push(EventKind::ContextUpdated, &next);
+    script.push(EventKind::ContextUpdated, &late);
+    feed(&mut s, &script.out);
+    assert_eq!(s.conversation.context.as_ref().unwrap().revision, 1);
+}
+
+fn live_context(s: &mut State, snapshot: &ContextSnapshot) {
+    let mut script = Script::new();
+    script.seq = s.last_applied_seq.map_or(1_000, |seq| seq + 1);
+    script.push(EventKind::ContextUpdated, snapshot);
+    feed(s, &script.out);
+}
+
+fn shown(s: &State) -> (u128, u64) {
+    let c = s.conversation.context.as_ref().unwrap();
+    (c.incarnation.0, c.revision)
+}
+
+#[test]
+fn a_retired_incarnation_is_never_shown_again_by_a_late_fetch_or_a_late_event() {
+    let mut s = st();
+    let a = of_incarnation(1, snapshot(40, 400_000));
+    let b = of_incarnation(2, snapshot(0, 12_000));
+    let epoch = s.conversation.context_epoch;
+    let answer = |epoch, snapshot: &ContextSnapshot, s: &State| ClientEvent::Context {
+        generation: s.generation.clone(),
+        epoch,
+        result: Ok(snapshot.clone()),
+    };
+    let ev = answer(epoch, &a, &s);
+    update(&mut s, ev).unwrap();
+    assert_eq!(shown(&s), (1, 40));
+    let ev = answer(epoch, &b, &s);
+    update(&mut s, ev).unwrap();
+    assert_eq!(shown(&s), (2, 0));
+    // A slow answer about A (same epoch), then a late live event about A.
+    let ev = answer(epoch, &a, &s);
+    update(&mut s, ev).unwrap();
+    assert_eq!(shown(&s), (2, 0));
+    live_context(&mut s, &of_incarnation(1, snapshot(41, 410_000)));
+    assert_eq!(shown(&s), (2, 0));
+    // B keeps moving on its own revisions.
+    live_context(&mut s, &of_incarnation(2, snapshot(3, 15_000)));
+    assert_eq!(shown(&s), (2, 3));
+    live_context(&mut s, &of_incarnation(2, snapshot(2, 14_000)));
+    assert_eq!(shown(&s), (2, 3));
+}
+
+#[test]
+fn the_retired_set_is_bounded_and_survives_a_resync() {
+    let mut s = st();
+    for n in 1..=12u128 {
+        live_context(&mut s, &of_incarnation(n, snapshot(0, 1_000)));
+    }
+    assert_eq!(shown(&s), (12, 0));
+    assert_eq!(s.conversation.retired_incarnations.len(), 8);
+    let resync = ClientEvent::Resync {
+        generation: s.generation.clone(),
+    };
+    update(&mut s, resync).unwrap();
+    assert_eq!(s.conversation.retired_incarnations.len(), 8);
+    live_context(&mut s, &of_incarnation(11, snapshot(9, 9_000)));
+    assert_eq!(shown(&s), (12, 0));
+}
+
+#[test]
+fn a_fetch_issued_before_a_resume_and_answered_after_it_is_dropped() {
+    let mut s = st();
+    models_now(&mut s, Some("a".into())).unwrap();
+    let created = |s: &State, kind_resumed: bool| {
+        let result = Ok(CreateSessionResponse {
+            session_id: "s1".into(),
+            root_actor_id: "agent:main".into(),
+            actor_state: "idle".into(),
+        });
+        if kind_resumed {
+            ClientEvent::Resumed {
+                generation: s.generation.clone(),
+                result,
+            }
+        } else {
+            ClientEvent::Created {
+                generation: s.generation.clone(),
+                result,
+            }
+        }
+    };
+    let ev = created(&s, false);
+    update(&mut s, ev).unwrap();
+    let connected = ClientEvent::StreamConnected {
+        generation: s.generation.clone(),
+    };
+    let effects = update(&mut s, connected).unwrap();
+    let Effect::FetchContext { epoch: old, .. } = effects[0].clone() else {
+        panic!("{effects:?}")
+    };
+    // The session is stopped and resumed under the same id before the answer arrives.
+    let ev = created(&s, true);
+    update(&mut s, ev).unwrap();
+    assert!(s.conversation.context_epoch > old);
+    let late = ClientEvent::Context {
+        generation: s.generation.clone(),
+        epoch: old,
+        result: Ok(of_incarnation(1, snapshot(40, 400_000))),
+    };
+    update(&mut s, late).unwrap();
+    assert!(s.conversation.context.is_none());
+    // The fetch of the new epoch is accepted.
+    let connected = ClientEvent::StreamConnected {
+        generation: s.generation.clone(),
+    };
+    let effects = update(&mut s, connected).unwrap();
+    assert_eq!(effects, vec![fetch("s1", &s)]);
+    let fresh = ClientEvent::Context {
+        generation: s.generation.clone(),
+        epoch: s.conversation.context_epoch,
+        result: Ok(of_incarnation(2, snapshot(0, 12_000))),
+    };
+    update(&mut s, fresh).unwrap();
+    assert_eq!(shown(&s), (2, 0));
+}

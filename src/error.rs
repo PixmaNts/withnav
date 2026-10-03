@@ -145,6 +145,8 @@ pub enum ServerError {
     },
     #[error("Session {session} has an unreadable saved model resolution ({reason}); it cannot be resumed until the sessions.model_resolution column of that row is fixed or cleared.")]
     SavedResolutionInvalid { session: String, reason: String },
+    #[error("Chat alias '{alias}' cannot be used: {reason}")]
+    ImpossibleBudget { alias: String, reason: String },
     #[error("history store error: {0}")]
     History(String),
 }

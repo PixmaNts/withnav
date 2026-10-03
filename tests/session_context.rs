@@ -247,6 +247,21 @@ async fn the_context_command_renders_the_gauge_and_the_breakdown() {
     }
 }
 
+// Given a session
+// When /context gets an argument
+// Then it is refused with its usage, like every argument-free command
+#[tokio::test]
+async fn the_context_command_takes_no_arguments() {
+    let (tmp, ws) = tmp_ws();
+    let state = TestServerConfig::unreachable(tmp.path())
+        .chat_tools(1_000_000)
+        .state();
+    let id = state.create_session(&ws, None, None).await.expect("create");
+    let out = state.run_command(id, "context", "now").await.expect("run");
+    assert!(!out.ok);
+    assert_eq!(out.error.as_deref(), Some("usage: /context"));
+}
+
 // Given a window that cannot hold its output reserve and margin
 // When a session is created
 // Then it is refused with a clear error naming models.json

@@ -1,4 +1,4 @@
-use crate::agent::actor::{AgentActor, AgentState};
+use crate::agent::actor::{AgentActor, AgentState, PendingInteraction};
 use crate::agent::context::Breakdown;
 use crate::agent::prompt::{assistant_history_message, build_request};
 use crate::agent::response::{classify, HumanRequest, StepOutcome};
@@ -122,7 +122,9 @@ pub async fn run_agent(
                         append_interrupted(actor, id);
                     }
                 }
-                actor.pending_ask_id = Some(request.tool_call_id.clone());
+                actor.pending = Some(PendingInteraction::Ask {
+                    tool_call_id: request.tool_call_id.clone(),
+                });
                 actor.state = AgentState::Yielded;
                 return Ok(RunOutcome::Yielded(request));
             }

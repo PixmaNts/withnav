@@ -136,7 +136,7 @@ impl RuntimeStatus {
 
     /// The turn is over: an agent or variant change may apply.
     fn end_turn(&self, actor: &AgentActor) {
-        self.selection.end_turn(actor.pending_ask_id.is_some());
+        self.selection.end_turn(actor.has_pending());
         self.slot().running = false;
     }
 
@@ -206,8 +206,7 @@ impl RuntimeStatus {
 
     /// Records that the session starts with `actor`'s unanswered `ask`, if any.
     pub fn init_ask(&self, actor: &AgentActor) {
-        self.selection
-            .set_ask_pending(actor.pending_ask_id.is_some());
+        self.selection.set_ask_pending(actor.has_pending());
     }
 }
 

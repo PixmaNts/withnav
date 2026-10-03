@@ -119,7 +119,7 @@ impl ActorInbox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::actor::AgentState;
+    use crate::agent::actor::{AgentState, PendingInteraction};
     use crate::bus::command::{ContentBlock, DeliveryMode};
     use crate::provider::config::{ProviderConfig, ReasoningHistory};
     use crate::provider::openai::ChatMessage;
@@ -271,7 +271,9 @@ mod tests {
 
         let mut actor = test_actor();
         actor.state = AgentState::Yielded;
-        actor.pending_ask_id = Some("call_ask".into());
+        actor.pending = Some(PendingInteraction::Ask {
+            tool_call_id: "call_ask".into(),
+        });
 
         inbox.drain_transport();
         inbox.apply_batch_to_actor(&mut actor);
@@ -292,7 +294,7 @@ mod tests {
             Some(ChatMessage::User { content }) if content == "third"
         ));
         assert_eq!(actor.transcript.len(), 3);
-        assert_eq!(actor.pending_ask_id, None);
+        assert_eq!(actor.pending, None);
     }
 
     // Given an Idle actor with a steer command buffered (downgraded, Phase 2)
@@ -307,7 +309,7 @@ mod tests {
 
         let mut actor = test_actor();
         actor.state = AgentState::Idle;
-        assert_eq!(actor.pending_ask_id, None);
+        assert_eq!(actor.pending, None);
 
         inbox.drain_transport();
         let outcome = inbox.apply_batch_to_actor(&mut actor);
@@ -320,7 +322,7 @@ mod tests {
             actor.transcript.last(),
             Some(ChatMessage::User { content }) if content == "lean left"
         ));
-        assert_eq!(actor.pending_ask_id, None);
+        assert_eq!(actor.pending, None);
     }
 
     // Given a batch mixing a steer and plain next-turn commands

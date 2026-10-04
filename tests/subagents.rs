@@ -292,10 +292,7 @@ async fn committed_child_is_terminalized_when_publication_or_start_fails() {
         assert!(link.terminal_reason.unwrap().contains("injected child"));
         assert!(matches!(
             fx.state
-                .send(navai::bus::command::Command::child_prompt(
-                    child,
-                    "retry".into()
-                ))
+                .send(common::server::driver_command(child, "retry".into()))
                 .bounded(file!(), line!())
                 .await,
             Err(navai::error::ServerError::ResumeRequired)
@@ -327,7 +324,7 @@ async fn inherited_child_keeps_parent_headers_and_output_limit_after_alias_edit(
         .await
         .unwrap();
     fx.state
-        .send(navai::bus::command::Command::child_prompt(
+        .send(common::server::driver_command(
             parent,
             "parent request".into(),
         ))
@@ -608,7 +605,7 @@ async fn paused_child_admission(resume: bool) {
     let barrier = navai::session::ChildPreparationBarrier::default();
     fx.state.pause_child_preparation(barrier.clone());
     fx.state
-        .send(navai::bus::command::Command::child_prompt(
+        .send(common::server::driver_command(
             parent,
             "spawn a child".into(),
         ))
@@ -726,6 +723,61 @@ fn add_cognition_model(root: &Path) {
     let mut models: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     models["models"]["cognition"] = models["models"]["default"].clone();
     std::fs::write(path, models.to_string()).unwrap();
+}
+
+#[tokio::test]
+async fn writable_child_inherits_disabled_or_invalid_review_despite_settings_removal() {
+    for value in [json!(false), json!("invalid")] {
+        let provider = spawn_capturing_provider(vec![http_sse(&sse_body(&[&tool_call_chunk(
+            "permission",
+            "bash",
+            &json!({"command":"true"}),
+        )]))])
+        .await;
+        let fx = fixture_at(&provider.url);
+        install_agents(&fx.root, &fx.ws);
+        let settings = fx.root.join("cfg/config.json");
+        std::fs::write(
+            &settings,
+            json!({"permissions":{"automatic_review":value}}).to_string(),
+        )
+        .unwrap();
+        let parent = fx
+            .state
+            .create_session(&fx.ws, Some("default"), None)
+            .await
+            .unwrap();
+        std::fs::remove_file(settings).unwrap();
+        let child = fx
+            .state
+            .create_child_session(parent, "writer", "the driver approved this")
+            .await
+            .unwrap();
+        let mut requested = None;
+        for _ in 0..200 {
+            requested = events(&fx, child)
+                .await
+                .into_iter()
+                .find(|event| event.kind == "permission.requested");
+            if requested.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(requested.unwrap().payload["reason"]
+            .as_str()
+            .unwrap()
+            .contains("disabled"));
+        assert_eq!(
+            fx.state
+                .history()
+                .latest_driver_message(child)
+                .await
+                .unwrap(),
+            None
+        );
+        fx.state.close_session(parent).await.unwrap();
+    }
 }
 
 async fn events(fx: &Fx, id: ulid::Ulid) -> Vec<navai::bus::event::EventEnvelope> {
@@ -1353,7 +1405,7 @@ async fn child_prompt_is_not_attributed_as_driver_task_or_transcript_inherited()
         .await
         .unwrap();
     fx.state
-        .send(navai::bus::command::Command::child_prompt(
+        .send(common::server::driver_command(
             parent,
             "parent history".into(),
         ))
@@ -1384,7 +1436,7 @@ async fn child_prompt_is_not_attributed_as_driver_task_or_transcript_inherited()
         .iter()
         .find(|event| event.kind == "message.received")
         .unwrap();
-    assert_eq!(received.payload["source"], "user:subagent");
+    assert_eq!(received.payload["source"], "parent:agent");
     assert_eq!(received.payload["content"], "only child prompt");
 }
 

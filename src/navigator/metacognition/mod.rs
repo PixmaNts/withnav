@@ -7,6 +7,7 @@
 //! the reflex-context producer.
 
 mod answer;
+mod permission;
 mod reflex_context;
 mod tools;
 

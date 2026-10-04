@@ -293,15 +293,7 @@ fn which_rg() -> Option<PathBuf> {
 }
 
 async fn grep_rg(pattern: &str, root: &Path) -> Option<ToolResult> {
-    let output = tokio::process::Command::new("rg")
-        .arg("--line-number")
-        .arg("--no-heading")
-        .arg("--color=never")
-        .arg(pattern)
-        .arg(root)
-        .output()
-        .await
-        .ok()?;
+    let output = rg_command(pattern, root).output().await.ok()?;
     let code = output.status.code().unwrap_or(-1);
     if code >= 2 {
         return None;
@@ -309,6 +301,21 @@ async fn grep_rg(pattern: &str, root: &Path) -> Option<ToolResult> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let bounded = bound_matches(&stdout);
     Some(bounded.with_metadata(json!({"engine": "rg"})))
+}
+
+fn rg_command(pattern: &str, root: &Path) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("rg");
+    command
+        .kill_on_drop(true)
+        .arg("--no-config")
+        .arg("--line-number")
+        .arg("--no-heading")
+        .arg("--color=never")
+        .arg("--regexp")
+        .arg(pattern)
+        .arg("--")
+        .arg(root);
+    command
 }
 
 fn grep_builtin(pattern: &str, root: &Path) -> Result<ToolResult, ToolError> {
@@ -368,6 +375,30 @@ fn bound_matches(s: &str) -> ToolResult {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rg_option_looking_patterns_are_data_and_config_is_disabled() {
+        for pattern in ["--pre=/some/program", "--glob=../*", "-e", "normal"] {
+            let command = super::rg_command(pattern, std::path::Path::new("/validated/root"));
+            let args: Vec<_> = command
+                .as_std()
+                .get_args()
+                .map(|arg| arg.to_str().unwrap())
+                .collect();
+            assert_eq!(
+                args,
+                [
+                    "--no-config",
+                    "--line-number",
+                    "--no-heading",
+                    "--color=never",
+                    "--regexp",
+                    pattern,
+                    "--",
+                    "/validated/root"
+                ]
+            );
+        }
+    }
     use super::*;
     use crate::tools::ToolStatus;
 

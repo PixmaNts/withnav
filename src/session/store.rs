@@ -1891,6 +1891,7 @@ mod tests {
         assert_eq!(after.meta.variant, before.meta.variant);
         assert_eq!(after.meta.variant_override, before.meta.variant_override);
         assert_eq!(after.meta.primary_agent, before.meta.primary_agent);
+        assert_eq!(after.meta.reasoning_floor, before.meta.reasoning_floor);
         assert_eq!(after.meta.last_seq, before.meta.last_seq);
         assert_eq!(after.meta.agent_overrides, before.meta.agent_overrides);
         assert_eq!(after.envelopes.len(), 2);
@@ -1899,7 +1900,7 @@ mod tests {
                 id,
                 "plan",
                 Some(value),
-                selection,
+                selection.clone(),
                 vec![
                     EventEnvelope::new(id, 10, EventKind::ModelChanged, serde_json::json!({})),
                     EventEnvelope::new(
@@ -1909,6 +1910,23 @@ mod tests {
                         serde_json::json!({}),
                     ),
                 ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.meta(id).await.unwrap().unwrap().last_seq, 10);
+        // A later transaction containing only older sequences must not lower the cursor.
+        store
+            .commit_agent_selection(
+                id,
+                "plan",
+                None,
+                selection,
+                vec![EventEnvelope::new(
+                    id,
+                    5,
+                    EventKind::ModelChanged,
+                    serde_json::json!({}),
+                )],
             )
             .await
             .unwrap();

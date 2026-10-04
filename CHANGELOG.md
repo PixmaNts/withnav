@@ -4,6 +4,21 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **VS Code chat**: permission requests can be answered with Allow once or Deny, including
+  requests from subagents. The full reason and call are visible; sending another message warns
+  before cancelling a pending request. Answers and expired requests remain visible on replay.
+- **VS Code chat**: subagent output is labelled as untrusted data, no longer shown as yours.
+  Your selected skill appears beside your message.
+- **VS Code chat**: out-of-steps and watchdog pauses can be continued from the transcript.
+  Watchdog pauses also offer Stop; refusals show the server's reason.
+
+### Added
+
+- **VS Code chat**: tool rows show who automatically approved a call (Jev or metacognition),
+  with the review reason and any available verdicts in an expandable note.
+
 ## [0.4.3] - 2026-10-04
 
 Fixes from trying 0.4.2's per-call permission review, including a security fix: metacognition could

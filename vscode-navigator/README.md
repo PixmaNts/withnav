@@ -16,6 +16,12 @@ diagnostics and user feedback, and hosts the Cognition chat view.
   the next new conversation (an open conversation keeps its model) and a gauge of the context used.
   Navigator wakes appear in it as messages from the navigator. It sends the open file and selection
   as editor context.
+- **Agent controls in chat**: permission cards show the full reason and command (or a file path
+  and bounded content), with Allow once and Deny plus an optional deny message. Subagents' requests
+  stay in the parent conversation. Sending while approval is pending asks for confirmation.
+  Out-of-steps and watchdog pauses offer Continue; watchdog pauses also offer Stop. Subagent
+  output is labelled untrusted, selected skills appear beside your messages, and tool rows have
+  expandable approval notes when the server provides review evidence.
 
 ## Requirements
 
@@ -65,6 +71,7 @@ Keybindings are active only when a remark is visible (`navai.remarkVisible` cont
 
 - `npm run watch` — rebuild the bundle on change.
 - `npm run typecheck` — `tsc --noEmit` type check only.
+- `npm test` — deterministic event projection, replay and extension-host control tests.
 - Output channel "Navai" shows the LSP traffic log.
 
 ## Settings

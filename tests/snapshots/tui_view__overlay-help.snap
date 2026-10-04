@@ -21,13 +21,13 @@ expression: snapshot
             │ shift+tab               switch focus                                     │            
             │ page up / page down     scroll                                           │            
             │ up / down               select transcript block                          │            
+            │ drag permission         copy full review; y still allows an open prompt  │            
             │ drag / double-click     select text / word; release copies via OSC 52    │            
             │ y / ctrl+shift+c        y copies; multi-block selections group sender na │            
             │ shift+drag              native selection; OSC 52: tmux set-clipboard on  │            
             │ space / enter           expand selected block                            │            
-            │ ctrl+end                follow newest                                    │            
-            │ esc / ctrl+c            stop / close                                     │────────────
-            │ ctrl+q                  quit                                             │n 31.2k tok 
+            │ ctrl+end                follow newest                                    │────────────
+            │ esc / ctrl+c            stop / close                                     │n 31.2k tok 
             │                                                                          │───────────┐
  alt+1…9 swi│ esc close                                                                │           │
  alt+w close└──────────────────────────────────────────────────────────────────────────┘───────────┘

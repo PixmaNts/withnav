@@ -4,6 +4,9 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Fixed
+- Permission reviews can be selected and copied without screen truncation or borders; drag to copy an open prompt (`y` still allows), or use `y` on a settled review. Write content is bounded to 4096 bytes with an omitted-byte count.
+
 ## [0.4.2] - 2026-10-04
 
 Every file change and shell command is now reviewed one by one, conversations no longer stop after

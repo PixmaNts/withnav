@@ -11,6 +11,35 @@ use crate::tui::protocol::{CreateSessionRequest, Generation, SubmitRequest};
 const DEAD_URL: &str = "http://127.0.0.1:1";
 
 #[tokio::test]
+async fn permission_y_copies_answered_but_never_intercepts_open_allow() {
+    use crate::tui::state::{Block, BlockKind, Focus};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut runtime = Runtime::new(&options(None));
+    let mut p = crate::tui::view::test_prompt();
+    runtime.state.conversation.blocks.push(Block {
+        id: "permission".into(),
+        kind: BlockKind::Permission(p.clone()),
+    });
+    runtime.ui.focus = Focus::Transcript;
+    runtime.ui.selected_block = Some("permission".into());
+    assert!(runtime.selection_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)));
+    assert!(runtime
+        .state
+        .notice
+        .as_deref()
+        .unwrap()
+        .starts_with("Copied "));
+    p.resolution = None;
+    runtime.state.conversation.blocks[0].kind = BlockKind::Permission(p);
+    runtime
+        .state
+        .conversation
+        .open_permissions
+        .push("permission".into());
+    assert!(!runtime.selection_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)));
+}
+
+#[tokio::test]
 async fn transcript_mouse_ignores_sidebar_and_scrolls_after_capture() {
     use crate::tui::state::{Block, BlockKind};
     use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};

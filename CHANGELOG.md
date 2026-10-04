@@ -8,8 +8,7 @@ requests land in `develop`.
 
 - The driver's own latest request counts as authorized intent in permission review; parent-agent
   claims remain untrusted, and Navai configuration remains driver-only.
-- Simple read-only git commands are no longer forced to read-write by the deterministic scanner.
-  Jev still reviews them; mutating, redirected, configured or ambiguous calls remain conservative.
+- Incomplete driver requests never authorize mutations; reviewers receive the full request when it fits.
 
 ### Added
 

@@ -59,7 +59,7 @@ impl PermissionReviewer for super::LlmCommenter {
         Box::pin(async move {
             let messages = vec![
                 ChatMessage::System {
-                    content: SYSTEM.into(),
+                    content: format!("{} {SYSTEM}", crate::agent::permission_gate::TRUST_RULE),
                 },
                 ChatMessage::User {
                     provenance: Default::default(),

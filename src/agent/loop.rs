@@ -320,6 +320,9 @@ pub async fn resolve_permission(
     }
     match decision {
         PermissionDecision::AllowOnce | PermissionDecision::AllowFolder => {
+            let mut evidence = request.permission_gate.as_deref().cloned().unwrap_or_else(|| serde_json::json!({"policy_version":1,"reason":request.reason,"truncated":false}));
+            evidence["source"] = serde_json::json!("driver");
+            let approval_note = Some(serde_json::json!({"permission_gate":evidence}));
             // The approval is for the destination the driver reviewed. Resolve
             // it again: a call that now lands elsewhere, or is refused, does
             // not run on this approval, and goes through the gate afresh.
@@ -332,7 +335,7 @@ pub async fn resolve_permission(
                             .grants
                             .grant(&request.agent, &request.tool, request.scope.clone());
                     }
-                    run_reviewed(actor, &call, destination.as_deref(), observe).await
+                    run_reviewed(actor, &call, destination.as_deref(), approval_note, observe).await
                 }
                 // An exception of a guarded agent: the driver's approval is
                 // for this one call and never becomes a grant, whatever the
@@ -340,7 +343,7 @@ pub async fn resolve_permission(
                 Gated::Guarded(needed) | Gated::Reviewed(needed)
                     if needed.destination == destination && needed.scope == request.scope =>
                 {
-                    run_reviewed(actor, &call, destination.as_deref(), observe).await
+                    run_reviewed(actor, &call, destination.as_deref(), approval_note, observe).await
                 }
                 _ => run_gated(actor, &call, observe).await,
             };
@@ -599,9 +602,10 @@ async fn run_reviewed(
     actor: &mut AgentActor,
     call: &ToolCall,
     destination: Option<&Path>,
+    approval_note: Option<serde_json::Value>,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> One {
-    if let Some(result) = execute_call(actor, call, destination, None, observe).await {
+    if let Some(result) = execute_call(actor, call, destination, approval_note, observe).await {
         append_tool_result(actor, &call.id, &result);
         return One::Settled;
     }
@@ -2025,6 +2029,118 @@ mod tests {
         hangs: bool,
     }
 
+    #[tokio::test]
+    async fn typed_driver_approval_preserves_matching_review_evidence() {
+        let mut actor = plan_actor(None, "http://unused");
+        let target = actor.tool_context.workspace.join("file.txt");
+        let call = ToolCall {
+            id: "c".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path":target,"content":"new"}),
+            args_valid: true,
+        };
+        let One::Ask(mut request, destination) = run_gated(&mut actor, &call, &mut |_| {}).await
+        else {
+            panic!("held call");
+        };
+        request.permission_gate = Some(Box::new(
+            serde_json::json!({"policy_version":1,"source":"driver","reason":"review uncertainty","verdicts":{"effect":"read_write","scope":"inside","risk":"unsure"},"truncated":false}),
+        ));
+        let id = request.id;
+        let mut second = call.clone();
+        second.id = "second".into();
+        actor.pending = Some(PendingInteraction::Permission {
+            request: Box::new(request),
+            call,
+            remaining_calls: vec![second],
+            destination,
+            steps_left: 1,
+        });
+        actor.state = AgentState::Yielded;
+        let mut pre = vec![];
+        let mut post = vec![];
+        let mut observe = |event: AgentEvent<'_>| match event {
+            AgentEvent::PreCall {
+                permission_gate, ..
+            } => pre.push(permission_gate.cloned().unwrap()),
+            AgentEvent::PostCall { result, .. } => {
+                post.push(result.metadata["permission_gate"].clone())
+            }
+            _ => {}
+        };
+        assert!(matches!(
+            resolve_permission(&mut actor, id, PermissionDecision::AllowOnce, &mut observe)
+                .await
+                .unwrap(),
+            RunOutcome::PermissionRequired(_)
+        ));
+        assert_eq!(pre, post);
+        assert_eq!(pre.len(), 1);
+        assert_eq!(pre[0]["source"], "driver");
+        assert_eq!(pre[0]["verdicts"]["risk"], "unsure");
+    }
+
+    #[test]
+    fn full_driver_request_and_every_question_preserve_authorization_restrictions() {
+        let mut actor = plan_actor(None, "http://unused");
+        actor.driver_request_inherited = true;
+        let target = actor.tool_context.workspace.join("keep.txt");
+        let call = ToolCall {
+            id: "c".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path":target,"content":"new"}),
+            args_valid: true,
+        };
+        let needed = Needed {
+            scope: Scope::Folder(actor.tool_context.workspace.clone()),
+            destination: Some(target),
+        };
+        for bytes in [3000, 30000] {
+            actor.driver_task = Some(format!(
+                "{} but never touch /home/x/keep.txt {}",
+                "x".repeat(bytes),
+                "y".repeat(bytes)
+            ));
+            let input = super::super::permission_gate::describe(
+                &actor,
+                &call,
+                &needed,
+                &Default::default(),
+            )
+            .unwrap();
+            let state: serde_json::Value = serde_json::from_str(&input.state).unwrap();
+            for question in input.questions.values() {
+                let crate::provider::systemone::Question::Choice { instructions, .. } = question
+                else {
+                    panic!("choice");
+                };
+                assert!(instructions.starts_with(super::super::permission_gate::TRUST_RULE));
+            }
+            assert_eq!(state["driver_request_origin"], "root_at_child_creation");
+            if state["driver_request_complete"] == true {
+                assert!(state["driver_request"]
+                    .as_str()
+                    .unwrap()
+                    .contains("but never touch /home/x/keep.txt"));
+            } else {
+                assert!(state["driver_request"].is_null());
+                let answers = safety_answers(&input, Verdict::Conforms);
+                assert_eq!(
+                    super::super::permission_gate::route(
+                        &input,
+                        &answers,
+                        &super::super::permission_gate::Overrides {
+                            mutation: true,
+                            ..Default::default()
+                        }
+                    )
+                    .unwrap(),
+                    super::super::permission_gate::Route::Ask
+                );
+            }
+        }
+    }
+
     struct IntentReviewer;
     impl super::super::permission_gate::PermissionReviewer for IntentReviewer {
         fn review<'a>(
@@ -2387,8 +2503,14 @@ mod tests {
                 match outcome {
                     One::Ask(_, destination) if route == "driver" => {
                         assert!(matches!(
-                            run_reviewed(&mut actor, &call, destination.as_deref(), &mut |_| {})
-                                .await,
+                            run_reviewed(
+                                &mut actor,
+                                &call,
+                                destination.as_deref(),
+                                None,
+                                &mut |_| {}
+                            )
+                            .await,
                             One::Settled
                         ));
                     }

@@ -4,6 +4,12 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Terminal client**: moving or resizing the terminal window no longer closes the client with
+  "cannot draw the screen: The cursor position could not be read within a normal duration". The
+  repaint after a resize no longer asks the terminal for the cursor position.
+
 ## [0.4.0] - 2026-10-04
 
 Background subagents: a conversation's agent can delegate work to other agents that run on their

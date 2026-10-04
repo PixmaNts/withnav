@@ -52,8 +52,14 @@ impl TerminalGuard {
     }
 
     /// Forgets the screen contents so the next draw repaints everything.
+    ///
+    /// Not `Terminal::clear`: it asks the terminal for the cursor position
+    /// first, and a terminal busy resizing its window may not answer within
+    /// crossterm's 2 s limit, which turned a window move into a fatal error.
+    /// `resize` clears the same fullscreen viewport without that query.
     pub fn invalidate(&mut self) -> io::Result<()> {
-        self.terminal.clear()
+        let area = self.terminal.size()?;
+        self.terminal.resize(area.into())
     }
 }
 

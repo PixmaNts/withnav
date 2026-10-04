@@ -6,6 +6,11 @@ requests land in `develop`.
 
 ### Fixed
 
+- Writes and edits into Navai's config directory (`~/.config/navai`) always ask you;
+  metacognition can no longer approve them. Literal bash references to the config root also ask.
+- Scratch storage is checked through no-follow directory descriptors and inode identity;
+  unsafe ancestors, replacements and overlaps with config cannot obtain its exemption.
+
 - Metacognition permission review no longer fails when the model reasons at length.
 - Write/edit outside the project are reviewed like bash; approvals bind one destination.
 - Tool errors always carry a non-empty message.

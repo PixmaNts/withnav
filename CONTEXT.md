@@ -187,6 +187,10 @@ _Avoid_: tool, action (an action is what a pipeline branch decides)
 
 ## Permissions
 
+Navai's explicitly configured config directory is a protected root: native writes/edits ask the
+driver before any model review, including symlink aliases. Scratch never overlaps this root.
+Bash calls literally naming it ask too, but indirect bash effects cannot be fully confined.
+
 **Scratch directory**:
 Private shared temporary storage, default `<temp_dir>/navai`, available across projects and children.
 Scratch changes count as project-local during review. `permissions.scratch_dir` selects an absolute

@@ -113,6 +113,11 @@ are read without depending on a newer server event enum. Missing data is not gue
 
 ## Data flows
 
+The actor carries an explicit protected config root. Resolved native write/edit targets inside it
+ask the driver before instinct, metacognition or scratch exemptions. Literal config references in
+bash ask too; bash retains ambient access and cannot be fully confined. Scratch choice is inherited
+from the parent's execution snapshot, and its no-follow descriptor/inode validation is repeated.
+
 Permission review includes outside-project write/edit destinations, binding approvals to one canonical
 file without expanding writable roots. Sessions install private scratch storage from
 `permissions.scratch_dir` (default `<temp_dir>/navai`, false/null disables); the owned, non-symlink

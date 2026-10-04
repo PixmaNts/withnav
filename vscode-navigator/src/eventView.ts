@@ -37,10 +37,61 @@ export function permissionCall(tool: string, argumentsText: string): string {
   try { args = JSON.parse(argumentsText); }
   catch { return `${argumentsText}\n(Arguments shortened by the server; full call unavailable.)`; }
   const field = (key: string): string => typeof args?.[key] === "string" ? args[key] : "(not provided)";
+  const extra = (excluded: string[]): string => Object.entries(args ?? {})
+    .filter(([key]) => !excluded.includes(key))
+    .map(([key, value]) => key === "replace_all" && value === true
+      ? "replace_all: true — replace every occurrence" : `${key}: ${JSON.stringify(value)}`).join("\n");
   if (tool === "bash") return field("command");
-  if (tool === "write") return `${field("path")}\n\nContent\n${boundedContent(field("content"))}`;
-  if (tool === "edit") return `${field("path")}\n\nOld\n${boundedContent(field("old_string"))}\n\nNew\n${boundedContent(field("new_string"))}`;
+  if (tool === "write") return `${field("path")}${extra(["path", "content"]) ? `\n${extra(["path", "content"])}` : ""}\n\nContent\n${boundedContent(field("content"))}`;
+  if (tool === "edit") return `${field("path")}${extra(["path", "old_string", "new_string"]) ? `\n${extra(["path", "old_string", "new_string"])}` : ""}\n\nOld\n${boundedContent(field("old_string"))}\n\nNew\n${boundedContent(field("new_string"))}`;
   return JSON.stringify(args, null, 2);
+}
+
+export function evidenceLabel(evidence: PermissionEvidence, context: "tool" | "permission", resolution?: string): string {
+  if (evidence.source === "driver") return context === "tool" || resolution === "allow_once" || resolution === "allow_folder"
+    ? "approved · driver" : "Driver review required";
+  return evidence.source === "jev" ? "auto · Jev" : "auto · metacognition";
+}
+
+/** Select from the latest response only: provider call ids may be reused. */
+export class PermissionCallReplay {
+  private latest: any[] = [];
+  observe(envelope: WireEnvelope): void {
+    if (envelope.kind === "llm.response") this.latest = Array.isArray(envelope.payload?.message?.tool_calls)
+      ? envelope.payload.message.tool_calls : [];
+  }
+  argumentsFor(request: any): string | undefined {
+    const matches = this.latest.filter(call => call.id === request.tool_call_id);
+    if (matches.length !== 1 || matches[0].name !== request.tool) return undefined;
+    const args = matches[0].args;
+    if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+    const serialized = JSON.stringify(args);
+    const reviewed = String(request.arguments ?? "");
+    try {
+      if (!jsonEqual(JSON.parse(reviewed), args)) return undefined;
+    } catch {
+      // Rust bound_output keeps a JSON head and tail around this exact marker.
+      // serde_json sorts object keys; preserve that order for the wire comparison.
+      const parts = reviewed.split("\n...[output elided]...\n");
+      const canonical = JSON.stringify(sortedJson(args));
+      if (parts.length !== 2 || !parts[0] || !parts[1] ||
+          !canonical.startsWith(parts[0]) || !canonical.endsWith(parts[1])) return undefined;
+    }
+    return serialized;
+  }
+}
+
+function sortedJson(value: any): any {
+  if (Array.isArray(value)) return value.map(sortedJson);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, sortedJson(value[key])]));
+}
+
+function jsonEqual(a: any, b: any): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== "object" || typeof b !== "object" || Array.isArray(a) !== Array.isArray(b)) return false;
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every(key => Object.hasOwn(b, key) && jsonEqual(a[key], b[key]));
 }
 
 function pauseToken(value: any): PauseToken | undefined {
@@ -48,7 +99,7 @@ function pauseToken(value: any): PauseToken | undefined {
     ? { incarnation: value.incarnation, hold_id: value.hold_id } : undefined;
 }
 
-export function eventView(envelope: WireEnvelope, currentTurn?: string, calls?: ReadonlyMap<string, unknown>): HostToWebview | undefined {
+export function eventView(envelope: WireEnvelope, currentTurn?: string, calls?: PermissionCallReplay): HostToWebview | undefined {
   const p = envelope.payload ?? {};
   switch (envelope.kind) {
     case "message.received": {
@@ -69,7 +120,8 @@ export function eventView(envelope: WireEnvelope, currentTurn?: string, calls?: 
         childSessionId: typeof p.child_session_id === "string" ? p.child_session_id : undefined,
         scope: { kind: String(p.scope?.kind ?? ""), value: String(p.scope?.value ?? "") },
         reason: String(p.reason ?? ""), call: permissionCall(tool,
-          !p.child_session_id && calls?.has(p.tool_call_id) ? JSON.stringify(calls.get(p.tool_call_id)) : String(p.arguments ?? "")),
+          (!p.child_session_id ? calls?.argumentsFor(p) : undefined) ?? String(p.arguments ?? "")),
+        arguments: String(p.arguments ?? ""),
         allowFolder: agent !== "plan" && !["bash", "write", "edit"].includes(tool),
         evidence: permissionEvidence(p.permission_gate),
       } };
@@ -94,19 +146,15 @@ export function eventView(envelope: WireEnvelope, currentTurn?: string, calls?: 
 
 /** Authoritative open controls: webview ids are checked against this conversation's replay. */
 export class ConversationControls {
-  readonly calls = new Map<string, unknown>();
+  calls = new PermissionCallReplay();
   readonly permissions = new Map<string, PermissionCard>();
   readonly pauses = new Map<string, Extract<HostToWebview, { type: "pause" }>>();
   envelopeUpdates(envelope: WireEnvelope): HostToWebview[] {
     const p = envelope.payload ?? {};
-    if (envelope.kind === "llm.response" && Array.isArray(p.message?.tool_calls)) {
-      for (const call of p.message.tool_calls) {
-        if (typeof call?.id === "string" && call.args && typeof call.args === "object") this.calls.set(call.id, call.args);
-      }
-    }
+    this.calls.observe(envelope);
     const results: HostToWebview[] = [];
     for (const [id, pause] of this.pauses) {
-      const startedOrEnded = envelope.kind === "turn.start" || (envelope.kind === "turn.end" && p.outcome !== "yielded");
+      const startedOrEnded = envelope.kind === "session.end" || envelope.kind === "turn.start" || (envelope.kind === "turn.end" && p.outcome !== "yielded");
       const watchdogResolved = envelope.kind === "command.result" && p.name === "watchdog" &&
         typeof p.data?.resolution === "string" && pause.token &&
         pause.token.incarnation === p.data?.pause_token?.incarnation && pause.token.hold_id === p.data?.pause_token?.hold_id;
@@ -120,7 +168,7 @@ export class ConversationControls {
     if (message.type === "pause") this.pauses.set(message.id, message);
     if (message.type === "pauseState" && message.state === "resolved") this.pauses.delete(message.id);
   }
-  reset(): void { this.permissions.clear(); this.pauses.clear(); this.calls.clear(); }
+  reset(): void { this.permissions.clear(); this.pauses.clear(); this.calls = new PermissionCallReplay(); }
 }
 
 export function permissionOutcome(resolution: string, message?: string): string {

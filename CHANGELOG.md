@@ -13,6 +13,11 @@ requests land in `develop`.
   Your selected skill appears beside your message.
 - **VS Code chat**: out-of-steps and watchdog pauses can be continued from the transcript.
   Watchdog pauses also offer Stop; refusals show the server's reason.
+- **VS Code chat review**: child permission previews match the requested call even when provider
+  call ids repeat. Child history reads are bounded and cancelled when leaving the conversation;
+  controls work when opening or reopening the view after the conversation has started.
+  Pending driver review no longer claims approval, edit previews show replacement options,
+  stopped pauses lose their controls on replay, and submitted permission answers cannot be sent twice.
 
 ### Added
 

@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { ChatBackend, ConversationSummary, HostToWebview, ModelInfo, PermissionDecision } from "./chatProtocol";
-import { ConversationControls, eventView, permissionCall, permissionEvidence, WireEnvelope } from "./eventView";
+import { ConversationControls, eventView, permissionCall, PermissionCallReplay, permissionEvidence, WireEnvelope } from "./eventView";
 import type { ServerInfoParams } from "./protocol";
 
 /** One SSE frame off the event stream: the seq id plus the parsed envelope. */
@@ -52,6 +52,12 @@ export class CognitionBackend implements ChatBackend {
   private turnTextDelta = new Set<string>();
   private controls = new ConversationControls();
   private pendingControls = new Set<string>();
+  private childReads = new Map<string, AbortController>();
+  private childReadQueue = new Set<string>();
+  private childReadsAttempted = new Set<string>();
+  private childReadTimer?: ReturnType<typeof setTimeout>;
+  private disposed = false;
+  private replayThrough?: number;
 
   setServerInfo(info: ServerInfoParams): void {
     // A restart of the language server publishes a NEW endpoint: the old
@@ -121,6 +127,7 @@ export class CognitionBackend implements ChatBackend {
     this.resetTranscript();
     this.session = sessionId;
     this.resumeId = undefined;
+    this.replayThrough = Infinity;
     this.emit({ type: "conversationOpened", id: sessionId, title: summary?.title ?? sessionId });
     this.emit({ type: "history", items: [] });
     this.emit({ type: "status", state: "ready" });
@@ -203,13 +210,14 @@ export class CognitionBackend implements ChatBackend {
       });
       if (result?.accepted === false) throw new Error("Permission answer refused by the server.");
     } catch (error) {
+      this.pendingControls.delete(key);
       if (this.session === sessionId && this.controls.permissions.has(requestId)) {
         this.emit({ type: "permissionState", requestId,
           resolution: error instanceof HttpError && error.status === 409 ? "stale" : "error",
           message: this.errorText(error) });
       }
       if (!(error instanceof HttpError && error.status === 409)) throw error;
-    } finally { this.pendingControls.delete(key); }
+    }
   }
 
   async controlPause(sessionId: string, id: string, action: "continue" | "stop"): Promise<void> {
@@ -322,10 +330,13 @@ export class CognitionBackend implements ChatBackend {
   private async loadSessionModel(id: string): Promise<void> {
     try {
       const summary = await this.request(`/v1/sessions/${encodeURIComponent(id)}`, { method: "GET" });
+      if (id !== this.session) return;
       if (typeof summary?.model === "string") this.selectedModel = summary.model;
+      this.replayThrough = typeof summary?.current_seq === "number" ? summary.current_seq : Infinity;
     } catch {
       // Keep the current selection: the picker is informative only here.
     }
+    if (id === this.session) this.drainChildReads();
     this.emitModels();
   }
 
@@ -364,10 +375,14 @@ export class CognitionBackend implements ChatBackend {
     this.turnTextDelta.clear();
     this.lastUsed = undefined;
     this.controls.reset();
+    this.pendingControls.clear();
+    this.replayThrough = undefined;
   }
 
   /** Stops the SSE fetch of the running stream, if any. */
   private abortStream(): void {
+    this.cancelPermissionReads();
+    this.pendingControls.clear();
     this.streamGeneration++;
     this.streaming = false;
     this.streamAbort?.abort();
@@ -375,7 +390,7 @@ export class CognitionBackend implements ChatBackend {
   }
 
   private async connect(): Promise<void> {
-    if (!this.endpoint || !this.session || this.streaming) return;
+    if (this.disposed || !this.endpoint || !this.session || this.streaming) return;
     this.streaming = true;
     const generation = this.streamGeneration;
     const endpoint = this.endpoint;
@@ -501,51 +516,106 @@ export class CognitionBackend implements ChatBackend {
     const message = this.mapEvent(frame.envelope);
     if (message) {
       this.emit(message);
-      if (message.type === "permission" && message.card.childSessionId) void this.loadChildPermissionCall(message);
+      if (message.type === "permission" && message.card.childSessionId) this.scheduleChildRead(message.card.childSessionId);
+    }
+    if (this.replayThrough !== undefined && Number(frame.id) >= this.replayThrough) {
+      this.replayThrough = undefined;
+      this.drainChildReads();
     }
   }
 
-  /** Child requests mirror only the bounded review arguments, not their LLM response.
-   *  Read its durable events without resuming it or sending any command. */
-  private async loadChildPermissionCall(message: Extract<HostToWebview, { type: "permission" }>): Promise<void> {
-    const card = message.card;
+  cancelPermissionReads(): void {
+    if (this.childReadTimer) clearTimeout(this.childReadTimer);
+    this.childReadTimer = undefined;
+    this.childReadQueue.clear();
+    this.childReadsAttempted.clear();
+    for (const abort of this.childReads.values()) abort.abort();
+    this.childReads.clear();
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.abortStream();
+    this.listeners.clear();
+  }
+
+  private scheduleChildRead(child: string): void {
+    this.childReadQueue.add(child);
+    if (this.childReadTimer) clearTimeout(this.childReadTimer);
+    // Let the current replay batch settle before opening reads for unresolved cards.
+    this.childReadTimer = setTimeout(() => { this.childReadTimer = undefined; this.drainChildReads(); }, 100);
+  }
+
+  private drainChildReads(): void {
+    if (this.disposed || (this.replayThrough !== undefined &&
+        ![...this.delivered].some(seq => seq >= this.replayThrough!))) return;
+    for (const child of this.childReadQueue) {
+      if (this.childReads.size >= 2) return;
+      if (this.childReads.has(child)) continue;
+      this.childReadQueue.delete(child);
+      const cards = [...this.controls.permissions.values()].filter(card => card.childSessionId === child && !this.childReadsAttempted.has(card.requestId));
+      if (!cards.length) continue;
+      for (const card of cards) this.childReadsAttempted.add(card.requestId);
+      const abort = new AbortController();
+      this.childReads.set(child, abort);
+      void this.loadChildPermissionCalls(child, cards, abort).finally(() => {
+        if (this.childReads.get(child) === abort) {
+          this.childReads.delete(child);
+          this.drainChildReads();
+        }
+      });
+    }
+  }
+
+  /** One bounded, read-only replay per child; substitute only at the matching request. */
+  private async loadChildPermissionCalls(child: string, cards: import("./chatProtocol").PermissionCard[], abort: AbortController): Promise<void> {
     const session = this.session;
     const generation = this.streamGeneration;
     const endpoint = this.endpoint;
-    if (!endpoint || !card.childSessionId) return;
-    const abort = new AbortController();
+    if (!endpoint) return;
+    const remaining = new Map(cards.map(card => [card.requestId, card]));
+    const replay = new PermissionCallReplay();
     const timer = setTimeout(() => abort.abort(), 5000);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    const cancel = (): void => { void reader?.cancel().catch(() => undefined); };
+    abort.signal.addEventListener("abort", cancel, { once: true });
     try {
-      const response = await fetch(`http://127.0.0.1:${endpoint.port}/v1/sessions/${encodeURIComponent(card.childSessionId)}/events`, {
+      const response = await fetch(`http://127.0.0.1:${endpoint.port}/v1/sessions/${encodeURIComponent(child)}/events`, {
         headers: { authorization: `Bearer ${endpoint.token}` }, signal: abort.signal,
       });
       if (!response.ok || !response.body) return;
-      const reader = response.body.getReader();
+      reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let bytes = 0;
       for (;;) {
         const part = await reader.read();
-        if (part.done || generation !== this.streamGeneration) return;
+        if (part.done || abort.signal.aborted || generation !== this.streamGeneration) return;
+        bytes += part.value.byteLength;
+        if (bytes > 2 * 1024 * 1024) return;
         buffer += decoder.decode(part.value, { stream: true });
         let split: number;
         while ((split = buffer.indexOf("\n\n")) !== -1) {
           const raw = buffer.slice(0, split);
           buffer = buffer.slice(split + 2);
           const event = this.parseFrame(raw)?.envelope;
-          if (event?.kind === "llm.response" && Array.isArray(event.payload?.message?.tool_calls)) {
-            const call = event.payload.message.tool_calls.find((c: any) => c.id === card.callId);
-            if (call?.args && typeof call.args === "object") {
-              if (session === this.session && generation === this.streamGeneration) {
-                this.emit({ type: "permissionCall", requestId: card.requestId, call: permissionCall(card.tool, JSON.stringify(call.args)) });
-              }
-              return;
+          if (!event) continue;
+          replay.observe(event);
+          if (event.kind === "permission.requested") {
+            const p = event.payload;
+            const card = remaining.get(p?.request_id);
+            if (!card) continue;
+            const args = p.tool_call_id === card.callId && p.tool === card.tool && p.arguments === card.arguments ? replay.argumentsFor(p) : undefined;
+            if (args && session === this.session && generation === this.streamGeneration && this.controls.permissions.has(card.requestId)) {
+              this.emit({ type: "permissionCall", requestId: card.requestId, call: permissionCall(card.tool, args) });
             }
+            remaining.delete(card.requestId);
+            if (!remaining.size) return;
           }
-          if (event?.kind === "permission.requested" && event.payload?.request_id === card.requestId) return;
         }
       }
     } catch { /* The card explicitly says when full arguments are unavailable. */ }
-    finally { clearTimeout(timer); abort.abort(); }
+    finally { clearTimeout(timer); abort.signal.removeEventListener("abort", cancel); abort.abort(); await reader?.cancel().catch(() => undefined); }
   }
 
   // ---- event -> webview mapping ----
@@ -645,6 +715,9 @@ export class CognitionBackend implements ChatBackend {
   private toolEvidence = new Map<string, NonNullable<Extract<HostToWebview, { type: "tool" }>["evidence"]>>();
 
   private emit(message: HostToWebview): void {
+    if (message.type === "permissionState" && !["pending", "error"].includes(message.resolution)) {
+      this.pendingControls.delete(`${this.currentConversationId()}:permission:${message.requestId}`);
+    }
     this.controls.apply(message);
     // Conversation-list, model and usage metadata is pushed, never replayed
     // as transcript (the view caches the last ones for a reopen).

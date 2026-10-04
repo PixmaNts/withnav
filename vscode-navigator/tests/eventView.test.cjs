@@ -144,3 +144,53 @@ test("evidence preserves all optional review fields only when present", () => {
     assert.deepEqual(eventView(request({ permission_gate: full })).card.evidence, full);
   }
 });
+
+test("open and denied driver-review cards never claim approval", () => {
+  const { evidenceLabel } = require("../out/tests/eventView.js");
+  const evidence = { source: "driver", policy_version: 1 };
+  assert.equal(evidenceLabel(evidence, "permission"), "Driver review required");
+  assert.equal(evidenceLabel(evidence, "permission", "deny"), "Driver review required");
+  assert.equal(evidenceLabel(evidence, "permission", "allow_once"), "approved · driver");
+  assert.equal(evidenceLabel(evidence, "tool"), "approved · driver");
+});
+
+test("edit replace_all and every non-content argument remain visible and distinguish calls", () => {
+  const args = { path: "/a", old_string: "before", new_string: "after", replace_all: false, custom_option: { mode: "exact" } };
+  const single = permissionCall("edit", JSON.stringify(args));
+  const all = permissionCall("edit", JSON.stringify({ ...args, replace_all: true }));
+  assert.notEqual(single, all);
+  assert.match(all, /replace_all: true — replace every occurrence/);
+  assert.match(single, /replace_all: false/);
+  assert.match(all, /custom_option: \{"mode":"exact"\}/);
+  assert.match(permissionCall("write", JSON.stringify({ path: "/a", content: "text", mode: "create" })), /mode: "create"/);
+});
+
+test("session.end closes yielded budget pauses identically live and on replay", () => {
+  const events = [envelope("agent.yield", { kind: "budget" }), envelope("turn.end", { outcome: "yielded" }, 2), envelope("session.end", {}, 3)];
+  const controls = new ConversationControls();
+  const history = [];
+  for (const event of events) {
+    for (const update of controls.envelopeUpdates(event)) { history.push(update); controls.apply(update); }
+    const message = eventView(event);
+    if (message) { history.push(message); controls.apply(message); }
+  }
+  assert.equal(controls.pauses.size, 0);
+  assert.equal(history.at(-1).type, "pauseState");
+  const replay = new ConversationControls();
+  history.forEach(message => replay.apply(message));
+  assert.equal(replay.pauses.size, 0);
+});
+
+test("ambiguous, wrong-name or inconsistent repeated calls never replace request arguments", () => {
+  const { PermissionCallReplay } = require("../out/tests/eventView.js");
+  const replay = new PermissionCallReplay();
+  const request = { tool_call_id: "C", tool: "bash", arguments: JSON.stringify({ command: "dangerous" }) };
+  const call = { id: "C", name: "bash", args: { command: "dangerous" } };
+  for (const calls of [[call, call], [{ ...call, name: "write" }], [{ ...call, args: { command: "harmless" } }]]) {
+    replay.observe(envelope("llm.response", { message: { tool_calls: calls } }));
+    assert.equal(replay.argumentsFor(request), undefined);
+  }
+  replay.observe(envelope("llm.response", { message: { tool_calls: [call] } }));
+  assert.equal(replay.argumentsFor(request), request.arguments);
+  assert.equal(replay.argumentsFor({ ...request, arguments: "unrelated shortened text" }), undefined);
+});

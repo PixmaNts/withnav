@@ -8,6 +8,7 @@ Module._load = function (id, ...args) {
 };
 const { CognitionBackend } = require("../out/tests/cognition.js");
 Module._load = originalLoad;
+const shortened = text => `${text.slice(0, 2000)}\n...[output elided]...\n${text.slice(-2000)}`;
 
 function setup(t, response = { accepted: true }, status = 200) {
   const backend = new CognitionBackend();
@@ -146,27 +147,160 @@ test("tool evidence comes from pre-call or post-call and survives row updates", 
 test("permission uses full llm call even when server review arguments were shortened", t => {
   const { apply, permission } = setup(t);
   const command = "a".repeat(8000);
-  apply("llm.response", { message: { tool_calls: [{ id: "C", args: { command } }] } });
-  assert.equal(permission({ tool_call_id: "C", arguments: '{"command":"cut' }).card.call, command);
+  apply("llm.response", { message: { tool_calls: [{ id: "C", name: "bash", args: { command } }] } });
+  assert.equal(permission({ tool_call_id: "C", arguments: shortened(JSON.stringify({ command })) }).card.call, command);
   const content = "x".repeat(6000);
-  apply("llm.response", { message: { tool_calls: [{ id: "W", args: { path: "/full/path", content } }] } });
-  const write = permission({ request_id: "W", tool_call_id: "W", tool: "write", arguments: "cut" });
-  assert.match(write.card.call, /^\/full\/path/);
+  apply("llm.response", { message: { tool_calls: [{ id: "W", name: "write", args: { path: "/full/path", content } }] } });
+  const write = permission({ request_id: "W", tool_call_id: "W", tool: "write", arguments: shortened(JSON.stringify({ content, path: "/full/path" })) });
+  assert.match(write.card.call, /\/full\/path/);
   assert.match(write.card.call, /1904 bytes omitted/);
 });
 
-test("child full call is read through host SSE without resuming and can enrich a resolved replay card", async t => {
+test("child replay correlates repeated call ids at the matching permission request", async t => {
   const { backend, calls, permission, apply } = setup(t);
-  const card = permission({ child_session_id: "child", tool_call_id: "C", arguments: "cut" });
-  apply("permission.resolved", { request_id: "R", resolution: "deny" });
+  const command = "rm -rf /important";
+  const args = JSON.stringify({ command });
+  const card = permission({ child_session_id: "child", tool_call_id: "C", arguments: args });
   t.mock.method(globalThis, "fetch", async (url, init) => {
     calls.push({ url, ...init });
-    return new Response(`id: 1\ndata: ${JSON.stringify({ kind: "llm.response", payload: { message: { tool_calls: [{ id: "C", args: { command: "whole child command" } }] } } })}\n\n`);
+    const events = [
+      { kind: "llm.response", payload: { message: { tool_calls: [{ id: "C", name: "bash", args: { command: "echo harmless" } }] } } },
+      { kind: "llm.response", payload: { message: { tool_calls: [{ id: "C", name: "bash", args: { command } }] } } },
+      { kind: "permission.requested", payload: { request_id: "R", tool_call_id: "C", tool: "bash", arguments: args } },
+    ];
+    return new Response(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join(""));
   });
-  await backend.loadChildPermissionCall(card);
+  await backend.loadChildPermissionCalls("child", [card.card], new AbortController());
   assert.equal(calls[0].url, "http://127.0.0.1:1234/v1/sessions/child/events");
   assert.equal(calls[0].headers.authorization, "Bearer secret");
   assert.equal(calls[0].method, undefined);
-  assert.deepEqual(backend.history().at(-1), { type: "permissionCall", requestId: "R", call: "whole child command" });
+  assert.deepEqual(backend.history().at(-1), { type: "permissionCall", requestId: "R", call: command });
+  apply("permission.resolved", { request_id: "R", resolution: "deny" });
   assert.equal(backend.hasOpenPermissions(), false);
+});
+
+test("sequential permission answers post once until durable resolution, failures release the guard", async t => {
+  const { backend, permission, apply, calls } = setup(t);
+  permission();
+  await backend.answerPermission("parent", "R", "allow_once");
+  await backend.answerPermission("parent", "R", "deny");
+  assert.equal(calls.length, 1);
+  apply("permission.resolved", { request_id: "R", resolution: "allow_once" });
+  assert.equal(backend.pendingControls.size, 0);
+  permission({ request_id: "retry" });
+  let attempts = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    attempts++;
+    return new Response(JSON.stringify(attempts === 1 ? { error: "retry" } : { accepted: true }), { status: attempts === 1 ? 503 : 200 });
+  });
+  await assert.rejects(backend.answerPermission("parent", "retry", "deny"));
+  await backend.answerPermission("parent", "retry", "deny");
+  assert.equal(attempts, 2);
+  backend.resetTranscript();
+  assert.equal(backend.pendingControls.size, 0);
+});
+
+test("resolved historical child requests open no streams; open requests coalesce with concurrency capped at two", async t => {
+  const { backend, permission, apply } = setup(t);
+  let active = 0;
+  let maximum = 0;
+  let reads = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    reads++;
+    active++;
+    maximum = Math.max(maximum, active);
+    return new Response(new ReadableStream({ cancel() { active--; } }));
+  });
+  for (let i = 0; i < 100; i++) {
+    permission({ request_id: `old-${i}`, child_session_id: `old-child-${i}` });
+    backend.scheduleChildRead(`old-child-${i}`);
+    apply("permission.resolved", { request_id: `old-${i}`, resolution: "deny" });
+  }
+  backend.drainChildReads();
+  assert.equal(reads, 0);
+  for (let i = 0; i < 20; i++) {
+    const child = `child-${Math.floor(i / 2)}`;
+    permission({ request_id: `open-${i}`, child_session_id: child });
+    backend.scheduleChildRead(child);
+  }
+  backend.drainChildReads();
+  await Promise.resolve();
+  assert.equal(reads, 2);
+  assert.equal(maximum, 2);
+  backend.dispose();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(active, 0);
+  assert.equal(backend.childReadQueue.size, 0);
+});
+
+for (const action of ["switch", "dispose"]) {
+  test(`child pending reader is cancelled on ${action}`, async t => {
+    const { backend, permission } = setup(t);
+    permission({ child_session_id: "child" });
+    let cancelled = false;
+    let signal;
+    t.mock.method(globalThis, "fetch", async (_url, init) => {
+      signal = init.signal;
+      return new Response(new ReadableStream({ cancel() { cancelled = true; } }));
+    });
+    backend.scheduleChildRead("child");
+    backend.drainChildReads();
+    await Promise.resolve();
+    if (action === "switch") await backend.newConversation();
+    else backend.dispose();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(signal.aborted, true);
+    assert.equal(cancelled, true);
+    assert.equal(backend.childReads.size, 0);
+  });
+}
+
+test("child replay byte cap cancels oversized streams without enriching", async t => {
+  const { backend, permission } = setup(t);
+  permission({ child_session_id: "child" });
+  let cancelled = false;
+  t.mock.method(globalThis, "fetch", async () => new Response(new ReadableStream({
+    start(controller) { controller.enqueue(new Uint8Array(2 * 1024 * 1024 + 1)); },
+    cancel() { cancelled = true; },
+  })));
+  backend.scheduleChildRead("child");
+  backend.drainChildReads();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(cancelled, true);
+  assert.equal(backend.history().some(m => m.type === "permissionCall"), false);
+  backend.dispose();
+});
+
+test("slow parent replay finishes before any historical child enrichment starts", async t => {
+  const { backend, calls } = setup(t);
+  backend.replayThrough = 3;
+  backend.handleFrame({ id: "1", envelope: { seq: 1, kind: "permission.requested", payload: {
+    request_id: "historical", tool_call_id: "C", tool: "bash", arguments: "{}", child_session_id: "child",
+  } } });
+  backend.drainChildReads();
+  assert.equal(calls.length, 0);
+  backend.handleFrame({ id: "2", envelope: { seq: 2, kind: "permission.resolved", payload: { request_id: "historical", resolution: "deny" } } });
+  backend.handleFrame({ id: "3", envelope: { seq: 3, kind: "turn.end", payload: { outcome: "done" } } });
+  backend.drainChildReads();
+  assert.equal(calls.length, 0);
+  backend.dispose();
+});
+
+test("child request mismatch or ambiguous latest response keeps the request's own shortened call", async t => {
+  const { backend, permission } = setup(t);
+  const reviewed = '{"command":"reviewed\n...[output elided]...\n"}';
+  const card = permission({ child_session_id: "child", tool_call_id: "C", arguments: reviewed });
+  for (const calls of [
+    [{ id: "C", name: "bash", args: { command: "echo harmless" } }],
+    [{ id: "C", name: "write", args: { command: "reviewed" } }],
+    [{ id: "C", name: "bash", args: {} }, { id: "C", name: "bash", args: {} }],
+  ]) {
+    t.mock.method(globalThis, "fetch", async () => new Response([
+      { kind: "llm.response", payload: { message: { tool_calls: calls } } },
+      { kind: "permission.requested", payload: { request_id: "R", tool_call_id: "C", tool: "bash", arguments: reviewed } },
+    ].map(e => `data: ${JSON.stringify(e)}\n\n`).join("")));
+    await backend.loadChildPermissionCalls("child", [card.card], new AbortController());
+    assert.equal(backend.history().some(m => m.type === "permissionCall"), false);
+    assert.match(card.card.call, /shortened by the server/);
+  }
 });

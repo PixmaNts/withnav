@@ -82,7 +82,8 @@ export function registerChatView(
         switch (message?.type) {
           case "ready":
             if (lastConversations) post(lastConversations);
-            if (lastConversationOpened) post(lastConversationOpened);
+            post({ type: "conversationOpened", id: backend.currentConversationId(),
+              title: lastConversationOpened?.type === "conversationOpened" ? lastConversationOpened.title : "Conversation" });
             post({ type: "history", items: backend.history() });
             if (lastModels) post(lastModels);
             if (lastUsage) post(lastUsage);
@@ -149,6 +150,7 @@ export function registerChatView(
         }
       });
       view.onDidDispose(() => {
+        backend.cancelPermissionReads();
         unsubscribe();
         messageSubscription.dispose();
         if (contextTimer) clearTimeout(contextTimer);

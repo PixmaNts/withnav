@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 import type { HostToWebview, WebviewToHost, PermissionEvidence, PermissionDecision } from "../chatProtocol";
-import { permissionOutcome } from "../eventView";
+import { evidenceLabel, permissionOutcome } from "../eventView";
 import { mountConversations } from "./conversations";
 import { diffKind, parseWake } from "./wake";
 
@@ -271,9 +271,9 @@ function activity(item: Turn, event: Extract<HostToWebview, { type: "tool" }>): 
   follow();
 }
 
-function evidenceDetails(evidence: PermissionEvidence): HTMLElement {
+function evidenceDetails(evidence: PermissionEvidence, context: "tool" | "permission" = "tool"): HTMLElement {
   const details = el("details", "approval-evidence");
-  const label = evidence.source === "jev" ? "auto · Jev" : evidence.source === "metacognition" ? "auto · metacognition" : "approved · driver";
+  const label = evidenceLabel(evidence, context);
   details.append(el("summary", "", label));
   details.setAttribute("aria-label", `Permission review: ${label}`);
   const body = el("div", "evidence-body");
@@ -312,7 +312,7 @@ function renderPermission(event: Extract<HostToWebview, { type: "permission" }>)
   const call = el("div", "permission-call");
   call.append(codeBlock("Call to review", card.call, code => { code.textContent = card.call; }));
   root.append(call);
-  if (card.evidence) root.append(evidenceDetails(card.evidence));
+  if (card.evidence) root.append(evidenceDetails(card.evidence, "permission"));
   const controls = el("div", "permission-controls");
   const denyMessage = el("textarea", "deny-message");
   denyMessage.rows = 2;
@@ -406,6 +406,8 @@ function receive(event: HostToWebview): void {
       if (!card) break;
       card.outcome.textContent = permissionOutcome(event.resolution, event.message);
       card.root.dataset.resolution = event.resolution;
+      const review = card.root.querySelector(".approval-evidence summary");
+      if (review?.textContent === "Driver review required" && ["allow_once", "allow_folder"].includes(event.resolution)) review.textContent = "approved · driver";
       card.controls.hidden = !["pending", "error"].includes(event.resolution);
       for (const control of card.controls.querySelectorAll<HTMLButtonElement | HTMLTextAreaElement>("button, textarea")) control.disabled = event.resolution === "pending";
       follow();

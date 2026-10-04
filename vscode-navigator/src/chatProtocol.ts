@@ -18,6 +18,7 @@ export interface PermissionCard {
   scope: { kind: string; value: string };
   reason: string;
   call: string;
+  arguments: string;
   allowFolder: boolean;
   evidence?: PermissionEvidence;
 }
@@ -113,6 +114,7 @@ export type WebviewToHost =
 
 /** What the chat view needs from the host side; implemented by the cognition bridge. */
 export interface ChatBackend {
+  cancelPermissionReads(): void;
   /** Current transcript, replayed into a freshly opened view. */
   history(): HostToWebview[];
   /** Subscribe to live messages; returns an unsubscribe function. */

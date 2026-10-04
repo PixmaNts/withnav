@@ -587,6 +587,7 @@ function renderPause(event: Extract<HostToWebview, { type: "pause" }>): void {
 function receive(event: HostToWebview): void {
   if (!identity.receive(event)) return;
   if (event.type === "conversationOpened") {
+    form.hidden = false;
     archiveReadOnly = false;
     compacting = false; compactionRow = undefined;
     usage.removeAttribute("aria-busy"); usage.removeAttribute("data-updating");

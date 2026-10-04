@@ -302,6 +302,26 @@ test('review3 archive mode persists on ready and list refresh, inert history and
   await b.listConversations();await tick();assert.equal(dom.window.document.querySelector('#prompt').disabled,true);assert.equal(dom.window.document.querySelector('#composer').hidden,true);assert.match(dom.window.document.querySelector('.child-header').textContent,/archive/);assert.equal([...dom.window.document.querySelectorAll('.control-card button')].length,0);
   const messages=[];let receive;provider.resolveWebviewView({webview:{cspSource:'test',asWebviewUri:v=>v,postMessage:m=>messages.push(m),onDidReceiveMessage:fn=>{receive=fn;return noopDisposable();}},onDidDispose(){}});receive({type:'ready'});assert(messages.some(m=>m.type==='viewMode'&&m.readOnly&&m.archiveReason));
   await b.newConversation();assert.equal(b.isReadOnly(),false);assert.equal(b.terminalChild,false);
+  assert.equal(dom.window.document.querySelector('#composer').hidden,false);assert.equal(dom.window.document.querySelector('#prompt').disabled,false);assert.equal(dom.window.document.querySelector('.child-header').hidden,true);
+});
+for(const transition of ['new','saved','restart'])test(`final archive to ${transition} restores visible composer and accepts focused submission`,async t=>{
+  const {b,dom,tick,prompt}=fullChat(t);
+  b.refreshAssignments=async()=>{};b.refreshCommands=async()=>{};b.fetchModels=async()=>{};b.bootstrapConversations=async()=>{};
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({current_seq:1,read_only:true,resume_disabled_reason:'archived identity',title:'Archive'})));
+  await b.openConversation('archive');assert.equal(dom.window.document.querySelector('#composer').hidden,true);
+  const posts=[];t.mock.method(globalThis,'fetch',async(url,init)=>{
+    if(init.method==='POST')posts.push({url,body:JSON.parse(init.body)});
+    return new Response(JSON.stringify(url.endsWith('/messages')?{accepted:true}:url.endsWith('/v1/sessions')?{session_id:'saved'}:{current_seq:1,agent:'build',model:'gw/chat',variant:null,source:'config',variant_source:'config',actor_state:'idle'}));
+  });
+  if(transition==='new')await b.newConversation();
+  else if(transition==='saved')await b.openConversation('saved');
+  else b.setServerInfo({port:5678,token:'restart'});
+  await tick();
+  assert.equal(dom.window.document.querySelector('#composer').hidden,false);assert.equal(dom.window.document.querySelector('.child-header').hidden,true);
+  if(transition==='restart')b.emit({type:'status',state:'ready'}); // Controlled empty-server bootstrap completion.
+  assert.equal(prompt.disabled,false);
+  const {key,type}=focusedKeys(dom);prompt.focus();type('ordinary draft');key('Enter');await tick();
+  assert(posts.some(post=>post.url.endsWith('/messages')&&post.body.content[0].text==='ordinary draft'));assert.equal(prompt.value,'');
 });
 for(const variant of ['high','off','inherit'])test(`review4 ${variant} variant-only preview and create wire tri-state`,async t=>{
   const {b,dom,tick,send}=fullChat(t);b.state.session=undefined;b.refreshAssignments=async()=>{};

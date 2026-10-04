@@ -76,6 +76,51 @@ mod read;
 
 pub use read::Resumed;
 
+/// Session-local choice; inheritance and explicitly disabling a variant are distinct.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "name",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum AgentVariantOverride {
+    #[default]
+    Inherit,
+    Off,
+    Named(String),
+}
+
+impl From<super::VariantChoice> for AgentVariantOverride {
+    fn from(choice: super::VariantChoice) -> Self {
+        match choice {
+            super::VariantChoice::Default => Self::Inherit,
+            super::VariantChoice::Clear => Self::Off,
+            super::VariantChoice::Exact(name) => Self::Named(name),
+        }
+    }
+}
+
+/// A model replacement resets `variant` to `Inherit` unless explicitly supplied.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentOverride {
+    pub model: Option<String>,
+    pub variant: AgentVariantOverride,
+}
+
+pub type AgentOverrides = std::collections::BTreeMap<String, AgentOverride>;
+
+/// Fully applied selection, not an admitted or pending switch.
+#[derive(Debug, Clone)]
+pub struct EffectiveAgentSelection {
+    pub model: String,
+    pub resolution: crate::provider::catalog::ModelResolution,
+    pub variant: Option<(String, crate::provider::config::Variant)>,
+    pub primary_agent: String,
+    pub reasoning_floor: usize,
+}
+
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -92,6 +137,7 @@ use crate::provider::openai::ChatMessage;
 /// minus `live` which only the registry knows).
 #[derive(Debug, Clone)]
 pub struct StoredSession {
+    pub agent_overrides: AgentOverrides,
     pub id: Ulid,
     pub workspace: String,
     pub model: String,
@@ -148,6 +194,13 @@ type Ack = oneshot::Sender<Result<(), String>>;
 
 /// What the writer thread accepts.
 enum Write {
+    AgentSelection {
+        id: Ulid,
+        agent: String,
+        value: Option<AgentOverride>,
+        selection: Option<EffectiveAgentSelection>,
+        envelopes: Vec<EventEnvelope>,
+    },
     RecordSession {
         id: Ulid,
         workspace: String,
@@ -221,6 +274,8 @@ enum Msg {
 /// Why a single write failed.
 #[derive(Debug, thiserror::Error)]
 enum WriteError {
+    #[error("invalid agent selection: {0}")]
+    InvalidSelection(String),
     #[error("sqlite: {0}")]
     Sql(#[from] rusqlite::Error),
     #[error("serialize: {0}")]
@@ -251,6 +306,73 @@ impl std::fmt::Debug for HistoryStore {
 const WRITER_GONE: &str = "history writer stopped";
 
 impl HistoryStore {
+    /// Updates only the saved override. Runtime applications should use
+    /// `commit_agent_selection` inside the existing sequencer acknowledged callback.
+    pub async fn update_agent_override(
+        &self,
+        id: Ulid,
+        agent: &str,
+        value: AgentOverride,
+    ) -> Result<(), String> {
+        self.acked(Write::AgentSelection {
+            id,
+            agent: agent.into(),
+            value: Some(value),
+            selection: None,
+            envelopes: vec![],
+        })
+        .await
+    }
+
+    pub async fn clear_agent_override(&self, id: Ulid, agent: &str) -> Result<(), String> {
+        self.acked(Write::AgentSelection {
+            id,
+            agent: agent.into(),
+            value: None,
+            selection: None,
+            envelopes: vec![],
+        })
+        .await
+    }
+
+    /// Override, effective identity and supplied sequenced events commit together.
+    /// `None` removes this agent's override; other agents are never changed.
+    /// Call only on successful application, from the sequencer commit callback,
+    /// before installing the in-memory selection or publishing its events.
+    pub async fn commit_agent_selection(
+        &self,
+        id: Ulid,
+        agent: &str,
+        value: Option<AgentOverride>,
+        selection: EffectiveAgentSelection,
+        envelopes: Vec<EventEnvelope>,
+    ) -> Result<(), String> {
+        if agent != selection.primary_agent {
+            return Err(format!(
+                "override agent '{agent}' does not match selection primary_agent '{}'",
+                selection.primary_agent
+            ));
+        }
+        if envelopes.is_empty()
+            || envelopes.iter().any(|e| {
+                e.session_id != id
+                    || !matches!(e.kind.as_str(), "model.changed" | "session.agent_changed")
+            })
+        {
+            return Err(
+                "agent selection requires same-session model.changed/session.agent_changed events"
+                    .into(),
+            );
+        }
+        self.acked(Write::AgentSelection {
+            id,
+            agent: agent.into(),
+            value,
+            selection: Some(selection),
+            envelopes,
+        })
+        .await
+    }
     /// Opens (creating parents) and migrates the database, opens the writer's
     /// connection, then spawns the single writer thread. Fails when the
     /// database cannot be opened at all.
@@ -1011,6 +1133,44 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
     // upgrade after an outbox connection commits, even with a busy timeout.
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     match write {
+        Write::AgentSelection {
+            id,
+            agent,
+            value,
+            selection,
+            envelopes,
+        } => {
+            let raw: Option<String> = tx
+                .query_row(
+                    "SELECT agent_overrides FROM sessions WHERE id=?1",
+                    [id.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or(WriteError::UnknownSession(id))?;
+            let mut overrides =
+                decode_agent_overrides(raw.as_deref()).map_err(WriteError::InvalidSelection)?;
+            if let Some(value) = value {
+                overrides.insert(agent, value);
+            } else {
+                overrides.remove(&agent);
+            }
+            validate_agent_overrides(&overrides).map_err(WriteError::InvalidSelection)?;
+            tx.execute(
+                "UPDATE sessions SET agent_overrides=?2 WHERE id=?1",
+                params![id.to_string(), serde_json::to_string(&overrides)?],
+            )?;
+            if let Some(selection) = selection {
+                let (variant, variant_override) = split_variant(selection.variant.as_ref())
+                    .map_err(WriteError::InvalidSelection)?;
+                let floor = i64::try_from(selection.reasoning_floor)
+                    .map_err(|e| WriteError::InvalidSelection(e.to_string()))?;
+                tx.execute("UPDATE sessions SET model=?2, model_resolution=?3, variant=?4, variant_override=?5, primary_agent=?6, reasoning_floor=?7 WHERE id=?1", params![id.to_string(), selection.model, serde_json::to_string(&selection.resolution)?, variant, variant_override, selection.primary_agent, floor])?;
+            }
+            for event in envelopes {
+                insert_committed_event(&tx, &event).map_err(WriteError::InvalidSelection)?;
+            }
+        }
         Write::RecordSession {
             id,
             workspace,
@@ -1385,6 +1545,39 @@ fn migrate(path: &Path) -> Result<(), String> {
         )
         .map_err(|e| format!("migrate: {e}"))?;
     }
+    let has_overrides = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name='agent_overrides'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| e.to_string())?;
+    if !has_overrides {
+        conn.execute("ALTER TABLE sessions ADD COLUMN agent_overrides TEXT", [])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn decode_agent_overrides(raw: Option<&str>) -> Result<AgentOverrides, String> {
+    let overrides = raw
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|e| format!("saved agent_overrides cannot decode: {e}"))?
+        .unwrap_or_default();
+    validate_agent_overrides(&overrides)?;
+    Ok(overrides)
+}
+
+fn validate_agent_overrides(overrides: &AgentOverrides) -> Result<(), String> {
+    let valid = |s: &str| !s.is_empty() && !s.chars().any(|c| c.is_whitespace() || c.is_control());
+    for (agent, value) in overrides {
+        if !valid(agent)
+            || value.model.as_deref().is_some_and(|s| !valid(s))
+            || matches!(&value.variant, AgentVariantOverride::Named(name) if !valid(name))
+        {
+            return Err(format!(
+                "saved agent_overrides for agent '{agent}' contains an invalid name"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -1522,6 +1715,290 @@ fn strip_editor_context(content: &str) -> String {
 mod tests {
     use super::*;
     use crate::bus::event::EventKind;
+
+    #[tokio::test]
+    async fn agent_overrides_are_independent_durable_clearable_and_deleted() {
+        let (dir, store) = temp_store();
+        let id = Ulid::new();
+        store.record_session(id, "/w", "old", None).await.unwrap();
+        assert!(store
+            .meta(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .agent_overrides
+            .is_empty());
+        let build = AgentOverride {
+            model: Some("p/build".into()),
+            variant: AgentVariantOverride::Off,
+        };
+        let plan = AgentOverride {
+            model: Some("p/plan".into()),
+            variant: AgentVariantOverride::Named("low".into()),
+        };
+        store
+            .update_agent_override(id, "build", build.clone())
+            .await
+            .unwrap();
+        store
+            .update_agent_override(id, "plan", plan.clone())
+            .await
+            .unwrap();
+        store.set_primary_agent(id, Some("plan")).await.unwrap();
+        store.set_primary_agent(id, Some("build")).await.unwrap();
+        let reopened = HistoryStore::open(dir.path().join("sessions.db")).unwrap();
+        let overrides = reopened.agent_overrides(id).await.unwrap().unwrap();
+        assert_eq!(overrides["build"], build);
+        assert_eq!(overrides["plan"], plan);
+        let reset = AgentOverride {
+            model: Some("p/new".into()),
+            variant: super::super::VariantChoice::Default.into(),
+        };
+        reopened
+            .update_agent_override(id, "build", reset.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened.agent_overrides(id).await.unwrap().unwrap()["build"],
+            reset
+        );
+        assert_ne!(reset.variant, build.variant);
+        reopened.clear_agent_override(id, "plan").await.unwrap();
+        assert!(!reopened
+            .agent_overrides(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .contains_key("plan"));
+        reopened.delete(id).await.unwrap();
+        assert!(reopened.agent_overrides(id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn agent_selection_events_identity_and_overrides_commit_or_rollback_together() {
+        use crate::provider::catalog::{Bounds, ModelResolution, Provenance, RESOLUTION_VERSION};
+        let (_dir, store) = temp_store();
+        let id = Ulid::new();
+        store.record_session(id, "/w", "old", None).await.unwrap();
+        let selection = EffectiveAgentSelection {
+            model: "p/new".into(),
+            primary_agent: "plan".into(),
+            variant: Some(("low".into(), Default::default())),
+            reasoning_floor: 4,
+            resolution: ModelResolution {
+                version: RESOLUTION_VERSION,
+                provider: "p".into(),
+                model: "new".into(),
+                api: "chat".into(),
+                endpoint: "http://h/v1".into(),
+                history_policy: "preserve".into(),
+                bounds: Bounds {
+                    context_window: 100,
+                    max_input_tokens: None,
+                    reported_output: None,
+                },
+                provenance: Provenance {
+                    context_window: "models.json".into(),
+                    max_input_tokens: "none".into(),
+                    reported_output: "none".into(),
+                },
+            },
+        };
+        let value = AgentOverride {
+            model: Some("p/new".into()),
+            variant: AgentVariantOverride::Inherit,
+        };
+        let events = vec![
+            EventEnvelope::new(id, 0, EventKind::ModelChanged, serde_json::json!({})),
+            EventEnvelope::new(id, 1, EventKind::SessionAgentChanged, serde_json::json!({})),
+        ];
+        store
+            .commit_agent_selection(
+                id,
+                "plan",
+                Some(value.clone()),
+                selection.clone(),
+                events.clone(),
+            )
+            .await
+            .unwrap();
+        let before = store.load(id).await.unwrap().unwrap();
+        assert_eq!(before.meta.model, "p/new");
+        assert_eq!(before.meta.variant.as_deref(), Some("low"));
+        assert_eq!(before.meta.primary_agent.as_deref(), Some("plan"));
+        assert_eq!(before.meta.reasoning_floor, Some(4));
+        assert_eq!(before.meta.agent_overrides["plan"], value);
+        assert_eq!(before.envelopes.len(), 2);
+        let mut mismatched = selection.clone();
+        mismatched.model = "p/mismatched".into();
+        mismatched.resolution.model = "mismatched".into();
+        mismatched.primary_agent = "build".into();
+        mismatched.variant = None;
+        mismatched.reasoning_floor = 99;
+        let error = store
+            .commit_agent_selection(
+                id,
+                "plan",
+                None,
+                mismatched,
+                vec![
+                    EventEnvelope::new(id, 2, EventKind::ModelChanged, serde_json::json!({})),
+                    EventEnvelope::new(
+                        id,
+                        3,
+                        EventKind::SessionAgentChanged,
+                        serde_json::json!({}),
+                    ),
+                ],
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("does not match"));
+        let unchanged = store.load(id).await.unwrap().unwrap();
+        assert_eq!(unchanged.meta.agent_overrides, before.meta.agent_overrides);
+        assert_eq!(unchanged.meta.model, before.meta.model);
+        assert_eq!(
+            unchanged.meta.model_resolution,
+            before.meta.model_resolution
+        );
+        assert_eq!(unchanged.meta.variant, before.meta.variant);
+        assert_eq!(
+            unchanged.meta.variant_override,
+            before.meta.variant_override
+        );
+        assert_eq!(unchanged.meta.primary_agent, before.meta.primary_agent);
+        assert_eq!(unchanged.meta.reasoning_floor, before.meta.reasoning_floor);
+        assert_eq!(unchanged.meta.last_seq, before.meta.last_seq);
+        assert_eq!(
+            serde_json::to_value(&unchanged.envelopes).unwrap(),
+            serde_json::to_value(&before.envelopes).unwrap()
+        );
+        let mut failed = selection.clone();
+        failed.model = "p/failed".into();
+        failed.variant = None;
+        failed.resolution.model = "failed".into();
+        let failing_events = vec![
+            EventEnvelope::new(id, 2, EventKind::ModelChanged, serde_json::json!({})),
+            events[1].clone(),
+        ];
+        assert!(store
+            .commit_agent_selection(id, "plan", None, failed, failing_events)
+            .await
+            .is_err());
+        let after = store.load(id).await.unwrap().unwrap();
+        assert_eq!(after.meta.model, before.meta.model);
+        assert_eq!(after.meta.model_resolution, before.meta.model_resolution);
+        assert_eq!(after.meta.variant, before.meta.variant);
+        assert_eq!(after.meta.variant_override, before.meta.variant_override);
+        assert_eq!(after.meta.primary_agent, before.meta.primary_agent);
+        assert_eq!(after.meta.reasoning_floor, before.meta.reasoning_floor);
+        assert_eq!(after.meta.last_seq, before.meta.last_seq);
+        assert_eq!(after.meta.agent_overrides, before.meta.agent_overrides);
+        assert_eq!(after.envelopes.len(), 2);
+        store
+            .commit_agent_selection(
+                id,
+                "plan",
+                Some(value),
+                selection.clone(),
+                vec![
+                    EventEnvelope::new(id, 10, EventKind::ModelChanged, serde_json::json!({})),
+                    EventEnvelope::new(
+                        id,
+                        4,
+                        EventKind::SessionAgentChanged,
+                        serde_json::json!({}),
+                    ),
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.meta(id).await.unwrap().unwrap().last_seq, 10);
+        // A later transaction containing only older sequences must not lower the cursor.
+        store
+            .commit_agent_selection(
+                id,
+                "plan",
+                None,
+                selection,
+                vec![EventEnvelope::new(
+                    id,
+                    5,
+                    EventKind::ModelChanged,
+                    serde_json::json!({}),
+                )],
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.meta(id).await.unwrap().unwrap().last_seq, 10);
+    }
+
+    #[tokio::test]
+    async fn missing_session_override_updates_and_clears_fail() {
+        let (_dir, store) = temp_store();
+        let id = Ulid::new();
+        assert!(store
+            .update_agent_override(id, "build", AgentOverride::default())
+            .await
+            .unwrap_err()
+            .contains("no stored session"));
+        assert!(store
+            .clear_agent_override(id, "build")
+            .await
+            .unwrap_err()
+            .contains("no stored session"));
+    }
+
+    #[tokio::test]
+    async fn concurrent_store_handles_preserve_sibling_agent_overrides() {
+        let (dir, first) = temp_store();
+        let second = HistoryStore::open(dir.path().join("sessions.db")).unwrap();
+        let id = Ulid::new();
+        first.record_session(id, "/w", "old", None).await.unwrap();
+        let build = AgentOverride {
+            model: Some("p/build".into()),
+            variant: AgentVariantOverride::Off,
+        };
+        let plan = AgentOverride {
+            model: Some("p/plan".into()),
+            variant: AgentVariantOverride::Named("low".into()),
+        };
+        let (a, b) = tokio::join!(
+            first.update_agent_override(id, "build", build.clone()),
+            second.update_agent_override(id, "plan", plan.clone())
+        );
+        a.unwrap();
+        b.unwrap();
+        let saved = first.agent_overrides(id).await.unwrap().unwrap();
+        assert_eq!(saved.len(), 2);
+        assert_eq!(saved["build"], build);
+        assert_eq!(saved["plan"], plan);
+    }
+
+    #[tokio::test]
+    async fn malformed_agent_overrides_fail_reads_and_updates_explicitly() {
+        let (dir, store) = temp_store();
+        let id = Ulid::new();
+        store.record_session(id, "/w", "old", None).await.unwrap();
+        for raw in [
+            "{bad",
+            "null",
+            r#"{"build":{"model":null,"variant":{"kind":"unknown"}}}"#,
+            r#"{"build":{"model":"","variant":{"kind":"inherit"}}}"#,
+        ] {
+            side_connection(&dir)
+                .execute("UPDATE sessions SET agent_overrides=?1", [raw])
+                .unwrap();
+            assert!(store
+                .meta(id)
+                .await
+                .unwrap_err()
+                .contains("agent_overrides"));
+            assert!(store.load_for_resume(id).await.is_err());
+            assert!(store.list("/w").await.is_err());
+            assert!(store.clear_agent_override(id, "build").await.is_err());
+        }
+    }
 
     #[tokio::test]
     async fn permission_writer_waits_for_outbox_write_ownership_without_poisoning_flush() {
@@ -2052,6 +2529,7 @@ mod tests {
         let store = HistoryStore::open(&path).expect("migrates");
         let meta = store.meta(id).await.expect("meta").expect("present");
         assert_eq!(meta.model_resolution, None);
+        assert!(meta.agent_overrides.is_empty());
         assert_eq!(meta.variant, None, "an old row has no variant");
         assert_eq!(meta.variant_override, None);
         drop(store);

@@ -124,6 +124,32 @@ generation, so late results of its previous session are ignored. Picking a model
 conversation sends `/model <alias>` on that same session; on an empty tab it changes the starting
 configuration. A conversation is created on the first message, not before.
 
+**Driver-selected skills.** `/skills` reads `GET /v1/sessions/{id}/skills`: the session snapshot's
+catalog-listed names and descriptions, or a disabled reason when its agent disallows `skill`.
+The searchable picker fills `/skill <name> ` without sending anything. Sending adds a typed
+`{type:"skill",name}` content block beside the driver's text; with no request the text is
+`Apply the <name> skill.`. Session admission resolves one listed skill through the skill tool's
+bounded loader before accepting anything. The inbox appends its exact output as JSON in a
+`<driver_selected_skill encoding="json">` block in the driver's own user message. JSON escapes
+`<`, `>` and `&`, so loaded text cannot close the delimiter. Unknown, omitted,
+disabled or unreadable selections refuse the whole message; clients cannot supply loaded content.
+The turn's pinned agent policy is checked again after admission: an intervening agent switch can
+refuse the whole command before answering an ask, cancelling permission, changing the driver task,
+appending text or persisting child delivery. A durable `command.result` uses its command id as
+operation id, causation and correlation; other queued commands proceed.
+Policy pinning does not consume a pending ask or clear its permission slot or answer claim:
+only accepted input or a matching answer starts interaction consumption. Replay task lookup
+excludes correlated whole-message refusals, so resume and new children keep the real driver task.
+`message.received.selected_skill` records `{name,origin:"driver"}` for live and replayed clients.
+No synthetic tool exchange or model-visible provenance argument is used. Selected instructions
+stay with their driver message through storage and latest-batch compaction protection. Multiple
+queued driver selections all stay verbatim even with interleaved navigator input. Discovery covers
+the consecutive user-message run, but only Driver-provenance messages are protected, carried and
+charged as irreducible. Non-driver input retains its provenance in the unsummarized tail and may
+be summarized before a checkpoint. If driver selections cannot fit, the capacity error prevents the request; no
+skill is silently truncated. Event text remains driver text only for display.
+This does not change the event catalog or execute a skill's scripts.
+
 **Permission prompts (terminal client).** `permission.requested` adds a `BlockKind::Permission` to the
 tab and its id to `Conversation::open_permissions`; the matching `permission.resolved` closes it and
 settles the held tool (denied, or interrupted on a cancel or an expiry). Because both are durable

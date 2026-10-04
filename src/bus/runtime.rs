@@ -96,6 +96,10 @@ struct PermissionSlot {
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
+    #[cfg(debug_assertions)]
+    pub(crate) driver_task_probe: Mutex<Option<String>>,
+    #[cfg(test)]
+    policy_pin_barrier: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
     pub watchdog: watchdog::WatchdogPark,
     pub activity: progress::Activity,
     #[cfg(debug_assertions)]
@@ -393,13 +397,22 @@ impl RuntimeStatus {
     /// A turn starts: a waiting variant change is applied, and the agent and
     /// the variant the whole turn runs with are returned. The agent is
     /// `None` for a status that sends no role.
-    async fn begin_turn(
-        &self,
-    ) -> (
-        Option<Arc<crate::agent::definitions::AgentDefinition>>,
-        SelectedVariant,
-    ) {
-        let role = self.selection.begin_turn().await;
+    async fn pin_turn(&self) -> Option<Arc<crate::agent::definitions::AgentDefinition>> {
+        let role = self.selection.pin_turn().await;
+        self.slot().running = true;
+        #[cfg(test)]
+        {
+            let barrier = self.policy_pin_barrier.lock().unwrap().clone();
+            if let Some((reached, release)) = barrier {
+                reached.notify_one();
+                release.notified().await;
+            }
+        }
+        role
+    }
+
+    fn consume_turn(&self) -> SelectedVariant {
+        self.selection.consume_interaction();
         self.watchdog.transition(true);
         self.set_pending_permission(None);
         let mut slot = self.slot();
@@ -407,11 +420,24 @@ impl RuntimeStatus {
             slot.active = pending;
         }
         slot.running = true;
-        (role, slot.active.clone())
+        slot.active.clone()
+    }
+
+    /// A policy pin that applied no input must preserve a concurrent permission claim.
+    fn release_pin(&self, actor: &AgentActor) {
+        self.selection.end_turn(actor.has_pending());
+        self.slot().running = false;
     }
 
     /// The turn is over: an agent or variant change may apply.
     fn end_turn(&self, actor: &AgentActor) {
+        #[cfg(debug_assertions)]
+        {
+            *self
+                .driver_task_probe
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = actor.driver_task.clone();
+        }
         self.watchdog.transition(false);
         self.selection.end_turn(actor.has_pending());
         self.set_pending_permission(actor.pending_permission().map(|request| request.id));
@@ -498,6 +524,13 @@ impl RuntimeStatus {
 
     /// Records that the session starts with `actor`'s unanswered `ask`, if any.
     pub fn init_ask(&self, actor: &AgentActor) {
+        #[cfg(debug_assertions)]
+        {
+            *self
+                .driver_task_probe
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = actor.driver_task.clone();
+        }
         self.selection.set_ask_pending(actor.has_pending());
     }
 }
@@ -891,6 +924,9 @@ async fn runtime_loop(
         let Some(inbound) = inbound else {
             break;
         };
+        // Pin policy before command mutation. Earlier completion-only wakes may already
+        // have committed delivery; rejected commands cannot enter any delivery callback.
+        actor.role = status.pin_turn().await;
 
         // A decision resumes the held call; a batch of commands starts a
         // turn the usual way.
@@ -903,8 +939,20 @@ async fn runtime_loop(
             Inbound::Batch(_) => {
                 let held = actor.pending_permission().cloned();
                 let applied = inbox.apply_batch_to_actor(&mut actor);
+                for (command_id, error) in &applied.refused {
+                    let mut candidate = crate::bus::sequencer::Candidate::new(
+                        EventKind::CommandResult,
+                        serde_json::json!({
+                            "operation_id":command_id, "name":"skill", "ok":false, "error":error,
+                        }),
+                    );
+                    candidate.causation_id = Some(*command_id);
+                    candidate.correlation_id = Some(*command_id);
+                    let _ = sequencer.publish(candidate);
+                }
                 // Only commands that were held: nothing changed, no turn.
                 let Some(first) = applied.first_applied else {
+                    status.release_pin(&actor);
                     continue;
                 };
                 if active_task_id.is_none() {
@@ -929,6 +977,7 @@ async fn runtime_loop(
                     .filter(|request| request.id == answer.request_id)
                     .cloned();
                 let Some(request) = held else {
+                    status.release_pin(&actor);
                     let _ = answer
                         .reply
                         .send(Err(crate::agent::permissions::PermissionError::Stale));
@@ -949,18 +998,16 @@ async fn runtime_loop(
                 Some((answer.request_id, decision))
             }
         };
-        // The turn runs as the agent and the variant selected now; a later
+        actor.variant = status.consume_turn().map(|(_, variant)| variant);
+        // Only validated commands can reach a callback that persists the transcript.
         if let Err(error) = delivery::apply(&mut actor, &status, &sequencer).await {
             tracing::error!(%error, "subagent transcript delivery failed");
+            status.end_turn(&actor);
             break;
         }
-        // change waits for the turn to end.
-        let (role, variant) = status.begin_turn().await;
         status
             .budget_parked
             .store(false, std::sync::atomic::Ordering::Release);
-        actor.role = role;
-        actor.variant = variant.map(|(_, variant)| variant);
         // A request that would not fit this budget is compacted first.
         actor.input_budget = status.context_snapshot().map(|s| s.input_budget);
 
@@ -1542,6 +1589,167 @@ mod tests {
     use crate::provider::test_support::{http_sse, sse_body};
     use crate::tools::{Registry, ToolContext};
     use std::collections::BTreeMap;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn permission_answer_racing_refused_batch_keeps_slot_and_claim() {
+        use crate::agent::{
+            actor::PendingInteraction,
+            definitions::Agents,
+            permissions::{PermissionRequest, Scope},
+            selection::AgentSelection,
+        };
+        let server = spawn_mock(vec![http_sse(&sse_body(&["{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]} "]))]).await;
+        let agents = Arc::new(Agents::builtin());
+        let mut denying = (**agents.get("build").unwrap()).clone();
+        denying.tools.insert("skill".into(), false);
+        let status = Arc::new(RuntimeStatus::with_selection(AgentSelection::new(
+            agents,
+            Arc::new(denying),
+        )));
+        let request_id = Ulid::new();
+        let mut actor = make_actor(server.url, CancellationToken::new());
+        actor.pending = Some(PendingInteraction::Permission {
+            request: Box::new(PermissionRequest {
+                id: request_id,
+                tool_call_id: "held".into(),
+                tool: "write".into(),
+                arguments: "{}".into(),
+                scope: Scope::Folder("/workspace".into()),
+                agent: "build".into(),
+                reason: "approval".into(),
+            }),
+            call: crate::provider::ToolCall {
+                id: "held".into(),
+                name: "write".into(),
+                args: serde_json::json!({}),
+                args_valid: true,
+            },
+            remaining_calls: vec![],
+            destination: None,
+            steps_left: 3,
+        });
+        status.set_pending_permission(Some(request_id));
+        let reached = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        *status.policy_pin_barrier.lock().unwrap() = Some((reached.clone(), release.clone()));
+        let (tx, mut inbox) = ActorInbox::channel();
+        let answers = inbox.permission_sender();
+        let id = Ulid::new();
+        let mut denied = text_command(id, "refused text");
+        denied.content.push(ContentBlock::LoadedSkill {
+            name: "review".into(),
+            content: "refused body".into(),
+        });
+        tx.try_send(denied).unwrap();
+        inbox.drain_transport();
+        let seq = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
+        let mut live = seq.subscribe_since(None).await.unwrap().live.unwrap();
+        let cancel = CancellationToken::new();
+        let handle = spawn_with_status(id, actor, inbox, seq, cancel.clone(), None, status.clone());
+        reached.notified().await;
+        assert_eq!(status.pending_permission(), Some(request_id));
+        assert!(status.pending_ask());
+        assert!(status.claim_permission(request_id));
+        let (reply, response) = tokio::sync::oneshot::channel();
+        answers
+            .send(crate::bus::inbox::PermissionAnswer {
+                request_id,
+                decision: PermissionDecision::Deny {
+                    message: "no".into(),
+                },
+                reply,
+            })
+            .await
+            .unwrap();
+        release.notify_one();
+        while live.recv().await.unwrap().kind != "command.result" {}
+        // The answer is paused at the next policy pin: the refused batch must not reset its claim.
+        reached.notified().await;
+        assert_eq!(status.pending_permission(), Some(request_id));
+        assert!(!status.claim_permission(request_id));
+        *status.policy_pin_barrier.lock().unwrap() = None;
+        release.notify_one();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), response)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_ok()
+        );
+        cancel.cancel();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejected_skill_never_enters_completion_commit_or_crash_resume_storage() {
+        use crate::agent::{definitions::Agents, selection::AgentSelection};
+        use crate::provider::openai::{ChatMessage, UserProvenance};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("history.db");
+        let store = Arc::new(crate::session::store::HistoryStore::open(&path).unwrap());
+        let id = Ulid::new();
+        store
+            .record_session(id, "/workspace", "test-model", None)
+            .await
+            .unwrap();
+        let agents = Arc::new(Agents::builtin());
+        let mut denying = (**agents.get("build").unwrap()).clone();
+        denying.tools.insert("skill".into(), false);
+        let status = Arc::new(RuntimeStatus::with_selection(AgentSelection::new(
+            agents,
+            Arc::new(denying),
+        )));
+        let persisted = Arc::new(tokio::sync::Notify::new());
+        let done = persisted.clone();
+        let history = store.clone();
+        status.install_delivery(Arc::new(move |mut transcript, _| {
+            let history = history.clone();
+            let done = done.clone();
+            Box::pin(async move {
+                transcript.push(ChatMessage::User {
+                    content: "child completion".into(),
+                    provenance: UserProvenance::Subagent,
+                });
+                history.save_transcript(id, transcript.clone());
+                history.load_for_resume(id).await.unwrap();
+                done.notify_one();
+                Err(crate::agent::boundary::BoundaryError {
+                    message: "crash after completion commit".into(),
+                    committed: Some(transcript),
+                })
+            })
+        }));
+        let (tx, mut inbox) = ActorInbox::channel();
+        let mut denied = text_command(id, "REJECTED DRIVER INPUT");
+        denied.content.push(ContentBlock::LoadedSkill {
+            name: "review".into(),
+            content: "REJECTED SKILL BODY".into(),
+        });
+        tx.try_send(denied).unwrap();
+        tx.try_send(text_command(id, "accepted sibling")).unwrap();
+        inbox.drain_transport();
+        let sequencer = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
+        let handle = spawn_with_status(
+            id,
+            make_actor("http://127.0.0.1:1".into(), CancellationToken::new()),
+            inbox,
+            sequencer,
+            CancellationToken::new(),
+            None,
+            status,
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), persisted.notified())
+            .await
+            .unwrap();
+        let actor = handle.await.unwrap();
+        assert!(actor.transcript.iter().any(|message| matches!(message, ChatMessage::User { content, .. } if content == "child completion")));
+        drop(store);
+        let reopened = crate::session::store::HistoryStore::open(&path).unwrap();
+        let (_, restored, _) = reopened.load_for_resume(id).await.unwrap().unwrap();
+        let raw = serde_json::to_string(&restored).unwrap();
+        assert!(raw.contains("accepted sibling") && raw.contains("child completion"));
+        assert!(!raw.contains("REJECTED DRIVER INPUT") && !raw.contains("REJECTED SKILL BODY"));
+    }
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

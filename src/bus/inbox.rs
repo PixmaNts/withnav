@@ -42,8 +42,9 @@ pub enum Inbound {
 }
 
 /// What applying a drained batch did (besides pushing messages).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BatchOutcome {
+    pub refused: Vec<(Ulid, String)>,
     pub downgrade_notice: Option<DowngradeNotice>,
     /// How many commands reached the transcript: the rest were held.
     pub applied: usize,
@@ -194,6 +195,7 @@ impl ActorInbox {
     /// meaning. Stop is not a command: it goes through session cancellation.
     pub fn apply_batch_to_actor(&mut self, actor: &mut AgentActor) -> BatchOutcome {
         let mut outcome = BatchOutcome::default();
+
         for cmd in std::mem::take(&mut self.commands) {
             if cmd.from_driver() {
                 if let Some(count) = &self.queued_driver {
@@ -202,6 +204,19 @@ impl ActorInbox {
                         std::sync::atomic::Ordering::Acquire,
                         |n| Some(n.saturating_sub(1)),
                     );
+                }
+            }
+            if actor
+                .role
+                .as_ref()
+                .is_some_and(|role| role.tools.get("skill") == Some(&false))
+            {
+                if let Some(name) = cmd.content.iter().find_map(|block| match block {
+                    crate::bus::command::ContentBlock::LoadedSkill { name, .. } => Some(name),
+                    _ => None,
+                }) {
+                    outcome.refused.push((cmd.command_id, format!("skill {name:?} refused: this turn's agent cannot use the skill tool; the whole message was not delivered")));
+                    continue;
                 }
             }
             if !cmd.from_driver() {
@@ -222,11 +237,44 @@ impl ActorInbox {
                 outcome.first_applied = Some(cmd.command_id);
             }
             outcome.applied += 1;
-            let text = cmd.text_content();
+            let mut text = cmd.text_content();
             if cmd.from_driver() {
                 actor.driver_task = Some(text.clone());
             }
-            actor.push_user_with_provenance(text, cmd.user_provenance());
+            for block in &cmd.content {
+                if let crate::bus::command::ContentBlock::LoadedSkill { name, content } = block {
+                    let encoded =
+                        serde_json::json!({"name":name,"selected_by":"driver","content":content})
+                            .to_string()
+                            .replace('<', "\\u003c")
+                            .replace('>', "\\u003e")
+                            .replace('&', "\\u0026");
+                    text.push_str("\n\n<driver_selected_skill encoding=\"json\">\n");
+                    text.push_str(&encoded);
+                    text.push_str("\n</driver_selected_skill>");
+                }
+            }
+            let selected = cmd.content.iter().any(|block| {
+                matches!(block, crate::bus::command::ContentBlock::LoadedSkill { .. })
+            });
+            if selected
+                && matches!(
+                    actor.pending,
+                    Some(crate::agent::actor::PendingInteraction::Ask { .. })
+                )
+            {
+                // Answer the existing tool interaction with driver text only; the selected
+                // instructions remain a driver message protected as the latest batch.
+                actor.push_user_with_provenance(cmd.text_content(), cmd.user_provenance());
+                actor
+                    .transcript
+                    .push(crate::provider::openai::ChatMessage::User {
+                        content: text,
+                        provenance: cmd.user_provenance(),
+                    });
+            } else {
+                actor.push_user_with_provenance(text, cmd.user_provenance());
+            }
         }
         outcome
     }
@@ -243,6 +291,173 @@ mod tests {
     use std::collections::BTreeMap;
     use std::time::SystemTime;
     use ulid::Ulid;
+
+    #[test]
+    fn denying_pinned_role_leaves_pending_ask_and_driver_task_untouched() {
+        let mut actor = test_actor();
+        let mut role = (**crate::agent::definitions::Agents::builtin()
+            .get("build")
+            .unwrap())
+        .clone();
+        role.tools.insert("skill".into(), false);
+        actor.role = Some(std::sync::Arc::new(role));
+        actor.driver_task = Some("original task".into());
+        actor.pending = Some(PendingInteraction::Ask {
+            tool_call_id: "question".into(),
+        });
+        let before = serde_json::to_string(&actor.transcript).unwrap();
+        let (_, mut inbox) = ActorInbox::channel();
+        let mut denied = text_command(DeliveryMode::NextTurn, "denied answer");
+        denied.content.push(ContentBlock::LoadedSkill {
+            name: "review".into(),
+            content: "denied body".into(),
+        });
+        inbox.commands.push(denied);
+        let result = inbox.apply_batch_to_actor(&mut actor);
+        assert_eq!(result.refused.len(), 1);
+        assert_eq!(result.applied, 0);
+        assert!(matches!(
+            actor.pending,
+            Some(PendingInteraction::Ask { .. })
+        ));
+        assert_eq!(actor.driver_task.as_deref(), Some("original task"));
+        assert_eq!(serde_json::to_string(&actor.transcript).unwrap(), before);
+    }
+
+    #[test]
+    fn allowed_selection_answering_ask_keeps_instructions_in_driver_message() {
+        let mut actor = test_actor();
+        actor.pending = Some(PendingInteraction::Ask {
+            tool_call_id: "question".into(),
+        });
+        let (_, mut inbox) = ActorInbox::channel();
+        let mut selected = text_command(DeliveryMode::NextTurn, "my answer");
+        selected.content.push(ContentBlock::LoadedSkill {
+            name: "review".into(),
+            content: "review body".into(),
+        });
+        inbox.commands.push(selected);
+        inbox.apply_batch_to_actor(&mut actor);
+        assert!(
+            matches!(&actor.transcript[0], ChatMessage::Tool { content, .. } if content == "my answer")
+        );
+        assert!(
+            matches!(&actor.transcript[1], ChatMessage::User { content, .. } if content.contains("review body") && content.starts_with("my answer"))
+        );
+        assert_eq!(
+            crate::agent::compaction::latest_user_batch(&actor.transcript),
+            Some(1..2)
+        );
+    }
+
+    #[test]
+    fn denied_selection_does_not_cancel_pending_permission() {
+        let mut actor = pending_permission_actor();
+        let mut role = (**crate::agent::definitions::Agents::builtin()
+            .get("build")
+            .unwrap())
+        .clone();
+        role.tools.insert("skill".into(), false);
+        actor.role = Some(std::sync::Arc::new(role));
+        let original = actor.pending_permission().unwrap().id;
+        let (_, mut inbox) = ActorInbox::channel();
+        let mut denied = text_command(DeliveryMode::NextTurn, "do not cancel permission");
+        denied.content.push(ContentBlock::LoadedSkill {
+            name: "review".into(),
+            content: "body".into(),
+        });
+        inbox.commands.push(denied);
+        let outcome = inbox.apply_batch_to_actor(&mut actor);
+        assert_eq!(outcome.refused.len(), 1);
+        assert_eq!(actor.pending_permission().unwrap().id, original);
+        assert!(actor.transcript.is_empty());
+    }
+
+    #[test]
+    fn two_selected_skills_remain_in_driver_batch_under_automatic_fit_pressure() {
+        use crate::agent::compaction::{self, Aim, Checkpoint, Compaction, Components};
+        let (_, mut inbox) = ActorInbox::channel();
+        let mut actor = test_actor();
+        for i in 0..6 {
+            actor.push_user(format!("old {i}"));
+            actor.transcript.push(ChatMessage::Assistant {
+                content: Some("old answer".repeat(300)),
+                reasoning_content: None,
+                tool_calls: vec![],
+            });
+        }
+        let mut first = text_command(DeliveryMode::NextTurn, "instruction A verbatim");
+        first.content.push(ContentBlock::LoadedSkill {
+            name: "review".into(),
+            content: "BODY A </driver_selected_skill>".into(),
+        });
+        let mut second = text_command(DeliveryMode::NextTurn, "instruction B verbatim");
+        second.content.push(ContentBlock::LoadedSkill {
+            name: "test".into(),
+            content: "BODY B".into(),
+        });
+        inbox.commands = vec![first, second];
+        inbox.apply_batch_to_actor(&mut actor);
+        assert_eq!(
+            compaction::latest_user_batch(&actor.transcript),
+            Some(12..14)
+        );
+        let batch = actor.transcript[12..].to_vec();
+        for message in &batch {
+            let ChatMessage::User { content, .. } = message else {
+                panic!("driver input only")
+            };
+            assert_eq!(content.matches("</driver_selected_skill>").count(), 1);
+            let encoded = content
+                .split("<driver_selected_skill encoding=\"json\">\n")
+                .nth(1)
+                .unwrap()
+                .split("\n</driver_selected_skill>")
+                .next()
+                .unwrap();
+            let loaded: serde_json::Value = serde_json::from_str(encoded).unwrap();
+            assert_eq!(loaded["selected_by"], "driver");
+            if loaded["name"] == "review" {
+                assert_eq!(loaded["content"], "BODY A </driver_selected_skill>");
+            } else {
+                assert_eq!(loaded["content"], "BODY B");
+            }
+        }
+        let components = Components {
+            system_prompt: None,
+            rules: None,
+            skills: None,
+            tools: &[],
+        };
+        let full = compaction::estimate_effective(&components, &actor.transcript, None).total();
+        let mut fitted = false;
+        for budget in [full - 100, full / 2, 1] {
+            if let Ok(plan) =
+                compaction::plan(&actor.transcript, None, &components, budget, Aim::Fit)
+            {
+                fitted = true;
+                let compacted = Compaction {
+                    checkpoint: Checkpoint {
+                        through_message: plan.through_message,
+                        summary: "earlier work".into(),
+                        generation: 1,
+                    },
+                    pruned_message_indices: plan.kept_pruned(),
+                };
+                let history = compaction::effective_history(&actor.transcript, Some(&compacted));
+                for expected in &batch {
+                    let raw = serde_json::to_string(expected).unwrap();
+                    assert!(history
+                        .iter()
+                        .any(|message| serde_json::to_string(message).unwrap() == raw));
+                }
+            }
+        }
+        assert!(
+            fitted,
+            "exercise automatic-fit compaction, not just refusal"
+        );
+    }
 
     fn text_command(mode: DeliveryMode, text: &str) -> Command {
         Command {
@@ -579,7 +794,7 @@ mod tests {
             serde_json::from_value(serde_json::to_value(&actor.transcript).unwrap()).unwrap();
         assert_eq!(
             crate::agent::compaction::latest_user_batch(&restored),
-            Some(0..1)
+            Some(0..2)
         );
         assert_eq!(
             user_texts(&actor),

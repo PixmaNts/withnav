@@ -141,6 +141,7 @@ pub struct TabView {
 /// no other tab.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Tab {
+    pub skills: crate::bus::event::SkillsBody,
     /// Stable for the life of the tab, unlike `generation`.
     pub id: u64,
     pub connection: ConnectionStatus,

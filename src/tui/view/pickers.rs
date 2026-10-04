@@ -16,6 +16,7 @@ use ratatui::{
 pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, theme: &Theme) {
     let Some(overlay) = ui.overlay else { return };
     let title = match overlay {
+        Overlay::Skills => " Choose a skill ",
         Overlay::Models if crate::tui::reducer::occupied(state) => " Switch this conversation to… ",
         Overlay::Models => " Choose a model ",
         Overlay::Sessions => " Conversations ",
@@ -32,6 +33,20 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
     // The popup's inner width, less its margins: what a row can take.
     let row_width = usize::from(width.saturating_sub(6));
     let rows: Vec<Line<'static>> = match overlay {
+        Overlay::Skills => commands::skill_rows(state, &ui.filter)
+            .into_iter()
+            .map(|skill| {
+                let name = fit(&skill.name, row_width);
+                let remaining = row_width.saturating_sub(columns(&name) + 3);
+                Line::from(vec![
+                    Span::styled(name, theme.accent()),
+                    Span::styled(
+                        format!(" · {}", fit(&skill.description, remaining)),
+                        theme.muted(),
+                    ),
+                ])
+            })
+            .collect(),
         Overlay::Children => state
             .child_rows(&ui.filter)
             .iter()
@@ -258,6 +273,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
 /// The keys a popup takes, at its foot.
 fn keys_line(overlay: Overlay) -> &'static str {
     match overlay {
+        Overlay::Skills => "↑↓ move  enter fill draft  esc close",
         Overlay::Help => "esc close",
         Overlay::Themes => "↑↓ preview  enter keep  esc put back",
         Overlay::Commands => "↑↓ move  enter run  esc close",
@@ -316,10 +332,15 @@ pub fn confirm_child(
 /// A line under the filter: what picking does to the live conversation (switched after the
 /// running turn, refused while the agent waits for the driver, ctrl+n for a new tab), or why the
 /// variant list is empty.
-fn note(overlay: Overlay, state: &State, ui: &UiState, empty: bool) -> Option<&'static str> {
+fn note<'a>(overlay: Overlay, state: &'a State, ui: &UiState, empty: bool) -> Option<&'a str> {
     let live = crate::tui::reducer::occupied(state);
     let blocked = crate::tui::reducer::switch_blocked(state);
     match overlay {
+        Overlay::Skills => state.skills.disabled_reason.as_deref().or(if empty {
+            Some("no listed skills match")
+        } else {
+            Some("enter fills /skill <name>; add a request, then send")
+        }),
         Overlay::Models if live => Some(match blocked {
             Some(why) => why,
             None if state.activity == Activity::Running => {
@@ -402,4 +423,38 @@ fn theme_row(entry: ThemeId, current: ThemeId, theme: &Theme) -> Line<'static> {
         spans.push(Span::styled("■", Style::default().fg(color)));
     }
     Line::from(spans)
+}
+
+#[cfg(test)]
+mod skill_tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn skills_picker_renders_on_a_narrow_terminal() {
+        let mut state = State::default();
+        state.skills.skills.push(crate::bus::event::SkillEntry {
+            name: "review".into(),
+            description: "Check correctness".into(),
+        });
+        let ui = UiState {
+            overlay: Some(Overlay::Skills),
+            ..Default::default()
+        };
+        let theme = ui.theme.palette();
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        terminal
+            .draw(|frame| draw(frame, frame.area(), &state, &ui, &theme))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("Choose a skill"));
+        assert!(text.contains("review"));
+        assert!(text.contains("Check correctness"));
+    }
 }

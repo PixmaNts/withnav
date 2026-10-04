@@ -581,6 +581,28 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
         Action::OpenOverlay(o) => {
             ui.overlay = Some(o);
             match o {
+                Overlay::Skills => {
+                    ui.filter.clear();
+                    ui.selection.insert("Skills".into(), 0);
+                    s.skills = crate::bus::event::SkillsBody {
+                        skills: vec![],
+                        disabled_reason: Some(if s.read_only() {
+                            "this subagent is read-only; choose a skill in its parent".into()
+                        } else if s.session.is_none() {
+                            "send a message to start a conversation before choosing a skill".into()
+                        } else {
+                            "loading skills…".into()
+                        }),
+                    };
+                    if s.read_only() {
+                        vec![]
+                    } else {
+                        s.session
+                            .as_ref()
+                            .map(|session| vec![Effect::FetchSkills(session.session_id.clone())])
+                            .unwrap_or_default()
+                    }
+                }
                 Overlay::Models => {
                     ui.variant_pick = None;
                     vec![Effect::FetchModels]

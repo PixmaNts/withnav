@@ -41,13 +41,22 @@ impl DeliveryMode {
     }
 }
 
-/// Transcript content blocks. PROVISIONAL shape: Phase 2 accepts
-/// the full enum but only HANDLES `Text`; any other block is rejected at the
-/// accept boundary with `BusError::NonTextContent`.
+/// Driver text and explicit skill selection. Other transcript block kinds
+/// remain rejected at admission; only the server can supply loaded skills.
 /// On the wire it carries a snake_case `type` tag.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
+    /// Driver-selected skill, resolved by admission before any message is accepted.
+    Skill {
+        name: String,
+    },
+    /// Only admission can supply loaded content; a client cannot impersonate a tool result.
+    #[serde(skip)]
+    LoadedSkill {
+        name: String,
+        content: String,
+    },
     Text {
         text: String,
     },
@@ -133,13 +142,17 @@ impl Command {
             created_at: SystemTime::now(),
         }
     }
-    /// Phase-2 content rule: Text-only. The server maps the typed
-    /// error to 400; the inbox rejects before buffering.
+    /// Rejects unsupported transcript blocks before buffering. Skill selections
+    /// must additionally be resolved by session admission.
     pub fn validate_content(&self) -> Result<(), ServerError> {
-        let non_text = self
-            .content
-            .iter()
-            .any(|b| !matches!(b, ContentBlock::Text { .. }));
+        let non_text = self.content.iter().any(|b| {
+            !matches!(
+                b,
+                ContentBlock::Text { .. }
+                    | ContentBlock::Skill { .. }
+                    | ContentBlock::LoadedSkill { .. }
+            )
+        });
         if non_text {
             return Err(ServerError::NonTextContent);
         }

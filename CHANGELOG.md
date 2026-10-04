@@ -4,33 +4,42 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-10-04
+
+Fixes from trying 0.4.6 in VS Code: subagents work there, reading a file outside the project is
+reviewed instead of refused, lists are searchable and compaction shows its progress.
+
 ### Fixed
 
-- VS Code conversations can start subagents; child results use the normal durable parent delivery.
-- Risky read-only calls, including reading credentials and keys, are no longer auto-approved by
-  the instinct. Sensitive native `read` calls require metacognition review and a typed driver
-  decision; `grep`/`glob` skip sensitive files. Bash sensitivity detection is best effort.
-- **VS Code pickers are searchable.** Model, skill, variant, command and conversation lists open
-  with a search field: match names, model IDs or descriptions, see the number of matches and
-  choose with the arrow keys and Enter. Escape clears the search before closing. Long lists show
-  the first 50 matches and ask you to narrow the search instead of drawing hundreds of rows.
-- **VS Code compaction no longer looks frozen.** A “Compacting the conversation…” indicator
-  stays visible until completion or refusal, and the context meter is marked as updating.
-  The composer stays usable and explains that messages sent now are queued until compaction ends;
-  the command's own completion replaces the progress
-  row with the result, and failures show their reason without losing your draft.
+- **VS Code conversations can start subagents.** The agent of a VS Code conversation now has the
+  `task` tool (and `steer_subagent`, `decide_subagent`), like the terminal client. Subagents'
+  results reach the conversation as before; they never become the navigator's conversation.
+- **Reading secrets is never approved on Jev's word.** A read-only call that is risky, such as
+  reading a key or a credentials file, now goes to metacognition and then to you. Reading
+  `~/.ssh`, `~/.gnupg`, `.env` files, `*.pem` / `*.key`, cloud credentials or Navai's
+  `auth.json` with the `read` tool always asks you. `grep` and `glob` skip these files (without
+  opening them) and say how many they skipped. For `bash`, this detection is best effort.
+- **VS Code lists are searchable.** The model, skill, variant, command and conversation lists open
+  with a search field that matches names, model ids and descriptions, shows the number of matches
+  ("12 of 300") and is chosen with the arrow keys and Enter. The `/` list filters from the composer
+  as you type. Choosing a model never touches your draft.
+- **VS Code compaction no longer looks frozen.** `/compact` shows "Compacting the conversation…"
+  until it ends or fails. You can keep writing and sending: your messages wait for the end of the
+  compaction.
 
 ### Changed
 
-- Single-file `read` outside the readable roots is reviewed like bash instead of refused.
-  Approval covers one canonical target, never a new readable root.
-- Outside-root `grep`/`glob` remain refused with guidance to use a specific read or reviewed bash.
-  Inside searches skip sensitive entries. Native read targets are bound out of band and opened
-  without following replacement links; forged host-binding arguments are rejected.
-- Reusable permission approval is offered only for `fetch`, in both clients.
-- Directory grep keeps ripgrep's ignore/hidden behavior with sensitive files excluded before open.
-  Its missing-ripgrep fallback is ignore-aware, bounded and cancellable. Sensitive aliases are
-  checked before canonicalization; quoted or escaped config-command options require the driver.
+- **`read` outside the project is reviewed like `bash`** instead of being refused: if Jev,
+  metacognition or you approve it, it reads that one file once. `grep` and `glob` outside the
+  project are still refused, with a message pointing to `read` or `bash`.
+- A `bash` command that writes into Navai's config directory (`~/.config/navai`) always asks you,
+  even with options hidden in quotes, escapes or braces; only plain reads such as `cat`, `ls` or
+  `wc` there can be approved automatically.
+- "Allow folder" is only offered for `fetch`; read, write, edit and bash requests offer allow once
+  or deny.
+- Directory `grep` uses ripgrep as before (fast, respects `.gitignore`); without ripgrep, its
+  fallback is limited in size and time and can be cancelled. More than 1000 matches is reported
+  as a partial result.
 
 ## [0.4.6] - 2026-10-04
 

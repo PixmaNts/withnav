@@ -155,7 +155,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     (
         "y / ctrl+shift+c",
-        "y copies selection/block; ctrl+shift+c best-effort",
+        "y copies; multi-block selections group sender names",
     ),
     (
         "shift+drag",

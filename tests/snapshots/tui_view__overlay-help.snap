@@ -21,7 +21,7 @@ expression: snapshot
             │ page up / page down     scroll                                           │            
             │ up / down               select transcript block                          │            
             │ drag / double-click     select text / word; release copies via OSC 52    │            
-            │ y / ctrl+shift+c        y copies selection/block; ctrl+shift+c best-effo │            
+            │ y / ctrl+shift+c        y copies; multi-block selections group sender na │            
             │ shift+drag              native selection; OSC 52: tmux set-clipboard on  │            
             │ space / enter           expand selected block                            │            
             │ ctrl+end                follow newest                                    │            

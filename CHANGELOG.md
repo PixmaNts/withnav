@@ -5,6 +5,9 @@ requests land in `develop`.
 ## [Unreleased]
 
 ### Added
+- Copying a selection across conversation blocks includes plain-text sender headers
+  (`You:`, the agent's name, `Navigator:`…), one per run of consecutive messages from the same
+  sender. A selection inside one block and whole-block `y` copies stay header-free.
 - Select and copy conversation text with a mouse drag, or double-click a word; wrapping,
   sidebar and tool labels stay out of the clipboard. The wheel scrolls the conversation and
   dragging beyond its edge scrolls the selection. In transcript focus, `y` copies the whole

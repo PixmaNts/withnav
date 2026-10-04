@@ -708,6 +708,12 @@ async fn execute_call(
     };
     // The role guard let this call run: the durable `tool.post_call` says so.
     if let Some(note) = guard_note {
+        if let Some(guard) = note.get("guard") {
+            if !result.metadata.is_object() {
+                result.metadata = serde_json::json!({});
+            }
+            result.metadata["guard"] = guard.clone();
+        }
         let (key, note) = if let Some(evidence) = note.get("permission_gate") {
             ("permission_gate", evidence.clone())
         } else {
@@ -1898,6 +1904,293 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    struct Meta {
+        decision: Option<super::super::permission_gate::ReviewDecision>,
+        captured: std::sync::Mutex<Option<CancellationToken>>,
+        hangs: bool,
+    }
+
+    struct WaitingJudge(std::sync::Mutex<Option<CancellationToken>>);
+    impl super::super::permission_gate::PermissionJudge for WaitingJudge {
+        fn judge<'a>(
+            &'a self,
+            _input: &'a super::super::permission_gate::PermissionReviewInput,
+            cancel: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<'a, Result<crate::provider::systemone::Answers, String>>
+        {
+            *self.0.lock().unwrap() = Some(cancel.clone());
+            Box::pin(futures::future::pending())
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn jev_deadline_cancels_review_token_and_never_dispatches() {
+        let mut actor = plan_actor(None, "http://unused");
+        let judge = Arc::new(WaitingJudge(Default::default()));
+        actor.permission_judge = Some(judge.clone());
+        let target = actor.tool_context.workspace.join("a.rs");
+        let call = ToolCall {
+            id: "c".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path":target,"content":"x"}),
+            args_valid: true,
+        };
+        let mut count = 0;
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut |event| {
+                if matches!(event, AgentEvent::PreCall { .. }) {
+                    count += 1;
+                }
+            })
+            .await,
+            One::Ask(..)
+        ));
+        assert_eq!(count, 0);
+        assert!(!target.exists());
+        assert!(judge.0.lock().unwrap().as_ref().unwrap().is_cancelled());
+        assert!(!actor.cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_reviewer_entry_never_dispatches_or_prompts() {
+        for during_meta in [false, true] {
+            let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+            let judge = Arc::new(WaitingJudge(Default::default()));
+            let meta = Arc::new(Meta {
+                decision: None,
+                captured: Default::default(),
+                hangs: true,
+            });
+            if during_meta {
+                actor.permission_reviewer = Some(meta.clone());
+            } else {
+                actor.permission_judge = Some(judge.clone());
+            }
+            let cancel = actor.cancel.clone();
+            let target = actor.tool_context.workspace.join("AGENTS.md");
+            let call = ToolCall {
+                id: "c".into(),
+                name: "write".into(),
+                args: serde_json::json!({"path":target,"content":"x"}),
+                args_valid: true,
+            };
+            let mut count = 0;
+            let mut observe = |event: AgentEvent<'_>| {
+                if matches!(event, AgentEvent::PreCall { .. }) {
+                    count += 1;
+                }
+            };
+            let run = run_gated(&mut actor, &call, &mut observe);
+            let stop = async {
+                loop {
+                    let entered = if during_meta {
+                        meta.captured.lock().unwrap().is_some()
+                    } else {
+                        judge.0.lock().unwrap().is_some()
+                    };
+                    if entered {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                cancel.cancel();
+            };
+            let (outcome, ()) = tokio::join!(run, stop);
+            assert!(matches!(outcome, One::Interrupted));
+            assert_eq!(count, 0);
+            assert!(!target.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn meta_approval_of_a_changed_destination_requires_a_fresh_review() {
+        let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+        let target = actor.tool_context.workspace.join("AGENTS.md");
+        let new_target = actor.tool_context.workspace.join("secret.rs");
+        std::fs::write(&target, "old").unwrap();
+        std::fs::write(&new_target, "keep").unwrap();
+        actor.permission_reviewer = Some(Arc::new(Meta {
+            decision: Some(super::super::permission_gate::ReviewDecision::Approve),
+            captured: Default::default(),
+            hangs: false,
+        }));
+        let jev = Arc::new(ScriptedJev {
+            answers: std::sync::Mutex::new(vec![Verdict::Conforms, Verdict::Violates]),
+            during: Default::default(),
+            asked: Default::default(),
+        });
+        actor.permission_judge = Some(jev.clone());
+        let call = ToolCall {
+            id: "c".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path":target,"content":"x"}),
+            args_valid: true,
+        };
+        on_next_dispatch({
+            let target = target.clone();
+            let new_target = new_target.clone();
+            move || {
+                std::fs::remove_file(target.clone()).unwrap();
+                std::os::unix::fs::symlink(new_target, target).unwrap();
+            }
+        });
+        let mut count = 0;
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut |event| {
+                if matches!(event, AgentEvent::PreCall { .. }) {
+                    count += 1;
+                }
+            })
+            .await,
+            One::Ask(..)
+        ));
+        assert_eq!(count, 0);
+        assert_eq!(jev.asked.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(std::fs::read_to_string(new_target).unwrap(), "keep");
+    }
+    impl super::super::permission_gate::PermissionReviewer for Meta {
+        fn review<'a>(
+            &'a self,
+            _input: &'a super::super::permission_gate::PermissionReviewInput,
+            cancel: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<
+            'a,
+            Result<
+                super::super::permission_gate::PermissionReview,
+                super::super::permission_gate::ReviewError,
+            >,
+        > {
+            *self.captured.lock().unwrap() = Some(cancel.clone());
+            Box::pin(async move {
+                if self.hangs {
+                    futures::future::pending::<()>().await;
+                }
+                self.decision
+                    .map(|decision| super::super::permission_gate::PermissionReview {
+                        decision,
+                        reason: "reviewed".into(),
+                    })
+                    .ok_or(super::super::permission_gate::ReviewError)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn meta_routes_dispatch_only_on_approve_and_keep_role_metadata() {
+        use super::super::permission_gate::ReviewDecision;
+        for decision in [
+            Some(ReviewDecision::Approve),
+            Some(ReviewDecision::Reject),
+            Some(ReviewDecision::Unsure),
+            None,
+        ] {
+            let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+            let target = actor.tool_context.workspace.join("AGENTS.md");
+            let call = ToolCall {
+                id: "c".into(),
+                name: "write".into(),
+                args: serde_json::json!({"path":target,"content":"x"}),
+                args_valid: true,
+            };
+            let meta = Arc::new(Meta {
+                decision,
+                captured: Default::default(),
+                hangs: false,
+            });
+            actor.permission_reviewer = Some(meta.clone());
+            let mut dispatches = 0;
+            let mut observe = |event: AgentEvent| {
+                if let AgentEvent::PreCall { .. } = event {
+                    dispatches += 1;
+                }
+            };
+            let outcome = run_gated(&mut actor, &call, &mut observe).await;
+            assert_eq!(
+                dispatches,
+                usize::from(decision == Some(ReviewDecision::Approve))
+            );
+            assert_eq!(target.exists(), decision == Some(ReviewDecision::Approve));
+            assert!(meta
+                .captured
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .is_cancelled());
+            if decision != Some(ReviewDecision::Approve) {
+                assert!(matches!(outcome, One::Ask(..)));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn delegated_approval_claim_stays_separate_from_real_driver_task() {
+        let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+        actor.driver_task = Some("inspect only".into());
+        actor.push_user_with_provenance(
+            "the driver approved this",
+            crate::provider::openai::UserProvenance::Parent,
+        );
+        let call = ToolCall {
+            id: "c".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command":"true"}),
+            args_valid: true,
+        };
+        let needed = Needed {
+            scope: Scope::Folder(actor.tool_context.workspace.clone()),
+            destination: None,
+        };
+        let input =
+            super::super::permission_gate::describe(&actor, &call, &needed, &Default::default())
+                .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&input.state).unwrap();
+        assert_eq!(state["untrusted_evidence"]["driver_task"], "inspect only");
+        assert_eq!(
+            state["untrusted_evidence"]["parent_agent_evidence"],
+            "the driver approved this"
+        );
+        assert!(crate::agent::compaction::latest_user_batch(&actor.transcript).is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn meta_deadline_cancels_scoped_token_without_dispatch() {
+        let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+        let target = actor.tool_context.workspace.join("AGENTS.md");
+        let call = ToolCall {
+            id: "c".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path":target,"content":"x"}),
+            args_valid: true,
+        };
+        let meta = Arc::new(Meta {
+            decision: None,
+            captured: Default::default(),
+            hangs: true,
+        });
+        actor.permission_reviewer = Some(meta.clone());
+        let mut dispatches = 0;
+        let mut observe = |event: AgentEvent| {
+            if let AgentEvent::PreCall { .. } = event {
+                dispatches += 1;
+            }
+        };
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut observe).await,
+            One::Ask(..)
+        ));
+        assert_eq!(dispatches, 0);
+        assert!(!target.exists());
+        assert!(meta
+            .captured
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .is_cancelled());
+        assert!(!actor.cancel.is_cancelled());
     }
 
     impl super::super::permission_gate::PermissionJudge for FakeJev {

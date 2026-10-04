@@ -270,7 +270,7 @@ pub fn describe(
         "role_policy": if check_role { Some(role.prompt.as_str()) } else { None },
         "untrusted_evidence": { "tool": call.name, "arguments": call.args, "driver_task": actor.driver_task.as_deref().map(|s| crate::tools::bound_output(s, 2048).0),
             "assistant_text": actor.transcript.iter().rev().find_map(|message| match message { crate::provider::openai::ChatMessage::Assistant { content, .. } => content.as_deref(), _ => None }).map(|text| crate::tools::bound_output(text, 1024).0),
-            "parent_agent_evidence": actor.transcript.iter().find_map(|message| match message { crate::provider::openai::ChatMessage::User { content, provenance: crate::provider::openai::UserProvenance::Parent } => Some(crate::tools::bound_output(content, 1024).0), _ => None })
+            "parent_agent_evidence": actor.transcript.iter().rev().find_map(|message| match message { crate::provider::openai::ChatMessage::User { content, provenance: crate::provider::openai::UserProvenance::Parent } => Some(crate::tools::bound_output(content, 1024).0), _ => None })
         }
     }).to_string();
     let size = state.len() + serde_json::to_vec(&questions).ok()?.len();
@@ -359,19 +359,19 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
     let Some(judge) = &actor.permission_judge else {
         return Judged::Ask("Permission review: Jev unavailable; approve once or deny".into());
     };
-    let result = tokio::select! { biased; _ = actor.cancel.cancelled() => return Judged::Interrupted, result = tokio::time::timeout(Duration::from_millis(2500), judge.judge(&input, &actor.cancel)) => result };
+    let review_cancel = actor.cancel.child_token();
+    let _cancel_on_exit = review_cancel.clone().drop_guard();
+    let result = tokio::select! { biased; _ = actor.cancel.cancelled() => return Judged::Interrupted, result = tokio::time::timeout(Duration::from_millis(2500), judge.judge(&input, &review_cancel)) => result };
     match result {
         Ok(Ok(answers)) => match route(&input, &answers, &flags) {
-            Ok(Route::Run) => {
-                Judged::Run(json!({"permission_gate": {"policy_version": 1, "source": "jev"}}))
-            }
+            Ok(Route::Run) => Judged::Run(approval_note(&input, "jev", None)),
             Ok(Route::Review) => {
                 let Some(reviewer) = &actor.permission_reviewer else {
                     return Judged::Ask("Jev: risky or outside project. Metacognition unavailable; approve once or deny".into());
                 };
-                let review = tokio::select! { biased; _ = actor.cancel.cancelled() => return Judged::Interrupted, review = tokio::time::timeout(Duration::from_secs(20), reviewer.review(&input, &actor.cancel)) => review };
+                let review = tokio::select! { biased; _ = actor.cancel.cancelled() => return Judged::Interrupted, review = tokio::time::timeout(Duration::from_secs(20), reviewer.review(&input, &review_cancel)) => review };
                 match review {
-                    Ok(Ok(review)) if review.decision == ReviewDecision::Approve => Judged::Run(json!({"permission_gate": {"policy_version": 1, "source": "metacognition", "reason": review.reason}})),
+                    Ok(Ok(review)) if review.decision == ReviewDecision::Approve => Judged::Run(approval_note(&input, "metacognition", Some(&review.reason))),
                     Ok(Ok(review)) => Judged::Ask(format!("Jev: risky or outside project. Metacognition reviewer output: {:?}. Approve once or deny", review.reason)),
                     _ => Judged::Ask("Jev: risky or outside project. Metacognition unavailable, timed out or malformed; approve once or deny".into()),
                 }
@@ -384,9 +384,37 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
     }
 }
 
+fn approval_note(input: &PermissionReviewInput, source: &str, reason: Option<&str>) -> Value {
+    let mut note = json!({"permission_gate":{"policy_version":1,"source":source}});
+    if let Some(reason) = reason {
+        note["permission_gate"]["reason"] = json!(reason);
+    }
+    if input.questions.contains_key("role_conformance") {
+        note["guard"] = json!({"by":"jev","verdict":"conforms","role":"plan"});
+    }
+    note
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strict_review_answers_never_repair_malformed_authorization() {
+        for text in [
+            r#"{"decision":"approve","reason":""}"#,
+            r#"{"decision":"approve","reason":"ok","extra":true}"#,
+            "approve",
+            r#"{"decision":"maybe","reason":"ok"}"#,
+        ] {
+            assert!(parse_review(text).is_err(), "{text}");
+        }
+        assert!(parse_review(&format!(
+            r#"{{"decision":"approve","reason":"{}"}}"#,
+            "x".repeat(513)
+        ))
+        .is_err());
+    }
 
     #[test]
     fn scanner_tightens_each_mutating_family() {

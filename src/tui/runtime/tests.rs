@@ -554,3 +554,31 @@ async fn a_tabs_editor_keeps_its_cursor_and_history_across_a_switch() {
     assert_eq!(runtime.editor.text(), "x");
     assert_eq!(runtime.editor.area().cursor().1, 1);
 }
+
+#[tokio::test]
+async fn wheel_bursts_accumulate_before_render() {
+    use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+    let mut runtime = Runtime::new(&options(None));
+    runtime.cache.transcript.area = ratatui::layout::Rect::new(0, 0, 40, 10);
+    runtime.ui.follow_bottom = false;
+    for kind in [
+        MouseEventKind::ScrollUp,
+        MouseEventKind::ScrollUp,
+        MouseEventKind::ScrollUp,
+    ] {
+        runtime.handle_terminal_event(Event::Mouse(MouseEvent {
+            kind,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+    assert_eq!(runtime.ui.scroll, 9);
+    runtime.handle_terminal_event(Event::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 1,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert_eq!(runtime.ui.scroll, 6);
+}

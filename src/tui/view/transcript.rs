@@ -256,7 +256,8 @@ pub fn draw(
             if matches!(&b.kind, BlockKind::AssistantStep { text, thinking, .. } if text.is_empty() && thinking.is_empty()) {
                 return (b, std::sync::Arc::new(Vec::new()), map.text.len());
             }
-            let key = format!("{width}:{:?}:{}:{}", b.kind, ui.expanded.contains(&b.id), if matches!(b.kind, BlockKind::Permission(_) | BlockKind::ToolCall { .. }) { ui.tick } else { 0 });
+            let key = layout_key(b, width, ui);
+            let cacheable = !matches!(b.kind, BlockKind::Permission(_));
             if let Some((old, rows, text)) = cache.wrapped.get(&b.id).filter(|(old,_,_)| old == &key) {
                 let _ = old;
                 let offset = map.text.len();
@@ -280,7 +281,7 @@ pub fn draw(
             };
             let mut local = super::selection::TranscriptMap::default();
             let rows = std::sync::Arc::new(super::selection::rows(text, width, &mut local, prefix, body_start));
-            cache.wrapped.insert(b.id.clone(), (key, rows.clone(), local.text.clone()));
+            if cacheable { cache.wrapped.insert(b.id.clone(), (key, rows.clone(), local.text.clone())); }
             let offset = map.text.len();
             map.text.push_str(&local.text);
             (b, rows, offset)
@@ -385,13 +386,10 @@ pub fn draw(
                 Paragraph::new(text_row.line.clone()),
                 Rect::new(area.x + 3, y, width, 1),
             );
-            map.cells.extend(
-                text_row
-                    .cells
-                    .iter()
-                    .copied()
-                    .map(|(x, a, b)| (area.x + 3 + x, y, a + offset, b + offset)),
-            );
+            for &(x, width, a, b) in &text_row.ranges {
+                map.cells
+                    .extend((0..width).map(|dx| (area.x + 3 + x + dx, y, a + offset, b + offset)));
+            }
         }
     }
     shown
@@ -410,10 +408,111 @@ pub(crate) fn copy_block(block: &Block) -> Option<String> {
     Some(clean(text))
 }
 
+fn layout_key(block: &Block, width: u16, ui: &UiState) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    width.hash(&mut h);
+    ui.expanded.contains(&block.id).hash(&mut h);
+    match &block.kind {
+        BlockKind::AssistantStep { revision, .. } => revision.hash(&mut h),
+        BlockKind::ToolCall {
+            name,
+            args,
+            status,
+            output,
+            duration_ms,
+            exit_code,
+            ..
+        } => {
+            name.hash(&mut h);
+            args.to_string().hash(&mut h);
+            format!("{status:?}").hash(&mut h);
+            duration_ms.hash(&mut h);
+            exit_code.hash(&mut h);
+            if ui.expanded.contains(&block.id) {
+                output.hash(&mut h);
+            }
+        }
+        BlockKind::Message { source, text } => {
+            source.hash(&mut h);
+            text.len().hash(&mut h);
+        }
+        _ => std::mem::discriminant(&block.kind).hash(&mut h),
+    }
+    h.finish().to_string()
+}
+
 #[cfg(test)]
 mod selection_tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn streaming_reuses_history_layout_and_ranges_are_graphemes() {
+        let mut state = State::default();
+        state.conversation.blocks.push(Block {
+            id: "history".into(),
+            kind: BlockKind::Message {
+                source: "user".into(),
+                text: "界".repeat(1000),
+            },
+        });
+        state.conversation.blocks.push(Block {
+            id: "live".into(),
+            kind: BlockKind::AssistantStep {
+                text: "one".into(),
+                thinking: String::new(),
+                revision: 1,
+            },
+        });
+        let ui = UiState {
+            follow_bottom: true,
+            ..Default::default()
+        };
+        let mut cache = MarkdownCache::default();
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut map = super::super::selection::TranscriptMap::default();
+        terminal
+            .draw(|f| {
+                draw(
+                    f,
+                    Rect::new(0, 0, 60, 20),
+                    &state,
+                    &ui,
+                    &ui.theme.palette(),
+                    &mut cache,
+                    &mut map,
+                );
+            })
+            .unwrap();
+        let history = cache.wrapped["history"].1.clone();
+        let ranges: usize = history.iter().map(|r| r.ranges.len()).sum();
+        assert_eq!(ranges, 1000);
+        state.conversation.blocks[1].kind = BlockKind::AssistantStep {
+            text: "two".into(),
+            thinking: String::new(),
+            revision: 2,
+        };
+        map = Default::default();
+        terminal
+            .draw(|f| {
+                draw(
+                    f,
+                    Rect::new(0, 0, 60, 20),
+                    &state,
+                    &ui,
+                    &ui.theme.palette(),
+                    &mut cache,
+                    &mut map,
+                );
+            })
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &history,
+            &cache.wrapped["history"].1
+        ));
+        assert!(map.cells.len() <= 60 * 20);
+    }
 
     #[test]
     fn copy_full_source_and_map_narrow_transcript_only() {

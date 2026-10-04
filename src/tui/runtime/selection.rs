@@ -77,8 +77,10 @@ impl Runtime {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
                 if map.area.contains((event.column, event.row).into()) =>
             {
+                if self.ui.selected_block.is_some() || self.ui.follow_bottom {
+                    self.ui.scroll = map.scroll;
+                }
                 self.ui.selected_block = None;
-                self.ui.scroll = map.scroll;
                 self.ui.follow_bottom = false;
                 self.dispatch(Action::Scroll(if event.kind == MouseEventKind::ScrollUp {
                     3

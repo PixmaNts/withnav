@@ -53,7 +53,7 @@ impl TranscriptMap {
 #[derive(Clone, Debug)]
 pub struct Row {
     pub line: Line<'static>,
-    pub cells: Vec<(u16, usize, usize)>,
+    pub ranges: Vec<(u16, u16, usize, usize)>,
 }
 
 /// Use one grapheme-safe wrapping pass for both painting and hit testing.
@@ -104,7 +104,7 @@ pub fn rows(
         }
         let mut row = Row {
             line: Line::default().style(line.style),
-            cells: Vec::new(),
+            ranges: Vec::new(),
         };
         let mut col = 0;
         let mut byte = 0;
@@ -132,7 +132,7 @@ pub fn rows(
                     rows.push(row);
                     row = Row {
                         line: Line::default().style(line.style),
-                        cells: Vec::new(),
+                        ranges: Vec::new(),
                     };
                     col = 0;
                 }
@@ -142,13 +142,8 @@ pub fn rows(
                     row.line.spans.push(Span::styled(g.to_owned(), span.style));
                 }
                 if copyable && byte >= skip {
-                    for dx in 0..w {
-                        row.cells.push((
-                            col + dx,
-                            start + byte - skip,
-                            start + byte - skip + g.len(),
-                        ));
-                    }
+                    row.ranges
+                        .push((col, w, start + byte - skip, start + byte - skip + g.len()));
                 }
                 col += w;
                 byte += g.len();
@@ -186,16 +181,8 @@ mod tests {
             })
             .unwrap();
         for (y, row) in rows.iter().enumerate() {
-            for &(x, a, b) in &row.cells {
+            for &(x, _, a, b) in &row.ranges {
                 let g = &map.text[a..b];
-                if x > 0
-                    && row
-                        .cells
-                        .iter()
-                        .any(|&(px, pa, pb)| px == x - 1 && pa == a && pb == b)
-                {
-                    continue;
-                }
                 assert_eq!(terminal.backend().buffer()[(x, y as u16)].symbol(), g);
             }
         }
@@ -238,7 +225,7 @@ mod tests {
         let rows = rows(Text::from(" 界e\u{301} xyz"), 4, &mut map, 1, 0);
         assert_eq!(map.text, "界e\u{301} xyz\n");
         for row in rows {
-            for (_, a, b) in row.cells {
+            for (_, _, a, b) in row.ranges {
                 assert!(map.text.is_char_boundary(a));
                 assert!(map.text.is_char_boundary(b));
                 assert!(!map.text[a..b].is_empty());

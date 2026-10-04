@@ -3134,3 +3134,48 @@ fn the_header_keeps_the_committed_model_when_the_catalog_says_otherwise() {
         "{header}"
     );
 }
+
+#[test]
+fn permission_layout_is_fresh_with_one_render_cache() {
+    let mut s = asking(prompt("bash", json!({"command":"ls"}), ("folder", "/ws")));
+    let mut ui = UiState {
+        follow_bottom: true,
+        ..Default::default()
+    };
+    let editor = Editor::new();
+    let mut cache = RenderCache::default();
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    for stage in 0..4 {
+        if stage == 1 {
+            ui.deny_message = Some(navai::tui::state::DenyDraft {
+                request_id: "R1".into(),
+                text: "first".into(),
+            });
+        }
+        if stage == 2 {
+            ui.deny_message.as_mut().unwrap().text = "edited".into();
+        }
+        if stage == 3 {
+            s.answered_permission = Some("R1".into());
+        }
+        terminal
+            .draw(|f| navai::tui::view::draw(f, &s, &ui, &editor, &mut cache))
+            .unwrap();
+        let shown = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(
+            shown.contains(match stage {
+                0 => "allow once",
+                1 => "first",
+                2 => "edited",
+                _ => "sent, waiting for the server",
+            }),
+            "{shown}"
+        );
+    }
+}

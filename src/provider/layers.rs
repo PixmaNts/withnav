@@ -1,4 +1,6 @@
 //! Shared layer assignments, without legacy role-alias fallback.
+//! Constructed clients pin assignments for their lifetime. A coherent caller should
+//! later pass a shared assignment snapshot; there is no global reload mechanism here.
 use std::{path::Path, sync::Arc};
 
 use super::{
@@ -129,6 +131,36 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("missing"));
+    }
+
+    #[test]
+    fn implicit_low_wins_over_stale_catalog_default_but_explicit_invalid_fails() {
+        let mut models = catalog();
+        models
+            .models
+            .get_mut("arbitrary-chat-key")
+            .unwrap()
+            .default_variant = Some("obsolete".into());
+        let dir = tempfile::tempdir().unwrap();
+        for (assignment, valid) in [
+            (json!("gateway/combo/chat"), true),
+            (
+                json!({"model":"gateway/combo/chat","variant":"obsolete"}),
+                false,
+            ),
+        ] {
+            std::fs::write(
+                dir.path().join("config.json"),
+                json!({"layers":{"metacognition":assignment}}).to_string(),
+            )
+            .unwrap();
+            let result = assigned(&models, dir.path(), Layer::Metacognition);
+            if valid {
+                assert_eq!(result.unwrap().variant.as_deref(), Some("low"));
+            } else {
+                assert!(result.is_err());
+            }
+        }
     }
 
     #[test]

@@ -168,6 +168,7 @@ impl Service {
             workspace,
             &self.config.config_dir,
         )
+        .map_err(|_| tracing::warn!("root watchdog layers disabled: catalog unavailable"))
         .ok()
         .map(|(m, _)| m);
         let judge = models
@@ -198,6 +199,9 @@ impl Service {
                 &resolved.provider_name,
                 resolved.provider.api_key_env.as_deref(),
             )
+            .map_err(|_| {
+                tracing::warn!("root watchdog metacognition disabled: credentials unavailable")
+            })
             .ok()?;
             Some(Arc::new(ModelReviewer {
                 client: ModelClient::new(
@@ -206,6 +210,9 @@ impl Service {
                     key.clone(),
                     &cache,
                 )
+                .map_err(|_| {
+                    tracing::warn!("root watchdog metacognition disabled: client unavailable")
+                })
                 .ok()?,
                 model: resolved.model.model.clone(),
                 assigned,
@@ -356,6 +363,107 @@ fn apply_review(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn watchdog_transmits_assignment_and_invalid_runtime_variant_asks_driver() {
+        use crate::provider::test_support::{assert_layer_body, layer_chat_fixture};
+        for runtime in [false, true] {
+            for (variant, effort) in [
+                (None, Some("low")),
+                (Some(serde_json::json!("off")), None),
+                (Some(serde_json::Value::Null), None),
+                (Some(serde_json::json!("high")), Some("high")),
+                (Some(serde_json::json!("missing")), None),
+            ] {
+                let invalid = variant == Some(serde_json::json!("missing"));
+                let (dir, server, models) =
+                    layer_chat_fixture(variant, runtime, r#"{"decision":"continue"}"#).await;
+                let assigned = crate::provider::layers::assigned(
+                    &models,
+                    dir.path(),
+                    crate::provider::assignments::Layer::Metacognition,
+                );
+                if invalid && !runtime {
+                    assert!(assigned.is_err());
+                    continue;
+                }
+                let assigned = assigned.unwrap();
+                let cache = Arc::new(ClientCache::new());
+                let resolved = &assigned.resolved;
+                let reviewer = ModelReviewer {
+                    client: ModelClient::new(
+                        &resolved.provider_name,
+                        &resolved.provider,
+                        "test-key".into(),
+                        &cache,
+                    )
+                    .unwrap(),
+                    model: resolved.model.model.clone(),
+                    assigned,
+                    key: "test-key".into(),
+                    cache,
+                    catalog: crate::provider::catalog::ModelCatalog::new(Some(
+                        dir.path().join("data"),
+                    )),
+                };
+                let result = tokio::time::timeout(
+                    Duration::from_secs(3),
+                    review_bounded(Some(&reviewer), &evidence(), &CancellationToken::new()),
+                )
+                .await
+                .unwrap();
+                if invalid {
+                    assert_eq!(result, Review::AskDriver);
+                    assert!(server
+                        .received_requests()
+                        .await
+                        .unwrap()
+                        .iter()
+                        .all(|r| r.method != "POST"));
+                } else {
+                    assert_eq!(result, Review::Continue);
+                    assert_layer_body(&server, effort).await;
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unavailable_provider_never_continues_watchdog() {
+        let (dir, server, models) =
+            crate::provider::test_support::layer_chat_fixture(None, false, "unused").await;
+        server.reset().await;
+        let assigned = crate::provider::layers::assigned(
+            &models,
+            dir.path(),
+            crate::provider::assignments::Layer::Metacognition,
+        )
+        .unwrap();
+        let cache = Arc::new(ClientCache::new());
+        let resolved = &assigned.resolved;
+        let reviewer = ModelReviewer {
+            client: ModelClient::new(
+                &resolved.provider_name,
+                &resolved.provider,
+                "test-key".into(),
+                &cache,
+            )
+            .unwrap(),
+            model: resolved.model.model.clone(),
+            assigned,
+            key: "test-key".into(),
+            cache,
+            catalog: crate::provider::catalog::ModelCatalog::new(Some(dir.path().join("data"))),
+        };
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_secs(3),
+                review_bounded(Some(&reviewer), &evidence(), &CancellationToken::new())
+            )
+            .await
+            .unwrap(),
+            Review::AskDriver
+        );
+    }
     struct FakeReviewer(Review);
     impl ProgressReviewer for FakeReviewer {
         fn review<'a>(

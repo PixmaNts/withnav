@@ -480,6 +480,122 @@ impl Metacognition for FailingCommenter {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn permission_reviewer_transmits_configured_variant_and_upstream_identity() {
+        use crate::agent::permission_gate::{
+            PermissionReviewInput, PermissionReviewer, ReviewDecision,
+        };
+        use crate::provider::test_support::{assert_layer_body, layer_chat_fixture};
+        for runtime in [false, true] {
+            for (variant, effort) in [
+                (None, Some("low")),
+                (Some(serde_json::json!("off")), None),
+                (Some(serde_json::Value::Null), None),
+                (Some(serde_json::json!("high")), Some("high")),
+            ] {
+                let (dir, server, models) = layer_chat_fixture(
+                    variant,
+                    runtime,
+                    r#"{"decision":"approve","reason":"safe"}"#,
+                )
+                .await;
+                let reviewer = LazyCommenter::new(
+                    &models,
+                    "ignored",
+                    dir.path(),
+                    &ModelCatalog::new(Some(dir.path().join("data"))),
+                    Arc::new(ClientCache::new()),
+                    dir.path().join("log"),
+                )
+                .unwrap();
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    reviewer.review(
+                        &PermissionReviewInput {
+                            state: "untrusted call".into(),
+                            questions: Default::default(),
+                        },
+                        &tokio_util::sync::CancellationToken::new(),
+                    ),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert_eq!(result.decision, ReviewDecision::Approve);
+                assert_layer_body(&server, effort).await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_runtime_variant_cannot_approve_permission() {
+        use crate::agent::permission_gate::{PermissionReviewInput, PermissionReviewer};
+        let (dir, server, models) = crate::provider::test_support::layer_chat_fixture(
+            Some(serde_json::json!("missing")),
+            true,
+            r#"{"decision":"approve","reason":"safe"}"#,
+        )
+        .await;
+        let reviewer = LazyCommenter::new(
+            &models,
+            "ignored",
+            dir.path(),
+            &ModelCatalog::new(Some(dir.path().join("data"))),
+            Arc::new(ClientCache::new()),
+            dir.path().join("log"),
+        )
+        .unwrap();
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            reviewer.review(
+                &PermissionReviewInput {
+                    state: "call".into(),
+                    questions: Default::default()
+                },
+                &tokio_util::sync::CancellationToken::new()
+            )
+        )
+        .await
+        .unwrap()
+        .is_err());
+        assert!(server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.method != "POST"));
+    }
+
+    #[tokio::test]
+    async fn unavailable_provider_cannot_approve_permission() {
+        use crate::agent::permission_gate::{PermissionReviewInput, PermissionReviewer};
+        let (dir, server, models) =
+            crate::provider::test_support::layer_chat_fixture(None, false, "unused").await;
+        server.reset().await;
+        let reviewer = LazyCommenter::new(
+            &models,
+            "ignored",
+            dir.path(),
+            &ModelCatalog::new(Some(dir.path().join("data"))),
+            Arc::new(ClientCache::new()),
+            dir.path().join("log"),
+        )
+        .unwrap();
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            reviewer.review(
+                &PermissionReviewInput {
+                    state: "call".into(),
+                    questions: Default::default()
+                },
+                &tokio_util::sync::CancellationToken::new()
+            )
+        )
+        .await
+        .unwrap()
+        .is_err());
+    }
+
     /// A provider nothing listens on, with the three navigator aliases on
     /// it. `metacognition_window` of `None` leaves that alias without a
     /// window, so only discovery could supply one.

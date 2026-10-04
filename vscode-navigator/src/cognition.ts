@@ -26,6 +26,7 @@ const RECONNECT_DELAY_MS = 500;
  * networking lives here; the webview never sees HTTP.
  */
 class ConversationState {
+  title = "Parent conversation";
   children = new Map<string, ChildInfo>();
   childStateCursors = new Map<string, string>();
   childStateSeq = new Map<string, number>();
@@ -63,6 +64,7 @@ class ConversationState {
   childReadQueue: Set<string> = new Set();
   childReadsAttempted: Set<string> = new Set();
   childReadTimer: ReturnType<typeof setTimeout> | undefined;
+  childRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   replayThrough: number | undefined;
   previousRunThrough: number = -1;
   toolSummaries: Map<string, string> = new Map();
@@ -72,12 +74,11 @@ class ConversationState {
 export class CognitionBackend implements ChatBackend {
   publishSubagents(): void { this.emitChildren(); }
   isReadOnly(): boolean { return this.state.readOnly; }
-  private parentState(): ConversationState { return this.state.parent ?? this.state; }
   private emitChildren(): void {
     const parent = this.parentState();
     if (parent.session ?? parent.resumeId) this.emit({ type: "subagents", parentId: (parent.session ?? parent.resumeId)!, items: [...parent.children.values()].map(c => ({ ...c })) });
     this.emit({ type: "childView", child: this.state.readOnly ? parent.children.get(this.state.session!) : undefined,
-      parentId: this.state.readOnly ? parent.session ?? parent.resumeId : undefined, parentTitle: "parent conversation" });
+      parentId: this.state.readOnly ? parent.session ?? parent.resumeId : undefined, parentTitle: parent.title });
   }
   private validateChild(parentId: string, childId: string, generation: number): { parent: ConversationState; child: ChildInfo } {
     this.checkGeneration(generation);
@@ -86,58 +87,63 @@ export class CognitionBackend implements ChatBackend {
     if ((parent.session ?? parent.resumeId) !== parentId || !child) throw new Error("This subagent does not belong to the open parent conversation.");
     return { parent, child };
   }
-  async openChild(parentId: string, childId: string, generation = this.currentGeneration()): Promise<void> {
+  private panels = new Set<CognitionBackend>();
+  private panelOwner?: CognitionBackend;
+  private terminalChild = false;
+  private parentState(): ConversationState { return this.state.parent ?? this.state; }
+  async openChild(parentId: string, childId: string, generation = this.currentGeneration()): Promise<ChatBackend> {
     const { parent } = this.validateChild(parentId, childId, generation);
-    if (this.state.readOnly) throw new Error("Return to the parent before opening another child.");
     const metadata = await this.request(`/v1/sessions/${encodeURIComponent(childId)}`, { method: "GET" });
     this.validateChild(parentId, childId, generation);
     if (metadata?.parent_session_id !== parentId || metadata?.promptable !== false) throw new Error("The server did not confirm a read-only child of this parent.");
-    this.abortStream();
-    const destination = this.currentGeneration();
-    const childState = new ConversationState();
-    childState.streamGeneration = destination;
-    childState.parent = parent;
-    childState.readOnly = true;
-    childState.session = childId;
-    childState.agent = typeof metadata.agent === "string" ? metadata.agent : parent.children.get(childId)!.agent;
-    this.state = childState;
-    this.emit({ type: "conversationOpened", id: childId, title: `${childState.agent} · read-only subagent` });
-    this.emit({ type: "history", items: [] });
+    this.seedChild(parent, childId, metadata);
+    const panel = new CognitionBackend();
+    panel.endpoint = this.endpoint;
+    panel.state.session = childId;
+    panel.state.parent = parent;
+    panel.state.readOnly = true;
+    panel.state.streamGeneration = generation;
+    panel.panelOwner = this;
+    panel.terminalChild = this.isTerminal(parent.children.get(childId)!.state);
+    this.panels.add(panel);
     this.emitChildren();
-    this.emit({ type: "status", state: "ready" });
-    void this.connect(); // GET replay + live only: never POST resume.
+    return panel;
   }
-  async backToParent(parentId: string, generation = this.currentGeneration()): Promise<void> {
-    this.checkGeneration(generation);
-    const parent = this.state.parent;
-    if (!parent || (parent.session ?? parent.resumeId) !== parentId) throw new Error("This parent is no longer open.");
-    this.abortStream();
-    const destination = this.currentGeneration();
-    this.state = parent;
-    parent.streamGeneration = destination;
-    parent.transcript = parent.transcript.map(m => ({ ...m, generation: destination }));
-    this.bindControlOwners();
-    this.emit({ type: "conversationOpened", id: parent.session ?? parent.resumeId, title: "Parent conversation" });
-    this.emit({ type: "history", items: this.history() });
+  private isTerminal(status: ChildInfo["state"]): boolean { return ["done", "failed", "stopped"].includes(status); }
+  private seedChild(parent: ConversationState, id: string, metadata: any): void {
+    const child = parent.children.get(id);
+    if (!child) return;
+    const status = this.childStatus(metadata?.child_status);
+    if (status !== "unknown") child.state = status;
+    if (typeof metadata?.agent === "string") child.agent = metadata.agent;
+    child.revision = (child.revision ?? 0) + 1;
     this.emitChildren();
-    this.emitModels();
-    this.emit({ type: "status", state: parent.currentTurn ? "busy" : "ready" });
-    this.resumePermissionReads();
-    void this.connect();
+    this.panelOwner?.emitChildren();
   }
-  async controlChild(parentId: string, childId: string, action: "stop" | "continue", generation = this.currentGeneration()): Promise<void> {
+  captureChildControl(parentId: string, childId: string, action: "stop" | "continue", generation = this.currentGeneration()): object {
+    if (this.panelOwner) return this.panelOwner.captureChildControl(parentId, childId, action, generation);
     const { parent, child } = this.validateChild(parentId, childId, generation);
+    if (child.pending || child.state === "unknown" || this.isTerminal(child.state) ||
+        (action === "continue" && !["budget", "watchdog"].includes(child.state))) throw new Error("This subagent cannot perform that action now.");
+    return { parent, child, revision: child.revision ?? 0, state: child.state };
+  }
+  async controlChild(parentId: string, childId: string, action: "stop" | "continue", generation = this.currentGeneration(), descriptor?: object): Promise<void> {
+    if (this.panelOwner) return this.panelOwner.controlChild(parentId, childId, action, generation, descriptor);
+    const { parent, child } = this.validateChild(parentId, childId, generation);
+    if (descriptor) {
+      const d = descriptor as any;
+      if (d.parent !== parent || d.child !== child || d.revision !== (child.revision ?? 0) || d.state !== child.state) throw new Error("The subagent changed, try again.");
+    }
     if (!["stop", "continue"].includes(action) || ["done", "failed", "stopped"].includes(child.state) ||
-        (action === "continue" && !["budget", "watchdog"].includes(child.state)) ||
-        (action === "continue" && child.state === "watchdog" && !child.pauseToken)) throw new Error("This subagent cannot perform that action now.");
+        (action === "continue" && !["budget", "watchdog"].includes(child.state))) throw new Error("This subagent cannot perform that action now.");
     if (child.pending) return;
     child.pending = true; child.error = undefined; this.emitChildren();
     try {
       const result = await this.request(action === "stop" ? `/v1/sessions/${encodeURIComponent(childId)}/stop` :
         `/v1/sessions/${encodeURIComponent(parentId)}/children/${encodeURIComponent(childId)}/continue`,
-      { method: "POST", ...(action === "continue" ? { body: JSON.stringify({ pause_token: child.pauseToken ?? null }) } : {}) }, "operation");
+      { method: "POST", ...(action === "continue" ? { body: JSON.stringify({ pause_token: null }) } : {}) }, "operation");
       if (result?.accepted !== true) throw new Error(String(result?.error ?? `${action} refused: ${result?.actor_state ?? "not accepted"}`));
-      child.state = action === "stop" ? "stopped" : "running"; child.pauseToken = undefined;
+
     } catch (error) { child.error = this.errorText(error); }
     finally { child.pending = false; if (parent === this.parentState() && generation === this.currentGeneration()) this.emitChildren(); }
   }
@@ -356,8 +362,9 @@ export class CognitionBackend implements ChatBackend {
     const body = await this.request(`/v1/sessions?${this.workspaceQuery()}`, { method: "GET" });
     const parent = this.parentState();
     for (const s of Array.isArray(body?.sessions) ? body.sessions : []) {
-      if (typeof s.id === "string" && s.parent_session_id === (parent.session ?? parent.resumeId) && s.promptable === false && !parent.children.has(s.id)) {
-        parent.children.set(s.id, { id: s.id, agent: typeof s.agent === "string" ? s.agent : "subagent", goal: "", state: this.childStatus(s.child_status) });
+      if (typeof s.id === "string" && s.parent_session_id === (parent.session ?? parent.resumeId) && s.promptable === false) {
+        if (!parent.children.has(s.id)) parent.children.set(s.id, { id: s.id, agent: typeof s.agent === "string" ? s.agent : "subagent", goal: "", state: this.childStatus(s.child_status) });
+        else if (this.isTerminal(this.childStatus(s.child_status))) this.seedChild(parent, s.id, s);
       }
     }
     this.emitChildren();
@@ -782,6 +789,8 @@ export class CognitionBackend implements ChatBackend {
 
   /** Stops the SSE fetch of the running stream, if any. */
   private abortStream(): void {
+    for (const panel of this.panels) panel.dispose();
+    this.panels.clear();
     this.cancelPermissionReads();
     this.state.streamGeneration = ++this.nextGeneration;
     this.state.streaming = false;
@@ -840,7 +849,8 @@ export class CognitionBackend implements ChatBackend {
     // session with the cursor, or picking up whatever session is current
     // (a send after Stop may have created one while this drained), unless
     // there is none (stop / new conversation / server restart).
-    if (this.state.session !== undefined) {
+    if (this.state.readOnly && this.state.session && !this.terminalChild) await this.reconcileChild(this.state.session, this.parentState());
+    if (this.state.session !== undefined && !this.terminalChild) {
       setTimeout(() => void this.connect(), RECONNECT_DELAY_MS);
     }
   }
@@ -956,6 +966,8 @@ export class CognitionBackend implements ChatBackend {
   }
 
   cancelPermissionReads(): void {
+    for (const timer of this.state.childRetryTimers.values()) clearTimeout(timer);
+    this.state.childRetryTimers.clear();
     if (this.state.childReadTimer) clearTimeout(this.state.childReadTimer);
     this.state.childReadTimer = undefined;
     this.state.childReadQueue.clear();
@@ -965,7 +977,7 @@ export class CognitionBackend implements ChatBackend {
   }
 
   resumePermissionReads(): void {
-    if (this.isReadOnly()) return;
+    if (this.isReadOnly()) { void this.connect(); return; }
     for (const child of this.state.children.values()) if (!["done", "failed", "stopped"].includes(child.state)) this.scheduleChildRead(child.id);
     const completed = new Set(this.state.transcript.filter(m => m.type === "permissionCall").map(m => m.type === "permissionCall" ? m.requestId : ""));
     for (const card of this.state.controls.permissions.values()) {
@@ -975,6 +987,7 @@ export class CognitionBackend implements ChatBackend {
 
   dispose(): void {
     this.disposed = true;
+    this.panelOwner?.panels.delete(this);
     this.abortStream();
     this.listeners.clear();
   }
@@ -1009,9 +1022,10 @@ export class CognitionBackend implements ChatBackend {
             this.state.childReadsAttempted.delete(`state:${child}`);
             const origin = this.state;
             const generation = this.currentGeneration();
-            this.state.childReadTimer = setTimeout(() => {
+            this.state.childRetryTimers.set(child, setTimeout(() => {
+              origin.childRetryTimers.delete(child);
               if (this.state === origin && this.currentGeneration() === generation && !this.disposed) this.scheduleChildRead(child);
-            }, RECONNECT_DELAY_MS);
+            }, RECONNECT_DELAY_MS));
           }
           this.drainChildReads();
         }
@@ -1052,6 +1066,7 @@ export class CognitionBackend implements ChatBackend {
           const raw = buffer.slice(0, split);
           buffer = buffer.slice(split + 2);
           const frame = this.parseFrame(raw);
+          if (frame?.event === "resync") { this.state.childStateCursors.delete(child); return; }
           const event = frame?.envelope;
           if (!event) continue;
           if (frame?.id && generation === this.currentGeneration()) this.state.childStateCursors.set(child, frame.id);
@@ -1090,7 +1105,7 @@ export class CognitionBackend implements ChatBackend {
       case "waiting_for_permission": case "permission": case "waiting_permission": case "awaiting_permission": return "permission";
       case "out_of_steps": case "step_budget_exhausted": case "parked": return "budget";
       case "doubt": case "watchdog_paused": return "watchdog";
-      default: return "running";
+      default: return "unknown";
     }
   }
   private observeChildren(e: WireEnvelope): void {
@@ -1105,13 +1120,19 @@ export class CognitionBackend implements ChatBackend {
       if (typeof p.goal === "string") child.goal = p.goal.slice(0, 500);
       if (e.kind === "subagent.done") { child.state = this.childStatus(p.outcome); child.pauseToken = undefined; }
       else if (e.kind === "subagent.watchdog" && !["done", "failed", "stopped"].includes(child.state)) {
-        if (p.verdict === "doubt") child.state = "watchdog";
+        if (p.verdict === "doubt" || p.verdict === "stuck") child.state = "watchdog";
         if (p.verdict === "active" && child.state === "watchdog") child.state = "running";
       }
       parent.children.set(id, child);
+      if (typeof p.reason === "string") child.reason = p.reason.slice(0,500);
+      if (typeof p.delivery === "string") child.delivery = p.delivery;
       if (!this.isReadOnly() && e.kind === "subagent.spawned" && !["done", "failed", "stopped"].includes(child.state)) this.scheduleChildRead(id);
     } else {
-      if (this.state.readOnly && id && typeof e.seq === "number") parent.childStateSeq.set(id, Math.max(parent.childStateSeq.get(id) ?? -1, e.seq));
+      if (this.state.readOnly && id && typeof e.seq === "number") {
+        if (this.isTerminal(parent.children.get(id)?.state ?? "unknown")) return;
+        if (e.seq <= (parent.childStateSeq.get(id) ?? -1)) return;
+        parent.childStateSeq.set(id, e.seq);
+      }
       if (e.kind === "permission.resolved" && !id) {
         const card = this.state.controls.permissions.get(p.request_id); id = card?.childSessionId;
       }
@@ -1125,10 +1146,28 @@ export class CognitionBackend implements ChatBackend {
         child.pauseToken = typeof token?.incarnation === "string" && typeof token?.hold_id === "string" ? token : undefined;
       } else if (e.kind === "command.result" && p.name === "watchdog" && p.data?.resolution &&
           JSON.stringify(p.data.pause_token) === JSON.stringify(child.pauseToken)) { child.state = "running"; child.pauseToken = undefined; }
-      else if (e.kind === "session.end") child.state = "stopped";
+      else if (e.kind === "session.end" || e.kind === "turn.end") { void this.reconcileChild(id!, parent); return; }
       else return;
     }
+    if (id) {
+      const child = parent.children.get(id);
+      if (child) child.revision = (child.revision ?? 0) + 1;
+    }
     this.emitChildren();
+    this.panelOwner?.emitChildren();
+  }
+
+  private async reconcileChild(id: string, parent: ConversationState): Promise<void> {
+    const generation = this.currentGeneration();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const metadata = await this.request(`/v1/sessions/${encodeURIComponent(id)}`, { method: "GET" });
+        if (generation !== this.currentGeneration()) return;
+        this.seedChild(parent, id, metadata);
+        if (this.state.readOnly) this.terminalChild = this.isTerminal(parent.children.get(id)!.state);
+        return;
+      } catch { if (generation !== this.currentGeneration()) return; await new Promise(resolve => setTimeout(resolve, 100 * (attempt + 1))); }
+    }
   }
 
   private mapEvent(envelope: WireEnvelope): HostToWebview | undefined {
@@ -1275,6 +1314,7 @@ export class CognitionBackend implements ChatBackend {
   }
 
   private emit(message: HostToWebview): void {
+    if (message.type === "conversationOpened") this.state.title = message.title;
     if (message.generation !== undefined && message.generation !== this.state.streamGeneration) return;
     message = { ...message, generation: this.state.streamGeneration };
     if (message.type === "permission" && this.state.session) this.state.controlOwners.set(`permission:${message.card.requestId}`, { session: this.state.session, generation: this.state.streamGeneration });

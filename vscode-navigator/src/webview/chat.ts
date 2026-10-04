@@ -38,14 +38,14 @@ const childrenRows = document.createElement("div"); childrenSection.append(child
 form.before(childrenSection);
 let readOnly = false;
 let parentId = "";
-const childStates: Record<ChildInfo["state"], string> = { running: "Running", permission: "Waiting for permission", budget: "Out of steps", watchdog: "In doubt · watchdog paused", done: "Done", failed: "Failed", stopped: "Stopped" };
+const childStates: Record<ChildInfo["state"], string> = { unknown: "Unknown", running: "Running", permission: "Waiting for permission", budget: "Out of steps", watchdog: "In doubt · watchdog paused", done: "Done", failed: "Failed", stopped: "Stopped" };
 function childActions(child: ChildInfo): HTMLElement {
   const actions = el("div", "child-actions");
   const boundPost = identity.bind(rawPost);
   for (const action of ["continue", "stop"] as const) {
-    if (["done", "failed", "stopped"].includes(child.state) || (action === "continue" && !["budget", "watchdog"].includes(child.state))) continue;
+    if (["unknown", "done", "failed", "stopped"].includes(child.state) || (action === "continue" && !["budget", "watchdog"].includes(child.state))) continue;
     const button = actionButton(action === "stop" ? "Stop" : "Continue", () => boundPost({ type: "controlChild", parentId, childId: child.id, action }));
-    button.disabled = !!child.pending || (action === "continue" && child.state === "watchdog" && !child.pauseToken);
+    button.disabled = !!child.pending;
     if (button.disabled && !child.pending) button.title = "Pause token not yet available. Open the transcript to read the pause.";
     actions.append(button);
   }
@@ -408,9 +408,7 @@ function renderPermission(event: Extract<HostToWebview, { type: "permission" }>)
   if (readOnly) {
     const note = el("article", "control-card");
     note.append(el("h3", "control-title", `Permission needed · ${event.card.agent}`), el("p", "permission-reason", event.card.reason));
-    const owner = parentId;
-    const boundPost = identity.bind(rawPost);
-    note.append(actionButton("Review in parent conversation", () => boundPost({ type: "backToParent", parentId: owner })));
+    note.append(el("p", "", `Review this permission in the parent conversation (${parentId}).`));
     add(note); return;
   }
   const post = identity.bind(rawPost);
@@ -510,7 +508,9 @@ function receive(event: HostToWebview): void {
         const row = el("article", "child-row");
         const open = actionButton(`${child.agent} · ${childStates[child.state]}`, () => boundPost({ type: "openChild", parentId: event.parentId, childId: child.id }));
         open.classList.add("child-open");
-        row.append(open, el("p", "child-goal", child.goal.slice(0,500)), childActions(child)); childrenRows.append(row);
+        row.append(open, el("p", "child-goal", child.goal.slice(0,500)), childActions(child));
+        if (child.reason || child.delivery) row.append(el("p", "child-goal", [child.reason, child.delivery].filter(Boolean).join(" · ")));
+        childrenRows.append(row);
       }
       break;
     }
@@ -519,12 +519,11 @@ function receive(event: HostToWebview): void {
       if (event.child) parentId = event.parentId ?? "";
       childHeader.replaceChildren(); childHeader.hidden = !readOnly;
       if (event.child) {
-        const owner = parentId;
-        const boundPost = identity.bind(rawPost);
-        childHeader.append(actionButton(`Back to ${event.parentTitle ?? "parent"}`, () => boundPost({ type: "backToParent", parentId: owner })),
+        childHeader.append(el("p", "", `Read-only · subagent of ${event.parentTitle ?? "parent conversation"}`),
           el("strong", "", `${event.child.agent} · ${childStates[event.child.state]}`), el("p", "", "Read-only subagent transcript. Send messages and answer permissions in the parent."), childActions(event.child));
         childrenSection.hidden = true;
       }
+      form.hidden = readOnly;
       prompt.placeholder = readOnly ? "Read-only · return to parent to send" : "Message Navai…";
       closePalette(); updateControls(); break;
     }

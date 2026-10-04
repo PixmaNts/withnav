@@ -7,7 +7,8 @@ requests land in `develop`.
 ### Added
 
 - **VS Code chat: follow subagents.** A Subagents section lists each delegated goal and state.
-  Open a child's read-only transcript and return to its parent without resuming or prompting it.
+  Open a child's read-only transcript in its own editor tab without leaving the parent chat,
+  resuming the child or prompting it. Parent drafts and context stay unchanged while inspecting.
   Stop or continue a parked child with confirmation; refusals stay visible. Child permissions
   remain reviewable in the parent, and delivered results keep their untrusted-subagent label.
 

@@ -101,7 +101,8 @@ export interface ModelInfo {
 export interface CommandInfo { name: string; description: string; args_hint: string }
 export interface ChildInfo {
   id: string; agent: string; goal: string;
-  state: "running" | "permission" | "budget" | "watchdog" | "done" | "failed" | "stopped";
+  state: "unknown" | "running" | "permission" | "budget" | "watchdog" | "done" | "failed" | "stopped";
+  revision?: number; reason?: string; delivery?: string;
   pauseToken?: PauseToken;
   pending?: boolean;
   error?: string;
@@ -111,7 +112,6 @@ export interface ComposerOperation { owner: object; generation: number }
 /** Webview -> host messages. */
 export type WebviewToHost = { generation?: number } & (
   | { type: "openChild"; parentId: string; childId: string }
-  | { type: "backToParent"; parentId: string }
   | { type: "controlChild"; parentId: string; childId: string; action: "stop" | "continue" }
   /** The webview finished loading and wants the history. */
   | { type: "ready" }
@@ -136,10 +136,11 @@ export type WebviewToHost = { generation?: number } & (
 
 /** What the chat view needs from the host side; implemented by the cognition bridge. */
 export interface ChatBackend {
+  dispose(): void;
+  captureChildControl(parentId: string, childId: string, action: "stop" | "continue", generation?: number): object;
   publishSubagents(): void;
-  openChild(parentId: string, childId: string, generation?: number): Promise<void>;
-  backToParent(parentId: string, generation?: number): Promise<void>;
-  controlChild(parentId: string, childId: string, action: "stop" | "continue", generation?: number): Promise<void>;
+  openChild(parentId: string, childId: string, generation?: number): Promise<ChatBackend>;
+  controlChild(parentId: string, childId: string, action: "stop" | "continue", generation?: number, descriptor?: object): Promise<void>;
   isReadOnly(): boolean;
   captureOperation(): ComposerOperation;
   ownsOperation(operation: ComposerOperation): boolean;

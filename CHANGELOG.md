@@ -12,6 +12,8 @@ requests land in `develop`.
 
 ### Fixed
 
+- **Terminal client**: multiline drafts grow to 20 text lines, then scroll with the cursor, while leaving room for the conversation on smaller terminals.
+
 - **Terminal client**: arrow keys and Home/End now move the cursor in message drafts, including between lines.
 
 - **Terminal client**: a 1M context window no longer shows as `1000k`.

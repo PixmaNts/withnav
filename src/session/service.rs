@@ -2064,6 +2064,20 @@ impl Service {
             &self.config.config_dir,
         );
         actor.automatic_permission_review = execution.automatic_permission_review;
+        match crate::settings::load(&self.config.config_dir)
+            .map_err(|e| e.to_string())
+            .and_then(|settings| settings.permissions_scratch_dir())
+        {
+            Ok(Some(path)) => match crate::agent::scratch::prepare(&path) {
+                Ok(path) => {
+                    actor.tool_context.writable_roots.push(path.clone());
+                    actor.scratch_dir = Some(path.clone());
+                }
+                Err(error) => tracing::warn!("scratch directory disabled: {error}"),
+            },
+            Ok(None) => {}
+            Err(error) => tracing::warn!("scratch directory disabled: {error}"),
+        }
         if let Some((_, _, _, driver_task)) = &child_policy {
             actor.driver_task = driver_task.clone();
         }

@@ -113,6 +113,11 @@ are read without depending on a newer server event enum. Missing data is not gue
 
 ## Data flows
 
+Permission review includes outside-project write/edit destinations, binding approvals to one canonical
+file without expanding writable roots. Sessions install private scratch storage from
+`permissions.scratch_dir` (default `<temp_dir>/navai`, false/null disables); the owned, non-symlink
+0700 directory is a writable root and counts as project-local in review, including child sessions.
+
 **Key to screen (terminal client).** A key reaches `runtime.rs`, which calls `input::route_key`: it
 edits the editor or returns an `Action`. `reducer::handle_action` changes the state and returns
 `Effect`s. The `Executor` runs each effect: an HTTP call through `client.rs`, or a subscription

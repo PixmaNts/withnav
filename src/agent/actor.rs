@@ -45,6 +45,7 @@ pub enum PendingInteraction {
 }
 
 pub struct AgentActor {
+    pub scratch_dir: Option<std::path::PathBuf>,
     pub automatic_permission_review: bool,
     pub permission_judge: Option<Arc<dyn super::permission_gate::PermissionJudge>>,
     pub permission_reviewer: Option<Arc<dyn super::permission_gate::PermissionReviewer>>,
@@ -128,6 +129,7 @@ impl AgentActor {
         cancel: CancellationToken,
     ) -> Self {
         Self {
+            scratch_dir: None,
             automatic_permission_review: true,
             permission_judge: None,
             permission_reviewer: None,

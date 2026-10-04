@@ -187,6 +187,12 @@ _Avoid_: tool, action (an action is what a pipeline branch decides)
 
 ## Permissions
 
+**Scratch directory**:
+Private shared temporary storage, default `<temp_dir>/navai`, available across projects and children.
+Scratch changes count as project-local during review. `permissions.scratch_dir` selects an absolute
+path or disables it with false/null. It must be a real directory owned by the current user, mode 0700.
+Outside-project file changes receive review like bash effects; approval never extends writable roots.
+
 **Permission review**:
 An advisory per-call classification by the instinct, followed for risky or outside-project
 mutations by synchronous metacognition review. Only explicit approval runs those calls;

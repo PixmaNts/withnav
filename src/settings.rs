@@ -39,6 +39,20 @@ pub struct Settings {
 }
 
 impl Settings {
+    pub fn permissions_scratch_dir(&self) -> Result<Option<PathBuf>, String> {
+        match self
+            .root
+            .get("permissions")
+            .and_then(|p| p.get("scratch_dir"))
+        {
+            None => Ok(Some(std::env::temp_dir().join("navai"))),
+            Some(Value::Null) | Some(Value::Bool(false)) => Ok(None),
+            Some(Value::String(path)) if Path::new(path).is_absolute() => {
+                Ok(Some(PathBuf::from(path)))
+            }
+            _ => Err("permissions.scratch_dir must be an absolute path, false or null".into()),
+        }
+    }
     /// Root progress-check interval; zero disables supervision.
     pub fn agent_watchdog_interval_secs(&self) -> Result<u64, String> {
         let Some(value) = self

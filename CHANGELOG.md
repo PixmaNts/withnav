@@ -4,6 +4,10 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- **Terminal client**: `/skills` opens a searchable list of this conversation's skills. Choose one to fill `/skill <name>`, add your request, and send to load its instructions before the agent starts thinking.
+
 ## [0.4.1] - 2026-10-04
 
 Fixes from daily use of 0.4.0, mostly in the terminal client.

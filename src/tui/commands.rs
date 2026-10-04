@@ -28,6 +28,11 @@ pub const CATALOG: &[Command] = &[
         args_hint: "[alias]",
     },
     Command {
+        name: "/skills",
+        description: "choose a skill to load for your next message",
+        args_hint: "",
+    },
+    Command {
         name: "/variant",
         description: "choose the model variant for this conversation",
         args_hint: "[name|off]",
@@ -131,6 +136,7 @@ pub fn palette_action(row: &PaletteRow, mode: Mode, revision: Option<u64>) -> Op
 }
 
 pub const KEYS: &[(&str, &str)] = &[
+    ("/skills", "choose a skill; enter fills /skill <name>"),
     ("enter", "send / choose"),
     ("alt+enter / ctrl+j", "newline"),
     ("ctrl+p / /", "commands"),
@@ -204,6 +210,14 @@ pub enum Routed {
 /// close ones.
 pub fn route(line: &str, mode: Mode) -> Routed {
     if let Some(rest) = line.strip_prefix("//") {
+        // Preserve the escape until submission so a literal /skill is never a selection.
+        if rest == "skill"
+            || rest
+                .strip_prefix("skill")
+                .is_some_and(|tail| tail.starts_with(char::is_whitespace))
+        {
+            return Routed::Message(line.to_string());
+        }
         return Routed::Message(format!("/{rest}"));
     }
     let Some(rest) = line.strip_prefix('/') else {
@@ -215,6 +229,13 @@ pub fn route(line: &str, mode: Mode) -> Routed {
     };
     if name.is_empty() {
         return Routed::Message(line.to_string());
+    }
+    if name == "skill" {
+        return if arguments.is_empty() {
+            Routed::Refused("usage: /skill <name> [request]".into())
+        } else {
+            Routed::Message(line.to_string())
+        };
     }
     match local_action(name, arguments, mode) {
         Local::Run(action) => Routed::Local(action),
@@ -265,6 +286,7 @@ pub fn command_action(name: &str, mode: Mode) -> Option<Action> {
         "/new" => Action::NewConversation,
         "/sessions" => Action::OpenOverlay(Overlay::Sessions),
         "/model" => Action::OpenOverlay(Overlay::Models),
+        "/skills" => Action::OpenOverlay(Overlay::Skills),
         "/variant" => Action::OpenOverlay(Overlay::Variants),
         "/stop" => Action::Stop,
         "/mode" => Action::SetMode(match mode {
@@ -277,6 +299,23 @@ pub fn command_action(name: &str, mode: Mode) -> Option<Action> {
         "/quit" => Action::Quit,
         _ => return None,
     })
+}
+
+/// Shared filtering keeps the selected name and the rendered description in sync.
+pub fn skill_rows<'a>(state: &'a State, filter: &str) -> Vec<&'a crate::bus::event::SkillEntry> {
+    let filter = filter.to_lowercase();
+    if state.skills.disabled_reason.is_some() {
+        return vec![];
+    }
+    state
+        .skills
+        .skills
+        .iter()
+        .filter(|skill| {
+            skill.name.to_lowercase().contains(&filter)
+                || skill.description.to_lowercase().contains(&filter)
+        })
+        .collect()
 }
 
 pub fn key_to_action(key: KeyEvent) -> Option<Action> {

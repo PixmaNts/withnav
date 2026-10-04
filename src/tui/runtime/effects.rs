@@ -178,6 +178,15 @@ impl Executor {
                     }
                 });
             }
+            Effect::FetchSkills(session_id) => {
+                let client = self.client.clone();
+                self.spawn_event(async move {
+                    ClientEvent::Skills {
+                        generation,
+                        result: client.skills(&session_id).await,
+                    }
+                });
+            }
             Effect::ListSessions => {
                 let (client, workspace) = (self.client.clone(), ctx.workspace.clone());
                 self.spawn_event(async move {

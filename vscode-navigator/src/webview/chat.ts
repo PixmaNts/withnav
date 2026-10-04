@@ -1,5 +1,6 @@
 /// <reference lib="dom" />
-import type { HostToWebview, WebviewToHost } from "../chatProtocol";
+import type { HostToWebview, WebviewToHost, PermissionEvidence, PermissionDecision } from "../chatProtocol";
+import { permissionOutcome } from "../eventView";
 import { mountConversations } from "./conversations";
 import { diffKind, parseWake } from "./wake";
 
@@ -35,10 +36,14 @@ let pendingQuestion = false;
 let stickToBottom = true;
 /** True while a history replay renders: only live wakes get the arrival cue. */
 let replaying = false;
+let sessionId = "";
+let sending = false;
+const permissionCards = new Map<string, { root: HTMLElement; outcome: HTMLElement; controls: HTMLElement; call: HTMLElement }>();
+const pauseCards = new Map<string, { outcome: HTMLElement; controls: HTMLElement }>();
 
 function updateControls(): void {
   prompt.disabled = state === "connecting";
-  send.disabled = prompt.disabled || !prompt.value.trim();
+  send.disabled = prompt.disabled || sending || !prompt.value.trim();
   stop.hidden = state !== "busy";
 }
 
@@ -69,10 +74,17 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
   return node;
 }
 
-function message(author: string, text: string, context?: string): void {
+function message(author: string, text: string, context?: string, skill?: { name: string; origin: string }, source?: string): void {
   if (author === "navigator") { add(navigatorNote(text)); return; }
   const root = el("article", `message ${author}`);
-  root.append(el("div", "byline", author === "driver" ? pendingQuestion ? "You · Answer" : "You" : author === "cognition" ? "Cognition" : "Navigator"));
+  const byline = el("div", "byline", author === "driver" ? pendingQuestion ? "You · Answer" : "You" : author === "cognition" ? "Cognition" : "Subagent output · untrusted data");
+  if (author === "subagent" && source) byline.title = `Source: ${source}`;
+  if (skill) {
+    const note = el("span", "skill-note", `skill: ${skill.name}`);
+    note.title = `Selected skill · ${skill.origin}`;
+    byline.append(note);
+  }
+  root.append(byline);
   const body = el("div", "message-body");
   renderMarkdown(body, text);
   root.append(body);
@@ -255,10 +267,109 @@ function activity(item: Turn, event: Extract<HostToWebview, { type: "tool" }>): 
   }
   row.title = summary;
   row.setAttribute("aria-label", `${event.phase === "start" ? "Running" : event.ok === false ? "Failed" : "Finished"}: ${summary}`);
+  if (event.evidence) row.append(evidenceDetails(event.evidence));
   follow();
 }
 
+function evidenceDetails(evidence: PermissionEvidence): HTMLElement {
+  const details = el("details", "approval-evidence");
+  const label = evidence.source === "jev" ? "auto · Jev" : evidence.source === "metacognition" ? "auto · metacognition" : "approved · driver";
+  details.append(el("summary", "", label));
+  details.setAttribute("aria-label", `Permission review: ${label}`);
+  const body = el("div", "evidence-body");
+  if (evidence.reason) body.append(el("p", "", evidence.reason));
+  body.append(el("div", "", `Policy version ${evidence.policy_version}`));
+  for (const key of ["verdicts", "overrides", "models", "latency_ms", "truncated"] as const) {
+    if (evidence[key] === undefined) continue;
+    const value = typeof evidence[key] === "object" ? JSON.stringify(evidence[key], null, 2) : String(evidence[key]);
+    body.append(el("div", "evidence-field", `${key}: ${value}`));
+  }
+  details.append(body);
+  return details;
+}
+
+function actionButton(label: string, action: () => void, primary = false): HTMLButtonElement {
+  const button = el("button", primary ? "control-primary" : "control-secondary", label);
+  button.type = "button";
+  button.addEventListener("click", action);
+  return button;
+}
+
+function renderPermission(event: Extract<HostToWebview, { type: "permission" }>): void {
+  const card = event.card;
+  const existing = permissionCards.get(card.requestId);
+  if (existing) {
+    existing.call.replaceChildren(codeBlock("Call to review", card.call, code => { code.textContent = card.call; }));
+    follow();
+    return;
+  }
+  const root = el("article", "control-card permission-card");
+  root.setAttribute("aria-label", `Permission: ${card.agent} wants to run ${card.tool}`);
+  root.append(el("div", "control-kicker", "Permission needed"), el("h3", "control-title", `${card.agent} wants to run ${card.tool}`));
+  if (card.childSessionId) root.append(el("div", "control-meta", `Subagent · ${card.childSessionId}`));
+  root.append(el("p", "control-meta", `${card.scope.kind}: ${card.scope.value}${card.tool === "bash" ? " · working directory, not confinement" : ""}`));
+  root.append(el("p", "permission-reason", card.reason));
+  const call = el("div", "permission-call");
+  call.append(codeBlock("Call to review", card.call, code => { code.textContent = card.call; }));
+  root.append(call);
+  if (card.evidence) root.append(evidenceDetails(card.evidence));
+  const controls = el("div", "permission-controls");
+  const denyMessage = el("textarea", "deny-message");
+  denyMessage.rows = 2;
+  denyMessage.placeholder = "Deny message (optional)";
+  denyMessage.setAttribute("aria-label", `Optional deny message for ${card.tool}`);
+  const buttons = el("div", "control-actions");
+  const answer = (decision: PermissionDecision): void => {
+    if (!sessionId) return;
+    for (const button of buttons.querySelectorAll("button")) button.disabled = true;
+    denyMessage.disabled = true;
+    outcome.textContent = "Sending answer…";
+    vscode.postMessage({ type: "answerPermission", sessionId, requestId: card.requestId, decision,
+      ...(decision === "deny" && denyMessage.value.trim() ? { message: denyMessage.value.trim() } : {}) });
+  };
+  buttons.append(actionButton("Allow once", () => answer("allow_once"), true));
+  if (card.allowFolder) buttons.append(actionButton(card.scope.kind === "origin" ? "Allow site" : "Allow folder", () => answer("allow_folder")));
+  buttons.append(actionButton("Deny", () => answer("deny")));
+  controls.append(denyMessage, buttons);
+  const outcome = el("div", "control-outcome", "Waiting for your answer");
+  outcome.setAttribute("role", "status");
+  root.append(controls, outcome);
+  permissionCards.set(card.requestId, { root, controls, outcome, call });
+  add(root);
+}
+
+function renderPause(event: Extract<HostToWebview, { type: "pause" }>): void {
+  if (pauseCards.has(event.id)) return;
+  const root = el("article", "control-card pause-card");
+  root.append(el("div", "control-kicker", event.kind === "budget" ? "Step limit reached" : "Watchdog pause"),
+    el("h3", "control-title", event.text));
+  const controls = el("div", "control-actions");
+  const outcome = el("div", "control-outcome");
+  outcome.setAttribute("role", "status");
+  const control = (action: "continue" | "stop"): void => {
+    if (!sessionId) return;
+    for (const button of controls.querySelectorAll("button")) button.disabled = true;
+    outcome.textContent = action === "continue" ? "Continuing…" : "Stopping…";
+    vscode.postMessage({ type: "controlPause", sessionId, id: event.id, action });
+  };
+  const resume = actionButton("Continue", () => control("continue"), true);
+  if (event.kind === "watchdog" && !event.token) {
+    resume.disabled = true;
+    outcome.textContent = "Pause token unavailable. Send a new message or stop instead.";
+  }
+  controls.append(resume);
+  if (event.kind === "watchdog") controls.append(actionButton("Stop", () => control("stop")));
+  root.append(controls, outcome);
+  pauseCards.set(event.id, { controls, outcome });
+  add(root);
+  setStatus("ready");
+}
+
 function receive(event: HostToWebview): void {
+  if (event.type === "conversationOpened") {
+    sessionId = event.id ?? "";
+    sending = false;
+  }
   if (conversations(event)) return;
   switch (event.type) {
     case "history":
@@ -266,6 +377,8 @@ function receive(event: HostToWebview): void {
       transcript.replaceChildren(empty);
       empty.hidden = false;
       turns.clear();
+      permissionCards.clear();
+      pauseCards.clear();
       pendingQuestion = false;
       stickToBottom = true;
       replaying = true;
@@ -275,7 +388,40 @@ function receive(event: HostToWebview): void {
       follow();
       break;
     case "status": setStatus(event.state, event.message); break;
-    case "message": message(event.author, event.text, event.context); break;
+    case "message": message(event.author, event.text, event.context, event.selectedSkill, event.source); break;
+    case "sendResult":
+      sending = false;
+      if (event.accepted && prompt.value.trim() === event.text) prompt.value = "";
+      updateControls();
+      break;
+    case "permission": renderPermission(event); break;
+    case "permissionCall": {
+      const card = permissionCards.get(event.requestId);
+      if (card) card.call.replaceChildren(codeBlock("Call to review", event.call, code => { code.textContent = event.call; }));
+      follow();
+      break;
+    }
+    case "permissionState": {
+      const card = permissionCards.get(event.requestId);
+      if (!card) break;
+      card.outcome.textContent = permissionOutcome(event.resolution, event.message);
+      card.root.dataset.resolution = event.resolution;
+      card.controls.hidden = !["pending", "error"].includes(event.resolution);
+      for (const control of card.controls.querySelectorAll<HTMLButtonElement | HTMLTextAreaElement>("button, textarea")) control.disabled = event.resolution === "pending";
+      follow();
+      break;
+    }
+    case "pause": renderPause(event); break;
+    case "pauseState": {
+      const card = pauseCards.get(event.id);
+      if (!card) break;
+      card.outcome.textContent = event.message ?? (event.state === "pending" ? "Waiting for the server…" : "No longer paused");
+      card.controls.hidden = event.state === "resolved";
+      for (const button of card.controls.querySelectorAll("button")) button.disabled = event.state === "pending";
+      follow();
+      break;
+    }
+    case "notice": add(el("article", "message control-notice", event.text)); break;
     case "models": renderModels(event); break;
     case "usage": renderUsage(event.used, event.window); break;
     case "editorContext":
@@ -447,9 +593,9 @@ window.addEventListener("message", event => {
 form.addEventListener("submit", event => {
   event.preventDefault();
   const text = prompt.value.trim();
-  if (!text || prompt.disabled) return;
+  if (!text || prompt.disabled || sending) return;
+  sending = true;
   vscode.postMessage({ type: "send", text, includeContext: includeContext.checked });
-  prompt.value = "";
   updateControls();
   stickToBottom = true;
   follow();

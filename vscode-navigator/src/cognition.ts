@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
-import { ChatBackend, ConversationSummary, HostToWebview, ModelInfo } from "./chatProtocol";
+import { ChatBackend, ConversationSummary, HostToWebview, ModelInfo, PermissionDecision } from "./chatProtocol";
+import { ConversationControls, eventView, permissionCall, permissionEvidence, WireEnvelope } from "./eventView";
 import type { ServerInfoParams } from "./protocol";
 
 /** One SSE frame off the event stream: the seq id plus the parsed envelope. */
@@ -7,14 +8,6 @@ interface EventFrame {
   id: string;
   event: string;
   envelope: any;
-}
-
-/** The wire `EventEnvelope` this bridge maps onto webview messages. */
-interface WireEnvelope {
-  seq: number;
-  kind: string;
-  actor_id: string;
-  payload: any;
 }
 
 const ROOT_ACTOR = "agent:main";
@@ -57,6 +50,8 @@ export class CognitionBackend implements ChatBackend {
   private streamGeneration = 0;
   /** Turn ids that received a live text delta (replayed turns get none). */
   private turnTextDelta = new Set<string>();
+  private controls = new ConversationControls();
+  private pendingControls = new Set<string>();
 
   setServerInfo(info: ServerInfoParams): void {
     // A restart of the language server publishes a NEW endpoint: the old
@@ -177,13 +172,74 @@ export class CognitionBackend implements ChatBackend {
   async stop(): Promise<void> {
     if (!this.session || !this.endpoint) return;
     const session = this.session;
+    const result = await this.request(`/v1/sessions/${encodeURIComponent(session)}/stop`, { method: "POST" });
+    if (result?.accepted !== true) throw new Error(`Stop refused: ${result?.actor_state ?? "not accepted"}`);
+    if (this.session !== session) return;
     this.session = undefined;
     // A stopped session accepts no new messages on the same id, but the
     // conversation survives: the next send resumes it under the same id,
     // so keep the stream cursor to continue where this one ended.
     this.resumeId = session;
-    await this.request(`/v1/sessions/${session}/stop`, { method: "POST" });
     this.emit({ type: "status", state: "ready" });
+  }
+
+  hasOpenPermissions(): boolean { return this.controls.permissions.size > 0; }
+
+  async answerPermission(sessionId: string, requestId: string, decision: PermissionDecision, message?: string): Promise<void> {
+    const card = this.controls.permissions.get(requestId);
+    if (sessionId !== this.session || !card ||
+        !["allow_once", "allow_folder", "deny"].includes(decision) ||
+        (decision === "allow_folder" && !card.allowFolder) ||
+        (message !== undefined && typeof message !== "string")) {
+      throw new Error("This permission request does not belong to the open conversation.");
+    }
+    const key = `${sessionId}:permission:${requestId}`;
+    if (this.pendingControls.has(key)) return;
+    this.pendingControls.add(key);
+    this.emit({ type: "permissionState", requestId, resolution: "pending" });
+    try {
+      const result = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}`, {
+        method: "POST", body: JSON.stringify({ decision, ...(decision === "deny" && message ? { message } : {}) }),
+      });
+      if (result?.accepted === false) throw new Error("Permission answer refused by the server.");
+    } catch (error) {
+      if (this.session === sessionId && this.controls.permissions.has(requestId)) {
+        this.emit({ type: "permissionState", requestId,
+          resolution: error instanceof HttpError && error.status === 409 ? "stale" : "error",
+          message: this.errorText(error) });
+      }
+      if (!(error instanceof HttpError && error.status === 409)) throw error;
+    } finally { this.pendingControls.delete(key); }
+  }
+
+  async controlPause(sessionId: string, id: string, action: "continue" | "stop"): Promise<void> {
+    const pause = this.controls.pauses.get(id);
+    if (sessionId !== this.session || !pause || !["continue", "stop"].includes(action)) {
+      throw new Error("This pause does not belong to the open conversation.");
+    }
+    if (pause.kind === "watchdog" && action === "continue" && !pause.token) {
+      throw new Error("The server did not provide a pause token. Send a new message or stop instead.");
+    }
+    const key = `${sessionId}:${id}`;
+    if (this.pendingControls.has(key)) return;
+    this.pendingControls.add(key);
+    this.emit({ type: "pauseState", id, state: "pending" });
+    try {
+      if (action === "stop") await this.stop();
+      else {
+        const session = encodeURIComponent(sessionId);
+        const result = await this.request(`/v1/sessions/${session}/children/${session}/continue`, {
+          method: "POST", body: JSON.stringify({ pause_token: pause.token ?? null }),
+        });
+        if (result?.accepted !== true) throw new Error("Continue refused by the server.");
+      }
+      if (this.currentConversationId() === sessionId) this.emit({ type: "pauseState", id, state: "resolved", message: action === "stop" ? "Stopped" : "Continued" });
+    } catch (error) {
+      if (this.currentConversationId() === sessionId && this.controls.pauses.has(id)) {
+        this.emit({ type: "pauseState", id, state: "error", message: this.errorText(error) });
+      }
+      throw error;
+    } finally { this.pendingControls.delete(key); }
   }
 
   // ---- session lifecycle ----
@@ -304,8 +360,10 @@ export class CognitionBackend implements ChatBackend {
     this.delivered.clear();
     this.currentTurn = undefined;
     this.toolSummaries.clear();
+    this.toolEvidence.clear();
     this.turnTextDelta.clear();
     this.lastUsed = undefined;
+    this.controls.reset();
   }
 
   /** Stops the SSE fetch of the running stream, if any. */
@@ -397,6 +455,7 @@ export class CognitionBackend implements ChatBackend {
     }
     this.emit({ type: "status", state: "ready" });
     this.emitModels();
+    this.emit({ type: "conversationOpened", id: sessionId, title: this.conversations.find(c => c.id === sessionId)?.title ?? "Conversation" });
     void this.connect();
     void this.listConversations().catch(() => undefined);
     return this.session;
@@ -440,23 +499,63 @@ export class CognitionBackend implements ChatBackend {
       this.delivered.add(seq);
     }
     const message = this.mapEvent(frame.envelope);
-    if (message) this.emit(message);
+    if (message) {
+      this.emit(message);
+      if (message.type === "permission" && message.card.childSessionId) void this.loadChildPermissionCall(message);
+    }
+  }
+
+  /** Child requests mirror only the bounded review arguments, not their LLM response.
+   *  Read its durable events without resuming it or sending any command. */
+  private async loadChildPermissionCall(message: Extract<HostToWebview, { type: "permission" }>): Promise<void> {
+    const card = message.card;
+    const session = this.session;
+    const generation = this.streamGeneration;
+    const endpoint = this.endpoint;
+    if (!endpoint || !card.childSessionId) return;
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 5000);
+    try {
+      const response = await fetch(`http://127.0.0.1:${endpoint.port}/v1/sessions/${encodeURIComponent(card.childSessionId)}/events`, {
+        headers: { authorization: `Bearer ${endpoint.token}` }, signal: abort.signal,
+      });
+      if (!response.ok || !response.body) return;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const part = await reader.read();
+        if (part.done || generation !== this.streamGeneration) return;
+        buffer += decoder.decode(part.value, { stream: true });
+        let split: number;
+        while ((split = buffer.indexOf("\n\n")) !== -1) {
+          const raw = buffer.slice(0, split);
+          buffer = buffer.slice(split + 2);
+          const event = this.parseFrame(raw)?.envelope;
+          if (event?.kind === "llm.response" && Array.isArray(event.payload?.message?.tool_calls)) {
+            const call = event.payload.message.tool_calls.find((c: any) => c.id === card.callId);
+            if (call?.args && typeof call.args === "object") {
+              if (session === this.session && generation === this.streamGeneration) {
+                this.emit({ type: "permissionCall", requestId: card.requestId, call: permissionCall(card.tool, JSON.stringify(call.args)) });
+              }
+              return;
+            }
+          }
+          if (event?.kind === "permission.requested" && event.payload?.request_id === card.requestId) return;
+        }
+      }
+    } catch { /* The card explicitly says when full arguments are unavailable. */ }
+    finally { clearTimeout(timer); abort.abort(); }
   }
 
   // ---- event -> webview mapping ----
 
   private mapEvent(envelope: WireEnvelope): HostToWebview | undefined {
     const payload = envelope.payload ?? {};
+    for (const update of this.controls.envelopeUpdates(envelope)) this.emit(update);
+    const projected = eventView(envelope, this.currentTurn, this.controls.calls);
+    if (projected) return projected;
     switch (envelope.kind) {
-      case "message.received": {
-        const author = String(payload.source ?? "").startsWith("user:") ? "driver" : "navigator";
-        return {
-          type: "message",
-          id: String(payload.command_id ?? envelope.seq),
-          author,
-          text: String(payload.content ?? ""),
-        };
-      }
       case "turn.start": {
         this.currentTurn = String(payload.turn_id ?? envelope.seq);
         this.emit({ type: "status", state: "busy" });
@@ -495,7 +594,9 @@ export class CognitionBackend implements ChatBackend {
         const name = String(payload.name ?? "tool");
         const summary = toolSummary(name, payload.args);
         this.toolSummaries.set(callId, summary);
-        return { type: "tool", id, callId, phase: "start", name, summary };
+        const evidence = permissionEvidence(payload.permission_gate);
+        if (evidence) this.toolEvidence.set(callId, evidence);
+        return { type: "tool", id, callId, phase: "start", name, summary, evidence };
       }
       case "tool.post_call": {
         const id = this.currentTurn ?? String(envelope.seq);
@@ -512,14 +613,10 @@ export class CognitionBackend implements ChatBackend {
         // `wc; ls; cat …` chain marked failed although its output was fine).
         const exitCode = payload.metadata?.exit_code;
         const shown = typeof exitCode === "number" && exitCode !== 0 ? `${summary} (exit ${exitCode})` : summary;
-        return { type: "tool", id, callId, phase: "end", name, summary: shown, ok: payload.status === "ok" };
+        const evidence = permissionEvidence(payload.metadata?.permission_gate) ?? this.toolEvidence.get(callId);
+        this.toolEvidence.delete(callId);
+        return { type: "tool", id, callId, phase: "end", name, summary: shown, ok: payload.status === "ok", evidence };
       }
-      case "agent.yield":
-        return {
-          type: "question",
-          id: String(payload.turn_id ?? this.currentTurn ?? envelope.seq),
-          text: String(payload.question ?? ""),
-        };
       case "turn.end": {
         const id = String(payload.turn_id ?? this.currentTurn ?? envelope.seq);
         const outcome =
@@ -545,8 +642,10 @@ export class CognitionBackend implements ChatBackend {
 
   /** callId -> the pre_call summary, so post_call rows keep their detail. */
   private toolSummaries = new Map<string, string>();
+  private toolEvidence = new Map<string, NonNullable<Extract<HostToWebview, { type: "tool" }>["evidence"]>>();
 
   private emit(message: HostToWebview): void {
+    this.controls.apply(message);
     // Conversation-list, model and usage metadata is pushed, never replayed
     // as transcript (the view caches the last ones for a reopen).
     const ephemeral =
@@ -555,6 +654,10 @@ export class CognitionBackend implements ChatBackend {
       message.type === "conversationOpened" ||
       message.type === "models" ||
       message.type === "usage";
+    if (message.type === "sendResult") {
+      for (const listener of this.listeners) listener(message);
+      return;
+    }
     if (!ephemeral) this.transcript.push(message);
     for (const listener of this.listeners) listener(message);
   }
@@ -584,7 +687,7 @@ export class CognitionBackend implements ChatBackend {
     if (response.status === 401) {
       const message = "cognition server rejected the token (401)";
       this.emit({ type: "status", state: "error", message });
-      throw new Error(message);
+      throw new HttpError(response.status, message);
     }
     if (!response.ok) {
       let detail = `HTTP ${response.status}`;
@@ -598,7 +701,7 @@ export class CognitionBackend implements ChatBackend {
       }
       const message = `cognition server: ${detail}`;
       this.emit({ type: "status", state: "error", message });
-      throw new Error(message);
+      throw new HttpError(response.status, message);
     }
     // DELETE answers 204 and other routes may answer empty: undefined, not a
     // JSON parse crash.
@@ -606,6 +709,10 @@ export class CognitionBackend implements ChatBackend {
     const raw = await response.text();
     return raw ? JSON.parse(raw) : undefined;
   }
+}
+
+class HttpError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
 }
 
 /** A fetch aborted on purpose (open/new/delete switching streams). */

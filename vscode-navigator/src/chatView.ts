@@ -90,10 +90,33 @@ export function registerChatView(
             break;
           case "send":
             if (typeof message.text === "string" && message.text.trim()) {
-              // Built at send time: the focused webview is not a text editor, so
-              // the active editor is still the one the driver last worked in.
-              const context = message.includeContext === false ? undefined : buildEditorContext().block;
-              void backend.send(message.text, context).catch(showError);
+              void (async () => {
+                const session = backend.currentConversationId();
+                if (backend.hasOpenPermissions()) {
+                  const answer = await vscode.window.showWarningMessage(
+                    "Sending cancels the pending permission request", { modal: true }, "Send anyway",
+                  );
+                  if (answer !== "Send anyway") return false;
+                }
+                if (session !== backend.currentConversationId()) throw new Error("The open conversation changed. Send again in the current conversation.");
+                const context = message.includeContext === false ? undefined : buildEditorContext().block;
+                await backend.send(message.text, context);
+                return true;
+              })().then(accepted => post({ type: "sendResult", text: message.text, accepted }))
+                .catch(error => { post({ type: "sendResult", text: message.text, accepted: false }); showError(error); });
+            }
+            break;
+          case "answerPermission":
+            if (typeof message.sessionId === "string" && typeof message.requestId === "string" &&
+                ["allow_once", "allow_folder", "deny"].includes(message.decision) &&
+                (message.message === undefined || typeof message.message === "string")) {
+              void backend.answerPermission(message.sessionId, message.requestId, message.decision, message.message).catch(showError);
+            }
+            break;
+          case "controlPause":
+            if (typeof message.sessionId === "string" && typeof message.id === "string" &&
+                ["continue", "stop"].includes(message.action)) {
+              void backend.controlPause(message.sessionId, message.id, message.action).catch(showError);
             }
             break;
           case "stop":

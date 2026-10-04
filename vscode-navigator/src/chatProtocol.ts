@@ -6,7 +6,32 @@
 export const CHAT_VIEW_ID = "navai.chat";
 
 /** Who wrote a message shown in the chat. */
-export type Author = "driver" | "cognition" | "navigator";
+export type Author = "driver" | "cognition" | "navigator" | "subagent";
+
+export type PermissionDecision = "allow_once" | "allow_folder" | "deny";
+export interface PermissionCard {
+  requestId: string;
+  callId: string;
+  tool: string;
+  agent: string;
+  childSessionId?: string;
+  scope: { kind: string; value: string };
+  reason: string;
+  call: string;
+  allowFolder: boolean;
+  evidence?: PermissionEvidence;
+}
+export interface PermissionEvidence {
+  policy_version: number;
+  source: "jev" | "metacognition" | "driver";
+  reason?: string;
+  verdicts?: unknown;
+  overrides?: unknown;
+  models?: unknown;
+  latency_ms?: number;
+  truncated?: boolean;
+}
+export interface PauseToken { incarnation: string; hold_id: string }
 
 /** Host -> webview messages. */
 export type HostToWebview =
@@ -14,7 +39,14 @@ export type HostToWebview =
   /** A message already complete when shown (the driver's own, or a navigator wake).
    *  `context` is the chip label of the editor context attached to a driver message;
    *  `text` then holds the driver's own text only, without the raw block. */
-  | { type: "message"; id: string; author: Author; text: string; context?: string }
+  | { type: "message"; id: string; author: Author; text: string; context?: string; source?: string; selectedSkill?: { name: string; origin: string } }
+  | { type: "permission"; card: PermissionCard }
+  | { type: "permissionCall"; requestId: string; call: string }
+  | { type: "permissionState"; requestId: string; resolution: string; message?: string }
+  | { type: "pause"; id: string; kind: "budget" | "watchdog"; text: string; token?: PauseToken }
+  | { type: "pauseState"; id: string; state: "pending" | "resolved" | "error"; message?: string }
+  | { type: "notice"; text: string }
+  | { type: "sendResult"; text: string; accepted: boolean }
   /** The cognition starts answering; deltas for this id follow. */
   | { type: "turnStart"; id: string }
   /** Streamed answer text for the current turn, to append. */
@@ -22,7 +54,7 @@ export type HostToWebview =
   /** Streamed reasoning text for the current turn, to append (shown collapsed). */
   | { type: "reasoning"; id: string; text: string }
   /** A tool call inside the current turn. `summary` is a short human line (e.g. "read src/main.rs"). */
-  | { type: "tool"; id: string; callId: string; phase: "start" | "end"; name: string; summary: string; ok?: boolean }
+  | { type: "tool"; id: string; callId: string; phase: "start" | "end"; name: string; summary: string; ok?: boolean; evidence?: PermissionEvidence }
   /** The turn is over. `error` is set when it failed. */
   | { type: "turnEnd"; id: string; outcome: "done" | "stopped" | "error"; error?: string }
   /** The cognition asked the driver a question and waits for the next message as the answer. */
@@ -64,6 +96,8 @@ export type WebviewToHost =
   | { type: "send"; text: string; includeContext?: boolean }
   /** The driver interrupts the current turn. */
   | { type: "stop" }
+  | { type: "answerPermission"; sessionId: string; requestId: string; decision: PermissionDecision; message?: string }
+  | { type: "controlPause"; sessionId: string; id: string; action: "continue" | "stop" }
   /** The driver opens a file mentioned in the chat. */
   | { type: "openFile"; path: string; line?: number }
   /** The driver asks for the conversation list (the host answers with `conversations`). */
@@ -86,6 +120,9 @@ export interface ChatBackend {
   /** `context` is an editor-context block appended after the driver's text. */
   send(text: string, context?: string): Promise<void>;
   stop(): Promise<void>;
+  hasOpenPermissions(): boolean;
+  answerPermission(sessionId: string, requestId: string, decision: PermissionDecision, message?: string): Promise<void>;
+  controlPause(sessionId: string, id: string, action: "continue" | "stop"): Promise<void>;
   /** Saved conversations of the workspace, newest first. */
   listConversations(): Promise<ConversationSummary[]>;
   /** Resumes a saved conversation and replays it into the transcript. */

@@ -5,7 +5,9 @@ requests land in `develop`.
 ## [Unreleased]
 
 ### Fixed
-- Permission reviews can be selected and copied without screen truncation or borders; drag to copy an open prompt (`y` still allows), or use `y` on a settled review. Write content is bounded to 4096 bytes with an omitted-byte count.
+- **Terminal client**: permission requests can be selected and copied like other messages, in full
+  (whole reason and command, no borders or truncation; a write's content up to 4096 bytes). While a
+  request is open, `y` still allows it: drag with the mouse to copy it; `y` copies an answered one.
 
 ## [0.4.2] - 2026-10-04
 

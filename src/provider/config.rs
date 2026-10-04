@@ -138,10 +138,20 @@ impl ModelsConfig {
         &self,
         name: &super::model_name::ModelName,
     ) -> Result<ResolvedModel, ProviderError> {
-        let (key, _) = self
+        let keys: Vec<_> = self
             .models
             .iter()
-            .find(|(_, model)| model.provider == name.gateway() && model.model == name.id())
+            .filter(|(_, model)| model.provider == name.gateway() && model.model == name.id())
+            .map(|(key, _)| key.clone())
+            .collect();
+        if keys.len() > 1 {
+            return Err(ProviderError::AmbiguousModel {
+                model: name.to_string(),
+                keys,
+            });
+        }
+        let key = keys
+            .first()
             .ok_or_else(|| ProviderError::UnknownModel(name.to_string()))?;
         if !self.providers.contains_key(name.gateway()) {
             return Err(ProviderError::UnknownModel(name.to_string()));

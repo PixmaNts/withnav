@@ -3,10 +3,29 @@ use serde_json::Value;
 use super::Settings;
 use crate::provider::assignments::Layer;
 
+/// Missing means inherit the model default; null or "off" disables variants.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum AssignmentVariant {
+    #[default]
+    Default,
+    Off,
+    Named(String),
+}
+
+impl From<Option<String>> for AssignmentVariant {
+    fn from(value: Option<String>) -> Self {
+        match value {
+            None => Self::Off,
+            Some(name) if name == "off" => Self::Off,
+            Some(name) => Self::Named(name),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelAssignment {
     pub model: String,
-    pub variant: Option<String>,
+    pub variant: AssignmentVariant,
 }
 
 impl Settings {
@@ -43,7 +62,7 @@ impl Settings {
         if shorthand && value.is_string() {
             return Ok(Some(ModelAssignment {
                 model: nonempty_string(value, &key)?.into(),
-                variant: None,
+                variant: AssignmentVariant::Default,
             }));
         }
         let object = value.as_object().ok_or_else(|| {
@@ -58,10 +77,13 @@ impl Settings {
             .ok_or_else(|| format!("{model_key} is required"))?;
         Ok(Some(ModelAssignment {
             model: nonempty_string(model, &model_key)?.into(),
-            variant: object
-                .get("variant")
-                .map(|v| nonempty_string(v, &format!("{key}.variant")).map(str::to_owned))
-                .transpose()?,
+            variant: match object.get("variant") {
+                None => AssignmentVariant::Default,
+                Some(Value::Null) => AssignmentVariant::Off,
+                Some(value) => {
+                    Some(nonempty_string(value, &format!("{key}.variant"))?.to_owned()).into()
+                }
+            },
         }))
     }
 }

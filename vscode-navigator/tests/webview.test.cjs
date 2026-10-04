@@ -3,6 +3,30 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const { JSDOM } = require("jsdom");
 
+function keyboardPage(){
+  const {chatHtml}=require('../out/tests/chatHtml.js');const dom=new JSDOM(chatHtml('n','chat.js','chat.css','resource:'),{runScripts:'outside-only'});const posts=[];
+  dom.window.acquireVsCodeApi=()=>({postMessage:m=>posts.push(m),getState(){},setState(){}});dom.window.eval(fs.readFileSync('out/chat.js','utf8'));
+  const d=dom.window.document;const receive=data=>dom.window.dispatchEvent(new dom.window.MessageEvent('message',{data:{...data,generation:1}}));
+  receive({type:'conversationOpened',id:'S',title:'S'});receive({type:'status',state:'ready'});
+  const key=(key,extra={})=>{const target=d.activeElement;const event=new dom.window.KeyboardEvent('keydown',{key,bubbles:true,cancelable:true,...extra});target.dispatchEvent(event);if(!event.defaultPrevented&&key.length===1){target.value+=key;target.dispatchEvent(new dom.window.Event('input',{bubbles:true}));}};
+  return {dom,d,posts,receive,key,type:text=>{for(const c of text)key(c);}};
+}
+test('R1.3 focused composer key-by-key preserves literal slash, command arguments and palette completion',()=>{
+  const {dom,d,posts,receive,key,type}=keyboardPage();receive({type:'commands',items:[{name:'model',description:'Choose model',args_hint:'[alias]'}]});const prompt=d.querySelector('#prompt');prompt.focus();
+  type('//text');assert.equal(d.activeElement,prompt);key('Enter');assert.equal(posts.at(-1).text,'//text');receive({type:'sendResult',text:'//text',accepted:true});
+  type('/compact focus');assert.equal(d.activeElement,prompt);key('Enter');assert.equal(posts.at(-1).text,'/compact focus');receive({type:'sendResult',text:'/compact focus',accepted:true});
+  type('/mo');key('Tab');assert.equal(prompt.value,'/model ');assert.equal(d.activeElement,prompt);dom.window.close();
+});
+test('R1.2 selector picker selection and refusal preserve existing typed draft',()=>{
+  const {dom,d,posts,receive,key,type}=keyboardPage();const prompt=d.querySelector('#prompt');prompt.focus();type('my unfinished request');
+  receive({type:'models',items:[{alias:'target',model:'provider/model'}],locked:false});d.querySelector('#model').focus();key('Enter');type('target');key('Enter');assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))),{type:'selectModel',alias:'target',generation:1});assert.equal(prompt.value,'my unfinished request');receive({type:'commandError',text:'Switch refused'});assert.equal(prompt.value,'my unfinished request');dom.window.close();
+});
+test('R1.6 conversation editing and IME stay in search; arrows scroll selected last row',()=>{
+  const {dom,d,posts,receive,key}=keyboardPage();receive({type:'conversations',items:Array.from({length:50},(_,i)=>({id:String(i),title:`item ${i}`,updatedAt:'2026-01-01',messageCount:1}))});d.querySelector('.conv-trigger').click();const search=d.activeElement;
+  key('Home');assert.equal(d.activeElement,search);key('End');assert.equal(d.activeElement,search);const before=posts.length;key('Enter',{isComposing:true});assert.equal(posts.length,before);
+  let scrolled;dom.window.HTMLElement.prototype.scrollIntoView=function(){scrolled=this.id;};key('ArrowUp');assert.equal(search.getAttribute('aria-activedescendant'),'conversation-option-49');assert.equal(scrolled,'conversation-option-49');dom.window.close();
+});
+
 test('conversation search counts and caps rows, filters titles and keyboard clears then closes',()=>{
   const {chatHtml}=require('../out/tests/chatHtml.js');const dom=new JSDOM(chatHtml('n','chat.js','chat.css','resource:'),{runScripts:'outside-only'});
   const posts=[];dom.window.acquireVsCodeApi=()=>({postMessage:m=>posts.push(m),getState(){},setState(){}});dom.window.eval(fs.readFileSync('out/chat.js','utf8'));

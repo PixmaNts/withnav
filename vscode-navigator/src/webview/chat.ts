@@ -91,6 +91,7 @@ let pickerItems: typeof paletteRows = [];
 let modelItems: typeof paletteRows = [];
 let paletteIndex = 0;
 let pickerKind: "model" | "variant" | "skills" | undefined;
+let selectorPicker = false;
 let paletteDismissed = false;
 function closePalette(): void {
   palette.hidden = true;
@@ -102,13 +103,15 @@ function closePalette(): void {
 function choosePalette(index: number): void {
   const row = paletteRows[index];
   if (!row) return;
-  if (pickerKind === "skills") prompt.value = `/skill ${row.name} `;
+  if (selectorPicker) post({ type: "selectModel", alias: row.name });
+  else if (pickerKind === "skills") prompt.value = `/skill ${row.name} `;
   else if (pickerKind) {
     const text = `/${pickerKind} ${row.name}`;
     prompt.value = text;
     post({ type: "send", text, includeContext: false });
   } else prompt.value = `/${row.name} `;
   pickerKind = undefined;
+  selectorPicker = false;
   closePalette();
   prompt.focus();
   updateControls();
@@ -121,8 +124,17 @@ function renderPalette(): void {
   paletteIndex = Math.max(0, Math.min(paletteIndex, paletteRows.length - 1));
   palette.hidden = false;
   pickerSearch.setAttribute("aria-expanded", "true");
+  pickerSearch.hidden = !pickerKind;
   if (paletteRows.length) pickerSearch.setAttribute("aria-activedescendant", `command-option-${paletteIndex}`);
   else { pickerSearch.removeAttribute("aria-activedescendant"); pickerOptions.append(el("p", "picker-empty", "No matches. Try another search.")); }
+  if (!pickerKind) {
+    prompt.setAttribute("role", "combobox");
+    prompt.setAttribute("aria-autocomplete", "list");
+    prompt.setAttribute("aria-controls", pickerOptions.id);
+    prompt.setAttribute("aria-expanded", "true");
+    if (paletteRows.length) prompt.setAttribute("aria-activedescendant", `command-option-${paletteIndex}`);
+    else prompt.removeAttribute("aria-activedescendant");
+  }
   for (const [index, row] of paletteRows.entries()) {
     const option = document.createElement("div");
     option.id = `command-option-${index}`;
@@ -147,7 +159,10 @@ function filterPalette(): void {
   pickerSearch.value = prompt.value.slice(1);
   paletteIndex = 0;
   renderPalette();
-  pickerSearch.focus();
+  prompt.setAttribute("aria-controls", pickerOptions.id);
+  prompt.setAttribute("aria-expanded", "true");
+  if (paletteRows.length) prompt.setAttribute("aria-activedescendant", `command-option-${paletteIndex}`);
+  else prompt.removeAttribute("aria-activedescendant");
 }
 pickerSearch.addEventListener("input", () => { paletteIndex = 0; renderPalette(); });
 pickerSearch.addEventListener("keydown", event => {
@@ -169,11 +184,11 @@ modelSelect.addEventListener("change", () => {
 });
 modelSelect.addEventListener("mousedown", event => {
   if (modelSelect.disabled) return;
-  event.preventDefault(); pickerKind = "model"; pickerItems = modelItems; pickerSearch.value = ""; paletteIndex = 0; renderPalette(); pickerSearch.focus();
+  event.preventDefault(); selectorPicker = true; pickerKind = "model"; pickerItems = modelItems; pickerSearch.value = ""; paletteIndex = 0; renderPalette(); pickerSearch.focus();
 });
 modelSelect.addEventListener("keydown", event => {
   if (!modelSelect.disabled && ["Enter", " ", "ArrowDown"].includes(event.key)) {
-    event.preventDefault(); pickerKind = "model"; pickerItems = modelItems; pickerSearch.value = ""; paletteIndex = 0; renderPalette(); pickerSearch.focus();
+    event.preventDefault(); selectorPicker = true; pickerKind = "model"; pickerItems = modelItems; pickerSearch.value = ""; paletteIndex = 0; renderPalette(); pickerSearch.focus();
   }
 });
 includeContext.checked = vscode.getState()?.includeContext ?? true;
@@ -197,12 +212,12 @@ const permissionCards = new Map<string, { root: HTMLElement; outcome: HTMLElemen
 const pauseCards = new Map<string, { outcome: HTMLElement; controls: HTMLElement }>();
 
 function updateControls(): void {
-  prompt.disabled = compacting || readOnly || state === "connecting";
-  if (compacting) prompt.placeholder = "Compacting… messages will be available when it finishes";
+  prompt.disabled = readOnly || state === "connecting";
+  if (compacting) prompt.placeholder = "Messages you send now are queued until compaction ends";
   else if (!readOnly) prompt.placeholder = "Message Navai…";
   if (readOnly) modelSelect.disabled = true;
   send.disabled = prompt.disabled || sending || !prompt.value.trim();
-  stop.hidden = readOnly || state !== "busy";
+  stop.hidden = readOnly || (state !== "busy" && !compacting);
 }
 
 function setStatus(next: string, message?: string): void {
@@ -597,7 +612,7 @@ function receive(event: HostToWebview): void {
     case "commandPicker":
       sending = false;
       if (event.disabledReason) { commandError.textContent = event.disabledReason; commandError.hidden = false; closePalette(); }
-      else { pickerKind = event.kind; pickerItems = event.items; pickerSearch.value = ""; paletteIndex = 0; renderPalette(); pickerSearch.focus(); }
+      else { selectorPicker = false; pickerKind = event.kind; pickerItems = event.items; pickerSearch.value = ""; paletteIndex = 0; renderPalette(); pickerSearch.focus(); }
       updateControls();
       break;
     case "history":

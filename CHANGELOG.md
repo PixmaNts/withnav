@@ -12,7 +12,8 @@ requests land in `develop`.
   the first 50 matches and ask you to narrow the search instead of drawing hundreds of rows.
 - **VS Code compaction no longer looks frozen.** A “Compacting the conversation…” indicator
   stays visible until completion or refusal, and the context meter is marked as updating.
-  The composer explains that sending is temporarily unavailable; completion replaces the progress
+  The composer stays usable and explains that messages sent now are queued until compaction ends;
+  the command's own completion replaces the progress
   row with the result, and failures show their reason without losing your draft.
 
 ## [0.4.6] - 2026-10-04

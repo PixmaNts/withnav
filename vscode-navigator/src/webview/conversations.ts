@@ -236,6 +236,7 @@ export function mountConversations(post: (message: WebviewToHost) => void, focus
       row.append(openButton, deleteButton);
       list.append(row);
     }
+    list.children[selected]?.scrollIntoView?.({ block: "nearest" });
 
     list.hidden = !shown.length;
     note.hidden = !!shown.length;
@@ -249,9 +250,11 @@ export function mountConversations(post: (message: WebviewToHost) => void, focus
   trigger.addEventListener("click", () => (isOpen() ? close() : open()));
   search.addEventListener("input", () => { selected = 0; render(); });
   search.addEventListener("keydown", event => {
+    if (event.isComposing) { event.stopPropagation(); return; }
     if (["ArrowUp", "ArrowDown"].includes(event.key)) { event.preventDefault(); event.stopPropagation(); const all = rows(); if (all.length) { selected = (selected + (event.key === "ArrowDown" ? 1 : -1) + all.length) % all.length; render(); } }
     else if (event.key === "Enter") { event.preventDefault(); event.stopPropagation(); rows()[selected]?.click(); }
     else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); if (search.value) { search.value = ""; selected = 0; render(); } else close(); }
+    else event.stopPropagation(); // Home/End and editing keys belong to the search field.
   });
   create.addEventListener("click", () => {
     close(false);
@@ -261,6 +264,7 @@ export function mountConversations(post: (message: WebviewToHost) => void, focus
   scrim.addEventListener("click", () => close());
 
   panel.addEventListener("keydown", event => {
+    if (event.isComposing) return;
     const all = rows();
     const active = document.activeElement as HTMLElement | null;
     const row = active?.closest<HTMLElement>(".conv-row");

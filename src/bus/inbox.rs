@@ -135,6 +135,21 @@ impl ActorInbox {
     pub fn has_buffered(&self) -> bool {
         !self.commands.is_empty()
     }
+    /// Autonomous input cannot renew a driver-owned parked budget or pause.
+    pub(crate) fn hold_autonomous(&mut self) {
+        let mut driver = Vec::new();
+        for command in std::mem::take(&mut self.commands) {
+            if command.from_driver() {
+                driver.push(command);
+            } else {
+                self.held = Some(command);
+            }
+        }
+        self.commands = driver;
+    }
+    pub(crate) fn discard_held(&mut self) {
+        self.held = None;
+    }
 
     /// The command_id of the FIRST buffered command — the task_id source for
     /// the runtime (`active_task_id.or(first command_id)`).

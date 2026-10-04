@@ -39,6 +39,20 @@ impl Judge for FakeJudge {
 
 #[tokio::test]
 async fn root_doubt_parks_after_results_and_owner_continue_releases_the_same_turn() {
+    pause_lifecycle(0).await;
+}
+
+#[tokio::test]
+async fn fresh_driver_input_supersedes_pause_and_checkpoint_survives_restart() {
+    pause_lifecycle(2).await;
+}
+
+#[tokio::test]
+async fn driver_message_supersedes_live_pause_but_navigator_does_not() {
+    pause_lifecycle(1).await;
+}
+
+async fn pause_lifecycle(mode: u8) {
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path().join("ws");
     std::fs::create_dir(&ws).unwrap();
@@ -53,7 +67,6 @@ async fn root_doubt_parks_after_results_and_owner_continue_releases_the_same_tur
     });
     service.install_root_watchdog_test(clock.clone(), Arc::new(FakeJudge(Verdict::Doubt)), None);
     let id = service.create_session(&ws, None, None).await.unwrap();
-    let sub = service.subscribe(id, None).await.unwrap();
     send_text(&service, id, "find files").await;
     let (_, stream) = provider
         .requests
@@ -64,13 +77,7 @@ async fn root_doubt_parks_after_results_and_owner_continue_releases_the_same_tur
     let tick = sleeps.recv().bounded(file!(), line!()).await.unwrap();
     *clock.now.lock().unwrap() += Duration::from_secs(300);
     tick.send(()).unwrap();
-    let events = collect_until(sub, |event| {
-        event.kind == "agent.yield" && event.payload["kind"] == "watchdog"
-    })
-    .await;
-    assert!(events.iter().any(|event| event.payload["question"]
-        .as_str()
-        .is_some_and(|q| q.contains("alt+c"))));
+    let _next_tick = sleeps.recv().bounded(file!(), line!()).await.unwrap();
     stream
         .send(tool_call_chunk(
             "glob",
@@ -80,9 +87,60 @@ async fn root_doubt_parks_after_results_and_owner_continue_releases_the_same_tur
         .unwrap();
     drop(stream);
     let sub = service.subscribe(id, None).await.unwrap();
-    collect_until(sub, |event| event.kind == "tool.post_call").await;
+    let events = collect_until(sub, |event| event.kind == "turn.end").await;
+    let pause = events
+        .iter()
+        .find(|event| event.kind == "agent.yield" && event.payload["kind"] == "watchdog")
+        .unwrap();
+    let typed: navai::bus::event::AgentYield =
+        serde_json::from_value(pause.payload.clone()).unwrap();
+    assert!(typed.question.contains("alt+c"));
+    let token = serde_json::from_value(typed.details.unwrap()["pause_token"].clone()).unwrap();
+    service.history().flush().await.unwrap();
+    let loaded = service.history().load(id).await.unwrap().unwrap();
+    assert!(loaded.transcript.iter().any(|m| matches!(m, navai::provider::openai::ChatMessage::Tool { tool_call_id, .. } if tool_call_id == "glob")));
     assert!(provider.requests.try_recv().is_err());
-    service.continue_child(id, id).await.unwrap();
+    if mode == 2 {
+        service.close_session(id).await.unwrap();
+        // Simulate a crash after the settled checkpoint but before a resolution was stored.
+        let db = rusqlite::Connection::open(tmp.path().join("history.db")).unwrap();
+        db.execute("DELETE FROM events WHERE session_id=?1 AND kind='command.result' AND json_extract(envelope,'$.payload.data.resolution')='expired'", [id.to_string()]).unwrap();
+        drop(db);
+        service
+            .create_or_resume_session(&ws, None, None, Some(id))
+            .await
+            .unwrap();
+        assert!(service
+            .continue_child_with_token(id, id, Some(token))
+            .await
+            .is_err());
+        send_text(&service, id, "replacement instruction").await;
+    } else if mode == 1 {
+        let command = navai::bus::command::Command {
+            command_id: ulid::Ulid::new(),
+            session_id: id,
+            source_actor_id: "navigator".into(),
+            target_actor_id: "agent:main".into(),
+            mode: navai::bus::command::DeliveryMode::NextTurn,
+            content: vec![navai::bus::command::ContentBlock::Text {
+                text: "autonomous wake".into(),
+            }],
+            created_at: std::time::SystemTime::now(),
+        };
+        service.send(command).await.unwrap();
+        assert!(provider.requests.try_recv().is_err());
+        send_text(&service, id, "replacement instruction").await;
+    } else {
+        assert!(service.continue_child(id, id).await.is_err());
+        service
+            .continue_child_with_token(id, id, Some(token))
+            .await
+            .unwrap();
+        assert!(service
+            .continue_child_with_token(id, id, Some(token))
+            .await
+            .is_err());
+    }
     let (request, stream) = provider
         .requests
         .recv()
@@ -90,11 +148,106 @@ async fn root_doubt_parks_after_results_and_owner_continue_releases_the_same_tur
         .await
         .unwrap();
     assert!(request.contains("\"role\":\"tool\""));
+    if mode > 0 {
+        assert!(request.contains("replacement instruction"));
+    }
     stream.send(text_chunk("finished")).unwrap();
     drop(stream);
     let sub = service.subscribe(id, None).await.unwrap();
-    let events = collect_until(sub, |event| event.kind == "turn.end").await;
-    assert_eq!(events.iter().filter(|e| e.kind == "turn.start").count(), 1);
+    let events = collect_until(sub, |event| {
+        event.kind == "turn.end" && event.payload["outcome"] == "done"
+    })
+    .await;
+    assert_eq!(events.iter().filter(|e| e.kind == "turn.start").count(), 2);
+    assert!(events
+        .iter()
+        .any(|e| e.payload["data"]["resolution"].is_string()));
+    service.close_all().await;
+    assert!(
+        _next_tick.is_closed(),
+        "supervisor sleep is cancelled and joined on runtime exit"
+    );
+}
+
+#[tokio::test]
+async fn watchdog_off_uses_fallback_and_autonomous_results_cannot_renew_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let provider = common::sse::spawn_responding_provider(1001, |_, request| {
+        if request.contains("finish child now") {
+            common::sse::http_sse(&common::sse::sse_body(&[&text_chunk("child finished")]))
+        } else {
+            common::sse::http_sse(&common::sse::sse_body(&[&tool_call_chunk(
+                "glob",
+                "glob",
+                &serde_json::json!({"pattern":"*"}),
+            )]))
+        }
+    })
+    .await;
+    let service = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(1_000_000)
+        .state();
+    std::fs::write(
+        tmp.path().join("cfg/config.json"),
+        r#"{"agent":{"watchdog_interval_secs":0}}"#,
+    )
+    .unwrap();
+    let (tx, mut sleeps) = mpsc::unbounded_channel();
+    service.install_root_watchdog_test(
+        Arc::new(FakeClock {
+            now: Mutex::new(Instant::now()),
+            sleeps: tx,
+        }),
+        Arc::new(FakeJudge(Verdict::Active)),
+        None,
+    );
+    let id = service.create_session(&ws, None, None).await.unwrap();
+    send_text(&service, id, "keep looking").await;
+    let sub = service.subscribe(id, None).await.unwrap();
+    let first = collect_until(sub, |e| e.kind == "turn.end").await;
+    assert_eq!(
+        first.iter().filter(|e| e.kind == "llm.response").count(),
+        500
+    );
+    assert!(sleeps.try_recv().is_err());
+    let child = service
+        .create_child_session(id, "explore", "finish child now")
+        .await
+        .unwrap();
+    let sub = service.subscribe(child, None).await.unwrap();
+    collect_until(sub, |e| e.kind == "turn.end").await;
+    let mut command = navai::bus::command::Command {
+        command_id: ulid::Ulid::new(),
+        session_id: id,
+        source_actor_id: "navigator".into(),
+        target_actor_id: "agent:main".into(),
+        mode: navai::bus::command::DeliveryMode::NextTurn,
+        content: vec![navai::bus::command::ContentBlock::Text {
+            text: "autonomous wake".into(),
+        }],
+        created_at: std::time::SystemTime::now(),
+    };
+    service.send(command.clone()).await.unwrap();
+    service.history().flush().await.unwrap();
+    assert_eq!(provider.bodies().len(), 501);
+    command.command_id = ulid::Ulid::new();
+    command.source_actor_id = "user:http".into();
+    command.content = vec![navai::bus::command::ContentBlock::Text {
+        text: "fresh driver window".into(),
+    }];
+    service.send(command).await.unwrap();
+    let sub = service.subscribe(id, None).await.unwrap();
+    let second = collect_until(sub, |e| {
+        e.kind == "turn.end" && e.seq > first.last().unwrap().seq
+    })
+    .await;
+    assert_eq!(
+        second.iter().filter(|e| e.kind == "llm.response").count(),
+        1000
+    );
+    assert_eq!(provider.bodies().len(), 1001);
     service.close_all().await;
 }
 

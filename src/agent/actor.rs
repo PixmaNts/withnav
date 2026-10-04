@@ -76,6 +76,7 @@ pub struct AgentActor {
     /// unbounded (`usize::MAX`); session preparation installs the child or
     /// unavailable-instinct fallback budget. An explicit environment cap wins.
     pub max_steps: usize,
+    pub watchdog_steps_left: Option<usize>,
     /// An optional role prompt, sent as a second system message right after
     /// the system contract on every request. It is not part of the transcript.
     pub system_prompt: Option<String>,
@@ -137,6 +138,7 @@ impl AgentActor {
             input_budget: None,
             variant: None,
             max_steps: crate::agent::run_loop::root_max_steps(),
+            watchdog_steps_left: None,
             system_prompt: None,
             role: None,
             rules: Instructions::default(),

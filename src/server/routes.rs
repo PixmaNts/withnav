@@ -722,11 +722,24 @@ async fn stop_session(State(state): State<AppState>, Path(id): Path<String>) -> 
 async fn continue_child(
     State(state): State<AppState>,
     Path((parent, child)): Path<(String, String)>,
+    body: Option<Json<serde_json::Value>>,
 ) -> Response {
     let (Ok(parent_id), Ok(child_id)) = (parent.parse(), child.parse()) else {
         return error_response(ServerError::SessionNotFound(child));
     };
-    match state.continue_child(parent_id, child_id).await {
+    let token = match body.and_then(|Json(value)| value.get("pause_token").cloned()) {
+        Some(value) if !value.is_null() => match serde_json::from_value(value) {
+            Ok(token) => Some(token),
+            Err(_) => {
+                return error_response(ServerError::MalformedBody("invalid pause token".into()))
+            }
+        },
+        _ => None,
+    };
+    match state
+        .continue_child_with_token(parent_id, child_id, token)
+        .await
+    {
         Ok(()) => Json(json!({"accepted":true})).into_response(),
         Err(error) => error_response(error),
     }

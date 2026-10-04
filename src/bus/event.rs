@@ -409,6 +409,12 @@ pub struct AgentYield {
     pub details: Option<Value>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PauseToken {
+    pub incarnation: Ulid,
+    pub hold_id: Ulid,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskDone {
     pub task_id: Ulid,

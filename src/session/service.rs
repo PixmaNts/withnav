@@ -1123,6 +1123,15 @@ impl Service {
         parent: SessionId,
         child: SessionId,
     ) -> Result<(), ServerError> {
+        self.continue_child_with_token(parent, child, None).await
+    }
+
+    pub async fn continue_child_with_token(
+        &self,
+        parent: SessionId,
+        child: SessionId,
+        token: Option<runtime::PauseToken>,
+    ) -> Result<(), ServerError> {
         let owner = self.routable_handle(parent).await?;
         if owner.parent_session_id.is_some() {
             return Err(ServerError::ChildReadOnly);
@@ -1134,6 +1143,19 @@ impl Service {
             return Err(ServerError::ChildReadOnly);
         }
         if handle.status.pending_permission().is_some() || handle.status.selection.ask_pending() {
+            return Err(ServerError::ChildNotParked);
+        }
+        if parent == child && handle.status.watchdog.root_hold().is_some() {
+            let token = token.ok_or(ServerError::ChildNotParked)?;
+            if !handle.status.watchdog.resolve_root(token, || {
+                runtime::publish_pause_resolution(&handle.sequencer, token, "continued");
+                handle.status.wake_continue();
+            }) {
+                return Err(ServerError::ChildNotParked);
+            }
+            return Ok(());
+        }
+        if token.is_some() {
             return Err(ServerError::ChildNotParked);
         }
         if !handle.status.watchdog.resume() && !handle.status.continue_budget() {
@@ -2011,6 +2033,31 @@ impl Service {
             None
         };
         let sequencer = Sequencer::spawn(session_id, emitter, next_seq);
+        if is_resume && child_parent.is_none() {
+            let events = self
+                .history
+                .watchdog_events(session_id)
+                .await
+                .map_err(ServerError::History)?;
+            let mut pending = None;
+            for event in events {
+                if event.kind == "agent.yield" && event.payload["kind"] == "watchdog" {
+                    pending = serde_json::from_value::<runtime::PauseToken>(
+                        event.payload["details"]["pause_token"].clone(),
+                    )
+                    .ok();
+                }
+                if event.kind == "command.result"
+                    && event.payload["name"] == "watchdog"
+                    && event.payload["data"]["resolution"].is_string()
+                {
+                    pending = None;
+                }
+            }
+            if let Some(token) = pending {
+                runtime::publish_pause_resolution(&sequencer, token, "expired");
+            }
+        }
         if root_watchdog
             .as_ref()
             .is_some_and(|watchdog| watchdog.unavailable())
@@ -2092,9 +2139,6 @@ impl Service {
                 && actor.max_steps == crate::agent::run_loop::WATCHDOG_FALLBACK_STEPS,
             std::sync::atomic::Ordering::Release,
         );
-        if let Some(watchdog) = root_watchdog {
-            watchdog.start(status.clone(), sequencer.clone(), session_cancel.clone());
-        }
         if child_parent.is_none() {
             let pending_history = self.history.clone();
             let eligible_history = self.history.clone();
@@ -2237,9 +2281,11 @@ impl Service {
             completion,
         ))));
 
+        let incarnation = Ulid::new();
+        status.watchdog.install_incarnation(incarnation);
         let handle = SessionHandle {
             publications: Arc::default(),
-            incarnation: Ulid::new(),
+            incarnation,
             inbox_tx,
             permissions,
             sequencer,
@@ -2273,6 +2319,22 @@ impl Service {
             self.drain_completions(session_id).await;
             if let Some(owner) = self.handle(session_id) {
                 owner.status.wake_delivery();
+            }
+        }
+        if let Some(watchdog) = root_watchdog {
+            if let Some(owner) = self.handle(session_id) {
+                let mut task = owner
+                    .status
+                    .root_supervisor
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if !owner.status.watchdog.supervisor_cancel.is_cancelled() {
+                    *task = watchdog.start(
+                        owner.status.clone(),
+                        owner.sequencer.clone(),
+                        owner.session_cancel.clone(),
+                    );
+                }
             }
         }
         // The host learns of the session once it is routable. A session

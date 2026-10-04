@@ -193,7 +193,7 @@ impl Service {
 
 impl RootWatchdog {
     pub fn unavailable(&self) -> bool {
-        self.judge.is_none()
+        self.interval == 0 || self.judge.is_none()
     }
 
     pub fn start(
@@ -201,19 +201,19 @@ impl RootWatchdog {
         status: Arc<RuntimeStatus>,
         sequencer: Sequencer,
         cancel: CancellationToken,
-    ) {
+    ) -> Option<tokio::task::JoinHandle<()>> {
         if self.interval == 0 || self.judge.is_none() {
-            return;
+            return None;
         }
         let activity_clock = self.clock.clone();
         status
             .activity
             .install_clock(Arc::new(move || activity_clock.now()));
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             let interval = Duration::from_secs(self.interval);
             let mut watchdog = Watchdog::new(self.clock.clone(), interval);
             loop {
-                tokio::select! { biased; _ = cancel.cancelled() => break, _ = self.clock.sleep(interval) => {} }
+                tokio::select! { biased; _ = cancel.cancelled() => break, _ = status.watchdog.supervisor_cancel.cancelled() => break, _ = self.clock.sleep(interval) => {} }
                 if !watchdog.due() || !status.watchdog_eligible() {
                     continue;
                 }
@@ -245,7 +245,11 @@ impl RootWatchdog {
                     .bounded()
                 };
                 let Some(checked) = watchdog
-                    .check(self.judge.as_deref(), &evidence, &cancel)
+                    .check(
+                        self.judge.as_deref(),
+                        &evidence,
+                        &status.watchdog.supervisor_cancel,
+                    )
                     .await
                 else {
                     continue;
@@ -260,11 +264,16 @@ impl RootWatchdog {
                 let review = if checked.verdict == Verdict::Stuck {
                     Review::Stop
                 } else {
-                    review_bounded(self.reviewer.as_deref(), &evidence, &cancel).await
+                    review_bounded(
+                        self.reviewer.as_deref(),
+                        &evidence,
+                        &status.watchdog.supervisor_cancel,
+                    )
+                    .await
                 };
                 apply_review(&status, &sequencer, generation, review, &evidence);
             }
-        });
+        }))
     }
 }
 
@@ -292,10 +301,10 @@ fn apply_review(
         Review::Stop if status.watchdog.stop_at_boundary(generation) => {
             notice(sequencer, &format!("Stopped by watchdog: observable progress toward the goal is stuck ({} steps, last call: {}). The current tool batch will settle; partial work is kept.", evidence.step_count, evidence.last_tool_call.as_deref().unwrap_or("none")));
         }
-        Review::AskDriver if status.watchdog.accept_verdict(generation, true) => {
-            let _ = sequencer.publish(Candidate::new(EventKind::AgentYield, serde_json::json!({
-                "actor_id":"agent:main", "kind":"watchdog", "question":"Watchdog uncertain: metacognition could not decide. Paused at the next safe boundary; alt+c to continue or Stop to stop. Partial work is kept.", "details":evidence
-            })));
+        Review::AskDriver => {
+            status
+                .watchdog
+                .request_root_pause(generation, serde_json::json!(evidence));
         }
         _ => {}
     }
@@ -405,7 +414,8 @@ mod tests {
         );
         assert!(status.watchdog.is_doubt());
         assert!(!status.watchdog_eligible());
-        assert!(status.watchdog.resume());
+        let hold = status.watchdog.publish_root_hold().unwrap();
+        assert!(status.watchdog.resolve_root(hold.token, || {}));
         status.selection.end_turn(true);
         apply_review(
             &status,

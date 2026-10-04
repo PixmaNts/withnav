@@ -88,7 +88,7 @@ pub async fn run_agent(
     actor: &mut AgentActor,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> Result<RunOutcome, AgentError> {
-    let budget = actor.max_steps;
+    let budget = actor.watchdog_steps_left.take().unwrap_or(actor.max_steps);
     run_steps(actor, observe, budget).await
 }
 
@@ -131,6 +131,11 @@ async fn run_steps(
                     Err(error) => {
                         if let Some(committed) = error.committed {
                             actor.transcript = committed;
+                        }
+                        if error.message == "watchdog_boundary" {
+                            actor.watchdog_steps_left = Some(budget - step);
+                            actor.state = AgentState::Idle;
+                            return Ok(RunOutcome::Interrupted);
                         }
                         return Err(AgentError::Tool(crate::error::ToolError::Denied {
                             code: "safe_boundary".into(),

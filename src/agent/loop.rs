@@ -488,7 +488,10 @@ fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
             "Navai configuration is driver-only; approve this call once or deny".into();
         return Gated::Ask(request, needed.destination);
     }
-    if matches!(call.name.as_str(), "bash" | "write" | "edit") {
+    if matches!(
+        call.name.as_str(),
+        "bash" | "write" | "edit" | "read" | "grep" | "glob"
+    ) {
         return Gated::Reviewed(needed);
     }
     // A guarded agent writes its markdown without asking; everything else it
@@ -2034,6 +2037,200 @@ mod tests {
     }
 
     struct OptimisticReadOnlyJudge;
+    struct ReadJudge;
+    impl super::super::permission_gate::PermissionJudge for ReadJudge {
+        fn judge<'a>(
+            &'a self,
+            input: &'a super::super::permission_gate::PermissionReviewInput,
+            _: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<'a, Result<crate::provider::systemone::Answers, String>>
+        {
+            let mut answers = safety_answers(input, Verdict::Conforms);
+            if let crate::provider::systemone::Answer::Choice { choice, .. } =
+                answers.get_mut("call_effect").unwrap()
+            {
+                *choice = "read_only".into();
+            }
+            Box::pin(async move { Ok(answers) })
+        }
+    }
+
+    #[tokio::test]
+    async fn outside_reads_are_reviewed_once_and_inside_reads_are_ungated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("README.md"), "first line").unwrap();
+        let mut actor = plan_actor(None, "http://unused");
+        as_build(&mut actor);
+        actor
+            .registry
+            .register(Box::new(crate::tools::native::GrepTool));
+        actor
+            .registry
+            .register(Box::new(crate::tools::glob::GlobTool));
+        actor.permission_judge = Some(Arc::new(ReadJudge));
+        for tool in ["read", "grep", "glob"] {
+            let target = if tool == "read" {
+                outside.join("README.md")
+            } else {
+                outside.clone()
+            };
+            let call = ToolCall {
+                id: tool.into(),
+                name: tool.into(),
+                args: serde_json::json!({"path":target,"pattern":if tool == "glob" { "*.md" } else { "first" }}),
+                args_valid: true,
+            };
+            let mut evidence = Vec::new();
+            assert!(matches!(
+                run_gated(&mut actor, &call, &mut |event| {
+                    if let AgentEvent::PostCall { result, .. } = event {
+                        assert_eq!(result.status, ToolStatus::Ok, "{result:?}");
+                        assert!(
+                            result.output.contains(if tool == "glob" {
+                                "README.md"
+                            } else {
+                                "first line"
+                            }),
+                            "{result:?}"
+                        );
+                        evidence.push(result.metadata["permission_gate"].clone());
+                    }
+                })
+                .await,
+                One::Settled
+            ));
+            assert_eq!(evidence.len(), 1);
+            assert_eq!(evidence[0]["source"], "jev");
+            let mut inside = call;
+            inside.args["path"] = serde_json::json!(actor.tool_context.workspace);
+            assert!(matches!(gate(&actor, &inside), Gated::Run(None)));
+        }
+    }
+
+    #[tokio::test]
+    async fn sensitive_reads_require_driver_even_after_optimistic_jev_and_metacognition() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(".ssh")).unwrap();
+        for name in [".ssh/id_ed25519", "auth.json"] {
+            std::fs::write(tmp.path().join(name), "secret").unwrap();
+        }
+        let mut actor = plan_actor(None, "http://unused");
+        as_build(&mut actor);
+        actor.permission_judge = Some(Arc::new(ReadJudge));
+        let meta = Arc::new(Meta {
+            decision: Some(super::super::permission_gate::ReviewDecision::Approve),
+            captured: Default::default(),
+            hangs: false,
+        });
+        actor.permission_reviewer = Some(meta.clone());
+        for (tool, args) in [
+            (
+                "read",
+                serde_json::json!({"path":tmp.path().join(".ssh/id_ed25519")}),
+            ),
+            (
+                "read",
+                serde_json::json!({"path":tmp.path().join("auth.json")}),
+            ),
+            (
+                "bash",
+                serde_json::json!({"command":format!("cat {}", tmp.path().join(".ssh/id_ed25519").display())}),
+            ),
+        ] {
+            let call = ToolCall {
+                id: tool.into(),
+                name: tool.into(),
+                args,
+                args_valid: true,
+            };
+            let One::Ask(request, _) = run_gated(&mut actor, &call, &mut |_| {
+                panic!("secret must not dispatch")
+            })
+            .await
+            else {
+                panic!("driver required");
+            };
+            assert_eq!(request.permission_gate.unwrap()["source"], "driver");
+            assert!(
+                meta.captured.lock().unwrap().is_some(),
+                "metacognition consulted"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn reviewed_read_replacement_symlink_regates_without_reading_the_new_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("README.md");
+        let secret = tmp.path().join("auth.json");
+        std::fs::write(&target, "public").unwrap();
+        std::fs::write(&secret, "secret").unwrap();
+        let mut actor = plan_actor(None, "http://unused");
+        as_build(&mut actor);
+        actor.permission_judge = Some(Arc::new(ReadJudge));
+        let call = ToolCall {
+            id: "read".into(),
+            name: "read".into(),
+            args: serde_json::json!({"path":target}),
+            args_valid: true,
+        };
+        let old = target.clone();
+        crate::tools::nofollow::on_next_open(move || {
+            std::fs::remove_file(&old).unwrap();
+            std::os::unix::fs::symlink(secret, old).unwrap();
+        });
+        let mut outputs = Vec::new();
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut |event| {
+                if let AgentEvent::PostCall { result, .. } = event {
+                    outputs.push(result.output.clone());
+                }
+            })
+            .await,
+            One::Ask(..)
+        ));
+        assert!(outputs.iter().all(|output| !output.contains("secret")));
+    }
+
+    #[tokio::test]
+    async fn driver_approved_outside_read_runs_once_without_adding_a_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("README.md");
+        std::fs::write(&path, "first line").unwrap();
+        let mut actor = plan_actor(None, "http://unused");
+        as_build(&mut actor);
+        let roots = actor.tool_context.read_roots();
+        actor
+            .registry
+            .register(Box::new(crate::tools::native::GrepTool));
+        actor
+            .registry
+            .register(Box::new(crate::tools::glob::GlobTool));
+        for tool in ["read", "grep", "glob"] {
+            let call = ToolCall {
+                id: tool.into(),
+                name: tool.into(),
+                args: serde_json::json!({"path":if tool == "glob" { tmp.path().to_path_buf() } else { path.clone() }, "pattern":if tool == "glob" { "*.md" } else { "first" }}),
+                args_valid: true,
+            };
+            let One::Ask(request, destination) = run_gated(&mut actor, &call, &mut |_| {}).await
+            else {
+                panic!("driver required");
+            };
+            let mut count = 0;
+            assert!(matches!(run_reviewed(&mut actor, &call, destination.as_deref(), Some(serde_json::json!({"permission_gate":{"source":"driver","reason":request.reason}})), &mut |event| {
+            if let AgentEvent::PostCall { result, .. } = event {
+                count += 1;
+                assert!(result.output.contains(if tool == "glob" { "README.md" } else { "first line" }));
+                assert_eq!(result.metadata["permission_gate"]["source"], "driver");
+            }
+        }).await, One::Settled));
+            assert_eq!(count, 1);
+            assert_eq!(actor.tool_context.read_roots(), roots);
+        }
+    }
     impl super::super::permission_gate::PermissionJudge for OptimisticReadOnlyJudge {
         fn judge<'a>(
             &'a self,

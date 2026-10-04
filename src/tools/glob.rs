@@ -86,6 +86,30 @@ impl Tool for GlobTool {
                 }
                 None => cx.workspace.clone(),
             };
+            let bound = crate::tools::bound_destination(&args, &[PathBuf::from("/")])?;
+            let held = bound
+                .as_deref()
+                .map(crate::tools::nofollow::open_read)
+                .transpose()?;
+            use std::os::fd::AsRawFd;
+            if let Some(file) = held {
+                return tokio::task::spawn_blocking(move || {
+                    let root = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
+                    let walked = walk(
+                        &root,
+                        &matcher,
+                        &cancel,
+                        GLOB_MAX_VISITED,
+                        GLOB_MAX_DURATION,
+                    );
+                    if walked.stop == Stop::Canceled {
+                        return Ok(ToolResult::interrupted());
+                    }
+                    Ok(render(walked, limit))
+                })
+                .await
+                .map_err(|error| ToolError::Io(std::io::Error::other(error)))?;
+            }
             let roots = cx.read_roots();
             search(
                 roots,

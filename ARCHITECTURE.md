@@ -204,10 +204,15 @@ status line shows the active tab's.
 
 **Permission request to answer.** Before each tool call of an assistant message, `run_loop` asks
 `needs_permission`, which validates the call and its paths. Every `bash`, `write` and `edit` then goes
+through review, as do native `read`/`grep`/`glob` outside readable roots or targeting credentials.
+Inside-root ordinary reads remain ungated. Approved reads bind one canonical target, re-resolve
+before dispatch and hold a no-follow descriptor; they never expand readable roots. Deterministic
+credential/key flags require metacognition and then the driver even after model approval. Reading
+ordinary Navai config follows this policy; config mutation stays driver-only. Every gated call goes
 to `permission_gate`: conservative deterministic checks (redirections, mutating and risky command
 families, canonical destinations) only tighten, then Jev answers `call_effect`, `call_scope` and
 `call_risk` in one bounded request (plus `role_conformance` for `plan`). A read-only call, or a
-low-risk change inside the project, runs. A risky or outside-project change goes to a synchronous,
+low-risk change inside the project, runs only if it is not risky. A risky call or outside-project change goes to a synchronous,
 tool-free metacognition review (20 s); only `approve` runs it. Anything else (reject, unsure, a
 malformed answer, a timeout, an oversized call, no reviewer) becomes a permission request. The
 verdicts are recorded as `permission_gate` on `tool.pre_call`, `tool.post_call` and
@@ -253,6 +258,10 @@ condition holds. `remark` calls the metacognition with the rendered branch promp
 sequences them, the runtime task runs `run_agent` on the `cognition` alias, events stream back over
 SSE. A navigator session also feeds the `ConversationFeed`, attached by `NavigatorHooks::started` (`navigator/session_hooks.rs`; a resume replays without announcing old turns): its digest reaches the fast layers'
 prompts, and every driver turn end triggers a `conversation` evaluation on the focused document.
+Navigator roots have the same root subagent tools as terminal roots. Children have no profile,
+do not receive `intent`, and are never registered by `started`. Completion uses the normal durable
+outbox and root stream, not the latest-wins navigator wake channel. The digest labels delivered
+subagent text as untrusted and never treats it as a driver turn.
 
 ## State on disk
 

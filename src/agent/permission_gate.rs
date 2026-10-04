@@ -26,9 +26,41 @@ pub struct Overrides {
     pub outside: bool,
 }
 
+/// Credential names are host facts, independent of a model's classification.
+pub fn sensitive_read(path: &std::path::Path) -> bool {
+    path.components().any(|part| {
+        let name = part.as_os_str().to_string_lossy().to_ascii_lowercase();
+        matches!(
+            name.as_str(),
+            ".ssh"
+                | ".gnupg"
+                | ".netrc"
+                | "auth.json"
+                | "keyrings"
+                | ".aws"
+                | "gcloud"
+                | "credentials"
+                | "credentials.json"
+                | "application_default_credentials.json"
+        ) || name.starts_with(".env")
+            || name.contains("id_rsa")
+            || name.contains("id_ed25519")
+            || name.contains("id_ecdsa")
+            || name.ends_with(".pem")
+            || name.ends_with(".key")
+            || name.ends_with(".keyring")
+    })
+}
+
 pub fn prefilter(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> Overrides {
     let mut flags = Overrides::default();
     if let Some(path) = &needed.destination {
+        let reading = matches!(call.name.as_str(), "read" | "grep" | "glob");
+        if reading {
+            flags.outside = crate::tools::validate_path(&cx.read_roots(), path).is_err();
+            flags.risky = sensitive_call(call, needed);
+            return flags;
+        }
         flags.mutation = true;
         let workspace = cx
             .workspace
@@ -98,6 +130,9 @@ pub fn prefilter(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> Override
             || command.contains("sed -i")
             || command.contains("perl -i");
         flags.risky = command.contains("$(")
+            || command
+                .split(|c: char| c.is_whitespace() || ";|&()'\"=<>".contains(c))
+                .any(|word| sensitive_read(std::path::Path::new(word)))
             || command.contains("-delete")
             || command.contains("-exec")
             || command.contains("git push")
@@ -108,7 +143,6 @@ pub fn prefilter(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> Override
             || command.contains("AGENTS.md")
             || command.contains("CLAUDE.md")
             || command.contains("auth.json")
-            || command.contains("config.json")
             || command.contains("hooks/")
             || command.contains('`')
             || words.iter().any(|word| {
@@ -341,6 +375,10 @@ fn describe_with_roots(
         }
     });
     let instruction_bytes = serde_json::to_vec(&questions).ok()?.len();
+    state["host_facts"]["read_only"] =
+        json!(matches!(call.name.as_str(), "read" | "grep" | "glob"));
+    state["host_facts"]["sensitive_read"] = json!(sensitive_call(call, needed));
+    state["host_facts"]["canonical_target"] = json!(needed.destination);
     if state.to_string().len() + instruction_bytes > super::guard::MAX_INPUT_BYTES {
         state["driver_request_complete"] = json!(false);
         state["driver_request"] = Value::Null;
@@ -397,7 +435,11 @@ pub fn route(
     {
         return Ok(Route::Ask);
     }
-    if !flags.mutation && choice("call_effect") == "read_only" {
+    if !flags.mutation
+        && choice("call_effect") == "read_only"
+        && !flags.risky
+        && choice("call_risk") == "low"
+    {
         return Ok(Route::Run);
     }
     if !flags.mutation && choice("call_effect") == "unsure" {
@@ -425,6 +467,17 @@ pub enum Judged {
 }
 
 pub fn protected_call(actor: &super::actor::AgentActor, call: &ToolCall, needed: &Needed) -> bool {
+    if sensitive_call(call, needed)
+        && matches!(call.name.as_str(), "bash" | "read" | "grep" | "glob")
+    {
+        return false;
+    }
+    if matches!(call.name.as_str(), "read" | "grep" | "glob") {
+        return false;
+    }
+    if call.name == "bash" && !prefilter(call, needed, &actor.tool_context).mutation {
+        return false;
+    }
     if actor.protected_config_unresolved && matches!(call.name.as_str(), "write" | "edit") {
         return true;
     }
@@ -508,6 +561,9 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
     let request_incomplete = serde_json::from_str::<Value>(&input.state)
         .is_ok_and(|state| state["driver_request_complete"] == false);
     let mut evidence = json!({"policy_version":1,"source":"driver","reason":"","truncated":context_truncated(actor) || request_incomplete,"overrides":override_names(&flags)});
+    evidence["canonical_target"] = json!(needed.destination);
+    evidence["read_only"] = json!(matches!(call.name.as_str(), "read" | "grep" | "glob"));
+    evidence["sensitive_read"] = json!(sensitive_call(call, needed));
     if let Some(model) = judge.model_id() {
         evidence["models"] = json!({"jev":model});
     }
@@ -554,9 +610,16 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
             let review = tokio::select! { biased; _ = actor.cancel.cancelled() => return Judged::Interrupted, review = tokio::time::timeout(Duration::from_secs(20), reviewer.review(&input, &review_cancel)) => review };
             evidence["latency_ms"]["metacognition"] = json!(started.elapsed().as_millis() as u64);
             match review {
-                Ok(Ok(review)) if review.decision == ReviewDecision::Approve => {
+                Ok(Ok(review))
+                    if review.decision == ReviewDecision::Approve
+                        && !sensitive_call(call, needed) =>
+                {
                     allowed_evidence(&input, "metacognition", &review.reason, evidence)
                 }
+                Ok(Ok(_)) if sensitive_call(call, needed) => ask_evidence(
+                    "Sensitive credential/key access requires a typed driver decision after metacognition review; approve once or deny".into(),
+                    evidence,
+                ),
                 Ok(Ok(review)) => ask_evidence(
                     format!(
                         "Metacognition {:?}: {:?}; approve once or deny",
@@ -579,6 +642,27 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
             evidence,
         ),
     }
+}
+
+fn sensitive_call(call: &ToolCall, needed: &Needed) -> bool {
+    needed.destination.as_deref().is_some_and(sensitive_read)
+        || (matches!(call.name.as_str(), "read" | "grep" | "glob")
+            && ["path", "pattern"].iter().any(|key| {
+                call.args
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| sensitive_read(std::path::Path::new(value)))
+            }))
+        || (call.name == "bash"
+            && call
+                .args
+                .get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|command| {
+                    command
+                        .split(|c: char| c.is_whitespace() || ";|&()'\"=<>".contains(c))
+                        .any(|word| sensitive_read(std::path::Path::new(word)))
+                }))
 }
 
 fn choice<'a>(answers: &'a Answers, name: &str) -> Option<&'a str> {
@@ -690,6 +774,28 @@ mod tests {
             };
             assert!(prefilter(&call, &needed, &cx).mutation, "{command}");
         }
+    }
+
+    #[test]
+    fn deterministic_sensitive_names_cover_keys_and_cloud_credentials_not_plain_config() {
+        for path in [
+            "/home/driver/.ssh/id_ed25519",
+            "/home/driver/.gnupg/private-keys-v1.d",
+            "/project/.env.local",
+            "/project/key-id_rsa-backup",
+            "/project/certificate.pem",
+            "/project/token.key",
+            "/home/driver/.local/share/keyrings/login.keyring",
+            "/home/driver/.netrc",
+            "/home/driver/.aws/credentials",
+            "/home/driver/.config/gcloud/application_default_credentials.json",
+            "/home/driver/.config/navai/auth.json",
+        ] {
+            assert!(sensitive_read(std::path::Path::new(path)), "{path}");
+        }
+        assert!(!sensitive_read(std::path::Path::new(
+            "/home/driver/.config/navai/config.json"
+        )));
     }
     #[test]
     fn audit_evidence_preserves_fixed_names_and_optional_values() {
@@ -853,6 +959,27 @@ mod tests {
             route(&input, &answers, &Overrides::default()),
             Ok(Route::Run)
         );
+        assert_eq!(
+            route(
+                &input,
+                &answers,
+                &Overrides {
+                    risky: true,
+                    ..Default::default()
+                }
+            ),
+            Ok(Route::Review)
+        );
+        if let Answer::Choice { choice, .. } = answers.get_mut("call_risk").unwrap() {
+            *choice = "risky".into();
+        }
+        assert_eq!(
+            route(&input, &answers, &Overrides::default()),
+            Ok(Route::Review)
+        );
+        if let Answer::Choice { choice, .. } = answers.get_mut("call_risk").unwrap() {
+            *choice = "low".into();
+        }
         assert_eq!(
             route(
                 &input,

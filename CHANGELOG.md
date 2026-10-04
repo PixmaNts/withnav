@@ -4,6 +4,17 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Fixed
+
+- VS Code conversations can start subagents; child results use the normal durable parent delivery.
+- Risky read-only calls, including reading credentials and keys, are no longer auto-approved by
+  the instinct. Sensitive reads require metacognition review and a typed driver decision.
+
+### Changed
+
+- `read`, `grep` and `glob` outside the readable roots are reviewed like bash instead of refused.
+  Approval covers one canonical target, never a new readable root.
+
 ## [0.4.6] - 2026-10-04
 
 The VS Code chat gets the terminal client's controls: slash commands, subagents and the context

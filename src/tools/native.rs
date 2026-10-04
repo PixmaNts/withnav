@@ -59,11 +59,22 @@ impl Tool for ReadTool {
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + 'a>> {
         boxed(async move {
             let path = arg_str(&args, "path")?;
-            let resolved = validate_path(&cx.read_roots(), Path::new(&path))?;
+            let bound = bound_destination(&args, &[PathBuf::from("/")])?;
+            let resolved = match &bound {
+                Some(path) => path.clone(),
+                None => validate_path(&cx.read_roots(), Path::new(&path))?,
+            };
             if !resolved.is_file() {
                 return Err(ToolError::NotFound(resolved));
             }
-            let bytes = tokio::fs::read(&resolved).await?;
+            let bytes = if bound.is_some() {
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                nofollow::open_read(&resolved)?.read_to_end(&mut bytes)?;
+                bytes
+            } else {
+                tokio::fs::read(&resolved).await?
+            };
             let original_bytes = bytes.len();
             let text = String::from_utf8_lossy(&bytes).into_owned();
 
@@ -274,14 +285,27 @@ impl Tool for GrepTool {
                 .and_then(|v| v.as_str())
                 .map(String::from)
                 .unwrap_or_else(|| cx.workspace.to_string_lossy().into_owned());
-            let search_root = validate_path(&cx.read_roots(), Path::new(&path))?;
+            let bound = bound_destination(&args, &[PathBuf::from("/")])?;
+            let held = bound.as_deref().map(nofollow::open_read).transpose()?;
+            use std::os::fd::AsRawFd;
+            let search_root = match &held {
+                Some(file) => PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd())),
+                None => validate_path(&cx.read_roots(), Path::new(&path))?,
+            };
 
-            if rg_available() {
+            if held.is_none() && rg_available() {
                 if let Some(result) = grep_rg(&pattern, &search_root).await {
                     return Ok(result);
                 }
             }
-            grep_builtin(&pattern, &search_root)
+            let mut result = grep_builtin(&pattern, &search_root)?;
+            if let Some(bound) = bound {
+                result.output = result.output.replace(
+                    search_root.to_string_lossy().as_ref(),
+                    bound.to_string_lossy().as_ref(),
+                );
+            }
+            Ok(result)
         })
     }
 }
@@ -337,6 +361,16 @@ fn grep_builtin(pattern: &str, root: &Path) -> Result<ToolResult, ToolError> {
     })?;
     let mut out = String::new();
     let mut matches = 0usize;
+    if root.is_file() {
+        let content = std::fs::read_to_string(root)?;
+        for (lineno, line) in content.lines().enumerate() {
+            if re.is_match(line) && matches < GREP_MAX_MATCHES {
+                out.push_str(&format!("{}:{}:{}\n", root.display(), lineno + 1, line));
+                matches += 1;
+            }
+        }
+        return Ok(bound_matches(&out).with_metadata(json!({"engine": "builtin"})));
+    }
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let entries = match std::fs::read_dir(&dir) {

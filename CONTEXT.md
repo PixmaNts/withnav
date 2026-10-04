@@ -76,7 +76,10 @@ _Avoid_: profile (a profile is the kind of session, such as the navigator)
 **Subagent**:
 An agent definition whose mode is `subagent` or `all`, meant to be given a task by another agent
 (`explore` and `review` are built in and read-only). A cognition session may start one through
-`task(agent, prompt)` as a real, non-promptable child session. It has an independent transcript, an
+`task(agent, prompt)` from either the terminal or a VS Code navigator-profile root conversation. Children never
+register with the conversation feed or receive the navigator's `intent` tool. Their results use
+normal durable delivery, not navigator wakes; the root digest labels them as untrusted subagent text.
+The subagent is a real, non-promptable child session. It has an independent transcript, an
 intersected snapshot of the parent's policy, a durable parent-child link, and bounded terminal
 result. `subagent.spawned` and `subagent.done` are replayable events. Results enter the parent's
 transcript once, as bounded untrusted user messages at a turn boundary. `steer` delivery can use
@@ -210,6 +213,13 @@ Outside-project file changes receive review like bash effects; approval never ex
 An advisory per-call classification by the instinct, followed for risky or outside-project
 mutations by synchronous metacognition review. Only explicit approval runs those calls;
 uncertainty, malformed answers and deadlines escalate to the driver. Not a sandbox.
+
+Native `read`, `grep` and `glob` within readable roots remain ungated, except sensitive targets.
+Outside reads use the same per-call classification as bash. Approval binds one canonical target,
+re-resolved before dispatch and opened without following replacement links. No root is added.
+Credential/key targets deterministically force risky review and then a typed driver decision even
+if both models approve. A risky read-only bash call also needs review. Reading ordinary Navai
+configuration follows normal read review; `auth.json` is sensitive.
 
 **Permission request**:
 A held tool call awaiting a typed driver decision. Bash, write and edit offer allow once or deny;

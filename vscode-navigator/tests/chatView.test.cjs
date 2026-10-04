@@ -48,6 +48,45 @@ function fullChat(t) {
   const tick = () => new Promise(resolve => setImmediate(resolve));
   return { b, dom, prompt, send, event, tick };
 }
+for (const early of [true,false]) test(`R3.1 end-to-end failed open unlocks abandoned creation with response ${early ? 'before' : 'after'} rollback`, async t => {
+  const { b,send,tick,prompt } = fullChat(t);
+  let finishCreate; let finishOpen;
+  t.mock.method(globalThis,'fetch',url => new Promise(resolve => {
+    if (url.endsWith('/v1/sessions')) finishCreate=resolve;
+    else finishOpen=resolve;
+  }));
+  send('abandoned'); await tick();
+  const opening = b.openConversation('missing').catch(() => {});
+  await tick();
+  if (early) { finishCreate(new Response(JSON.stringify({session_id:'abandoned'}))); await tick(); }
+  // Reconciliation retries the missing metadata three times before rollback.
+  for (let attempt=0; attempt<3; attempt++) {
+    finishOpen(new Response(JSON.stringify({error:'missing'}),{status:404}));
+    if (attempt<2) await new Promise(resolve => setTimeout(resolve, 110*(attempt+1)));
+  }
+  await opening;
+  if (!early) { finishCreate(new Response(JSON.stringify({session_id:'abandoned'}))); await tick(); }
+  assert.equal(b.state.starting,false);
+  t.mock.method(globalThis,'fetch',async url => new Response(JSON.stringify(url.endsWith('/messages') ? {accepted:true} : {session_id:'fresh'})));
+  send('fresh'); await tick();
+  assert.equal(b.currentConversationId(),'fresh'); assert.equal(prompt.value,'');
+});
+test('R3.2 end-to-end populated picker locks at nonzero opening generation and unlocks on completion', async t => {
+  const { b,dom,tick } = fullChat(t);
+  b.models=[{alias:'a',model:'a'}];
+  await b.newConversation();
+  const picker=dom.window.document.querySelector('#model');
+  assert(b.currentGeneration()>=1); assert.equal(picker.disabled,false);
+  let finish;
+  t.mock.method(globalThis,'fetch',url => url.endsWith('/v1/sessions') ? Promise.resolve(new Response(JSON.stringify({session_id:'B'}))) : new Promise(resolve => finish=resolve));
+  const opening=b.openConversation('B');
+  await tick(); assert.equal(picker.disabled,true);
+  finish(new Response(JSON.stringify({current_seq:1,model:'a',agent:'build',actor_state:'idle'})));
+  await opening; assert.equal(picker.disabled,false);
+  // Settle the independent model-summary read started after opening.
+  finish(new Response(JSON.stringify({current_seq:1,model:'a',agent:'build',actor_state:'idle'})));
+  await tick();
+});
 for (const resume of [false,true]) test(`R2.1 end-to-end ordinary ${resume ? 'resume' : 'create'} clears composer at destination generation`, async t => {
   const { b,prompt,send,tick } = fullChat(t); if (resume) b.state.resumeId = 'S';
   t.mock.method(globalThis,'fetch',async url => new Response(JSON.stringify(url.endsWith('/messages') ? { accepted:true } : { session_id:'S' })));

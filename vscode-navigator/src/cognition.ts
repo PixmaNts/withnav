@@ -284,11 +284,14 @@ export class CognitionBackend implements ChatBackend {
   async openConversation(id: string): Promise<void> {
     const previous = this.state;
     this.abortStream();
+    // Its create/open operation is now abandoned. A rollback must restore an
+    // idle origin, not depend on that obsolete operation's cleanup.
+    previous.starting = false;
     const generation = this.state.streamGeneration;
     this.state = new ConversationState();
+    this.state.streamGeneration = generation;
     this.state.starting = true;
     this.emitModels();
-    this.state.streamGeneration = generation;
     this.state.session = undefined;
     this.state.resumeId = undefined;
     this.emit({ type: "conversationOpened", title: "Opening conversation" });

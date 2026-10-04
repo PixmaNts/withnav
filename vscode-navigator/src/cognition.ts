@@ -30,6 +30,7 @@ class ConversationState {
   children = new Map<string, ChildInfo>();
   childStateCursors = new Map<string, string>();
   childStateSeq = new Map<string, number>();
+  childControlTokens = new Map<string, number>();
   parent?: ConversationState;
   readOnly = false;
   starting = false;
@@ -90,6 +91,7 @@ export class CognitionBackend implements ChatBackend {
   private panels = new Set<CognitionBackend>();
   private panelOwner?: CognitionBackend;
   private terminalChild = false;
+  private childReconciliations = new Map<string, { abort: AbortController; trailing: boolean; done: Promise<void> }>();
   private parentState(): ConversationState { return this.state.parent ?? this.state; }
   async openChild(parentId: string, childId: string, generation = this.currentGeneration()): Promise<ChatBackend> {
     const { parent } = this.validateChild(parentId, childId, generation);
@@ -114,7 +116,8 @@ export class CognitionBackend implements ChatBackend {
     const child = parent.children.get(id);
     if (!child) return;
     const status = this.childStatus(metadata?.child_status);
-    if (status !== "unknown") child.state = status;
+    if (this.isTerminal(status) || (status !== "unknown" && !this.isTerminal(child.state) &&
+        !(status === "running" && ["permission", "budget", "watchdog"].includes(child.state)))) child.state = status;
     if (typeof metadata?.agent === "string") child.agent = metadata.agent;
     child.revision = (child.revision ?? 0) + 1;
     this.emitChildren();
@@ -125,18 +128,19 @@ export class CognitionBackend implements ChatBackend {
     const { parent, child } = this.validateChild(parentId, childId, generation);
     if (child.pending || child.state === "unknown" || this.isTerminal(child.state) ||
         (action === "continue" && !["budget", "watchdog"].includes(child.state))) throw new Error("This subagent cannot perform that action now.");
-    return { parent, child, revision: child.revision ?? 0, state: child.state };
+    return { parent, child, revision: child.revision ?? 0, state: child.state, action, token: parent.childControlTokens.get(childId) ?? 0 };
   }
   async controlChild(parentId: string, childId: string, action: "stop" | "continue", generation = this.currentGeneration(), descriptor?: object): Promise<void> {
     if (this.panelOwner) return this.panelOwner.controlChild(parentId, childId, action, generation, descriptor);
     const { parent, child } = this.validateChild(parentId, childId, generation);
     if (descriptor) {
       const d = descriptor as any;
-      if (d.parent !== parent || d.child !== child || d.revision !== (child.revision ?? 0) || d.state !== child.state) throw new Error("The subagent changed, try again.");
+      if (d.parent !== parent || d.child !== child || d.revision !== (child.revision ?? 0) || d.state !== child.state || d.action !== action || d.token !== (parent.childControlTokens.get(childId) ?? 0)) throw new Error("The subagent changed, try again.");
     }
     if (!["stop", "continue"].includes(action) || ["done", "failed", "stopped"].includes(child.state) ||
         (action === "continue" && !["budget", "watchdog"].includes(child.state))) throw new Error("This subagent cannot perform that action now.");
     if (child.pending) return;
+    parent.childControlTokens.set(childId, (parent.childControlTokens.get(childId) ?? 0) + 1);
     child.pending = true; child.error = undefined; this.emitChildren();
     try {
       const result = await this.request(action === "stop" ? `/v1/sessions/${encodeURIComponent(childId)}/stop` :
@@ -789,6 +793,8 @@ export class CognitionBackend implements ChatBackend {
 
   /** Stops the SSE fetch of the running stream, if any. */
   private abortStream(): void {
+    for (const operation of this.childReconciliations.values()) operation.abort.abort();
+    this.childReconciliations.clear();
     for (const panel of this.panels) panel.dispose();
     this.panels.clear();
     this.cancelPermissionReads();
@@ -1099,6 +1105,7 @@ export class CognitionBackend implements ChatBackend {
 
   private childStatus(status: unknown): ChildInfo["state"] {
     switch (status) {
+      case "running": case "active": return "running";
       case "done": case "completed": return "done";
       case "failed": return "failed";
       case "stopped": return "stopped";
@@ -1146,7 +1153,7 @@ export class CognitionBackend implements ChatBackend {
         child.pauseToken = typeof token?.incarnation === "string" && typeof token?.hold_id === "string" ? token : undefined;
       } else if (e.kind === "command.result" && p.name === "watchdog" && p.data?.resolution &&
           JSON.stringify(p.data.pause_token) === JSON.stringify(child.pauseToken)) { child.state = "running"; child.pauseToken = undefined; }
-      else if (e.kind === "session.end" || e.kind === "turn.end") { void this.reconcileChild(id!, parent); return; }
+      else if (e.kind === "session.end" || (e.kind === "turn.end" && ["done", "error"].includes(p.outcome))) { void this.reconcileChild(id!, parent); return; }
       else return;
     }
     if (id) {
@@ -1157,17 +1164,37 @@ export class CognitionBackend implements ChatBackend {
     this.panelOwner?.emitChildren();
   }
 
-  private async reconcileChild(id: string, parent: ConversationState): Promise<void> {
+  private reconcileChild(id: string, parent: ConversationState): Promise<void> {
+    const existing = this.childReconciliations.get(id);
+    if (existing) { existing.trailing = true; return existing.done; }
     const generation = this.currentGeneration();
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const metadata = await this.request(`/v1/sessions/${encodeURIComponent(id)}`, { method: "GET" });
-        if (generation !== this.currentGeneration()) return;
-        this.seedChild(parent, id, metadata);
-        if (this.state.readOnly) this.terminalChild = this.isTerminal(parent.children.get(id)!.state);
-        return;
-      } catch { if (generation !== this.currentGeneration()) return; await new Promise(resolve => setTimeout(resolve, 100 * (attempt + 1))); }
-    }
+    const operation = { abort: new AbortController(), trailing: false, done: Promise.resolve() };
+    operation.done = (async () => {
+      // One active lookup and at most one trailing batch, each with bounded retries.
+      for (let batch = 0; batch < 2; batch++) {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const timeout = setTimeout(() => operation.abort.abort(), 2000);
+          try {
+            const metadata = await this.request(`/v1/sessions/${encodeURIComponent(id)}`, { method: "GET", signal: operation.abort.signal });
+            if (operation.abort.signal.aborted || generation !== this.currentGeneration()) return;
+            this.seedChild(parent, id, metadata);
+            const terminal = this.isTerminal(parent.children.get(id)!.state);
+            if (this.state.readOnly) this.terminalChild = terminal;
+            if (terminal) break;
+          } catch { if (operation.abort.signal.aborted || generation !== this.currentGeneration()) return; }
+          finally { clearTimeout(timeout); }
+          if (attempt < 2) await new Promise<void>(resolve => {
+            const timer = setTimeout(resolve, 100 * (attempt + 1));
+            operation.abort.signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+          });
+          if (operation.abort.signal.aborted) return;
+        }
+        if (!operation.trailing || operation.abort.signal.aborted) break;
+        operation.trailing = false;
+      }
+    })().finally(() => { if (this.childReconciliations.get(id) === operation) this.childReconciliations.delete(id); });
+    this.childReconciliations.set(id, operation);
+    return operation.done;
   }
 
   private mapEvent(envelope: WireEnvelope): HostToWebview | undefined {

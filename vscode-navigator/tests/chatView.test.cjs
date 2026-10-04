@@ -103,6 +103,54 @@ test('S3 panel disposal cancels confirmation; S8 terminal panel replay EOF never
   panels[0].send({type:'controlChild',parentId:'P',childId:'C',action:'continue',generation:b.currentGeneration()});
   panels[0].panel.dispose();confirm('Confirm');await tick();assert.equal(posts,0);
 });
+test('S2.1 concurrent delayed opens reserve one panel then close and reopen', async t=>{
+  const {b,event,dom,tick,panels}=fullChat(t);b.state.session='P';b.scheduleChildRead=()=>{};
+  event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'plan',goal:'work'});
+  let finish;let count=0;
+  t.mock.method(globalThis,'fetch',()=>{count++;return new Promise(r=>finish=r);});
+  const open=()=>dom.window.document.querySelector('.child-open').click();open();open();assert.equal(count,1);
+  finish(new Response(JSON.stringify({parent_session_id:'P',promptable:false,child_status:'done'})));await tick();await tick();assert.equal(panels.length,1);
+  panels[0].panel.dispose();const before=count;open();assert.equal(count,before+1);
+  finish(new Response(JSON.stringify({parent_session_id:'P',promptable:false,child_status:'done'})));await tick();await tick();assert.equal(panels.length,2);panels[1].panel.dispose();
+});
+test('S2.2 running metadata is real running but preserves newer budget and terminal projections', async t=>{
+  const {b,event,dom,tick,panels}=fullChat(t);b.state.session='P';b.scheduleChildRead=()=>{};
+  event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'plan',goal:'work'});
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({parent_session_id:'P',promptable:false,child_status:'running'})));
+  event('agent.yield',{child_session_id:'C',kind:'budget'});
+  dom.window.document.querySelector('.child-open').click();await tick();await tick();assert.equal(b.state.children.get('C').state,'budget');
+  event('subagent.done',{parent_session_id:'P',child_session_id:'C',outcome:'done'});
+  b.seedChild(b.state,'C',{child_status:'active'});assert.equal(b.state.children.get('C').state,'done');
+  assert.equal(b.childStatus('running'),'running');assert.equal(b.childStatus('active'),'running');panels[0].panel.dispose();
+});
+test('S2.3 terminal replay coalesces, ignores yields, retries delayed metadata and cancels hanging lookup', async t=>{
+  const {b,event,tick}=fullChat(t);b.state.session='P';b.scheduleChildRead=()=>{};
+  event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'plan',goal:'work'});
+  let count=0;let finish;let signal;
+  t.mock.method(globalThis,'fetch',(_url,init)=>{count++;signal=init.signal;return new Promise(r=>finish=r);});
+  for(let i=0;i<50;i++)event('turn.end',{child_session_id:'C',outcome:'yielded'});assert.equal(count,0);
+  for(let i=0;i<50;i++)event('turn.end',{child_session_id:'C',outcome:'done'});assert.equal(count,1);
+  finish(new Response(JSON.stringify({child_status:'running'})));await new Promise(r=>setTimeout(r,150));assert.equal(count,2);
+  finish(new Response(JSON.stringify({child_status:'done'})));await tick();
+  if(count===3){finish(new Response(JSON.stringify({child_status:'done'})));await tick();}
+  assert.equal(b.state.children.get('C').state,'done');assert(count<=3);
+  b.state.children.get('C').state='running';event('session.end',{child_session_id:'C'});assert.equal(signal.aborted,false);b.dispose();assert.equal(signal.aborted,true);
+});
+test('S2.4 two outstanding confirmed descriptors across accepted completion send one POST', async t=>{
+  const {b,event,dom,tick}=fullChat(t);b.state.session='P';b.scheduleChildRead=()=>{};
+  event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'plan',goal:'work'});event('agent.yield',{child_session_id:'C',kind:'budget'});
+  const confirmations=[];vscode.window.showWarningMessage=()=>new Promise(r=>confirmations.push(r));
+  let count=0;t.mock.method(globalThis,'fetch',async()=>{count++;return new Response(JSON.stringify({accepted:true}));});
+  const button=[...dom.window.document.querySelectorAll('.child-row button')].find(x=>x.textContent==='Continue');button.click();button.click();
+  confirmations[0]('Confirm');await tick();confirmations[1]('Confirm');await tick();assert.equal(count,1);assert.equal(b.state.children.get('C').state,'budget');
+});
+test('S2.3 hanging terminal metadata GET times out and releases reconciliation', async t=>{
+  const {b,event,tick}=fullChat(t);b.state.session='P';b.scheduleChildRead=()=>{};
+  event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'plan',goal:'work'});
+  let signal;t.mock.method(globalThis,'fetch',(_url,init)=>{signal=init.signal;return new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(new Error('aborted'))));});
+  event('session.end',{child_session_id:'C'});
+  await new Promise(r=>setTimeout(r,2100));await tick();assert.equal(signal.aborted,true);assert.equal(b.childReconciliations.size,0);
+});
 function fullChat(t) {
   const { JSDOM } = require('jsdom');
   const { chatHtml } = require('../out/tests/chatHtml.js');

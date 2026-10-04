@@ -11,6 +11,7 @@ export function registerChatView(
   backend: ChatBackend,
 ): vscode.Disposable {
   const panels = new Map<string, vscode.WebviewPanel>();
+  const openings = new Map<string, Promise<void>>();
   const registration = vscode.window.registerWebviewViewProvider(CHAT_VIEW_ID, {
     resolveWebviewView(view) {
       let disposed = false;
@@ -151,15 +152,18 @@ export function registerChatView(
             if (typeof message.parentId === "string" && typeof message.childId === "string") {
               const existing = panels.get(message.childId);
               if (existing) { existing.reveal(); break; }
-              void backend.openChild(message.parentId, message.childId, message.generation).then(childBackend => {
+              const opening = openings.get(message.childId);
+              if (opening) { void opening.then(() => panels.get(message.childId)?.reveal()); break; }
+              const pending = backend.openChild(message.parentId, message.childId, message.generation).then(childBackend => {
                 if (disposed || message.generation !== backend.currentGeneration()) { childBackend.dispose(); return; }
                 const panel = vscode.window.createWebviewPanel("navai.subagent", "Subagent", vscode.ViewColumn.Active, { enableScripts: true });
                 panels.set(message.childId, panel);
                 mountChildPanel(context, panel, childBackend, backend, message.parentId, message.childId);
-                panel.onDidDispose(() => { panels.delete(message.childId); childBackend.dispose(); });
+                panel.onDidDispose(() => { if (panels.get(message.childId) === panel) panels.delete(message.childId); childBackend.dispose(); });
                 const off = backend.subscribe(update => { if (update.generation !== message.generation) panel.dispose(); });
                 panel.onDidDispose(off);
-              }).catch(showError);
+              }).catch(showError).finally(() => { if (openings.get(message.childId) === pending) openings.delete(message.childId); });
+              openings.set(message.childId, pending);
             }
             break;
           case "controlChild":

@@ -96,13 +96,14 @@ are read without depending on a newer server event enum. Missing data is not gue
 | `runtime.rs` | `Runtime`: owns state, editor, client and streams; runs an event's effects for the tab it reached; the event loop with its frame tick |
 | `runtime/effects.rs` | `Executor`: runs each `Effect` in a task and reports a tagged `ClientEvent`; owns one live stream per tab generation and stops those no tab holds |
 | `runtime/tests.rs` | executor and loop tests with no terminal and a dead server |
-| `terminal.rs` | raw mode and the alternate screen, restored on exit and on panic |
+| `terminal.rs` | raw mode, alternate screen, bracketed paste and mouse capture, restored on exit and on panic |
 | `theme.rs` | the four themes (`ThemeId`, the `Theme` colour roles), the RGB `blend` for tints, and the semantic styles the views draw with |
 | `view/mod.rs` | `draw`: layout of header, sidebar, transcript, right panel, status line, editor, key bar and overlays; the key bar lists the keys that apply now, the prompt's while one waits |
 | `view/header.rs` | the header row: `◆ navai`, workspace, git branch and change count, `▌agent` in its colour, alias · model · variant · context gauge, and an accepted model switch scheduled for after the turn; the path and model give way first |
 | `view/panel.rs` | the right panel (36 columns, hidden under 140 unless `alt+r` asks): Agents and role, Context breakdown and last compaction, Skills listed and omitted, and Changes from git; a section with no data shows `—` |
 | `view/sidebar.rs` | the left conversation sidebar: number, title, `<agent> · <state>`, unread mark, active tint and tab keys; hidden under 80 columns (`alt+b` also toggles it) |
 | `view/transcript.rs` | block layout and drawing: messages by origin, steps, tools, errors, permission prompts, scroll and selection |
+| `view/selection.rs`, `runtime/selection.rs` | the shared grapheme wrapping and transcript-only cell map; mouse selection, edge scrolling and bounded OSC 52 clipboard writes; whole-block copying keeps source Markdown and complete tool output |
 | `view/permission.rs` | the inline permission prompt: tool and scope, a short preview of the call (a write's first lines, an edit's change, a command, a URL), the answer keys or the outcome |
 | `view/tool.rs` | the one-line summary and the expanded output of a tool call |
 | `view/markdown.rs` | markdown to styled lines, cached per block revision |

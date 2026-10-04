@@ -3,9 +3,8 @@ source: tests/tui_view.rs
 expression: snapshot
 ---
  Conversations       │ ◆ navai  …dev/project  ▌build  cognition · cc/claude-opus-5-5 · 12.4k / 200k 
-▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
-▌  build · i┌─────────────────────────── Keyboard shortcuts ───────────────────────────┐            
-            │ enter                   send / choose                                    │            
+▌1 Fix parse┌─────────────────────────── Keyboard shortcuts ───────────────────────────┐────────────
+▌  build · i│ enter                   send / choose                                    │            
             │ alt+enter / ctrl+j      newline                                          │            
             │ ctrl+p / /              commands                                         │            
             │ ctrl+n                  new conversation, in a new tab                   │            
@@ -21,14 +20,15 @@ expression: snapshot
             │ shift+tab               switch focus                                     │            
             │ page up / page down     scroll                                           │            
             │ up / down               select transcript block                          │            
+            │ drag / double-click     select text / word; release copies via OSC 52    │            
+            │ y / ctrl+shift+c        copy block / selection; block keeps Markdown     │            
+            │ shift+drag              native selection; allow OSC 52 for app copying   │            
             │ space / enter           expand selected block                            │            
             │ ctrl+end                follow newest                                    │            
             │ esc / ctrl+c            stop / close                                     │            
-            │ ctrl+q                  quit                                             │            
-            │                                                                          │            
-            │                                                                          │────────────
-            │ esc close                                                                │n 31.2k tok 
-            └──────────────────────────────────────────────────────────────────────────┘───────────┐
- alt+1…9 switch      ││                                                                            │
- alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
+            │ ctrl+q                  quit                                             │────────────
+            │                                                                          │n 31.2k tok 
+            │                                                                          │───────────┐
+ alt+1…9 swi│ esc close                                                                │           │
+ alt+w close└──────────────────────────────────────────────────────────────────────────┘───────────┘
  alt+b hide bar      │ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model · /compact · esc stop

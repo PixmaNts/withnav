@@ -154,12 +154,3 @@ impl MarkdownCache {
         &self.entries[&key]
     }
 }
-
-pub fn height(text: &Text<'_>, width: u16) -> usize {
-    let width = usize::from(width.max(1));
-    text.lines
-        .iter()
-        .map(|line| line.width().max(1).div_ceil(width))
-        .sum::<usize>()
-        .max(1)
-}

@@ -10,6 +10,55 @@ use crate::tui::protocol::{CreateSessionRequest, Generation, SubmitRequest};
 
 const DEAD_URL: &str = "http://127.0.0.1:1";
 
+#[tokio::test]
+async fn transcript_mouse_ignores_sidebar_and_scrolls_after_capture() {
+    use crate::tui::state::{Block, BlockKind};
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::{backend::TestBackend, Terminal};
+    let mut runtime = Runtime::new(&options(None));
+    runtime.state.conversation.blocks.push(Block {
+        id: "reply".into(),
+        kind: BlockKind::Message {
+            source: "assistant".into(),
+            text: "hello world".into(),
+        },
+    });
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal.draw(|frame| runtime.render(frame)).unwrap();
+    let area = runtime.cache.transcript.area;
+    runtime.handle_terminal_event(Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 1,
+        row: area.y,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert!(runtime.selection.range.is_none());
+    runtime.handle_terminal_event(Event::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: area.x,
+        row: area.y,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert_eq!(runtime.ui.scroll, 3);
+    assert!(!runtime.ui.follow_bottom);
+    let &(x, y, _, _) = runtime.cache.transcript.cells.first().unwrap();
+    runtime.handle_terminal_event(Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert!(runtime.selection.range.is_some());
+    runtime.handle_terminal_event(Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: x,
+        row: area.y - 1,
+        modifiers: KeyModifiers::NONE,
+    }));
+    runtime.on_tick();
+    assert_eq!(runtime.ui.scroll, 4);
+}
+
 fn executor() -> (Executor, mpsc::Receiver<ClientEvent>) {
     let (tx, rx) = mpsc::channel(16);
     (Executor::new(Client::new(DEAD_URL, None), tx), rx)

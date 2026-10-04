@@ -149,6 +149,18 @@ pub const KEYS: &[(&str, &str)] = &[
     ("shift+tab", "switch focus"),
     ("page up / page down", "scroll"),
     ("up / down", "select transcript block"),
+    (
+        "drag / double-click",
+        "select text / word; release copies via OSC 52",
+    ),
+    (
+        "y / ctrl+shift+c",
+        "copy block / selection; block keeps Markdown",
+    ),
+    (
+        "shift+drag",
+        "native selection; allow OSC 52 for app copying",
+    ),
     ("space / enter", "expand selected block"),
     ("ctrl+end", "follow newest"),
     ("esc / ctrl+c", "stop / close"),

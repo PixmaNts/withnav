@@ -262,6 +262,18 @@ impl LlmCommenter {
         tools: Vec<crate::provider::openai::ToolDef>,
         cancel: &CancellationToken,
     ) -> Result<crate::provider::AssistantMessage, ModelError> {
+        self.chat_round_capped(client, messages, tools, cancel, REMARK_MAX_TOKENS)
+            .await
+    }
+
+    async fn chat_round_capped(
+        &self,
+        client: &reqwest::Client,
+        messages: &[crate::provider::openai::ChatMessage],
+        tools: Vec<crate::provider::openai::ToolDef>,
+        cancel: &CancellationToken,
+        output_cap: u64,
+    ) -> Result<crate::provider::AssistantMessage, ModelError> {
         use crate::provider::openai::{build_request, ChatRequest};
         use crate::provider::{start_and_consume, StreamDelta};
 
@@ -279,7 +291,7 @@ impl LlmCommenter {
                 self.resolved
                     .model
                     .max_output_tokens
-                    .map_or(REMARK_MAX_TOKENS, |m| m.min(REMARK_MAX_TOKENS)),
+                    .map_or(output_cap, |m| m.min(output_cap)),
             ),
             temperature: Some(0.2),
             extra: self.variant.clone().unwrap_or_default(),

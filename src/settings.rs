@@ -39,6 +39,39 @@ pub struct Settings {
 }
 
 impl Settings {
+    pub fn permissions_scratch_dirs(&self) -> Result<Vec<PathBuf>, String> {
+        match self
+            .root
+            .get("permissions")
+            .and_then(|p| p.get("scratch_dirs"))
+        {
+            None => {
+                let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+                let home = std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_default();
+                let private = private_scratch_root(runtime.as_deref(), &home);
+                Ok(unique_roots(vec![
+                    private,
+                    std::env::temp_dir().join("navai"),
+                ]))
+            }
+            Some(Value::Array(values)) => values
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(PathBuf::from)
+                        .filter(|path| path.is_absolute())
+                        .ok_or_else(|| {
+                            "permissions.scratch_dirs must contain absolute paths".into()
+                        })
+                })
+                .collect::<Result<Vec<_>, String>>()
+                .map(unique_roots),
+            _ => Err("permissions.scratch_dirs must be a list of absolute paths".into()),
+        }
+    }
     /// Root progress-check interval; zero disables supervision.
     pub fn agent_watchdog_interval_secs(&self) -> Result<u64, String> {
         let Some(value) = self
@@ -129,6 +162,24 @@ impl Settings {
     }
 }
 
+fn private_scratch_root(runtime: Option<&Path>, home: &Path) -> PathBuf {
+    let usable = runtime.filter(|path| crate::agent::scratch::private_runtime_usable(path));
+    usable
+        .map(|path| path.join("navai"))
+        .unwrap_or_else(|| home.join(".cache/navai/scratch"))
+}
+
+fn unique_roots(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut unique = Vec::new();
+    for path in paths {
+        let path: PathBuf = path.components().collect();
+        if !unique.contains(&path) {
+            unique.push(path);
+        }
+    }
+    unique
+}
+
 pub fn path(config_dir: &Path) -> PathBuf {
     config_dir.join(FILE_NAME)
 }
@@ -187,6 +238,67 @@ pub fn save_tui_theme(config_dir: &Path, id: &str) -> Result<(), SettingsError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn private_scratch_uses_only_owned_private_runtime_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = temp.path().join("runtime");
+        let home = temp.path().join("home");
+        std::fs::create_dir(&runtime).unwrap();
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            private_scratch_root(Some(&runtime), &home),
+            runtime.join("navai")
+        );
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o750)).unwrap();
+        assert_eq!(
+            private_scratch_root(Some(&runtime), &home),
+            home.join(".cache/navai/scratch")
+        );
+        assert_eq!(
+            private_scratch_root(None, &home),
+            home.join(".cache/navai/scratch")
+        );
+        assert_eq!(
+            private_scratch_root(Some(Path::new("relative")), &home),
+            home.join(".cache/navai/scratch")
+        );
+        assert_eq!(
+            private_scratch_root(Some(&temp.path().join("missing")), &home),
+            home.join(".cache/navai/scratch")
+        );
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(temp.path(), &alias).unwrap();
+        assert_eq!(
+            private_scratch_root(Some(&alias.join("runtime")), &home),
+            home.join(".cache/navai/scratch")
+        );
+        assert_eq!(
+            unique_roots(vec![runtime.join("navai"), runtime.join("navai/")]),
+            vec![runtime.join("navai")]
+        );
+    }
+    #[test]
+    fn scratch_setting_disables_or_selects_absolute_paths() {
+        let settings = super::Settings {
+            root: serde_json::json!({"permissions":{"scratch_dirs":[]}})
+                .as_object()
+                .unwrap()
+                .clone(),
+        };
+        assert!(settings.permissions_scratch_dirs().unwrap().is_empty());
+        let settings = super::Settings {
+            root: serde_json::json!({"permissions":{"scratch_dirs":["/tmp/custom"]}})
+                .as_object()
+                .unwrap()
+                .clone(),
+        };
+        assert_eq!(
+            settings.permissions_scratch_dirs().unwrap(),
+            vec![std::path::PathBuf::from("/tmp/custom")]
+        );
+    }
     #[test]
     fn watchdog_interval_defaults_disables_and_rejects_invalid_values() {
         let mut settings = Settings::default();

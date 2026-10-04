@@ -127,7 +127,13 @@ impl Tool for WriteTool {
             let content = arg_str(&args, "content")?;
 
             // A reviewed destination is opened without following any link.
-            if let Some(destination) = bound_destination(&args, &cx.writable_roots)? {
+            if let Some(destination) = bound_destination(&args, &[PathBuf::from("/")])? {
+                if let Some(binding) = args.get("navai_scratch_binding") {
+                    let identity = serde_json::from_value(binding.clone())
+                        .map_err(|_| ToolError::DestinationChanged(destination.clone()))?;
+                    nofollow::write_scratch(&destination, content.as_bytes(), &identity)?;
+                    return Ok(ToolResult::ok(format!("wrote {} bytes", content.len())));
+                }
                 nofollow::write_atomic(&destination, content.as_bytes())?;
                 return Ok(ToolResult::ok(format!("wrote {} bytes", content.len())));
             }
@@ -213,8 +219,14 @@ impl Tool for EditTool {
             };
             // A reviewed destination is read and written back without
             // following any link.
-            if let Some(destination) = bound_destination(&args, &cx.writable_roots)? {
-                let report = nofollow::edit_atomic(&destination, change)?;
+            if let Some(destination) = bound_destination(&args, &[PathBuf::from("/")])? {
+                let report = if let Some(binding) = args.get("navai_scratch_binding") {
+                    let identity = serde_json::from_value(binding.clone())
+                        .map_err(|_| ToolError::DestinationChanged(destination.clone()))?;
+                    nofollow::edit_scratch(&destination, &identity, change)?
+                } else {
+                    nofollow::edit_atomic(&destination, change)?
+                };
                 return Ok(ToolResult::ok(report));
             }
 

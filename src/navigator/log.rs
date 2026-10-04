@@ -221,6 +221,11 @@ impl PendingTrigger {
 // the variant would trade a copy for an allocation on every log line.
 #[allow(clippy::large_enum_variant)]
 pub enum LogRecord<'a> {
+    PermissionReviewDiagnostic {
+        level: &'a str,
+        category: &'a str,
+        excerpt: &'a str,
+    },
     Trigger(TriggerRecord<'a>),
     Call {
         /// "reflex" | "instinct" | "metacognition" | "cognition"

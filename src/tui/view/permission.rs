@@ -9,6 +9,100 @@ use serde_json::Value;
 /// Lines of a file or a command shown before the rest is summed up.
 const PREVIEW_LINES: usize = 6;
 
+#[cfg(test)]
+pub(crate) fn test_prompt() -> PermissionPrompt {
+    PermissionPrompt {
+        child_session_id: None,
+        request_id: "R".into(),
+        tool_call_id: "C".into(),
+        tool: "bash".into(),
+        arguments: serde_json::json!({"command":"echo long command"}).to_string(),
+        scope_kind: "folder".into(),
+        scope: "/workspace".into(),
+        agent: "build".into(),
+        reason: "long reason".into(),
+        resolution: Some("allow_once".into()),
+        message: None,
+        stale: false,
+    }
+}
+
+/// Clipboard sections stay complete even when the review cuts its screen preview.
+pub(crate) fn copy_sections(p: &PermissionPrompt, call: Option<&Value>, sent: bool) -> [String; 4] {
+    let parsed = serde_json::from_str::<Value>(&p.arguments).ok();
+    let args = call.filter(|a| a.is_object()).or(parsed.as_ref());
+    let payload = match args {
+        Some(args) if p.tool == "bash" => args
+            .get("command")
+            .and_then(Value::as_str)
+            .map(|s| format!("$ {s}"))
+            .unwrap_or_else(|| args.to_string()),
+        Some(args) if p.tool == "write" => {
+            let mut args = args.clone();
+            if let Some(content) = args.get_mut("content") {
+                if let Some(text) = content.as_str() {
+                    let mut end = text.len().min(4096);
+                    while !text.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    *content = Value::String(if end < text.len() {
+                        format!("{}\n({} bytes omitted)", &text[..end], text.len() - end)
+                    } else {
+                        text.to_owned()
+                    });
+                }
+            }
+            serde_json::to_string_pretty(&args).expect("JSON value")
+        }
+        Some(args) => serde_json::to_string_pretty(args).expect("JSON value"),
+        None => format!(
+            "{}\n(arguments shortened by the server; full arguments unavailable)",
+            p.arguments
+        ),
+    };
+    let outcome = if let Some(resolution) = &p.resolution {
+        outcome(p, resolution, &Theme::default())
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+            .trim_start()
+            .to_owned()
+    } else if p.stale {
+        "no longer waiting".into()
+    } else if sent {
+        "sent, waiting for the server".into()
+    } else {
+        "waiting for your answer".into()
+    };
+    [
+        format!(
+            "PERMISSION · {} wants to run {} {}",
+            if p.agent.is_empty() {
+                "the agent"
+            } else {
+                &p.agent
+            },
+            p.tool,
+            scope_text(p)
+        ),
+        p.reason.clone(),
+        payload,
+        outcome,
+    ]
+    .map(|text| {
+        text.chars()
+            .map(|c| {
+                if c.is_control() && c != '\n' && c != '\t' {
+                    ' '
+                } else {
+                    c
+                }
+            })
+            .collect()
+    })
+}
+
 /// What the keys do on an open prompt.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Keys<'a> {
@@ -278,4 +372,32 @@ fn escape(text: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod copy_tests {
+    use super::*;
+    #[test]
+    fn outcomes_and_write_content_are_explicit_and_bounded() {
+        let mut p = test_prompt();
+        p.child_session_id = Some("child".into());
+        for (resolution, expected) in [
+            (None, "waiting for your answer"),
+            (Some("deny"), "denied: do not run"),
+            (Some("expired"), "expired: the session restarted"),
+        ] {
+            p.resolution = resolution.map(str::to_owned);
+            p.message = Some("do not run".into());
+            assert_eq!(copy_sections(&p, None, false)[3], expected);
+        }
+        p.resolution = None;
+        assert_eq!(
+            copy_sections(&p, None, true)[3],
+            "sent, waiting for the server"
+        );
+        p.tool = "write".into();
+        let args = serde_json::json!({"path":"/tmp/full-path","content":"a".repeat(5000)});
+        let text = &copy_sections(&p, Some(&args), false)[2];
+        assert!(text.contains("/tmp/full-path") && text.contains("904 bytes omitted"));
+    }
 }

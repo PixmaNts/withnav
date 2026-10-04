@@ -4,6 +4,39 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-04
+
+Fixes from trying 0.4.2's per-call permission review, including a security fix: metacognition could
+approve writes into Navai's own configuration.
+
+### Fixed
+
+- **Security**: writes and edits into Navai's config directory (`~/.config/navai`: `auth.json`,
+  `models.json`, `config.json`, agent definitions) always ask you; metacognition can no longer
+  approve them. This also holds through symlinks and when the directory does not exist yet. A
+  `bash` command that names the config directory also asks you (best effort: `bash` is not
+  confined).
+- **Metacognition review** no longer fails when the model reasons at length before answering: its
+  answer budget is 4096 tokens. When it does fail, the permission request says why (timed out,
+  unavailable, input too large, malformed answer and how, or output exhausted by reasoning), and a
+  short excerpt of a malformed answer goes to the decision log. A reviewer answer with a duplicated
+  field is rejected.
+- **`write` and `edit` outside the project** are reviewed like `bash` instead of being refused: if
+  approved (by metacognition or by you), the call runs once, for that exact file, without opening the
+  folder to later calls.
+- **Tool errors** always carry a message.
+- **Terminal client**: permission requests can be selected and copied like other messages, in full
+  (whole reason and command, no borders or truncation; a write's content up to 4096 bytes). While a
+  request is open, `y` still allows it: drag with the mouse to copy it; `y` copies an answered one.
+
+### Added
+
+- **Scratch folders**: the agent can write temporary files without asking in two folders available
+  in every project: a private one, `$XDG_RUNTIME_DIR/navai` (or `~/.cache/navai/scratch`), used
+  first, and the shared `/tmp/navai`. Each must be a real directory owned by you with mode 0700; a
+  folder that is replaced, made public or reached through a symlink loses this exemption.
+  `permissions.scratch_dirs` in `config.json` sets the list of absolute paths; `[]` turns them off.
+
 ## [0.4.2] - 2026-10-04
 
 Every file change and shell command is now reviewed one by one, conversations no longer stop after

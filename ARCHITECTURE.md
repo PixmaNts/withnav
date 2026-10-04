@@ -113,6 +113,21 @@ are read without depending on a newer server event enum. Missing data is not gue
 
 ## Data flows
 
+Scratch roots default to private `$XDG_RUNTIME_DIR/navai` (fallback `~/.cache/navai/scratch`) and
+shared `<temp_dir>/navai`, snapshotted in `permissions.scratch_dirs`. Every component is opened
+descriptor-relatively without following links. Native execution carries the reviewed root identity,
+opens it again without creation and writes relative to that descriptor. Validation is read-only.
+
+The actor carries an explicit protected config root. Resolved native write/edit targets inside it
+ask the driver before instinct, metacognition or scratch exemptions. Literal config references in
+bash ask too; bash retains ambient access and cannot be fully confined. Scratch choice is inherited
+from the parent's execution snapshot, and its no-follow descriptor/inode validation is repeated.
+
+Permission review includes outside-project write/edit destinations, binding approvals to one canonical
+file without expanding writable roots. Sessions install private scratch storage from
+`permissions.scratch_dirs` (ordered absolute paths, private runtime/cache first, shared temp second; `[]` disables); the owned, non-symlink
+0700 directory is a writable root and counts as project-local in review, including child sessions.
+
 **Key to screen (terminal client).** A key reaches `runtime.rs`, which calls `input::route_key`: it
 edits the editor or returns an `Action`. `reducer::handle_action` changes the state and returns
 `Effect`s. The `Executor` runs each effect: an HTTP call through `client.rs`, or a subscription

@@ -45,6 +45,11 @@ pub enum PendingInteraction {
 }
 
 pub struct AgentActor {
+    pub protected_config_spelling: Option<std::path::PathBuf>,
+    pub protected_config_unresolved: bool,
+    pub scratch_roots: Vec<super::scratch::Identity>,
+    pub protected_config_root: Option<std::path::PathBuf>,
+    pub permission_reviewer_unavailable: &'static str,
     pub automatic_permission_review: bool,
     pub permission_judge: Option<Arc<dyn super::permission_gate::PermissionJudge>>,
     pub permission_reviewer: Option<Arc<dyn super::permission_gate::PermissionReviewer>>,
@@ -128,6 +133,11 @@ impl AgentActor {
         cancel: CancellationToken,
     ) -> Self {
         Self {
+            protected_config_spelling: None,
+            protected_config_unresolved: false,
+            scratch_roots: Vec::new(),
+            protected_config_root: None,
+            permission_reviewer_unavailable: "no alias",
             automatic_permission_review: true,
             permission_judge: None,
             permission_reviewer: None,
@@ -170,10 +180,28 @@ impl AgentActor {
     /// when both are empty, which is the case for the default `build` agent
     /// on a session without a profile.
     pub fn role_message(&self) -> Option<String> {
-        compose_role_message(
+        let message = compose_role_message(
             self.role.as_ref().map(|role| role.prompt.as_str()),
             self.system_prompt.as_deref(),
-        )
+        );
+        let usable: Vec<_> = self
+            .scratch_roots
+            .iter()
+            .filter(|root| root.valid())
+            .collect();
+        if usable.is_empty() {
+            message
+        } else {
+            Some(format!(
+                "{}\nTemporary scratch roots (private first, recommended): {}",
+                message.as_deref().unwrap_or(""),
+                usable
+                    .iter()
+                    .map(|root| root.path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        }
     }
 
     /// Installs the skills snapshot: with at least one skill, the `skill` tool

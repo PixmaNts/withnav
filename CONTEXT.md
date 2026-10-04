@@ -59,6 +59,9 @@ _Avoid_: feedback, vote
 
 ## Agents
 
+The ownership and delivery decisions are in
+[ADR 0009](docs/adr/0009-background-subagents-and-durable-delivery.md).
+
 **Primary agent**:
 The role a session runs as: `build` (implement, verify, report), `plan` (research, write markdown
 plans, delegate) or a custom one. The driver selects it for the session and can switch between turns.
@@ -76,8 +79,9 @@ An agent definition whose mode is `subagent` or `all`, meant to be given a task 
 `task(agent, prompt)` as a real, non-promptable child session. It has an independent transcript, an
 intersected snapshot of the parent's policy, a durable parent-child link, and bounded terminal
 result. `subagent.spawned` and `subagent.done` are replayable events. Results enter the parent's
-transcript once, as bounded untrusted user messages at a turn boundary. Completion wakes an idle
-parent, but cannot answer its pending interaction. Child permissions are answered by the driver
+transcript once, as bounded untrusted user messages at a turn boundary. `steer` delivery can use
+a safe boundary within its running turn. Completion wakes an idle parent, but cannot answer its
+pending interaction. Child permissions are answered by the driver
 through the parent's API, with the interaction and grants remaining on the child. Parent stop and
 delete cascade; restart stops unfinished children without replaying their tools.
 _Avoid_: worker, child agent
@@ -86,8 +90,9 @@ _Avoid_: worker, child agent
 Watchdog doubts also use the durable outbox to ask the parent model for a decision, independently
 of terminal completion; their notice ids are distinct from the child's id.
 A durable outbox entry containing the child's id, outcome, agent and result, independent of the
-child's continued existence. `delivered` means its `subagent.done` event was committed to the parent
-stream; `consumed` means its result message was committed atomically into the parent's transcript.
+child's continued existence. `delivered` means its notice event (`subagent.done` or
+`subagent.watchdog`) was committed to the parent stream. `consumed` means its result message and
+durable `message.received` event were committed atomically into the parent's transcript and stream.
 These are separate recovery boundaries. Several notices are consumed in order and never use the
 navigator's latest-wins inbox. Deleting the parent removes its notices.
 _Avoid_: tool result (the `task` tool already returned the child id), wake message
@@ -100,7 +105,8 @@ _Avoid_: step event (observation is not an injection boundary)
 
 **Steer**:
 Parent guidance injected into a running child's transcript at its next safe boundary, without
-restarting the turn. A parked interaction keeps it queued. `Parent` provenance prevents guidance
+restarting the turn. A parked interaction or watchdog doubt keeps it queued. Guidance is queued
+in memory and can be lost in a crash. `Parent` provenance prevents guidance
 from replacing the driver's instruction for compaction or the plan guard. A child result whose
 delivery mode is `steer` uses the same boundary on the parent, with untrusted subagent provenance.
 _Avoid_: driver message, permission answer
@@ -163,8 +169,10 @@ chat text never does. It does not survive a restart.
 _Avoid_: confirmation, approval prompt
 
 **Folder grant**:
-An "allow folder" answer, kept in memory for the session: it lets the same agent run the same kind of
-call (file changes, `bash`, or `fetch` for an origin) in that folder and below without asking again.
+An "allow folder" answer: it lets the same agent run the same kind of call (file changes, `bash`,
+or `fetch` for an origin) in that folder and below without asking again. A root session saves it per
+workspace in `<data dir>/grants.json` (0600), so later sessions in that workspace start with it; a
+subagent keeps its grants in memory.
 A grant on the workspace never covers the config directory. For `bash` the folder is the scope the
 driver approved, not a confinement.
 _Avoid_: whitelist, permission rule

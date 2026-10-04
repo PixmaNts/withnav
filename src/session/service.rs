@@ -47,6 +47,7 @@ use crate::agent::actor::AgentActor;
 use crate::agent::context::{ContextLimits, ContextSnapshot, ContextTracker};
 use crate::agent::definitions::{AgentDefinition, AgentId, AgentRoots, Agents};
 use crate::agent::instructions::Instructions;
+use crate::agent::permissions::Grants;
 use crate::agent::selection::AgentSelection;
 use crate::agent::skills::Skills;
 use crate::bus::command::Command;
@@ -60,6 +61,9 @@ use crate::bus::SessionBus;
 use crate::error::ServerError;
 use crate::provider::config::{load_models, ApiKind, ModelConfig};
 use crate::provider::openai::ChatMessage;
+
+/// The file in the data dir that keeps the "allow folder" grants of every workspace.
+const GRANTS_FILE: &str = "grants.json";
 
 /// A session id on the wire and in the registry.
 pub type SessionId = Ulid;
@@ -1820,6 +1824,11 @@ impl Service {
                 session_cancel.child_token(),
             ),
         };
+        // "Allow folder" answers are kept per workspace, across sessions. A
+        // subagent keeps its own in memory, as its parent's policy decides.
+        if child_policy.is_none() {
+            actor.grants = Grants::persisted(self.config.data_dir.join(GRANTS_FILE), &workspace);
+        }
         if root_tools_enabled && role.mode.is_primary() {
             actor.registry.register(Box::new(
                 crate::tools::decide_subagent::DecideSubagent::new(self.clone(), session_id),

@@ -4,6 +4,28 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-04
+
+Fixes from daily use of 0.4.0, mostly in the terminal client.
+
+### Changed
+
+- **Folder grants persist**: an "allow folder" answer is saved per workspace in
+  `<data dir>/grants.json` and applies to later sessions in that workspace. Subagents keep theirs in
+  memory. Delete the workspace's entry in that file to revoke.
+
+### Fixed
+
+- **Terminal client**: running out of agent steps shows "Out of steps · send a message to
+  continue", no longer a question awaiting an answer.
+- **Terminal client**: a multiline draft grows to 20 lines, then scrolls with the cursor, and
+  leaves room for the conversation on a small terminal.
+- **Terminal client**: arrow keys and Home/End move the cursor in a draft, including between lines.
+- **Terminal client**: a 1M context window no longer shows as `1000k`.
+- **Terminal client**: moving or resizing the terminal window no longer closes the client with
+  "cannot draw the screen: The cursor position could not be read within a normal duration". The
+  repaint after a resize no longer asks the terminal for the cursor position.
+
 ## [0.4.0] - 2026-10-04
 
 Background subagents: a conversation's agent can delegate work to other agents that run on their

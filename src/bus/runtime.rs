@@ -1674,7 +1674,7 @@ fn permission_requested(
     });
     if matches!(request.tool.as_str(), "bash" | "write" | "edit") {
         payload["permission_gate"] =
-            serde_json::json!({"policy_version":1,"source":"driver","reason":request.reason});
+            request.permission_gate.as_deref().cloned().unwrap_or_else(|| serde_json::json!({"policy_version":1,"source":"driver","reason":request.reason,"truncated":false}));
     }
     payload
 }
@@ -1883,6 +1883,7 @@ mod tests {
         let mut actor = make_actor(server.url, CancellationToken::new());
         actor.pending = Some(PendingInteraction::Permission {
             request: Box::new(PermissionRequest {
+                permission_gate: None,
                 id: request_id,
                 tool_call_id: "held".into(),
                 tool: "write".into(),

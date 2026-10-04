@@ -2120,6 +2120,7 @@ impl Service {
             }
         }
         if let Some((_, _, _, driver_task, _)) = &child_policy {
+            actor.driver_request_inherited = true;
             actor.driver_task = driver_task.clone();
         }
         if let Ok((models, _)) = crate::provider::config::load_models(

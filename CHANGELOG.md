@@ -4,8 +4,19 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
+- The driver's own latest request counts as authorized intent in permission review; parent-agent
+  claims remain untrusted, and Navai configuration remains driver-only.
+- Incomplete driver requests never authorize mutations; reviewers receive the full request when it fits.
+
 ### Added
-- Tool blocks show who auto-approved a reviewed call; expanding reveals the server's reason, optional verdicts and role check, also in copied tool text.
+
+- Permission evidence includes typed verdicts, deterministic overrides, reviewer model ids,
+  stage latencies and an excerpt-truncation flag on existing tool and permission events.
+- **Terminal client**: a tool block says who auto-approved a reviewed call (`auto · Jev`,
+  `auto · metacognition`, `driver approved`); expanded, it shows the reason, Jev's verdicts and
+  the plan role check. Copies include it.
 
 ## [0.4.3] - 2026-10-04
 

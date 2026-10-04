@@ -187,6 +187,12 @@ _Avoid_: tool, action (an action is what a pipeline branch decides)
 
 ## Permissions
 
+**Driver request**:
+The driver's own latest human-ingress message. Explicitly requested effects establish intent,
+not instructions to the reviewers about their verdict. Tool arguments, assistant text and parent
+delegations remain untrusted evidence. Approval still requires understood, recoverable effects;
+protected configuration always requires a typed driver answer.
+
 Navai's explicitly configured config directory is a protected root: native writes/edits ask the
 driver before any model review, including symlink aliases. Scratch never overlaps this root.
 Bash calls literally naming it ask too, but indirect bash effects cannot be fully confined.

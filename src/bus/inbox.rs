@@ -733,6 +733,7 @@ mod tests {
         actor.state = AgentState::Yielded;
         actor.pending = Some(PendingInteraction::Permission {
             request: Box::new(PermissionRequest {
+                permission_gate: None,
                 id: Ulid::new(),
                 tool_call_id: "w1".into(),
                 tool: "write".into(),

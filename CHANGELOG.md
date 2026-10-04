@@ -4,6 +4,16 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- **VS Code chat: slash commands and a command palette.** Type `/` to browse commands with
+  descriptions and argument hints, using the arrow keys, Enter, Tab or the mouse. Switch the
+  open conversation's model with the picker or `/model` (a running turn finishes first), choose
+  its variant or agent, compact context, inspect the context breakdown, select a skill for your
+  next request, stop, start fresh or show help. The current agent and a pending model switch
+  stay visible near the composer. Command outcomes appear as notices; refusals keep your draft.
+  Commands carry no editor context; `//text` sends a literal `/text` message.
+
 ## [0.4.5] - 2026-10-04
 
 The VS Code chat can now answer the agent's permission requests and continue a paused agent.

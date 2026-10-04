@@ -2,6 +2,7 @@ import { chatHtml } from "./chatHtml";
 import * as vscode from "vscode";
 import { CHAT_VIEW_ID, ChatBackend, HostToWebview, WebviewToHost } from "./chatProtocol";
 import { buildEditorContext, presentMessage } from "./editorContext";
+import { routeComposer } from "./commands";
 
 const CONTEXT_DEBOUNCE_MS = 200;
 
@@ -70,12 +71,17 @@ export function registerChatView(
             if (lastUsage) post(lastUsage);
             pushContext();
             backend.resumePermissionReads();
+            void backend.refreshCommands().catch(showError);
             break;
           case "send":
             if (typeof message.text === "string" && message.text.trim()) {
               void (async () => {
                 const session = backend.currentConversationId();
-                const generation = backend.currentGeneration();
+                 const generation = backend.currentGeneration();
+                 // Route before confirmation and, crucially, before reading editor content.
+                 if (routeComposer(message.text).kind === "command") {
+                   return await backend.runComposerCommand(message.text, generation);
+                 }
                 if (backend.hasOpenPermissions()) {
                   const answer = await vscode.window.showWarningMessage(
                     "Sending cancels the pending permission request", { modal: true }, "Send anyway",
@@ -84,10 +90,11 @@ export function registerChatView(
                 }
                 if (generation !== backend.currentGeneration() || session !== backend.currentConversationId()) throw new Error("The open conversation changed. Send again in the current conversation.");
                 const context = message.includeContext === false ? undefined : buildEditorContext().block;
-                await backend.send(message.text, context);
+                 const routed = routeComposer(message.text);
+                 if (routed.kind === "message") await backend.send(routed.text, context);
                 return true;
               })().then(accepted => post({ type: "sendResult", text: message.text, accepted, generation: accepted ? backend.currentGeneration() : message.generation }))
-                .catch(error => { post({ type: "sendResult", text: message.text, accepted: false, generation: message.generation }); showError(error); });
+                .catch(error => { post({ type: "sendResult", text: message.text, accepted: false, generation: message.generation }); post({ type: "commandError", text: error instanceof Error ? error.message : String(error), generation: message.generation }); });
             }
             break;
           case "answerPermission":

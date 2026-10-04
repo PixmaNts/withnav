@@ -23,10 +23,32 @@ Module._load = function (id, ...args) {
 const { registerChatView } = require("../out/tests/chatView.js");
 Module._load = originalLoad;
 
+test("host routes slash commands before editor context or permission confirmation", async () => {
+  let receive;
+  let contextReads = 0;
+  let command;
+  Object.defineProperty(vscode.window, "activeTextEditor", { configurable: true, get() { contextReads++; throw new Error("Editor must not be read"); } });
+  const backend = {
+    currentGeneration: () => 2,
+    subscribe: () => () => {},
+    currentConversationId: () => "S",
+    runComposerCommand: async (text, generation) => { command = { text, generation }; return false; },
+    hasOpenPermissions: () => { throw new Error("Commands do not cancel permissions"); },
+  };
+  registerChatView({ extensionUri: "extension" }, backend);
+  provider.resolveWebviewView({ webview: { cspSource: "test", asWebviewUri: value => value, postMessage() {}, onDidReceiveMessage(listener) { receive = listener; return noopDisposable(); } }, onDidDispose() {} });
+  receive({ type: "send", text: "/context", includeContext: true, generation: 2 });
+  await Promise.resolve(); await Promise.resolve();
+  assert.deepEqual(command, { text: "/context", generation: 2 });
+  assert.equal(contextReads, 0);
+  delete vscode.window.activeTextEditor;
+});
+
 test("late-created and recreated views receive current session identity before replay", () => {
   let cancelled = 0;
   const backend = {
     currentGeneration: () => 1,
+    refreshCommands: async () => {},
     resumePermissionReads: () => {},
     currentConversationId: () => "already-open",
     history: () => [{ type: "pause", id: "P", kind: "budget", text: "Out of steps" }],

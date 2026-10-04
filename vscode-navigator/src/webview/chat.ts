@@ -4,6 +4,8 @@ import { evidenceLabel, permissionOutcome } from "../eventView";
 import { ConversationIdentity } from "./conversationIdentity";
 import { mountConversations } from "./conversations";
 import { diffKind, parseWake } from "./wake";
+import { commandRows } from "../commands";
+import type { CommandInfo } from "../chatProtocol";
 
 type ViewState = { includeContext?: boolean };
 declare function acquireVsCodeApi(): { postMessage(message: WebviewToHost): void; getState(): ViewState | undefined; setState(state: ViewState): void };
@@ -24,6 +26,79 @@ const stop = document.querySelector<HTMLButtonElement>("#stop")!;
 const includeContext = document.querySelector<HTMLInputElement>("#include-context")!;
 const contextPreview = document.querySelector<HTMLElement>("#context-preview")!;
 const modelSelect = document.querySelector<HTMLSelectElement>("#model")!;
+const palette = document.createElement("div");
+palette.id = "command-palette";
+palette.className = "command-palette";
+palette.setAttribute("role", "listbox");
+palette.setAttribute("aria-label", "Commands");
+palette.hidden = true;
+form.prepend(palette);
+const commandError = document.createElement("div");
+commandError.className = "command-error";
+commandError.setAttribute("role", "alert");
+commandError.hidden = true;
+prompt.after(commandError);
+const agentLabel = document.createElement("span");
+agentLabel.className = "agent-label";
+agentLabel.textContent = "build";
+const pendingModel = document.createElement("span");
+pendingModel.className = "pending-model";
+modelSelect.after(agentLabel, pendingModel);
+let commands: CommandInfo[] = [];
+let paletteRows: { name: string; description: string; args_hint?: string }[] = [];
+let paletteIndex = 0;
+let pickerKind: "model" | "variant" | "skills" | undefined;
+let paletteDismissed = false;
+function closePalette(): void {
+  palette.hidden = true;
+  prompt.removeAttribute("aria-activedescendant");
+  prompt.setAttribute("aria-expanded", "false");
+}
+function choosePalette(index: number): void {
+  const row = paletteRows[index];
+  if (!row) return;
+  if (pickerKind === "skills") prompt.value = `/skill ${row.name} `;
+  else if (pickerKind) {
+    const text = `/${pickerKind} ${row.name}`;
+    prompt.value = text;
+    post({ type: "send", text, includeContext: false });
+  } else prompt.value = `/${row.name} `;
+  pickerKind = undefined;
+  closePalette();
+  prompt.focus();
+  updateControls();
+}
+function renderPalette(): void {
+  palette.replaceChildren();
+  if (!paletteRows.length) { closePalette(); return; }
+  paletteIndex = Math.min(paletteIndex, paletteRows.length - 1);
+  palette.hidden = false;
+  prompt.setAttribute("aria-controls", palette.id);
+  prompt.setAttribute("aria-expanded", "true");
+  prompt.setAttribute("aria-activedescendant", `command-option-${paletteIndex}`);
+  for (const [index, row] of paletteRows.entries()) {
+    const option = document.createElement("div");
+    option.id = `command-option-${index}`;
+    option.className = "command-option";
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", String(index === paletteIndex));
+    const name = document.createElement("strong");
+    name.textContent = `${pickerKind ? "" : "/"}${row.name}${row.args_hint ? ` ${row.args_hint}` : ""}`;
+    const description = document.createElement("span");
+    description.textContent = row.description;
+    option.append(name, description);
+    option.addEventListener("mousedown", event => event.preventDefault());
+    option.addEventListener("click", () => choosePalette(index));
+    palette.append(option);
+  }
+  palette.children[paletteIndex]?.scrollIntoView?.({ block: "nearest" });
+}
+function filterPalette(): void {
+  pickerKind = undefined;
+  paletteRows = paletteDismissed ? [] : commandRows(commands, prompt.value);
+  paletteIndex = 0;
+  renderPalette();
+}
 const usage = document.querySelector<HTMLElement>("#usage")!;
 const usageFill = document.querySelector<HTMLElement>("#usage-fill")!;
 const usageLabel = document.querySelector<HTMLElement>("#usage-label")!;
@@ -378,9 +453,23 @@ function receive(event: HostToWebview): void {
   if (event.type === "conversationOpened") {
     sessionId = event.id ?? "";
     sending = false;
+    closePalette();
+    commandError.hidden = true;
+    agentLabel.textContent = "build";
+    pendingModel.textContent = "";
   }
   if (conversations(event)) return;
   switch (event.type) {
+    case "commands": commands = event.items; filterPalette(); break;
+    case "commandError": commandError.textContent = event.text; commandError.hidden = false; sending = false; updateControls(); break;
+    case "agent": agentLabel.textContent = event.name; break;
+    case "modelPending": pendingModel.textContent = event.alias ? `→ ${event.alias} · pending after turn` : ""; break;
+    case "commandPicker":
+      sending = false;
+      if (event.disabledReason) { commandError.textContent = event.disabledReason; commandError.hidden = false; closePalette(); }
+      else { pickerKind = event.kind; paletteRows = event.items; paletteIndex = 0; renderPalette(); prompt.focus(); }
+      updateControls();
+      break;
     case "history":
       if (!event.items.length) usage.hidden = true;
       transcript.replaceChildren(empty);
@@ -400,7 +489,7 @@ function receive(event: HostToWebview): void {
     case "message": message(event.author, event.text, event.context, event.selectedSkill, event.source); break;
     case "sendResult":
       sending = false;
-      if (event.accepted && prompt.value.trim() === event.text) prompt.value = "";
+      if (event.accepted && prompt.value === event.text) prompt.value = "";
       updateControls();
       break;
     case "permission": renderPermission(event); break;
@@ -432,7 +521,13 @@ function receive(event: HostToWebview): void {
       follow();
       break;
     }
-    case "notice": add(el("article", "message control-notice", event.text)); break;
+    case "notice": {
+      const notice = el("article", "message control-notice", event.text);
+      if (event.operationId) { notice.dataset.operationId = event.operationId; notice.title = `Operation: ${event.operationId}`; }
+      if (event.ok === false) notice.classList.add("command-error");
+      add(notice);
+      break;
+    }
     case "models": renderModels(event); break;
     case "usage": renderUsage(event.used, event.window); break;
     case "editorContext":
@@ -496,7 +591,7 @@ function renderModels(event: Extract<HostToWebview, { type: "models" }>): void {
   modelSelect.replaceChildren(...options);
   if (event.current) modelSelect.value = event.current;
   modelSelect.disabled = event.locked || event.items.length === 0;
-  modelSelect.title = event.locked ? "Model of this conversation · start a new conversation to change it" : "Model for the new conversation";
+  modelSelect.title = "Switch model · running turns finish before the switch";
 }
 
 function tokens(count: number): string {
@@ -603,15 +698,17 @@ window.addEventListener("message", event => {
 });
 form.addEventListener("submit", event => {
   event.preventDefault();
-  const text = prompt.value.trim();
-  if (!text || prompt.disabled || sending) return;
+  const text = prompt.value;
+  if (!text.trim() || prompt.disabled || sending) return;
+  closePalette();
+  commandError.hidden = true;
   sending = true;
   post({ type: "send", text, includeContext: includeContext.checked });
   updateControls();
   stickToBottom = true;
   follow();
 });
-prompt.addEventListener("input", updateControls);
+prompt.addEventListener("input", () => { paletteDismissed = false; commandError.hidden = true; filterPalette(); updateControls(); });
 function updateContextToggle(): void {
   contextPreview.classList.toggle("off", !includeContext.checked);
 }
@@ -621,6 +718,13 @@ includeContext.addEventListener("change", () => {
 });
 updateContextToggle();
 prompt.addEventListener("keydown", event => {
+  if (!palette.hidden && !event.isComposing) {
+    if (event.key === "Escape") { event.preventDefault(); paletteDismissed = true; pickerKind = undefined; closePalette(); return; }
+    if (["ArrowUp", "ArrowDown"].includes(event.key)) {
+      event.preventDefault(); paletteIndex = (paletteIndex + (event.key === "ArrowDown" ? 1 : -1) + paletteRows.length) % paletteRows.length; renderPalette(); return;
+    }
+    if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") { event.preventDefault(); choosePalette(paletteIndex); return; }
+  }
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
     form.requestSubmit();

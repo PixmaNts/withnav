@@ -45,6 +45,7 @@ pub enum PendingInteraction {
 }
 
 pub struct AgentActor {
+    pub driver_request_inherited: bool,
     pub protected_config_spelling: Option<std::path::PathBuf>,
     pub protected_config_unresolved: bool,
     pub scratch_roots: Vec<super::scratch::Identity>,
@@ -133,6 +134,7 @@ impl AgentActor {
         cancel: CancellationToken,
     ) -> Self {
         Self {
+            driver_request_inherited: false,
             protected_config_spelling: None,
             protected_config_unresolved: false,
             scratch_roots: Vec::new(),

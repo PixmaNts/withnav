@@ -254,6 +254,9 @@ impl LazyCommenter {
 }
 
 impl crate::agent::permission_gate::PermissionReviewer for LazyCommenter {
+    fn model_id(&self) -> Option<&str> {
+        Some(LazyCommenter::model_id(self))
+    }
     fn review<'a>(
         &'a self,
         input: &'a crate::agent::permission_gate::PermissionReviewInput,

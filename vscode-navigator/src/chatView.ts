@@ -32,16 +32,13 @@ export function registerChatView(
       let lastConversationOpened: HostToWebview | undefined;
       let lastConversations: HostToWebview | undefined;
       let lastModels: HostToWebview | undefined;
-      let lastUsage: HostToWebview | undefined;
       const post = (message: HostToWebview): void => {
         if (message.generation !== undefined && message.generation !== backend.currentGeneration()) return;
         message = { ...message, generation: backend.currentGeneration() };
         if (message.type === "conversationOpened") {
           lastConversationOpened = message;
-          lastUsage = undefined; // a new or reopened conversation re-reports its own
         } else if (message.type === "conversations") lastConversations = message;
         else if (message.type === "models") lastModels = message;
-        else if (message.type === "usage") lastUsage = message;
         void webview.postMessage(presentMessage(message));
       };
       const unsubscribe = backend.subscribe(post);
@@ -68,7 +65,8 @@ export function registerChatView(
               title: lastConversationOpened?.type === "conversationOpened" ? lastConversationOpened.title : "Conversation" });
             post({ type: "history", items: backend.history() });
             if (lastModels) post(lastModels);
-            if (lastUsage) post(lastUsage);
+            const snapshot = backend.currentContext();
+            if (snapshot) post({ type: "usage", snapshot });
             pushContext();
             backend.resumePermissionReads();
             void backend.refreshCommands().catch(showError);

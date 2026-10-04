@@ -23,6 +23,12 @@ requests land in `develop`.
   one. Command discovery refreshes when the server starts or restarts, live variant choices use
   the conversation's offer, reopened conversations retain their agent, and watchdog resolutions
   close their pause controls.
+### Changed
+
+- **VS Code chat**: the context meter shows what the next request will send, as the terminal
+  client does (`~42k / 1M · 4%`), instead of the last call's usage. Hover or focus it for the
+  breakdown (system, rules, skills catalog, tools, messages), the input budget, the output reserve
+  and the provider's count for the last request.
 
 ## [0.4.5] - 2026-10-04
 

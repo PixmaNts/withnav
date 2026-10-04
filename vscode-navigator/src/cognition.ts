@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { ContextSnapshot, parseContext } from "./contextMeter";
 import { ChatBackend, ConversationSummary, HostToWebview, ModelInfo, PermissionDecision } from "./chatProtocol";
 import { ConversationControls, eventView, permissionCall, PermissionCallReplay, permissionEvidence, WireEnvelope } from "./eventView";
 import type { ServerInfoParams } from "./protocol";
@@ -40,7 +41,10 @@ class ConversationState {
   currentTurn: string | undefined;
   streaming: boolean = false;
   selectedModel: string | undefined;
-  lastUsed: number | undefined;
+  context: ContextSnapshot | undefined;
+  contextEpoch = 0;
+  contextRefresh: { session: string; generation: number; pending: boolean; done: Promise<void> } | undefined;
+  retiredIncarnations: string[] = [];
   resumeId: string | undefined;
   streamAbort: AbortController | undefined;
   streamGeneration: number = 0;
@@ -311,6 +315,7 @@ export class CognitionBackend implements ChatBackend {
       this.emit({ type: "history", items: [] });
       this.emit({ type: "status", state: "ready" });
       void this.loadSessionModel(sessionId);
+      void this.fetchContext();
       // No Last-Event-ID: the stored events replay the whole conversation.
       void this.connect();
       void this.listConversations().catch(() => undefined);
@@ -322,6 +327,7 @@ export class CognitionBackend implements ChatBackend {
         this.bindControlOwners();
         this.emit({ type: "conversationOpened", id: this.currentConversationId(), title: "Conversation" });
         this.emit({ type: "history", items: this.history() });
+        if (this.state.context) this.emit({ type: "usage", snapshot: this.state.context });
         this.emit({ type: "status", state: "error", message: `Could not open conversation: ${this.errorText(error)}` });
         void this.connect();
         this.resumePermissionReads();
@@ -525,9 +531,6 @@ export class CognitionBackend implements ChatBackend {
       current: this.state.selectedModel,
       locked: this.state.starting,
     });
-    // The window depends on the model: a replay can report usage before the
-    // list or the conversation's model arrives, so re-send it with both.
-    if (this.state.lastUsed !== undefined) this.emitUsage();
   }
 
   selectModel(alias: string): void {
@@ -580,20 +583,55 @@ export class CognitionBackend implements ChatBackend {
     }
   }
 
-  /** Records the context used by a model call (prompt + completion tokens). */
-  private recordUsage(usage: any): void {
-    const prompt = typeof usage?.prompt_tokens === "number" ? usage.prompt_tokens : 0;
-    const completion = typeof usage?.completion_tokens === "number" ? usage.completion_tokens : 0;
-    if (prompt + completion <= 0) return;
-    this.state.lastUsed = prompt + completion;
-    this.emitUsage();
+  currentContext(): ContextSnapshot | undefined { return this.state.context; }
+
+  private acceptContext(value: unknown, authoritative = false): void {
+    const snapshot = parseContext(value);
+    if (!snapshot || !this.currentConversationId()) return;
+    const held = this.state.context;
+    if (!authoritative && held && held.incarnation !== snapshot.incarnation) {
+      void this.fetchContext();
+      return;
+    }
+    if (authoritative) this.state.retiredIncarnations = this.state.retiredIncarnations.filter(id => id !== snapshot.incarnation);
+    if (held) {
+      if (held.incarnation === snapshot.incarnation && snapshot.revision <= held.revision) return;
+      if (held.incarnation && held.incarnation !== snapshot.incarnation) {
+        this.state.retiredIncarnations.push(held.incarnation);
+        this.state.retiredIncarnations = this.state.retiredIncarnations.slice(-8);
+      }
+    }
+    this.state.context = snapshot;
+    this.emit({ type: "usage", snapshot });
   }
 
-  /** The last usage against the current model's window (absent when unknown). */
-  private emitUsage(): void {
-    if (this.state.lastUsed === undefined) return;
-    const window = this.models.find((m) => m.alias === this.state.selectedModel)?.contextWindow;
-    this.emit({ type: "usage", used: this.state.lastUsed, window });
+  private async fetchContext(): Promise<void> {
+    const origin = this.state;
+    const session = this.currentConversationId();
+    const generation = origin.streamGeneration;
+    ++origin.contextEpoch;
+    if (!session) return;
+    const active = origin.contextRefresh;
+    if (active?.session === session && active.generation === generation) {
+      active.pending = true;
+      return active.done;
+    }
+    const refresh = { session, generation, pending: false, done: Promise.resolve() };
+    origin.contextRefresh = refresh;
+    const current = (): boolean => origin === this.state && generation === this.state.streamGeneration && session === this.currentConversationId();
+    refresh.done = (async () => {
+      do {
+        refresh.pending = false;
+        const epoch = origin.contextEpoch;
+        try {
+          const snapshot = await this.request(`/v1/sessions/${encodeURIComponent(session)}/context`, { method: "GET" });
+          if (current() && epoch === origin.contextEpoch) this.acceptContext(snapshot, true);
+        } catch { /* Keep the last estimate; never substitute last-call usage. */ }
+      } while (current() && refresh.pending);
+    })().finally(() => {
+      if (origin.contextRefresh === refresh) origin.contextRefresh = undefined;
+    });
+    return refresh.done;
   }
 
   private emitConversations(): void {
@@ -621,7 +659,9 @@ export class CognitionBackend implements ChatBackend {
     this.state.toolSummaries.clear();
     this.state.toolEvidence.clear();
     this.state.turnTextDelta.clear();
-    this.state.lastUsed = undefined;
+    this.state.context = undefined;
+    this.state.contextEpoch++;
+    this.state.retiredIncarnations = [];
     this.state.controls.reset();
     this.state.controlOwners.clear();
     this.state.pendingControls.clear();
@@ -658,6 +698,8 @@ export class CognitionBackend implements ChatBackend {
       if (!response.ok || !response.body) {
         throw new Error(`event stream: HTTP ${response.status}`);
       }
+      if (generation !== this.state.streamGeneration) return;
+      void this.fetchContext();
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -742,6 +784,7 @@ export class CognitionBackend implements ChatBackend {
     this.emitModels();
     this.emit({ type: "conversationOpened", id: sessionId, title: this.conversations.find(c => c.id === sessionId)?.title ?? "Conversation" });
     this.emit({ type: "agent", name: this.state.agent });
+    void this.fetchContext();
     void this.connect();
     void this.listConversations().catch(() => undefined);
     return { session: sessionId, generation };
@@ -772,6 +815,7 @@ export class CognitionBackend implements ChatBackend {
 
   private handleFrame(frame: EventFrame | undefined): void {
     if (!frame) return;
+    if (frame.envelope?.session_id !== undefined && frame.envelope.session_id !== this.currentConversationId()) return;
     if (frame.id) this.state.lastSeq = frame.id;
     if (frame.event === "resync") {
       // The cursor is out of range: drop it, rebuild the view from what the
@@ -903,6 +947,8 @@ export class CognitionBackend implements ChatBackend {
 
   private mapEvent(envelope: WireEnvelope): HostToWebview | undefined {
     const payload = envelope.payload ?? {};
+    // Refresh context even when these events also project a notice.
+    if (envelope.kind === "context.compacted" || envelope.kind === "model.changed") void this.fetchContext();
     for (const update of this.state.controls.envelopeUpdates(envelope)) this.emit(update);
     if (envelope.kind === "message.received" && typeof payload.command_id === "string") {
       this.state.acceptedMessages.add(payload.command_id);
@@ -943,6 +989,10 @@ export class CognitionBackend implements ChatBackend {
     }
     if (projected) return projected;
     switch (envelope.kind) {
+      case "context.updated":
+        this.state.contextEpoch++;
+        this.acceptContext(payload);
+        return undefined;
       case "turn.start": {
         this.state.currentTurn = String(payload.turn_id ?? envelope.seq);
         this.emit({ type: "status", state: "busy" });
@@ -966,7 +1016,6 @@ export class CognitionBackend implements ChatBackend {
         // no live text renders its final message as one delta. Live turns
         // (flagged above) must not be duplicated.
         const id = String(payload.turn_id ?? this.state.currentTurn ?? envelope.seq);
-        this.recordUsage(payload.usage ?? payload.message?.usage);
         const message = payload.message ?? {};
         const text = typeof message.text === "string" ? message.text : "";
         const thinking = typeof message.thinking === "string" ? message.thinking : "";

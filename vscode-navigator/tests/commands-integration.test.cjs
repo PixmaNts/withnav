@@ -15,6 +15,20 @@ function backend() {
   const event = (kind, payload) => b.handleFrame({ id: String(++seq), event: '', envelope: { seq, kind, payload } });
   return { b, messages, event };
 }
+test('R11 model and compaction retain notices and refresh snapshot context before returning', async () => {
+  const { b, messages, event } = backend();
+  let refreshed = 0;
+  b.fetchContext = async () => { refreshed++; };
+  event('model.changed', { operation_id: 'M', new: { alias: 'next' } });
+  assert.equal(refreshed, 1);
+  assert.equal(b.state.selectedModel, 'next');
+  assert.match(messages.at(-1).text, /Model: next/);
+  event('context.compacted', { estimate_before: 200, estimate_after: 100 });
+  assert.equal(refreshed, 2);
+  assert.match(messages.at(-1).text, /Context compacted/);
+  event('llm.response', { message: {}, usage: { prompt_tokens: 999, completion_tokens: 20 } });
+  assert.equal(messages.some(m => m.type === 'usage'), false);
+});
 for (const early of [false, true]) test(`R2 skill admission followed by refusal ${early ? 'before' : 'after'} HTTP preserves correlation`, async t => {
   const { b, messages, event } = backend();
   let finish; t.mock.method(globalThis, 'fetch', () => new Promise(resolve => finish = resolve));

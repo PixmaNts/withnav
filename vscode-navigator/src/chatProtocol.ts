@@ -77,7 +77,7 @@ export type HostToWebview = { generation?: number } & (
    *  `locked`: the conversation exists, its model can no longer change. */
   | { type: "models"; items: ModelInfo[]; current?: string; locked: boolean }
   /** Context of the last model call: `used` tokens out of `window` (absent when unknown). */
-  | { type: "usage"; used: number; window?: number });
+  | { type: "usage"; snapshot: import("./contextMeter").ContextSnapshot });
 
 /** One saved conversation, as listed in the panel. `updatedAt` is an RFC 3339 timestamp. */
 export interface ConversationSummary {
@@ -123,6 +123,7 @@ export type WebviewToHost = { generation?: number } & (
 
 /** What the chat view needs from the host side; implemented by the cognition bridge. */
 export interface ChatBackend {
+  currentContext(): import("./contextMeter").ContextSnapshot | undefined;
   currentGeneration(): number;
   refreshCommands(): Promise<void>;
   runComposerCommand(text: string, generation?: number): Promise<boolean>;

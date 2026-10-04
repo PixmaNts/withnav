@@ -13,7 +13,7 @@ diagnostics and user feedback, and hosts the Cognition chat view.
 - **Cognition chat**: a webview in the Navai activity-bar container (view id `navai.chat`, named
   "Cognition"). It talks to the session server that `navai-lsp` runs over HTTP and SSE. It streams
   the conversation, lists past conversations of the workspace to resume, and has a model picker for
-  new and open conversations (switches during a running turn apply after it finishes) and a gauge of the context used.
+  new and open conversations (switches during a running turn apply after it finishes) and a gauge of the next request’s estimated context against the model’s window; hover or focus it for the breakdown, input budget and last request’s count.
   Type `/` for a keyboard-accessible command palette: `/model`, `/variant`, `/agent`, `/compact`,
   `/context`, `/skills`, `/stop`, `/new` and `/help`. `/skills` fills a selected skill into your
   next request; command outcomes appear as notices. Commands never attach editor context;

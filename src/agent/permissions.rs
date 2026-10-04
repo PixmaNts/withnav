@@ -2,7 +2,8 @@
 //! approval covers, and the grants an approval can leave behind.
 //!
 //! `write`, `edit`, `bash` and `fetch` are gated for a session that runs as an
-//! agent; `read`, `grep`, `glob`, `skill` and `ask` never are. A gated call is
+//! agent; outside-root or sensitive `read`, `grep` and `glob` calls are reviewed
+//! too. Ordinary inside-root reads, `skill` and `ask` are ungated. A gated call is
 //! described by a [`Scope`]: the folder it changes, or the origin it reaches.
 //! The driver answers with a [`PermissionDecision`]; an "allow folder" answer
 //! is remembered, in memory only, as a grant keyed by agent, capability and
@@ -269,7 +270,7 @@ fn folder_covers(grant: &Path, target: &Path, cx: &ToolContext) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Needed {
     pub scope: Scope,
-    /// For `write` and `edit`: the canonical file the call will change, as
+    /// For native file tools: the canonical target the call will access, as
     /// resolved when the request was made. An approval covers this file only;
     /// a call that resolves elsewhere when it runs needs a new approval.
     pub destination: Option<PathBuf>,
@@ -289,7 +290,8 @@ pub fn offered_decision(
     tool: &str,
     decision: PermissionDecision,
 ) -> PermissionDecision {
-    if (agent == crate::agent::definitions::PLAN || matches!(tool, "bash" | "write" | "edit"))
+    if (agent == crate::agent::definitions::PLAN
+        || matches!(tool, "bash" | "write" | "edit" | "read" | "grep" | "glob"))
         && decision == PermissionDecision::AllowFolder
     {
         PermissionDecision::AllowOnce
@@ -345,10 +347,7 @@ fn is_link(path: &Path) -> bool {
 }
 
 fn review_destination(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolError> {
-    if !path.is_absolute() {
-        return validate_path(&cx.writable_roots, path);
-    }
-    let resolved = validate_path(&[PathBuf::from("/")], path)?;
+    let resolved = resolve_read_target(path, cx)?;
     if resolved.is_dir() {
         return Err(ToolError::Denied {
             code: "invalid_path".into(),
@@ -370,11 +369,36 @@ pub fn still_resolves(args: &Value, destination: Option<&Path>, cx: &ToolContext
     let Some(destination) = destination else {
         return true;
     };
-    let Some(path) = args.get("path").and_then(Value::as_str) else {
-        return false;
+    let path = args
+        .get("path")
+        .and_then(Value::as_str)
+        .map(Path::new)
+        .unwrap_or(&cx.workspace);
+    resolve_read_target(path, cx).is_ok_and(|now| now == destination) && !is_link(destination)
+}
+
+pub fn resolve_read_target(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolError> {
+    let path = requested_path(path, cx)?;
+    validate_path(&[PathBuf::from("/")], &path)
+}
+
+pub fn requested_path(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolError> {
+    let path = if path.starts_with("~") {
+        let home =
+            std::env::var_os("HOME").ok_or_else(|| ToolError::PathTraversal(path.to_path_buf()))?;
+        PathBuf::from(home).join(
+            path.strip_prefix("~")
+                .map_err(|_| ToolError::PathTraversal(path.to_path_buf()))?,
+        )
+    } else if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cx.workspace.join(path)
     };
-    review_destination(Path::new(path), cx).is_ok_and(|now| now == destination)
-        && !is_link(destination)
+    if path.as_os_str().is_empty() || path.to_string_lossy().contains('\0') {
+        return Err(ToolError::PathTraversal(path));
+    }
+    Ok(path)
 }
 
 /// What the gate decides about a call, with no side effect.
@@ -382,6 +406,7 @@ pub fn still_resolves(args: &Value, destination: Option<&Path>, cx: &ToolContext
 pub enum Gate {
     /// The call runs without approval.
     Ungated,
+    Bound(PathBuf),
     /// The call is refused before it runs; the string is the tool error the
     /// model reads back.
     Rejected(String),
@@ -411,6 +436,47 @@ pub fn needs_permission(
         return Gate::Ungated;
     }
     match tool {
+        "read" | "grep" | "glob" => {
+            let path = match args.get("path") {
+                Some(Value::String(path)) if !path.is_empty() => PathBuf::from(path),
+                None if tool != "read" => cx.workspace.clone(),
+                _ => return Gate::Rejected("missing string argument: path".into()),
+            };
+            let resolved = match resolve_read_target(&path, cx) {
+                Ok(path) => path,
+                Err(error) => return Gate::Rejected(error.to_string()),
+            };
+            let inside = validate_path(&cx.read_roots(), &resolved).is_ok();
+            let path = match requested_path(&path, cx) {
+                Ok(path) => path,
+                Err(error) => return Gate::Rejected(error.to_string()),
+            };
+            if tool == "read" && resolved.is_dir() {
+                return Gate::Rejected("read requires a specific file, not a directory".into());
+            }
+            if tool != "read" {
+                if super::permission_gate::sensitive_read(&path)
+                    || super::permission_gate::sensitive_read(&resolved)
+                {
+                    return Gate::Rejected("sensitive search root: use read on individual files; each read is reviewed".into());
+                }
+                return if inside {
+                    Gate::Bound(resolved)
+                } else {
+                    Gate::Rejected(crate::tools::OUTSIDE_SEARCH.into())
+                };
+            }
+            if inside
+                && !super::permission_gate::sensitive_read(&resolved)
+                && !super::permission_gate::sensitive_read(&path)
+            {
+                return Gate::Bound(resolved);
+            }
+            Gate::Needs(Needed {
+                scope: Scope::Folder(resolved.parent().unwrap_or(&resolved).to_path_buf()),
+                destination: Some(resolved),
+            })
+        }
         "write" | "edit" => {
             let Some(path) = args.get("path").and_then(Value::as_str) else {
                 return Gate::Rejected(
@@ -479,6 +545,7 @@ mod tests {
         std::fs::create_dir_all(ws.join("src")).unwrap();
         std::fs::create_dir_all(&config).unwrap();
         let cx = ToolContext {
+            binding: None,
             workspace: ws.clone(),
             writable_roots: vec![ws.clone(), config.clone()],
             readable_roots: Vec::new(),
@@ -715,6 +782,7 @@ mod tests {
         let inner = f.ws.join("cfg");
         std::fs::create_dir_all(&inner).unwrap();
         let cx = ToolContext {
+            binding: None,
             workspace: f.ws.clone(),
             writable_roots: vec![f.ws.clone(), inner.clone()],
             readable_roots: Vec::new(),

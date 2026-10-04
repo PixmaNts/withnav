@@ -6,6 +6,10 @@ requests land in `develop`.
 
 ### Fixed
 
+- VS Code conversations can start subagents; child results use the normal durable parent delivery.
+- Risky read-only calls, including reading credentials and keys, are no longer auto-approved by
+  the instinct. Sensitive native `read` calls require metacognition review and a typed driver
+  decision; `grep`/`glob` skip sensitive files. Bash sensitivity detection is best effort.
 - **VS Code pickers are searchable.** Model, skill, variant, command and conversation lists open
   with a search field: match names, model IDs or descriptions, see the number of matches and
   choose with the arrow keys and Enter. Escape clears the search before closing. Long lists show
@@ -15,6 +19,18 @@ requests land in `develop`.
   The composer stays usable and explains that messages sent now are queued until compaction ends;
   the command's own completion replaces the progress
   row with the result, and failures show their reason without losing your draft.
+
+### Changed
+
+- Single-file `read` outside the readable roots is reviewed like bash instead of refused.
+  Approval covers one canonical target, never a new readable root.
+- Outside-root `grep`/`glob` remain refused with guidance to use a specific read or reviewed bash.
+  Inside searches skip sensitive entries. Native read targets are bound out of band and opened
+  without following replacement links; forged host-binding arguments are rejected.
+- Reusable permission approval is offered only for `fetch`, in both clients.
+- Directory grep keeps ripgrep's ignore/hidden behavior with sensitive files excluded before open.
+  Its missing-ripgrep fallback is ignore-aware, bounded and cancellable. Sensitive aliases are
+  checked before canonicalization; quoted or escaped config-command options require the driver.
 
 ## [0.4.6] - 2026-10-04
 

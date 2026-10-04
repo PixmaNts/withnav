@@ -26,9 +26,54 @@ pub struct Overrides {
     pub outside: bool,
 }
 
+/// Credential names are host facts, independent of a model's classification.
+pub const SENSITIVE_NAMES: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".netrc",
+    "auth.json",
+    "keyrings",
+    ".aws",
+    "gcloud",
+    "credentials",
+    "credentials.json",
+    "application_default_credentials.json",
+    ".env*",
+    "*id_rsa*",
+    "*id_ed25519*",
+    "*id_ecdsa*",
+    "*.pem",
+    "*.key",
+    "*.keyring",
+];
+
+pub fn sensitive_read(path: &std::path::Path) -> bool {
+    static MATCHER: std::sync::OnceLock<globset::GlobSet> = std::sync::OnceLock::new();
+    let matcher = MATCHER.get_or_init(|| {
+        let mut builder = globset::GlobSetBuilder::new();
+        for pattern in SENSITIVE_NAMES {
+            builder.add(
+                globset::GlobBuilder::new(pattern)
+                    .case_insensitive(true)
+                    .build()
+                    .expect("fixed sensitive pattern"),
+            );
+        }
+        builder.build().expect("fixed sensitive matcher")
+    });
+    path.components()
+        .any(|part| matcher.is_match(std::path::Path::new(part.as_os_str())))
+}
+
 pub fn prefilter(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> Overrides {
     let mut flags = Overrides::default();
     if let Some(path) = &needed.destination {
+        let reading = matches!(call.name.as_str(), "read" | "grep" | "glob");
+        if reading {
+            flags.outside = crate::tools::validate_path(&cx.read_roots(), path).is_err();
+            flags.risky = sensitive_call(call, needed, cx);
+            return flags;
+        }
         flags.mutation = true;
         let workspace = cx
             .workspace
@@ -98,6 +143,9 @@ pub fn prefilter(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> Override
             || command.contains("sed -i")
             || command.contains("perl -i");
         flags.risky = command.contains("$(")
+            || command
+                .split(|c: char| c.is_whitespace() || ";|&()'\"=<>".contains(c))
+                .any(|word| sensitive_read(std::path::Path::new(word)))
             || command.contains("-delete")
             || command.contains("-exec")
             || command.contains("git push")
@@ -108,7 +156,6 @@ pub fn prefilter(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> Override
             || command.contains("AGENTS.md")
             || command.contains("CLAUDE.md")
             || command.contains("auth.json")
-            || command.contains("config.json")
             || command.contains("hooks/")
             || command.contains('`')
             || words.iter().any(|word| {
@@ -152,6 +199,7 @@ pub fn prefilter(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> Override
                     )
             });
         flags.mutation |= flags.risky;
+        flags.risky |= sensitive_call(call, needed, cx);
         flags.mutation |= words.contains(&"git");
         flags.outside = words.iter().any(|word| {
             matches!(
@@ -341,6 +389,11 @@ fn describe_with_roots(
         }
     });
     let instruction_bytes = serde_json::to_vec(&questions).ok()?.len();
+    state["host_facts"]["read_only"] =
+        json!(matches!(call.name.as_str(), "read" | "grep" | "glob"));
+    state["host_facts"]["sensitive_read"] =
+        json!(sensitive_call(call, needed, &actor.tool_context));
+    state["host_facts"]["canonical_target"] = json!(needed.destination);
     if state.to_string().len() + instruction_bytes > super::guard::MAX_INPUT_BYTES {
         state["driver_request_complete"] = json!(false);
         state["driver_request"] = Value::Null;
@@ -397,7 +450,11 @@ pub fn route(
     {
         return Ok(Route::Ask);
     }
-    if !flags.mutation && choice("call_effect") == "read_only" {
+    if !flags.mutation
+        && choice("call_effect") == "read_only"
+        && !flags.risky
+        && choice("call_risk") == "low"
+    {
         return Ok(Route::Run);
     }
     if !flags.mutation && choice("call_effect") == "unsure" {
@@ -425,6 +482,15 @@ pub enum Judged {
 }
 
 pub fn protected_call(actor: &super::actor::AgentActor, call: &ToolCall, needed: &Needed) -> bool {
+    if matches!(call.name.as_str(), "read" | "grep" | "glob") {
+        return false;
+    }
+    if call.name == "bash"
+        && supported_read_only_bash(call)
+        && !sensitive_call(call, needed, &actor.tool_context)
+    {
+        return false;
+    }
     if actor.protected_config_unresolved && matches!(call.name.as_str(), "write" | "edit") {
         return true;
     }
@@ -508,6 +574,9 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
     let request_incomplete = serde_json::from_str::<Value>(&input.state)
         .is_ok_and(|state| state["driver_request_complete"] == false);
     let mut evidence = json!({"policy_version":1,"source":"driver","reason":"","truncated":context_truncated(actor) || request_incomplete,"overrides":override_names(&flags)});
+    evidence["canonical_target"] = json!(needed.destination);
+    evidence["read_only"] = json!(matches!(call.name.as_str(), "read" | "grep" | "glob"));
+    evidence["sensitive_read"] = json!(sensitive_call(call, needed, &actor.tool_context));
     if let Some(model) = judge.model_id() {
         evidence["models"] = json!({"jev":model});
     }
@@ -554,9 +623,16 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
             let review = tokio::select! { biased; _ = actor.cancel.cancelled() => return Judged::Interrupted, review = tokio::time::timeout(Duration::from_secs(20), reviewer.review(&input, &review_cancel)) => review };
             evidence["latency_ms"]["metacognition"] = json!(started.elapsed().as_millis() as u64);
             match review {
-                Ok(Ok(review)) if review.decision == ReviewDecision::Approve => {
+                Ok(Ok(review))
+                    if review.decision == ReviewDecision::Approve
+                        && !sensitive_call(call, needed, &actor.tool_context) =>
+                {
                     allowed_evidence(&input, "metacognition", &review.reason, evidence)
                 }
+                Ok(Ok(_)) if sensitive_call(call, needed, &actor.tool_context) => ask_evidence(
+                    "Sensitive credential/key access requires a typed driver decision after metacognition review; approve once or deny".into(),
+                    evidence,
+                ),
                 Ok(Ok(review)) => ask_evidence(
                     format!(
                         "Metacognition {:?}: {:?}; approve once or deny",
@@ -579,6 +655,61 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
             evidence,
         ),
     }
+}
+
+fn sensitive_call(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> bool {
+    needed.destination.as_deref().is_some_and(sensitive_read)
+        || (matches!(call.name.as_str(), "read" | "grep" | "glob")
+            && ["path"].iter().any(|key| {
+                call.args
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| {
+                        super::permissions::requested_path(std::path::Path::new(value), cx)
+                            .is_ok_and(|path| sensitive_read(&path))
+                    })
+            }))
+        || (call.name == "bash"
+            && call
+                .args
+                .get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|command| {
+                    command
+                        .split(|c: char| c.is_whitespace() || ";|&()'\"=<>".contains(c))
+                        .any(|word| {
+                            let simplified: String =
+                                word.chars().filter(|c| !"[]{}*?\\".contains(*c)).collect();
+                            sensitive_read(std::path::Path::new(&simplified))
+                                || super::permissions::resolve_read_target(
+                                    std::path::Path::new(word),
+                                    cx,
+                                )
+                                .is_ok_and(|path| sensitive_read(&path))
+                        })
+                }))
+}
+
+fn supported_read_only_bash(call: &ToolCall) -> bool {
+    let Some(command) = call.args.get("command").and_then(Value::as_str) else {
+        return false;
+    };
+    if command.contains([
+        '>', '<', '|', '&', ';', '\n', '$', '`', '(', ')', '\'', '"', '\\', '*', '?', '[', '{', '}',
+    ]) {
+        return false;
+    }
+    let mut words = command.split_whitespace();
+    let Some(program) = words.next() else {
+        return false;
+    };
+    if !matches!(
+        program,
+        "cat" | "head" | "tail" | "wc" | "ls" | "stat" | "grep" | "diff" | "file"
+    ) {
+        return false;
+    }
+    words.all(|word| !word.starts_with(['-', '+']))
 }
 
 fn choice<'a>(answers: &'a Answers, name: &str) -> Option<&'a str> {
@@ -658,8 +789,41 @@ fn approval_note(input: &PermissionReviewInput, source: &str, reason: Option<&st
 mod tests {
     use super::*;
     #[test]
+    fn bash_literal_aliases_and_uncertain_sensitive_expansions_force_risk() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(".ssh")).unwrap();
+        let key = tmp.path().join(".ssh/id_ed25519");
+        std::fs::write(&key, "secret").unwrap();
+        std::os::unix::fs::symlink(key, tmp.path().join("innocent")).unwrap();
+        let cx = ToolContext {
+            binding: None,
+            workspace: tmp.path().to_path_buf(),
+            writable_roots: vec![tmp.path().to_path_buf()],
+            readable_roots: vec![],
+        };
+        let needed = Needed {
+            scope: super::super::permissions::Scope::Folder(cx.workspace.clone()),
+            destination: None,
+        };
+        for command in [
+            "cat innocent",
+            "cat .ssh/id_ed25519",
+            "cat ~/.s[s]h/*",
+            "cat $X/.ssh",
+        ] {
+            let call = ToolCall {
+                id: "c".into(),
+                name: "bash".into(),
+                args: json!({"command":command}),
+                args_valid: true,
+            };
+            assert!(prefilter(&call, &needed, &cx).risky, "{command}");
+        }
+    }
+    #[test]
     fn complete_prefilter_keeps_recognized_git_invocations_conservative() {
         let cx = ToolContext {
+            binding: None,
             workspace: "/workspace".into(),
             writable_roots: vec!["/workspace".into()],
             readable_roots: vec![],
@@ -690,6 +854,28 @@ mod tests {
             };
             assert!(prefilter(&call, &needed, &cx).mutation, "{command}");
         }
+    }
+
+    #[test]
+    fn deterministic_sensitive_names_cover_keys_and_cloud_credentials_not_plain_config() {
+        for path in [
+            "/home/driver/.ssh/id_ed25519",
+            "/home/driver/.gnupg/private-keys-v1.d",
+            "/project/.env.local",
+            "/project/key-id_rsa-backup",
+            "/project/certificate.pem",
+            "/project/token.key",
+            "/home/driver/.local/share/keyrings/login.keyring",
+            "/home/driver/.netrc",
+            "/home/driver/.aws/credentials",
+            "/home/driver/.config/gcloud/application_default_credentials.json",
+            "/home/driver/.config/navai/auth.json",
+        ] {
+            assert!(sensitive_read(std::path::Path::new(path)), "{path}");
+        }
+        assert!(!sensitive_read(std::path::Path::new(
+            "/home/driver/.config/navai/config.json"
+        )));
     }
     #[test]
     fn audit_evidence_preserves_fixed_names_and_optional_values() {
@@ -769,6 +955,7 @@ mod tests {
     #[test]
     fn scanner_tightens_each_mutating_family() {
         let cx = ToolContext {
+            binding: None,
             workspace: "/workspace".into(),
             writable_roots: vec!["/workspace".into()],
             readable_roots: vec![],
@@ -853,6 +1040,27 @@ mod tests {
             route(&input, &answers, &Overrides::default()),
             Ok(Route::Run)
         );
+        assert_eq!(
+            route(
+                &input,
+                &answers,
+                &Overrides {
+                    risky: true,
+                    ..Default::default()
+                }
+            ),
+            Ok(Route::Review)
+        );
+        if let Answer::Choice { choice, .. } = answers.get_mut("call_risk").unwrap() {
+            *choice = "risky".into();
+        }
+        assert_eq!(
+            route(&input, &answers, &Overrides::default()),
+            Ok(Route::Review)
+        );
+        if let Answer::Choice { choice, .. } = answers.get_mut("call_risk").unwrap() {
+            *choice = "low".into();
+        }
         assert_eq!(
             route(
                 &input,

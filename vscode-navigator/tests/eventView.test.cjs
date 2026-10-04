@@ -60,7 +60,7 @@ test("durable replay reconstructs closed and still-open child permissions on the
   assert.equal(replay().open[0].childSessionId, "child");
 });
 
-for (const tool of ["bash", "write", "edit", "fetch"]) {
+  for (const tool of ["bash", "write", "edit", "read", "grep", "glob", "fetch"]) {
   test(`reusable ${tool} grant follows server offer`, () => {
     assert.equal(eventView(request({ tool })).card.allowFolder, tool === "fetch");
     assert.equal(eventView(request({ tool, agent: "plan" })).card.allowFolder, false);

@@ -592,6 +592,7 @@ fn context(fx: &Fixture) -> (Registry, ToolContext) {
     (
         Registry::new(),
         ToolContext {
+            binding: None,
             workspace: fx.ws.clone(),
             writable_roots: vec![fx.ws.clone()],
             readable_roots: Vec::new(),
@@ -859,6 +860,7 @@ async fn skill_roots_are_readable_but_never_writable() {
     let mut actor = AgentActor::new(
         registry,
         ToolContext {
+            binding: None,
             workspace: fx.ws.clone(),
             writable_roots: vec![fx.ws.clone()],
             readable_roots: Vec::new(),
@@ -974,6 +976,7 @@ fn without_skills_nothing_is_registered() {
     let mut actor = AgentActor::new(
         Registry::new(),
         ToolContext {
+            binding: None,
             workspace: fx.ws.clone(),
             writable_roots: vec![fx.ws.clone()],
             readable_roots: Vec::new(),

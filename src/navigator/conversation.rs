@@ -92,6 +92,7 @@ enum Author {
     Driver,
     Cognition,
     Navigator,
+    Subagent,
 }
 
 impl Author {
@@ -100,6 +101,7 @@ impl Author {
             Author::Driver => "driver",
             Author::Cognition => "cognition",
             Author::Navigator => "navigator",
+            Author::Subagent => "subagent (untrusted)",
         }
     }
 }
@@ -320,6 +322,8 @@ impl ConversationFeed {
             entry.push_exchange(
                 if driver {
                     Author::Driver
+                } else if matches!(source, "subagent" | "user:subagent") {
+                    Author::Subagent
                 } else {
                     Author::Navigator
                 },
@@ -774,5 +778,29 @@ mod tests {
         assert_eq!(feed.active_session(), None);
         assert!(!feed.is_waiting_on_driver());
         assert_eq!(feed.digest(), "");
+    }
+
+    #[tokio::test]
+    async fn child_events_do_not_replace_root_conversation_or_answer_its_ask() {
+        let feed = ConversationFeed::new();
+        let root = Ulid::new();
+        let child = Ulid::new();
+        feed.register_session(root, recording_poster(Arc::new(Mutex::new(Vec::new()))));
+        feed.observe(&message_envelope(root, "user:http", "root request"))
+            .await;
+        feed.observe(&yield_envelope(root)).await;
+        feed.observe(&message_envelope(child, "user:http", "child request"))
+            .await;
+        feed.observe(&response_envelope(child, "raw child transcript"))
+            .await;
+        feed.observe(&turn_end_envelope(child)).await;
+        feed.observe(&message_envelope(root, "subagent", "bounded child result"))
+            .await;
+        assert_eq!(feed.active_session(), Some(root));
+        assert!(feed.is_waiting_on_driver());
+        assert_eq!(
+            feed.digest(),
+            "driver: root request\nsubagent (untrusted): bounded child result"
+        );
     }
 }

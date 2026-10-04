@@ -50,6 +50,29 @@ fn changed(path: &Path) -> ToolError {
     ToolError::DestinationChanged(path.to_path_buf())
 }
 
+/// Holds the reviewed read target without following a replacement link.
+pub fn open_read(destination: &Path) -> Result<std::fs::File, ToolError> {
+    before_open();
+    if destination == Path::new("/") {
+        return open_dir(destination, false, true).map(std::fs::File::from);
+    }
+    let (parent, name) = split(destination)?;
+    let dir = open_dir(parent, false, true)?;
+    let fd = openat(
+        dir.as_fd(),
+        name,
+        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| walk_error(error, destination))?;
+    let file = std::fs::File::from(fd);
+    let metadata = file.metadata()?;
+    if !metadata.is_file() && !metadata.is_dir() {
+        return Err(changed(destination));
+    }
+    Ok(file)
+}
+
 #[cfg(test)]
 #[test]
 fn replaced_or_missing_scratch_root_is_not_recreated_at_native_open() {

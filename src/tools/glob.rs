@@ -62,6 +62,7 @@ impl Tool for GlobTool {
         cx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + 'a>> {
         Box::pin(async move {
+            crate::tools::reject_reserved_args(&args)?;
             let pattern = args
                 .get("pattern")
                 .and_then(|v| v.as_str())
@@ -86,7 +87,26 @@ impl Tool for GlobTool {
                 }
                 None => cx.workspace.clone(),
             };
+            if crate::agent::permission_gate::sensitive_read(&requested) {
+                return Err(denied(
+                    "sensitive_path",
+                    "sensitive search root: use read on individual files; each read is reviewed",
+                ));
+            }
+            let requested = cx
+                .binding
+                .as_ref()
+                .map(|binding| binding.destination.clone())
+                .unwrap_or(requested);
             let roots = cx.read_roots();
+            let canonical = validate_path(&roots, &requested)
+                .map_err(|_| denied("outside_project", crate::tools::OUTSIDE_SEARCH))?;
+            if crate::agent::permission_gate::sensitive_read(&canonical) {
+                return Err(denied(
+                    "sensitive_path",
+                    "sensitive search root: use read on individual files; each read is reviewed",
+                ));
+            }
             search(
                 roots,
                 requested,
@@ -143,7 +163,7 @@ async fn search(
             Err(_) => {
                 worker_cancel.cancel();
                 Ok(render(
-                    Walked { paths: Vec::new(), visited: 0, stop: Stop::Timeout },
+                    Walked { paths: Vec::new(), visited: 0, sensitive_skipped: 0, stop: Stop::Timeout },
                     limit,
                 ))
             }
@@ -160,6 +180,7 @@ enum Stop {
 }
 
 struct Walked {
+    sensitive_skipped: usize,
     paths: Vec<String>,
     visited: usize,
     stop: Stop,
@@ -224,10 +245,15 @@ fn walk(
 ) -> Walked {
     let started = Instant::now();
     let mut out = Walked {
+        sensitive_skipped: 0,
         paths: Vec::new(),
         visited: 0,
         stop: Stop::Done,
     };
+    if crate::agent::permission_gate::sensitive_read(root) {
+        out.sensitive_skipped = 1;
+        return out;
+    }
     let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         if cancel.is_cancelled() {
@@ -264,13 +290,17 @@ fn walk(
                 continue;
             }
             let name = entry.file_name();
+            let path = entry.path();
+            if crate::agent::permission_gate::sensitive_read(&path) {
+                out.sensitive_skipped += 1;
+                continue;
+            }
             let Some(name) = name.to_str() else {
                 continue;
             };
             if !matcher.admits(name) {
                 continue;
             }
-            let path = entry.path();
             if kind.is_dir() {
                 stack.push(path);
             } else if let Ok(rel) = path.strip_prefix(root) {
@@ -295,6 +325,12 @@ fn render(mut walked: Walked, limit: usize) -> ToolResult {
         _ => None,
     };
     let mut text = walked.paths.join("\n");
+    if walked.sensitive_skipped > 0 {
+        text.push_str(&format!(
+            "\n{} sensitive files skipped; read them individually (reviewed)",
+            walked.sensitive_skipped
+        ));
+    }
     if cut || stopped.is_some() {
         let mut note = String::from("[");
         if cut {
@@ -341,6 +377,32 @@ fn render(mut walked: Walked, limit: usize) -> ToolResult {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn glob_skips_sensitive_files_even_when_pattern_explicitly_names_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(tmp.path(), "config.json");
+        for name in [
+            "auth.json",
+            "credentials.json",
+            "token.key",
+            ".env.sample",
+            ".ssh/id_ed25519",
+        ] {
+            touch(tmp.path(), name);
+        }
+        let result = run(&cx(tmp.path()), json!({"pattern":"**/*"}))
+            .await
+            .unwrap();
+        assert!(result.output.contains("config.json"));
+        for name in ["auth.json", "credentials.json", "token.key"] {
+            assert!(!result.output.contains(name));
+        }
+        let result = run(&cx(tmp.path()), json!({"pattern":".ssh/**"}))
+            .await
+            .unwrap();
+        assert!(result.output.contains("sensitive files skipped"));
+        assert!(!result.output.contains("id_ed25519"));
+    }
     use super::*;
     use crate::tools::ToolStatus;
 
@@ -352,6 +414,7 @@ mod tests {
 
     fn cx(root: &Path) -> ToolContext {
         ToolContext {
+            binding: None,
             workspace: root.to_path_buf(),
             writable_roots: vec![root.to_path_buf()],
             readable_roots: Vec::new(),
@@ -363,7 +426,10 @@ mod tests {
     }
 
     fn lines(res: &ToolResult) -> Vec<&str> {
-        res.output.lines().collect()
+        res.output
+            .lines()
+            .filter(|line| !line.contains("sensitive files skipped") && !line.is_empty())
+            .collect()
     }
 
     // Given a tree of sources and docs
@@ -439,7 +505,8 @@ mod tests {
             .unwrap();
         assert_eq!(lines(&tg), ["target/debug/t.txt"]);
         let dot = run(&cx, json!({"pattern": ".*.txt"})).await.unwrap();
-        assert_eq!(lines(&dot), [".env.txt"]);
+        assert!(!dot.output.contains(".env.txt"));
+        assert!(dot.output.contains("1 sensitive files skipped"));
     }
 
     // Given links to a file, a directory outside, and back to the root
@@ -495,11 +562,11 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, ToolError::PathTraversal(_)));
+        assert!(err.to_string().contains(crate::tools::OUTSIDE_SEARCH));
         let err = run(&cx, json!({"pattern": "*", "path": "../outside"}))
             .await
             .unwrap_err();
-        assert!(matches!(err, ToolError::PathTraversal(_)));
+        assert!(err.to_string().contains(crate::tools::OUTSIDE_SEARCH));
         let err = run(&cx, json!({"pattern": "*", "path": "a.txt"}))
             .await
             .unwrap_err();
@@ -517,6 +584,7 @@ mod tests {
         touch(&ws, "a.txt");
         touch(&skills, "s/SKILL.md");
         let cx = ToolContext {
+            binding: None,
             workspace: ws.clone(),
             writable_roots: vec![ws],
             readable_roots: vec![skills.clone()],

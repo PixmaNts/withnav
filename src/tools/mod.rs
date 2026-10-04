@@ -15,46 +15,30 @@ pub mod control;
 pub mod decide_subagent;
 pub mod fetch;
 pub mod glob;
+mod grep;
 pub mod native;
 pub mod nofollow;
 pub mod steer_subagent;
 pub mod task;
 
-/// The argument the agent loop adds to a `write` or `edit` whose destination
-/// was reviewed: `path` is then that canonical file, and the tool opens it
-/// without following any link ([`nofollow`]). Never part of a tool's schema;
-/// the loop strips what a model puts under this name.
+/// Legacy reserved argument name. Every model ingress rejects it; approved
+/// destinations travel only in the host's dispatch context.
 pub const BOUND_ARG: &str = "navai_bound_destination";
+pub const OUTSIDE_SEARCH: &str =
+    "outside the project: use `read` on a specific file, or a `bash` command, which are reviewed";
 
-/// The canonical file a bound call is for, checked against the writable roots
-/// as a plain path: it must be absolute, free of `..`, and under a root. No
-/// link is resolved here; the no-follow open refuses any that is there.
-pub fn bound_destination(args: &Value, roots: &[PathBuf]) -> Result<Option<PathBuf>, ToolError> {
-    if args.get(BOUND_ARG).and_then(Value::as_bool) != Some(true) {
-        return Ok(None);
-    }
-    let path = args
-        .get("path")
-        .and_then(Value::as_str)
-        .map(PathBuf::from)
-        .ok_or_else(|| ToolError::Denied {
+/// Model arguments cannot supply host bindings or scratch identities.
+pub fn reject_reserved_args(args: &Value) -> Result<(), ToolError> {
+    if args
+        .as_object()
+        .is_some_and(|object| object.keys().any(|key| key.starts_with("navai_")))
+    {
+        return Err(ToolError::Denied {
             code: "invalid_args".into(),
-            message: "missing string argument: path".into(),
-        })?;
-    let plain = path.is_absolute()
-        && path
-            .components()
-            .all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
-    let inside = roots.iter().any(|root| {
-        root.canonicalize()
-            .map(|root| path.starts_with(root))
-            .unwrap_or(false)
-    });
-    if plain && inside {
-        Ok(Some(path))
-    } else {
-        Err(ToolError::PathTraversal(path))
+            message: "reserved tool argument".into(),
+        });
     }
+    Ok(())
 }
 
 pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 64 * 1024;
@@ -169,7 +153,10 @@ impl ToolResult {
     }
 }
 
+#[derive(Clone)]
 pub struct ToolContext {
+    /// Host-only binding installed by the agent loop, never model arguments.
+    pub binding: Option<DispatchBinding>,
     pub workspace: PathBuf,
     /// Where `write`, `edit` and `bash` may change files (and `read`/`grep`
     /// may look).
@@ -177,6 +164,12 @@ pub struct ToolContext {
     /// Extra places `read` and `grep` may look, never change: the skill
     /// roots.
     pub readable_roots: Vec<PathBuf>,
+}
+
+#[derive(Clone)]
+pub struct DispatchBinding {
+    pub(crate) destination: PathBuf,
+    pub(crate) scratch: Option<crate::agent::scratch::Identity>,
 }
 
 impl ToolContext {
@@ -255,6 +248,7 @@ impl Registry {
         cancel: CancellationToken,
         cx: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
+        reject_reserved_args(&args)?;
         match self.get(name) {
             Some(tool) => tool.call(args, cancel, cx).await,
             None => Ok(ToolResult {
@@ -375,6 +369,7 @@ mod tests {
 
     fn ctx(root: &Path) -> ToolContext {
         ToolContext {
+            binding: None,
             workspace: root.to_path_buf(),
             writable_roots: vec![root.to_path_buf()],
             readable_roots: Vec::new(),

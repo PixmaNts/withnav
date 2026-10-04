@@ -66,6 +66,7 @@ fn build_actor_with_policy(
     read_only: bool,
 ) -> AgentActor {
     let tool_context = ToolContext {
+        binding: None,
         workspace: workspace.to_path_buf(),
         writable_roots: vec![workspace.to_path_buf(), config_dir.to_path_buf()],
         readable_roots: Vec::new(),

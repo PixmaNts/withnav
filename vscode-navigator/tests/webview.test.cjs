@@ -3,6 +3,37 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const { JSDOM } = require("jsdom");
 
+test('conversation search counts and caps rows, filters titles and keyboard clears then closes',()=>{
+  const {chatHtml}=require('../out/tests/chatHtml.js');const dom=new JSDOM(chatHtml('n','chat.js','chat.css','resource:'),{runScripts:'outside-only'});
+  const posts=[];dom.window.acquireVsCodeApi=()=>({postMessage:m=>posts.push(m),getState(){},setState(){}});dom.window.eval(fs.readFileSync('out/chat.js','utf8'));
+  const d=dom.window.document;const receive=data=>dom.window.dispatchEvent(new dom.window.MessageEvent('message',{data:{...data,generation:1}}));
+  receive({type:'conversationOpened',id:'S',title:'S'});receive({type:'conversations',items:Array.from({length:300},(_,i)=>({id:String(i),title:`Conversation ${i}`,updatedAt:'2026-01-01',messageCount:1}))});
+  d.querySelector('.conv-trigger').click();const search=d.querySelector('.conv-panel .picker-search');assert.equal(d.activeElement,search);assert.equal(d.querySelectorAll('.conv-row').length,50);
+  search.value='Conversation 299';search.dispatchEvent(new dom.window.Event('input'));assert.equal(d.querySelectorAll('.conv-row').length,1);assert.match(d.querySelector('.conv-panel .picker-count').textContent,/1 of 300/);
+  const key=key=>search.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key,bubbles:true,cancelable:true}));key('Escape');assert.equal(search.value,'');assert.equal(d.querySelector('.conv-panel').hidden,false);key('Escape');assert.equal(d.querySelector('.conv-panel').hidden,true);dom.window.close();
+});
+
+test('searchable shipped pickers rank names, match descriptions, cap 300 rows and support clear-then-close Escape',()=>{
+  const {chatHtml}=require('../out/tests/chatHtml.js');
+  const dom=new JSDOM(chatHtml('n','chat.js','chat.css','resource:'),{runScripts:'outside-only'});const posts=[];
+  dom.window.acquireVsCodeApi=()=>({postMessage:m=>posts.push(m),getState(){},setState(){}});
+  dom.window.eval(fs.readFileSync('out/chat.js','utf8'));
+  const d=dom.window.document;const receive=data=>dom.window.dispatchEvent(new dom.window.MessageEvent('message',{data:{...data,generation:1}}));
+  receive({type:'conversationOpened',id:'S',title:'S'});receive({type:'status',state:'ready'});
+  const items=Array.from({length:300},(_,i)=>({name:`model-${i}`,description:`provider id ${i}`}));
+  items[90]={name:'target',description:'ordinary'};items[91]={name:'target-more',description:'ordinary'};items[0]={name:'other',description:'target description'};
+  receive({type:'commandPicker',kind:'model',items});
+  const search=d.querySelector('#command-palette .picker-search');assert.equal(d.activeElement,search);assert.equal(d.querySelectorAll('#picker-options [role=option]').length,50);assert.match(d.querySelector('#command-palette .picker-count').textContent,/300 of 300.*Type to narrow/);
+  const input=value=>{search.value=value;search.dispatchEvent(new dom.window.Event('input'));};
+  const key=key=>search.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key,bubbles:true,cancelable:true}));
+  input('TARGET');assert.match(d.querySelector('#command-palette .picker-count').textContent,/3 of 300/);assert.match(d.querySelector('#picker-options [role=option]').textContent,/^targetordinary/);
+  key('ArrowDown');assert.equal(search.getAttribute('aria-activedescendant'),'command-option-1');key('Enter');assert.equal(posts.at(-1).text,'/model target-more');
+  receive({type:'commandPicker',kind:'skills',items});input('provider id 299');assert.match(d.querySelector('#command-palette .picker-count').textContent,/1 of 300/);key('Enter');assert.equal(d.querySelector('#prompt').value,'/skill model-299 ');
+  receive({type:'commandPicker',kind:'variant',items});input('missing');assert.match(d.querySelector('#picker-options').textContent,/No matches/);key('Escape');assert.equal(search.value,'');assert.equal(d.querySelector('#command-palette').hidden,false);key('Escape');assert.equal(d.querySelector('#command-palette').hidden,true);
+  receive({type:'models',items:items.map(i=>({alias:i.name,model:i.description})),locked:false});d.querySelector('#model').dispatchEvent(new dom.window.MouseEvent('mousedown',{bubbles:true,cancelable:true}));assert.equal(d.activeElement,search);
+  dom.window.close();
+});
+
 test("R2 shipped page restores refused admitted skill without overwriting newer typing; R5 picker locks", () => {
   const { chatHtml } = require("../out/tests/chatHtml.js");
   const dom = new JSDOM(chatHtml("n", "chat.js", "chat.css", "resource:"), { runScripts: "outside-only" });
@@ -46,7 +77,7 @@ test("shipped palette supports filter, arrows, Tab, Enter, Escape and mouse; age
   key("ArrowDown"); key("Tab"); assert.equal(prompt.value, "/compact ");
   input("/mo"); key("Enter"); assert.equal(prompt.value, "/model ");
   input("/"); key("Escape"); assert.equal(d.querySelector("#command-palette").hidden, true);
-  input("/"); key("ArrowUp"); assert.equal(prompt.getAttribute("aria-activedescendant"), "command-option-1");
+  input("/"); key("ArrowUp"); assert.equal(d.querySelector('#command-palette .picker-search').getAttribute("aria-activedescendant"), "command-option-1");
   d.querySelector('[role="option"]').click(); assert.equal(prompt.value, "/model ");
   receive({ type: "history", items: [{ type: "agent", name: "plan", generation: 1 }] });
   assert.equal(d.querySelector(".agent-label").textContent, "plan");

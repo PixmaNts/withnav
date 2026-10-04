@@ -151,6 +151,29 @@ test('S2.3 hanging terminal metadata GET times out and releases reconciliation',
   event('session.end',{child_session_id:'C'});
   await new Promise(r=>setTimeout(r,2100));await tick();assert.equal(signal.aborted,true);assert.equal(b.childReconciliations.size,0);
 });
+test('compaction real host/page starts immediately, survives deferred acceptance, completes and rejects stale ownership',async t=>{
+  const {b,event,dom,tick,send}=fullChat(t);b.state.session='P';b.commands.push({name:'compact',description:'Compact',args_hint:''});
+  let finish;t.mock.method(globalThis,'fetch',()=>new Promise(r=>finish=r));
+  send('/compact focus');assert.match(dom.window.document.querySelector('.compaction-progress').textContent,/Compacting/);assert.equal(dom.window.document.querySelector('#prompt').disabled,true);assert.equal(dom.window.document.querySelector('#usage').getAttribute('aria-busy'),'true');
+  event('command.result',{name:'compact',operation_id:'C',ok:true,data:{accepted:true,applies:'after_turn'}});
+  finish(new Response(JSON.stringify({operation_id:'C',ok:true})));await tick();assert.equal(b.state.compaction.pending,true);
+  event('context.compacted',{estimate_before:200,estimate_after:100});assert.equal(dom.window.document.querySelector('.compaction-progress').dataset.pending,'false');assert.match(dom.window.document.querySelector('.compaction-progress').textContent,/200.*100/);assert.equal(dom.window.document.querySelector('#prompt').disabled,false);
+  send('/compact');await tick();await b.newConversation();finish(new Response(JSON.stringify({operation_id:'OLD',ok:true})));await tick();assert.equal(dom.window.document.querySelector('.compaction-progress'),null);assert.equal(b.state.compaction,undefined);
+});
+test('compaction correlated failure replaces progress and frees composer',async t=>{
+  const {b,event,dom,tick,send}=fullChat(t);b.state.session='P';b.commands.push({name:'compact',description:'Compact',args_hint:''});
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({operation_id:'C',ok:true})));
+  send('/compact');await tick();event('command.result',{name:'compact',operation_id:'C',ok:false,error:'Summary unavailable'});
+  assert.match(dom.window.document.querySelector('.compaction-progress').textContent,/Summary unavailable/);assert.equal(dom.window.document.querySelector('#prompt').disabled,false);
+});
+test('compaction pending progress survives recreated host view',async t=>{
+  const {b,send,tick}=fullChat(t);b.state.session='P';b.commands.push({name:'compact',description:'Compact',args_hint:''});
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({operation_id:'C',ok:true})));
+  send('/compact');await tick();
+  const messages=[];let receive;
+  provider.resolveWebviewView({webview:{cspSource:'test',asWebviewUri:v=>v,postMessage:m=>messages.push(m),onDidReceiveMessage:fn=>{receive=fn;return noopDisposable();}},onDidDispose(){}});
+  receive({type:'ready'});assert.equal(messages.find(m=>m.type==='compaction').pending,true);assert.equal(messages.find(m=>m.type==='compaction').operationId,'C');
+});
 function fullChat(t) {
   const { JSDOM } = require('jsdom');
   const { chatHtml } = require('../out/tests/chatHtml.js');
@@ -364,6 +387,7 @@ test("late-created and recreated views receive current session identity before r
   const backend = {
     currentContext: () => ({ incarnation: "I", revision: 3, estimate_total: 42 }),
     publishSubagents() {},
+    publishCompaction() {},
     currentGeneration: () => 1,
     refreshCommands: async () => {},
     resumePermissionReads: () => {},

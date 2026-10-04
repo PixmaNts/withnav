@@ -26,6 +26,7 @@ const RECONNECT_DELAY_MS = 500;
  * networking lives here; the webview never sees HTTP.
  */
 class ConversationState {
+  compaction?: { operationId: string; pending: boolean; text: string; ok?: boolean };
   title = "Parent conversation";
   children = new Map<string, ChildInfo>();
   childStateCursors = new Map<string, string>();
@@ -73,6 +74,7 @@ class ConversationState {
 }
 
 export class CognitionBackend implements ChatBackend {
+  publishCompaction(): void { if (this.state.compaction) this.emit({ type: "compaction", ...this.state.compaction }); }
   publishSubagents(): void { this.emitChildren(); }
   isReadOnly(): boolean { return this.state.readOnly; }
   private emitChildren(): void {
@@ -180,6 +182,7 @@ export class CognitionBackend implements ChatBackend {
   ownsOperation(operation: ComposerOperation): boolean { return !this.disposed && operation.owner === this.state && operation.generation === this.currentGeneration(); }
 
   async runComposerCommand(draft: string, generation = this.currentGeneration(), operation?: ComposerOperation): Promise<boolean> {
+    if (this.state.compaction?.pending) throw new Error("Compacting the conversation. Wait for it to finish before sending commands.");
     if (this.isReadOnly()) throw new Error("Subagent transcripts are read-only. Return to the parent to send messages or commands.");
     this.checkGeneration(generation);
     const routed = routeComposer(draft);
@@ -256,11 +259,27 @@ export class CognitionBackend implements ChatBackend {
     if (name === "model" && this.hasOpenPermissions()) throw new Error("Answer the pending permission before switching model.");
     const session = this.state.session;
     const origin = this.state;
+    if (name === "compact") {
+      origin.compaction = { operationId: `request:${generation}:${Date.now()}`, pending: true, text: "Compacting the conversation…" };
+      this.emitForState(origin, { type: "compaction", ...origin.compaction });
+    }
     const modelToken = name === "model" ? ++origin.modelRequestToken : undefined;
     if (name === "model") { origin.pendingModel = undefined; this.emitForState(origin, { type: "modelPending" }); }
-    const result = await this.request(`/v1/sessions/${encodeURIComponent(session)}/commands`, { method: "POST", body: JSON.stringify({ name, arguments: args }) }, "operation");
+    let result: any;
+    try { result = await this.request(`/v1/sessions/${encodeURIComponent(session)}/commands`, { method: "POST", body: JSON.stringify({ name, arguments: args }) }, "operation"); }
+    catch (error) {
+      if (name === "compact" && origin.compaction?.pending) {
+        origin.compaction = { ...origin.compaction, pending: false, ok: false, text: `Compaction failed: ${this.errorText(error)}` };
+        this.emitForState(origin, { type: "compaction", ...origin.compaction });
+      }
+      throw error;
+    }
     if (session !== origin.session) throw new Error("Conversation changed");
     if (typeof result?.operation_id !== "string") throw new Error("Command returned no operation id");
+    if (name === "compact" && origin.compaction?.pending) {
+      origin.compaction.operationId = result.operation_id;
+      this.emitForState(origin, { type: "compaction", ...origin.compaction });
+    }
     if (name === "model" && modelToken === origin.modelRequestToken && !origin.settledModelOps.has(result.operation_id)) {
       origin.pendingModel = { alias: args, operationId: result.operation_id };
       this.emitForState(origin, { type: "modelPending", alias: args });
@@ -281,6 +300,17 @@ export class CognitionBackend implements ChatBackend {
     const operation = p.operation_id;
     if (typeof operation !== "string") return;
     this.state.commandResults.set(operation, p);
+    if (p.name === "compact" && !this.state.compaction && p.ok === true && p.data?.accepted === true && p.data?.applies === "after_turn") {
+      this.state.compaction = { operationId: operation, pending: true, text: "Compacting the conversation… · waiting for this turn to finish" };
+      this.publishCompaction();
+    }
+    if (p.name === "compact" && this.state.compaction?.pending &&
+        (this.state.compaction.operationId === operation || this.state.compaction.operationId.startsWith("request:"))) {
+      const deferred = p.ok === true && p.data?.accepted === true && p.data?.applies === "after_turn";
+      this.state.compaction = { operationId: operation, pending: deferred, ok: p.ok === true,
+        text: deferred ? "Compacting the conversation… · waiting for this turn to finish" : p.ok === false ? `Compaction failed: ${p.error ?? "Refused"}` : "Conversation compacted." };
+      this.publishCompaction();
+    }
     const command = this.state.commands.get(operation);
     if (command) {
       this.emit({ type: "sendResult", text: command.draft, accepted: p.ok === true, restoreDraft: command.name === "skill" && p.ok !== true });
@@ -440,6 +470,7 @@ export class CognitionBackend implements ChatBackend {
         this.emitModels();
         this.emit({ type: "modelPending", alias: this.state.pendingModel?.alias });
         for (const result of this.state.commandResults.values()) this.settleCommand(result);
+        this.publishCompaction();
         if (this.state.context) this.emit({ type: "usage", snapshot: this.state.context });
         this.emit({ type: "status", state: "error", message: `Could not open conversation: ${this.errorText(error)}` });
         void this.connect();
@@ -477,6 +508,7 @@ export class CognitionBackend implements ChatBackend {
   }
 
   async send(text: string, context?: string, operation?: ComposerOperation): Promise<void> {
+    if (this.state.compaction?.pending) throw new Error("Compacting the conversation. Wait for it to finish before sending.");
     if (this.isReadOnly()) throw new Error("Subagent transcripts are read-only. Return to the parent.");
     // The driver's message arrives as `message.received` on the stream; do
     // NOT emit an optimistic copy here (that duplicated it).
@@ -505,6 +537,7 @@ export class CognitionBackend implements ChatBackend {
     // so keep the stream cursor to continue where this one ended.
     origin.resumeId = session;
     origin.pendingModel = undefined;
+    if (origin.compaction?.pending) { origin.compaction = { ...origin.compaction, pending: false, ok: false, text: "Compaction stopped." }; this.emitForState(origin, { type: "compaction", ...origin.compaction }); }
     this.emitForState(origin, { type: "modelPending" });
     this.emitForState(origin, { type: "status", state: "ready" });
   }
@@ -1211,6 +1244,7 @@ export class CognitionBackend implements ChatBackend {
       }
     }
     if (envelope.kind === "session.end") {
+      if (this.state.compaction?.pending) { this.state.compaction = { ...this.state.compaction, pending: false, ok: false, text: "Compaction stopped with the conversation." }; this.publishCompaction(); }
       this.state.pendingModel = undefined;
       this.emit({ type: "modelPending" });
     }
@@ -1224,7 +1258,11 @@ export class CognitionBackend implements ChatBackend {
       this.state.agent = String(payload.agent ?? "build");
       return { type: "agent", name: this.state.agent };
     }
-    if (envelope.kind === "context.compacted") return { type: "notice", text: `Context compacted: ~${payload.estimate_before ?? "?"} → ~${payload.estimate_after ?? "?"} tokens` };
+    if (envelope.kind === "context.compacted") {
+      const text = `Context compacted: ~${payload.estimate_before ?? "?"} → ~${payload.estimate_after ?? "?"} tokens`;
+      if (this.state.compaction?.pending) { this.state.compaction = { ...this.state.compaction, pending: false, ok: true, text }; this.publishCompaction(); return undefined; }
+      return { type: "notice", text };
+    }
     if (envelope.kind === "model.changed") {
       if (typeof payload.operation_id === "string") this.state.settledModelOps.add(payload.operation_id);
       if (typeof payload.new?.alias === "string") this.state.selectedModel = payload.new.alias;
@@ -1353,6 +1391,7 @@ export class CognitionBackend implements ChatBackend {
     // Conversation-list, model and usage metadata is pushed, never replayed
     // as transcript (the view caches the last ones for a reopen).
     const ephemeral =
+      message.type === "compaction" ||
       message.type === "subagents" || message.type === "childView" ||
       message.type === "history" ||
       message.type === "conversations" ||

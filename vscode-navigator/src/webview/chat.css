@@ -1,4 +1,11 @@
 :root { color-scheme: light dark; }
+.picker-search { display: block; width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); background: var(--vscode-input-background); color: var(--vscode-input-foreground); font: inherit; border-radius: 3px; }
+.picker-count, .picker-empty { padding: 5px 8px; font-size: 11px; color: var(--vscode-descriptionForeground); }
+.conv-row[aria-selected="true"] { background: var(--vscode-list-hoverBackground); }
+.compaction-progress[data-pending="true"]::before { content: ""; display: inline-block; width: 12px; height: 12px; border: 2px solid var(--vscode-descriptionForeground); border-right-color: transparent; border-radius: 50%; margin-right: 8px; vertical-align: middle; animation: compaction-spin 1s linear infinite; }
+#usage[data-updating="true"]::after { content: " · updating"; font-size: 11px; color: var(--vscode-descriptionForeground); }
+@keyframes compaction-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .compaction-progress[data-pending="true"]::before { animation: none; } }
 .subagents { flex: none; border-top: 1px solid var(--vscode-widget-border); padding: 8px 10px; max-height: 28vh; overflow: auto; }
 .subagents summary { cursor: pointer; font-size: 11px; font-weight: 600; color: var(--vscode-descriptionForeground); }
 .child-row { padding: 8px 0; border-bottom: 1px solid var(--vscode-widget-border); }

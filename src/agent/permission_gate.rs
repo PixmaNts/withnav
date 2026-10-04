@@ -392,13 +392,13 @@ pub fn route(
     {
         return Ok(Route::Ask);
     }
-    if !flags.mutation && choice("call_effect") == "read_only" {
-        return Ok(Route::Run);
-    }
     if serde_json::from_str::<Value>(&input.state)
         .is_ok_and(|state| state["driver_request_complete"] == false)
     {
         return Ok(Route::Ask);
+    }
+    if !flags.mutation && choice("call_effect") == "read_only" {
+        return Ok(Route::Run);
     }
     if !flags.mutation && choice("call_effect") == "unsure" {
         return Ok(Route::Ask);
@@ -658,7 +658,7 @@ fn approval_note(input: &PermissionReviewInput, source: &str, reason: Option<&st
 mod tests {
     use super::*;
     #[test]
-    fn complete_prefilter_keeps_all_git_calls_conservative() {
+    fn complete_prefilter_keeps_recognized_git_invocations_conservative() {
         let cx = ToolContext {
             workspace: "/workspace".into(),
             writable_roots: vec!["/workspace".into()],
@@ -673,6 +673,14 @@ mod tests {
             "git diff",
             "git grep -O/tmp/p x",
             "git cat-file --filters HEAD:x",
+            "git co x",
+            "git -C dir status",
+            "GIT_DIR=x git status",
+            "env A=1 git status",
+            "sudo git status",
+            "command git status",
+            "/usr/bin/git status",
+            "xargs git status",
         ] {
             let call = ToolCall {
                 id: "c".into(),

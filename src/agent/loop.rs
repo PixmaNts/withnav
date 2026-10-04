@@ -751,16 +751,20 @@ async fn execute_call(
         // one (or another kind of file) there: nothing was touched, and the
         // call is checked again. The attempt stays visible, closed as an error.
         Err(ToolError::DestinationChanged(path)) => {
+            let mut result = ToolResult::error(
+                "destination_changed",
+                format!("{} changed after it was checked; nothing was written, the call is checked again", path.display()),
+            );
+            if let Some(evidence) = guard_note
+                .as_ref()
+                .and_then(|note| note.get("permission_gate"))
+            {
+                result.metadata = serde_json::json!({"permission_gate":evidence});
+            }
             observe(AgentEvent::PostCall {
                 tool_call_id: &call.id,
                 name: &call.name,
-                result: &ToolResult::error(
-                    "destination_changed",
-                    format!(
-                        "{} changed after it was checked; nothing was written, the call is checked again",
-                        path.display()
-                    ),
-                ),
+                result: &result,
             });
             return None;
         }
@@ -2029,6 +2033,62 @@ mod tests {
         hangs: bool,
     }
 
+    struct OptimisticReadOnlyJudge;
+    impl super::super::permission_gate::PermissionJudge for OptimisticReadOnlyJudge {
+        fn judge<'a>(
+            &'a self,
+            input: &'a super::super::permission_gate::PermissionReviewInput,
+            _cancel: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<'a, Result<crate::provider::systemone::Answers, String>>
+        {
+            let state: serde_json::Value = serde_json::from_str(&input.state).unwrap();
+            assert_eq!(state["driver_request_complete"], false);
+            assert_eq!(state["host_facts"]["mutation"], false);
+            let mut answers = safety_answers(input, Verdict::Conforms);
+            if let crate::provider::systemone::Answer::Choice { choice, .. } =
+                answers.get_mut("call_effect").unwrap()
+            {
+                *choice = "read_only".into();
+            }
+            Box::pin(async move { Ok(answers) })
+        }
+    }
+
+    #[tokio::test]
+    async fn omitted_intent_blocks_optimistic_read_only_in_the_call_loop() {
+        let mut actor = plan_actor(None, "http://unused");
+        as_build(&mut actor);
+        actor.driver_task = Some("request ".repeat(10000));
+        actor.permission_judge = Some(Arc::new(OptimisticReadOnlyJudge));
+        let meta = Arc::new(Meta {
+            decision: Some(super::super::permission_gate::ReviewDecision::Approve),
+            captured: Default::default(),
+            hangs: false,
+        });
+        actor.permission_reviewer = Some(meta.clone());
+        let target = actor.tool_context.workspace.join("file");
+        std::fs::write(&target, "a").unwrap();
+        let call = ToolCall {
+            id: "c".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command":format!("sed --in-place s/a/b/ {}", target.display())}),
+            args_valid: true,
+        };
+        let mut dispatches = 0;
+        let mut observe = |event: AgentEvent<'_>| {
+            if matches!(event, AgentEvent::PreCall { .. }) {
+                dispatches += 1;
+            }
+        };
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut observe).await,
+            One::Ask(..)
+        ));
+        assert_eq!(dispatches, 0);
+        assert!(meta.captured.lock().unwrap().is_none());
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "a");
+    }
+
     #[tokio::test]
     async fn typed_driver_approval_preserves_matching_review_evidence() {
         let mut actor = plan_actor(None, "http://unused");
@@ -2434,6 +2494,10 @@ mod tests {
                 else {
                     panic!("expected held call");
                 };
+                let mut request = request;
+                request.permission_gate = Some(Box::new(
+                    serde_json::json!({"policy_version":1,"source":"driver","reason":"original destination approval","truncated":false}),
+                ));
                 let id = request.id;
                 actor.pending = Some(PendingInteraction::Permission {
                     request: Box::new(request),
@@ -2456,12 +2520,41 @@ mod tests {
                 } else {
                     swap();
                 }
-                assert!(matches!(
-                    resolve_permission(&mut actor, id, PermissionDecision::AllowOnce, &mut |_| {})
+                let mut attempt_evidence = vec![];
+                let mut observe = |event: AgentEvent<'_>| {
+                    if let AgentEvent::PostCall { result, .. } = event {
+                        if result
+                            .error
+                            .as_ref()
+                            .is_some_and(|error| error.code == "destination_changed")
+                        {
+                            attempt_evidence.push(result.metadata["permission_gate"].clone());
+                        }
+                    }
+                };
+                let RunOutcome::PermissionRequired(fresh) =
+                    resolve_permission(&mut actor, id, PermissionDecision::AllowOnce, &mut observe)
                         .await
-                        .unwrap(),
-                    RunOutcome::PermissionRequired(_)
-                ));
+                        .unwrap()
+                else {
+                    panic!("new destination must ask");
+                };
+                assert_ne!(fresh.id, id);
+                assert_ne!(fresh.reason, "original destination approval");
+                assert!(fresh
+                    .permission_gate
+                    .as_deref()
+                    .is_none_or(|evidence| evidence["reason"] != "original destination approval"));
+                if at_open {
+                    assert_eq!(attempt_evidence.len(), 1);
+                    assert_eq!(attempt_evidence[0]["source"], "driver");
+                    assert_eq!(
+                        attempt_evidence[0]["reason"],
+                        "original destination approval"
+                    );
+                } else {
+                    assert!(attempt_evidence.is_empty());
+                }
                 assert_eq!(std::fs::read_to_string(secret).unwrap(), "keep");
                 assert_eq!(actor.tool_context.writable_roots, roots);
             }

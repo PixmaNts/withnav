@@ -689,11 +689,16 @@ async fn execute_call(
     };
     // The role guard let this call run: the durable `tool.post_call` says so.
     if let Some(note) = guard_note {
+        let (key, note) = if let Some(evidence) = note.get("permission_gate") {
+            ("permission_gate", evidence.clone())
+        } else {
+            ("guard", note)
+        };
         match &mut result.metadata {
             serde_json::Value::Object(map) => {
-                map.insert("guard".into(), note);
+                map.insert(key.into(), note);
             }
-            other => *other = serde_json::json!({ "guard": note }),
+            other => *other = serde_json::json!({ key: note }),
         }
     }
     observe(AgentEvent::PostCall {
@@ -1935,7 +1940,7 @@ mod tests {
         actor.driver_task = Some("plan it".to_string());
         let mut observe = |event: AgentEvent| {
             if let AgentEvent::PostCall { result, .. } = event {
-                notes.0.push(result.metadata["guard"].clone());
+                notes.0.push(result.metadata["permission_gate"].clone());
             }
         };
         run_agent(actor, &mut observe).await
@@ -1969,7 +1974,7 @@ mod tests {
         assert_eq!(jev.asked(), 1);
         assert_eq!(
             notes.0,
-            vec![serde_json::json!({"permission_gate": {"policy_version": 1, "source": "jev"}})]
+            vec![serde_json::json!({"policy_version": 1, "source": "jev"})]
         );
     }
 

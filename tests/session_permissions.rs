@@ -324,7 +324,7 @@ async fn allow_folder_covers_descendants_and_deny_reaches_the_model() {
     assert!(last.contains("keep out of other/"), "{last}");
 
     let resolved = events(&state, id, "permission.resolved").await;
-    assert_eq!(resolved[0].payload["resolution"], "allow_folder");
+    assert_eq!(resolved[0].payload["resolution"], "allow_once");
     assert_eq!(resolved[2].payload["resolution"], "deny");
     assert_eq!(resolved[2].payload["message"], "keep out of other/");
 }

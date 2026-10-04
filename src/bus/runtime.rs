@@ -930,8 +930,11 @@ async fn runtime_loop(
                         .send(Err(crate::agent::permissions::PermissionError::Stale));
                     continue;
                 };
-                let decision =
-                    crate::agent::permissions::offered_decision(&request.agent, answer.decision);
+                let decision = crate::agent::permissions::offered_decision(
+                    &request.agent,
+                    &request.tool,
+                    answer.decision,
+                );
                 publish_resolved(
                     &sequencer,
                     active_task_id,

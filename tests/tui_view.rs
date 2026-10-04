@@ -1959,7 +1959,7 @@ fn a_write_prompt_shows_the_path_the_first_lines_and_the_keys() {
         "+ line 1",
         "+ line 6",
         "… 3 more lines",
-        "y allow once   a always for this folder   n deny",
+        "y allow once",
     ] {
         assert!(shown.contains(want), "{want}: {shown}");
     }
@@ -2148,7 +2148,7 @@ fn a_prompt_shows_why_it_asks_and_a_plan_exception_offers_only_once_or_deny() {
         &Editor::new(),
     );
     assert!(shown.contains("it changes files"), "{shown}");
-    assert!(shown.contains("a always for this folder"), "{shown}");
+    assert!(!shown.contains("a always for this folder"), "{shown}");
 
     let plan = plan_exception();
     let shown = render(
@@ -2240,7 +2240,9 @@ fn n_asks_for_a_message_then_enter_denies_with_it() {
     );
     assert_eq!(
         keys("a", &s, &mut ui, &mut editor),
-        [answer("allow_folder", None)]
+        [Action::ShowNotice(
+            "this request can be allowed once or denied, not always".into()
+        )]
     );
     assert!(keys("n", &s, &mut ui, &mut editor).is_empty());
     assert_eq!(ui.deny_draft("R1"), Some(""));
@@ -2379,13 +2381,9 @@ fn a_key_on_a_prompt_scrolled_out_of_view_first_brings_it_back() {
     assert_eq!(ui.prompt_shown.as_deref(), Some("R1"), "now in view");
     assert_eq!(
         keys("a", &s, &mut ui, &mut editor),
-        [Action::AnswerPermission {
-            request_id: "R1".into(),
-            answer: navai::tui::protocol::PermissionAnswer {
-                decision: "allow_folder".into(),
-                message: None,
-            },
-        }]
+        [Action::ShowNotice(
+            "this request can be allowed once or denied, not always".into()
+        )]
     );
     // in view from the start: the first key answers
     let mut ui = UiState {
@@ -2760,7 +2758,7 @@ fn the_key_bar_follows_what_the_keys_do_now() {
     let s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
     let bar = bottom_row(&s, &ui, &Editor::new(), (200, 30));
     assert!(
-        bar.contains("y allow once · a always · n deny · esc stop · ctrl+p palette"),
+        bar.contains("y allow once · n deny · esc stop · ctrl+p palette"),
         "{bar}"
     );
     let theme = Theme::ayu_dark();
@@ -2978,21 +2976,21 @@ fn the_three_permission_choices_stay_on_a_narrow_key_bar() {
     let bar = |width: u16| bottom_row(&s, &ui, &Editor::new(), (width, 30));
     let wide = bar(100);
     assert!(
-        wide.contains("y allow once · a always · n deny · esc stop · ctrl+p palette"),
+        wide.contains("y allow once · n deny · esc stop · ctrl+p palette"),
         "{wide}"
     );
-    // `y allow once · a always · n deny` needs 34 columns; below that the short labels
+    // `y allow once · n deny` needs 34 columns; below that the short labels
     let full = bar(34);
-    assert!(full.contains("y allow once · a always · n deny"), "{full}");
+    assert!(full.contains("y allow once · n deny"), "{full}");
     let mid = bar(30);
-    assert!(mid.contains("y once · a always · n deny"), "{mid}");
+    assert!(mid.contains("y allow once · n deny"), "{mid}");
     let narrow = bar(24);
-    assert!(narrow.contains("y · a · n"), "{narrow}");
+    assert!(narrow.contains("y allow once · n deny"), "{narrow}");
     for width in [24u16, 30, 40, 50, 60, 80] {
         let row = bar(width);
         // At 80 columns and more the sidebar takes the left of the row.
         let row = row.rsplit('│').next().unwrap_or(&row).to_string();
-        for key in ["y", "a", "n"] {
+        for key in ["y", "n"] {
             assert!(
                 row.split(" · ")
                     .any(|h| h.trim() == key || h.trim().starts_with(&format!("{key} "))),

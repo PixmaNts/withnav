@@ -252,8 +252,8 @@ async fn a_conforming_exception_runs_and_is_recorded() {
     let post = events(&state, id, "tool.post_call").await;
     assert_eq!(post.len(), 1);
     assert_eq!(
-        post[0].payload["metadata"]["guard"],
-        json!({"permission_gate": {"policy_version":1,"source":"jev"}})
+        post[0].payload["metadata"]["permission_gate"],
+        json!({"policy_version":1,"source":"jev"})
     );
 }
 

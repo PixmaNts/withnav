@@ -12,6 +12,8 @@ requests land in `develop`.
 
 ### Fixed
 
+- **Terminal client**: arrow keys and Home/End now move the cursor in message drafts, including between lines.
+
 - **Terminal client**: a 1M context window no longer shows as `1000k`.
 - **Terminal client**: moving or resizing the terminal window no longer closes the client with
   "cannot draw the screen: The cursor position could not be read within a normal duration". The

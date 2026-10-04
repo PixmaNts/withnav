@@ -138,6 +138,7 @@ fn block_text(
             );
             lines.push(header);
             if expanded {
+                lines.extend(tool::approval_lines(&block.kind, theme));
                 lines.extend(tool::output(&block.kind, theme));
             }
         }
@@ -420,7 +421,11 @@ pub(crate) fn copy_block(block: &Block) -> Option<String> {
         BlockKind::Message { text, .. }
         | BlockKind::AssistantStep { text, .. }
         | BlockKind::Command { text, .. } => text,
-        BlockKind::ToolCall { output, .. } => output,
+        BlockKind::ToolCall { output, .. } => {
+            let mut lines = tool::approval_text(&block.kind);
+            lines.push(clean(output));
+            return Some(lines.join("\n"));
+        }
         BlockKind::YieldQuestion(text) | BlockKind::Error(text) | BlockKind::Notice(text) => text,
         BlockKind::Permission(_) => return None,
     };
@@ -493,9 +498,12 @@ fn layout_key(block: &Block, width: u16, ui: &UiState) -> String {
             output,
             duration_ms,
             exit_code,
+            metadata,
             ..
         } => {
             name.hash(&mut h);
+            metadata.get("permission_gate").hash(&mut h);
+            metadata.get("guard").hash(&mut h);
             args.hash(&mut h);
             status.map(|s| s as u8).hash(&mut h);
             if status.is_none() && !args.is_null() {

@@ -6,6 +6,11 @@ requests land in `develop`.
 
 ### Added
 
+- **VS Code chat: follow subagents.** A Subagents section lists each delegated goal and state.
+  Open a child's read-only transcript and return to its parent without resuming or prompting it.
+  Stop or continue a parked child with confirmation; refusals stay visible. Child permissions
+  remain reviewable in the parent, and delivered results keep their untrusted-subagent label.
+
 - **VS Code chat: slash commands and a command palette.** Type `/` to browse commands with
   descriptions and argument hints, using the arrow keys, Enter, Tab or the mouse. Switch the
   open conversation's model with the picker or `/model` (a running turn finishes first), choose

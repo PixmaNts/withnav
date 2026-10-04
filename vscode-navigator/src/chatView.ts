@@ -63,6 +63,7 @@ export function registerChatView(
             if (lastConversations) post(lastConversations);
             post({ type: "conversationOpened", id: backend.currentConversationId(),
               title: lastConversationOpened?.type === "conversationOpened" ? lastConversationOpened.title : "Conversation" });
+            backend.publishSubagents();
             post({ type: "history", items: backend.history() });
             if (lastModels) post(lastModels);
             const snapshot = backend.currentContext();
@@ -72,6 +73,7 @@ export function registerChatView(
             void backend.refreshCommands().catch(showError);
             break;
           case "send":
+            if (backend.isReadOnly()) break;
             if (typeof message.text === "string" && message.text.trim()) {
               const operation = backend.captureOperation();
               void (async () => {
@@ -142,6 +144,22 @@ export function registerChatView(
             break;
           case "selectModel":
             if (typeof message.alias === "string") backend.selectModel(message.alias);
+            break;
+          case "openChild":
+            if (typeof message.parentId === "string" && typeof message.childId === "string") void backend.openChild(message.parentId, message.childId, message.generation).catch(showError);
+            break;
+          case "backToParent":
+            if (typeof message.parentId === "string") void backend.backToParent(message.parentId, message.generation).catch(showError);
+            break;
+          case "controlChild":
+            if (typeof message.parentId === "string" && typeof message.childId === "string" && ["stop", "continue"].includes(message.action)) {
+              const generation = message.generation;
+              void (async () => {
+                const choice = await vscode.window.showWarningMessage(`${message.action === "stop" ? "Stop" : "Continue"} this subagent?`, { modal: true }, "Confirm");
+                if (choice !== "Confirm" || generation !== backend.currentGeneration()) return;
+                await backend.controlChild(message.parentId, message.childId, message.action, generation);
+              })().catch(showError);
+            }
             break;
         }
       });

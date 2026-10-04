@@ -48,6 +48,81 @@ function fullChat(t) {
   const tick = () => new Promise(resolve => setImmediate(resolve));
   return { b, dom, prompt, send, event, tick };
 }
+test('subagent events replay list, child read-only transcript and Back use real host and shipped page', async t => {
+  const { b,dom,event,tick,send } = fullChat(t); b.state.session='P'; b.scheduleChildRead=()=>{};
+  event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'review',goal:'<script>check</script>'});
+  const row=dom.window.document.querySelector('.child-row');
+  assert.match(row.textContent,/review/); assert.equal(row.querySelector('script'),null);
+  const calls=[];
+  t.mock.method(globalThis,'fetch',async (url,init) => { calls.push({url,...init}); return new Response(JSON.stringify({parent_session_id:'P',promptable:false,agent:'review'})); });
+  row.querySelector('.child-open').click(); await tick();
+  assert.equal(b.isReadOnly(),true); assert.equal(dom.window.document.querySelector('#prompt').disabled,true);
+  assert(calls.every(c=>c.method==='GET')); assert.match(dom.window.document.querySelector('.child-header').textContent,/Read-only/);
+  send('forged message'); await tick(); assert.equal(calls.length,1);
+  await assert.rejects(b.send('direct'),/read-only/); await assert.rejects(b.runComposerCommand('/stop'),/read-only/);
+  event('message.received',{source:'user:subagent',content:'child output',command_id:'M'});
+  assert.match(dom.window.document.querySelector('#transcript').textContent,/untrusted/);
+  event('permission.requested',{request_id:'R',tool:'bash',agent:'review',arguments:'{}',reason:'Review me'});
+  assert.equal([...dom.window.document.querySelectorAll('button')].some(x=>x.textContent==='Allow once'),false);
+  dom.window.document.querySelector('.child-header button').click(); await tick();
+  assert.equal(b.isReadOnly(),false); assert.equal(dom.window.document.querySelector('#prompt').disabled,false);
+  assert.match(dom.window.document.querySelector('.child-row').textContent,/Waiting for permission/);
+});
+test('subagent Stop and Continue confirm, exact bodies, refusals and stale parent controls', async t => {
+  const { b,dom,event,tick } = fullChat(t); b.state.session='P'; b.scheduleChildRead=()=>{};
+  event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'build',goal:'work'});
+  event('agent.yield',{child_session_id:'C',kind:'budget'});
+  let confirmed=0; vscode.window.showWarningMessage=async()=>{confirmed++;return 'Confirm';};
+  const calls=[]; t.mock.method(globalThis,'fetch',async(url,init)=>{calls.push({url,...init});return new Response(JSON.stringify({accepted:false,error:'Not parked'}));});
+  [...dom.window.document.querySelectorAll('.child-row button')].find(x=>x.textContent==='Continue').click(); await tick();
+  assert.equal(confirmed,1); assert.deepEqual(JSON.parse(calls[0].body),{pause_token:null});
+  assert.match(calls[0].url,/\/P\/children\/C\/continue$/); assert.match(dom.window.document.querySelector('.child-row').textContent,/Not parked/);
+  const token={incarnation:'I',hold_id:'H'};
+  event('agent.yield',{child_session_id:'C',kind:'watchdog',details:{pause_token:token}});
+  t.mock.method(globalThis,'fetch',async(url,init)=>{calls.push({url,...init});return new Response(JSON.stringify({accepted:true}));});
+  [...dom.window.document.querySelectorAll('.child-row button')].find(x=>x.textContent==='Continue').click(); await tick();
+  assert.deepEqual(JSON.parse(calls.at(-1).body),{pause_token:token});
+  [...dom.window.document.querySelectorAll('.child-row button')].find(x=>x.textContent==='Stop').click(); await tick();
+  assert.match(calls.at(-1).url,/\/C\/stop$/); assert.equal(calls.at(-1).body,undefined);
+  const old=b.currentGeneration(); await b.newConversation();
+  await assert.rejects(b.controlChild('P','C','stop',old),/conversation changed/);
+});
+test('child event stream aborts on Back, parent switch and dispose; never POST resume', async t => {
+  const { b,event,tick } = fullChat(t); b.state.session='P'; b.scheduleChildRead=()=>{};
+  event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'review',goal:'work'});
+  delete b.connect;
+  const signals=[];const calls=[];
+  t.mock.method(globalThis,'fetch',async(url,init)=>{
+    calls.push({url,...init});
+    if(url.endsWith('/events')) { signals.push(init.signal); return new Response(new ReadableStream({start(controller){init.signal.addEventListener('abort',()=>controller.close());}})); }
+    return new Response(JSON.stringify({parent_session_id:'P',promptable:false,agent:'review'}));
+  });
+  await b.openChild('P','C');await tick();const first=signals.at(-1);
+  await b.backToParent('P');assert.equal(first.aborted,true);
+  await b.openChild('P','C');await tick();const second=signals.at(-1);
+  await b.newConversation();assert.equal(second.aborted,true);
+  b.state.session='P';b.state.children.set('C',{id:'C',agent:'review',goal:'',state:'running'});
+  await b.openChild('P','C');await tick();const third=signals.at(-1);
+  b.dispose();assert.equal(third.aborted,true);
+  assert(calls.every(c=>!c.method||c.method==='GET'));
+});
+test('subagent session list seeds rows, replay preserves terminal states and watchdog resolution', async t => {
+  const { b,event,dom,tick } = fullChat(t);b.state.session='P';b.scheduleChildRead=()=>{};
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({sessions:[{id:'P',promptable:true},{id:'C',parent_session_id:'P',promptable:false,agent:'plan',child_status:'out_of_steps'}]})));
+  delete b.listConversations;await b.listConversations();
+  assert.equal(b.state.children.get('C').state,'budget');assert.match(dom.window.document.querySelector('.child-row').textContent,/Out of steps/);
+  const token={incarnation:'I',hold_id:'H'};
+  event('agent.yield',{child_session_id:'C',kind:'watchdog',details:{pause_token:token}});
+  assert.equal(b.state.children.get('C').state,'watchdog');
+  event('command.result',{child_session_id:'C',name:'watchdog',ok:true,data:{resolution:'continued',pause_token:token,message:'Continued'}});
+  assert.equal(b.state.children.get('C').state,'running');
+  event('subagent.done',{parent_session_id:'P',child_session_id:'C',outcome:'done'});
+  event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'plan',goal:'replayed'});
+  assert.equal(b.state.children.get('C').state,'done');
+  const old=b.currentGeneration();b.fetchModels=async()=>{};b.bootstrapConversations=async()=>{};b.refreshCommands=async()=>{};
+  b.setServerInfo({port:5678,token:'new'});await tick();
+  await assert.rejects(b.controlChild('P','C','stop',old),/conversation changed/);
+});
 for (const early of [true,false]) test(`R3.1 end-to-end failed open unlocks abandoned creation with response ${early ? 'before' : 'after'} rollback`, async t => {
   const { b,send,tick,prompt } = fullChat(t);
   let finishCreate; let finishOpen;
@@ -149,7 +224,7 @@ test("R1 skill confirms permission cancellation before submission without editor
   let receive; let submitted = 0; let confirms = 0;
   vscode.window.showWarningMessage = async () => { confirms++; return "Send anyway"; };
   Object.defineProperty(vscode.window, "activeTextEditor", { configurable: true, get() { throw new Error("No editor context for skills"); } });
-  const backend = { captureOperation: () => ({ owner: {}, generation: 2 }), ownsOperation: () => true, currentGeneration: () => 2, currentConversationId: () => "S", subscribe: () => () => {}, hasOpenPermissions: () => true,
+  const backend = { isReadOnly: () => false, captureOperation: () => ({ owner: {}, generation: 2 }), ownsOperation: () => true, currentGeneration: () => 2, currentConversationId: () => "S", subscribe: () => () => {}, hasOpenPermissions: () => true,
     runComposerCommand: async () => { assert.equal(confirms, 1); submitted++; return false; } };
   registerChatView({ extensionUri: "extension" }, backend);
   provider.resolveWebviewView({ webview: { cspSource: "test", asWebviewUri: value => value, postMessage() {}, onDidReceiveMessage(listener) { receive = listener; return noopDisposable(); } }, onDidDispose() {} });
@@ -165,6 +240,7 @@ test("host routes slash commands before editor context or permission confirmatio
   let command;
   Object.defineProperty(vscode.window, "activeTextEditor", { configurable: true, get() { contextReads++; throw new Error("Editor must not be read"); } });
   const backend = {
+    isReadOnly: () => false,
     captureOperation: () => ({ owner: {}, generation: 2 }), ownsOperation: () => true,
     currentGeneration: () => 2,
     subscribe: () => () => {},
@@ -185,6 +261,7 @@ test("late-created and recreated views receive current session identity before r
   let cancelled = 0;
   const backend = {
     currentContext: () => ({ incarnation: "I", revision: 3, estimate_total: 42 }),
+    publishSubagents() {},
     currentGeneration: () => 1,
     refreshCommands: async () => {},
     resumePermissionReads: () => {},

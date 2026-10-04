@@ -20,6 +20,9 @@ diagnostics and user feedback, and hosts the Cognition chat view.
   `//text` sends the literal `/text`. Unknown or refused commands keep your draft.
   Navigator wakes appear in it as messages from the navigator. It sends the open file and selection
   as editor context.
+- **Subagents in chat:** see delegated goals and live states beneath the conversation. Open a
+  subagent's read-only transcript, then return to its parent. Stop or continue a parked subagent
+  with confirmation; permission requests are still reviewed in the parent conversation.
 - **Agent controls in chat**: permission cards show the full reason and command (or a file path
   and bounded content), with Allow once and Deny plus an optional deny message. Subagents' requests
   stay in the parent conversation. Sending while approval is pending asks for confirmation.

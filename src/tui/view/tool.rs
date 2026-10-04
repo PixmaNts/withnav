@@ -50,6 +50,7 @@ pub fn header(kind: &BlockKind, tick: u64, theme: &Theme) -> Line<'static> {
         status,
         duration_ms,
         exit_code,
+        metadata,
         ..
     } = kind
     else {
@@ -88,7 +89,137 @@ pub fn header(kind: &BlockKind, tick: u64, theme: &Theme) -> Line<'static> {
     if !exit.is_empty() {
         spans.push(Span::styled(exit, theme.error()));
     }
+    if let Some(source) = review_source(metadata) {
+        spans.insert(
+            2,
+            Span::styled(
+                format!(
+                    " · {}",
+                    if source == "driver" {
+                        "driver approved".into()
+                    } else {
+                        format!("auto · {}", reviewer(source))
+                    }
+                ),
+                theme.muted(),
+            ),
+        );
+    }
     Line::from(spans)
+}
+
+fn review_source(metadata: &Value) -> Option<&str> {
+    metadata["permission_gate"]["source"]
+        .as_str()
+        .filter(|s| matches!(*s, "jev" | "metacognition" | "driver"))
+}
+fn reviewer(source: &str) -> &str {
+    if source == "jev" {
+        "Jev"
+    } else {
+        source
+    }
+}
+fn safe(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
+/// Evidence reported by the server, never a client-derived approval.
+pub(crate) fn approval_text(kind: &BlockKind) -> Vec<String> {
+    let BlockKind::ToolCall { metadata, .. } = kind else {
+        return Vec::new();
+    };
+    let mut lines = Vec::new();
+    let gate = &metadata["permission_gate"];
+    if let Some(source) = review_source(metadata).filter(|s| *s != "driver") {
+        let verdicts = &gate["verdicts"];
+        let mut evidence = Vec::new();
+        for (key, values) in [
+            (
+                "effect",
+                [
+                    ("read_only", "read-only"),
+                    ("read_write", "read/write"),
+                    ("unsure", "effect unsure"),
+                ],
+            ),
+            (
+                "scope",
+                [
+                    ("inside", "inside the project"),
+                    ("outside", "outside the project"),
+                    ("unsure", "scope unsure"),
+                ],
+            ),
+            (
+                "risk",
+                [
+                    ("low", "low risk"),
+                    ("risky", "risky"),
+                    ("unsure", "risk unsure"),
+                ],
+            ),
+        ] {
+            if let Some(value) = verdicts[key].as_str() {
+                if let Some((_, label)) = values.iter().find(|(v, _)| *v == value) {
+                    evidence.push((*label).to_string());
+                }
+            }
+        }
+        if let Some(reason) = gate["reason"].as_str().filter(|s| !s.is_empty()) {
+            evidence.push(safe(reason));
+        }
+        lines.push(format!(
+            "Auto-approved by {}{}",
+            reviewer(source),
+            if evidence.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", evidence.join(" · "))
+            }
+        ));
+        if let Some(overrides) = gate["overrides"].as_array() {
+            let overrides: Vec<_> = overrides
+                .iter()
+                .filter_map(Value::as_str)
+                .map(safe)
+                .collect();
+            if !overrides.is_empty() {
+                lines.push(format!("Overrides: {}", overrides.join(", ")));
+            }
+        }
+        if gate["truncated"] == true {
+            lines.push("Review evidence was shortened".into());
+        }
+    }
+    if let Some(guard) = metadata.get("guard").filter(|g| !g.is_null()) {
+        // The plan role check records `{by, verdict, role, reason?}`; show it as words, never
+        // as raw JSON, and fall back to the verdict alone when the other fields are absent.
+        let verdict = guard["verdict"]
+            .as_str()
+            .map(safe)
+            .unwrap_or_else(|| "recorded".into());
+        let role = guard["role"]
+            .as_str()
+            .map(|r| format!(" ({})", safe(r)))
+            .unwrap_or_default();
+        let reason = guard["reason"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(|r| format!(" · {}", safe(r)))
+            .unwrap_or_default();
+        lines.push(format!("Role check{role}: {verdict}{reason}"));
+    }
+    lines
+}
+
+pub(crate) fn approval_lines(kind: &BlockKind, theme: &Theme) -> Vec<Line<'static>> {
+    approval_text(kind)
+        .into_iter()
+        .map(|s| Line::styled(format!("  {s}"), theme.muted()))
+        .collect()
 }
 
 pub fn output(kind: &BlockKind, theme: &Theme) -> Vec<Line<'static>> {

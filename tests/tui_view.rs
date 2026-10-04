@@ -3209,3 +3209,44 @@ fn permission_layout_is_fresh_with_one_render_cache() {
         );
     }
 }
+
+#[test]
+fn auto_approval_notes_render_narrow_with_optional_evidence() {
+    for source in ["jev", "metacognition", "driver", "none"] {
+        for detailed in [false, true] {
+            let mut s = State::default();
+            let mut block = tool_block(Some(ToolStatus::Ok));
+            block.id = "review".into();
+            if let BlockKind::ToolCall { metadata, .. } = &mut block.kind {
+                *metadata = if source == "none" {
+                    json!({})
+                } else {
+                    json!({"permission_gate":{"policy_version":1,"source":source,"reason":"Matches the requested change"}})
+                };
+                if detailed && source != "none" {
+                    metadata["permission_gate"]["verdicts"] =
+                        json!({"effect":"read_only","scope":"inside","risk":"low"});
+                    metadata["permission_gate"]["overrides"] = json!(["scratch root"]);
+                    metadata["permission_gate"]["truncated"] = json!(true);
+                    metadata["guard"] =
+                        json!({"verdict":"conforms","reason":"Within the plan role"});
+                }
+            }
+            s.conversation.blocks.push(block);
+            let mut ui = UiState {
+                follow_bottom: true,
+                ..Default::default()
+            };
+            let collapsed = screen_text(&s, &ui, (70, 24));
+            match source {
+                "jev" => assert!(collapsed.contains("auto · Jev")),
+                "metacognition" => assert!(collapsed.contains("auto · metacognition")),
+                "driver" => assert!(collapsed.contains("driver approved")),
+                _ => assert!(!collapsed.contains("auto ·")),
+            }
+            ui.expanded.insert("review".into());
+            let shown = screen_text(&s, &ui, (70, 24));
+            insta::assert_snapshot!(format!("approval-{source}-{detailed}-70"), shown);
+        }
+    }
+}

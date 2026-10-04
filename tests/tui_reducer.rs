@@ -5058,3 +5058,39 @@ fn an_acceptance_of_an_unknown_operation_is_not_labelled_with_this_tabs_alias() 
     feed(&mut s, &script.out);
     assert_eq!(last_text(&s), "switches to luna after this turn");
 }
+
+#[test]
+fn approval_evidence_survives_live_and_replay() {
+    let mut script = Script::new();
+    let gate = json!({"policy_version":1,"source":"jev","verdicts":{"effect":"read_only","scope":"inside","risk":"low"}});
+    script.raw("tool.pre_call",json!({"tool_call_id":"review","name":"bash","args":{"command":"ls"},"permission_gate":gate}));
+    script.raw("tool.post_call",json!({"tool_call_id":"review","name":"bash","status":"ok","output":"done","metadata":{"permission_gate":gate}}));
+    for _ in 0..2 {
+        let mut s = State::default();
+        for envelope in script.out.clone() {
+            let generation = s.generation.clone();
+            update(
+                &mut s,
+                ClientEvent::Envelope {
+                    generation,
+                    envelope,
+                },
+            )
+            .unwrap();
+            let block = s
+                .conversation
+                .blocks
+                .iter()
+                .find(|b| matches!(b.kind, BlockKind::ToolCall { .. }))
+                .unwrap();
+            assert!(navai::tui::view::tool::header(
+                &block.kind,
+                0,
+                &navai::tui::theme::ThemeId::default().palette()
+            )
+            .spans
+            .iter()
+            .any(|span| span.content.contains("auto · Jev")));
+        }
+    }
+}

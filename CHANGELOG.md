@@ -4,6 +4,36 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Fixed
+
+
+- **VS Code chat**: permission requests can be answered with Allow once or Deny, including
+  requests from subagents. The full reason and call are visible; sending another message warns
+  before cancelling a pending request. Answers and expired requests remain visible on replay.
+- **VS Code chat**: subagent output is labelled as untrusted data, no longer shown as yours.
+  Your selected skill appears beside your message.
+- **VS Code chat**: out-of-steps and watchdog pauses can be continued from the transcript.
+  Watchdog pauses also offer Stop; refusals show the server's reason.
+- **VS Code chat review**: child permission previews match the requested call even when provider
+  call ids repeat. Child history reads are bounded and cancelled when leaving the conversation;
+  controls work when opening or reopening the view after the conversation has started.
+  Pending driver review no longer claims approval, edit previews show replacement options,
+  stopped pauses lose their controls on replay, and submitted permission answers cannot be sent twice.
+- **VS Code conversation switching**: old approval and pause controls cannot act on a new
+  conversation, and a superseded session creation cancels its send without clearing your draft.
+  Reopened pauses from an ended run stay historical. Failed history reconciliation retries,
+  and reopening the chat view resumes interrupted child-call previews.
+- **VS Code chat startup and recovery**: the panel works with VS Code's frozen webview API.
+  A server restart clears the previous run's controls, failed conversation opens restore the
+  conversation you were using, and the model picker loads even when startup opens a conversation
+  before the model catalog arrives.
+- **VS Code failed-open recovery**: submitted approvals, live streamed text and tool review details
+  survive a failed conversation switch; an approval still awaiting resolution cannot be sent again.
+### Added
+
+- **VS Code chat**: tool rows show who automatically approved a call (Jev or metacognition),
+  with the review reason and any available verdicts in an expandable note.
+
 ## [0.4.4] - 2026-10-04
 
 The per-call review now treats your own request as what you want, and the terminal client shows

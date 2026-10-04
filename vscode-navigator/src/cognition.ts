@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
-import { ChatBackend, ConversationSummary, HostToWebview, ModelInfo } from "./chatProtocol";
+import { ChatBackend, ConversationSummary, HostToWebview, ModelInfo, PermissionDecision } from "./chatProtocol";
+import { ConversationControls, eventView, permissionCall, PermissionCallReplay, permissionEvidence, WireEnvelope } from "./eventView";
 import type { ServerInfoParams } from "./protocol";
 
 /** One SSE frame off the event stream: the seq id plus the parsed envelope. */
@@ -7,14 +8,6 @@ interface EventFrame {
   id: string;
   event: string;
   envelope: any;
-}
-
-/** The wire `EventEnvelope` this bridge maps onto webview messages. */
-interface WireEnvelope {
-  seq: number;
-  kind: string;
-  actor_id: string;
-  payload: any;
 }
 
 const ROOT_ACTOR = "agent:main";
@@ -27,36 +20,58 @@ const RECONNECT_DELAY_MS = 500;
  * maps the SSE event stream onto the webview's message vocabulary. All
  * networking lives here; the webview never sees HTTP.
  */
+class ConversationState {
+  transcript: HostToWebview[] = [];
+  session: string | undefined;
+  lastSeq: string | undefined;
+  delivered: Set<number> = new Set();
+  currentTurn: string | undefined;
+  streaming: boolean = false;
+  selectedModel: string | undefined;
+  lastUsed: number | undefined;
+  resumeId: string | undefined;
+  streamAbort: AbortController | undefined;
+  streamGeneration: number = 0;
+  turnTextDelta: Set<string> = new Set();
+  controls: ConversationControls = new ConversationControls();
+  controlOwners: Map<string, { session: string; generation: number }> = new Map();
+  pendingControls: Map<string, symbol> = new Map();
+  childReads: Map<string, AbortController> = new Map();
+  childReadQueue: Set<string> = new Set();
+  childReadsAttempted: Set<string> = new Set();
+  childReadTimer: ReturnType<typeof setTimeout> | undefined;
+  replayThrough: number | undefined;
+  previousRunThrough: number = -1;
+  toolSummaries: Map<string, string> = new Map();
+  toolEvidence: Map<string, NonNullable<Extract<HostToWebview, { type: "tool" }>["evidence"]>> = new Map();
+}
+
 export class CognitionBackend implements ChatBackend {
+  private state = new ConversationState();
+  private nextGeneration = 0;
   private endpoint?: ServerInfoParams;
   private listeners = new Set<(message: HostToWebview) => void>();
-  private transcript: HostToWebview[] = [];
-  private session?: string;
   /** Last delivered seq, sent back as `Last-Event-ID` on reconnect. */
-  private lastSeq?: string;
   /** Envelope seqs already delivered, so a resync's fresh full replay does
    *  not duplicate messages already in the transcript. */
-  private delivered = new Set<number>();
-  private currentTurn?: string;
-  private streaming = false;
   /** Saved conversations of the workspace, newest first (last listing). */
   private conversations: ConversationSummary[] = [];
   /** Models from GET /v1/models, and the alias the next new conversation uses
    *  (or the open conversation's, once it exists). */
   private models: ModelInfo[] = [];
-  private selectedModel?: string;
   /** Default alias the server announced, restored by "new conversation". */
   private defaultModel?: string;
   /** Tokens of the last model call, re-sent when the model or list changes. */
-  private lastUsed?: number;
   /** A stopped conversation to resume on the next send (Stop keeps it). */
-  private resumeId?: string;
   /** Cancels the SSE fetch of the running stream, if any. */
-  private streamAbort?: AbortController;
   /** Bumped by every deliberate stream cancel: stale connects go quiet. */
-  private streamGeneration = 0;
   /** Turn ids that received a live text delta (replayed turns get none). */
-  private turnTextDelta = new Set<string>();
+  private disposed = false;
+
+  currentGeneration(): number { return this.state.streamGeneration; }
+  private checkGeneration(generation: number): void {
+    if (this.disposed || generation !== this.state.streamGeneration) throw new Error("Send cancelled: the conversation changed. Your draft was kept.");
+  }
 
   setServerInfo(info: ServerInfoParams): void {
     // A restart of the language server publishes a NEW endpoint: the old
@@ -67,15 +82,16 @@ export class CognitionBackend implements ChatBackend {
     const first = !this.endpoint;
     if (restarted) {
       this.abortStream();
-      this.session = undefined;
-      this.resumeId = undefined;
-      this.lastSeq = undefined;
-      this.delivered.clear();
-      this.currentTurn = undefined;
+      this.state.session = undefined;
+      this.state.resumeId = undefined;
+      this.resetTranscript();
+      this.conversations = [];
+      this.emit({ type: "conversationOpened", title: "Server restarted" });
+      this.emit({ type: "history", items: [] });
       this.emit({ type: "status", state: "connecting" });
     }
     this.endpoint = info;
-    if (this.session) {
+    if (this.state.session) {
       void this.connect();
       return;
     }
@@ -86,7 +102,7 @@ export class CognitionBackend implements ChatBackend {
   }
 
   history(): HostToWebview[] {
-    return [...this.transcript];
+    return [...this.state.transcript];
   }
 
   subscribe(listener: (message: HostToWebview) => void): () => void {
@@ -95,7 +111,7 @@ export class CognitionBackend implements ChatBackend {
   }
 
   currentConversationId(): string | undefined {
-    return this.session ?? this.resumeId;
+    return this.state.session ?? this.state.resumeId;
   }
 
   async listConversations(): Promise<ConversationSummary[]> {
@@ -112,36 +128,64 @@ export class CognitionBackend implements ChatBackend {
   }
 
   async openConversation(id: string): Promise<void> {
-    if (!this.endpoint) await this.waitForEndpoint();
-    const summary = this.conversations.find((c) => c.id === id);
-    // Resume first: an unknown id (404) must leave the current view intact.
-    const created = await this.request("/v1/sessions", {
-      method: "POST",
-      body: JSON.stringify({ workspace: this.workspacePath(), profile: "navigator", resume: id }),
-    });
-    const sessionId = String(created?.session_id ?? "");
-    if (!sessionId) throw new Error("cognition server: resume returned no id");
-    // Stop streaming the previous conversation before switching.
+    const previous = this.state;
     this.abortStream();
-    this.resetTranscript();
-    this.session = sessionId;
-    this.resumeId = undefined;
-    this.emit({ type: "conversationOpened", id: sessionId, title: summary?.title ?? sessionId });
+    const generation = this.state.streamGeneration;
+    this.state = new ConversationState();
+    this.state.streamGeneration = generation;
+    this.state.session = undefined;
+    this.state.resumeId = undefined;
+    this.emit({ type: "conversationOpened", title: "Opening conversation" });
     this.emit({ type: "history", items: [] });
-    this.emit({ type: "status", state: "ready" });
-    void this.loadSessionModel(sessionId);
-    // No Last-Event-ID: the stored events replay the whole conversation.
-    void this.connect();
-    void this.listConversations().catch(() => undefined);
+    try {
+      if (!this.endpoint) await this.waitForEndpoint();
+      this.checkGeneration(generation);
+      const summary = this.conversations.find((c) => c.id === id);
+      const before = await this.reconcileSession(id, generation);
+      this.checkGeneration(generation);
+      this.state.previousRunThrough = before.actor_state === "stopped" ? before.current_seq : -1;
+      // Resume first: an unknown id (404) must leave the current view intact.
+      const created = await this.request("/v1/sessions", {
+        method: "POST",
+        body: JSON.stringify({ workspace: this.workspacePath(), profile: "navigator", resume: id }),
+      });
+      const sessionId = String(created?.session_id ?? "");
+      this.checkGeneration(generation);
+      if (!sessionId) throw new Error("cognition server: resume returned no id");
+      // Stop streaming the previous conversation before switching.
+      this.state.session = sessionId;
+      this.state.resumeId = undefined;
+      this.state.replayThrough = Infinity;
+      this.emit({ type: "conversationOpened", id: sessionId, title: summary?.title ?? sessionId });
+      this.emit({ type: "history", items: [] });
+      this.emit({ type: "status", state: "ready" });
+      void this.loadSessionModel(sessionId);
+      // No Last-Event-ID: the stored events replay the whole conversation.
+      void this.connect();
+      void this.listConversations().catch(() => undefined);
+    } catch (error) {
+      if (generation === this.state.streamGeneration) {
+        this.state = previous;
+        this.state.streamGeneration = generation;
+        this.state.transcript = this.state.transcript.map(message => ({ ...message, generation }));
+        this.bindControlOwners();
+        this.emit({ type: "conversationOpened", id: this.currentConversationId(), title: "Conversation" });
+        this.emit({ type: "history", items: this.history() });
+        this.emit({ type: "status", state: "error", message: `Could not open conversation: ${this.errorText(error)}` });
+        void this.connect();
+        this.resumePermissionReads();
+      }
+      throw error;
+    }
   }
 
   async newConversation(): Promise<void> {
     // The previous conversation stays on disk; the next send creates fresh.
     this.abortStream();
-    this.session = undefined;
-    this.resumeId = undefined;
+    this.state.session = undefined;
+    this.state.resumeId = undefined;
     this.resetTranscript();
-    this.selectedModel = this.defaultModel ?? this.selectedModel;
+    this.state.selectedModel = this.defaultModel ?? this.state.selectedModel;
     this.emit({ type: "conversationOpened", title: "New conversation" });
     this.emit({ type: "history", items: [] });
     this.emit({ type: "status", state: "ready" });
@@ -152,7 +196,7 @@ export class CognitionBackend implements ChatBackend {
   async deleteConversation(id: string): Promise<void> {
     await this.request(`/v1/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
     this.conversations = this.conversations.filter((c) => c.id !== id);
-    if (this.session === id || this.resumeId === id) {
+    if (this.state.session === id || this.state.resumeId === id) {
       // The open conversation vanished: land in a fresh one (which pushes
       // the updated list itself).
       await this.newConversation();
@@ -164,7 +208,8 @@ export class CognitionBackend implements ChatBackend {
   async send(text: string, context?: string): Promise<void> {
     // The driver's message arrives as `message.received` on the stream; do
     // NOT emit an optimistic copy here (that duplicated it).
-    const session = await this.ensureSession();
+    const { session, generation } = await this.ensureSession();
+    this.checkGeneration(generation);
     await this.request(`/v1/sessions/${session}/messages`, {
       method: "POST",
       body: JSON.stringify({
@@ -174,16 +219,89 @@ export class CognitionBackend implements ChatBackend {
     });
   }
 
-  async stop(): Promise<void> {
-    if (!this.session || !this.endpoint) return;
-    const session = this.session;
-    this.session = undefined;
+  async stop(): Promise<void> { await this.stopState(this.state); }
+
+  private async stopState(origin: ConversationState): Promise<void> {
+    if (!origin.session || !this.endpoint) return;
+    const session = origin.session;
+    const result = await this.request(`/v1/sessions/${encodeURIComponent(session)}/stop`, { method: "POST" }, "operation");
+    if (result?.accepted !== true) throw new Error(`Stop refused: ${result?.actor_state ?? "not accepted"}`);
+    if (origin.session !== session) return;
+    origin.session = undefined;
     // A stopped session accepts no new messages on the same id, but the
     // conversation survives: the next send resumes it under the same id,
     // so keep the stream cursor to continue where this one ended.
-    this.resumeId = session;
-    await this.request(`/v1/sessions/${session}/stop`, { method: "POST" });
-    this.emit({ type: "status", state: "ready" });
+    origin.resumeId = session;
+    this.emitForState(origin, { type: "status", state: "ready" });
+  }
+
+  hasOpenPermissions(): boolean { return this.state.controls.permissions.size > 0; }
+
+  async answerPermission(sessionId: string, requestId: string, decision: PermissionDecision, message?: string, generation = this.state.streamGeneration): Promise<void> {
+    this.checkGeneration(generation);
+    const card = this.state.controls.permissions.get(requestId);
+    const owner = this.state.controlOwners.get(`permission:${requestId}`);
+    if (sessionId !== this.state.session || owner?.session !== sessionId || owner.generation !== generation || !card ||
+        !["allow_once", "allow_folder", "deny"].includes(decision) ||
+        (decision === "allow_folder" && !card.allowFolder) ||
+        (message !== undefined && typeof message !== "string")) {
+      throw new Error("This permission request does not belong to the open conversation.");
+    }
+    const key = `${sessionId}:permission:${requestId}`;
+    const origin = this.state;
+    const operation = Symbol(key);
+    if (origin.pendingControls.has(key)) return;
+    this.state.pendingControls.set(key, operation);
+    this.emit({ type: "permissionState", requestId, resolution: "pending" });
+    try {
+      const result = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}`, {
+        method: "POST", body: JSON.stringify({ decision, ...(decision === "deny" && message ? { message } : {}) }),
+      }, "operation");
+      if (result?.accepted === false) throw new Error("Permission answer refused by the server.");
+    } catch (error) {
+      if (origin.pendingControls.get(key) !== operation) return;
+      origin.pendingControls.delete(key);
+      if (origin.controls.permissions.has(requestId)) {
+        this.emitForState(origin, { type: "permissionState", requestId,
+          resolution: error instanceof HttpError && error.status === 409 ? "stale" : "error",
+          message: this.errorText(error) });
+      }
+      if (!(error instanceof HttpError && error.status === 409)) throw error;
+    }
+  }
+
+  async controlPause(sessionId: string, id: string, action: "continue" | "stop", generation = this.state.streamGeneration): Promise<void> {
+    this.checkGeneration(generation);
+    const pause = this.state.controls.pauses.get(id);
+    const owner = this.state.controlOwners.get(id);
+    if (sessionId !== this.state.session || owner?.session !== sessionId || owner.generation !== generation || !pause || !["continue", "stop"].includes(action)) {
+      throw new Error("This pause does not belong to the open conversation.");
+    }
+    if (pause.kind === "watchdog" && action === "continue" && !pause.token) {
+      throw new Error("The server did not provide a pause token. Send a new message or stop instead.");
+    }
+    const key = `${sessionId}:${id}`;
+    const origin = this.state;
+    const operation = Symbol(key);
+    if (origin.pendingControls.has(key)) return;
+    this.state.pendingControls.set(key, operation);
+    this.emit({ type: "pauseState", id, state: "pending" });
+    try {
+      if (action === "stop") await this.stopState(origin);
+      else {
+        const session = encodeURIComponent(sessionId);
+        const result = await this.request(`/v1/sessions/${session}/children/${session}/continue`, {
+          method: "POST", body: JSON.stringify({ pause_token: pause.token ?? null }),
+        }, "operation");
+        if (result?.accepted !== true) throw new Error("Continue refused by the server.");
+      }
+      if (origin.session === sessionId || origin.resumeId === sessionId) this.emitForState(origin, { type: "pauseState", id, state: "resolved", message: action === "stop" ? "Stopped" : "Continued" });
+    } catch (error) {
+      if (origin.controls.pauses.has(id)) {
+        this.emitForState(origin, { type: "pauseState", id, state: "error", message: this.errorText(error) });
+      }
+      throw error;
+    } finally { if (origin.pendingControls.get(key) === operation) origin.pendingControls.delete(key); }
   }
 
   // ---- session lifecycle ----
@@ -210,6 +328,7 @@ export class CognitionBackend implements ChatBackend {
 
   /** Lists the workspace's conversations and resumes the newest one, if any. */
   private async bootstrapConversations(): Promise<void> {
+    const generation = this.state.streamGeneration;
     try {
       const body = await this.request(`/v1/sessions?${this.workspaceQuery()}`, { method: "GET" });
       this.conversations = parseSessionList(body);
@@ -217,6 +336,7 @@ export class CognitionBackend implements ChatBackend {
       if (newest) await this.openConversation(newest.id);
       else this.emitConversations();
     } catch {
+      if (generation !== this.state.streamGeneration) return;
       // The endpoint announcement is our only trigger; if listing fails
       // (e.g. a server without the history store), stay empty and calm.
       this.emitConversations();
@@ -225,12 +345,14 @@ export class CognitionBackend implements ChatBackend {
 
   /** Fetches the models the cognition can use and preselects the default. */
   private async fetchModels(): Promise<void> {
+    const endpoint = this.endpoint;
     try {
-      const body = await this.request(`/v1/models?${this.workspaceQuery()}`, { method: "GET" });
+      const body = await this.request(`/v1/models?${this.workspaceQuery()}`, { method: "GET" }, "endpoint");
       this.models = parseModelList(body);
       if (typeof body?.default === "string") this.defaultModel = body.default;
-      if (!this.selectedModel) this.selectedModel = this.defaultModel;
+      if (!this.state.selectedModel) this.state.selectedModel = this.defaultModel;
     } catch {
+      if (endpoint !== this.endpoint) return;
       // No model list (older server, unreadable models.json): the picker
       // stays empty and new sessions use the server's default.
       this.models = [];
@@ -240,37 +362,59 @@ export class CognitionBackend implements ChatBackend {
 
   /** A conversation that exists on the server keeps its model (option A). */
   private modelLocked(): boolean {
-    return this.session !== undefined || this.resumeId !== undefined;
+    return this.state.session !== undefined || this.state.resumeId !== undefined;
   }
 
   private emitModels(): void {
     this.emit({
       type: "models",
       items: [...this.models],
-      current: this.selectedModel,
+      current: this.state.selectedModel,
       locked: this.modelLocked(),
     });
     // The window depends on the model: a replay can report usage before the
     // list or the conversation's model arrives, so re-send it with both.
-    if (this.lastUsed !== undefined) this.emitUsage();
+    if (this.state.lastUsed !== undefined) this.emitUsage();
   }
 
   selectModel(alias: string): void {
     if (this.modelLocked()) return;
     if (!this.models.some((m) => m.alias === alias)) return;
-    this.selectedModel = alias;
+    this.state.selectedModel = alias;
     this.emitModels();
   }
 
   /** Reads the open conversation's model from GET /v1/sessions/{id}. */
   private async loadSessionModel(id: string): Promise<void> {
+    const generation = this.state.streamGeneration;
     try {
-      const summary = await this.request(`/v1/sessions/${encodeURIComponent(id)}`, { method: "GET" });
-      if (typeof summary?.model === "string") this.selectedModel = summary.model;
+      const summary = await this.reconcileSession(id, generation);
+      if (id !== this.state.session) return;
+      if (typeof summary?.model === "string") this.state.selectedModel = summary.model;
+      this.state.replayThrough = typeof summary?.current_seq === "number" ? summary.current_seq : Infinity;
     } catch {
       // Keep the current selection: the picker is informative only here.
     }
+    if (generation !== this.state.streamGeneration) return;
+    if (id === this.state.session) this.drainChildReads();
     this.emitModels();
+  }
+
+  private async reconcileSession(id: string, generation: number): Promise<any> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      this.checkGeneration(generation);
+      try {
+        const summary = await this.request(`/v1/sessions/${encodeURIComponent(id)}`, { method: "GET" });
+        this.checkGeneration(generation);
+        if (!Number.isSafeInteger(summary?.current_seq) || summary.current_seq < 0) throw new Error("Invalid session summary");
+        return summary;
+      } catch (error) {
+        this.checkGeneration(generation);
+        this.emit({ type: "status", state: "error", message: "Could not reconcile conversation history; retrying…" });
+        if (attempt === 2) throw error;
+        await new Promise(resolve => setTimeout(resolve, 100 * (attempt + 1)));
+      }
+    }
   }
 
   /** Records the context used by a model call (prompt + completion tokens). */
@@ -278,15 +422,15 @@ export class CognitionBackend implements ChatBackend {
     const prompt = typeof usage?.prompt_tokens === "number" ? usage.prompt_tokens : 0;
     const completion = typeof usage?.completion_tokens === "number" ? usage.completion_tokens : 0;
     if (prompt + completion <= 0) return;
-    this.lastUsed = prompt + completion;
+    this.state.lastUsed = prompt + completion;
     this.emitUsage();
   }
 
   /** The last usage against the current model's window (absent when unknown). */
   private emitUsage(): void {
-    if (this.lastUsed === undefined) return;
-    const window = this.models.find((m) => m.alias === this.selectedModel)?.contextWindow;
-    this.emit({ type: "usage", used: this.lastUsed, window });
+    if (this.state.lastUsed === undefined) return;
+    const window = this.models.find((m) => m.alias === this.state.selectedModel)?.contextWindow;
+    this.emit({ type: "usage", used: this.state.lastUsed, window });
   }
 
   private emitConversations(): void {
@@ -299,36 +443,43 @@ export class CognitionBackend implements ChatBackend {
 
   /** Drops everything that described the previous conversation. */
   private resetTranscript(): void {
-    this.transcript = [];
-    this.lastSeq = undefined;
-    this.delivered.clear();
-    this.currentTurn = undefined;
-    this.toolSummaries.clear();
-    this.turnTextDelta.clear();
-    this.lastUsed = undefined;
+    this.state.transcript = [];
+    this.state.lastSeq = undefined;
+    this.state.delivered.clear();
+    this.state.currentTurn = undefined;
+    this.state.toolSummaries.clear();
+    this.state.toolEvidence.clear();
+    this.state.turnTextDelta.clear();
+    this.state.lastUsed = undefined;
+    this.state.controls.reset();
+    this.state.controlOwners.clear();
+    this.state.pendingControls.clear();
+    this.state.replayThrough = undefined;
+    this.state.previousRunThrough = -1;
   }
 
   /** Stops the SSE fetch of the running stream, if any. */
   private abortStream(): void {
-    this.streamGeneration++;
-    this.streaming = false;
-    this.streamAbort?.abort();
-    this.streamAbort = undefined;
+    this.cancelPermissionReads();
+    this.state.streamGeneration = ++this.nextGeneration;
+    this.state.streaming = false;
+    this.state.streamAbort?.abort();
+    this.state.streamAbort = undefined;
   }
 
   private async connect(): Promise<void> {
-    if (!this.endpoint || !this.session || this.streaming) return;
-    this.streaming = true;
-    const generation = this.streamGeneration;
+    if (this.disposed || !this.endpoint || !this.state.session || this.state.streaming) return;
+    this.state.streaming = true;
+    const generation = this.state.streamGeneration;
     const endpoint = this.endpoint;
-    const session = this.session;
+    const session = this.state.session;
     const abort = new AbortController();
-    this.streamAbort = abort;
+    this.state.streamAbort = abort;
     try {
       const headers: Record<string, string> = {
         authorization: `Bearer ${endpoint.token}`,
       };
-      if (this.lastSeq !== undefined) headers["last-event-id"] = this.lastSeq;
+      if (this.state.lastSeq !== undefined) headers["last-event-id"] = this.state.lastSeq;
       const response = await fetch(
         `http://127.0.0.1:${endpoint.port}/v1/sessions/${session}/events`,
         { headers, signal: abort.signal },
@@ -343,7 +494,7 @@ export class CognitionBackend implements ChatBackend {
         const part = await reader.read();
         if (part.done) break;
         // A newer stream took over (open/new/delete): drop this one quietly.
-        if (generation !== this.streamGeneration) return;
+        if (generation !== this.state.streamGeneration) return;
         buffer += decoder.decode(part.value, { stream: true });
         let split: number;
         while ((split = buffer.indexOf("\n\n")) !== -1) {
@@ -354,52 +505,65 @@ export class CognitionBackend implements ChatBackend {
       }
     } catch (error) {
       // A deliberate cancel (open/new/delete) is not an error.
-      if (generation === this.streamGeneration && !isAbort(error)) {
+      if (generation === this.state.streamGeneration && !isAbort(error)) {
         this.emit({ type: "status", state: "error", message: this.errorText(error) });
       }
     }
-    if (generation !== this.streamGeneration) return; // a newer stream took over
-    if (this.streamAbort === abort) this.streamAbort = undefined;
-    this.streaming = false;
+    if (generation !== this.state.streamGeneration) return; // a newer stream took over
+    if (this.state.streamAbort === abort) this.state.streamAbort = undefined;
+    this.state.streaming = false;
     // The stream ended (server drain or drop): reconnect — resuming this
     // session with the cursor, or picking up whatever session is current
     // (a send after Stop may have created one while this drained), unless
     // there is none (stop / new conversation / server restart).
-    if (this.session !== undefined) {
+    if (this.state.session !== undefined) {
       setTimeout(() => void this.connect(), RECONNECT_DELAY_MS);
     }
   }
 
-  private async ensureSession(): Promise<string> {
-    if (this.session) return this.session;
+  private async ensureSession(): Promise<{ session: string; generation: number }> {
+    if (this.state.session) return { session: this.state.session, generation: this.state.streamGeneration };
+    this.abortStream();
+    const generation = this.state.streamGeneration;
+    if (!this.state.resumeId) {
+      this.resetTranscript();
+      this.emit({ type: "history", items: [] });
+    } else {
+      this.state.transcript = this.state.transcript.map(message => ({ ...message, generation }));
+      this.bindControlOwners();
+    }
+    this.emit({ type: "conversationOpened", id: this.state.resumeId, title: "Starting conversation" });
     this.emit({ type: "status", state: "connecting" });
     await this.waitForEndpoint();
-    const resume = this.resumeId;
+    this.checkGeneration(generation);
+    const resume = this.state.resumeId;
     const created = await this.request("/v1/sessions", {
       method: "POST",
       body: JSON.stringify(
         resume
           ? { workspace: this.workspacePath(), profile: "navigator", resume }
-          : { workspace: this.workspacePath(), profile: "navigator", model: this.selectedModel },
+          : { workspace: this.workspacePath(), profile: "navigator", model: this.state.selectedModel },
       ),
     });
     const sessionId = String(created?.session_id ?? "");
+    this.checkGeneration(generation);
     if (!sessionId) throw new Error("cognition server: create session returned no id");
-    this.session = sessionId;
-    this.resumeId = undefined;
+    this.state.session = sessionId;
+    this.state.resumeId = undefined;
     if (!resume) {
       // A brand-new session restarts its seq space. (On resume: same
       // conversation, same seq space — keep the cursor and the delivered
       // set so the resumed stream continues instead of replaying.)
-      this.lastSeq = undefined;
-      this.delivered.clear();
-      this.turnTextDelta.clear();
+      this.state.lastSeq = undefined;
+      this.state.delivered.clear();
+      this.state.turnTextDelta.clear();
     }
     this.emit({ type: "status", state: "ready" });
     this.emitModels();
+    this.emit({ type: "conversationOpened", id: sessionId, title: this.conversations.find(c => c.id === sessionId)?.title ?? "Conversation" });
     void this.connect();
     void this.listConversations().catch(() => undefined);
-    return this.session;
+    return { session: sessionId, generation };
   }
 
   /** Parses one SSE frame: `id:`, optional `event:`, joined `data:` lines. */
@@ -424,50 +588,156 @@ export class CognitionBackend implements ChatBackend {
 
   private handleFrame(frame: EventFrame | undefined): void {
     if (!frame) return;
-    if (frame.id) this.lastSeq = frame.id;
+    if (frame.id) this.state.lastSeq = frame.id;
     if (frame.event === "resync") {
       // The cursor is out of range: drop it, rebuild the view from what the
       // bridge already holds, and let the reconnect's full replay fill any
       // gap (already-delivered seqs are skipped below).
-      this.lastSeq = undefined;
-      this.emit({ type: "history", items: this.transcript.filter((m) => m.type !== "history") });
+      this.state.lastSeq = undefined;
+      this.emit({ type: "history", items: this.history().filter((m) => m.type !== "history") });
       return;
     }
     if (!frame.envelope) return;
     const seq = frame.envelope.seq;
     if (typeof seq === "number") {
-      if (this.delivered.has(seq)) return;
-      this.delivered.add(seq);
+      if (this.state.delivered.has(seq)) return;
+      this.state.delivered.add(seq);
     }
     const message = this.mapEvent(frame.envelope);
-    if (message) this.emit(message);
+    if (message) {
+      this.emit(message);
+      if (message.type === "permission" && message.card.childSessionId) this.scheduleChildRead(message.card.childSessionId);
+    }
+    if (this.state.replayThrough !== undefined && Number(frame.id) >= this.state.replayThrough) {
+      this.state.replayThrough = undefined;
+      this.drainChildReads();
+    }
+  }
+
+  cancelPermissionReads(): void {
+    if (this.state.childReadTimer) clearTimeout(this.state.childReadTimer);
+    this.state.childReadTimer = undefined;
+    this.state.childReadQueue.clear();
+    this.state.childReadsAttempted.clear();
+    for (const abort of this.state.childReads.values()) abort.abort();
+    this.state.childReads.clear();
+  }
+
+  resumePermissionReads(): void {
+    const completed = new Set(this.state.transcript.filter(m => m.type === "permissionCall").map(m => m.type === "permissionCall" ? m.requestId : ""));
+    for (const card of this.state.controls.permissions.values()) {
+      if (card.childSessionId && !completed.has(card.requestId)) this.scheduleChildRead(card.childSessionId);
+    }
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.abortStream();
+    this.listeners.clear();
+  }
+
+  private scheduleChildRead(child: string): void {
+    this.state.childReadQueue.add(child);
+    if (this.state.childReadTimer) clearTimeout(this.state.childReadTimer);
+    // Let the current replay batch settle before opening reads for unresolved cards.
+    this.state.childReadTimer = setTimeout(() => { this.state.childReadTimer = undefined; this.drainChildReads(); }, 100);
+  }
+
+  private drainChildReads(): void {
+    if (this.disposed || (this.state.replayThrough !== undefined &&
+        ![...this.state.delivered].some(seq => seq >= this.state.replayThrough!))) return;
+    for (const child of this.state.childReadQueue) {
+      if (this.state.childReads.size >= 2) return;
+      if (this.state.childReads.has(child)) continue;
+      this.state.childReadQueue.delete(child);
+      const cards = [...this.state.controls.permissions.values()].filter(card => card.childSessionId === child && !this.state.childReadsAttempted.has(card.requestId));
+      if (!cards.length) continue;
+      for (const card of cards) this.state.childReadsAttempted.add(card.requestId);
+      const abort = new AbortController();
+      this.state.childReads.set(child, abort);
+      void this.loadChildPermissionCalls(child, cards, abort).finally(() => {
+        if (this.state.childReads.get(child) === abort) {
+          this.state.childReads.delete(child);
+          this.drainChildReads();
+        }
+      });
+    }
+  }
+
+  /** One bounded, read-only replay per child; substitute only at the matching request. */
+  private async loadChildPermissionCalls(child: string, cards: import("./chatProtocol").PermissionCard[], abort: AbortController): Promise<void> {
+    const session = this.state.session;
+    const generation = this.state.streamGeneration;
+    const endpoint = this.endpoint;
+    if (!endpoint) return;
+    const remaining = new Map(cards.map(card => [card.requestId, card]));
+    const replay = new PermissionCallReplay();
+    const timer = setTimeout(() => abort.abort(), 5000);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    const cancel = (): void => { void reader?.cancel().catch(() => undefined); };
+    abort.signal.addEventListener("abort", cancel, { once: true });
+    try {
+      const response = await fetch(`http://127.0.0.1:${endpoint.port}/v1/sessions/${encodeURIComponent(child)}/events`, {
+        headers: { authorization: `Bearer ${endpoint.token}` }, signal: abort.signal,
+      });
+      if (!response.ok || !response.body) return;
+      reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let bytes = 0;
+      for (;;) {
+        const part = await reader.read();
+        if (part.done || abort.signal.aborted || generation !== this.state.streamGeneration) return;
+        bytes += part.value.byteLength;
+        if (bytes > 2 * 1024 * 1024) return;
+        buffer += decoder.decode(part.value, { stream: true });
+        let split: number;
+        while ((split = buffer.indexOf("\n\n")) !== -1) {
+          const raw = buffer.slice(0, split);
+          buffer = buffer.slice(split + 2);
+          const event = this.parseFrame(raw)?.envelope;
+          if (!event) continue;
+          replay.observe(event);
+          if (event.kind === "permission.requested") {
+            const p = event.payload;
+            const card = remaining.get(p?.request_id);
+            if (!card) continue;
+            const args = p.tool_call_id === card.callId && p.tool === card.tool && p.arguments === card.arguments ? replay.argumentsFor(p) : undefined;
+            if (args && session === this.state.session && generation === this.state.streamGeneration && this.state.controls.permissions.has(card.requestId)) {
+              this.emit({ type: "permissionCall", requestId: card.requestId, call: permissionCall(card.tool, args) });
+            }
+            remaining.delete(card.requestId);
+            if (!remaining.size) return;
+          }
+        }
+      }
+    } catch { /* The card explicitly says when full arguments are unavailable. */ }
+    finally { clearTimeout(timer); abort.signal.removeEventListener("abort", cancel); abort.abort(); await reader?.cancel().catch(() => undefined); }
   }
 
   // ---- event -> webview mapping ----
 
   private mapEvent(envelope: WireEnvelope): HostToWebview | undefined {
     const payload = envelope.payload ?? {};
+    for (const update of this.state.controls.envelopeUpdates(envelope)) this.emit(update);
+    const projected = eventView(envelope, this.state.currentTurn, this.state.controls.calls);
+    if (projected?.type === "pause" && envelope.seq <= this.state.previousRunThrough) {
+      this.emit(projected);
+      return { type: "pauseState", id: projected.id, state: "resolved", message: "Ended with the previous run" };
+    }
+    if (projected) return projected;
     switch (envelope.kind) {
-      case "message.received": {
-        const author = String(payload.source ?? "").startsWith("user:") ? "driver" : "navigator";
-        return {
-          type: "message",
-          id: String(payload.command_id ?? envelope.seq),
-          author,
-          text: String(payload.content ?? ""),
-        };
-      }
       case "turn.start": {
-        this.currentTurn = String(payload.turn_id ?? envelope.seq);
+        this.state.currentTurn = String(payload.turn_id ?? envelope.seq);
         this.emit({ type: "status", state: "busy" });
-        return { type: "turnStart", id: this.currentTurn };
+        return { type: "turnStart", id: this.state.currentTurn };
       }
       case "llm.delta": {
         // One turn groups its deltas, tools and turnEnd under one id.
-        const id = String(payload.turn_id ?? this.currentTurn ?? envelope.seq);
+        const id = String(payload.turn_id ?? this.state.currentTurn ?? envelope.seq);
         const delta = payload.delta ?? {};
         if (delta.delta_type === "text") {
-          this.turnTextDelta.add(id);
+          this.state.turnTextDelta.add(id);
           return { type: "delta", id, text: String(delta.text ?? "") };
         }
         if (delta.delta_type === "thinking") {
@@ -479,32 +749,34 @@ export class CognitionBackend implements ChatBackend {
         // During a history replay no `llm.delta` arrives: a turn that got
         // no live text renders its final message as one delta. Live turns
         // (flagged above) must not be duplicated.
-        const id = String(payload.turn_id ?? this.currentTurn ?? envelope.seq);
+        const id = String(payload.turn_id ?? this.state.currentTurn ?? envelope.seq);
         this.recordUsage(payload.usage ?? payload.message?.usage);
         const message = payload.message ?? {};
         const text = typeof message.text === "string" ? message.text : "";
         const thinking = typeof message.thinking === "string" ? message.thinking : "";
-        if (this.turnTextDelta.has(id)) return undefined;
+        if (this.state.turnTextDelta.has(id)) return undefined;
         if (!text && !thinking) return undefined;
         if (thinking) this.emit({ type: "reasoning", id, text: thinking });
         return text ? { type: "delta", id, text } : undefined;
       }
       case "tool.pre_call": {
-        const id = this.currentTurn ?? String(envelope.seq);
+        const id = this.state.currentTurn ?? String(envelope.seq);
         const callId = String(payload.tool_call_id ?? envelope.seq);
         const name = String(payload.name ?? "tool");
         const summary = toolSummary(name, payload.args);
-        this.toolSummaries.set(callId, summary);
-        return { type: "tool", id, callId, phase: "start", name, summary };
+        this.state.toolSummaries.set(callId, summary);
+        const evidence = permissionEvidence(payload.permission_gate);
+        if (evidence) this.state.toolEvidence.set(callId, evidence);
+        return { type: "tool", id, callId, phase: "start", name, summary, evidence };
       }
       case "tool.post_call": {
-        const id = this.currentTurn ?? String(envelope.seq);
+        const id = this.state.currentTurn ?? String(envelope.seq);
         const callId = String(payload.tool_call_id ?? envelope.seq);
         const name = String(payload.name ?? "tool");
         // The post_call payload carries no args: reuse the pre_call summary
         // so the finished row keeps saying what was touched.
-        const summary = toolSummary(name, undefined, this.toolSummaries.get(callId));
-        this.toolSummaries.delete(callId);
+        const summary = toolSummary(name, undefined, this.state.toolSummaries.get(callId));
+        this.state.toolSummaries.delete(callId);
         // A non-zero shell exit is reported as status error, but it is
         // often harmless: `grep` finding nothing exits 1, and in a `;` chain
         // the last command's code decides for all the output above it. Show
@@ -512,16 +784,12 @@ export class CognitionBackend implements ChatBackend {
         // `wc; ls; cat …` chain marked failed although its output was fine).
         const exitCode = payload.metadata?.exit_code;
         const shown = typeof exitCode === "number" && exitCode !== 0 ? `${summary} (exit ${exitCode})` : summary;
-        return { type: "tool", id, callId, phase: "end", name, summary: shown, ok: payload.status === "ok" };
+        const evidence = permissionEvidence(payload.metadata?.permission_gate) ?? this.state.toolEvidence.get(callId);
+        this.state.toolEvidence.delete(callId);
+        return { type: "tool", id, callId, phase: "end", name, summary: shown, ok: payload.status === "ok", evidence };
       }
-      case "agent.yield":
-        return {
-          type: "question",
-          id: String(payload.turn_id ?? this.currentTurn ?? envelope.seq),
-          text: String(payload.question ?? ""),
-        };
       case "turn.end": {
-        const id = String(payload.turn_id ?? this.currentTurn ?? envelope.seq);
+        const id = String(payload.turn_id ?? this.state.currentTurn ?? envelope.seq);
         const outcome =
           payload.outcome === "interrupted"
             ? "stopped"
@@ -534,7 +802,7 @@ export class CognitionBackend implements ChatBackend {
             : undefined;
         const message: HostToWebview = { type: "turnEnd", id, outcome };
         if (error !== undefined) (message as any).error = error;
-        this.currentTurn = undefined;
+        this.state.currentTurn = undefined;
         this.emit({ type: "status", state: outcome === "error" ? "error" : "ready" });
         return message;
       }
@@ -544,9 +812,25 @@ export class CognitionBackend implements ChatBackend {
   }
 
   /** callId -> the pre_call summary, so post_call rows keep their detail. */
-  private toolSummaries = new Map<string, string>();
+
+  private emitForState(origin: ConversationState, message: HostToWebview): void {
+    if (origin === this.state) this.emit(message);
+    else {
+      const tagged = { ...message, generation: origin.streamGeneration };
+      origin.controls.apply(tagged);
+      origin.transcript.push(tagged);
+    }
+  }
 
   private emit(message: HostToWebview): void {
+    if (message.generation !== undefined && message.generation !== this.state.streamGeneration) return;
+    message = { ...message, generation: this.state.streamGeneration };
+    if (message.type === "permission" && this.state.session) this.state.controlOwners.set(`permission:${message.card.requestId}`, { session: this.state.session, generation: this.state.streamGeneration });
+    if (message.type === "pause" && this.state.session) this.state.controlOwners.set(message.id, { session: this.state.session, generation: this.state.streamGeneration });
+    if (message.type === "permissionState" && !["pending", "error"].includes(message.resolution)) {
+      this.state.pendingControls.delete(`${this.currentConversationId()}:permission:${message.requestId}`);
+    }
+    this.state.controls.apply(message);
     // Conversation-list, model and usage metadata is pushed, never replayed
     // as transcript (the view caches the last ones for a reopen).
     const ephemeral =
@@ -555,7 +839,11 @@ export class CognitionBackend implements ChatBackend {
       message.type === "conversationOpened" ||
       message.type === "models" ||
       message.type === "usage";
-    if (!ephemeral) this.transcript.push(message);
+    if (message.type === "sendResult") {
+      for (const listener of this.listeners) listener(message);
+      return;
+    }
+    if (!ephemeral) this.state.transcript.push(message);
     for (const listener of this.listeners) listener(message);
   }
 
@@ -564,7 +852,21 @@ export class CognitionBackend implements ChatBackend {
     return String(error);
   }
 
-  private async request(path: string, init: RequestInit): Promise<any> {
+  private bindControlOwners(): void {
+    this.state.controlOwners.clear();
+    const session = this.currentConversationId();
+    if (!session) return;
+    for (const id of this.state.controls.permissions.keys()) this.state.controlOwners.set(`permission:${id}`, { session, generation: this.state.streamGeneration });
+    for (const id of this.state.controls.pauses.keys()) this.state.controlOwners.set(id, { session, generation: this.state.streamGeneration });
+  }
+
+  private async request(path: string, init: RequestInit, scope: "conversation" | "endpoint" | "operation" = "conversation"): Promise<any> {
+    const generation = this.state.streamGeneration;
+    const endpoint = this.endpoint;
+    const check = (): void => {
+      if (endpoint !== this.endpoint || this.disposed) throw new Error("Server endpoint changed");
+      if (scope === "conversation") this.checkGeneration(generation);
+    };
     if (!this.endpoint) throw new Error("cognition server not announced yet");
     let response: Response;
     try {
@@ -577,14 +879,16 @@ export class CognitionBackend implements ChatBackend {
         },
       });
     } catch (error) {
+      check();
       const message = this.errorText(error);
       this.emit({ type: "status", state: "error", message });
       throw new Error(`cognition server unreachable: ${message}`);
     }
+    check();
     if (response.status === 401) {
       const message = "cognition server rejected the token (401)";
       this.emit({ type: "status", state: "error", message });
-      throw new Error(message);
+      throw new HttpError(response.status, message);
     }
     if (!response.ok) {
       let detail = `HTTP ${response.status}`;
@@ -598,14 +902,19 @@ export class CognitionBackend implements ChatBackend {
       }
       const message = `cognition server: ${detail}`;
       this.emit({ type: "status", state: "error", message });
-      throw new Error(message);
+      throw new HttpError(response.status, message);
     }
     // DELETE answers 204 and other routes may answer empty: undefined, not a
     // JSON parse crash.
     if (response.status === 204) return undefined;
     const raw = await response.text();
+    check();
     return raw ? JSON.parse(raw) : undefined;
   }
+}
+
+class HttpError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
 }
 
 /** A fetch aborted on purpose (open/new/delete switching streams). */

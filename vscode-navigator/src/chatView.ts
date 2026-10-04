@@ -1,3 +1,4 @@
+import { chatHtml } from "./chatHtml";
 import * as vscode from "vscode";
 import { CHAT_VIEW_ID, ChatBackend, HostToWebview, WebviewToHost } from "./chatProtocol";
 import { buildEditorContext, presentMessage } from "./editorContext";
@@ -22,30 +23,7 @@ export function registerChatView(
       const nonce = randomNonce();
       const script = webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "out", "chat.js"));
       const style = webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "out", "chat.css"));
-      webview.html = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource}; style-src ${webview.cspSource}; script-src 'nonce-${nonce}'; connect-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
-  <link rel="stylesheet" href="${style}">
-  <title>Navai</title>
-</head>
-<body>
-  <div class="shell">
-    <header class="topbar"><span class="identity">Navai</span><span id="status" class="status" role="status" aria-live="polite"><span class="status-dot"></span><span id="status-label">Connecting</span></span></header>
-    <main id="transcript" class="transcript" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions text"><div id="empty" class="empty">Ask about the code, or describe what you want to do.</div></main>
-    <form id="composer" class="composer">
-      <label for="prompt" class="sr-only">Message Navai</label>
-      <textarea id="prompt" rows="2" placeholder="Message Navai…" disabled></textarea>
-      <div class="context-row"><label class="context-toggle"><input type="checkbox" id="include-context" checked><span>Include editor context</span></label><span id="context-preview" class="context-chip" title="Attached to your next message">No editor open</span></div>
-      <div class="model-row"><label for="model" class="sr-only">Model for a new conversation</label><select id="model" class="model-select" disabled><option value="">Default model</option></select><span id="usage" class="usage" role="meter" aria-label="Context used" aria-valuemin="0" aria-valuemax="100" hidden><span class="usage-bar"><span id="usage-fill" class="usage-fill"></span></span><span id="usage-label" class="usage-label"></span></span></div>
-      <div class="composer-footer"><span class="hint">Enter to send · Shift+Enter for a line</span><div class="actions"><button type="button" id="stop" class="stop" hidden>Stop</button><button type="submit" id="send" disabled>Send <span aria-hidden="true">↗</span></button></div></div>
-    </form>
-  </div>
-  <script nonce="${nonce}" src="${script}"></script>
-</body>
-</html>`;
+      webview.html = chatHtml(nonce, String(script), String(style), webview.cspSource);
 
       // Driver messages lose their raw editor-context block and gain a chip label.
       // The webview (re)loads with amnesia: remember the last conversation
@@ -55,6 +33,8 @@ export function registerChatView(
       let lastModels: HostToWebview | undefined;
       let lastUsage: HostToWebview | undefined;
       const post = (message: HostToWebview): void => {
+        if (message.generation !== undefined && message.generation !== backend.currentGeneration()) return;
+        message = { ...message, generation: backend.currentGeneration() };
         if (message.type === "conversationOpened") {
           lastConversationOpened = message;
           lastUsage = undefined; // a new or reopened conversation re-reports its own
@@ -79,21 +59,48 @@ export function registerChatView(
         vscode.window.tabGroups.onDidChangeTabs(scheduleContext),
       ];
       const messageSubscription = webview.onDidReceiveMessage((message: WebviewToHost) => {
+        if (message?.type !== "ready" && message?.generation !== backend.currentGeneration()) return;
         switch (message?.type) {
           case "ready":
             if (lastConversations) post(lastConversations);
-            if (lastConversationOpened) post(lastConversationOpened);
+            post({ type: "conversationOpened", id: backend.currentConversationId(),
+              title: lastConversationOpened?.type === "conversationOpened" ? lastConversationOpened.title : "Conversation" });
             post({ type: "history", items: backend.history() });
             if (lastModels) post(lastModels);
             if (lastUsage) post(lastUsage);
             pushContext();
+            backend.resumePermissionReads();
             break;
           case "send":
             if (typeof message.text === "string" && message.text.trim()) {
-              // Built at send time: the focused webview is not a text editor, so
-              // the active editor is still the one the driver last worked in.
-              const context = message.includeContext === false ? undefined : buildEditorContext().block;
-              void backend.send(message.text, context).catch(showError);
+              void (async () => {
+                const session = backend.currentConversationId();
+                const generation = backend.currentGeneration();
+                if (backend.hasOpenPermissions()) {
+                  const answer = await vscode.window.showWarningMessage(
+                    "Sending cancels the pending permission request", { modal: true }, "Send anyway",
+                  );
+                  if (answer !== "Send anyway") return false;
+                }
+                if (generation !== backend.currentGeneration() || session !== backend.currentConversationId()) throw new Error("The open conversation changed. Send again in the current conversation.");
+                const context = message.includeContext === false ? undefined : buildEditorContext().block;
+                await backend.send(message.text, context);
+                return true;
+              })().then(accepted => post({ type: "sendResult", text: message.text, accepted, generation: accepted ? backend.currentGeneration() : message.generation }))
+                .catch(error => { post({ type: "sendResult", text: message.text, accepted: false, generation: message.generation }); showError(error); });
+            }
+            break;
+          case "answerPermission":
+            if (typeof message.sessionId === "string" && typeof message.requestId === "string" &&
+                ["allow_once", "allow_folder", "deny"].includes(message.decision) &&
+                (message.message === undefined || typeof message.message === "string")) {
+              void backend.answerPermission(message.sessionId, message.requestId, message.decision, message.message, message.generation).catch(showError);
+            }
+            break;
+          case "controlPause":
+            if (typeof message.sessionId === "string" && typeof message.id === "string" &&
+                ["continue", "stop"].includes(message.action)) {
+              void backend.controlPause(message.sessionId, message.id, message.action, message.generation).catch(showError);
             }
             break;
           case "stop":
@@ -126,6 +133,7 @@ export function registerChatView(
         }
       });
       view.onDidDispose(() => {
+        backend.cancelPermissionReads();
         unsubscribe();
         messageSubscription.dispose();
         if (contextTimer) clearTimeout(contextTimer);

@@ -196,6 +196,40 @@ for(const deferred of [true,false])test(`R1.5 resync republishes ${deferred?'def
   if(deferred)event('command.result',{name:'compact',operation_id:'C',ok:true,data:{accepted:true,applies:'after_turn'}});
   b.handleFrame({id:'',event:'resync'});assert.match(dom.window.document.querySelector('.compaction-progress').textContent,/Compacting/);assert.equal(dom.window.document.querySelector('.compaction-progress').dataset.pending,'true');
 });
+function focusedKeys(dom) {
+  const key = key => {
+    const target = dom.window.document.activeElement;
+    const event = new dom.window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+    target.dispatchEvent(event);
+    if (!event.defaultPrevented && key.length === 1) { target.value += key; target.dispatchEvent(new dom.window.Event('input', { bubbles: true })); }
+    if (!event.defaultPrevented && key === 'Backspace') { target.value = target.value.slice(0,-1); target.dispatchEvent(new dom.window.Event('input',{bubbles:true})); }
+  };
+  return { key, type: text => { for (const character of text) key(character); } };
+}
+test('R2.1 registered host posts queued message while idle compact HTTP remains pending and preserves its submission lock', async t=>{
+  const {b,dom,tick,prompt}=fullChat(t);b.state.session='P';b.refreshCommands=async()=>{};b.commands.push({name:'compact',description:'Compact',args_hint:''});
+  const {key,type}=focusedKeys(dom);let compactResponse;let messageResponse;const calls=[];
+  t.mock.method(globalThis,'fetch',(url,init)=>{calls.push({url,...init});return new Promise(resolve=>{if(url.endsWith('/commands'))compactResponse=resolve;else messageResponse=resolve;});});
+  prompt.focus();type('/compact focus');key('Enter');await tick();assert.equal(calls.length,1);assert.equal(prompt.value,'/compact focus');
+  while(prompt.value)key('Backspace');type('queued message');key('Enter');await tick();assert.match(calls[1].url,/\/messages$/);
+  compactResponse(new Response(JSON.stringify({operation_id:'C',ok:true})));await tick();assert.equal(dom.window.document.querySelector('#send').disabled,true);
+  b.handleFrame({id:'1',event:'',envelope:{seq:1,kind:'command.result',payload:{name:'compact',operation_id:'C',ok:false,error:'Summary refused'}}});await tick();assert.equal(dom.window.document.querySelector('#send').disabled,true);
+  messageResponse(new Response(JSON.stringify({accepted:true})));await tick();assert.equal(prompt.value,'');
+});
+test('R2.2 cancelled selector cannot route slash completion as model selection, including after conversation switch',async t=>{
+  const {b,dom,tick,prompt}=fullChat(t);b.state.session='P';b.refreshCommands=async()=>{};
+  b.commands.push({name:'compact',description:'Compact',args_hint:''});b.emit({type:'commands',items:b.commands});b.emit({type:'models',items:[{alias:'a',model:'provider/a'}],locked:false});
+  await tick();b.emit({type:'commands',items:[{name:'compact',description:'Compact',args_hint:''}]});
+  const {key,type}=focusedKeys(dom);let posts=0;
+  t.mock.method(globalThis,'fetch',()=>{posts++;return new Promise(()=>{});});
+  const selector=dom.window.document.querySelector('#model');selector.focus();key('Enter');key('Escape');prompt.focus();type('/com');key('Tab');assert.equal(prompt.value,'/compact ');assert.equal(posts,0);
+  selector.focus();key('Enter');await b.newConversation();await tick();prompt.focus();while(prompt.value)key('Backspace');type('/com');key('Tab');assert.equal(prompt.value,'/compact ');assert.equal(posts,0);
+});
+test('R2.3 unknown bare slash reaches registered host validation and retains focused draft',async t=>{
+  const {b,dom,tick,prompt}=fullChat(t);b.state.session='P';b.refreshCommands=async()=>{};b.emit({type:'commands',items:b.commands});
+  let calls=0;t.mock.method(globalThis,'fetch',()=>{calls++;return new Promise(()=>{});});const {key,type}=focusedKeys(dom);
+  prompt.focus();type('/nonexistent');key('ArrowDown');key('Enter');await tick();assert.match(dom.window.document.querySelector('.command-error').textContent,/Unknown command/);assert.equal(prompt.value,'/nonexistent');assert.equal(calls,0);
+});
 function fullChat(t) {
   const { JSDOM } = require('jsdom');
   const { chatHtml } = require('../out/tests/chatHtml.js');

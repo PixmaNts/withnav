@@ -94,6 +94,8 @@ let pickerKind: "model" | "variant" | "skills" | undefined;
 let selectorPicker = false;
 let paletteDismissed = false;
 function closePalette(): void {
+  selectorPicker = false;
+  pickerKind = undefined;
   palette.hidden = true;
   pickerSearch.setAttribute("aria-expanded", "false");
   pickerSearch.removeAttribute("aria-activedescendant");
@@ -155,6 +157,7 @@ function renderPalette(): void {
 function filterPalette(): void {
   if (paletteDismissed || !/^\/[^\s/]*$/.test(prompt.value)) { closePalette(); return; }
   pickerKind = undefined;
+  selectorPicker = false;
   pickerItems = commands;
   pickerSearch.value = prompt.value.slice(1);
   paletteIndex = 0;
@@ -205,6 +208,7 @@ let stickToBottom = true;
 let replaying = false;
 let sessionId = "";
 let sending = false;
+let pendingSendText: string | undefined;
 let compacting = false;
 let compactionRow: HTMLElement | undefined;
 let lastConsumedDraft: string | undefined;
@@ -555,6 +559,7 @@ function receive(event: HostToWebview): void {
     readOnly = false; parentId = ""; childHeader.hidden = true; childrenSection.hidden = true;
     sessionId = event.id ?? "";
     sending = false;
+    pendingSendText = undefined;
     lastConsumedDraft = undefined;
     closePalette();
     commandError.hidden = true;
@@ -606,7 +611,7 @@ function receive(event: HostToWebview): void {
       closePalette(); updateControls(); break;
     }
     case "commands": commands = event.items; filterPalette(); break;
-    case "commandError": commandError.textContent = event.text; commandError.hidden = false; sending = false; updateControls(); break;
+    case "commandError": commandError.textContent = event.text; commandError.hidden = false; updateControls(); break;
     case "agent": agentLabel.textContent = event.name; break;
     case "modelPending": pendingModel.textContent = event.alias ? `→ ${event.alias} · pending after turn` : ""; break;
     case "commandPicker":
@@ -634,7 +639,7 @@ function receive(event: HostToWebview): void {
     case "status": setStatus(event.state, event.message); break;
     case "message": message(event.author, event.text, event.context, event.selectedSkill, event.source); break;
     case "sendResult":
-      sending = false;
+      if (pendingSendText === event.text) { sending = false; pendingSendText = undefined; }
       if (event.accepted && prompt.value === event.text) { lastConsumedDraft = event.text; prompt.value = ""; }
       if (!event.accepted && event.restoreDraft && !prompt.value && lastConsumedDraft === event.text) {
         prompt.value = event.text;
@@ -849,7 +854,9 @@ form.addEventListener("submit", event => {
   if (!text.trim() || prompt.disabled || sending) return;
   closePalette();
   commandError.hidden = true;
-  sending = true;
+  // Idle compaction holds its HTTP response until completion. It must not own
+  // the ordinary message submission lock while the server queues input safely.
+  if (!/^\/compact(?:\s|$)/.test(text)) { sending = true; pendingSendText = text; }
   post({ type: "send", text, includeContext: includeContext.checked });
   updateControls();
   stickToBottom = true;
@@ -868,9 +875,12 @@ prompt.addEventListener("keydown", event => {
   if (!palette.hidden && !event.isComposing) {
     if (event.key === "Escape") { event.preventDefault(); paletteDismissed = true; pickerKind = undefined; closePalette(); return; }
     if (["ArrowUp", "ArrowDown"].includes(event.key)) {
-      event.preventDefault(); paletteIndex = (paletteIndex + (event.key === "ArrowDown" ? 1 : -1) + paletteRows.length) % paletteRows.length; renderPalette(); return;
+      event.preventDefault(); if (paletteRows.length) { paletteIndex = (paletteIndex + (event.key === "ArrowDown" ? 1 : -1) + paletteRows.length) % paletteRows.length; renderPalette(); } return;
     }
-    if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") { event.preventDefault(); choosePalette(paletteIndex); return; }
+    if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
+      if (paletteRows.length || pickerKind || event.key === "Tab") { event.preventDefault(); choosePalette(paletteIndex); return; }
+      // An unknown slash command is still submitted for host validation.
+    }
   }
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();

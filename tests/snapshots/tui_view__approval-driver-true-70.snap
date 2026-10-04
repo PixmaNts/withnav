@@ -5,11 +5,11 @@ expression: shown
  ◆ navai                                        ▌build  — · — · — / — 
 ──────────────────────────────────────────────────────────────────────
  │ ▾ ✓ bash · driver approved cargo test parser  ok  1.42 s  exit 101 
- │   Role check: {"reason":"Within the plan                           
- │ role","verdict":"conforms"}                                        
+ │   Role check: conforms · Within the plan role                      
  │   test parser::empty_argument ... FAILED                           
  │   expected Some(""), got None                                      
  │                                                                    
+                                                                      
                                                                       
                                                                       
                                                                       

@@ -195,7 +195,22 @@ pub(crate) fn approval_text(kind: &BlockKind) -> Vec<String> {
         }
     }
     if let Some(guard) = metadata.get("guard").filter(|g| !g.is_null()) {
-        lines.push(format!("Role check: {}", safe(&guard.to_string())));
+        // The plan role check records `{by, verdict, role, reason?}`; show it as words, never
+        // as raw JSON, and fall back to the verdict alone when the other fields are absent.
+        let verdict = guard["verdict"]
+            .as_str()
+            .map(safe)
+            .unwrap_or_else(|| "recorded".into());
+        let role = guard["role"]
+            .as_str()
+            .map(|r| format!(" ({})", safe(r)))
+            .unwrap_or_default();
+        let reason = guard["reason"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(|r| format!(" · {}", safe(r)))
+            .unwrap_or_default();
+        lines.push(format!("Role check{role}: {verdict}{reason}"));
     }
     lines
 }

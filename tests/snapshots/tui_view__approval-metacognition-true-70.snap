@@ -10,11 +10,11 @@ expression: shown
  │ low risk · Matches the requested change                            
  │   Overrides: scratch root                                          
  │   Review evidence was shortened                                    
- │   Role check: {"reason":"Within the plan                           
- │ role","verdict":"conforms"}                                        
+ │   Role check: conforms · Within the plan role                      
  │   test parser::empty_argument ... FAILED                           
  │   expected Some(""), got None                                      
  │                                                                    
+                                                                      
                                                                       
                                                                       
                                                                       

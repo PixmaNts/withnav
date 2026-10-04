@@ -17,7 +17,6 @@ impl std::fmt::Debug for TestWatchdog {
 }
 use crate::provider::config::load_models;
 use crate::provider::openai::ClientCache;
-use crate::provider::systemone::SystemOneClient;
 use crate::session::service::{Lifecycle, Service, SessionId};
 
 impl Service {
@@ -41,13 +40,11 @@ impl Service {
         )
         .ok()
         .and_then(|(models, _)| {
-            SystemOneClient::from_alias(
+            crate::provider::layers::available_instinct(
                 &models,
-                "instinct",
                 &self.config.config_dir,
                 Arc::new(ClientCache::new()),
             )
-            .ok()
         })
         .map(|client| Arc::new(JevJudge(client)) as Arc<dyn Judge>);
         let service = self.clone();

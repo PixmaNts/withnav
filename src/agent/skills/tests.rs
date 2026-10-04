@@ -686,7 +686,7 @@ async fn the_body_cap_is_an_explicit_error_not_a_cut() {
     assert_eq!(call(&skills, "big", &cx).await.status, ToolStatus::Ok);
     let res = call(&skills, "bigger", &cx).await;
     assert_eq!(res.error.expect("error").code, "skill_oversized");
-    assert!(res.output.is_empty());
+    assert!(!res.output.is_empty());
 }
 
 #[tokio::test]

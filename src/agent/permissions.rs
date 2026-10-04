@@ -341,6 +341,20 @@ fn is_link(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn review_destination(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolError> {
+    if !path.is_absolute() {
+        return validate_path(&cx.writable_roots, path);
+    }
+    let resolved = validate_path(&[PathBuf::from("/")], path)?;
+    if resolved.is_dir() {
+        return Err(ToolError::Denied {
+            code: "invalid_path".into(),
+            message: "destination is a directory".into(),
+        });
+    }
+    Ok(resolved)
+}
+
 /// Whether `args`' path still resolves to `destination`, the canonical file a
 /// call was checked for, and that file is not a link now. A call whose file
 /// moved between the check and the dispatch (a link put in its place) must
@@ -352,7 +366,7 @@ pub fn still_resolves(args: &Value, destination: Option<&Path>, cx: &ToolContext
     let Some(path) = args.get("path").and_then(Value::as_str) else {
         return false;
     };
-    validate_path(&cx.writable_roots, Path::new(path)).is_ok_and(|now| now == destination)
+    review_destination(Path::new(path), cx).is_ok_and(|now| now == destination)
         && !is_link(destination)
 }
 
@@ -400,7 +414,7 @@ pub fn needs_permission(
                     .to_string(),
                 );
             };
-            let resolved = match validate_path(&cx.writable_roots, Path::new(path)) {
+            let resolved = match review_destination(Path::new(path), cx) {
                 Ok(resolved) => resolved,
                 Err(e) => return Gate::Rejected(e.to_string()),
             };
@@ -513,7 +527,7 @@ mod tests {
         std::os::unix::fs::symlink(&outside, f.ws.join("link")).unwrap();
         assert!(matches!(
             gate(&f, "write", json!({"path": f.ws.join("link/a.txt")})),
-            Gate::Rejected(_)
+            Gate::Needs(_)
         ));
     }
 
@@ -534,11 +548,7 @@ mod tests {
     #[test]
     fn paths_the_tool_would_refuse_are_rejected_and_unusable_urls_need_nothing() {
         let f = fixture();
-        for args in [
-            json!({"path": "/etc/passwd"}),
-            json!({}),
-            json!({"path": 3}),
-        ] {
+        for args in [json!({}), json!({"path": 3})] {
             assert!(matches!(gate(&f, "write", args.clone()), Gate::Rejected(_)));
             assert!(matches!(gate(&f, "edit", args), Gate::Rejected(_)));
         }
@@ -714,6 +724,7 @@ mod tests {
         let args = json!({"path": path, "content": "x"});
         match gate(f, tool, args.clone()) {
             Gate::Needs(needed) => exempt_from_guard(tool, &args, &needed),
+            Gate::Rejected(_) => false,
             other => panic!("expected a request, got {other:?}"),
         }
     }

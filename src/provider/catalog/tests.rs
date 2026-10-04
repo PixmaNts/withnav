@@ -595,9 +595,22 @@ fn an_unwritable_cache_dir_warns_once() {
         .with_writer(log.clone())
         .with_ansi(false)
         .finish();
-    tracing::subscriber::with_default(subscriber, || {
+    let dispatch = tracing::Dispatch::new(subscriber);
+    // In October 2026, a parallel first warning cached no interest on its thread before this
+    // thread installed its subscriber. Exercise that ordering, then register our interest again.
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let other = ModelCatalog::new(None);
+                other.persist(&target, &file);
+            })
+            .join()
+            .unwrap();
+    });
+    tracing::dispatcher::with_default(&dispatch, || {
+        tracing::callsite::rebuild_interest_cache();
         for _ in 0..3 {
-            catalog.persist(&target, &file);
+            assert!(!catalog.persist(&target, &file));
         }
     });
     let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();

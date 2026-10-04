@@ -96,7 +96,7 @@ pub struct MarkdownCache {
     entries: HashMap<(String, u64, u16), Text<'static>>,
     /// Options for the current theme and table width; rebuilt only when either changes, since
     /// they hold a copy of the syntax-highlighting theme.
-    options: Option<(ThemeId, u16, Options<ThemeStyles>)>,
+    options: Option<(ThemeId, u16, String, Options<ThemeStyles>)>,
     theme: Theme,
 }
 
@@ -134,18 +134,37 @@ impl MarkdownCache {
             {
                 text.push_str("\n```");
             }
+            let rendered = if text.contains("&#") {
+                tui_markdown::from_str_with_options(
+                    &text,
+                    &options(self.theme, String::new()).table_width(width),
+                )
+                .lines
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+            } else {
+                String::new()
+            };
             let mut marker = "\u{e000}".to_owned();
-            while text.contains(&marker) {
+            while text.contains(&marker) || rendered.contains(&marker) {
                 marker.push('\u{e000}');
             }
+            if self
+                .options
+                .as_ref()
+                .map(|(id, w, m, _)| (*id, *w, m.as_str()))
+                != Some((self.theme.id, width, marker.as_str()))
             {
                 self.options = Some((
                     self.theme.id,
                     width,
+                    marker.clone(),
                     options(self.theme, marker.clone()).table_width(width),
                 ));
             }
-            let options = &self.options.as_ref().expect("set above").2;
+            let options = &self.options.as_ref().expect("set above").3;
             let parsed = tui_markdown::from_str_with_options(&text, options);
             let owned = Text::from(
                 parsed
@@ -185,6 +204,16 @@ impl MarkdownCache {
 #[cfg(test)]
 mod selection_tests {
     use super::*;
+    #[test]
+    fn entity_private_characters_are_content() {
+        let mut cache = MarkdownCache::default();
+        for source in ["&#xE000;literal", "&#57344;literal"] {
+            let parsed = cache.get(source, 0, 60, source).clone();
+            let mut map = super::super::selection::TranscriptMap::default();
+            super::super::selection::rows(parsed, 60, &mut map, 0, 0);
+            assert!(map.text.contains("\u{e000}literal"), "{}", map.text);
+        }
+    }
     #[test]
     fn nested_fences_and_literal_private_character() {
         let mut cache = MarkdownCache::default();

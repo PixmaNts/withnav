@@ -74,7 +74,7 @@ fn block_text(
             };
             lines.push(Line::styled(name, style.add_modifier(Modifier::BOLD)));
             if Origin::of(source) == Origin::Assistant {
-                let parsed = cache.get(&block.id, 0, width.saturating_sub(2), text);
+                let parsed = cache.get(&block.id, content_key(text), width.saturating_sub(2), text);
                 lines.extend(parsed.lines.iter().cloned().map(|line| {
                     Line::from(
                         std::iter::once(Span::raw(" "))
@@ -408,11 +408,19 @@ pub(crate) fn copy_block(block: &Block) -> Option<String> {
     Some(clean(text))
 }
 
+fn content_key(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
+}
+
 fn layout_key(block: &Block, width: u16, ui: &UiState) -> String {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     width.hash(&mut h);
     ui.expanded.contains(&block.id).hash(&mut h);
+    std::mem::discriminant(&block.kind).hash(&mut h);
     match &block.kind {
         BlockKind::AssistantStep { revision, .. } => revision.hash(&mut h),
         BlockKind::ToolCall {
@@ -425,8 +433,11 @@ fn layout_key(block: &Block, width: u16, ui: &UiState) -> String {
             ..
         } => {
             name.hash(&mut h);
-            args.to_string().hash(&mut h);
-            format!("{status:?}").hash(&mut h);
+            args.hash(&mut h);
+            status.map(|s| s as u8).hash(&mut h);
+            if status.is_none() && !args.is_null() {
+                (ui.tick % 2).hash(&mut h);
+            }
             duration_ms.hash(&mut h);
             exit_code.hash(&mut h);
             if ui.expanded.contains(&block.id) {
@@ -435,9 +446,17 @@ fn layout_key(block: &Block, width: u16, ui: &UiState) -> String {
         }
         BlockKind::Message { source, text } => {
             source.hash(&mut h);
-            text.len().hash(&mut h);
+            text.hash(&mut h);
         }
-        _ => std::mem::discriminant(&block.kind).hash(&mut h),
+        BlockKind::Command { name, ok, text } => {
+            name.hash(&mut h);
+            ok.hash(&mut h);
+            text.hash(&mut h);
+        }
+        BlockKind::Notice(text) | BlockKind::Error(text) | BlockKind::YieldQuestion(text) => {
+            text.hash(&mut h)
+        }
+        BlockKind::Permission(_) => {}
     }
     h.finish().to_string()
 }
@@ -446,6 +465,90 @@ fn layout_key(block: &Block, width: u16, ui: &UiState) -> String {
 mod selection_tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn persistent_layout_updates_replaced_content_and_running_glyph() {
+        let mut state = State::default();
+        state.conversation.blocks.push(Block {
+            id: "message".into(),
+            kind: BlockKind::Message {
+                source: "assistant".into(),
+                text: "first".into(),
+            },
+        });
+        state.conversation.blocks.push(Block {
+            id: "command".into(),
+            kind: BlockKind::Command {
+                name: "test".into(),
+                ok: true,
+                text: "before".into(),
+            },
+        });
+        state.conversation.blocks.push(Block {
+            id: "tool".into(),
+            kind: BlockKind::ToolCall {
+                id: "call".into(),
+                name: "bash".into(),
+                args: serde_json::json!({"command":"ls"}),
+                status: None,
+                output: String::new(),
+                metadata: serde_json::Value::Null,
+                duration_ms: None,
+                exit_code: None,
+            },
+        });
+        let mut ui = UiState {
+            follow_bottom: true,
+            ..Default::default()
+        };
+        let mut cache = MarkdownCache::default();
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut paint = |state: &State, ui: &UiState| {
+            let mut map = super::super::selection::TranscriptMap::default();
+            terminal
+                .draw(|f| {
+                    draw(
+                        f,
+                        Rect::new(0, 0, 60, 20),
+                        state,
+                        ui,
+                        &ui.theme.palette(),
+                        &mut cache,
+                        &mut map,
+                    );
+                })
+                .unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>()
+        };
+        let first = paint(&state, &ui);
+        ui.tick = 1;
+        assert_ne!(first, paint(&state, &ui));
+        state.conversation.blocks[0].kind = BlockKind::Message {
+            source: "assistant".into(),
+            text: "other".into(),
+        };
+        state.conversation.blocks[1].kind = BlockKind::Command {
+            name: "test".into(),
+            ok: false,
+            text: "after".into(),
+        };
+        let changed = paint(&state, &ui);
+        assert!(
+            changed.contains("other") && changed.contains("after") && changed.contains("error")
+        );
+        if let BlockKind::ToolCall { status, .. } = &mut state.conversation.blocks[2].kind {
+            *status = Some(crate::tools::ToolStatus::Ok);
+        }
+        let settled = paint(&state, &ui);
+        ui.tick = 2;
+        assert_eq!(settled, paint(&state, &ui));
+    }
 
     #[test]
     fn streaming_reuses_history_layout_and_ranges_are_graphemes() {

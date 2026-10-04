@@ -6,6 +6,7 @@ requests land in `develop`.
 
 ### Fixed
 
+
 - **VS Code chat**: permission requests can be answered with Allow once or Deny, including
   requests from subagents. The full reason and call are visible; sending another message warns
   before cancelling a pending request. Answers and expired requests remain visible on replay.
@@ -26,22 +27,41 @@ requests land in `develop`.
   A server restart clears the previous run's controls, failed conversation opens restore the
   conversation you were using, and the model picker loads even when startup opens a conversation
   before the model catalog arrives.
-### Changed
-
-- The driver's own latest request counts as authorized intent in permission review; parent-agent
-  claims remain untrusted, and Navai configuration remains driver-only.
-- Incomplete driver requests never authorize mutations; reviewers receive the full request when it fits.
-
 ### Added
 
 - **VS Code chat**: tool rows show who automatically approved a call (Jev or metacognition),
   with the review reason and any available verdicts in an expandable note.
-- Tool blocks show who auto-approved a reviewed call; expanding reveals the server's reason, optional verdicts and role check, also in copied tool text.
-- Permission evidence includes typed verdicts, deterministic overrides, reviewer model ids,
-  stage latencies and an excerpt-truncation flag on existing tool and permission events.
-- **Terminal client**: a tool block says who auto-approved a reviewed call (`auto · Jev`,
-  `auto · metacognition`, `driver approved`); expanded, it shows the reason, Jev's verdicts and
-  the plan role check. Copies include it.
+
+## [0.4.4] - 2026-10-04
+
+The per-call review now treats your own request as what you want, and the terminal client shows
+who approved each call.
+
+### Changed
+
+- **Your request counts in the permission review**: Jev and metacognition receive your latest
+  request as your intent, so a write you explicitly asked for (for example a file in your home
+  folder) can be approved instead of refused as "untrusted". Its text is never an instruction to
+  the reviewers, and claims made by the agent, a subagent or a tool still prove nothing. Navai's
+  config directory still always asks you.
+- **Incomplete requests never authorize**: your request is sent to the reviewers in full when it
+  fits; when it does not, every reviewed `bash`, `write` and `edit` call asks you.
+- `git` commands stay reviewed as changes: even `git status` or `git diff` can run programs
+  configured in the repository.
+
+### Added
+
+- **Terminal client**: a tool block says who approved a reviewed call (`auto · Jev`,
+  `auto · metacognition`, `driver approved`); expanded, it shows the reason, Jev's verdicts and the
+  plan role check. Copies include it.
+- **Review evidence**: the permission review records Jev's verdicts, the deterministic checks that
+  tightened the call, the reviewer models and their response times on the tool and permission
+  events, also when you approved the call yourself.
+
+### Fixed
+
+- Four tests that failed now and then on a loaded machine; when `git status` for the Changes panel
+  passes its deadline, Navai now ends and reaps the process itself.
 
 ## [0.4.3] - 2026-10-04
 

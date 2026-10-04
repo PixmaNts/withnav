@@ -52,7 +52,7 @@ export type HostToWebview = { generation?: number } & (
   | { type: "commandPicker"; kind: "model" | "variant" | "skills"; items: { name: string; description: string }[]; disabledReason?: string }
   | { type: "agent"; name: string }
   | { type: "modelPending"; alias?: string }
-  | { type: "sendResult"; text: string; accepted: boolean }
+  | { type: "sendResult"; text: string; accepted: boolean; restoreDraft?: boolean }
   /** The cognition starts answering; deltas for this id follow. */
   | { type: "turnStart"; id: string }
   /** Streamed answer text for the current turn, to append. */

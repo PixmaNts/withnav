@@ -119,6 +119,7 @@ let stickToBottom = true;
 let replaying = false;
 let sessionId = "";
 let sending = false;
+let lastConsumedDraft: string | undefined;
 const permissionCards = new Map<string, { root: HTMLElement; outcome: HTMLElement; controls: HTMLElement; call: HTMLElement }>();
 const pauseCards = new Map<string, { outcome: HTMLElement; controls: HTMLElement }>();
 
@@ -453,6 +454,7 @@ function receive(event: HostToWebview): void {
   if (event.type === "conversationOpened") {
     sessionId = event.id ?? "";
     sending = false;
+    lastConsumedDraft = undefined;
     closePalette();
     commandError.hidden = true;
     agentLabel.textContent = "build";
@@ -489,7 +491,11 @@ function receive(event: HostToWebview): void {
     case "message": message(event.author, event.text, event.context, event.selectedSkill, event.source); break;
     case "sendResult":
       sending = false;
-      if (event.accepted && prompt.value === event.text) prompt.value = "";
+      if (event.accepted && prompt.value === event.text) { lastConsumedDraft = event.text; prompt.value = ""; }
+      if (!event.accepted && event.restoreDraft && !prompt.value && lastConsumedDraft === event.text) {
+        prompt.value = event.text;
+        lastConsumedDraft = undefined;
+      }
       updateControls();
       break;
     case "permission": renderPermission(event); break;
@@ -708,7 +714,7 @@ form.addEventListener("submit", event => {
   stickToBottom = true;
   follow();
 });
-prompt.addEventListener("input", () => { paletteDismissed = false; commandError.hidden = true; filterPalette(); updateControls(); });
+prompt.addEventListener("input", () => { lastConsumedDraft = undefined; paletteDismissed = false; commandError.hidden = true; filterPalette(); updateControls(); });
 function updateContextToggle(): void {
   contextPreview.classList.toggle("off", !includeContext.checked);
 }

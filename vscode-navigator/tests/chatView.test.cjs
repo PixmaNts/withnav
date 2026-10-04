@@ -23,6 +23,20 @@ Module._load = function (id, ...args) {
 const { registerChatView } = require("../out/tests/chatView.js");
 Module._load = originalLoad;
 
+test("R1 skill confirms permission cancellation before submission without editor context", async () => {
+  let receive; let submitted = 0; let confirms = 0;
+  vscode.window.showWarningMessage = async () => { confirms++; return "Send anyway"; };
+  Object.defineProperty(vscode.window, "activeTextEditor", { configurable: true, get() { throw new Error("No editor context for skills"); } });
+  const backend = { currentGeneration: () => 2, currentConversationId: () => "S", subscribe: () => () => {}, hasOpenPermissions: () => true,
+    runComposerCommand: async () => { assert.equal(confirms, 1); submitted++; return false; } };
+  registerChatView({ extensionUri: "extension" }, backend);
+  provider.resolveWebviewView({ webview: { cspSource: "test", asWebviewUri: value => value, postMessage() {}, onDidReceiveMessage(listener) { receive = listener; return noopDisposable(); } }, onDidDispose() {} });
+  receive({ type: "send", text: "/skill review check", generation: 2, includeContext: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(submitted, 1);
+  delete vscode.window.activeTextEditor;
+});
+
 test("host routes slash commands before editor context or permission confirmation", async () => {
   let receive;
   let contextReads = 0;

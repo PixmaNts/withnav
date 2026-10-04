@@ -14,6 +14,16 @@ requests land in `develop`.
   stay visible near the composer. Command outcomes appear as notices; refusals keep your draft.
   Commands carry no editor context; `//text` sends a literal `/text` message.
 
+### Fixed
+
+- **VS Code command controls stay with their conversation.** Skill requests now confirm before
+  cancelling a pending permission, can start or resume a conversation, and restore a refused
+  request without replacing newer typing. Model switches remain pending regardless of HTTP/event
+  arrival order; controls cannot change starting conversations or leak late errors into another
+  one. Command discovery refreshes when the server starts or restarts, live variant choices use
+  the conversation's offer, reopened conversations retain their agent, and watchdog resolutions
+  close their pause controls.
+
 ## [0.4.5] - 2026-10-04
 
 The VS Code chat can now answer the agent's permission requests and continue a paused agent.

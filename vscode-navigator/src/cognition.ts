@@ -23,6 +23,10 @@ const RECONNECT_DELAY_MS = 500;
  * networking lives here; the webview never sees HTTP.
  */
 class ConversationState {
+  starting = false;
+  agentSeq = -1;
+  modelRequestToken = 0;
+  settledModelOps = new Set<string>();
   commands: Map<string, { draft: string; name: string; arguments: string }> = new Map();
   commandResults: Map<string, any> = new Map();
   acceptedMessages: Set<string> = new Set();
@@ -70,10 +74,11 @@ export class CognitionBackend implements ChatBackend {
   private commands: CommandInfo[] = [];
 
   async refreshCommands(): Promise<void> {
-    const generation = this.currentGeneration();
+    this.emit({ type: "commands", items: [...this.commands, ...CLIENT_COMMANDS.filter(c => !this.commands.some(s => s.name === c.name))] });
     if (!this.endpoint) return;
-    const body = await this.request("/v1/commands", { method: "GET" });
-    this.checkGeneration(generation);
+    const endpoint = this.endpoint;
+    const body = await this.request("/v1/commands", { method: "GET" }, "endpoint");
+    if (endpoint !== this.endpoint) return;
     this.commands = (Array.isArray(body?.commands) ? body.commands : []).filter((c: any) =>
       typeof c?.name === "string" && /^[a-z][a-z0-9_-]*$/.test(c.name) && typeof c.description === "string" && typeof c.args_hint === "string");
     this.emit({ type: "commands", items: [...this.commands, ...CLIENT_COMMANDS.filter(c => !this.commands.some(s => s.name === c.name))] });
@@ -84,6 +89,7 @@ export class CognitionBackend implements ChatBackend {
     const routed = routeComposer(draft);
     if (routed.kind !== "command") throw new Error("Not a command");
     const { name, arguments: args } = routed;
+    if (this.state.starting && ["model", "variant", "agent", "skill"].includes(name)) throw new Error("Conversation is starting or opening. Try again when it is ready.");
     if (typeof args !== "string") throw new Error("Command arguments must be text");
     if (!this.commands.length) { await this.refreshCommands(); this.checkGeneration(generation); }
     if (![...this.commands, ...CLIENT_COMMANDS].some(c => c.name === name)) throw new Error(`Unknown command: /${name}. Use /help.`);
@@ -94,15 +100,19 @@ export class CognitionBackend implements ChatBackend {
     }
     if (name === "new") {
       if (args && !this.models.some(m => m.alias === args)) throw new Error("Unknown model alias");
-      await this.newConversation();
+      const reset = this.newConversation();
+      const newGeneration = this.currentGeneration();
+      await reset;
+      this.checkGeneration(newGeneration);
       if (args) this.selectModel(args);
+      this.emit({ type: "sendResult", text: draft, accepted: true, generation: newGeneration });
       return true;
     }
     if (name === "model" && !args) {
       this.emit({ type: "commandPicker", kind: "model", items: this.models.map(m => ({ name: m.alias, description: m.model })) });
       return true;
     }
-    if (name === "variant" && !args) {
+    if (name === "variant" && !args && !this.currentConversationId()) {
       const model = this.models.find(m => m.alias === this.state.selectedModel);
       this.emit({ type: "commandPicker", kind: "variant", items: [...(model?.variants ?? []), "off"].map(name => ({ name, description: name === "off" ? "No variant" : "Model variant" })) });
       return true;
@@ -117,10 +127,12 @@ export class CognitionBackend implements ChatBackend {
       return true;
     }
     if (name === "skill") {
-      if (!this.state.session) throw new Error("A conversation is needed. Send a message first.");
       const match = /^(\S+)(?:\s+([\s\S]*))?$/.exec(args);
       if (!match) throw new Error("Usage: /skill <name> [request]");
-      const session = this.state.session;
+      const ensured = await this.ensureSession();
+      const session = ensured.session;
+      generation = ensured.generation;
+      this.checkGeneration(generation);
       const result = await this.request(`/v1/sessions/${encodeURIComponent(session)}/messages`, { method: "POST", body: JSON.stringify({ target_actor_id: ROOT_ACTOR, content: [{ type: "text", text: match[2] || `Apply the ${match[1]} skill.` }, { type: "skill", name: match[1] }] }) });
       this.checkGeneration(generation);
       const operation = result?.command_id ?? result?.operation_id;
@@ -128,7 +140,7 @@ export class CognitionBackend implements ChatBackend {
       else if (result?.accepted === false || result?.ok === false) throw new Error(String(result.error ?? "Message refused"));
       return typeof operation !== "string";
     }
-    if (name === "stop") { if (!this.state.session) throw new Error("A conversation is needed."); await this.stop(); return true; }
+    if (name === "stop") { if (!this.state.session) throw new Error("A conversation is needed."); await this.stop(); this.checkGeneration(generation); return true; }
     if (!this.state.session && !this.state.resumeId) {
       if (!["model", "variant", "agent"].includes(name)) throw new Error("A conversation is needed. Send a message first.");
       if (name === "model") { if (!this.models.some(m => m.alias === args)) throw new Error("Unknown model alias"); this.selectModel(args); return true; }
@@ -147,11 +159,12 @@ export class CognitionBackend implements ChatBackend {
     if (!this.state.session) throw new Error("The conversation is stopped. Send a message to resume it first.");
     if (name === "model" && this.hasOpenPermissions()) throw new Error("Answer the pending permission before switching model.");
     const session = this.state.session;
+    const modelToken = name === "model" ? ++this.state.modelRequestToken : undefined;
     const result = await this.request(`/v1/sessions/${encodeURIComponent(session)}/commands`, { method: "POST", body: JSON.stringify({ name, arguments: args }) });
     this.checkGeneration(generation);
     if (session !== this.state.session) throw new Error("Conversation changed");
     if (typeof result?.operation_id !== "string") throw new Error("Command returned no operation id");
-    if (name === "model" && !this.state.commandResults.has(result.operation_id)) {
+    if (name === "model" && modelToken === this.state.modelRequestToken && !this.state.settledModelOps.has(result.operation_id)) {
       this.state.pendingModel = { alias: args, operationId: result.operation_id };
       this.emit({ type: "modelPending", alias: args });
     }
@@ -160,13 +173,10 @@ export class CognitionBackend implements ChatBackend {
   }
 
   private trackCommand(operation: string, command: { draft: string; name: string; arguments: string }): void {
-    if (command.name === "skill" && this.state.acceptedMessages.has(operation)) {
-      this.emit({ type: "sendResult", text: command.draft, accepted: true });
-      return;
-    }
     this.state.commands.set(operation, command);
     const outcome = this.state.commandResults.get(operation);
     if (outcome) this.settleCommand(outcome);
+    else if (command.name === "skill" && this.state.acceptedMessages.has(operation)) this.emit({ type: "sendResult", text: command.draft, accepted: true });
   }
 
   private settleCommand(p: any): void {
@@ -175,11 +185,15 @@ export class CognitionBackend implements ChatBackend {
     this.state.commandResults.set(operation, p);
     const command = this.state.commands.get(operation);
     if (command) {
-      this.emit({ type: "sendResult", text: command.draft, accepted: p.ok === true });
+      this.emit({ type: "sendResult", text: command.draft, accepted: p.ok === true, restoreDraft: command.name === "skill" && p.ok !== true });
       if (p.ok !== true) this.emit({ type: "commandError", text: String(p.error ?? "Command refused. Your draft was kept.") });
       this.state.commands.delete(operation);
     }
     const deferred = p.ok === true && p.data?.accepted === true && p.data?.applies === "after_turn";
+    if (p.name === "model" && !deferred) this.state.settledModelOps.add(operation);
+    if (command?.name === "variant" && !command.arguments && p.ok === true && Array.isArray(p.data?.offered)) {
+      this.emit({ type: "commandPicker", kind: "variant", items: [...p.data.offered.filter((v: unknown) => typeof v === "string"), "off"].map(name => ({ name, description: name === (p.data.variant ?? "off") ? "Current variant" : "Model variant" })) });
+    }
     if (this.state.pendingModel?.operationId === operation && !deferred) {
       this.state.pendingModel = undefined;
       this.emit({ type: "modelPending" });
@@ -217,6 +231,10 @@ export class CognitionBackend implements ChatBackend {
       this.emit({ type: "status", state: "connecting" });
     }
     this.endpoint = info;
+    if (first || restarted) {
+      this.commands = [];
+      void this.refreshCommands().catch(() => undefined);
+    }
     if (this.state.session) {
       void this.connect();
       return;
@@ -258,6 +276,7 @@ export class CognitionBackend implements ChatBackend {
     this.abortStream();
     const generation = this.state.streamGeneration;
     this.state = new ConversationState();
+    this.state.starting = true;
     this.state.streamGeneration = generation;
     this.state.session = undefined;
     this.state.resumeId = undefined;
@@ -269,6 +288,10 @@ export class CognitionBackend implements ChatBackend {
       const summary = this.conversations.find((c) => c.id === id);
       const before = await this.reconcileSession(id, generation);
       this.checkGeneration(generation);
+      if (typeof before.agent === "string") {
+        this.state.agent = before.agent;
+        this.state.agentSeq = before.current_seq;
+      }
       this.state.previousRunThrough = before.actor_state === "stopped" ? before.current_seq : -1;
       // Resume first: an unknown id (404) must leave the current view intact.
       const created = await this.request("/v1/sessions", {
@@ -280,9 +303,11 @@ export class CognitionBackend implements ChatBackend {
       if (!sessionId) throw new Error("cognition server: resume returned no id");
       // Stop streaming the previous conversation before switching.
       this.state.session = sessionId;
+      this.state.starting = false;
       this.state.resumeId = undefined;
       this.state.replayThrough = Infinity;
       this.emit({ type: "conversationOpened", id: sessionId, title: summary?.title ?? sessionId });
+      this.emit({ type: "agent", name: this.state.agent });
       this.emit({ type: "history", items: [] });
       this.emit({ type: "status", state: "ready" });
       void this.loadSessionModel(sessionId);
@@ -490,7 +515,7 @@ export class CognitionBackend implements ChatBackend {
 
   /** A conversation that exists on the server keeps its model (option A). */
   private modelLocked(): boolean {
-    return this.state.session !== undefined || this.state.resumeId !== undefined;
+    return this.state.starting || this.state.session !== undefined || this.state.resumeId !== undefined;
   }
 
   private emitModels(): void {
@@ -498,7 +523,7 @@ export class CognitionBackend implements ChatBackend {
       type: "models",
       items: [...this.models],
       current: this.state.selectedModel,
-      locked: false,
+      locked: this.state.starting,
     });
     // The window depends on the model: a replay can report usage before the
     // list or the conversation's model arrives, so re-send it with both.
@@ -506,7 +531,11 @@ export class CognitionBackend implements ChatBackend {
   }
 
   selectModel(alias: string): void {
-    if (this.modelLocked()) { void this.runComposerCommand(`/model ${alias}`).catch(error => this.emit({ type: "commandError", text: this.errorText(error) })); return; }
+    if (this.state.starting) { this.emit({ type: "commandError", text: "Conversation is starting or opening. Try again when it is ready." }); return; }
+    if (this.modelLocked()) {
+      const generation = this.currentGeneration();
+      void this.runComposerCommand(`/model ${alias}`, generation).catch(error => this.emit({ type: "commandError", text: this.errorText(error), generation })); return;
+    }
     if (!this.models.some((m) => m.alias === alias)) return;
     this.state.selectedModel = alias;
     this.state.startVariant = undefined;
@@ -520,6 +549,11 @@ export class CognitionBackend implements ChatBackend {
       const summary = await this.reconcileSession(id, generation);
       if (id !== this.state.session) return;
       if (typeof summary?.model === "string") this.state.selectedModel = summary.model;
+      if (typeof summary?.agent === "string" && summary.current_seq >= this.state.agentSeq) {
+        this.state.agent = summary.agent;
+        this.state.agentSeq = summary.current_seq;
+        this.emit({ type: "agent", name: summary.agent });
+      }
       this.state.replayThrough = typeof summary?.current_seq === "number" ? summary.current_seq : Infinity;
     } catch {
       // Keep the current selection: the picker is informative only here.
@@ -576,6 +610,8 @@ export class CognitionBackend implements ChatBackend {
     this.state.commandResults.clear();
     this.state.acceptedMessages.clear();
     this.state.pendingModel = undefined;
+    this.state.settledModelOps.clear();
+    this.state.agentSeq = -1;
     this.state.agent = "build";
     this.state.startVariant = undefined;
     this.state.transcript = [];
@@ -657,9 +693,13 @@ export class CognitionBackend implements ChatBackend {
   }
 
   private async ensureSession(): Promise<{ session: string; generation: number }> {
+    if (this.state.starting) throw new Error("Conversation is starting or opening. Try again when it is ready.");
     if (this.state.session) return { session: this.state.session, generation: this.state.streamGeneration };
     this.abortStream();
     const generation = this.state.streamGeneration;
+    this.state.starting = true;
+    this.emitModels();
+    try {
     if (!this.state.resumeId) {
       const agent = this.state.agent;
       const variant = this.state.startVariant;
@@ -688,6 +728,7 @@ export class CognitionBackend implements ChatBackend {
     this.checkGeneration(generation);
     if (!sessionId) throw new Error("cognition server: create session returned no id");
     this.state.session = sessionId;
+    this.state.starting = false;
     this.state.resumeId = undefined;
     if (!resume) {
       // A brand-new session restarts its seq space. (On resume: same
@@ -704,6 +745,9 @@ export class CognitionBackend implements ChatBackend {
     void this.connect();
     void this.listConversations().catch(() => undefined);
     return { session: sessionId, generation };
+    } finally {
+      if (generation === this.currentGeneration()) { this.state.starting = false; this.emitModels(); }
+    }
   }
 
   /** Parses one SSE frame: `id:`, optional `event:`, joined `data:` lines. */
@@ -859,12 +903,12 @@ export class CognitionBackend implements ChatBackend {
 
   private mapEvent(envelope: WireEnvelope): HostToWebview | undefined {
     const payload = envelope.payload ?? {};
+    for (const update of this.state.controls.envelopeUpdates(envelope)) this.emit(update);
     if (envelope.kind === "message.received" && typeof payload.command_id === "string") {
       this.state.acceptedMessages.add(payload.command_id);
       const command = this.state.commands.get(payload.command_id);
       if (command?.name === "skill") {
         this.emit({ type: "sendResult", text: command.draft, accepted: true });
-        this.state.commands.delete(payload.command_id);
       }
     }
     if (envelope.kind === "session.end") {
@@ -877,11 +921,13 @@ export class CognitionBackend implements ChatBackend {
         text: `/${String(payload.name ?? "command")} · ${payload.ok === false ? String(payload.error ?? "Refused") : payload.data?.applies === "after_turn" ? "Accepted · switches after this turn" : typeof payload.data?.message === "string" ? payload.data.message : JSON.stringify(payload.data ?? "Done", null, 2)}` };
     }
     if (envelope.kind === "session.agent_changed") {
+      this.state.agentSeq = envelope.seq;
       this.state.agent = String(payload.agent ?? "build");
       return { type: "agent", name: this.state.agent };
     }
     if (envelope.kind === "context.compacted") return { type: "notice", text: `Context compacted: ~${payload.estimate_before ?? "?"} → ~${payload.estimate_after ?? "?"} tokens` };
     if (envelope.kind === "model.changed") {
+      if (typeof payload.operation_id === "string") this.state.settledModelOps.add(payload.operation_id);
       if (typeof payload.new?.alias === "string") this.state.selectedModel = payload.new.alias;
       if (payload.operation_id === this.state.pendingModel?.operationId) {
         this.state.pendingModel = undefined;
@@ -890,7 +936,6 @@ export class CognitionBackend implements ChatBackend {
       this.emitModels();
       return { type: "notice", text: `Model: ${payload.new?.alias ?? "unknown"}${payload.variant ? ` · ${payload.variant}` : ""}` };
     }
-    for (const update of this.state.controls.envelopeUpdates(envelope)) this.emit(update);
     const projected = eventView(envelope, this.state.currentTurn, this.state.controls.calls);
     if (projected?.type === "pause" && envelope.seq <= this.state.previousRunThrough) {
       this.emit(projected);

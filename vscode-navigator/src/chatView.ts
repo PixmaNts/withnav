@@ -79,7 +79,8 @@ export function registerChatView(
                 const session = backend.currentConversationId();
                  const generation = backend.currentGeneration();
                  // Route before confirmation and, crucially, before reading editor content.
-                 if (routeComposer(message.text).kind === "command") {
+                 const route = routeComposer(message.text);
+                 if (route.kind === "command" && route.name !== "skill") {
                    return await backend.runComposerCommand(message.text, generation);
                  }
                 if (backend.hasOpenPermissions()) {
@@ -88,12 +89,18 @@ export function registerChatView(
                   );
                   if (answer !== "Send anyway") return false;
                 }
-                if (generation !== backend.currentGeneration() || session !== backend.currentConversationId()) throw new Error("The open conversation changed. Send again in the current conversation.");
+                 if (generation !== backend.currentGeneration() || session !== backend.currentConversationId()) throw new Error("The open conversation changed. Send again in the current conversation.");
+                 if (route.kind === "command") return await backend.runComposerCommand(message.text, generation);
                 const context = message.includeContext === false ? undefined : buildEditorContext().block;
                  const routed = routeComposer(message.text);
                  if (routed.kind === "message") await backend.send(routed.text, context);
                 return true;
-              })().then(accepted => post({ type: "sendResult", text: message.text, accepted, generation: accepted ? backend.currentGeneration() : message.generation }))
+               })().then(accepted => {
+                 // /new deliberately changes identity. Its reset already released the composer;
+                 // never relabel an acknowledgement from the previous conversation.
+                 if (routeComposer(message.text).kind === "command" && message.text.match(/^\/new(?:\s|$)/)) return;
+                 post({ type: "sendResult", text: message.text, accepted, generation: message.generation });
+               })
                 .catch(error => { post({ type: "sendResult", text: message.text, accepted: false, generation: message.generation }); post({ type: "commandError", text: error instanceof Error ? error.message : String(error), generation: message.generation }); });
             }
             break;

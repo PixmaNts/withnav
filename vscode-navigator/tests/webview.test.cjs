@@ -3,6 +3,31 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const { JSDOM } = require("jsdom");
 
+test("R2 shipped page restores refused admitted skill without overwriting newer typing; R5 picker locks", () => {
+  const { chatHtml } = require("../out/tests/chatHtml.js");
+  const dom = new JSDOM(chatHtml("n", "chat.js", "chat.css", "resource:"), { runScripts: "outside-only" });
+  dom.window.acquireVsCodeApi = () => ({ postMessage() {}, getState() {}, setState() {} });
+  dom.window.eval(fs.readFileSync("out/chat.js", "utf8"));
+  const receive = data => dom.window.dispatchEvent(new dom.window.MessageEvent("message", { data: { ...data, generation: 1 } }));
+  receive({ type: "conversationOpened", id: "S", title: "S" });
+  const prompt = dom.window.document.querySelector("#prompt");
+  prompt.value = "/skill review check";
+  receive({ type: "sendResult", text: prompt.value, accepted: true });
+  receive({ type: "sendResult", text: "/skill review check", accepted: false, restoreDraft: true });
+  assert.equal(prompt.value, "/skill review check");
+  receive({ type: "sendResult", text: prompt.value, accepted: true });
+  prompt.value = "new typing"; prompt.dispatchEvent(new dom.window.Event("input"));
+  receive({ type: "sendResult", text: "/skill review check", accepted: false, restoreDraft: true });
+  assert.equal(prompt.value, "new typing");
+  receive({ type: "models", items: [{ alias: "a", model: "a" }], locked: true });
+  assert.equal(dom.window.document.querySelector("#model").disabled, true);
+  dom.window.dispatchEvent(new dom.window.MessageEvent("message", { data: { type: "conversationOpened", id: "B", title: "B", generation: 2 } }));
+  prompt.value = "/stop";
+  dom.window.dispatchEvent(new dom.window.MessageEvent("message", { data: { type: "sendResult", text: "/stop", accepted: true, generation: 1 } }));
+  assert.equal(prompt.value, "/stop", "R6 stale acknowledgement cannot consume an identical draft in B");
+  dom.window.close();
+});
+
 test("shipped palette supports filter, arrows, Tab, Enter, Escape and mouse; agent replay", () => {
   const { chatHtml } = require("../out/tests/chatHtml.js");
   const dom = new JSDOM(chatHtml("n", "chat.js", "chat.css", "resource:"), { runScripts: "outside-only" });

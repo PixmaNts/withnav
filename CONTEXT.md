@@ -132,6 +132,10 @@ that token once; late answers cannot release a newer pause. Resolution, expiry a
 supersession are sequenced notices. Restart expires the hold, retains the checkpoint and waits
 for fresh driver input. Navigator wakes and child results cannot release a hold or renew a parked
 budget. A real driver message replaces the paused turn and records its interruption.
+Recovery installs a separate fresh-driver gate even after publishing expiry; pending child
+completions and autonomous inbox messages stay held until HTTP or CLI driver input clears it.
+Supersession names the old turn in the pause-resolution event, never a second terminal event.
+Accepted deferred model/compact operations receive correlated cancellation at a watchdog pause.
 Without instinct, or with supervision disabled, the session announces a renewable 500-step fallback
 cap instead. Only explicit owner Continue or fresh driver input renews it. An explicit
 `NAVAI_MAX_STEPS` keeps the existing budget parking behaviour; subagents keep their 50-step default.

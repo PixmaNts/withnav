@@ -273,8 +273,12 @@ metacognition call within 20 seconds; undecidable reviews ask the driver. Notice
 awaited delivery, snapshots settled tools and ends the paused turn. Hold identity is a session
 incarnation plus unique hold id. Continue consumes the matching token atomically and sequences
 resolution; restart/stop expires it. A driver message supersedes it and records interruption;
-autonomous inputs cannot release it or renew a parked budget. The event catalog remains
-22 kinds. Root `alt+c`
+autonomous inputs cannot release it or renew a parked budget. The event catalog remains 22 kinds.
+The typed boundary result carries the settled transcript on every watchdog exit and keeps the
+remaining steps. Interrupt-delivery checks revalidate the hold after awaiting notice eligibility.
+Recovery installs an awaiting-fresh-driver gate; neither delivery wakes nor delegated provenance
+can clear it. Deferred controls accepted in a paused turn receive operation-correlated cancellation.
+Root `alt+c`
 uses the existing Continue route with the root as both owner and target, which cannot answer asks
 or permissions. Root turns are unbounded unless `NAVAI_MAX_STEPS` is set; unavailable instinct
 or disabled supervision installs a visible renewable 500-step fallback cap. Children keep their

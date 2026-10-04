@@ -72,8 +72,9 @@ pub struct AgentActor {
     /// sends the request as built. The session runtime sets it at each turn
     /// start.
     pub variant: Option<crate::provider::config::Variant>,
-    /// Model steps one run may take before it yields; read from the
-    /// environment once, when the actor is built.
+    /// Model steps one run may take before it yields. Root actors default to
+    /// unbounded (`usize::MAX`); session preparation installs the child or
+    /// unavailable-instinct fallback budget. An explicit environment cap wins.
     pub max_steps: usize,
     /// An optional role prompt, sent as a second system message right after
     /// the system contract on every request. It is not part of the transcript.
@@ -135,7 +136,7 @@ impl AgentActor {
             max_tokens,
             input_budget: None,
             variant: None,
-            max_steps: crate::agent::run_loop::max_steps(),
+            max_steps: crate::agent::run_loop::root_max_steps(),
             system_prompt: None,
             role: None,
             rules: Instructions::default(),

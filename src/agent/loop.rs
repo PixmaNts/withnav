@@ -15,13 +15,23 @@ use std::path::{Path, PathBuf};
 
 use crate::tools::{ToolResult, ToolStatus};
 
+/// Children retain their renewable step budget.
 pub const DEFAULT_MAX_STEPS: usize = 50;
+pub const WATCHDOG_FALLBACK_STEPS: usize = 500;
 
 pub fn max_steps() -> usize {
     std::env::var("NAVAI_MAX_STEPS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_MAX_STEPS)
+}
+
+/// Root turns have no step cap unless the driver explicitly opts in.
+pub fn root_max_steps() -> usize {
+    std::env::var("NAVAI_MAX_STEPS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(usize::MAX)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1056,6 +1066,29 @@ mod tests {
         actor.input_budget = None;
         let outcome = continue_run(&mut actor, &mut noop, 4).await.unwrap();
         assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "fin"));
+    }
+
+    #[tokio::test]
+    async fn default_root_turn_runs_past_sixty_steps() {
+        let call = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"glob","arguments":"{\"pattern\":\"*\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let done =
+            r#"{"choices":[{"index":0,"delta":{"content":"finished"},"finish_reason":"stop"}]}"#;
+        let mut replies = vec![http_sse(&sse_body(&[call])); 60];
+        replies.push(http_sse(&sse_body(&[done])));
+        let server = spawn_mock(replies).await;
+        let mut actor = make_actor(server.url, registry_all(), CancellationToken::new());
+        assert_eq!(actor.max_steps, usize::MAX);
+        actor.push_user("keep going");
+        let mut steps = 0;
+        let result = run_agent(&mut actor, &mut |event| {
+            if matches!(event, AgentEvent::StepStarted) {
+                steps += 1;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(result, RunOutcome::Done(_)));
+        assert_eq!(steps, 61);
     }
 
     // Given a model that keeps calling tools and a prompt over the budget at

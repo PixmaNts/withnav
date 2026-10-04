@@ -306,6 +306,9 @@ pub struct Service {
     pub(crate) watchdog_teardown_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
     pub(crate) watchdog_test: Arc<Mutex<Option<super::subagents::supervisor::TestWatchdog>>>,
+    #[cfg(debug_assertions)]
+    pub(crate) root_watchdog_test:
+        Arc<Mutex<Option<super::subagents::root_watchdog::TestRootWatchdog>>>,
     _instance: Arc<super::instance::Instance>,
     /// The live sessions of this process; a closed session is removed.
     pub(super) sessions: Arc<Mutex<HashMap<SessionId, SessionHandle>>>,
@@ -565,6 +568,8 @@ impl Service {
             watchdog_teardown_barrier: Arc::default(),
             #[cfg(debug_assertions)]
             watchdog_test: Arc::default(),
+            #[cfg(debug_assertions)]
+            root_watchdog_test: Arc::default(),
             _instance: instance,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             config: Arc::new(config),
@@ -1123,8 +1128,13 @@ impl Service {
             return Err(ServerError::ChildReadOnly);
         }
         let handle = self.routable_handle(child).await?;
-        if handle.parent_session_id != Some(parent) {
+        if handle.parent_session_id != Some(parent)
+            && !(parent == child && handle.parent_session_id.is_none())
+        {
             return Err(ServerError::ChildReadOnly);
+        }
+        if handle.status.pending_permission().is_some() || handle.status.selection.ask_pending() {
+            return Err(ServerError::ChildNotParked);
         }
         if !handle.status.watchdog.resume() && !handle.status.continue_budget() {
             return Err(ServerError::ChildNotParked);
@@ -1877,6 +1887,9 @@ impl Service {
             &self.config.config_dir,
         );
         self.hooks.configure_actor(profile, &mut actor);
+        if child_policy.is_some() {
+            actor.max_steps = crate::agent::run_loop::max_steps();
+        }
         if let Some((allowed, _)) = &child_policy {
             actor
                 .registry
@@ -1992,7 +2005,19 @@ impl Service {
         {
             emitter = emitter.with_permission_mirror(session_id, parent_id, parent.sequencer);
         }
+        let root_watchdog = if child_parent.is_none() {
+            Some(self.prepare_root_watchdog(&workspace)?)
+        } else {
+            None
+        };
         let sequencer = Sequencer::spawn(session_id, emitter, next_seq);
+        if root_watchdog
+            .as_ref()
+            .is_some_and(|watchdog| watchdog.unavailable())
+            && actor.max_steps == usize::MAX
+        {
+            actor.max_steps = crate::agent::run_loop::WATCHDOG_FALLBACK_STEPS;
+        }
 
         for (request_id, tool_call_id) in expired {
             let payload = serde_json::to_value(crate::bus::event::PermissionResolved {
@@ -2060,6 +2085,16 @@ impl Service {
             agents, role,
         )));
         status.init_variant(selected.clone());
+        status.watchdog_fallback_notice.store(
+            root_watchdog
+                .as_ref()
+                .is_some_and(|watchdog| watchdog.unavailable())
+                && actor.max_steps == crate::agent::run_loop::WATCHDOG_FALLBACK_STEPS,
+            std::sync::atomic::Ordering::Release,
+        );
+        if let Some(watchdog) = root_watchdog {
+            watchdog.start(status.clone(), sequencer.clone(), session_cancel.clone());
+        }
         if child_parent.is_none() {
             let pending_history = self.history.clone();
             let eligible_history = self.history.clone();

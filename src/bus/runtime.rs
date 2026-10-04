@@ -97,6 +97,8 @@ struct PermissionSlot {
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
     pub watchdog: watchdog::WatchdogPark,
+    pub watchdog_goal: Mutex<String>,
+    pub watchdog_fallback_notice: std::sync::atomic::AtomicBool,
     pub activity: progress::Activity,
     #[cfg(debug_assertions)]
     negative_eligibility_barrier:
@@ -400,6 +402,7 @@ impl RuntimeStatus {
         SelectedVariant,
     ) {
         let role = self.selection.begin_turn().await;
+        self.activity.begin_turn();
         self.watchdog.transition(true);
         self.set_pending_permission(None);
         let mut slot = self.slot();
@@ -741,7 +744,9 @@ async fn runtime_loop(
     actor.safe_boundary = Some(Arc::new(move |transcript, cancel| {
         let status = boundary_status.clone();
         Box::pin(async move {
-            status.watchdog.boundary(&cancel).await;
+            if !status.watchdog.boundary(&cancel).await {
+                return Ok(None);
+            }
             if cancel.is_cancelled() {
                 return Ok(None);
             }
@@ -949,6 +954,10 @@ async fn runtime_loop(
         }
         // change waits for the turn to end.
         let (role, variant) = status.begin_turn().await;
+        *status
+            .watchdog_goal
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = actor.driver_task.clone().unwrap_or_default();
         status
             .budget_parked
             .store(false, std::sync::atomic::Ordering::Release);
@@ -960,6 +969,14 @@ async fn runtime_loop(
         let task_id = active_task_id.unwrap_or_default();
         let turn_id = Ulid::new();
         let mut turn = TurnPublisher::new(sequencer.clone(), status.clone(), turn_id, task_id);
+        if status
+            .watchdog_fallback_notice
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            turn.publish(EventKind::CommandResult, serde_json::json!({
+                "name":"watchdog", "ok":true, "operation_id":Ulid::new(), "data":{"message":"Instinct unavailable: watchdog cannot judge progress. This session falls back to a renewable 500-step cap; partial work is kept when the budget parks."}
+            }));
+        }
 
         turn.publish(
             EventKind::TurnStart,

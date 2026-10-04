@@ -13,6 +13,7 @@ pub struct WatchdogPark {
     pub stopped: AtomicBool,
     doubt: AtomicBool,
     resumed: Notify,
+    boundary_stop: AtomicBool,
 }
 
 pub type NaturalOutcome = (crate::provider::AssistantMessage, super::CompletionOutcome);
@@ -29,6 +30,16 @@ pub enum TerminalOwner {
 }
 
 impl WatchdogPark {
+    /// Root stops settle the complete tool batch rather than cancelling a call.
+    pub fn stop_at_boundary(&self, generation: u64) -> bool {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.0 != generation || !state.1 || self.is_doubt() {
+            return false;
+        }
+        self.boundary_stop.store(true, Ordering::Release);
+        self.resumed.notify_waiters();
+        true
+    }
     pub fn claim_stuck(&self, generation: u64) -> bool {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.0 != generation || !state.1 || self.is_doubt() {
@@ -40,6 +51,10 @@ impl WatchdogPark {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.0 = state.0.wrapping_add(1);
         state.1 = running;
+        self.boundary_stop.store(false, Ordering::Release);
+        if running {
+            self.doubt.store(false, Ordering::Release);
+        }
     }
     pub fn generation(&self) -> Option<u64> {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -133,22 +148,40 @@ impl WatchdogPark {
         }
         true
     }
-    pub(super) async fn boundary(&self, cancel: &CancellationToken) {
+    pub(super) async fn boundary(&self, cancel: &CancellationToken) -> bool {
         loop {
             let notified = self.resumed.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
+            if self.boundary_stop.swap(false, Ordering::AcqRel) {
+                return false;
+            }
             if !self.is_doubt() && !self.stopped.load(Ordering::Acquire) {
                 break;
             }
             tokio::select! { biased; _ = cancel.cancelled() => break, _ = notified => {} }
         }
+        true
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn root_stop_is_consumed_at_a_safe_boundary_and_does_not_cross_turns() {
+        let park = WatchdogPark::default();
+        park.transition(true);
+        let generation = park.generation().unwrap();
+        assert!(park.stop_at_boundary(generation));
+        assert!(!park.boundary(&CancellationToken::new()).await);
+        assert!(park.boundary(&CancellationToken::new()).await);
+        assert!(park.stop_at_boundary(generation));
+        park.transition(false);
+        park.transition(true);
+        assert!(!park.stop_at_boundary(generation));
+        assert!(park.boundary(&CancellationToken::new()).await);
+    }
     #[tokio::test]
     async fn cancelled_turn_unwinds_a_doubt_boundary_without_resuming_it() {
         let park = WatchdogPark::default();
@@ -173,5 +206,11 @@ mod tests {
         park.transition(true);
         assert!(!park.accept_verdict(old, true));
         assert!(park.accept_verdict(park.generation().unwrap(), true));
+        park.transition(false);
+        park.transition(true);
+        assert!(
+            !park.is_doubt(),
+            "a replacement turn cannot inherit an old hold"
+        );
     }
 }

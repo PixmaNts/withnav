@@ -73,13 +73,14 @@ export function registerChatView(
             break;
           case "send":
             if (typeof message.text === "string" && message.text.trim()) {
+              const operation = backend.captureOperation();
               void (async () => {
                 const session = backend.currentConversationId();
                  const generation = backend.currentGeneration();
                  // Route before confirmation and, crucially, before reading editor content.
                  const route = routeComposer(message.text);
                  if (route.kind === "command" && route.name !== "skill") {
-                   return await backend.runComposerCommand(message.text, generation);
+                   return await backend.runComposerCommand(message.text, generation, operation);
                  }
                 if (backend.hasOpenPermissions()) {
                   const answer = await vscode.window.showWarningMessage(
@@ -88,18 +89,18 @@ export function registerChatView(
                   if (answer !== "Send anyway") return false;
                 }
                  if (generation !== backend.currentGeneration() || session !== backend.currentConversationId()) throw new Error("The open conversation changed. Send again in the current conversation.");
-                 if (route.kind === "command") return await backend.runComposerCommand(message.text, generation);
+                 if (route.kind === "command") return await backend.runComposerCommand(message.text, generation, operation);
                 const context = message.includeContext === false ? undefined : buildEditorContext().block;
                  const routed = routeComposer(message.text);
-                 if (routed.kind === "message") await backend.send(routed.text, context);
+                 if (routed.kind === "message") await backend.send(routed.text, context, operation);
                 return true;
                })().then(accepted => {
                  // /new deliberately changes identity. Its reset already released the composer;
                  // never relabel an acknowledgement from the previous conversation.
                  if (routeComposer(message.text).kind === "command" && message.text.match(/^\/new(?:\s|$)/)) return;
-                 post({ type: "sendResult", text: message.text, accepted, generation: message.generation });
+                 if (backend.ownsOperation(operation)) post({ type: "sendResult", text: message.text, accepted, generation: operation.generation });
                })
-                .catch(error => { post({ type: "sendResult", text: message.text, accepted: false, generation: message.generation }); post({ type: "commandError", text: error instanceof Error ? error.message : String(error), generation: message.generation }); });
+                .catch(error => { if (!backend.ownsOperation(operation)) return; post({ type: "sendResult", text: message.text, accepted: false, generation: operation.generation }); post({ type: "commandError", text: error instanceof Error ? error.message : String(error), generation: operation.generation }); });
             }
             break;
           case "answerPermission":

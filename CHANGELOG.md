@@ -16,6 +16,11 @@ requests land in `develop`.
 
 ### Fixed
 
+- **VS Code composer lifecycle:** first and resumed messages clear their draft after delivery;
+  creation failures and skill refusals remain visible. Starting fresh or restarting the server
+  abandons the old creation safely. Model switches replace the previous pending choice when
+  requested, and an outstanding switch survives a failed attempt to open another conversation.
+
 - **VS Code command controls stay with their conversation.** Skill requests now confirm before
   cancelling a pending permission, can start or resume a conversation, and restore a refused
   request without replacing newer typing. Model switches remain pending regardless of HTTP/event

@@ -1,0 +1,28 @@
+---
+source: tests/tui_view.rs
+expression: shown
+---
+ ◆ navai                                        ▌build  — · — · — / — 
+──────────────────────────────────────────────────────────────────────
+ │ ▾ ✓ bash · driver approved cargo test parser  ok  1.42 s  exit 101 
+ │   Role check: {"reason":"Within the plan                           
+ │ role","verdict":"conforms"}                                        
+ │   test parser::empty_argument ... FAILED                           
+ │   expected Some(""), got None                                      
+ │                                                                    
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+──────────────────────────────────────────────────────────────────────
+ ready   offline                                        session — tok 
+┌ Message ───────────────────────────────────────────────────────────┐
+│                                                                    │
+└────────────────────────────────────────────────────────────────────┘
+ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model · /compact

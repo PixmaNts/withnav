@@ -4,6 +4,9 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+- Tool blocks show who auto-approved a reviewed call; expanding reveals the server's reason, optional verdicts and role check, also in copied tool text.
+
 ## [0.4.3] - 2026-10-04
 
 Fixes from trying 0.4.2's per-call permission review, including a security fix: metacognition could

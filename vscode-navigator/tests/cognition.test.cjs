@@ -34,7 +34,8 @@ test("deferred model resolves only its operation and agent replay updates displa
   assert.equal(backend.state.pendingModel.name, "next");
   apply("model.changed", { operation_id: "OP", new: { agent: "build", source: "override", model: "next" } });
   assert.equal(backend.state.pendingModel, undefined);
-  assert.equal(apply("session.agent_changed", { agent: "plan" }).name, "plan");
+  apply("model.changed", { new: { agent: "plan", model: "gw/plan", source: "config", variant: null } }, 10);
+  assert.equal(backend.state.agent, "plan");
 });
 test("skill sends typed content; durable refusal retains draft and is operation correlated", async t => {
   const { backend, calls, apply } = setup(t, { command_id: "SK", accepted: true });

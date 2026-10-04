@@ -39,7 +39,7 @@ class ConversationState {
   parent?: ConversationState;
   readOnly = false;
   starting = false;
-  agentSeq = -1;
+  archiveReason?: string;
   modelRequestToken = 0;
   settledModelOps = new Set<string>();
   commands: Map<string, { draft: string; name: string; arguments: string }> = new Map();
@@ -85,7 +85,7 @@ export class CognitionBackend implements ChatBackend {
   private assignmentToken = 0;
   private emitAssignments(): void {
     this.emit({ type: "assignments", agents: this.agents, layers: this.layers, current: this.state.agent,
-      model: this.state.selectedModel, variant: this.state.selection?.variant, source: this.state.modelOverride ? "override" : this.state.selection?.source });
+      models: this.models.filter(m => m.api === "chat" && m.enabled !== false), locked: this.state.starting || this.state.readOnly, variant_source: this.state.selection?.variant_source, model: this.state.selectedModel, variant: this.state.selection?.variant, source: this.state.modelOverride ? "override" : this.state.selection?.source });
   }
   async refreshAssignments(): Promise<void> {
     if (this.isReadOnly() || !this.endpoint) return;
@@ -119,7 +119,7 @@ export class CognitionBackend implements ChatBackend {
     this.emit({ type: "agent", name: id }); this.emitAssignments(); this.emitModels();
   }
   publishCompaction(): void { if (this.state.compaction) { const { request: _request, ...view } = this.state.compaction; this.emit({ type: "compaction", ...view }); } }
-  publishSubagents(): void { this.emitChildren(); }
+  publishSubagents(): void { this.emit({ type: "viewMode", readOnly: this.state.readOnly, archiveReason: this.state.archiveReason }); if (!this.state.archiveReason) this.emitChildren(); }
   isReadOnly(): boolean { return this.state.readOnly; }
   private emitChildren(): void {
     const parent = this.parentState();
@@ -261,7 +261,7 @@ export class CognitionBackend implements ChatBackend {
     }
     if (name === "variant" && !args && !this.currentConversationId()) {
       const model = this.models.find(m => m.name === this.state.selectedModel);
-      this.emit({ type: "commandPicker", kind: "variant", items: [...(model?.variants ?? []), "off"].map(name => ({ name, description: name === "off" ? "No variant" : "Model variant" })) });
+      this.emit({ type: "commandPicker", kind: "variant", items: [...(model?.variants ?? []), "off", "inherit"].map(name => ({ name, description: name === "off" ? "No variant" : "Model variant" })) });
       return true;
     }
     if (name === "skills") {
@@ -295,6 +295,11 @@ export class CognitionBackend implements ChatBackend {
         const model = this.models.find(m => m.name === this.state.selectedModel);
         if (!["off", "inherit"].includes(args) && !model?.variants?.includes(args)) throw new Error("Unknown variant for this model");
         this.state.startVariant = args === "inherit" ? undefined : args === "off" ? null : args;
+        const assigned = this.agents.find(a => a.id === this.state.agent)?.effective;
+        this.state.selection = { model: this.state.selectedModel ?? assigned?.model ?? "", source: this.state.modelOverride ? "override" : assigned?.source ?? "config",
+          variant: args === "inherit" ? assigned?.variant ?? model?.defaultVariant : this.state.startVariant,
+          variant_source: args === "inherit" ? assigned?.variant_source ?? "model_default" : "override" };
+        this.emitAssignments();
         this.emit({ type: "notice", text: `Starting variant: ${args}` });
         return true;
       }
@@ -346,11 +351,11 @@ export class CognitionBackend implements ChatBackend {
     else if (command.name === "skill" && this.state.acceptedMessages.has(operation)) this.emit({ type: "sendResult", text: command.draft, accepted: true });
   }
 
-  private settleCommand(p: any): void {
+  private settleCommand(p: any, seq?: number): void {
     const operation = p.operation_id;
     if (typeof operation !== "string") return;
     this.state.commandResults.set(operation, p);
-    if (p.ok === true && p.data?.selection) this.applySelection(p.data.selection);
+    if (p.ok === true && p.data?.selection) this.applySelection(p.data.selection, seq);
     if (p.name === "compact" && this.state.compaction?.pending && this.state.compaction.operationId === operation) {
       const deferred = p.ok === true && p.data?.accepted === true && p.data?.applies === "after_turn";
       this.state.compaction = { ...this.state.compaction, pending: deferred, ok: p.ok === true,
@@ -366,7 +371,7 @@ export class CognitionBackend implements ChatBackend {
     const deferred = p.ok === true && p.data?.accepted === true && p.data?.applies === "after_turn";
     if (p.name === "model" && !deferred) this.state.settledModelOps.add(operation);
     if (command?.name === "variant" && !command.arguments && p.ok === true && Array.isArray(p.data?.offered)) {
-      this.emit({ type: "commandPicker", kind: "variant", items: [...p.data.offered.filter((v: unknown) => typeof v === "string"), "off"].map(name => ({ name, description: name === (p.data.variant ?? "off") ? "Current variant" : "Model variant" })) });
+      this.emit({ type: "commandPicker", kind: "variant", items: [...p.data.offered.filter((v: unknown) => typeof v === "string"), "off", "inherit"].map(name => ({ name, description: name === (p.data.variant ?? "off") ? "Current variant" : "Model variant" })) });
     }
     if (this.state.pendingModel?.operationId === operation && !deferred) {
       this.state.pendingModel = undefined;
@@ -480,7 +485,8 @@ export class CognitionBackend implements ChatBackend {
         this.state.session = id; this.state.readOnly = true; this.state.starting = false;
         this.emit({ type: "conversationOpened", id, title: `${before.title ?? id} · archive` });
         this.emit({ type: "history", items: [] });
-        this.emit({ type: "childView", child: { id, agent: before.agent ?? "Archive", goal: String(before.resume_disabled_reason ?? "Archived history is read-only"), state: "done" }, parentTitle: "archived conversation" });
+        this.state.archiveReason = String(before.resume_disabled_reason ?? "Archived history is read-only");
+        this.publishSubagents();
         this.emit({ type: "status", state: "ready" });
         this.terminalChild = true;
         void this.connect();
@@ -488,7 +494,7 @@ export class CognitionBackend implements ChatBackend {
       }
       if (typeof before.agent === "string") {
         this.state.agent = before.agent;
-        this.state.agentSeq = before.current_seq;
+
       }
       this.state.previousRunThrough = before.actor_state === "stopped" ? before.current_seq : -1;
       // Resume first: an unknown id (404) must leave the current view intact.
@@ -541,6 +547,7 @@ export class CognitionBackend implements ChatBackend {
     this.abortStream();
     const generation = this.currentGeneration();
     this.state = new ConversationState();
+    this.terminalChild = false;
     this.state.streamGeneration = generation;
     this.agents = this.agents.map(agent => ({ ...agent, effective: agent.assignment ?? (agent.effective?.source === "override" ? null : agent.effective) }));
     this.state.agent = this.defaultAgent;
@@ -765,17 +772,8 @@ export class CognitionBackend implements ChatBackend {
     try {
       const summary = await this.reconcileSession(id, generation);
       if (id !== this.state.session) return;
-      if (typeof summary?.model === "string" && summary.current_seq >= this.state.selectionSeq) {
-        this.state.selectedModel = summary.model;
-        this.state.selection = { model: summary.model, variant: summary.variant, source: summary.source, variant_source: summary.variant_source };
-        this.state.selectionSeq = summary.current_seq;
-      }
+      this.applySelection(summary, summary.current_seq);
       void this.refreshAssignments().catch(() => undefined);
-      if (typeof summary?.agent === "string" && summary.current_seq >= this.state.agentSeq) {
-        this.state.agent = summary.agent;
-        this.state.agentSeq = summary.current_seq;
-        this.emit({ type: "agent", name: summary.agent });
-      }
       this.state.replayThrough = typeof summary?.current_seq === "number" ? summary.current_seq : Infinity;
     } catch {
       // Keep the current selection: the picker is informative only here.
@@ -870,7 +868,7 @@ export class CognitionBackend implements ChatBackend {
     this.state.acceptedMessages.clear();
     this.state.pendingModel = undefined;
     this.state.settledModelOps.clear();
-    this.state.agentSeq = -1;
+    this.state.selectionSeq = -1;
     this.state.agent = "build";
     this.state.startVariant = undefined;
     this.state.transcript = [];
@@ -995,7 +993,7 @@ export class CognitionBackend implements ChatBackend {
       body: JSON.stringify(
         resume
           ? { workspace: this.workspacePath(), resume }
-           : { workspace: this.workspacePath(), editor: true, ...(this.state.modelOverride ? { model: this.state.modelOverride } : {}), agent: this.state.agent, ...(this.state.startVariant !== undefined ? { variant: this.state.startVariant } : {}) },
+           : { workspace: this.workspacePath(), editor: true, ...(this.state.modelOverride ? { model: this.state.modelOverride } : {}), ...(this.state.agentChosen ? { agent: this.state.agent } : {}), ...(this.state.startVariant !== undefined ? { variant: this.state.startVariant } : {}) },
       ),
     });
     const sessionId = String(created?.session_id ?? "");
@@ -1018,6 +1016,7 @@ export class CognitionBackend implements ChatBackend {
     this.emit({ type: "agent", name: this.state.agent });
     void this.fetchContext();
     void this.connect();
+    void this.loadSessionModel(sessionId);
     void this.listConversations().catch(() => undefined);
     return { session: sessionId, generation };
     } finally {
@@ -1206,15 +1205,16 @@ export class CognitionBackend implements ChatBackend {
   }
 
   // ---- event -> webview mapping ----
-  private applySelection(selection: any): void {
+  private applySelection(selection: any, seq?: number): void {
+    if (seq === undefined || seq <= this.state.selectionSeq) return;
     if (typeof selection?.agent !== "string" || typeof selection.model !== "string" || typeof selection.source !== "string") return;
     if (selection.agent !== this.state.agent && this.state.pendingModel) { this.state.pendingModel = undefined; this.emit({ type: "modelPending" }); }
+    this.state.selectionSeq = seq;
     this.state.agent = selection.agent;
     this.state.selectedModel = selection.model;
     this.state.selection = selection;
     this.state.modelOverride = undefined;
-    this.emit({ type: "agent", name: selection.agent });
-    this.emitModels(); this.emitAssignments();
+    this.emitAssignments();
   }
 
   private childStatus(status: unknown): ChildInfo["state"] {
@@ -1330,22 +1330,18 @@ export class CognitionBackend implements ChatBackend {
       this.emit({ type: "modelPending" });
     }
     if (envelope.kind === "command.result") {
-      this.settleCommand(payload);
+      this.settleCommand(payload, envelope.seq);
       return { type: "notice", operationId: payload.operation_id, name: String(payload.name ?? "command"), ok: payload.ok === true,
         text: `/${String(payload.name ?? "command")} · ${payload.ok === false ? String(payload.error ?? "Refused") : payload.data?.applies === "after_turn" ? "Accepted · switches after this turn" : typeof payload.data?.message === "string" ? payload.data.message : JSON.stringify(payload.data ?? "Done", null, 2)}` };
     }
-    if (envelope.kind === "session.agent_changed") {
-      this.state.agentSeq = envelope.seq;
-      this.state.agent = String(payload.agent ?? "build");
-      return { type: "agent", name: this.state.agent };
-    }
+    if (envelope.kind === "session.agent_changed") return undefined; // Secondary notification, not effective identity.
     if (envelope.kind === "context.compacted") {
       const text = `Context compacted: ~${payload.estimate_before ?? "?"} → ~${payload.estimate_after ?? "?"} tokens`;
       return { type: "notice", text };
     }
     if (envelope.kind === "model.changed") {
       if (typeof payload.operation_id === "string") this.state.settledModelOps.add(payload.operation_id);
-      if (typeof payload.new?.model === "string") { this.state.selectionSeq = envelope.seq; this.applySelection(payload.new); void this.refreshAssignments().catch(() => undefined); }
+      if (typeof payload.new?.model === "string") { this.applySelection(payload.new, envelope.seq); void this.refreshAssignments().catch(() => undefined); }
       if (payload.operation_id === this.state.pendingModel?.operationId) {
         this.state.pendingModel = undefined;
         this.emit({ type: "modelPending" });
@@ -1471,7 +1467,7 @@ export class CognitionBackend implements ChatBackend {
     // Conversation-list, model and usage metadata is pushed, never replayed
     // as transcript (the view caches the last ones for a reopen).
     const ephemeral =
-      message.type === "assignments" ||
+      message.type === "assignments" || message.type === "viewMode" ||
       message.type === "compaction" ||
       message.type === "subagents" || message.type === "childView" ||
       message.type === "history" ||

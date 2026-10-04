@@ -36,7 +36,8 @@ export interface PauseToken { incarnation: string; hold_id: string }
 
 /** Host -> webview messages. */
 export type HostToWebview = { generation?: number } & (
-  | { type: "assignments"; agents: AgentInfo[]; layers: LayerInfo[]; current: string; model?: string; variant?: string | null; source?: string }
+  | { type: "viewMode"; readOnly: boolean; archiveReason?: string }
+  | { type: "assignments"; agents: AgentInfo[]; layers: LayerInfo[]; current: string; model?: string; variant?: string | null; source?: string; variant_source?: string; models?: ModelInfo[]; locked?: boolean }
   | { type: "compaction"; operationId: string; pending: boolean; text: string; ok?: boolean }
   | { type: "subagents"; parentId: string; items: ChildInfo[] }
   | { type: "childView"; child?: ChildInfo; parentId?: string; parentTitle?: string }

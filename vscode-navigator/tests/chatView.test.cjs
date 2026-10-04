@@ -218,11 +218,11 @@ test('R2.1 registered host posts queued message while idle compact HTTP remains 
 });
 test('R2.2 cancelled selector cannot route slash completion as model selection, including after conversation switch',async t=>{
   const {b,dom,tick,prompt}=fullChat(t);b.state.session='P';b.refreshCommands=async()=>{};
-  b.commands.push({name:'compact',description:'Compact',args_hint:''});b.emit({type:'commands',items:b.commands});b.emit({type:'models',items:[{name:'a',model:'provider/a'}],locked:false});
+  b.commands.push({name:'compact',description:'Compact',args_hint:''});b.emit({type:'commands',items:b.commands});b.emit({type:'models',items:[{name:'gw/a',gateway:'gw',provider_group:'gw',upstream_id:'a',api:'chat',enabled:true}],locked:false});
   await tick();b.emit({type:'commands',items:[{name:'compact',description:'Compact',args_hint:''}]});
   const {key,type}=focusedKeys(dom);let posts=0;
   t.mock.method(globalThis,'fetch',()=>{posts++;return new Promise(()=>{});});
-  const selector=dom.window.document.querySelector('#model');selector.focus();key('Enter');key('Escape');prompt.focus();type('/com');key('Tab');assert.equal(prompt.value,'/compact ');assert.equal(posts,0);
+   const selector=dom.window.document.querySelector('#model');selector.focus();key('Enter');assert.equal(dom.window.document.querySelectorAll('#picker-options [role=option]').length,1);key('Escape');prompt.focus();type('/com');key('Tab');assert.equal(prompt.value,'/compact ');assert.equal(posts,0);
   selector.focus();key('Enter');await b.newConversation();await tick();prompt.focus();while(prompt.value)key('Backspace');type('/com');key('Tab');assert.equal(prompt.value,'/compact ');assert.equal(posts,0);
 });
 test('R2.3 unknown bare slash reaches registered host validation and retains focused draft',async t=>{
@@ -241,7 +241,7 @@ test('target configured default agent, editor creation body, agent switching and
   });
   await b.refreshAssignments();assert.equal(b.state.agent,'plan');assert.equal(dom.window.document.querySelector('[aria-label="Conversation agent"]').value,'plan');assert.equal(dom.window.document.querySelectorAll('[aria-label="Conversation agent"] option').length,2);
   assert.match(dom.window.document.querySelector('.topbar').title,/FIM.*disabled.*wrong API/);assert.match(dom.window.document.querySelector('.topbar').title,/not network availability/);
-  send('hello');await tick();const creation=calls.find(c=>c.url.endsWith('/v1/sessions'));assert.deepEqual(JSON.parse(creation.body),{workspace:process.cwd(),editor:true,agent:'plan'});
+  send('hello');await tick();const creation=calls.find(c=>c.url.endsWith('/v1/sessions'));assert.deepEqual(JSON.parse(creation.body),{workspace:process.cwd(),editor:true});
   event('model.changed',{operation_id:'A',reason:'agent',new:{agent:'build',model:'direct/override',gateway:'direct',upstream_id:'override',variant:null,source:'override',variant_source:'override'}});
   assert.equal(b.state.selectedModel,'direct/override');assert.match(dom.window.document.querySelector('.agent-label').textContent,/build.*override/);
   event('model.changed',{operation_id:'B',reason:'agent',new:{agent:'plan',model:'omniroute/combo/think',gateway:'omniroute',upstream_id:'combo/think',variant:'high',source:'config',variant_source:'config'}});assert.equal(b.state.selectedModel,'omniroute/combo/think');
@@ -268,6 +268,58 @@ test('target reopened summary restores effective override and blocks stale metad
   await b.loadSessionModel('S');assert.equal(b.state.selectedModel,'gw/saved');assert.match(dom.window.document.querySelector('.topbar').title,/gw\/saved.*override/);
   for(let i=0;i<5;i++)event('model.changed',{new:{agent:'build',model:'gw/new',gateway:'gw',upstream_id:'new',variant:null,source:'config',variant_source:'config'}});
   await b.loadSessionModel('S');assert.equal(b.state.selectedModel,'gw/new');
+});
+test('review1 monotonic identity remains atomic across replay summaries and cached command selection rollback',async t=>{
+  const {b,event,dom}=fullChat(t);b.state.session='S';b.refreshAssignments=async()=>{};
+  const identity={agent:'plan',model:'gw/current',variant:'high',source:'override',variant_source:'override'};
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({...identity,current_seq:10})));
+  await b.loadSessionModel('S');
+  for(let i=0;i<9;i++)event('model.changed',{new:{agent:'build',model:'gw/old',variant:null,source:'config',variant_source:'config'}});
+  event('session.agent_changed',{agent:'build'});assert.equal(b.state.agent,'plan');assert.match(dom.window.document.querySelector('.topbar').title,/plan.*gw\/current.*high.*override/);
+  b.state.commandResults.set('old',{operation_id:'old',name:'agent',ok:true,data:{selection:{agent:'build',model:'gw/old',variant:null,source:'config'}}});
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({error:'missing'}),{status:404}));await b.openConversation('missing').catch(()=>{});
+  assert.equal(b.state.agent,'plan');assert.equal(b.state.selectedModel,'gw/current');
+  event('model.changed',{new:{agent:'review',model:'gw/new',variant:'low',source:'config',variant_source:'config'}});
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({...identity,current_seq:9})));await b.loadSessionModel('S');assert.equal(b.state.agent,'review');assert.equal(b.state.selectedModel,'gw/new');
+});
+test('review2 immediate creation omits unselected agent while assignment responses are pending',async t=>{
+  const {b,send,tick}=fullChat(t);b.state.session=undefined;let finishAgents,finishLayers;const bodies=[];
+  t.mock.method(globalThis,'fetch',(url,init)=>{
+    if(url.includes('/agents?'))return new Promise(r=>finishAgents=r);if(url.includes('/layers?'))return new Promise(r=>finishLayers=r);
+    if(init.method==='POST')bodies.push(JSON.parse(init.body));return Promise.resolve(new Response(JSON.stringify(url.endsWith('/messages')?{accepted:true}:{session_id:'S'})));
+  });
+  const loading=b.refreshAssignments().catch(()=>{});send('immediate');await tick();assert.equal(bodies[0].agent,undefined);
+  finishAgents(new Response(JSON.stringify({default_agent:'plan',agents:[]})));finishLayers(new Response(JSON.stringify({layers:[]})));await loading;
+});
+test('review3 archive mode persists on ready and list refresh, inert history and new root lifecycle',async t=>{
+  const {b,dom,tick,event}=fullChat(t);let posts=0;
+  t.mock.method(globalThis,'fetch',async(_url,init)=>{if(init.method==='POST')posts++;return new Response(JSON.stringify({current_seq:10,read_only:true,resume_disabled_reason:'identity unproven',title:'Old history',agent:'plan',model:'gw/history',source:'config'}));});
+  await b.openConversation('archive');assert.equal(posts,0);b.publishSubagents();
+  event('permission.requested',{request_id:'R',tool:'bash',agent:'plan',arguments:'{}',reason:'historic'});event('agent.yield',{kind:'budget'});
+  b.publishSubagents();assert.equal(dom.window.document.querySelector('#prompt').disabled,true);assert.equal(dom.window.document.querySelector('[aria-label="Conversation agent"]').disabled,true);assert.equal([...dom.window.document.querySelectorAll('.control-card button')].length,0);assert.match(dom.window.document.querySelector('.child-header').textContent,/archive/);assert.doesNotMatch(dom.window.document.querySelector('.child-header').textContent,/subagent of/);
+  await b.listConversations();await tick();assert.equal(dom.window.document.querySelector('#prompt').disabled,true);
+  const messages=[];let receive;provider.resolveWebviewView({webview:{cspSource:'test',asWebviewUri:v=>v,postMessage:m=>messages.push(m),onDidReceiveMessage:fn=>{receive=fn;return noopDisposable();}},onDidDispose(){}});receive({type:'ready'});assert(messages.some(m=>m.type==='viewMode'&&m.readOnly&&m.archiveReason));
+  await b.newConversation();assert.equal(b.isReadOnly(),false);assert.equal(b.terminalChild,false);
+});
+for(const variant of ['high','off','inherit'])test(`review4 ${variant} variant-only preview and create wire tri-state`,async t=>{
+  const {b,dom,tick,send}=fullChat(t);b.state.session=undefined;b.refreshAssignments=async()=>{};
+  b.agents=[{id:'build',description:'Build',mode:'primary',effective:{model:'gw/chat',variant:'low',source:'config',variant_source:'config'}}];b.models=[{name:'gw/chat',gateway:'gw',provider_group:'gw',upstream_id:'chat',api:'chat',variants:['low','high']}];b.state.selectedModel='gw/chat';b.state.selection=b.agents[0].effective;
+  b.commands.push({name:'variant',description:'Variant',args_hint:''});const bodies=[];t.mock.method(globalThis,'fetch',async(url,init)=>{if(init.method==='POST')bodies.push(JSON.parse(init.body));return new Response(JSON.stringify(url.endsWith('/messages')?{accepted:true}:{session_id:'S'}));});
+  send('/variant '+variant);await tick();assert.match(dom.window.document.querySelector('.topbar').title,variant==='off'?/variant off/:variant==='inherit'?/low/:/high/);send('hello');await tick();assert.equal(bodies[0].model,undefined);assert.equal(bodies[0].variant,variant==='inherit'?undefined:variant==='off'?null:'high');
+});
+test('review5 hierarchy preserves gateway with collapsed providers and group key actions never select model',async t=>{
+  const {b,dom}=fullChat(t);const rows=['a','b'].map(provider=>({name:`gw/${provider}/model`,gateway:'gw',provider_group:provider,upstream_id:`${provider}/model`,api:'chat',enabled:true}));rows.push({name:'direct/model',gateway:'direct',provider_group:'direct',upstream_id:'model',api:'chat',enabled:true});b.emit({type:'models',items:rows,locked:false});
+  const {key}=focusedKeys(dom);dom.window.document.querySelector('#model').focus();key('Enter');let requests=0;t.mock.method(globalThis,'fetch',()=>{requests++;return new Promise(()=>{});});
+  const group=text=>[...dom.window.document.querySelectorAll('.picker-group')].find(button=>button.textContent===text);
+  group('a').click();assert.equal(dom.window.document.querySelectorAll('#picker-options [role=option]').length,2);group('b').click();assert(group('gw'));assert.equal(dom.window.document.querySelectorAll('#picker-options [role=option]').length,1);group('gw').click();assert.equal(group('a'),undefined);assert.equal(group('b'),undefined);
+  group('gw').focus();key('Enter');group('gw').click(); // jsdom needs native button activation simulated.
+  group('a').focus();key(' ');group('a').click();assert.equal(requests,0);assert.equal([...dom.window.document.querySelectorAll('.picker-group')].filter(button=>button.textContent==='direct').length,1);
+});
+test('review2 send before endpoint announcement also omits unselected agent',async t=>{
+  const {b,send,tick}=fullChat(t);b.endpoint=undefined;b.state.session=undefined;
+  let available;b.waitForEndpoint=()=>new Promise(resolve=>available=resolve);const bodies=[];
+  t.mock.method(globalThis,'fetch',async(url,init)=>{if(init.method==='POST')bodies.push(JSON.parse(init.body));return new Response(JSON.stringify(url.endsWith('/messages')?{accepted:true}:{session_id:'S'}));});
+  send('before announcement');await tick();assert.equal(bodies.length,0);b.endpoint={port:1234,token:'t'};available();await tick();assert.equal(bodies[0].agent,undefined);
 });
 function fullChat(t) {
   const { JSDOM } = require('jsdom');

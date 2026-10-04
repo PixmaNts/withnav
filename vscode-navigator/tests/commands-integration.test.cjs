@@ -107,13 +107,13 @@ test('R8 live variant picker uses correlated pinned offer not catalog or replay'
   assert.equal(messages.some(m => m.type === 'commandPicker'), false);
   await b.runComposerCommand('/variant');
   event('command.result', { operation_id: 'V', name: 'variant', ok: true, data: { offered: ['pinned'], variant: 'pinned' } });
-  assert.deepEqual(messages.findLast(m => m.type === 'commandPicker').items.map(i => i.name), ['pinned','off']);
+  assert.deepEqual(messages.findLast(m => m.type === 'commandPicker').items.map(i => i.name), ['pinned','off','inherit']);
 });
 test('R9 reopen seeds plan from summary and newer agent event wins', async t => {
   const { b, messages, event } = backend();
-  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ agent: 'plan', model: 'a', current_seq: 3 })));
-  await b.loadSessionModel('S'); assert.equal(messages.findLast(m => m.type === 'agent').name, 'plan');
-  for (let i = 0; i < 4; i++) event('session.agent_changed', { agent: 'review' });
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ agent: 'plan', model: 'gw/a', variant: null, source: 'config', variant_source: 'config', current_seq: 3 })));
+  await b.loadSessionModel('S'); assert.equal(messages.findLast(m => m.type === 'assignments').current, 'plan');
+  for (let i = 0; i < 4; i++) event('model.changed', { new: { agent: 'review', model: 'gw/review', variant: null, source: 'config', variant_source: 'config' } });
   await b.loadSessionModel('S'); assert.equal(b.state.agent, 'review');
 });
 for (const resume of [false,true]) test(`R10 skill ${resume ? 'resumes' : 'creates'} then posts typed message`, async t => {

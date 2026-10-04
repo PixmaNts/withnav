@@ -144,23 +144,14 @@ function renderPalette(): void {
     if (paletteRows.length) prompt.setAttribute("aria-activedescendant", `command-option-${paletteIndex}`);
     else prompt.removeAttribute("aria-activedescendant");
   }
-  let gateway = ""; let provider = "";
+
   const group = (label: string, id: string): void => {
     const button = el("button", "picker-group", label); button.type = "button";
     button.setAttribute("aria-expanded", String(!collapsedGroups.has(id) || !!pickerSearch.value));
     button.addEventListener("click", () => { if (collapsedGroups.has(id)) collapsedGroups.delete(id); else collapsedGroups.add(id); renderPalette(); });
     pickerOptions.append(button);
   };
-  if (pickerKind === "model" && !pickerSearch.value) for (const row of pickerItems) {
-    if (row.gateway && collapsedGroups.has(row.gateway) && row.gateway !== gateway) { group(row.gateway, row.gateway); gateway = row.gateway; }
-    else if (row.gateway && row.provider_group && row.provider_group !== row.gateway && collapsedGroups.has(`${row.gateway}/${row.provider_group}`) && provider !== `${row.gateway}/${row.provider_group}`) { group(row.provider_group, `${row.gateway}/${row.provider_group}`); provider = `${row.gateway}/${row.provider_group}`; }
-  }
-  gateway = "";
-  for (const [index, row] of paletteRows.entries()) {
-    if (pickerKind === "model" && row.gateway) {
-      if (gateway !== row.gateway) { gateway = row.gateway; provider = ""; group(gateway, gateway); }
-      if (row.provider_group && row.provider_group !== gateway && provider !== row.provider_group) { provider = row.provider_group; group(provider, `${gateway}/${provider}`); }
-    }
+  const renderOption = (row: typeof paletteRows[number], index: number): void => {
     const option = document.createElement("div");
     option.id = `command-option-${index}`;
     option.className = "command-option";
@@ -176,6 +167,23 @@ function renderPalette(): void {
     option.addEventListener("click", () => choosePalette(index));
     pickerOptions.append(option);
   }
+  if (pickerKind === "model") {
+    const gateways = [...new Set(allMatches.map(row => row.gateway ?? "Models"))];
+    for (const gateway of gateways) {
+      group(gateway, gateway);
+      if (!pickerSearch.value && collapsedGroups.has(gateway)) continue;
+      const rows = allMatches.filter(row => (row.gateway ?? "Models") === gateway);
+      for (const provider of [...new Set(rows.map(row => row.provider_group ?? gateway))]) {
+        const id = `${gateway}/${provider}`;
+        if (provider !== gateway) group(provider, id);
+        if (!pickerSearch.value && collapsedGroups.has(id)) continue;
+        for (const row of rows.filter(row => (row.provider_group ?? gateway) === provider)) {
+          const index = paletteRows.indexOf(row);
+          if (index >= 0) renderOption(row, index);
+        }
+      }
+    }
+  } else paletteRows.forEach(renderOption);
   pickerOptions.querySelector(`#command-option-${paletteIndex}`)?.scrollIntoView?.({ block: "nearest" });
 }
 function filterPalette(): void {
@@ -621,11 +629,19 @@ function receive(event: HostToWebview): void {
       }
       break;
     }
+    case "viewMode": {
+      readOnly = event.readOnly;
+      agentSelect.disabled = readOnly;
+      if (event.archiveReason) { childHeader.hidden = false; childHeader.replaceChildren(el("strong", "", "Read-only archive"), el("p", "", event.archiveReason)); form.hidden = true; }
+      for (const control of document.querySelectorAll<HTMLButtonElement | HTMLTextAreaElement>(".control-card button, .control-card textarea")) control.disabled = readOnly;
+      updateControls(); break;
+    }
     case "childView": {
       readOnly = !!event.child;
       if (event.child) parentId = event.parentId ?? "";
       childHeader.replaceChildren(); childHeader.hidden = !readOnly;
       if (event.child) {
+        agentSelect.disabled = true;
         childHeader.append(el("p", "", `Read-only · subagent of ${event.parentTitle ?? "parent conversation"}`),
           el("strong", "", `${event.child.agent} · ${childStates[event.child.state]}`), el("p", "", "Read-only subagent transcript. Send messages and answer permissions in the parent."), childActions(event.child));
         childrenSection.hidden = true;
@@ -638,11 +654,12 @@ function receive(event: HostToWebview): void {
     case "commandError": commandError.textContent = event.text; commandError.hidden = false; updateControls(); break;
     case "agent": agentLabel.textContent = event.name; break;
     case "assignments": {
+      if (event.models) renderModels({ type: "models", items: event.models, current: event.model, locked: !!event.locked });
       agentSelect.replaceChildren(...event.agents.map(agent => { const option = el("option", "", agent.id); option.value = agent.id; option.title = `${agent.description} · ${agent.effective?.model ?? "Unassigned"}${agent.warning ? ` · ${agent.warning}` : ""}`; return option; }));
-      agentSelect.value = event.current; agentSelect.disabled = readOnly;
+      agentSelect.value = event.current; agentSelect.disabled = readOnly || !!event.locked;
       agentLabel.textContent = `${event.current}${event.source === "override" ? " · override" : ""}`;
       const types: Record<string,string> = { reflex: "FIM · editor", instinct: "SystemOne", metacognition: "Chat" };
-      const tooltip = [`Cognition · ${event.current}: ${event.model ?? "Unassigned"}${event.variant ? ` · ${event.variant}` : ""} · ${event.source ?? "assignment"}`, ...event.layers.map(layer => `${layer.layer} (${types[layer.layer]}): ${layer.model ?? "Unassigned"}${layer.variant ? ` · ${layer.variant}` : ""} · ${layer.status}${layer.reason ? ` — ${layer.reason}` : ""}`), "Usable describes configuration, not network availability. Assignments are read-only."].join("\n");
+      const tooltip = [`Cognition · ${event.current}: ${event.model ?? "Unassigned"}${event.variant === null ? " · variant off" : event.variant ? ` · ${event.variant}` : ""} · ${event.source ?? "assignment"}`, ...event.layers.map(layer => `${layer.layer} (${types[layer.layer]}): ${layer.model ?? "Unassigned"}${layer.variant ? ` · ${layer.variant}` : ""} · ${layer.status}${layer.reason ? ` — ${layer.reason}` : ""}`), "Usable describes configuration, not network availability. Assignments are read-only."].join("\n");
       document.querySelector<HTMLElement>(".topbar")!.title = tooltip; agentLabel.title = tooltip;
       break;
     }
@@ -666,6 +683,7 @@ function receive(event: HostToWebview): void {
       replaying = true;
       try { for (const item of event.items) if (item.type !== "history") receive(item); }
       finally { replaying = false; }
+      if (readOnly) { agentSelect.disabled = true; modelSelect.disabled = true; for (const control of document.querySelectorAll<HTMLButtonElement | HTMLTextAreaElement>(".control-card button, .control-card textarea")) control.disabled = true; }
       if (state === "connecting") setStatus("ready");
       follow();
       break;
@@ -695,7 +713,7 @@ function receive(event: HostToWebview): void {
       const review = card.root.querySelector(".approval-evidence summary");
     if (review?.textContent === "Driver review required" && ["allow_once", "allow_folder"].includes(event.resolution)) review.textContent = "approved · driver";
       card.controls.hidden = !["pending", "error"].includes(event.resolution);
-      for (const control of card.controls.querySelectorAll<HTMLButtonElement | HTMLTextAreaElement>("button, textarea")) control.disabled = event.resolution === "pending";
+      for (const control of card.controls.querySelectorAll<HTMLButtonElement | HTMLTextAreaElement>("button, textarea")) control.disabled = readOnly || event.resolution === "pending";
       follow();
       break;
     }
@@ -705,7 +723,7 @@ function receive(event: HostToWebview): void {
       if (!card) break;
       card.outcome.textContent = event.message ?? (event.state === "pending" ? "Waiting for the server…" : "No longer paused");
       card.controls.hidden = event.state === "resolved";
-      for (const button of card.controls.querySelectorAll("button")) button.disabled = event.state === "pending";
+      for (const button of card.controls.querySelectorAll("button")) button.disabled = readOnly || event.state === "pending";
       follow();
       break;
     }

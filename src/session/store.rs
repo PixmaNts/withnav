@@ -210,6 +210,7 @@ enum Write {
         envelopes: Vec<EventEnvelope>,
     },
     RecordSession {
+        overrides: String,
         id: Ulid,
         workspace: String,
         model: String,
@@ -833,12 +834,40 @@ impl HistoryStore {
         variant: Option<&(String, crate::provider::config::Variant)>,
         primary_agent: Option<&str>,
     ) -> Result<(), String> {
+        self.record_session_with_overrides(
+            id,
+            workspace,
+            model,
+            profile,
+            resolution,
+            variant,
+            primary_agent,
+            &AgentOverrides::new(),
+        )
+        .await
+    }
+
+    /// Initial identity and complete overrides are inserted in one writer transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_session_with_overrides(
+        &self,
+        id: Ulid,
+        workspace: &str,
+        model: &str,
+        profile: Option<&str>,
+        resolution: Option<&crate::provider::catalog::ModelResolution>,
+        variant: Option<&(String, crate::provider::config::Variant)>,
+        primary_agent: Option<&str>,
+        overrides: &AgentOverrides,
+    ) -> Result<(), String> {
+        validate_agent_overrides(overrides)?;
         let (variant, variant_override) = split_variant(variant)?;
         let resolution = resolution
             .map(serde_json::to_string)
             .transpose()
             .map_err(|e| format!("serialize model resolution: {e}"))?;
         self.acked(Write::RecordSession {
+            overrides: serde_json::to_string(overrides).map_err(|e| e.to_string())?,
             id,
             workspace: workspace.to_string(),
             model: model.to_string(),
@@ -1216,6 +1245,7 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             }
         }
         Write::RecordSession {
+            overrides,
             id,
             workspace,
             model,
@@ -1229,8 +1259,8 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             tx.execute(
                 "INSERT OR IGNORE INTO sessions
                  (id, workspace, model, profile, title, created_at, updated_at, last_seq, transcript,
-                  model_resolution, variant, variant_override, primary_agent)
-                 VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5, -1, NULL, ?6, ?7, ?8, ?9)",
+                   model_resolution, variant, variant_override, primary_agent, agent_overrides)
+                  VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5, -1, NULL, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     id.to_string(),
                     workspace,
@@ -1240,7 +1270,8 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                     resolution,
                     variant,
                     variant_override,
-                    primary_agent
+                    primary_agent,
+                    overrides
                 ],
             )?;
         }
@@ -1759,6 +1790,43 @@ fn strip_editor_context(content: &str) -> String {
 mod tests {
     use super::*;
     use crate::bus::event::EventKind;
+
+    #[tokio::test]
+    async fn initial_overrides_and_identity_insert_atomically_or_leave_no_row() {
+        let (dir, store) = temp_store();
+        let mut overrides = AgentOverrides::new();
+        overrides.insert(
+            "build".into(),
+            AgentOverride {
+                model: Some("p/model".into()),
+                variant: AgentVariantOverride::Off,
+            },
+        );
+        let id = Ulid::new();
+        store
+            .record_session_with_overrides(id, "/w", "p/model", None, None, None, None, &overrides)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.meta(id).await.unwrap().unwrap().agent_overrides,
+            overrides
+        );
+        side_connection(&dir).execute_batch("CREATE TRIGGER fail_initial AFTER INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'insert fault'); END;").unwrap();
+        let failed = Ulid::new();
+        assert!(store
+            .record_session_with_overrides(
+                failed, "/w", "p/model", None, None, None, None, &overrides
+            )
+            .await
+            .unwrap_err()
+            .contains("insert fault"));
+        assert!(store.meta(failed).await.unwrap().is_none());
+        assert!(store
+            .replay(failed, None, u64::MAX)
+            .await
+            .unwrap()
+            .is_empty());
+    }
 
     #[tokio::test]
     async fn agent_overrides_are_independent_durable_clearable_and_deleted() {

@@ -13,6 +13,86 @@ use navai::server::{app, AppState};
 mod common;
 
 #[tokio::test]
+async fn creation_assignment_off_named_overrides_and_fallback_notice_are_durable() {
+    let env = env();
+    let config = TestServerConfig::unreachable(&env.root)
+        .variants(json!({"low":{"reasoning_effort":"low"}}), Some("low"))
+        .config();
+    let state = AppState::new(config).unwrap();
+    for off in [json!(null), json!("off")] {
+        std::fs::write(
+            env.root.join("cfg/config.json"),
+            json!({"agents":{"build":{"model":"mock/mock-model","variant":off}}}).to_string(),
+        )
+        .unwrap();
+        let id = state.create_session(&env.ws, None, None).await.unwrap();
+        assert_eq!(
+            state.history().meta(id).await.unwrap().unwrap().variant,
+            None
+        );
+        let named = state
+            .create_session_with(
+                &env.ws,
+                None,
+                None,
+                navai::session::VariantChoice::Exact("low".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        let meta = state.history().meta(named).await.unwrap().unwrap();
+        assert_eq!(meta.agent_overrides["build"].model, None);
+        assert_eq!(
+            meta.agent_overrides["build"].variant,
+            navai::session::store::AgentVariantOverride::Named("low".into())
+        );
+    }
+    std::fs::write(
+        env.root.join("cfg/config.json"),
+        json!({"agents":{"build":{"model":"mock/mock-model"},"plan":{"model":"mock/absent"}}})
+            .to_string(),
+    )
+    .unwrap();
+    let id = state
+        .create_session_with(
+            &env.ws,
+            None,
+            None,
+            navai::session::VariantChoice::Default,
+            Some("plan"),
+        )
+        .await
+        .unwrap();
+    state.history().flush().await.unwrap();
+    let loaded = state.history().load(id).await.unwrap().unwrap();
+    assert!(loaded.envelopes.iter().any(|e| e.kind == "command.result"
+        && e.payload["data"]["warning"]
+            .as_str()
+            .is_some_and(|s| s.contains("plan") && s.contains("mock/absent"))));
+    let rows_before = state
+        .history()
+        .list(&env.ws.display().to_string())
+        .await
+        .unwrap()
+        .len();
+    std::fs::write(
+        env.root.join("cfg/config.json"),
+        json!({"agents":{"build":{"model":"mock/absent"}}}).to_string(),
+    )
+    .unwrap();
+    assert!(state.create_session(&env.ws, None, None).await.is_err());
+    assert_eq!(
+        state
+            .history()
+            .list(&env.ws.display().to_string())
+            .await
+            .unwrap()
+            .len(),
+        rows_before
+    );
+}
+
+#[tokio::test]
 async fn live_agent_switch_restores_model_and_off_override_after_restart() {
     let env = env();
     let config = TestServerConfig::unreachable(&env.root)

@@ -257,6 +257,7 @@ impl Drop for ChildReservation {
 }
 
 struct PreparedSession {
+    assignment_warning: Option<String>,
     initial_override: Option<super::store::AgentOverride>,
     execution: Arc<EffectiveExecution>,
     session_id: SessionId,
@@ -361,6 +362,8 @@ pub struct Service {
     /// installation.
     #[cfg(test)]
     pub(super) install_barrier: Arc<Mutex<Option<Arc<super::run_command::Barrier>>>>,
+    #[cfg(test)]
+    pub(super) preparation_barrier: Arc<Mutex<Option<Arc<super::run_command::Barrier>>>>,
     #[cfg(test)]
     pub(super) publish_barrier: Arc<Mutex<Option<Arc<super::run_command::Barrier>>>>,
 }
@@ -614,6 +617,8 @@ impl Service {
             child_start_failure: Arc::default(),
             #[cfg(test)]
             install_barrier: Arc::default(),
+            #[cfg(test)]
+            preparation_barrier: Arc::default(),
             #[cfg(test)]
             publish_barrier: Arc::default(),
         })
@@ -1900,9 +1905,9 @@ impl Service {
         let agents = self
             .load_agents(&workspace, session_id, resumed.is_some())
             .await;
-        let configured = self.assignments_configured()?;
-        let settings = crate::settings::load(&self.config.config_dir)
-            .map_err(|e| ServerError::History(e.to_string()))?;
+        let captured = self.capture_preparation(&workspace)?;
+        let configured = captured.configured;
+        let settings = &captured.settings;
         let wanted = if configured && agent.is_none() && resumed.is_none() && child_parent.is_none()
         {
             Some(settings.default_agent().map_err(ServerError::History)?)
@@ -1929,6 +1934,8 @@ impl Service {
         };
         let mut inherited = inherited;
         let mut assignment_variant = variant.clone();
+        let mut captured_model = None;
+        let mut assignment_warning = None;
         let initial_override = if configured {
             if let Some(loaded) = &resumed {
                 if let Some(saved) = loaded.meta.agent_overrides.get(role.id.as_str()) {
@@ -1943,22 +1950,26 @@ impl Service {
                     }
                 }
             }
-            let assignment = self.assigned_agent_model(
-                &workspace,
+            let assignment = self.assigned_from_snapshot(
+                &captured,
                 &agents,
                 role.id.as_str(),
                 child_parent.is_some(),
             )?;
             if resumed.is_none() {
                 if child_parent.is_some() {
-                    if let Some((name, choice)) = assignment {
+                    if let Some((name, choice, resolved, warning)) = assignment {
+                        captured_model = Some(resolved);
+                        assignment_warning = warning;
                         alias = name;
                         assignment_variant = choice;
                         inherited = None;
                     }
                 } else if let Some(explicit) = model {
                     alias = explicit.into();
-                } else if let Some((name, choice)) = assignment {
+                } else if let Some((name, choice, resolved, warning)) = assignment {
+                    captured_model = Some(resolved);
+                    assignment_warning = warning;
                     alias = name;
                     if *variant == VariantChoice::Default {
                         assignment_variant = choice;
@@ -1976,6 +1987,23 @@ impl Service {
             // Internal legacy creation path until the final catalog contract cutover.
             None
         };
+        if captured_model.is_none() && inherited.is_none() {
+            captured_model = Some(if configured {
+                let name = crate::provider::model_name::ModelName::parse(&alias, &captured.catalog)
+                    .map_err(|e| ServerError::History(e.to_string()))?;
+                captured.catalog.resolve_name(&name)?
+            } else {
+                captured.catalog.resolve(&alias)?
+            });
+        }
+        #[cfg(test)]
+        {
+            let barrier = self.preparation_barrier.lock().unwrap().take();
+            if let Some(barrier) = barrier {
+                barrier.reached.notify_one();
+                barrier.release.notified().await;
+            }
+        }
         let (resolved, api_key, snapshot, save_late, models_file) =
             if let Some(selection) = &inherited {
                 let execution = selection
@@ -2006,6 +2034,7 @@ impl Service {
                     },
                     &alias,
                     resumed.as_ref(),
+                    captured_model.map(|model| (model, captured.path.clone())),
                 )
                 .await?
             };
@@ -2060,10 +2089,7 @@ impl Service {
         let execution = Arc::new(EffectiveExecution {
             scratch_choice: match &child_policy {
                 Some((_, _, _, _, choice)) => choice.clone(),
-                None => match crate::settings::load(&self.config.config_dir)
-                    .map_err(|e| e.to_string())
-                    .and_then(|settings| settings.permissions_scratch_dirs())
-                {
+                None => match settings.permissions_scratch_dirs() {
                     Ok(paths) => paths,
                     Err(error) => {
                         crate::agent::scratch::warn_once(&error);
@@ -2073,10 +2099,7 @@ impl Service {
             },
             automatic_permission_review: match &child_policy {
                 Some((_, _, enabled, _, _)) => *enabled,
-                None => match crate::settings::load(&self.config.config_dir)
-                    .map_err(|e| e.to_string())
-                    .and_then(|settings| settings.permissions_automatic_review())
-                {
+                None => match settings.permissions_automatic_review() {
                     Ok(enabled) => enabled,
                     Err(error) => {
                         tracing::warn!("automatic permission review disabled: {error}");
@@ -2247,6 +2270,7 @@ impl Service {
         };
 
         Ok(PreparedSession {
+            assignment_warning,
             initial_override,
             execution,
             session_id,
@@ -2269,8 +2293,12 @@ impl Service {
     }
 
     async fn store_prepared(&self, prepared: &PreparedSession) -> Result<(), ServerError> {
+        let mut overrides = super::store::AgentOverrides::new();
+        if let Some(value) = &prepared.initial_override {
+            overrides.insert(prepared.role.id.to_string(), value.clone());
+        }
         self.history
-            .record_session_resolved(
+            .record_session_with_overrides(
                 prepared.session_id,
                 &prepared.workspace.display().to_string(),
                 &prepared.alias,
@@ -2279,26 +2307,10 @@ impl Service {
                 prepared.selected.as_ref(),
                 (prepared.resumed.is_none() && !prepared.role.id.is_build())
                     .then(|| prepared.role.id.as_str()),
+                &overrides,
             )
             .await
             .map_err(ServerError::History)?;
-        if let Some(value) = &prepared.initial_override {
-            if let Err(error) = self
-                .history
-                .update_agent_override(
-                    prepared.session_id,
-                    prepared.role.id.as_str(),
-                    value.clone(),
-                )
-                .await
-            {
-                self.history
-                    .delete(prepared.session_id)
-                    .await
-                    .map_err(ServerError::History)?;
-                return Err(ServerError::History(error));
-            }
-        }
         if prepared.save_late {
             self.save_legacy_snapshot(prepared.session_id, &prepared.snapshot)
                 .await?;
@@ -2308,6 +2320,7 @@ impl Service {
 
     async fn publish_session(&self, prepared: PreparedSession) -> Result<SessionId, ServerError> {
         let PreparedSession {
+            assignment_warning,
             initial_override: _,
             execution,
             session_id,
@@ -2429,6 +2442,9 @@ impl Service {
         if !is_resume {
             // session.start is seq 0, sequenced before the runtime exists.
             let _ = sequencer.publish(start_candidate(&workspace));
+        }
+        if let Some(warning) = assignment_warning {
+            sequencer.publish(Candidate::new(EventKind::CommandResult, serde_json::json!({"operation_id":Ulid::new(),"name":"model_assignment","ok":true,"data":{"warning":warning}}))).map_err(|_| ServerError::SessionStopping)?;
         }
         // THEN the runtime task; the handle is retained so /stop can await
         // the interrupted turn's events before the session.end fence.

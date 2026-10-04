@@ -134,7 +134,51 @@ pub(crate) struct Offer {
     pub known: bool,
 }
 
+pub(super) struct PreparationConfig {
+    pub settings: crate::settings::Settings,
+    pub configured: bool,
+    pub catalog: crate::provider::config::ModelsConfig,
+    pub path: PathBuf,
+}
+type PreparedAssignment = (String, VariantChoice, ResolvedModel, Option<String>);
+
 impl Service {
+    pub(super) fn capture_preparation(
+        &self,
+        workspace: &Path,
+    ) -> Result<PreparationConfig, ServerError> {
+        let path = crate::settings::path(&self.config.config_dir);
+        let read = || match std::fs::read_to_string(&path) {
+            Ok(raw) => Ok(Some(raw)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(ServerError::History(e.to_string())),
+        };
+        let before = read()?;
+        let settings = crate::settings::load(&self.config.config_dir)
+            .map_err(|e| ServerError::History(e.to_string()))?;
+        if before != read()? {
+            return Err(ServerError::History(
+                "settings changed during preparation; retry".into(),
+            ));
+        }
+        let raw: serde_json::Value = before
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|e| ServerError::History(e.to_string()))?
+            .unwrap_or_default();
+        let (catalog, path) = load_models(
+            self.config.models_path.as_deref(),
+            workspace,
+            &self.config.config_dir,
+        )?;
+        Ok(PreparationConfig {
+            settings,
+            configured: raw.get("agents").is_some() || raw.get("default_agent").is_some(),
+            catalog,
+            path,
+        })
+    }
     pub(crate) fn assignments_configured(&self) -> Result<bool, ServerError> {
         let path = crate::settings::path(&self.config.config_dir);
         let raw = match std::fs::read_to_string(path) {
@@ -154,16 +198,21 @@ impl Service {
         agent: &str,
         child: bool,
     ) -> Result<Option<(String, VariantChoice)>, ServerError> {
+        let captured = self.capture_preparation(workspace)?;
+        self.assigned_from_snapshot(&captured, agents, agent, child)
+            .map(|assigned| assigned.map(|(name, variant, _, _)| (name, variant)))
+    }
+
+    pub(super) fn assigned_from_snapshot(
+        &self,
+        captured: &PreparationConfig,
+        agents: &crate::agent::definitions::Agents,
+        agent: &str,
+        child: bool,
+    ) -> Result<Option<PreparedAssignment>, ServerError> {
         use crate::provider::assignments::{AgentModel, AssignmentResolver};
         use crate::settings::AssignmentVariant;
-        let settings = crate::settings::load(&self.config.config_dir)
-            .map_err(|e| ServerError::History(e.to_string()))?;
-        let (catalog, _) = load_models(
-            self.config.models_path.as_deref(),
-            workspace,
-            &self.config.config_dir,
-        )?;
-        let resolver = AssignmentResolver::new(&catalog, &settings);
+        let resolver = AssignmentResolver::new(&captured.catalog, &captured.settings);
         let records: Vec<_> = agents
             .all()
             .map(|a| (a.id.as_str(), a.model.as_deref(), a.mode.is_primary()))
@@ -175,12 +224,14 @@ impl Service {
         let outcome = resolver
             .agent_model(agent, header)
             .map_err(ServerError::History)?;
+        let mut warning_text = None;
         let assigned = match outcome {
             AgentModel::Assigned(model) => model,
             AgentModel::Unassigned if child => return Ok(None),
             outcome => {
                 if let AgentModel::Fallback(warning) = outcome {
                     tracing::warn!("{warning}");
+                    warning_text = Some(warning.to_string());
                 }
                 let header = agents.get(&default).and_then(|a| a.model.as_deref());
                 match resolver
@@ -201,7 +252,12 @@ impl Service {
             AssignmentVariant::Off => VariantChoice::Clear,
             AssignmentVariant::Named(name) => VariantChoice::Exact(name),
         };
-        Ok(Some((assigned.name.to_string(), variant)))
+        Ok(Some((
+            assigned.name.to_string(),
+            variant,
+            assigned.resolved,
+            warning_text,
+        )))
     }
 
     pub(super) fn resolve_model(
@@ -258,8 +314,12 @@ impl Service {
         workspace: &Path,
         alias: &str,
         resumed: Option<&ResumedSession>,
+        captured_model: Option<(ResolvedModel, PathBuf)>,
     ) -> Result<(ResolvedModel, String, ModelResolution, bool, PathBuf), ServerError> {
-        let (resolved, models_file) = self.resolve_model(workspace, alias)?;
+        let (resolved, models_file) = match captured_model {
+            Some(model) => model,
+            None => self.resolve_model(workspace, alias)?,
+        };
         if resolved.model.api != crate::provider::config::ApiKind::Chat {
             return Err(ServerError::History(format!(
                 "model '{alias}' requires API 'chat'"

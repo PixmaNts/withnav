@@ -252,6 +252,17 @@ fall back to next-turn delivery for pending human interactions; inbox commands a
 are checked before completion-only wakes. `subagent.spawned` and `subagent.done` payloads include
 `delivery`; no new event kind is introduced.
 
+**Root watchdog.** `session/subagents/root_watchdog.rs` reuses the child clock, evidence, judge and
+consecutive-failure rule. The service installs one task per root runtime. It skips idle and human
+waits, checks the turn generation again after each model await, and submits a safe-boundary stop or
+doubt hold through `WatchdogPark`. A local mockable `ProgressReviewer` performs one tool-free
+metacognition call within 20 seconds; undecidable reviews ask the driver. Notices reuse
+`command.result`; pauses reuse `agent.yield` with a watchdog subtype. The event catalog remains
+22 kinds. Root `alt+c`
+uses the existing Continue route with the root as both owner and target, which cannot answer asks
+or permissions. Root turns are unbounded unless `NAVAI_MAX_STEPS` is set; unavailable instinct
+installs a visible renewable 500-step fallback cap. Children keep their 50-step budget.
+
 **Child watchdog.** `session/subagents/watchdog.rs` owns the monotonic clock and judge seams,
 bounded evidence, separate `subagent_progress` System One choice and consecutive-failure rule.
 `supervisor.rs` owns one service task per published child, cancelled by lifetime stop or terminal

@@ -119,6 +119,16 @@ child result never cancels the parent's human interaction, instead waiting for t
 _Avoid_: stop (stop tears down the session)
 
 **Watchdog**:
+Root conversations have no default step cap. Their watchdog uses the same bounded observable
+evidence every 300 seconds (`agent.watchdog_interval_secs`; 0 disables), bound to the judged turn.
+`active` continues; `stuck` stops before the next provider request once every tool result is in.
+`doubt`, including two consecutive judge failures, gets one tool-free metacognition review with a
+20-second deadline. Continue keeps running; stop settles the batch and stops; hesitation, invalid
+output, timeout or an unavailable reviewer pauses at that boundary and asks the driver to Continue
+(`alt+c`) or Stop. Permission and ask waits are not judged or answered by this mechanism.
+Without instinct, the session announces a renewable 500-step fallback cap instead. An explicit
+`NAVAI_MAX_STEPS` keeps the existing budget parking behaviour; subagents keep their 50-step default.
+
 The instinct's separate progress check for a running background child, every 300 seconds by
 default (`subagents.watchdog_interval_secs`; 0 disables). It reads a bounded goal, time since
 message/tool activity, last tool call and result, and step count, never reasoning. `active` does

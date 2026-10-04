@@ -6,6 +6,14 @@ requests land in `develop`.
 
 ### Changed
 
+- **Root turns no longer have a 50-step limit**: progress supervision checks the instinct every
+  300 seconds (`agent.watchdog_interval_secs` in `config.json`; 0 disables). Stuck turns stop after
+  the complete tool batch; uncertain progress receives a bounded metacognition review, then pauses
+  for the driver if still uncertain (`alt+c` to continue, Stop to stop). Partial work is kept.
+  `NAVAI_MAX_STEPS` remains an explicit cap. Without an available `instinct` alias, a visible notice
+  announces a renewable 500-step fallback cap for the session. Subagents retain their 50-step budget
+  and their existing watchdog and owner Continue behaviour.
+
 - **Folder grants persist**: an "allow folder" answer is saved per workspace in
   `<data dir>/grants.json` and applies to later sessions in that workspace. Subagents keep theirs in
   memory. Delete the workspace's entry in that file to revoke.

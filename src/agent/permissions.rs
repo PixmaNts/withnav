@@ -355,6 +355,10 @@ fn review_destination(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolErro
     Ok(resolved)
 }
 
+pub fn resolve_protected_root(path: &Path) -> Result<PathBuf, ToolError> {
+    validate_path(&[PathBuf::from("/")], path)
+}
+
 /// Whether `args`' path still resolves to `destination`, the canonical file a
 /// call was checked for, and that file is not a link now. A call whose file
 /// moved between the check and the dispatch (a link put in its place) must

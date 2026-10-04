@@ -39,18 +39,37 @@ pub struct Settings {
 }
 
 impl Settings {
-    pub fn permissions_scratch_dir(&self) -> Result<Option<PathBuf>, String> {
+    pub fn permissions_scratch_dirs(&self) -> Result<Vec<PathBuf>, String> {
         match self
             .root
             .get("permissions")
-            .and_then(|p| p.get("scratch_dir"))
+            .and_then(|p| p.get("scratch_dirs"))
         {
-            None => Ok(Some(std::env::temp_dir().join("navai"))),
-            Some(Value::Null) | Some(Value::Bool(false)) => Ok(None),
-            Some(Value::String(path)) if Path::new(path).is_absolute() => {
-                Ok(Some(PathBuf::from(path)))
+            None => {
+                let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+                    .map(PathBuf::from)
+                    .filter(|path| path.is_absolute() && path.is_dir());
+                let private = runtime.map(|path| path.join("navai")).unwrap_or_else(|| {
+                    std::env::var_os("HOME")
+                        .map(PathBuf::from)
+                        .unwrap_or_default()
+                        .join(".cache/navai/scratch")
+                });
+                Ok(vec![private, std::env::temp_dir().join("navai")])
             }
-            _ => Err("permissions.scratch_dir must be an absolute path, false or null".into()),
+            Some(Value::Array(values)) => values
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(PathBuf::from)
+                        .filter(|path| path.is_absolute())
+                        .ok_or_else(|| {
+                            "permissions.scratch_dirs must contain absolute paths".into()
+                        })
+                })
+                .collect(),
+            _ => Err("permissions.scratch_dirs must be a list of absolute paths".into()),
         }
     }
     /// Root progress-check interval; zero disables supervision.
@@ -200,29 +219,27 @@ pub fn save_tui_theme(config_dir: &Path, id: &str) -> Result<(), SettingsError> 
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     #[test]
-    fn scratch_setting_disables_or_selects_an_absolute_path() {
-        for value in [serde_json::Value::Null, serde_json::json!(false)] {
-            let settings = super::Settings {
-                root: serde_json::json!({"permissions":{"scratch_dir":value}})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-            };
-            assert_eq!(settings.permissions_scratch_dir().unwrap(), None);
-        }
+    fn scratch_setting_disables_or_selects_absolute_paths() {
         let settings = super::Settings {
-            root: serde_json::json!({"permissions":{"scratch_dir":"/tmp/custom-scratch"}})
+            root: serde_json::json!({"permissions":{"scratch_dirs":[]}})
+                .as_object()
+                .unwrap()
+                .clone(),
+        };
+        assert!(settings.permissions_scratch_dirs().unwrap().is_empty());
+        let settings = super::Settings {
+            root: serde_json::json!({"permissions":{"scratch_dirs":["/tmp/custom"]}})
                 .as_object()
                 .unwrap()
                 .clone(),
         };
         assert_eq!(
-            settings.permissions_scratch_dir().unwrap(),
-            Some("/tmp/custom-scratch".into())
+            settings.permissions_scratch_dirs().unwrap(),
+            vec![std::path::PathBuf::from("/tmp/custom")]
         );
     }
-    use super::*;
     #[test]
     fn watchdog_interval_defaults_disables_and_rejects_invalid_values() {
         let mut settings = Settings::default();

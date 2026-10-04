@@ -692,6 +692,22 @@ async fn execute_call(
     if let Some(object) = args.as_object_mut() {
         // Only the loop binds a call to a destination, never the model.
         object.remove(crate::tools::BOUND_ARG);
+        object.remove("navai_scratch_binding");
+        if let Some(destination) = destination {
+            if let Some(identity) = actor
+                .scratch_roots
+                .iter()
+                .find(|root| destination.starts_with(&root.path))
+            {
+                object.insert("navai_scratch_binding".into(), serde_json::json!(identity));
+            }
+        }
+        if let Some(binding) = guard_note
+            .as_ref()
+            .and_then(|note| note.get("scratch_binding"))
+        {
+            object.insert("navai_scratch_binding".into(), binding.clone());
+        }
         if let Some(destination) = destination {
             object.insert(
                 "path".into(),
@@ -1996,6 +2012,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn external_native_retarget_through_typed_resolution_or_native_open_regates() {
+        for tool in ["write", "edit"] {
+            for at_open in [false, true] {
+                let mut actor = plan_actor(None, "http://unused");
+                actor.registry.register(Box::new(crate::tools::native::EditTool));
+                let external = tempfile::tempdir().unwrap();
+                let target = external.path().join("target"); let secret = external.path().join("secret");
+                std::fs::write(&target, "old").unwrap(); std::fs::write(&secret, "keep").unwrap();
+                let roots = actor.tool_context.writable_roots.clone();
+                let args = if tool == "write" { serde_json::json!({"path":target,"content":"new"}) } else { serde_json::json!({"path":target,"old_string":"old","new_string":"new"}) };
+                let call = ToolCall { id:"c".into(), name:tool.into(), args, args_valid:true };
+                let One::Ask(request, destination) = run_gated(&mut actor, &call, &mut |_| {}).await else { panic!("expected held call"); };
+                let id = request.id;
+                actor.pending = Some(PendingInteraction::Permission { request:Box::new(request), call, remaining_calls:vec![], destination, steps_left:1 });
+                actor.state = AgentState::Yielded;
+                let swap = { let target = target.clone(); let secret = secret.clone(); move || { std::fs::remove_file(&target).unwrap(); std::os::unix::fs::symlink(secret, target).unwrap(); } };
+                if at_open { crate::tools::nofollow::on_next_open(swap); } else { swap(); }
+                assert!(matches!(resolve_permission(&mut actor, id, PermissionDecision::AllowOnce, &mut |_| {}).await.unwrap(), RunOutcome::PermissionRequired(_)));
+                assert_eq!(std::fs::read_to_string(secret).unwrap(), "keep");
+                assert_eq!(actor.tool_context.writable_roots, roots);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn external_native_write_and_edit_approval_matrix_preserves_roots() {
         for tool in ["write", "edit"] {
             for route in ["meta", "driver", "deny"] {
@@ -2059,7 +2100,7 @@ mod tests {
             };
             std::fs::create_dir_all(config.join("agents")).unwrap();
             actor.protected_config_root = Some(config.clone());
-            actor.scratch_dir = Some(actor.tool_context.workspace.clone());
+
             actor.permission_reviewer = Some(Arc::new(Meta {
                 decision: Some(super::super::permission_gate::ReviewDecision::Approve),
                 captured: Default::default(),
@@ -2090,6 +2131,38 @@ mod tests {
                     assert!(!target.exists());
                 }
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_config_under_symlinked_parent_and_literal_bash_are_protected() {
+        let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+        let actual = actor.tool_context.workspace.join("actual");
+        std::fs::create_dir(&actual).unwrap();
+        let alias = actor.tool_context.workspace.join("alias");
+        std::os::unix::fs::symlink(&actual, &alias).unwrap();
+        actor.protected_config_root =
+            Some(super::super::permissions::resolve_protected_root(&alias.join("navai")).unwrap());
+        actor.protected_config_spelling = Some(alias.join("navai"));
+        for tool in ["write", "edit", "bash"] {
+            let args = if tool == "bash" {
+                serde_json::json!({"command":format!("echo x > {}/navai/models.json", alias.display())})
+            } else {
+                serde_json::json!({"path":alias.join("navai/models.json"),"content":"new","old_string":"old","new_string":"new"})
+            };
+            let call = ToolCall {
+                id: "c".into(),
+                name: tool.into(),
+                args,
+                args_valid: true,
+            };
+            actor
+                .registry
+                .register(Box::new(crate::tools::native::EditTool));
+            assert!(matches!(
+                run_gated(&mut actor, &call, &mut |_| {}).await,
+                One::Ask(..)
+            ));
         }
     }
 

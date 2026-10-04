@@ -45,10 +45,11 @@ pub enum PendingInteraction {
 }
 
 pub struct AgentActor {
-    pub scratch_identity: Option<super::scratch::Identity>,
+    pub protected_config_spelling: Option<std::path::PathBuf>,
+    pub protected_config_unresolved: bool,
+    pub scratch_roots: Vec<super::scratch::Identity>,
     pub protected_config_root: Option<std::path::PathBuf>,
     pub permission_reviewer_unavailable: &'static str,
-    pub scratch_dir: Option<std::path::PathBuf>,
     pub automatic_permission_review: bool,
     pub permission_judge: Option<Arc<dyn super::permission_gate::PermissionJudge>>,
     pub permission_reviewer: Option<Arc<dyn super::permission_gate::PermissionReviewer>>,
@@ -132,10 +133,11 @@ impl AgentActor {
         cancel: CancellationToken,
     ) -> Self {
         Self {
-            scratch_identity: None,
+            protected_config_spelling: None,
+            protected_config_unresolved: false,
+            scratch_roots: Vec::new(),
             protected_config_root: None,
             permission_reviewer_unavailable: "no alias",
-            scratch_dir: None,
             automatic_permission_review: true,
             permission_judge: None,
             permission_reviewer: None,
@@ -182,14 +184,18 @@ impl AgentActor {
             self.role.as_ref().map(|role| role.prompt.as_str()),
             self.system_prompt.as_deref(),
         );
-        if let Some(path) = &self.scratch_dir {
-            Some(format!(
-                "{}\nPrivate temporary files may use {}. Scratch mutations count as project-local.",
-                message.as_deref().unwrap_or(""),
-                path.display()
-            ))
-        } else {
+        if self.scratch_roots.is_empty() {
             message
+        } else {
+            Some(format!(
+                "{}\nTemporary scratch roots (private first, recommended): {}",
+                message.as_deref().unwrap_or(""),
+                self.scratch_roots
+                    .iter()
+                    .map(|root| root.path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
         }
     }
 

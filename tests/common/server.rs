@@ -237,7 +237,7 @@ impl TestServerConfig {
         std::fs::create_dir_all(&config_dir).expect("config dir");
         std::fs::write(
             config_dir.join("config.json"),
-            r#"{"permissions":{"scratch_dir":false}}"#,
+            r#"{"permissions":{"scratch_dirs":[]}}"#,
         )
         .expect("isolated scratch settings");
         write_auth_file(&config_dir, PROVIDER, "test-key");

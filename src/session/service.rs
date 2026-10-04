@@ -148,7 +148,7 @@ pub struct SelectedModel {
 #[derive(Clone)]
 pub(crate) struct EffectiveExecution {
     pub(crate) automatic_permission_review: bool,
-    pub(crate) scratch_choice: Option<PathBuf>,
+    pub(crate) scratch_choice: Vec<PathBuf>,
     pub(crate) resolved: crate::provider::config::ResolvedModel,
     pub(crate) api_key: String,
 }
@@ -158,7 +158,7 @@ type ChildPolicy = (
     bool,
     bool,
     Option<String>,
-    Option<PathBuf>,
+    Vec<PathBuf>,
 );
 impl std::fmt::Debug for EffectiveExecution {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -803,7 +803,8 @@ impl Service {
                         .selected()
                         .execution
                         .as_ref()
-                        .and_then(|execution| execution.scratch_choice.clone()),
+                        .map(|execution| execution.scratch_choice.clone())
+                        .unwrap_or_default(),
                 )),
                 Some(parent),
                 definition.model.is_none().then_some(inherited),
@@ -1984,10 +1985,16 @@ impl Service {
         let execution = Arc::new(EffectiveExecution {
             scratch_choice: match &child_policy {
                 Some((_, _, _, _, choice)) => choice.clone(),
-                None => crate::settings::load(&self.config.config_dir)
-                    .ok()
-                    .and_then(|settings| settings.permissions_scratch_dir().ok())
-                    .flatten(),
+                None => match crate::settings::load(&self.config.config_dir)
+                    .map_err(|e| e.to_string())
+                    .and_then(|settings| settings.permissions_scratch_dirs())
+                {
+                    Ok(paths) => paths,
+                    Err(error) => {
+                        crate::agent::scratch::warn_once(&error);
+                        Vec::new()
+                    }
+                },
             },
             automatic_permission_review: match &child_policy {
                 Some((_, _, enabled, _, _)) => *enabled,
@@ -2083,34 +2090,34 @@ impl Service {
             &self.config.config_dir,
         );
         actor.automatic_permission_review = execution.automatic_permission_review;
-        actor.protected_config_root = Some(
-            self.config
-                .config_dir
-                .canonicalize()
-                .unwrap_or_else(|_| self.config.config_dir.clone()),
-        );
-        match Ok::<_, String>(execution.scratch_choice.clone()) {
-            Ok(Some(path)) => match crate::agent::scratch::prepare(&path) {
-                Ok(path) => {
-                    if actor
-                        .protected_config_root
-                        .as_ref()
-                        .is_some_and(|root| root.starts_with(&path) || path.starts_with(root))
-                    {
-                        crate::agent::scratch::warn_once(
-                            "scratch overlaps protected config directory",
-                        );
-                    } else {
-                        actor.tool_context.writable_roots.push(path.clone());
-                        actor.scratch_dir = Some(path.clone());
-                        actor.scratch_identity =
-                            crate::agent::scratch::Identity::capture(&path).ok();
-                    }
+        actor.protected_config_spelling = Some(self.config.config_dir.clone());
+        actor.protected_config_root =
+            crate::agent::permissions::resolve_protected_root(&self.config.config_dir).ok();
+        actor.protected_config_unresolved = actor.protected_config_root.is_none();
+        if actor.protected_config_unresolved {
+            crate::agent::scratch::warn_once(
+                "config root unresolved; native writes require driver approval",
+            );
+        }
+        for path in &execution.scratch_choice {
+            if actor
+                .protected_config_root
+                .as_ref()
+                .is_some_and(|root| root.starts_with(path) || path.starts_with(root))
+            {
+                crate::agent::scratch::warn_once("scratch overlaps protected config directory");
+                continue;
+            }
+            match crate::agent::scratch::Identity::capture(path) {
+                Ok(identity) => {
+                    actor
+                        .tool_context
+                        .writable_roots
+                        .push(identity.path.clone());
+                    actor.scratch_roots.push(identity);
                 }
                 Err(error) => crate::agent::scratch::warn_once(&error),
-            },
-            Ok(None) => {}
-            Err(error) => crate::agent::scratch::warn_once(&error),
+            }
         }
         if let Some((_, _, _, driver_task, _)) = &child_policy {
             actor.driver_task = driver_task.clone();

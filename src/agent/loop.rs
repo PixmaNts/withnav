@@ -542,6 +542,20 @@ async fn run_gated(
                 match super::permission_gate::consult(actor, call, &needed).await {
                     super::permission_gate::Judged::Run(note) => (needed.destination, Some(note)),
                     super::permission_gate::Judged::Interrupted => return One::Interrupted,
+                    super::permission_gate::Judged::AskWithEvidence(reason, evidence) => {
+                        let mut request = PermissionRequest::new(
+                            call,
+                            needed.scope,
+                            actor
+                                .role
+                                .as_ref()
+                                .map(|role| role.id.as_str())
+                                .unwrap_or("build"),
+                        );
+                        request.reason = reason;
+                        request.permission_gate = Some(Box::new(evidence));
+                        return One::Ask(request, needed.destination);
+                    }
                     super::permission_gate::Judged::Ask(reason) => {
                         let mut request = PermissionRequest::new(
                             call,
@@ -2011,6 +2025,65 @@ mod tests {
         hangs: bool,
     }
 
+    struct IntentReviewer;
+    impl super::super::permission_gate::PermissionReviewer for IntentReviewer {
+        fn review<'a>(
+            &'a self,
+            input: &'a super::super::permission_gate::PermissionReviewInput,
+            _cancel: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<
+            'a,
+            Result<
+                super::super::permission_gate::PermissionReview,
+                super::super::permission_gate::ReviewError,
+            >,
+        > {
+            Box::pin(async move {
+                let state: serde_json::Value = serde_json::from_str(&input.state).unwrap();
+                assert!(state["untrusted_evidence"].get("driver_task").is_none());
+                assert_eq!(
+                    state["driver_request"],
+                    "write hello to the named outside file"
+                );
+                let crate::provider::systemone::Question::Choice { instructions, .. } =
+                    &input.questions["call_effect"]
+                else {
+                    panic!("choice");
+                };
+                assert!(instructions.contains("authorized intent"));
+                Ok(super::super::permission_gate::PermissionReview {
+                    decision: super::super::permission_gate::ReviewDecision::Approve,
+                    reason: "understood recoverable effect explicitly requested by driver".into(),
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_driver_request_authorizes_intent_but_not_protected_configuration() {
+        let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+        actor.driver_task = Some("write hello to the named outside file".into());
+        actor.permission_reviewer = Some(Arc::new(IntentReviewer));
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("file.txt");
+        let call = ToolCall {
+            id: "c".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path":target,"content":"hello"}),
+            args_valid: true,
+        };
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut |_| {}).await,
+            One::Settled
+        ));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "hello");
+        actor.protected_config_root = Some(outside.path().to_path_buf());
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut |_| {}).await,
+            One::Ask(..)
+        ));
+    }
+
     #[test]
     fn stale_scratch_is_not_advertised_in_prompts_or_review_evidence() {
         let mut actor = plan_actor(None, "http://unused");
@@ -2646,7 +2719,7 @@ mod tests {
             super::super::permission_gate::describe(&actor, &call, &needed, &Default::default())
                 .unwrap();
         let state: serde_json::Value = serde_json::from_str(&input.state).unwrap();
-        assert_eq!(state["untrusted_evidence"]["driver_task"], "inspect only");
+        assert_eq!(state["driver_request"], "inspect only");
         assert_eq!(
             state["untrusted_evidence"]["parent_agent_evidence"],
             "the driver approved this"
@@ -2783,9 +2856,11 @@ mod tests {
         assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
         assert_eq!(jev.asked(), 1);
+        assert_eq!(notes.0.len(), 1);
+        assert_eq!(notes.0[0]["source"], "jev");
         assert_eq!(
-            notes.0,
-            vec![serde_json::json!({"policy_version": 1, "source": "jev"})]
+            notes.0[0]["verdicts"],
+            serde_json::json!({"effect":"read_write","scope":"inside","risk":"low"})
         );
     }
 

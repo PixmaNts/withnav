@@ -161,7 +161,7 @@ async fn wake(state: &AppState, id: ulid::Ulid, text: &str) {
 fn task_asked(provider: &CapturingProvider, n: usize) -> Value {
     let body: Value = serde_json::from_str(&system_one_requests(provider)[n]).unwrap();
     let state: Value = serde_json::from_str(body["state"].as_str().unwrap()).unwrap();
-    state["untrusted_evidence"]["driver_task"].clone()
+    state["driver_request"].clone()
 }
 
 async fn plan_session(state: &AppState, env: &Env) -> ulid::Ulid {
@@ -234,7 +234,7 @@ async fn a_conforming_exception_runs_and_is_recorded() {
         "the role prompt"
     );
     let evidence = &described["untrusted_evidence"];
-    assert_eq!(evidence["driver_task"], "write the stub");
+    assert_eq!(described["driver_request"], "write the stub");
     assert_eq!(
         described["host_facts"]["destination"],
         target.to_str().unwrap()
@@ -256,9 +256,18 @@ async fn a_conforming_exception_runs_and_is_recorded() {
         json!({"by":"jev","verdict":"conforms","role":"plan"})
     );
     assert_eq!(
-        post[0].payload["metadata"]["permission_gate"],
-        json!({"policy_version":1,"source":"jev"})
+        post[0].payload["metadata"]["permission_gate"]["source"],
+        json!("jev")
     );
+    let evidence = &post[0].payload["metadata"]["permission_gate"];
+    assert_eq!(evidence["models"]["jev"], "jev-test");
+    assert_eq!(
+        evidence["verdicts"],
+        json!({"effect":"read_write","scope":"inside","risk":"low"})
+    );
+    assert!(evidence["latency_ms"]["jev"].is_u64());
+    let pre = events(&state, id, "tool.pre_call").await;
+    assert_eq!(&pre[0].payload["permission_gate"], evidence);
 }
 
 // Given plan writing code and Jev not conforming, or not available

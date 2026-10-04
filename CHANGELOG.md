@@ -4,6 +4,18 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
+- The driver's own latest request counts as authorized intent in permission review; parent-agent
+  claims remain untrusted, and Navai configuration remains driver-only.
+- Simple read-only git commands are no longer forced to read-write by the deterministic scanner.
+  Jev still reviews them; mutating, redirected, configured or ambiguous calls remain conservative.
+
+### Added
+
+- Permission evidence includes typed verdicts, deterministic overrides, reviewer model ids,
+  stage latencies and an excerpt-truncation flag on existing tool and permission events.
+
 ## [0.4.3] - 2026-10-04
 
 Fixes from trying 0.4.2's per-call permission review, including a security fix: metacognition could

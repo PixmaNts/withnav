@@ -4,42 +4,40 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-10-04
+
+The VS Code chat gets the terminal client's controls: slash commands, subagents and the context
+gauge. The server is unchanged.
+
 ### Added
 
-- **VS Code chat: follow subagents.** A Subagents section lists each delegated goal and state.
-  Open a child's read-only transcript in its own editor tab without leaving the parent chat,
-  resuming the child or prompting it. Parent drafts and context stay unchanged while inspecting.
-  Stop or continue a parked child with confirmation; refusals stay visible. Child permissions
-  remain reviewable in the parent, and delivered results keep their untrusted-subagent label.
+- **VS Code chat: slash commands.** Type `/` to open a list of commands with their descriptions
+  (arrow keys, Enter or Tab, Esc, or the mouse). `/model` switches the open conversation's model,
+  and the model picker now works on an open conversation too; while the agent is answering, the
+  switch waits for the end of the turn and shows as pending. Also `/variant`, `/agent` (the current
+  agent is shown near the composer), `/compact`, `/context`, `/stop`, `/new` and `/help`. `/skills`
+  lists the conversation's skills; `/skill <name> <request>` sends your request with that skill.
+  A command is never sent to the model as text, nor with the editor context; `//text` sends
+  `/text` as a message. A refused command or skill keeps your draft.
+- **VS Code chat: subagents.** A Subagents section under the conversation lists each subagent with
+  its goal and state. **Open** shows a subagent's conversation in its own read-only editor tab,
+  without leaving or changing your conversation. **Stop** and **Continue** (out of steps, or paused
+  by the watchdog) ask for confirmation first. A subagent's permission requests are still answered
+  in the parent conversation.
 
-- **VS Code chat: slash commands and a command palette.** Type `/` to browse commands with
-  descriptions and argument hints, using the arrow keys, Enter, Tab or the mouse. Switch the
-  open conversation's model with the picker or `/model` (a running turn finishes first), choose
-  its variant or agent, compact context, inspect the context breakdown, select a skill for your
-  next request, stop, start fresh or show help. The current agent and a pending model switch
-  stay visible near the composer. Command outcomes appear as notices; refusals keep your draft.
-  Commands carry no editor context; `//text` sends a literal `/text` message.
+### Changed
+
+- **VS Code chat: the context meter shows what the next request will send**, like the terminal
+  client (`~42k / 1M · 4%`), instead of the last call's usage. Hover or focus it for the breakdown
+  (system, rules, skills catalog, tools, messages), the input budget, the output reserve and the
+  provider's count for the last request.
 
 ### Fixed
 
-- **VS Code composer lifecycle:** first and resumed messages clear their draft after delivery;
-  creation failures and skill refusals remain visible. Starting fresh or restarting the server
-  abandons the old creation safely. Model switches replace the previous pending choice when
-  requested, and an outstanding switch survives a failed attempt to open another conversation.
-
-- **VS Code command controls stay with their conversation.** Skill requests now confirm before
-  cancelling a pending permission, can start or resume a conversation, and restore a refused
-  request without replacing newer typing. Model switches remain pending regardless of HTTP/event
-  arrival order; controls cannot change starting conversations or leak late errors into another
-  one. Command discovery refreshes when the server starts or restarts, live variant choices use
-  the conversation's offer, reopened conversations retain their agent, and watchdog resolutions
-  close their pause controls.
-### Changed
-
-- **VS Code chat**: the context meter shows what the next request will send, as the terminal
-  client does (`~42k / 1M · 4%`), instead of the last call's usage. Hover or focus it for the
-  breakdown (system, rules, skills catalog, tools, messages), the input budget, the output reserve
-  and the provider's count for the last request.
+- **VS Code chat**: commands, model switches and subagent controls always act on the conversation
+  they were started from, including after switching conversations, a failed open, starting a new
+  one or a server restart; a sent message always clears your draft, and a control is sent only
+  once.
 
 ## [0.4.5] - 2026-10-04
 

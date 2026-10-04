@@ -93,7 +93,8 @@ pub struct AgentActor {
     pub cancel: CancellationToken,
     pub state: AgentState,
     pub pending: Option<PendingInteraction>,
-    /// The folder and origin approvals given in this session; memory only.
+    /// The folder and origin approvals: given in this session, or kept for
+    /// its workspace when the session service loads them.
     pub grants: Grants,
     /// What the driver last asked for: the text of their latest message, or
     /// their answer to an `ask`. Set only from a command whose source is the

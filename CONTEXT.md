@@ -169,8 +169,10 @@ chat text never does. It does not survive a restart.
 _Avoid_: confirmation, approval prompt
 
 **Folder grant**:
-An "allow folder" answer, kept in memory for the session: it lets the same agent run the same kind of
-call (file changes, `bash`, or `fetch` for an origin) in that folder and below without asking again.
+An "allow folder" answer: it lets the same agent run the same kind of call (file changes, `bash`,
+or `fetch` for an origin) in that folder and below without asking again. A root session saves it per
+workspace in `<data dir>/grants.json` (0600), so later sessions in that workspace start with it; a
+subagent keeps its grants in memory.
 A grant on the workspace never covers the config directory. For `bash` the folder is the scope the
 driver approved, not a confinement.
 _Avoid_: whitelist, permission rule

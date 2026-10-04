@@ -13,6 +13,7 @@ pub fn number(n: Option<u64>) -> String {
     match n {
         None => "—".into(),
         Some(n) if n < 1000 => n.to_string(),
+        Some(n) if n >= 999_950 => crate::tui::reducer::tokens(n),
         Some(n) if n.is_multiple_of(1000) => format!("{}k", n / 1000),
         Some(n) => format!("{:.1}k", n as f64 / 1000.0),
     }

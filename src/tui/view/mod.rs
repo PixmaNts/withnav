@@ -5,7 +5,7 @@ pub mod panel;
 mod permission;
 mod pickers;
 pub mod sidebar;
-mod status;
+pub(crate) mod status;
 pub mod text;
 pub mod tool;
 mod transcript;

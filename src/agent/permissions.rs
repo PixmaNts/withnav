@@ -102,7 +102,8 @@ pub enum PermissionError {
 
 /// What a grant allows: `write` and `edit` share one capability, `bash` and
 /// `fetch` each have their own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum Capability {
     Files,
     Bash,
@@ -120,14 +121,90 @@ impl Capability {
     }
 }
 
-/// The approvals remembered for a session. Memory only: never persisted, so a
-/// restart starts without any.
+type Entry = (String, Capability, Scope);
+
+/// The approvals remembered for a session. In memory by default; one built
+/// with [`Grants::persisted`] loads and saves those of its workspace.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Grants {
-    entries: Vec<(String, Capability, Scope)>,
+    entries: Vec<Entry>,
+    store: Option<GrantStore>,
+}
+
+/// Where a workspace's grants are kept: one JSON file for every workspace,
+/// keyed by the canonical workspace path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GrantStore {
+    file: PathBuf,
+    workspace: String,
+}
+
+type GrantFile = std::collections::BTreeMap<String, Vec<Entry>>;
+
+impl GrantStore {
+    /// The whole file; an absent file is empty. An unreadable or malformed one
+    /// is an error, so it is never overwritten.
+    fn read(&self) -> Result<GrantFile, String> {
+        match std::fs::read(&self.file) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(GrantFile::new()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Adds `entries` to this workspace's saved grants, keeping those another
+    /// session saved meanwhile: temp file (0600), sync, rename.
+    fn save(&self, entries: &[Entry]) -> Result<(), String> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = self.read()?;
+        let saved = file.entry(self.workspace.clone()).or_default();
+        for entry in entries {
+            if !saved.contains(entry) {
+                saved.push(entry.clone());
+            }
+        }
+        let json = serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())?;
+        if let Some(dir) = self.file.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        let tmp = self.file.with_extension(format!("{}.tmp", Ulid::new()));
+        let mut out = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)
+            .map_err(|e| e.to_string())?;
+        out.write_all(&json)
+            .and_then(|()| out.sync_all())
+            .map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &self.file).map_err(|e| e.to_string())
+    }
 }
 
 impl Grants {
+    /// The grants kept in `file` for `workspace`, saved back there on every
+    /// new grant. A file that cannot be read starts the session without any
+    /// (and is left as it is).
+    pub fn persisted(file: PathBuf, workspace: &Path) -> Self {
+        let store = GrantStore {
+            file,
+            workspace: canonical(workspace).to_string_lossy().into_owned(),
+        };
+        let entries = match store.read() {
+            Ok(mut all) => all.remove(&store.workspace).unwrap_or_default(),
+            Err(err) => {
+                tracing::warn!(file = %store.file.display(), "cannot read the saved grants: {err}");
+                Vec::new()
+            }
+        };
+        Self {
+            entries,
+            store: Some(store),
+        }
+    }
+
     /// Remembers that `agent` may use `tool`'s capability inside `scope`.
     /// Tools that are never gated record nothing.
     pub fn grant(&mut self, agent: &str, tool: &str, scope: Scope) {
@@ -135,8 +212,15 @@ impl Grants {
             return;
         };
         let entry = (agent.to_string(), capability, scope);
-        if !self.entries.contains(&entry) {
-            self.entries.push(entry);
+        if self.entries.contains(&entry) {
+            return;
+        }
+        self.entries.push(entry);
+        // A failed save keeps the grant for this session only.
+        if let Some(store) = &self.store {
+            if let Err(err) = store.save(&self.entries) {
+                tracing::warn!(file = %store.file.display(), "cannot save the grants: {err}");
+            }
         }
     }
 
@@ -511,6 +595,33 @@ mod tests {
         assert_eq!(request.tool_call_id, "c1");
         assert_eq!(request.agent, "build");
         assert!(request.reason.contains("write"));
+    }
+
+    #[test]
+    fn a_persisted_grant_survives_a_new_session_in_the_same_workspace_only() {
+        let f = fixture();
+        let file = f.config.join("grants.json");
+        let mut first = Grants::persisted(file.clone(), &f.ws);
+        first.grant("build", "bash", Scope::Folder(f.ws.clone()));
+        let second = Grants::persisted(file.clone(), &f.ws);
+        assert!(second.covers("build", "bash", &Scope::Folder(f.ws.clone()), &f.cx));
+        assert!(!second.covers("plan", "bash", &Scope::Folder(f.ws.clone()), &f.cx));
+        let other = Grants::persisted(file.clone(), &f.ws.join("src"));
+        assert!(!other.covers("build", "bash", &Scope::Folder(f.ws.clone()), &f.cx));
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn a_malformed_grants_file_is_never_overwritten() {
+        let f = fixture();
+        let file = f.config.join("grants.json");
+        std::fs::write(&file, "not json").unwrap();
+        let mut grants = Grants::persisted(file.clone(), &f.ws);
+        grants.grant("build", "bash", Scope::Folder(f.ws.clone()));
+        assert!(grants.covers("build", "bash", &Scope::Folder(f.ws.clone()), &f.cx));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "not json");
     }
 
     #[test]

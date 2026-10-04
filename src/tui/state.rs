@@ -209,6 +209,7 @@ pub struct Tab {
     pub child_status_seq: Option<u64>,
     /// A watchdog doubt or renewable step budget, never an ask or permission.
     pub watchdog_paused: bool,
+    pub pause_token: Option<crate::bus::event::PauseToken>,
     /// The workspace's branch and changes at the last read; `None` until read, or when the
     /// workspace is not a git repository.
     pub git: Option<super::git::GitStatus>,
@@ -500,6 +501,7 @@ pub enum Focus {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UiState {
     pub child_confirm: Option<(String, String, super::protocol::ChildControl)>,
+    pub child_confirm_token: Option<crate::bus::event::PauseToken>,
     pub focus: Focus,
     pub overlay: Option<super::protocol::Overlay>,
     pub selection: HashMap<String, usize>,

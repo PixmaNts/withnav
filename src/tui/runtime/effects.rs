@@ -320,6 +320,7 @@ impl Executor {
                 parent_session_id,
                 child_session_id,
                 control,
+                pause_token,
             } => {
                 let client = self.client.clone();
                 self.spawn_event(async move {
@@ -335,7 +336,11 @@ impl Executor {
                         }
                         crate::tui::protocol::ChildControl::Continue => {
                             client
-                                .continue_child(&parent_session_id, &child_session_id)
+                                .continue_child_with_token(
+                                    &parent_session_id,
+                                    &child_session_id,
+                                    pause_token,
+                                )
                                 .await
                         }
                     };
@@ -344,6 +349,7 @@ impl Executor {
                         child_session_id,
                         control,
                         result,
+                        pause_token,
                     }
                 });
             }

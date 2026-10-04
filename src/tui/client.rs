@@ -189,12 +189,25 @@ impl Client {
     }
 
     pub async fn continue_child(&self, parent: &str, child: &str) -> Result<(), String> {
+        self.continue_child_with_token(parent, child, None).await
+    }
+    pub async fn continue_child_with_token(
+        &self,
+        parent: &str,
+        child: &str,
+        token: Option<crate::bus::event::PauseToken>,
+    ) -> Result<(), String> {
         let path = format!(
             "/v1/sessions/{}/children/{}/continue",
             encode_segment(parent),
             encode_segment(child)
         );
-        let response: serde_json::Value = self.json(self.post(&path)).await?;
+        let response: serde_json::Value = self
+            .json(
+                self.post(&path)
+                    .json(&serde_json::json!({"pause_token":token})),
+            )
+            .await?;
         if response["accepted"].as_bool() == Some(true) {
             Ok(())
         } else {

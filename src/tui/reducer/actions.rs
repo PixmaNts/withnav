@@ -486,7 +486,12 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             else {
                 return vec![];
             };
-            if s.parent_session_id.as_ref() != Some(&parent_session_id)
+            let token = ui.child_confirm_token.take();
+            let root_self = s.parent_session_id.is_none()
+                && parent_session_id == child_session_id
+                && s.watchdog_paused
+                && s.pause_token == token;
+            if (!root_self && s.parent_session_id.as_ref() != Some(&parent_session_id))
                 || s.session.as_ref().map(|m| &m.session_id) != Some(&child_session_id)
             {
                 return vec![];
@@ -495,10 +500,12 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                 parent_session_id,
                 child_session_id,
                 control,
+                pause_token: token,
             }]
         }
         Action::CancelChildControl => {
             ui.child_confirm = None;
+            ui.child_confirm_token = None;
             vec![]
         }
         Action::PickModel(alias) => pick_model(s, ui, alias, None).unwrap_or_default(),
@@ -659,6 +666,7 @@ fn confirm_child(
                 session.session_id.clone(),
                 control,
             ));
+            ui.child_confirm_token = s.pause_token;
         }
         return vec![];
     }

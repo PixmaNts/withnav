@@ -9,14 +9,15 @@ use super::{Service, SessionId};
 use crate::agent::definitions::{AgentDefinition, AgentMode, AgentRoots, Agents};
 use crate::error::ServerError;
 use crate::provider::assignments::{
-    AgentModel, AssignedModel, AssignmentResolver, Layer, LayerAssignment,
+    AgentModel, AssignedModel, AssignmentResolver, DefaultAgentError, Layer, LayerAssignment,
+    LayerDisabled,
 };
 use crate::provider::config::{effective_variants, load_models, ApiKind, ModelsConfig};
 use crate::provider::model_name::ModelName;
 use crate::session::store::{AgentOverride, AgentVariantOverride, StoredSession};
 use crate::settings::{AssignmentVariant, Settings};
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AssignmentSource {
     Config,
@@ -29,6 +30,16 @@ pub enum AssignmentSource {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AssignmentSelection {
+    pub model: String,
+    pub variant: Option<String>,
+    pub source: AssignmentSource,
+    pub variant_source: AssignmentSource,
+}
+
+/// Must be supplied from the same authoritative snapshot as the stored selection.
+/// Identity fields bind provenance to a selection, rather than to today's config.
+#[derive(Debug, Clone)]
+pub(super) struct PinnedSelectionProvenance {
     pub model: String,
     pub variant: Option<String>,
     pub source: AssignmentSource,
@@ -79,6 +90,8 @@ pub struct LayerEntry {
     pub upstream_id: Option<String>,
     pub api: Option<ApiKind>,
     pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variant_diagnostic: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -178,6 +191,7 @@ impl Service {
                 upstream_id: None,
                 api: None,
                 reason: None,
+                variant_diagnostic: None,
             };
             if requested
                 .as_ref()
@@ -188,24 +202,27 @@ impl Service {
                 continue;
             }
             match resolver.layer_assignment(layer).map_err(diagnostic)? {
-                LayerAssignment::Disabled(reason) => {
-                    entry.reason = Some(safe_reason(
-                        &reason.to_string(),
-                        requested.as_ref().map(|a| a.model.as_str()),
-                        &snapshot.catalog,
-                    ))
-                }
+                LayerAssignment::Disabled(reason) => entry.reason = Some(layer_reason(&reason)),
                 LayerAssignment::Enabled(assigned) => {
-                    match self.assignment_variant(
-                        &snapshot,
-                        &assigned,
-                        layer == Layer::Metacognition,
-                    ) {
-                        Ok(variant) => {
-                            entry.status = LayerStatus::Usable;
-                            entry.variant = variant;
+                    if layer != Layer::Metacognition && assigned.variant.is_some() {
+                        entry.reason = Some(format!("layer '{layer}' disabled: model '{}' does not support variants on its API", assigned.name));
+                    } else if assigned.prefer_low
+                        && !snapshot.offers.contains_key(&assigned.name.to_string())
+                    {
+                        entry.status = LayerStatus::Usable;
+                        entry.variant_diagnostic = Some("preferred-low unresolved: no cached provider effort tiers; runtime discovery is required");
+                    } else {
+                        match self.assignment_variant(
+                            &snapshot,
+                            &assigned,
+                            layer == Layer::Metacognition,
+                        ) {
+                            Ok(variant) => {
+                                entry.status = LayerStatus::Usable;
+                                entry.variant = variant;
+                            }
+                            Err(reason) => entry.reason = Some(reason),
                         }
-                        Err(reason) => entry.reason = Some(reason),
                     }
                     entry.model = Some(assigned.name.to_string());
                     entry.gateway = Some(assigned.name.gateway().into());
@@ -224,7 +241,7 @@ impl Service {
         workspace: &Path,
         session: Option<SessionId>,
     ) -> Result<AgentsBody, ServerError> {
-        let snapshot = self.assignment_snapshot(workspace).await?;
+        let mut snapshot = self.assignment_snapshot(workspace).await?;
         let saved = match session {
             Some(id) => {
                 let row = self
@@ -237,6 +254,9 @@ impl Service {
                     != Some(&snapshot.workspace)
                 {
                     return Err(diagnostic("session_id belongs to a different workspace"));
+                }
+                if let Some(handle) = self.handle(id) {
+                    snapshot.agents = handle.status.selection.agents().clone();
                 }
                 Some(row)
             }
@@ -271,7 +291,7 @@ impl Service {
         }
         let default_agent = resolver
             .default_agent_check(&known)
-            .map_err(|error| diagnostic(error.to_string()))?;
+            .map_err(|error| diagnostic(default_agent_reason(error)))?;
         let default = snapshot
             .agents
             .get(&default_agent)
@@ -327,7 +347,7 @@ impl Service {
                     selection_override = Some(override_view(over));
                 }
                 if definition.id.as_str() == row.primary_agent.as_deref().unwrap_or("build") {
-                    effective = Some(saved_selection(row, effective.as_ref(), &snapshot.catalog)?);
+                    effective = Some(saved_selection(row, None, &snapshot.catalog)?);
                 } else if inherits_parent && selection_override.is_none() {
                     let mut parent = saved_selection(row, None, &snapshot.catalog)?;
                     parent.source = AssignmentSource::Parent;
@@ -386,10 +406,9 @@ impl Service {
             AgentModel::Unassigned => Ok((None, None)),
             AgentModel::Fallback(warning) => Ok((
                 None,
-                Some(safe_reason(
-                    &warning.to_string(),
-                    Some(&warning.model),
-                    &snapshot.catalog,
+                Some(format!(
+                    "agent '{}' has an unusable model assignment; using default_agent",
+                    warning.agent
                 )),
             )),
             AgentModel::Assigned(model) => match self.assignment_variant(snapshot, &model, false) {
@@ -441,7 +460,10 @@ impl Service {
                 return Err(if !snapshot.offers.contains_key(&model.name.to_string()) {
                     "variant offer unavailable: no cached provider effort tiers".into()
                 } else {
-                    format!("variant '{name}' is not offered by model '{}'", model.name)
+                    format!(
+                        "configured variant is not offered by model '{}'",
+                        model.name
+                    )
                 });
             }
         }
@@ -459,6 +481,7 @@ impl Service {
             .as_deref()
             .or_else(|| base.map(|b| b.model.as_str()))
             .ok_or_else(|| diagnostic("variant override has no base model"))?;
+        canonical_name(name, &snapshot.catalog).map_err(diagnostic)?;
         let model_name = ModelName::parse(name, &snapshot.catalog)
             .map_err(|_| diagnostic("saved override has an invalid canonical model name"))?;
         let resolved = snapshot.catalog.resolve_name(&model_name).map_err(|_| {
@@ -520,11 +543,30 @@ fn canonical_name(raw: &str, catalog: &ModelsConfig) -> Result<String, String> {
         .map_err(|_| "invalid canonical model name".into())
 }
 
-fn safe_reason(reason: &str, requested: Option<&str>, catalog: &ModelsConfig) -> String {
-    if requested.is_some_and(|raw| canonical_name(raw, catalog).is_err()) {
-        "assignment has an invalid canonical model name".into()
-    } else {
-        reason.into()
+fn layer_reason(reason: &LayerDisabled) -> String {
+    match reason {
+        LayerDisabled::Missing { layer } => {
+            format!("layer '{layer}' disabled: layers.{layer} is missing")
+        }
+        LayerDisabled::UnknownModel { layer, .. } => {
+            format!("layer '{layer}' disabled: model is unknown, ambiguous or unavailable")
+        }
+        LayerDisabled::InvalidVariant { layer, .. } => {
+            format!("layer '{layer}' disabled: configured variant is not offered")
+        }
+        LayerDisabled::WrongApi {
+            layer,
+            expected,
+            actual,
+            ..
+        } => format!("layer '{layer}' disabled: must use '{expected}' API, not '{actual}'"),
+    }
+}
+
+fn default_agent_reason(error: DefaultAgentError) -> String {
+    match error {
+        DefaultAgentError::NoUsableModel { name, .. } => format!("default_agent '{name}' has no usable model: assignment is missing, invalid, ambiguous or unavailable"),
+        other => other.to_string(),
     }
 }
 
@@ -539,9 +581,9 @@ fn override_view(over: &AgentOverride) -> AssignmentOverrideView {
     }
 }
 
-fn saved_selection(
+pub(super) fn saved_selection(
     row: &StoredSession,
-    candidate: Option<&AssignmentSelection>,
+    provenance: Option<&PinnedSelectionProvenance>,
     catalog: &ModelsConfig,
 ) -> Result<AssignmentSelection, ServerError> {
     let resolution = row.model_resolution.as_deref().ok_or_else(|| {
@@ -559,12 +601,51 @@ fn saved_selection(
         catalog,
     )
     .map_err(diagnostic)?;
-    let same = candidate.filter(|s| s.model == model && s.variant == row.variant);
+    let pinned = match provenance {
+        Some(pinned) if pinned.model == model && pinned.variant == row.variant => Some(pinned),
+        Some(_) => {
+            return Err(diagnostic(
+                "saved selection provenance does not match durable identity",
+            ))
+        }
+        None => None,
+    };
+    let over = row
+        .agent_overrides
+        .get(row.primary_agent.as_deref().unwrap_or("build"));
+    if let Some(over) = over {
+        if let Some(requested) = &over.model {
+            if canonical_name(requested, catalog).map_err(diagnostic)? != model {
+                return Err(diagnostic(
+                    "saved model override does not match durable selection",
+                ));
+            }
+        }
+        let matches = match &over.variant {
+            AgentVariantOverride::Inherit => true,
+            AgentVariantOverride::Off => row.variant.is_none(),
+            AgentVariantOverride::Named(name) => row.variant.as_ref() == Some(name),
+        };
+        if !matches {
+            return Err(diagnostic(
+                "saved variant override does not match durable selection",
+            ));
+        }
+    }
+    let source = if over.is_some_and(|o| o.model.is_some()) {
+        AssignmentSource::Override
+    } else {
+        pinned.map(|p| p.source).ok_or_else(|| diagnostic("saved selection model provenance unavailable: authoritative pinned metadata required"))?
+    };
+    let variant_source = match over.map(|o| &o.variant) {
+        Some(AgentVariantOverride::Off | AgentVariantOverride::Named(_)) => AssignmentSource::Override,
+        _ => pinned.map(|p| p.variant_source).ok_or_else(|| diagnostic("saved selection variant provenance unavailable: authoritative pinned metadata required"))?,
+    };
     Ok(AssignmentSelection {
         model,
         variant: row.variant.clone(),
-        source: same.map_or(AssignmentSource::Override, |s| s.source),
-        variant_source: same.map_or(AssignmentSource::Override, |s| s.variant_source),
+        source,
+        variant_source,
     })
 }
 
@@ -728,6 +809,51 @@ mod tests {
             .set_model_resolution(id, &resolution)
             .await
             .unwrap();
+        let mut row = state.history().meta(id).await.unwrap().unwrap();
+        let pinned = PinnedSelectionProvenance {
+            model: "mock/combo/chat".into(),
+            variant: None,
+            source: AssignmentSource::Config,
+            variant_source: AssignmentSource::Config,
+        };
+        let mut changed_catalog = load_models(
+            state.config.models_path.as_deref(),
+            root.path(),
+            &state.config.config_dir,
+        )
+        .unwrap()
+        .0;
+        // A config refresh cannot change the provenance of the durable selection.
+        changed_catalog
+            .models
+            .get_mut("legacy-chat")
+            .unwrap()
+            .default_variant = Some("low".into());
+        let selection = saved_selection(&row, Some(&pinned), &changed_catalog).unwrap();
+        assert_eq!(selection.source, AssignmentSource::Config);
+        assert_eq!(selection.variant_source, AssignmentSource::Config);
+        assert!(saved_selection(&row, None, &changed_catalog).is_err());
+        row.agent_overrides.insert(
+            "build".into(),
+            AgentOverride {
+                model: Some("mock/combo/chat".into()),
+                variant: AgentVariantOverride::Inherit,
+            },
+        );
+        let selection = saved_selection(&row, Some(&pinned), &changed_catalog).unwrap();
+        assert_eq!(selection.source, AssignmentSource::Override);
+        assert_eq!(selection.variant_source, AssignmentSource::Config);
+        row.agent_overrides.insert(
+            "build".into(),
+            AgentOverride {
+                model: None,
+                variant: AgentVariantOverride::Off,
+            },
+        );
+        let selection = saved_selection(&row, Some(&pinned), &changed_catalog).unwrap();
+        assert_eq!(selection.source, AssignmentSource::Config);
+        assert_eq!(selection.variant_source, AssignmentSource::Override);
+        assert!(saved_selection(&row, None, &changed_catalog).is_err());
         state
             .history()
             .update_agent_override(
@@ -816,5 +942,113 @@ mod tests {
             "config"
         );
         assert!(agent(&body, "oracle")["assignment"]["variant"].is_null());
+    }
+
+    #[tokio::test]
+    async fn layer_non_chat_variants_match_runtime_and_discovery_is_explicitly_unresolved() {
+        let (root, state) = fixture(
+            json!({"layers":{"reflex":{"model":"mock/fim","variant":"low"},"instinct":{"model":"mock/jev","variant":"low"},"metacognition":"mock/combo/chat"}}),
+        );
+        let path = state.config.models_path.as_ref().unwrap();
+        let mut catalog: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        for key in ["legacy-fim", "legacy-instinct"] {
+            catalog["models"][key]["variants"] = json!({"low":{"reasoning_effort":"low"}});
+        }
+        catalog["models"]["legacy-chat"]
+            .as_object_mut()
+            .unwrap()
+            .remove("variants");
+        catalog["models"]["legacy-chat"]
+            .as_object_mut()
+            .unwrap()
+            .remove("default_variant");
+        catalog["providers"]["mock"]["catalog_format"] = json!("omniroute");
+        std::fs::write(path, catalog.to_string()).unwrap();
+        let models = load_models(Some(path), root.path(), &state.config.config_dir)
+            .unwrap()
+            .0;
+        let (_, body) = get(&state, root.path(), "layers", "").await;
+        for (index, layer) in [(0, Layer::Reflex), (1, Layer::Instinct)] {
+            assert_eq!(body["layers"][index]["status"], "disabled");
+            let error = crate::provider::layers::assigned(&models, &state.config.config_dir, layer)
+                .unwrap_err();
+            assert_eq!(body["layers"][index]["reason"], error.to_string());
+        }
+        assert!(body["layers"][2]["variant"].is_null());
+        assert!(body["layers"][2]["variant_diagnostic"]
+            .as_str()
+            .unwrap()
+            .contains("unresolved"));
+    }
+
+    #[tokio::test]
+    async fn ambiguous_catalog_keys_and_url_overrides_are_not_exposed() {
+        let (root, state) = fixture(
+            json!({"layers":{"metacognition":"mock/combo/chat"},"agents":{"build":{"model":"mock/combo/chat"}}}),
+        );
+        let path = state.config.models_path.as_ref().unwrap();
+        let mut catalog: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        catalog["models"]["https://raw-key-secret.invalid"] =
+            catalog["models"]["legacy-chat"].clone();
+        std::fs::write(path, catalog.to_string()).unwrap();
+        for route in ["layers", "agents"] {
+            let (_, body) = get(&state, root.path(), route, "").await;
+            assert!(!body.to_string().contains("raw-key-secret"));
+        }
+        let snapshot = state.assignment_snapshot(root.path()).await.unwrap();
+        let over = AgentOverride {
+            model: Some("mock/https://auth-secret.invalid".into()),
+            variant: AgentVariantOverride::Off,
+        };
+        let error = state
+            .override_assignment(&snapshot, None, &over)
+            .unwrap_err();
+        assert!(!error.to_string().contains("auth-secret"));
+    }
+
+    #[tokio::test]
+    async fn live_session_uses_pinned_definitions_after_agent_file_removal() {
+        let (root, state) = fixture(json!({"agents":{"build":{"model":"mock/combo/chat"}}}));
+        crate::provider::auth::set_key(&state.config.config_dir, "mock", "test-only-secret")
+            .unwrap();
+        let id = state
+            .create_session_as(root.path(), Some("legacy-chat"), None, Some("oracle"))
+            .await
+            .unwrap();
+        let before = state
+            .handle(id)
+            .unwrap()
+            .status
+            .selection
+            .agents()
+            .get("oracle")
+            .cloned()
+            .unwrap();
+        std::fs::remove_file(state.config.config_dir.join("agents/oracle.md")).unwrap();
+        let (status, body) = get(&state, root.path(), "agents", &format!("&session_id={id}")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("provenance unavailable"));
+        assert!(!body["error"]
+            .as_str()
+            .unwrap()
+            .contains("agent 'oracle' is unavailable"));
+        assert_eq!(
+            state
+                .handle(id)
+                .unwrap()
+                .status
+                .selection
+                .agents()
+                .get("oracle")
+                .unwrap()
+                .as_ref(),
+            before.as_ref()
+        );
+        state.close_all().await;
     }
 }

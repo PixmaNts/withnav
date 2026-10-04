@@ -46,15 +46,11 @@ impl Settings {
             .and_then(|p| p.get("scratch_dirs"))
         {
             None => {
-                let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+                let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+                let home = std::env::var_os("HOME")
                     .map(PathBuf::from)
-                    .filter(|path| path.is_absolute() && path.is_dir());
-                let private = runtime.map(|path| path.join("navai")).unwrap_or_else(|| {
-                    std::env::var_os("HOME")
-                        .map(PathBuf::from)
-                        .unwrap_or_default()
-                        .join(".cache/navai/scratch")
-                });
+                    .unwrap_or_default();
+                let private = private_scratch_root(runtime.as_deref(), &home);
                 Ok(vec![private, std::env::temp_dir().join("navai")])
             }
             Some(Value::Array(values)) => values
@@ -162,6 +158,20 @@ impl Settings {
     }
 }
 
+fn private_scratch_root(runtime: Option<&Path>, home: &Path) -> PathBuf {
+    use std::os::unix::fs::MetadataExt;
+    let usable = runtime.filter(|path| path.is_absolute()).filter(|path| {
+        std::fs::symlink_metadata(path).is_ok_and(|metadata| {
+            metadata.is_dir()
+                && metadata.uid() == nix::unistd::Uid::current().as_raw()
+                && metadata.mode() & 0o777 == 0o700
+        })
+    });
+    usable
+        .map(|path| path.join("navai"))
+        .unwrap_or_else(|| home.join(".cache/navai/scratch"))
+}
+
 pub fn path(config_dir: &Path) -> PathBuf {
     config_dir.join(FILE_NAME)
 }
@@ -220,6 +230,36 @@ pub fn save_tui_theme(config_dir: &Path, id: &str) -> Result<(), SettingsError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn private_scratch_uses_only_owned_private_runtime_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = temp.path().join("runtime");
+        let home = temp.path().join("home");
+        std::fs::create_dir(&runtime).unwrap();
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            private_scratch_root(Some(&runtime), &home),
+            runtime.join("navai")
+        );
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o750)).unwrap();
+        assert_eq!(
+            private_scratch_root(Some(&runtime), &home),
+            home.join(".cache/navai/scratch")
+        );
+        assert_eq!(
+            private_scratch_root(None, &home),
+            home.join(".cache/navai/scratch")
+        );
+        assert_eq!(
+            private_scratch_root(Some(Path::new("relative")), &home),
+            home.join(".cache/navai/scratch")
+        );
+        assert_eq!(
+            private_scratch_root(Some(&temp.path().join("missing")), &home),
+            home.join(".cache/navai/scratch")
+        );
+    }
     #[test]
     fn scratch_setting_disables_or_selects_absolute_paths() {
         let settings = super::Settings {

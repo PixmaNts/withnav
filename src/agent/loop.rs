@@ -2012,6 +2012,172 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn protected_config_typed_answers_execute_once_without_grants() {
+        for tool in ["write", "edit"] {
+            for allow in [false, true] {
+                let mut actor =
+                    plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+                actor
+                    .registry
+                    .register(Box::new(crate::tools::native::EditTool));
+                let config = actor.tool_context.workspace.join("config");
+                std::fs::create_dir(&config).unwrap();
+                actor.protected_config_root = Some(config.clone());
+                actor.permission_reviewer = Some(Arc::new(Meta {
+                    decision: Some(super::super::permission_gate::ReviewDecision::Approve),
+                    captured: Default::default(),
+                    hangs: false,
+                }));
+                let target = config.join("models.json");
+                std::fs::write(&target, "old").unwrap();
+                let args = if tool == "write" {
+                    serde_json::json!({"path":target,"content":"new"})
+                } else {
+                    serde_json::json!({"path":target,"old_string":"old","new_string":"new"})
+                };
+                let call = ToolCall {
+                    id: "first".into(),
+                    name: tool.into(),
+                    args,
+                    args_valid: true,
+                };
+                let One::Ask(request, destination) =
+                    run_gated(&mut actor, &call, &mut |_| {}).await
+                else {
+                    panic!("protected target must ask");
+                };
+                let id = request.id;
+                let scope = request.scope.clone();
+                let mut second = call.clone();
+                second.id = "second".into();
+                let roots = actor.tool_context.writable_roots.clone();
+                actor.pending = Some(PendingInteraction::Permission {
+                    request: Box::new(request),
+                    call,
+                    remaining_calls: vec![second],
+                    destination,
+                    steps_left: 1,
+                });
+                actor.state = AgentState::Yielded;
+                let decision = if allow {
+                    PermissionDecision::AllowOnce
+                } else {
+                    PermissionDecision::Deny {
+                        message: "keep configuration".into(),
+                    }
+                };
+                let mut executions = 0;
+                let mut observe = |event: AgentEvent<'_>| {
+                    if matches!(event, AgentEvent::PreCall { .. }) {
+                        executions += 1;
+                    }
+                };
+                let outcome = resolve_permission(&mut actor, id, decision, &mut observe)
+                    .await
+                    .unwrap();
+                let RunOutcome::PermissionRequired(request) = outcome else {
+                    panic!("identical sibling must ask again");
+                };
+                assert_eq!(request.tool_call_id, "second");
+                assert_eq!(executions, usize::from(allow));
+                assert_eq!(
+                    std::fs::read_to_string(&target).unwrap(),
+                    if allow { "new" } else { "old" }
+                );
+                assert!(!actor
+                    .grants
+                    .covers("plan", tool, &scope, &actor.tool_context));
+                assert_eq!(actor.tool_context.writable_roots, roots);
+            }
+        }
+    }
+
+    struct BarrierReviewer {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        outside: std::sync::Mutex<Vec<bool>>,
+    }
+    impl super::super::permission_gate::PermissionReviewer for BarrierReviewer {
+        fn review<'a>(
+            &'a self,
+            input: &'a super::super::permission_gate::PermissionReviewInput,
+            _cancel: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<
+            'a,
+            Result<
+                super::super::permission_gate::PermissionReview,
+                super::super::permission_gate::ReviewError,
+            >,
+        > {
+            Box::pin(async move {
+                let state: serde_json::Value = serde_json::from_str(&input.state).unwrap();
+                let first = {
+                    let mut seen = self.outside.lock().unwrap();
+                    seen.push(state["host_facts"]["outside"].as_bool().unwrap());
+                    seen.len() == 1
+                };
+                if first {
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                }
+                Ok(super::super::permission_gate::PermissionReview {
+                    decision: if first {
+                        super::super::permission_gate::ReviewDecision::Approve
+                    } else {
+                        super::super::permission_gate::ReviewDecision::Unsure
+                    },
+                    reason: "reviewed exact call".into(),
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn scratch_replaced_or_removed_during_reviewer_wait_regates_as_outside() {
+        for remove in [false, true] {
+            let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+            let root = actor.tool_context.workspace.join("scratch");
+            let identity = crate::agent::scratch::Identity::capture(&root).unwrap();
+            actor.tool_context.writable_roots.push(root.clone());
+            actor.scratch_roots.push(identity);
+            // Agent instructions require the reflective stage even inside scratch.
+            let target = root.join("AGENTS.md");
+            let call = ToolCall {
+                id: "c".into(),
+                name: "write".into(),
+                args: serde_json::json!({"path":target,"content":"new"}),
+                args_valid: true,
+            };
+            let reviewer = Arc::new(BarrierReviewer {
+                entered: Default::default(),
+                release: Default::default(),
+                outside: Default::default(),
+            });
+            actor.permission_reviewer = Some(reviewer.clone());
+            let roots = actor.tool_context.writable_roots.clone();
+            let mutate = async {
+                reviewer.entered.notified().await;
+                std::fs::rename(&root, root.with_file_name("old-scratch")).unwrap();
+                if !remove {
+                    std::fs::create_dir(&root).unwrap();
+                }
+                reviewer.release.notify_one();
+            };
+            let mut observe = |_event: AgentEvent<'_>| {};
+            let (outcome, ()) = tokio::join!(run_gated(&mut actor, &call, &mut observe), mutate);
+            assert!(matches!(outcome, One::Ask(..)));
+            assert_eq!(*reviewer.outside.lock().unwrap(), vec![false, true]);
+            assert!(!target.exists());
+            assert_eq!(
+                root.exists(),
+                !remove,
+                "removed scratch must never be recreated"
+            );
+            assert_eq!(actor.tool_context.writable_roots, roots);
+        }
+    }
+
+    #[tokio::test]
     async fn external_native_retarget_through_typed_resolution_or_native_open_regates() {
         for tool in ["write", "edit"] {
             for at_open in [false, true] {

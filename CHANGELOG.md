@@ -24,9 +24,7 @@ requests land in `develop`.
   `~/.cache/navai/scratch`) and shared `<temp_dir>/navai`. `permissions.scratch_dirs` is an
   ordered list of absolute paths; `[]` disables it. Private storage is recommended first.
 
-- Private scratch storage at `<temp_dir>/navai` (0700), shared by sessions and children.
-  `permissions.scratch_dirs` accepts an absolute path; an empty list disables it. Symlinks and foreign-owned
-  directories are refused. Scratch mutations count as project-local.
+
 
 
 ## [0.4.2] - 2026-10-04

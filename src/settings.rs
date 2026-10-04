@@ -51,7 +51,10 @@ impl Settings {
                     .map(PathBuf::from)
                     .unwrap_or_default();
                 let private = private_scratch_root(runtime.as_deref(), &home);
-                Ok(vec![private, std::env::temp_dir().join("navai")])
+                Ok(unique_roots(vec![
+                    private,
+                    std::env::temp_dir().join("navai"),
+                ]))
             }
             Some(Value::Array(values)) => values
                 .iter()
@@ -64,7 +67,8 @@ impl Settings {
                             "permissions.scratch_dirs must contain absolute paths".into()
                         })
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, String>>()
+                .map(unique_roots),
             _ => Err("permissions.scratch_dirs must be a list of absolute paths".into()),
         }
     }
@@ -159,17 +163,21 @@ impl Settings {
 }
 
 fn private_scratch_root(runtime: Option<&Path>, home: &Path) -> PathBuf {
-    use std::os::unix::fs::MetadataExt;
-    let usable = runtime.filter(|path| path.is_absolute()).filter(|path| {
-        std::fs::symlink_metadata(path).is_ok_and(|metadata| {
-            metadata.is_dir()
-                && metadata.uid() == nix::unistd::Uid::current().as_raw()
-                && metadata.mode() & 0o777 == 0o700
-        })
-    });
+    let usable = runtime.filter(|path| crate::agent::scratch::private_runtime_usable(path));
     usable
         .map(|path| path.join("navai"))
         .unwrap_or_else(|| home.join(".cache/navai/scratch"))
+}
+
+fn unique_roots(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut unique = Vec::new();
+    for path in paths {
+        let path: PathBuf = path.components().collect();
+        if !unique.contains(&path) {
+            unique.push(path);
+        }
+    }
+    unique
 }
 
 pub fn path(config_dir: &Path) -> PathBuf {
@@ -258,6 +266,17 @@ mod tests {
         assert_eq!(
             private_scratch_root(Some(&temp.path().join("missing")), &home),
             home.join(".cache/navai/scratch")
+        );
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(temp.path(), &alias).unwrap();
+        assert_eq!(
+            private_scratch_root(Some(&alias.join("runtime")), &home),
+            home.join(".cache/navai/scratch")
+        );
+        assert_eq!(
+            unique_roots(vec![runtime.join("navai"), runtime.join("navai/")]),
+            vec![runtime.join("navai")]
         );
     }
     #[test]

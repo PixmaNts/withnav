@@ -195,9 +195,9 @@ Bash calls literally naming it ask too, but indirect bash effects cannot be full
 Two independently checked roots default to private `$XDG_RUNTIME_DIR/navai` (fallback
 `~/.cache/navai/scratch`) then shared `<temp_dir>/navai`. `permissions.scratch_dirs` is an ordered
 absolute-path list; `[]` disables both. Native scratch approval binds the root inode through dispatch.
-Private shared temporary storage, default `<temp_dir>/navai`, available across projects and children.
-Scratch changes count as project-local during review. `permissions.scratch_dirs` selects an absolute
-path or disables it with an empty list. It must be a real directory owned by the current user, mode 0700.
+These private owned roots are available across projects and children.
+Scratch changes count as project-local during review. The ordered absolute-path list is snapshotted
+and inherited by children; `[]` disables it. It must be a real directory owned by the current user, mode 0700.
 Outside-project file changes receive review like bash effects; approval never extends writable roots.
 
 **Permission review**:

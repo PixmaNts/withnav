@@ -125,7 +125,7 @@ from the parent's execution snapshot, and its no-follow descriptor/inode validat
 
 Permission review includes outside-project write/edit destinations, binding approvals to one canonical
 file without expanding writable roots. Sessions install private scratch storage from
-`permissions.scratch_dirs` (default `<temp_dir>/navai`, an empty list disables); the owned, non-symlink
+`permissions.scratch_dirs` (ordered absolute paths, private runtime/cache first, shared temp second; `[]` disables); the owned, non-symlink
 0700 directory is a writable root and counts as project-local in review, including child sessions.
 
 **Key to screen (terminal client).** A key reaches `runtime.rs`, which calls `input::route_key`: it

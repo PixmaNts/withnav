@@ -65,6 +65,13 @@ fn open_checked(path: &Path, create: bool) -> Result<std::fs::File, String> {
     Ok(file)
 }
 
+pub(crate) fn private_runtime_usable(path: &Path) -> bool {
+    open_checked(path, false).is_ok_and(|file| {
+        file.metadata()
+            .is_ok_and(|metadata| metadata.mode() & 0o777 == 0o700)
+    })
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Identity {
     pub path: PathBuf,
@@ -100,7 +107,10 @@ impl Identity {
     pub fn open(&self) -> Result<std::fs::File, String> {
         let file = open_checked(&self.path, false)?;
         let metadata = file.metadata().map_err(|e| e.to_string())?;
-        if metadata.dev() != self.dev || metadata.ino() != self.ino {
+        if metadata.dev() != self.dev
+            || metadata.ino() != self.ino
+            || metadata.mode() & 0o777 != 0o700
+        {
             return Err("scratch directory identity changed".into());
         }
         Ok(file)
@@ -120,6 +130,26 @@ fn acceptable(metadata: &std::fs::Metadata, uid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn validation_refuses_widened_permissions_without_repair() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("scratch");
+        let identity = Identity::capture(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(!identity.valid());
+        assert!(
+            crate::tools::nofollow::write_scratch(&path.join("file"), b"x", &identity).is_err()
+        );
+        assert!(
+            crate::tools::nofollow::edit_scratch(&path.join("file"), &identity, |_| Ok((
+                "x".into(),
+                "edited".into()
+            )))
+            .is_err()
+        );
+        assert!(!path.join("file").exists());
+        assert_eq!(std::fs::metadata(path).unwrap().mode() & 0o777, 0o777);
+    }
     #[test]
     fn trailing_separator_and_ancestor_links_never_change_target_permissions() {
         let temp = tempfile::tempdir().unwrap();

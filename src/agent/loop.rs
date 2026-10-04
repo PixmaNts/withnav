@@ -2011,6 +2011,44 @@ mod tests {
         hangs: bool,
     }
 
+    #[test]
+    fn stale_scratch_is_not_advertised_in_prompts_or_review_evidence() {
+        let mut actor = plan_actor(None, "http://unused");
+        let root = actor.tool_context.workspace.join("scratch");
+        actor
+            .scratch_roots
+            .push(crate::agent::scratch::Identity::capture(&root).unwrap());
+        actor.tool_context.writable_roots.push(root.clone());
+        assert!(actor
+            .role_message()
+            .unwrap()
+            .contains(root.to_str().unwrap()));
+        std::fs::remove_dir(&root).unwrap();
+        assert!(!actor
+            .role_message()
+            .unwrap()
+            .contains(root.to_str().unwrap()));
+        let call = ToolCall {
+            id: "c".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command":"echo harmless"}),
+            args_valid: true,
+        };
+        let needed = Needed {
+            scope: Scope::Folder(actor.tool_context.workspace.clone()),
+            destination: None,
+        };
+        let input =
+            super::super::permission_gate::describe(&actor, &call, &needed, &Default::default())
+                .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&input.state).unwrap();
+        assert_eq!(state["host_facts"]["scratch_roots"], serde_json::json!([]));
+        assert!(!state["host_facts"]["writable_roots"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(root)));
+    }
+
     #[tokio::test]
     async fn protected_config_typed_answers_execute_once_without_grants() {
         for tool in ["write", "edit"] {

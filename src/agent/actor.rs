@@ -184,13 +184,18 @@ impl AgentActor {
             self.role.as_ref().map(|role| role.prompt.as_str()),
             self.system_prompt.as_deref(),
         );
-        if self.scratch_roots.is_empty() {
+        let usable: Vec<_> = self
+            .scratch_roots
+            .iter()
+            .filter(|root| root.valid())
+            .collect();
+        if usable.is_empty() {
             message
         } else {
             Some(format!(
                 "{}\nTemporary scratch roots (private first, recommended): {}",
                 message.as_deref().unwrap_or(""),
-                self.scratch_roots
+                usable
                     .iter()
                     .map(|root| root.path.display().to_string())
                     .collect::<Vec<_>>()

@@ -63,8 +63,9 @@ pub fn prefilter(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> Override
             .and_then(Value::as_str)
             .unwrap_or("");
         let words: Vec<_> = command
-            .split(|c: char| c.is_whitespace() || ";|&()".contains(c))
+            .split(|c: char| c.is_whitespace() || ";|&()'\"".contains(c))
             .filter(|s| !s.is_empty())
+            .map(|s| s.rsplit('/').next().unwrap_or(s))
             .collect();
         flags.mutation = command.contains('>')
             || command.contains("<>")
@@ -98,6 +99,18 @@ pub fn prefilter(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> Override
             || command.contains("sed -i")
             || command.contains("perl -i");
         flags.risky = command.contains("$(")
+            || command.contains("-delete")
+            || command.contains("-exec")
+            || command.contains("git push")
+            || command.contains("git reset")
+            || command.contains("git clean")
+            || command.contains(".ssh")
+            || command.contains(".env")
+            || command.contains("AGENTS.md")
+            || command.contains("CLAUDE.md")
+            || command.contains("auth.json")
+            || command.contains("config.json")
+            || command.contains("hooks/")
             || command.contains('`')
             || words.iter().any(|word| {
                 matches!(
@@ -119,6 +132,25 @@ pub fn prefilter(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> Override
                         | "chmod"
                         | "chown"
                 ) || word.ends_with(".sh")
+                    || word.ends_with(".py")
+                    || word.ends_with(".js")
+                    || word.ends_with(".rb")
+                    || word.starts_with("mkfs.")
+                    || word.starts_with("python")
+                    || matches!(
+                        *word,
+                        "docker"
+                            | "kubectl"
+                            | "service"
+                            | "passwd"
+                            | "useradd"
+                            | "mount"
+                            | "umount"
+                            | "doas"
+                            | "fish"
+                            | "dash"
+                            | "lua"
+                    )
             });
         flags.mutation |= flags.risky;
         flags.outside = words.iter().any(|word| {
@@ -350,6 +382,56 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scanner_tightens_each_mutating_family() {
+        let cx = ToolContext {
+            workspace: "/workspace".into(),
+            writable_roots: vec!["/workspace".into()],
+            readable_roots: vec![],
+        };
+        let needed = Needed {
+            scope: super::super::permissions::Scope::Folder(cx.workspace.clone()),
+            destination: None,
+        };
+        for command in [
+            "echo x > f",
+            "echo x 2>>f",
+            "exec 3<>f",
+            "rm f",
+            "mv a b",
+            "cp a b",
+            "install a b",
+            "mkdir a",
+            "touch a",
+            "truncate a",
+            "tee a",
+            "chmod 600 a",
+            "chown x a",
+            "find . -delete",
+            "find . -exec echo {} +",
+            "sed -i x f",
+            "perl -pi -e x f",
+            "git commit",
+            "cargo build",
+            "npm install",
+            "eval x",
+            "bash -c 'echo hi'",
+            "python3 -c x",
+            "echo $(cat a)",
+            "./script.sh",
+            "sudo true",
+            "echo x > .ssh/key",
+        ] {
+            let call = ToolCall {
+                id: "c".into(),
+                name: "bash".into(),
+                args: json!({"command": command}),
+                args_valid: true,
+            };
+            assert!(prefilter(&call, &needed, &cx).mutation, "{command}");
+        }
+    }
 
     #[test]
     fn deterministic_overrides_never_allow_optimistic_mutations() {

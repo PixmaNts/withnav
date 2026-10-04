@@ -17,7 +17,9 @@ mod steering;
 mod watchdog;
 pub use delivery::BoundaryEligible;
 pub use delivery::Delivery;
+pub use delivery::DriverCommit;
 pub use delivery::PendingNotice;
+pub use watchdog::PauseToken;
 pub use watchdog::TerminalOwner;
 mod model;
 
@@ -101,10 +103,16 @@ pub struct RuntimeStatus {
     #[cfg(test)]
     policy_pin_barrier: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
     pub watchdog: watchdog::WatchdogPark,
+    pub watchdog_goal: Mutex<String>,
+    pub watchdog_fallback_notice: std::sync::atomic::AtomicBool,
+    pub root_supervisor: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    pub awaiting_fresh_driver: std::sync::atomic::AtomicBool,
     pub activity: progress::Activity,
     #[cfg(debug_assertions)]
     negative_eligibility_barrier:
         Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
+    #[cfg(test)]
+    initial_watchdog_barrier: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
     boundary_eligible: Mutex<Option<delivery::EligibleCell>>,
     queued_driver: Arc<std::sync::atomic::AtomicUsize>,
     boundary_deferred: std::sync::atomic::AtomicBool,
@@ -112,6 +120,7 @@ pub struct RuntimeStatus {
     steering: Arc<steering::Steering>,
     budget_parked: std::sync::atomic::AtomicBool,
     delivery: Mutex<Option<delivery::DeliveryCell>>,
+    driver_commit: Mutex<Option<delivery::DriverCommitCell>>,
     variant: Mutex<VariantSlot>,
     /// The session's context gauge: written by the runtime at each boundary,
     /// read on demand by the service.
@@ -130,6 +139,38 @@ pub struct RuntimeStatus {
 }
 
 impl RuntimeStatus {
+    pub fn install_driver_commit(&self, commit: DriverCommit) {
+        *self.driver_commit.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(delivery::DriverCommitCell(commit));
+    }
+    async fn commit_driver(
+        &self,
+        transcript: Vec<crate::provider::openai::ChatMessage>,
+    ) -> Result<(), String> {
+        let commit = self
+            .driver_commit
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|cell| cell.0.clone());
+        if let Some(commit) = commit {
+            commit(transcript).await?;
+        }
+        self.awaiting_fresh_driver
+            .store(false, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+    fn progress_parked(&self) -> bool {
+        self.awaiting_fresh_driver
+            .load(std::sync::atomic::Ordering::Acquire)
+            || self
+                .budget_parked
+                .load(std::sync::atomic::Ordering::Acquire)
+            || self.watchdog.root_hold().is_some()
+    }
+    pub fn wake_continue(&self) {
+        let _ = self.controls.tx.send(Control::Continue);
+    }
     pub fn watchdog_eligible(&self) -> bool {
         !self.watchdog.is_doubt()
             && !self
@@ -413,6 +454,7 @@ impl RuntimeStatus {
 
     fn consume_turn(&self) -> SelectedVariant {
         self.selection.consume_interaction();
+        self.activity.begin_turn();
         self.watchdog.transition(true);
         self.set_pending_permission(None);
         let mut slot = self.slot();
@@ -778,9 +820,22 @@ async fn runtime_loop(
     actor.safe_boundary = Some(Arc::new(move |transcript, cancel| {
         let status = boundary_status.clone();
         Box::pin(async move {
-            status.watchdog.boundary(&cancel).await;
+            use crate::agent::boundary::BoundaryResult;
+            if status.watchdog.root_hold().is_none() {
+                #[cfg(test)]
+                {
+                    let barrier = status.initial_watchdog_barrier.lock().unwrap().take();
+                    if let Some((entered, release)) = barrier {
+                        entered.notify_one();
+                        release.notified().await;
+                    }
+                }
+                if !status.watchdog.boundary(&cancel).await {
+                    return Ok(BoundaryResult::Watchdog(transcript));
+                }
+            }
             if cancel.is_cancelled() {
-                return Ok(None);
+                return Ok(BoundaryResult::Interrupted);
             }
             let driver_queued = status
                 .queued_driver
@@ -791,7 +846,7 @@ async fn runtime_loop(
                     status
                         .boundary_deferred
                         .store(true, std::sync::atomic::Ordering::Release);
-                    return Ok(None);
+                    return Ok(BoundaryResult::Interrupted);
                 }
                 #[cfg(debug_assertions)]
                 {
@@ -807,7 +862,11 @@ async fn runtime_loop(
                 }
                 // Eligibility and consumption otherwise read different outbox
                 // snapshots. A later completion must not overtake this driver.
-                return Ok(Some(status.steering.apply(transcript)));
+                let transcript = status.steering.apply(transcript);
+                if !status.watchdog.boundary(&cancel).await {
+                    return Ok(BoundaryResult::Watchdog(transcript));
+                }
+                return Ok(BoundaryResult::Continue(transcript));
             }
             let mut transcript = status.steering.apply(transcript);
             let callback = status
@@ -821,7 +880,10 @@ async fn runtime_loop(
                     transcript = updated;
                 }
             }
-            Ok(Some(transcript))
+            if !status.watchdog.boundary(&cancel).await {
+                return Ok(BoundaryResult::Watchdog(transcript));
+            }
+            Ok(BoundaryResult::Continue(transcript))
         })
     }));
 
@@ -856,17 +918,21 @@ async fn runtime_loop(
                 // Between turns: run it now, publish its result, then answer.
                 match control {
                     Control::Steer => {
-                        if actor.has_pending() || status.budget_parked.load(std::sync::atomic::Ordering::Acquire)
+                        if actor.has_pending() || status.progress_parked()
                             || status.steering.queue.lock().unwrap_or_else(|e| e.into_inner()).is_empty() { continue; }
                         actor.transcript = status.steering.apply(actor.transcript.clone());
                         Some(Inbound::Continue)
                     }
                     Control::Interrupt(id) => {
+                        if status.progress_parked() { continue; }
                         if !status.steering.has_interrupt(id) { continue; }
                         replacement_waiting=true;
                         continue;
                     }
-                    Control::Continue => Some(Inbound::Continue),
+                    Control::Continue => {
+                        if status.awaiting_fresh_driver.load(std::sync::atomic::Ordering::Acquire) || status.watchdog.root_hold().is_some() { continue; }
+                        Some(Inbound::Continue)
+                    },
                     Control::Delivery => { delivery_waiting = true; continue; }
                     Control::DeliverySteer => { delivery_waiting=true; continue; }
                     Control::DeliveryInterrupt(id) => { if status.notice_pending(id).await { delivery_waiting=true; } continue; }
@@ -900,13 +966,13 @@ async fn runtime_loop(
             inbound = async {
                 // A command held behind an ask or a permission request goes
                 // in once nothing is pending.
-                if !actor.has_pending() {
+                if !actor.has_pending() && !status.progress_parked() {
                     inbox.release_held();
                 }
                 inbox.next_inbound().await
             } => inbound,
             _ = async {
-                if delivery_waiting && !actor.has_pending() { return; }
+                if delivery_waiting && !actor.has_pending() && !status.progress_parked() { return; }
                 std::future::pending::<()>().await;
             } => {
                 delivery_waiting = true;
@@ -924,6 +990,14 @@ async fn runtime_loop(
         let Some(inbound) = inbound else {
             break;
         };
+        // Parked progress never pins policy for autonomous-only input. Driver skill
+        // validation still needs the role pin before any mutation or durable delivery.
+        if matches!(inbound, Inbound::Batch(_)) && status.progress_parked() {
+            inbox.hold_autonomous();
+            if !inbox.has_buffered() {
+                continue;
+            }
+        }
         // Pin policy before command mutation. Earlier completion-only wakes may already
         // have committed delivery; rejected commands cannot enter any delivery callback.
         actor.role = status.pin_turn().await;
@@ -931,12 +1005,17 @@ async fn runtime_loop(
         // A decision resumes the held call; a batch of commands starts a
         // turn the usual way.
         let resume: Option<(Ulid, PermissionDecision)> = match inbound {
-            Inbound::Continue => None,
+            Inbound::Continue => {
+                let (transcript, _) = status.steering.claim_replacements(actor.transcript.clone());
+                actor.transcript = transcript;
+                None
+            }
             Inbound::Completion => {
                 active_task_id = Some(Ulid::new());
                 None
             }
             Inbound::Batch(_) => {
+                let parked = status.progress_parked();
                 let held = actor.pending_permission().cloned();
                 let applied = inbox.apply_batch_to_actor(&mut actor);
                 for (command_id, error) in &applied.refused {
@@ -955,6 +1034,25 @@ async fn runtime_loop(
                     status.release_pin(&actor);
                     continue;
                 };
+                if parked {
+                    actor.watchdog_steps_left = None;
+                    inbox.discard_held();
+                    if let Some(hold) = status.watchdog.root_hold() {
+                        status.watchdog.resolve_root(hold.token, || {
+                            publish_pause_resolution_for_turn(
+                                &sequencer,
+                                hold.token,
+                                "superseded",
+                                hold.turn_id,
+                            )
+                        });
+                    }
+                    if let Err(error) = status.commit_driver(actor.transcript.clone()).await {
+                        tracing::error!(%error, "driver checkpoint commit failed");
+                        status.release_pin(&actor);
+                        break;
+                    }
+                }
                 if active_task_id.is_none() {
                     active_task_id = Some(first);
                 }
@@ -998,6 +1096,10 @@ async fn runtime_loop(
                 Some((answer.request_id, decision))
             }
         };
+        *status
+            .watchdog_goal
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = actor.driver_task.clone().unwrap_or_default();
         actor.variant = status.consume_turn().map(|(_, variant)| variant);
         // Only validated commands can reach a callback that persists the transcript.
         if let Err(error) = delivery::apply(&mut actor, &status, &sequencer).await {
@@ -1014,6 +1116,14 @@ async fn runtime_loop(
         let task_id = active_task_id.unwrap_or_default();
         let turn_id = Ulid::new();
         let mut turn = TurnPublisher::new(sequencer.clone(), status.clone(), turn_id, task_id);
+        if status
+            .watchdog_fallback_notice
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            turn.publish(EventKind::CommandResult, serde_json::json!({
+                "name":"watchdog", "ok":true, "operation_id":Ulid::new(), "data":{"message":"Instinct unavailable: watchdog cannot judge progress. This session falls back to a renewable 500-step cap; partial work is kept when the budget parks."}
+            }));
+        }
 
         turn.publish(
             EventKind::TurnStart,
@@ -1084,7 +1194,9 @@ async fn runtime_loop(
                             Control::Delivery => { delivery_waiting = true; }
                             Control::DeliverySteer => { delivery_waiting=true; }
                             Control::DeliveryInterrupt(id) => {
+                                if status.watchdog.root_hold().is_some() { delivery_waiting = true; continue; }
                                 if !status.notice_pending(id).await { continue; }
+                                if status.watchdog.root_hold().is_some() { delivery_waiting = true; continue; }
                                 delivery_waiting=true;
                                 interrupted_for_input=true;
                                 actor_cancel.cancel();
@@ -1147,6 +1259,39 @@ async fn runtime_loop(
         // and the usage of a final response.
         turn.publish_context(actor.context_breakdown());
         status.end_turn(&actor);
+        if !matches!(outcome, Ok(RunOutcome::WatchdogBoundary)) {
+            status.watchdog.discard_unpublished_root();
+        }
+        status.watchdog.bind_root_turn(turn_id);
+        if let Some(hold) = status.watchdog.publish_root_hold() {
+            snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
+            turn.publish(EventKind::AgentYield, to_value(&AgentYield {
+                actor_id: ROOT_ACTOR_ID.into(), turn_id,
+                question: "Watchdog uncertain: paused; alt+c to continue, Stop to stop, or send a fresh instruction. Partial work is kept.".into(),
+                kind: Some("watchdog".into()),
+                details: Some(serde_json::json!({"pause_token":hold.token,"evidence":hold.evidence})),
+            }));
+            emit_turn_end(
+                &mut turn,
+                turn_id,
+                TurnEndOutcome::Yielded,
+                None,
+                duration_ms,
+                None,
+            );
+            emit_agent_state(&mut turn, "yielded");
+            snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
+            if !session_cancel.is_cancelled() {
+                actor.cancel = session_cancel.child_token();
+            }
+            deferred::report_cancelled(
+                &sequencer,
+                &deferred,
+                "watchdog pause: deferred operation cancelled",
+            );
+            continue;
+        }
+        actor.watchdog_steps_left = None;
 
         // A collapsed session surfaces its first publish failure as the turn
         // error (checked BEFORE translating the natural outcome).
@@ -1248,7 +1393,7 @@ async fn runtime_loop(
                 );
                 emit_agent_state(&mut turn, "yielded");
             }
-            Ok(RunOutcome::Interrupted) => {
+            Ok(RunOutcome::Interrupted) | Ok(RunOutcome::WatchdogBoundary) => {
                 if let Some(done) = completion.as_ref().filter(|_| !interrupted_for_input) {
                     done(
                         crate::provider::AssistantMessage {
@@ -1383,8 +1528,35 @@ async fn runtime_loop(
         );
         snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
     }
+    if let Some(hold) = status.watchdog.take_root_on_exit() {
+        publish_pause_resolution(&sequencer, hold.token, "expired");
+    }
     teardown(&mut actor, &sequencer);
+    status.watchdog.supervisor_cancel.cancel();
+    let supervisor = status
+        .root_supervisor
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    if let Some(supervisor) = supervisor {
+        let _ = supervisor.await;
+    }
     actor
+}
+
+pub(crate) fn publish_pause_resolution(sequencer: &Sequencer, token: PauseToken, resolution: &str) {
+    publish_pause_resolution_for_turn(sequencer, token, resolution, None);
+}
+fn publish_pause_resolution_for_turn(
+    sequencer: &Sequencer,
+    token: PauseToken,
+    resolution: &str,
+    turn_id: Option<Ulid>,
+) {
+    let _ = sequencer.publish(Candidate::new(EventKind::CommandResult, serde_json::json!({
+        "name":"watchdog", "ok":true,"operation_id":Ulid::new(),
+        "data":{"pause_token":token,"resolution":resolution,"turn_id":turn_id,"message":format!("Watchdog pause {resolution}")}
+    })));
 }
 
 /// Carries a turn through the automatic compactions it needs: each time the
@@ -1590,6 +1762,107 @@ mod tests {
     use crate::tools::{Registry, ToolContext};
     use std::collections::BTreeMap;
 
+    #[tokio::test]
+    async fn skill_driver_validation_preserves_parked_state_until_real_turn_consumption() {
+        use crate::agent::{definitions::Agents, selection::AgentSelection};
+        for refuse in [false, true] {
+            let server = spawn_mock(vec![http_sse(&sse_body(&["{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]} "]))]).await;
+            let agents = Arc::new(Agents::builtin());
+            let mut role = (**agents.get("build").unwrap()).clone();
+            if refuse {
+                role.tools.insert("skill".into(), false);
+            }
+            let status = Arc::new(RuntimeStatus::with_selection(AgentSelection::new(
+                agents,
+                Arc::new(role),
+            )));
+            status.watchdog.transition(true);
+            assert!(status
+                .watchdog
+                .request_root_pause(status.watchdog.generation().unwrap(), serde_json::json!({})));
+            let token = status.watchdog.publish_root_hold().unwrap().token;
+            status.watchdog.transition(false);
+            status
+                .awaiting_fresh_driver
+                .store(true, std::sync::atomic::Ordering::Release);
+            *status.watchdog_goal.lock().unwrap() = "old goal".into();
+            status.activity.0.lock().unwrap().steps = 9;
+            let checkpoint_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let count = checkpoint_count.clone();
+            status.install_driver_commit(Arc::new(move |_| {
+                count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                Box::pin(async { Ok(()) })
+            }));
+            let id = Ulid::new();
+            let seq = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
+            let mut live = seq.subscribe_since(None).await.unwrap().live.unwrap();
+            let (tx, inbox) = ActorInbox::channel();
+            let cancel = CancellationToken::new();
+            let task = spawn_with_status(
+                id,
+                make_actor(server.url, CancellationToken::new()),
+                inbox,
+                seq,
+                cancel.clone(),
+                None,
+                status.clone(),
+            );
+            let mut command = text_command(id, "new driver task");
+            command.content.push(ContentBlock::LoadedSkill {
+                name: "review".into(),
+                content: "review instructions".into(),
+            });
+            tx.send(command).await.unwrap();
+            if refuse {
+                while let Some(event) = live.recv().await {
+                    if event.kind == "command.result" && event.payload["name"] == "skill" {
+                        break;
+                    }
+                }
+                assert_eq!(status.watchdog.root_hold().unwrap().token, token);
+                assert!(status
+                    .awaiting_fresh_driver
+                    .load(std::sync::atomic::Ordering::Acquire));
+                assert_eq!(status.activity.0.lock().unwrap().steps, 9);
+                assert_eq!(*status.watchdog_goal.lock().unwrap(), "old goal");
+                assert_eq!(
+                    checkpoint_count.load(std::sync::atomic::Ordering::Acquire),
+                    0
+                );
+                assert!(!status.selection.is_running());
+                assert!(server.requests.lock().unwrap().is_empty());
+                tx.send(text_command(id, "accepted plain correction"))
+                    .await
+                    .unwrap();
+            }
+            while let Some(event) = live.recv().await {
+                if event.kind == "turn.end" {
+                    break;
+                }
+            }
+            assert!(status.watchdog.root_hold().is_none());
+            assert!(!status
+                .awaiting_fresh_driver
+                .load(std::sync::atomic::Ordering::Acquire));
+            assert_eq!(status.activity.0.lock().unwrap().steps, 1);
+            assert_eq!(
+                *status.watchdog_goal.lock().unwrap(),
+                if refuse {
+                    "accepted plain correction"
+                } else {
+                    "new driver task"
+                }
+            );
+            assert_eq!(
+                checkpoint_count.load(std::sync::atomic::Ordering::Acquire),
+                1
+            );
+            assert_eq!(server.requests.lock().unwrap().len(), 1);
+            cancel.cancel();
+            task.await.unwrap();
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn permission_answer_racing_refused_batch_keeps_slot_and_claim() {
         use crate::agent::{
@@ -1755,6 +2028,298 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn hold_between_initial_presence_check_and_boundary_keeps_remaining_steps() {
+        let status = Arc::new(RuntimeStatus::default());
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        *status.initial_watchdog_barrier.lock().unwrap() = Some((entered.clone(), release.clone()));
+        let (tx, inbox) = ActorInbox::channel();
+        let id = Ulid::new();
+        let cancel = CancellationToken::new();
+        let seq = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
+        let mut live = seq.subscribe_since(None).await.unwrap().live.unwrap();
+        let mut actor = make_actor("http://127.0.0.1:1/v1".into(), CancellationToken::new());
+        actor.max_steps = 7;
+        let task = spawn_with_status(id, actor, inbox, seq, cancel.clone(), None, status.clone());
+        tx.send(text_command(id, "task")).await.unwrap();
+        entered.notified().await;
+        assert!(status
+            .watchdog
+            .request_root_pause(status.watchdog.generation().unwrap(), serde_json::json!({})));
+        release.notify_one();
+        while let Some(event) = live.recv().await {
+            if event.kind == "turn.end" {
+                assert_eq!(event.payload["outcome"], "yielded");
+                break;
+            }
+        }
+        cancel.cancel();
+        let actor = task.await.unwrap();
+        assert_eq!(actor.watchdog_steps_left, Some(7));
+    }
+
+    #[tokio::test]
+    async fn hold_during_interrupt_notice_await_does_not_cancel_continue_or_driver_turn() {
+        for driver in [false, true] {
+            let server = spawn_mock(vec![http_sse(&sse_body(&[r#"{"choices":[{"index":0,"delta":{"content":"finished"},"finish_reason":"stop"}]}"#]))]).await;
+            let status = Arc::new(RuntimeStatus::default());
+            let delivery_entered = Arc::new(tokio::sync::Notify::new());
+            let delivery_release = Arc::new(tokio::sync::Notify::new());
+            let notice_entered = Arc::new(tokio::sync::Notify::new());
+            let notice_release = Arc::new(tokio::sync::Notify::new());
+            let once = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (entered, release) = (notice_entered.clone(), notice_release.clone());
+            status.install_pending_notice(Arc::new(move |_| {
+                let (entered, release) = (entered.clone(), release.clone());
+                Box::pin(async move {
+                    entered.notify_one();
+                    release.notified().await;
+                    Ok(true)
+                })
+            }));
+            let (entered, release, first) = (
+                delivery_entered.clone(),
+                delivery_release.clone(),
+                once.clone(),
+            );
+            status.install_delivery(Arc::new(move |transcript, mid| {
+                let (entered, release, first) = (entered.clone(), release.clone(), first.clone());
+                Box::pin(async move {
+                    if mid && !first.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                        entered.notify_one();
+                        release.notified().await;
+                    }
+                    Ok(Some(transcript))
+                })
+            }));
+            let (tx, inbox) = ActorInbox::channel();
+            let id = Ulid::new();
+            let sequencer = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
+            let mut live = sequencer.subscribe_since(None).await.unwrap().live.unwrap();
+            let cancel = CancellationToken::new();
+            let task = spawn_with_status(
+                id,
+                make_actor(server.url, CancellationToken::new()),
+                inbox,
+                sequencer,
+                cancel.clone(),
+                None,
+                status.clone(),
+            );
+            tx.send(text_command(id, "original task")).await.unwrap();
+            delivery_entered.notified().await;
+            status.wake_delivery_mode("interrupt", Ulid::new());
+            notice_entered.notified().await;
+            assert!(status
+                .watchdog
+                .request_root_pause(status.watchdog.generation().unwrap(), serde_json::json!({})));
+            notice_release.notify_one();
+            delivery_release.notify_one();
+            while let Some(event) = live.recv().await {
+                if event.kind == "turn.end" {
+                    assert_eq!(event.payload["outcome"], "yielded");
+                    break;
+                }
+            }
+            if driver {
+                tx.send(text_command(id, "replacement task")).await.unwrap();
+            } else {
+                let hold = status.watchdog.root_hold().unwrap();
+                assert!(status
+                    .watchdog
+                    .resolve_root(hold.token, || status.wake_continue()));
+            }
+            while let Some(event) = live.recv().await {
+                if event.kind == "turn.end" {
+                    assert_eq!(event.payload["outcome"], "done");
+                    break;
+                }
+            }
+            assert_eq!(server.requests.lock().unwrap().len(), 1);
+            cancel.cancel();
+            task.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn paused_turn_reports_terminal_results_for_deferred_model_and_compact() {
+        let status = Arc::new(RuntimeStatus::default());
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (r, u) = (entered.clone(), release.clone());
+        status.install_delivery(Arc::new(move |transcript, mid| {
+            let (r, u) = (r.clone(), u.clone());
+            Box::pin(async move {
+                if mid {
+                    r.notify_one();
+                    u.notified().await;
+                }
+                Ok(Some(transcript))
+            })
+        }));
+        let (tx, inbox) = ActorInbox::channel();
+        let id = Ulid::new();
+        let sequencer = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
+        let mut live = sequencer.subscribe_since(None).await.unwrap().live.unwrap();
+        let cancel = CancellationToken::new();
+        let task = spawn_with_status(
+            id,
+            make_actor("http://127.0.0.1:1/v1".into(), CancellationToken::new()),
+            inbox,
+            sequencer,
+            cancel.clone(),
+            None,
+            status.clone(),
+        );
+        tx.send(text_command(id, "task")).await.unwrap();
+        entered.notified().await;
+        let model = Ulid::new();
+        let compact = Ulid::new();
+        assert_eq!(
+            status.request_model_switch("other".into(), model).await,
+            Some(ModelReply::Deferred)
+        );
+        assert_eq!(
+            status.request_compact(None, compact).await,
+            Some(CompactReply::Deferred)
+        );
+        assert!(status
+            .watchdog
+            .request_root_pause(status.watchdog.generation().unwrap(), serde_json::json!({})));
+        release.notify_one();
+        let mut terminal = Vec::new();
+        while let Some(event) = live.recv().await {
+            if event.kind == "command.result" && event.payload["ok"] == false {
+                terminal.push(event.payload["operation_id"].as_str().unwrap().to_string());
+                if terminal.len() == 2 {
+                    break;
+                }
+            }
+        }
+        assert_eq!(terminal, vec![model.to_string(), compact.to_string()]);
+        cancel.cancel();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn queued_driver_boundary_keeps_consumed_steer_and_the_remaining_budget() {
+        let status = Arc::new(RuntimeStatus::default());
+        let reached = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        status.pause_negative_eligibility(reached.clone(), release.clone());
+        status.queue_driver();
+        status.queue_driver();
+        let (tx, inbox) = ActorInbox::channel();
+        let id = Ulid::new();
+        let cancel = CancellationToken::new();
+        let seq = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
+        let mut live = seq.subscribe_since(None).await.unwrap().live.unwrap();
+        let mut actor = make_actor("http://127.0.0.1:1/v1".into(), CancellationToken::new());
+        actor.max_steps = 7;
+        let task = spawn_with_status(id, actor, inbox, seq, cancel.clone(), None, status.clone());
+        tx.send(text_command(id, "task")).await.unwrap();
+        reached.notified().await;
+        assert!(status.steer("accepted guidance".into(), false));
+        assert!(status
+            .watchdog
+            .request_root_pause(status.watchdog.generation().unwrap(), serde_json::json!({})));
+        release.notify_one();
+        while let Some(event) = live.recv().await {
+            if event.kind == "turn.end" {
+                break;
+            }
+        }
+        cancel.cancel();
+        let actor = task.await.unwrap();
+        assert_eq!(actor.watchdog_steps_left, Some(7));
+        assert!(actor.transcript.iter().any(|message| matches!(message,crate::provider::openai::ChatMessage::User { content,.. } if content.contains("accepted guidance"))));
+    }
+
+    #[tokio::test]
+    async fn inbox_exit_cancels_and_joins_the_owned_root_supervisor() {
+        let status = Arc::new(RuntimeStatus::default());
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (watchdog, done) = (status.clone(), finished.clone());
+        let supervisor = tokio::spawn(async move {
+            watchdog.watchdog.supervisor_cancel.cancelled().await;
+            done.store(true, std::sync::atomic::Ordering::Release);
+        });
+        *status.root_supervisor.lock().unwrap() = Some(supervisor);
+        let (tx, inbox) = ActorInbox::channel();
+        let id = Ulid::new();
+        let task = spawn_with_status(
+            id,
+            make_actor("http://127.0.0.1:1/v1".into(), CancellationToken::new()),
+            inbox,
+            Sequencer::spawn(id, crate::bus::SessionBus::default(), 0),
+            CancellationToken::new(),
+            None,
+            status.clone(),
+        );
+        drop(tx);
+        task.await.unwrap();
+        assert!(finished.load(std::sync::atomic::Ordering::Acquire));
+        assert!(status.root_supervisor.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn verdict_during_awaited_delivery_blocks_the_next_request_and_keeps_steer() {
+        for pause in [false, true] {
+            let server = spawn_mock(vec![http_sse(&sse_body(&[r#"{"choices":[{"index":0,"delta":{"content":"must not run"},"finish_reason":"stop"}]}"#]))]).await;
+            let (tx, inbox) = ActorInbox::channel();
+            let status = Arc::new(RuntimeStatus::default());
+            let reached = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+            let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let (r, u, count) = (reached.clone(), release.clone(), call_count.clone());
+            status.install_delivery(Arc::new(move |transcript, mid_turn| {
+                let (r, u, count) = (r.clone(), u.clone(), count.clone());
+                Box::pin(async move {
+                    if mid_turn && count.fetch_add(1, std::sync::atomic::Ordering::AcqRel) == 0 {
+                        r.notify_one();
+                        u.notified().await;
+                    }
+                    Ok(Some(transcript))
+                })
+            }));
+            let id = Ulid::new();
+            let sequencer = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
+            let mut live = sequencer.subscribe_since(None).await.unwrap().live.unwrap();
+            let cancel = CancellationToken::new();
+            let task = spawn_with_status(
+                id,
+                make_actor(server.url, CancellationToken::new()),
+                inbox,
+                sequencer,
+                cancel.clone(),
+                None,
+                status.clone(),
+            );
+            tx.send(text_command(id, "driver goal")).await.unwrap();
+            reached.notified().await;
+            assert!(status.steer("queued guidance".into(), false));
+            let generation = status.watchdog.generation().unwrap();
+            if pause {
+                assert!(status
+                    .watchdog
+                    .request_root_pause(generation, serde_json::json!({})));
+            } else {
+                assert!(status.watchdog.stop_at_boundary(generation));
+            }
+            release.notify_one();
+            while let Some(event) = live.recv().await {
+                if event.kind == "turn.end" {
+                    break;
+                }
+            }
+            assert!(server.requests.lock().unwrap().is_empty());
+            cancel.cancel();
+            let actor = task.await.unwrap();
+            assert!(!status.steering.queue.lock().unwrap().is_empty() || actor.transcript.iter().any(|message| matches!(message, crate::provider::openai::ChatMessage::User { content, .. } if content.contains("queued guidance"))), "guidance is never lost");
+        }
+    }
 
     // ---- mock provider (same technique as the loop.rs tests) ----
 

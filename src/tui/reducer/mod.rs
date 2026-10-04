@@ -141,6 +141,8 @@ pub(crate) fn push_local(s: &mut State, kind: BlockKind) {
 
 /// Clears the conversation projection and the cursor; the replay re-derives everything.
 fn reset_projection(s: &mut State) {
+    s.watchdog_paused = false;
+    s.pause_token = None;
     s.conversation = Default::default();
     s.children.clear();
     s.last_applied_seq = None;
@@ -702,15 +704,19 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             child_session_id,
             control,
             result,
+            pause_token,
             ..
         } => match result {
             Ok(()) => {
+                if pause_token.is_some() && s.pause_token != pause_token {
+                    return Ok(vec![]);
+                }
                 let text = match control {
                     super::protocol::ChildControl::Stop => {
                         "stop accepted; waiting for the subagent to finish"
                     }
                     super::protocol::ChildControl::Continue => {
-                        "continue accepted; waiting for the subagent"
+                        "continue accepted; waiting for the agent"
                     }
                 };
                 push_local(s, BlockKind::Notice(text.into()));

@@ -18,6 +18,135 @@ use ulid::Ulid;
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
 #[test]
+fn root_watchdog_notice_and_pause_render_and_continue_is_not_an_ask_answer() {
+    let mut s = subagent_parent();
+    let mut ui = UiState::default();
+    let mut script = Script::new();
+    script.raw("command.result", json!({"name":"watchdog","ok":true,"data":{"message":"Stopped by watchdog: looping; partial work kept"}}));
+    script.raw(
+        "agent.yield",
+        json!({"kind":"watchdog","question":"Paused: alt+c continue or Stop"}),
+    );
+    for envelope in script.out {
+        let generation = s.generation.clone();
+        update(
+            &mut s,
+            ClientEvent::Envelope {
+                generation,
+                envelope,
+            },
+        )
+        .unwrap();
+    }
+    assert!(
+        matches!(&s.conversation.blocks[0].kind, BlockKind::Notice(text) if text.contains("Stopped by watchdog"))
+    );
+    assert!(
+        matches!(&s.conversation.blocks[1].kind, BlockKind::Notice(text) if text.contains("Watchdog pause") && text.contains("alt+c"))
+    );
+    assert!(s.watchdog_paused);
+    assert_eq!(s.activity, Activity::AwaitingUser);
+    handle_action(&mut s, &mut ui, Action::ContinueChild);
+    assert_eq!(
+        ui.child_confirm
+            .as_ref()
+            .map(|(parent, child, _)| (parent.clone(), child.clone())),
+        Some((Ulid(1).to_string(), Ulid(1).to_string()))
+    );
+    assert!(
+        matches!(handle_action(&mut s, &mut ui, Action::ConfirmChildControl).as_slice(), [Effect::ControlChild { parent_session_id, child_session_id, .. }] if parent_session_id == child_session_id)
+    );
+    handle_action(&mut s, &mut ui, Action::ContinueChild);
+    s.watchdog_paused = false;
+    assert!(handle_action(&mut s, &mut ui, Action::ConfirmChildControl).is_empty());
+    handle_action(&mut s, &mut ui, Action::ContinueChild);
+    assert!(ui.child_confirm.is_none());
+}
+
+#[test]
+fn budget_notices_name_the_root_or_child_continue_path() {
+    for child in [false, true] {
+        let mut s = subagent_parent();
+        if child {
+            s.parent_session_id = Some(Ulid(2).to_string());
+        }
+        let mut script = Script::new();
+        script.raw(
+            "agent.yield",
+            json!({"kind":"budget","question":"step budget exhausted"}),
+        );
+        let generation = s.generation.clone();
+        update(
+            &mut s,
+            ClientEvent::Envelope {
+                generation,
+                envelope: script.out.remove(0),
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(s.conversation.blocks.last().map(|b| &b.kind),Some(BlockKind::Notice(text)) if text.contains(if child {"alt+c"} else {"send a message"}))
+        );
+    }
+}
+
+#[test]
+fn pause_lifecycle_replay_expiry_reset_and_late_continue_are_not_actionable() {
+    let first = PauseToken {
+        incarnation: Ulid(10),
+        hold_id: Ulid(11),
+    };
+    let second = PauseToken {
+        incarnation: Ulid(10),
+        hold_id: Ulid(12),
+    };
+    let mut s = subagent_parent();
+    let mut script = Script::new();
+    script.raw(
+        "agent.yield",
+        json!({"kind":"watchdog","question":"paused","details":{"pause_token":first}}),
+    );
+    script.raw("command.result", json!({"name":"watchdog","ok":true,"data":{"pause_token":first,"resolution":"expired","message":"expired"}}));
+    for envelope in script.out {
+        let generation = s.generation.clone();
+        update(
+            &mut s,
+            ClientEvent::Envelope {
+                generation,
+                envelope,
+            },
+        )
+        .unwrap();
+    }
+    assert!(!s.watchdog_paused);
+    assert!(s.pause_token.is_none());
+    s.watchdog_paused = true;
+    s.pause_token = Some(second);
+    let generation = s.generation.clone();
+    update(
+        &mut s,
+        ClientEvent::ChildControlled {
+            generation,
+            child_session_id: Ulid(1).to_string(),
+            control: ChildControl::Continue,
+            result: Ok(()),
+            pause_token: Some(first),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.pause_token, Some(second));
+    assert!(s.watchdog_paused);
+    let mut ui = UiState::default();
+    handle_action(&mut s, &mut ui, Action::ContinueChild);
+    s.pause_token = Some(first);
+    assert!(handle_action(&mut s, &mut ui, Action::ConfirmChildControl).is_empty());
+    let generation = s.generation.clone();
+    update(&mut s, ClientEvent::Resync { generation }).unwrap();
+    assert!(!s.watchdog_paused);
+    assert!(s.pause_token.is_none());
+}
+
+#[test]
 fn interrupted_steering_keeps_watched_and_open_children_running_then_parked() {
     for opened in [false, true] {
         for close_parent in [false, true] {
@@ -749,6 +878,7 @@ fn subagent_controls_confirm_effects_and_show_server_refusals() {
         assert_eq!(
             handle_action(&mut s, &mut ui, Action::ConfirmChildControl),
             vec![Effect::ControlChild {
+                pause_token: None,
                 parent_session_id: Ulid(1).to_string(),
                 child_session_id: Ulid(2).to_string(),
                 control
@@ -757,6 +887,7 @@ fn subagent_controls_confirm_effects_and_show_server_refusals() {
         update(
             &mut s,
             ClientEvent::ChildControlled {
+                pause_token: None,
                 generation,
                 child_session_id: Ulid(2).to_string(),
                 control,

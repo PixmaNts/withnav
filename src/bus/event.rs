@@ -417,6 +417,12 @@ pub struct AgentYield {
     pub details: Option<Value>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PauseToken {
+    pub incarnation: Ulid,
+    pub hold_id: Ulid,
+}
+
 /// Read-only catalog projection; this is an HTTP body, not a new event kind.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct SkillsBody {

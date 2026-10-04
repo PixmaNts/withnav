@@ -626,6 +626,7 @@ async fn results(state: &AppState, id: ulid::Ulid) -> Vec<(String, bool, String)
     stored(state, id, "command.result")
         .await
         .into_iter()
+        .filter(|e| e.payload["name"] != "watchdog")
         .map(|e| {
             (
                 e.payload["name"].as_str().unwrap().to_string(),

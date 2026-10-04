@@ -267,6 +267,7 @@ pub enum ClientEvent {
         child_session_id: String,
         control: ChildControl,
         result: Result<(), String>,
+        pause_token: Option<crate::bus::event::PauseToken>,
     },
     DeliveryUncertain {
         generation: Generation,
@@ -419,6 +420,7 @@ pub enum Effect {
         parent_session_id: String,
         child_session_id: String,
         control: ChildControl,
+        pause_token: Option<crate::bus::event::PauseToken>,
     },
     Quit,
     /// Writes the theme id to the user settings.

@@ -2,6 +2,13 @@ use std::sync::Arc;
 
 use crate::provider::openai::ChatMessage;
 
+/// The boundary owns the complete settled transcript, including consumed guidance.
+pub enum BoundaryResult {
+    Continue(Vec<ChatMessage>),
+    Interrupted,
+    Watchdog(Vec<ChatMessage>),
+}
+
 /// A later delivery failure must not discard an already acknowledged prefix.
 #[derive(Debug)]
 pub struct BoundaryError {
@@ -23,8 +30,7 @@ pub type SafeBoundary = Arc<
     dyn Fn(
             Vec<ChatMessage>,
             tokio_util::sync::CancellationToken,
-        )
-            -> futures::future::BoxFuture<'static, Result<Option<Vec<ChatMessage>>, BoundaryError>>
+        ) -> futures::future::BoxFuture<'static, Result<BoundaryResult, BoundaryError>>
         + Send
         + Sync,
 >;

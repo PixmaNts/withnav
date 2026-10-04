@@ -242,6 +242,38 @@ fn state() -> State {
         ..State::default()
     }
 }
+
+#[test]
+fn watchdog_pause_and_budget_are_not_questions_and_permission_keys_take_priority() {
+    let mut s = state();
+    s.watchdog_paused = true;
+    s.activity = Activity::AwaitingUser;
+    s.conversation.blocks = vec![Block {
+        id: "pause".into(),
+        kind: BlockKind::Notice("Watchdog pause · alt+c continue or Stop".into()),
+    }];
+    let text = screen_text(&s, &UiState::default(), (100, 30));
+    assert!(text.contains("Watchdog pause"));
+    assert!(text.contains("alt+c"));
+    assert!(!text.contains("QUESTION"));
+    assert!(text.contains("watchdog paused"));
+    assert!(navai::tui::reducer::switch_blocked(&s.tabs[s.active]).is_none());
+    let mut child = s.clone();
+    child.parent_session_id = Some("parent".into());
+    child.activity = Activity::OutOfSteps;
+    child.conversation.blocks[0].kind = BlockKind::Notice("Out of steps · alt+c continue".into());
+    let text = screen_text(&child, &UiState::default(), (100, 30));
+    assert!(text.contains("alt+c continue"));
+    assert!(!text.contains("send a message"));
+    s.conversation.blocks[0].kind =
+        BlockKind::Notice("Out of steps · send a message to continue".into());
+    assert!(!screen_text(&s, &UiState::default(), (100, 30)).contains("QUESTION"));
+    let mut permission = asking(prompt("bash", json!({"command":"true"}), ("folder", "/ws")));
+    permission.watchdog_paused = true;
+    let text = screen_text(&permission, &UiState::default(), (100, 30));
+    assert!(text.contains("allow once"));
+    assert!(!text.contains("alt+c continue"));
+}
 fn done() -> State {
     let mut s = state();
     s.conversation.blocks = vec![

@@ -6,6 +6,65 @@ fn cli_debug_assert() {
     Cli::command().debug_assert();
 }
 
+#[tokio::test]
+async fn typed_watchdog_pause_exits_yielded_even_with_yes_and_notice_renders() {
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    let pause = kind_envelope(
+        EventKind::AgentYield,
+        serde_json::to_value(AgentYield {
+            actor_id: "agent:main".into(),
+            turn_id: ulid::Ulid::new(),
+            question: "watchdog pause".into(),
+            kind: Some("watchdog".into()),
+            details: None,
+        })
+        .unwrap(),
+    );
+    assert!(
+        matches!(event_to_ui(&pause), Some(UiEvent::Yielded { kind:Some(kind), .. }) if kind == "watchdog")
+    );
+    tx.send(pause).await.unwrap();
+    tx.send(turn_end_envelope(TurnEndOutcome::Yielded))
+        .await
+        .unwrap();
+    let mut subscription = crate::session::Subscription {
+        replay: crate::bus::ResumeOutcome::Replay(vec![]),
+        live: Some(rx),
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path().join("cfg");
+    std::fs::create_dir(&config_dir).unwrap();
+    let models_path = tmp.path().join("models.json");
+    std::fs::write(&models_path, r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"default":{"provider":"mock","model":"m","context_window":128000}},"default":"default"}"#).unwrap();
+    let state = crate::server::AppState::new(crate::server::ServerConfig {
+        config_dir,
+        data_dir: tmp.path().join("data"),
+        models_path: Some(models_path),
+        bind: "127.0.0.1:0".parse().unwrap(),
+        allow_non_loopback: false,
+        bearer_token: None,
+        history_db: tmp.path().join("history.db"),
+        rules_roots: Default::default(),
+    })
+    .unwrap();
+    assert_eq!(
+        render_until_terminal(
+            &mut subscription,
+            &mut Renderer::new(false),
+            Some((&state, ulid::Ulid::new()))
+        )
+        .await,
+        EXIT_YIELDED
+    );
+    let notice = kind_envelope(
+        EventKind::CommandResult,
+        serde_json::json!({"name":"watchdog","ok":true,"data":{"message":"fallback 500 steps"}}),
+    );
+    assert!(
+        matches!(event_to_ui(&notice), Some(UiEvent::AssistantText(text)) if text.contains("500"))
+    );
+}
+
 #[test]
 fn exit_codes_are_pinned() {
     assert_eq!(EXIT_DONE, 0);

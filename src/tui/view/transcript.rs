@@ -38,7 +38,7 @@ impl Origin {
     fn of(source: &str) -> Self {
         if source == "user:subagent" || source == "subagent" || source.starts_with("subagent:") {
             Self::Subagent
-        } else if source == "user" || source.starts_with("user:") {
+        } else if source == "user" || crate::bus::command::is_driver_source(source) {
             Self::User
         } else if source == "navigator" || source.starts_with("navigator:") {
             Self::Navigator

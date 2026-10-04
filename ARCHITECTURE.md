@@ -290,6 +290,38 @@ fall back to next-turn delivery for pending human interactions; inbox commands a
 are checked before completion-only wakes. `subagent.spawned` and `subagent.done` payloads include
 `delivery`; no new event kind is introduced.
 
+**Root watchdog.** `session/subagents/root_watchdog.rs` reuses the child clock, evidence, judge and
+consecutive-failure rule. The service installs one task per root runtime. It skips idle and human
+waits, checks the turn generation again after each model await, and submits a safe-boundary stop or
+doubt hold through `WatchdogPark`. A local mockable `ProgressReviewer` performs one tool-free
+metacognition call within 20 seconds; undecidable reviews ask the driver. Notices reuse
+`command.result`; the runtime emits typed `agent.yield` at the final safe-boundary check after
+awaited delivery, snapshots settled tools and ends the paused turn. Hold identity is a session
+incarnation plus unique hold id. Continue consumes the matching token atomically and sequences
+resolution; restart/stop expires it. A driver message supersedes it and records interruption;
+autonomous inputs cannot release it or renew a parked budget. The event catalog remains 22 kinds.
+The typed boundary result carries the settled transcript on every watchdog exit and keeps the
+remaining steps. Interrupt-delivery checks revalidate the hold after awaiting notice eligibility.
+Recovery installs an awaiting-fresh-driver gate; neither delivery wakes nor delegated provenance
+can clear it. Deferred controls accepted in a paused turn receive operation-correlated cancellation.
+Driver admission events never clear the recovered gate. The runtime commits the consumed driver
+transcript and a `command.result` checkpoint marker atomically through the existing acknowledged
+transcript/event transaction before releasing the gate. Recovery reads that marker, not admission;
+an admitted but unconsumed correction therefore requires fresh input after another crash. Accepted
+interrupt guidance on a budget-parked child stays queued and is claimed once by authorized Continue
+before its first resumed provider request; the guidance itself never renews the budget.
+Progress parking filters autonomous-only batches before policy pinning. A driver batch pins its
+role before validating selected skills; held-only or refused batches release that pin without
+changing the interaction claim, progress generation, goal or recovery gate. Only applied commands
+supersede a watchdog hold and commit fresh input. `consume_turn` starts activity and the watchdog
+after that validation, using the updated driver task, before transcript-persisting turn delivery.
+Root `alt+c`
+uses the existing Continue route with the root as both owner and target, which cannot answer asks
+or permissions. Root turns are unbounded unless `NAVAI_MAX_STEPS` is set; unavailable instinct
+or disabled supervision installs a visible renewable 500-step fallback cap. Children keep their
+50-step budget. The root supervisor starts only after publication; runtime exit cancels and joins
+it outside admission and registry locks.
+
 **Child watchdog.** `session/subagents/watchdog.rs` owns the monotonic clock and judge seams,
 bounded evidence, separate `subagent_progress` System One choice and consecutive-failure rule.
 `supervisor.rs` owns one service task per published child, cancelled by lifetime stop or terminal

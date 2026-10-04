@@ -39,6 +39,22 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// Root progress-check interval; zero disables supervision.
+    pub fn agent_watchdog_interval_secs(&self) -> Result<u64, String> {
+        let Some(value) = self
+            .root
+            .get("agent")
+            .and_then(|s| s.get("watchdog_interval_secs"))
+        else {
+            return Ok(300);
+        };
+        value
+            .as_u64()
+            .filter(|n| *n <= 365 * 24 * 60 * 60)
+            .ok_or_else(|| {
+                "agent.watchdog_interval_secs must be an integer from 0 to 31536000".into()
+            })
+    }
     /// Automatic advisory review; disabling it asks for every mutating call.
     pub fn permissions_automatic_review(&self) -> Result<bool, String> {
         let Some(permissions) = self.root.get("permissions") else {
@@ -194,6 +210,32 @@ mod tests {
                 serde_json::json!({"watchdog_interval_secs":value}),
             );
             assert!(settings.subagents_watchdog_interval_secs().is_err());
+        }
+    }
+
+    #[test]
+    fn root_watchdog_interval_is_validated() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.agent_watchdog_interval_secs(), Ok(300));
+        for n in [0, 1, 300, 31536000] {
+            settings.root.insert(
+                "agent".into(),
+                serde_json::json!({"watchdog_interval_secs":n}),
+            );
+            assert_eq!(settings.agent_watchdog_interval_secs(), Ok(n));
+        }
+        for bad in [
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("300"),
+            serde_json::json!(null),
+            serde_json::json!(31536001),
+        ] {
+            settings.root.insert(
+                "agent".into(),
+                serde_json::json!({"watchdog_interval_secs":bad}),
+            );
+            assert!(settings.agent_watchdog_interval_secs().is_err());
         }
     }
 

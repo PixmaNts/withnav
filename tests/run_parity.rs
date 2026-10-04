@@ -151,7 +151,7 @@ fn phase1_exit(outcome: &RunOutcome) -> i32 {
         | RunOutcome::PermissionRequired(_)
         | RunOutcome::StepBudgetExhausted
         | RunOutcome::NeedsCompaction { .. } => 2,
-        RunOutcome::Interrupted => 130,
+        RunOutcome::Interrupted | RunOutcome::WatchdogBoundary => 130,
     }
 }
 

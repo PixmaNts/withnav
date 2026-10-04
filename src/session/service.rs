@@ -314,6 +314,9 @@ pub struct Service {
     pub(crate) watchdog_teardown_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
     pub(crate) watchdog_test: Arc<Mutex<Option<super::subagents::supervisor::TestWatchdog>>>,
+    #[cfg(debug_assertions)]
+    pub(crate) root_watchdog_test:
+        Arc<Mutex<Option<super::subagents::root_watchdog::TestRootWatchdog>>>,
     _instance: Arc<super::instance::Instance>,
     /// The live sessions of this process; a closed session is removed.
     pub(super) sessions: Arc<Mutex<HashMap<SessionId, SessionHandle>>>,
@@ -573,6 +576,8 @@ impl Service {
             watchdog_teardown_barrier: Arc::default(),
             #[cfg(debug_assertions)]
             watchdog_test: Arc::default(),
+            #[cfg(debug_assertions)]
+            root_watchdog_test: Arc::default(),
             _instance: instance,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             config: Arc::new(config),
@@ -1248,13 +1253,47 @@ impl Service {
         parent: SessionId,
         child: SessionId,
     ) -> Result<(), ServerError> {
+        self.continue_child_with_token(parent, child, None).await
+    }
+
+    pub async fn continue_child_with_token(
+        &self,
+        parent: SessionId,
+        child: SessionId,
+        token: Option<runtime::PauseToken>,
+    ) -> Result<(), ServerError> {
         let owner = self.routable_handle(parent).await?;
         if owner.parent_session_id.is_some() {
             return Err(ServerError::ChildReadOnly);
         }
         let handle = self.routable_handle(child).await?;
-        if handle.parent_session_id != Some(parent) {
+        if handle.parent_session_id != Some(parent)
+            && !(parent == child && handle.parent_session_id.is_none())
+        {
             return Err(ServerError::ChildReadOnly);
+        }
+        if handle.status.pending_permission().is_some() || handle.status.selection.ask_pending() {
+            return Err(ServerError::ChildNotParked);
+        }
+        if handle
+            .status
+            .awaiting_fresh_driver
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(ServerError::ChildNotParked);
+        }
+        if parent == child && handle.status.watchdog.root_hold().is_some() {
+            let token = token.ok_or(ServerError::ChildNotParked)?;
+            if !handle.status.watchdog.resolve_root(token, || {
+                runtime::publish_pause_resolution(&handle.sequencer, token, "continued");
+                handle.status.wake_continue();
+            }) {
+                return Err(ServerError::ChildNotParked);
+            }
+            return Ok(());
+        }
+        if token.is_some() {
+            return Err(ServerError::ChildNotParked);
         }
         if !handle.status.watchdog.resume() && !handle.status.continue_budget() {
             return Err(ServerError::ChildNotParked);
@@ -2047,6 +2086,9 @@ impl Service {
             });
         }
         self.hooks.configure_actor(profile, &mut actor);
+        if child_policy.is_some() {
+            actor.max_steps = crate::agent::run_loop::max_steps();
+        }
         if let Some((allowed, _, _, _)) = &child_policy {
             actor
                 .registry
@@ -2162,7 +2204,56 @@ impl Service {
         {
             emitter = emitter.with_permission_mirror(session_id, parent_id, parent.sequencer);
         }
+        let root_watchdog = if child_parent.is_none() {
+            Some(self.prepare_root_watchdog(&workspace)?)
+        } else {
+            None
+        };
         let sequencer = Sequencer::spawn(session_id, emitter, next_seq);
+        let mut awaiting_fresh_driver = false;
+        if is_resume && child_parent.is_none() {
+            let events = self
+                .history
+                .watchdog_events(session_id)
+                .await
+                .map_err(ServerError::History)?;
+            let mut pending = None;
+            for event in events {
+                if event.kind == "agent.yield" && event.payload["kind"] == "watchdog" {
+                    pending = serde_json::from_value::<runtime::PauseToken>(
+                        event.payload["details"]["pause_token"].clone(),
+                    )
+                    .ok();
+                }
+                if event.kind == "command.result"
+                    && event.payload["name"] == "watchdog"
+                    && event.payload["data"]["resolution"].is_string()
+                {
+                    pending = None;
+                    awaiting_fresh_driver = matches!(
+                        event.payload["data"]["resolution"].as_str(),
+                        Some("expired" | "superseded")
+                    );
+                }
+                if event.kind == "command.result"
+                    && event.payload["name"] == "watchdog"
+                    && event.payload["data"]["driver_committed"] == true
+                {
+                    awaiting_fresh_driver = false;
+                }
+            }
+            if let Some(token) = pending {
+                awaiting_fresh_driver = true;
+                runtime::publish_pause_resolution(&sequencer, token, "expired");
+            }
+        }
+        if root_watchdog
+            .as_ref()
+            .is_some_and(|watchdog| watchdog.unavailable())
+            && actor.max_steps == usize::MAX
+        {
+            actor.max_steps = crate::agent::run_loop::WATCHDOG_FALLBACK_STEPS;
+        }
 
         for (request_id, tool_call_id) in expired {
             let payload = serde_json::to_value(crate::bus::event::PermissionResolved {
@@ -2230,6 +2321,33 @@ impl Service {
             agents, role,
         )));
         status.init_variant(selected.clone());
+        if child_parent.is_none() {
+            let history = self.history.clone();
+            let driver_sequencer = sequencer.clone();
+            status.install_driver_commit(Arc::new(move |transcript| {
+                let (history, sequencer) = (history.clone(), driver_sequencer.clone());
+                Box::pin(async move {
+                    history.flush().await?;
+                    let candidate = Candidate::new(EventKind::CommandResult, serde_json::json!({
+                        "name":"watchdog","ok":true,"operation_id":Ulid::new(),
+                        "data":{"driver_committed":true,"message":"Fresh driver instruction checkpointed"}
+                    }));
+                    sequencer.commit_acked(candidate, Box::new(move |envelope| Box::pin(async move {
+                        history.consume_completions_committed(session_id,vec![],transcript,Some(envelope)).await
+                    }))).await.map(|_| ()).map_err(|error| error.to_string())
+                })
+            }));
+        }
+        status
+            .awaiting_fresh_driver
+            .store(awaiting_fresh_driver, std::sync::atomic::Ordering::Release);
+        status.watchdog_fallback_notice.store(
+            root_watchdog
+                .as_ref()
+                .is_some_and(|watchdog| watchdog.unavailable())
+                && actor.max_steps == crate::agent::run_loop::WATCHDOG_FALLBACK_STEPS,
+            std::sync::atomic::Ordering::Release,
+        );
         if child_parent.is_none() {
             let pending_history = self.history.clone();
             let eligible_history = self.history.clone();
@@ -2373,10 +2491,12 @@ impl Service {
             completion,
         ))));
 
+        let incarnation = Ulid::new();
+        status.watchdog.install_incarnation(incarnation);
         let handle = SessionHandle {
             skills,
             publications: Arc::default(),
-            incarnation: Ulid::new(),
+            incarnation,
             inbox_tx,
             permissions,
             sequencer,
@@ -2410,6 +2530,22 @@ impl Service {
             self.drain_completions(session_id).await;
             if let Some(owner) = self.handle(session_id) {
                 owner.status.wake_delivery();
+            }
+        }
+        if let Some(watchdog) = root_watchdog {
+            if let Some(owner) = self.handle(session_id) {
+                let mut task = owner
+                    .status
+                    .root_supervisor
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if !owner.status.watchdog.supervisor_cancel.is_cancelled() {
+                    *task = watchdog.start(
+                        owner.status.clone(),
+                        owner.sequencer.clone(),
+                        owner.session_cancel.clone(),
+                    );
+                }
             }
         }
         // The host learns of the session once it is routable. A session

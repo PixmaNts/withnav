@@ -15,13 +15,23 @@ use std::path::{Path, PathBuf};
 
 use crate::tools::{ToolResult, ToolStatus};
 
+/// Children retain their renewable step budget.
 pub const DEFAULT_MAX_STEPS: usize = 50;
+pub const WATCHDOG_FALLBACK_STEPS: usize = 500;
 
 pub fn max_steps() -> usize {
     std::env::var("NAVAI_MAX_STEPS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_MAX_STEPS)
+}
+
+/// Root turns have no step cap unless the driver explicitly opts in.
+pub fn root_max_steps() -> usize {
+    std::env::var("NAVAI_MAX_STEPS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(usize::MAX)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,6 +43,7 @@ pub enum RunOutcome {
     /// pending interaction.
     PermissionRequired(PermissionRequest),
     Interrupted,
+    WatchdogBoundary,
     StepBudgetExhausted,
     /// The next request would not fit the model's input budget. Internal, like
     /// `StepBudgetExhausted`: it never reaches the wire. The run stopped at a
@@ -79,7 +90,7 @@ pub async fn run_agent(
     actor: &mut AgentActor,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> Result<RunOutcome, AgentError> {
-    let budget = actor.max_steps;
+    let budget = actor.watchdog_steps_left.take().unwrap_or(actor.max_steps);
     run_steps(actor, observe, budget).await
 }
 
@@ -129,11 +140,21 @@ async fn run_steps(
                         }));
                     }
                 };
-                let Some(updated) = updated else {
-                    actor.state = AgentState::Idle;
-                    return Ok(RunOutcome::Interrupted);
-                };
-                actor.transcript = updated;
+                match updated {
+                    crate::agent::boundary::BoundaryResult::Continue(updated) => {
+                        actor.transcript = updated
+                    }
+                    crate::agent::boundary::BoundaryResult::Interrupted => {
+                        actor.state = AgentState::Idle;
+                        return Ok(RunOutcome::Interrupted);
+                    }
+                    crate::agent::boundary::BoundaryResult::Watchdog(updated) => {
+                        actor.transcript = updated;
+                        actor.watchdog_steps_left = Some(budget - step);
+                        actor.state = AgentState::Idle;
+                        return Ok(RunOutcome::WatchdogBoundary);
+                    }
+                }
             }
         }
 
@@ -756,6 +777,41 @@ mod tests {
     use crate::agent::permissions::Scope;
     use crate::provider::config::{ProviderConfig, ReasoningHistory};
     use crate::provider::test_support::{http_sse, sse_body};
+
+    #[tokio::test]
+    async fn typed_watchdog_boundary_preserves_transcript_and_steps_at_every_position() {
+        for before_first in [true, false] {
+            let call = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"g","function":{"name":"glob","arguments":"{\"pattern\":\"*\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+            let server = spawn_mock(vec![http_sse(&sse_body(&[call]))]).await;
+            let mut actor = make_actor(server.url, registry_all(), CancellationToken::new());
+            actor.max_steps = 7;
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            actor.safe_boundary = Some(Arc::new(move |mut transcript, _| {
+                let step = calls.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                Box::pin(async move {
+                    if !before_first && step == 0 {
+                        return Ok(crate::agent::boundary::BoundaryResult::Continue(transcript));
+                    }
+                    transcript.push(ChatMessage::User {
+                        provenance: crate::provider::openai::UserProvenance::Parent,
+                        content: "committed steering".into(),
+                    });
+                    Ok(crate::agent::boundary::BoundaryResult::Watchdog(transcript))
+                })
+            }));
+            assert_eq!(
+                run_agent(&mut actor, &mut |_| {}).await.unwrap(),
+                RunOutcome::WatchdogBoundary
+            );
+            assert_eq!(
+                actor.watchdog_steps_left,
+                Some(if before_first { 7 } else { 6 })
+            );
+            assert!(
+                matches!(actor.transcript.last(),Some(ChatMessage::User {content,..}) if content == "committed steering")
+            );
+        }
+    }
     use crate::tools::bash::BashTool;
     use crate::tools::control::AskTool;
     use crate::tools::native::{GrepTool, ReadTool, WriteTool};
@@ -1109,6 +1165,29 @@ mod tests {
         actor.input_budget = None;
         let outcome = continue_run(&mut actor, &mut noop, 4).await.unwrap();
         assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "fin"));
+    }
+
+    #[tokio::test]
+    async fn default_root_turn_runs_past_sixty_steps() {
+        let call = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"glob","arguments":"{\"pattern\":\"*\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let done =
+            r#"{"choices":[{"index":0,"delta":{"content":"finished"},"finish_reason":"stop"}]}"#;
+        let mut replies = vec![http_sse(&sse_body(&[call])); 60];
+        replies.push(http_sse(&sse_body(&[done])));
+        let server = spawn_mock(replies).await;
+        let mut actor = make_actor(server.url, registry_all(), CancellationToken::new());
+        assert_eq!(actor.max_steps, usize::MAX);
+        actor.push_user("keep going");
+        let mut steps = 0;
+        let result = run_agent(&mut actor, &mut |event| {
+            if matches!(event, AgentEvent::StepStarted) {
+                steps += 1;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(result, RunOutcome::Done(_)));
+        assert_eq!(steps, 61);
     }
 
     // Given a model that keeps calling tools and a prompt over the budget at

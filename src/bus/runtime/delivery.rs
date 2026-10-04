@@ -16,6 +16,14 @@ pub type PendingNotice =
     Arc<dyn Fn(ulid::Ulid) -> super::BoxFuture<Result<bool, String>> + Send + Sync>;
 pub(super) struct NoticeCell(pub PendingNotice);
 pub type BoundaryEligible = Arc<dyn Fn() -> super::BoxFuture<Result<bool, String>> + Send + Sync>;
+pub type DriverCommit =
+    Arc<dyn Fn(Vec<ChatMessage>) -> super::BoxFuture<Result<(), String>> + Send + Sync>;
+pub(super) struct DriverCommitCell(pub DriverCommit);
+impl std::fmt::Debug for DriverCommitCell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DriverCommit")
+    }
+}
 pub(super) struct EligibleCell(pub BoundaryEligible);
 impl std::fmt::Debug for EligibleCell {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

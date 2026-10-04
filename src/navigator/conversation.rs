@@ -272,6 +272,15 @@ impl ConversationFeed {
                     entry.waiting_on_driver = true;
                 }
             }
+            "command.result"
+                if envelope.payload["name"] == "watchdog"
+                    && envelope.payload["data"]["resolution"].is_string() =>
+            {
+                let mut state = self.lock();
+                if let Some(entry) = state.sessions.get_mut(&envelope.session_id) {
+                    entry.waiting_on_driver = false;
+                }
+            }
             _ => {}
         }
     }
@@ -615,6 +624,62 @@ mod tests {
             .await;
         let digest = feed.digest();
         assert!(digest.contains("navigator: latest wake"));
+    }
+
+    #[tokio::test]
+    async fn watchdog_resolution_clears_waiting_on_driver() {
+        let feed = ConversationFeed::new();
+        let id = Ulid::new();
+        feed.register_session(id, recording_poster(Arc::new(Mutex::new(Vec::new()))));
+        feed.observe(&message_envelope(id, "user:http", "work"))
+            .await;
+        feed.observe(&yield_envelope(id)).await;
+        assert!(feed.is_waiting_on_driver());
+        let mut resolved = yield_envelope(id);
+        resolved.kind = "command.result".into();
+        resolved.payload = serde_json::json!({"name":"watchdog","data":{"resolution":"continued"}});
+        feed.observe(&resolved).await;
+        assert!(!feed.is_waiting_on_driver());
+    }
+
+    #[tokio::test]
+    async fn paused_turn_supersession_keeps_replacement_driver_causality() {
+        let feed = ConversationFeed::new();
+        let id = Ulid::new();
+        feed.register_session(id, recording_poster(Arc::new(Mutex::new(Vec::new()))));
+        let mut events = feed.subscribe();
+        feed.observe(&message_envelope(id, "user:http", "original"))
+            .await;
+        feed.observe(&yield_envelope(id)).await;
+        feed.observe(&turn_end_envelope(id)).await;
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            ConversationEvent::TurnEnded {
+                caused_by_driver: true,
+                ..
+            }
+        ));
+        feed.observe(&message_envelope(id, "user:subagent", "not driver"))
+            .await;
+        feed.observe(&message_envelope(id, "user:cli", "replacement"))
+            .await;
+        let mut resolution = yield_envelope(id);
+        resolution.kind = "command.result".into();
+        resolution.payload =
+            json!({"name":"watchdog","data":{"resolution":"superseded","turn_id":Ulid::new()}});
+        feed.observe(&resolution).await;
+        assert!(
+            events.try_recv().is_err(),
+            "resolution never ends the old turn again"
+        );
+        feed.observe(&turn_end_envelope(id)).await;
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            ConversationEvent::TurnEnded {
+                caused_by_driver: true,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

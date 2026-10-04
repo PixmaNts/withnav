@@ -183,6 +183,8 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
     match kind {
         Some(EventKind::SessionStart) => s.activity = Activity::Idle,
         Some(EventKind::SessionEnd) => {
+            s.watchdog_paused = false;
+            s.pause_token = None;
             s.activity = Activity::Stopped;
             // A stopped session switches nothing after its turn.
             s.model_switch = None;
@@ -214,6 +216,8 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             }
         }
         Some(EventKind::TurnStart) => {
+            s.watchdog_paused = false;
+            s.pause_token = None;
             let v = e.payload;
             s.conversation.current_turn = Some(v["turn_id"].as_str().ok_or_else(bad)?.into());
             s.activity = Activity::Running;
@@ -328,8 +332,13 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         }
         Some(EventKind::AgentYield) => {
             let v = e.payload;
+            s.watchdog_paused = v["kind"] == "watchdog" || v["kind"] == "budget";
+            s.pause_token = v["details"]
+                .get("pause_token")
+                .and_then(|token| serde_json::from_value(token.clone()).ok());
             let q = v["question"].as_str().ok_or_else(bad)?;
             let budget = v["kind"].as_str() == Some("budget");
+            let child = s.read_only();
             s.activity = if budget {
                 Activity::OutOfSteps
             } else {
@@ -338,7 +347,16 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             s.conversation.blocks.push(block(
                 e.seq.to_string(),
                 if budget {
-                    BlockKind::Notice("Out of steps · send a message to continue".into())
+                    BlockKind::Notice(
+                        if child {
+                            "Out of steps · alt+c continue"
+                        } else {
+                            "Out of steps · send a message to continue"
+                        }
+                        .into(),
+                    )
+                } else if v["kind"] == "watchdog" {
+                    BlockKind::Notice(format!("Watchdog pause · {}", strip_controls(q)))
                 } else {
                     BlockKind::YieldQuestion(strip_controls(q))
                 },
@@ -347,6 +365,10 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         Some(EventKind::TurnEnd) => {
             let v = e.payload;
             let outcome = v["outcome"].as_str().unwrap_or("");
+            if outcome != "yielded" {
+                s.watchdog_paused = false;
+                s.pause_token = None;
+            }
             s.activity = match outcome {
                 "yielded" if s.activity == Activity::OutOfSteps => Activity::OutOfSteps,
                 "yielded" => Activity::AwaitingUser,
@@ -561,6 +583,22 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         }
         Some(EventKind::CommandResult) => {
             let v = e.payload;
+            if v["name"] == "watchdog" {
+                if v["data"]["resolution"].is_string() {
+                    let token = serde_json::from_value(v["data"]["pause_token"].clone()).ok();
+                    if s.pause_token == token {
+                        s.watchdog_paused = false;
+                        s.pause_token = None;
+                        s.activity = Activity::Idle;
+                    }
+                }
+                let text = v["data"]["message"].as_str().ok_or_else(bad)?;
+                s.conversation.blocks.push(block(
+                    e.seq.to_string(),
+                    BlockKind::Notice(strip_controls(text)),
+                ));
+                return Ok(());
+            }
             let name = v["name"].as_str().ok_or_else(bad)?.to_string();
             let ok = v["ok"].as_bool().ok_or_else(bad)?;
             // `/model`: the result of an operation settles the switch waiting on it (a deferred

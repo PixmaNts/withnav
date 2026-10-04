@@ -217,6 +217,8 @@ class CatalogTests(unittest.TestCase):
         models = oc["provider"]["omniroute"]["models"]
         models["typesafe/jev-1.13"] = {"limit": {"context": 90000, "output": 9000}}
         models["mercury-edit-2"] = {"limit": {"context": 90000, "output": 9000}}
+        models["typesafe/jev-1.13"]["api"] = "systemone"
+        models["mercury-edit-2"]["api"] = "fim"
         p, m, _, _ = importer.convert(oc, True, lambda _: None)
         old = {"models": {mid: {"provider": "omniroute", "model": mid, "api": api,
                                  "context_window": window, "max_output_tokens": output}
@@ -225,8 +227,36 @@ class CatalogTests(unittest.TestCase):
                               ("mercury-edit-2", "fim", 128000, 512))}}
         _, merged = importer.merge_catalog(p, m, old)
         for mid, entry in old["models"].items():
+            self.assertEqual(merged["omniroute/" + mid]["api"], entry["api"])
             self.assertEqual(merged["omniroute/" + mid]["context_window"], entry["context_window"])
             self.assertEqual(merged["omniroute/" + mid]["max_output_tokens"], entry["max_output_tokens"])
+        for mid in old["models"]:
+            with self.subTest(mid=mid), tempfile.TemporaryDirectory() as tmp:
+                d = Path(tmp)
+                changed = json.loads(json.dumps(oc))
+                changed["provider"]["omniroute"]["models"][mid]["api"] = "chat"
+                (d / "source.jsonc").write_text(json.dumps(changed))
+                (d / "models.json").write_text(json.dumps(old))
+                before = {p.name: p.read_bytes() for p in d.iterdir()}
+                result = self.cli(d, "--with-windows")
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("omniroute/" + mid, result.stderr)
+                self.assertIn("source API conflicts", result.stderr)
+                self.assertEqual(before, {p.name: p.read_bytes() for p in d.iterdir()})
+
+    def test_retained_invalid_env_is_value_free_and_write_free(self):
+        for env in ("{file:synthetic-secret}", "", "1INVALID", None, 123):
+            with self.subTest(kind=type(env).__name__), tempfile.TemporaryDirectory() as tmp:
+                d = Path(tmp)
+                (d / "source.jsonc").write_text(json.dumps(source()))
+                (d / "models.json").write_text(json.dumps({"providers": {
+                    "retained": {"base_url": "http://localhost/v1", "api_key_env": env}}}))
+                before = {p.name: p.read_bytes() for p in d.iterdir()}
+                result = self.cli(d)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("valid environment variable name", result.stderr)
+                self.assertNotIn("synthetic-secret", result.stdout + result.stderr)
+                self.assertEqual(before, {p.name: p.read_bytes() for p in d.iterdir()})
 
     def test_provider_identity_full_url_and_routing(self):
         base = {"base_url": "http://localhost:9999/v1", "api_key_env": "TEST_KEY"}

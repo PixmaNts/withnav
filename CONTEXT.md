@@ -123,10 +123,17 @@ Root conversations have no default step cap. Their watchdog uses the same bounde
 evidence every 300 seconds (`agent.watchdog_interval_secs`; 0 disables), bound to the judged turn.
 `active` continues; `stuck` stops before the next provider request once every tool result is in.
 `doubt`, including two consecutive judge failures, gets one tool-free metacognition review with a
-20-second deadline. Continue keeps running; stop settles the batch and stops; hesitation, invalid
+20-second deadline. Continue resumes with the remaining steps; stop settles the batch and stops; hesitation, invalid
 output, timeout or an unavailable reviewer pauses at that boundary and asks the driver to Continue
 (`alt+c`) or Stop. Permission and ask waits are not judged or answered by this mechanism.
-Without instinct, the session announces a renewable 500-step fallback cap instead. An explicit
+At the settled boundary, a pause snapshots the transcript, publishes a typed yield with its turn
+identity and unique incarnation/hold token, and ends the turn as yielded. Owner Continue consumes
+that token once; late answers cannot release a newer pause. Resolution, expiry and driver-message
+supersession are sequenced notices. Restart expires the hold, retains the checkpoint and waits
+for fresh driver input. Navigator wakes and child results cannot release a hold or renew a parked
+budget. A real driver message replaces the paused turn and records its interruption.
+Without instinct, or with supervision disabled, the session announces a renewable 500-step fallback
+cap instead. Only explicit owner Continue or fresh driver input renews it. An explicit
 `NAVAI_MAX_STEPS` keeps the existing budget parking behaviour; subagents keep their 50-step default.
 
 The instinct's separate progress check for a running background child, every 300 seconds by

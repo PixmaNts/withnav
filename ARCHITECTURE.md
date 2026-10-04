@@ -257,11 +257,17 @@ consecutive-failure rule. The service installs one task per root runtime. It ski
 waits, checks the turn generation again after each model await, and submits a safe-boundary stop or
 doubt hold through `WatchdogPark`. A local mockable `ProgressReviewer` performs one tool-free
 metacognition call within 20 seconds; undecidable reviews ask the driver. Notices reuse
-`command.result`; pauses reuse `agent.yield` with a watchdog subtype. The event catalog remains
+`command.result`; the runtime emits typed `agent.yield` at the final safe-boundary check after
+awaited delivery, snapshots settled tools and ends the paused turn. Hold identity is a session
+incarnation plus unique hold id. Continue consumes the matching token atomically and sequences
+resolution; restart/stop expires it. A driver message supersedes it and records interruption;
+autonomous inputs cannot release it or renew a parked budget. The event catalog remains
 22 kinds. Root `alt+c`
 uses the existing Continue route with the root as both owner and target, which cannot answer asks
 or permissions. Root turns are unbounded unless `NAVAI_MAX_STEPS` is set; unavailable instinct
-installs a visible renewable 500-step fallback cap. Children keep their 50-step budget.
+or disabled supervision installs a visible renewable 500-step fallback cap. Children keep their
+50-step budget. The root supervisor starts only after publication; runtime exit cancels and joins
+it outside admission and registry locks.
 
 **Child watchdog.** `session/subagents/watchdog.rs` owns the monotonic clock and judge seams,
 bounded evidence, separate `subagent_progress` System One choice and consecutive-failure rule.

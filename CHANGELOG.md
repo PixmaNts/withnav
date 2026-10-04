@@ -11,11 +11,16 @@ Fixes from daily use of 0.4.0, mostly in the terminal client.
 ### Changed
 
 - **Root turns no longer have a 50-step limit**: progress supervision checks the instinct every
-  300 seconds (`agent.watchdog_interval_secs` in `config.json`; 0 disables). Stuck turns stop after
+  300 seconds (`agent.watchdog_interval_secs` in `config.json`; 0 disables supervision and enables
+  the 500-step safety cap unless `NAVAI_MAX_STEPS` is explicit). Stuck turns stop after
   the complete tool batch; uncertain progress receives a bounded metacognition review, then pauses
   for the driver if still uncertain (`alt+c` to continue, Stop to stop). Partial work is kept.
   `NAVAI_MAX_STEPS` remains an explicit cap. Without an available `instinct` alias, a visible notice
-  announces a renewable 500-step fallback cap for the session. Subagents retain their 50-step budget
+  announces a renewable 500-step fallback cap for the session. Only driver input or owner Continue
+  renews a parked budget; autonomous messages and child results wait. Pauses checkpoint settled
+  work and emit a typed yield and turn end. Continue consumes a session-incarnation/hold token;
+  expiry and supersession are replayable, and a fresh driver message replaces a paused turn.
+  Subagents retain their 50-step budget
   and their existing watchdog and owner Continue behaviour.
 
 - **Folder grants persist**: an "allow folder" answer is saved per workspace in

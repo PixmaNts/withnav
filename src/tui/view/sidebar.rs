@@ -38,6 +38,7 @@ pub fn tab_state(tab: &Tab) -> &'static str {
     match tab.activity {
         Activity::Running => "running",
         Activity::AwaitingUser => "waiting",
+        Activity::OutOfSteps => "out of steps",
         _ if tab.delivery_uncertain => "error",
         _ if matches!(
             tab.conversation.blocks.last().map(|b| &b.kind),

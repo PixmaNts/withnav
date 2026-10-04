@@ -51,6 +51,7 @@ export class CognitionBackend implements ChatBackend {
   /** Turn ids that received a live text delta (replayed turns get none). */
   private turnTextDelta = new Set<string>();
   private controls = new ConversationControls();
+  private controlOwners = new Map<string, { session: string; generation: number }>();
   private pendingControls = new Set<string>();
   private childReads = new Map<string, AbortController>();
   private childReadQueue = new Set<string>();
@@ -76,9 +77,10 @@ export class CognitionBackend implements ChatBackend {
       this.abortStream();
       this.session = undefined;
       this.resumeId = undefined;
-      this.lastSeq = undefined;
-      this.delivered.clear();
-      this.currentTurn = undefined;
+      this.resetTranscript();
+      this.conversations = [];
+      this.emit({ type: "conversationOpened", title: "Server restarted" });
+      this.emit({ type: "history", items: [] });
       this.emit({ type: "status", state: "connecting" });
     }
     this.endpoint = info;
@@ -93,7 +95,7 @@ export class CognitionBackend implements ChatBackend {
   }
 
   history(): HostToWebview[] {
-    return this.transcript.map(message => ({ ...message, generation: this.streamGeneration }));
+    return [...this.transcript];
   }
 
   subscribe(listener: (message: HostToWebview) => void): () => void {
@@ -119,13 +121,21 @@ export class CognitionBackend implements ChatBackend {
   }
 
   async openConversation(id: string): Promise<void> {
+    const previous = {
+      session: this.session, resumeId: this.resumeId, transcript: [...this.transcript],
+      controls: this.controls, lastSeq: this.lastSeq, delivered: this.delivered,
+      currentTurn: this.currentTurn, previousRunThrough: this.previousRunThrough,
+    };
     this.abortStream();
     const generation = this.streamGeneration;
+    this.controls = new ConversationControls();
+    this.delivered = new Set<number>();
     this.resetTranscript();
     this.session = undefined;
     this.resumeId = undefined;
     this.emit({ type: "conversationOpened", title: "Opening conversation" });
     this.emit({ type: "history", items: [] });
+    try {
     if (!this.endpoint) await this.waitForEndpoint();
     this.checkGeneration(generation);
     const summary = this.conversations.find((c) => c.id === id);
@@ -151,6 +161,26 @@ export class CognitionBackend implements ChatBackend {
     // No Last-Event-ID: the stored events replay the whole conversation.
     void this.connect();
     void this.listConversations().catch(() => undefined);
+    } catch (error) {
+      if (generation === this.streamGeneration) {
+        this.session = previous.session;
+        this.resumeId = previous.resumeId;
+        this.controls = previous.controls;
+        this.lastSeq = previous.lastSeq;
+        this.delivered = previous.delivered;
+        this.currentTurn = previous.currentTurn;
+        this.previousRunThrough = previous.previousRunThrough;
+        // Explicitly restore the same owning conversation under the new generation.
+        this.transcript = previous.transcript.map(message => ({ ...message, generation }));
+        this.bindControlOwners();
+        this.emit({ type: "conversationOpened", id: this.currentConversationId(), title: "Conversation" });
+        this.emit({ type: "history", items: this.history() });
+        this.emit({ type: "status", state: "error", message: `Could not open conversation: ${this.errorText(error)}` });
+        void this.connect();
+        this.resumePermissionReads();
+      }
+      throw error;
+    }
   }
 
   async newConversation(): Promise<void> {
@@ -212,7 +242,8 @@ export class CognitionBackend implements ChatBackend {
   async answerPermission(sessionId: string, requestId: string, decision: PermissionDecision, message?: string, generation = this.streamGeneration): Promise<void> {
     this.checkGeneration(generation);
     const card = this.controls.permissions.get(requestId);
-    if (sessionId !== this.session || !card ||
+    const owner = this.controlOwners.get(`permission:${requestId}`);
+    if (sessionId !== this.session || owner?.session !== sessionId || owner.generation !== generation || !card ||
         !["allow_once", "allow_folder", "deny"].includes(decision) ||
         (decision === "allow_folder" && !card.allowFolder) ||
         (message !== undefined && typeof message !== "string")) {
@@ -241,7 +272,8 @@ export class CognitionBackend implements ChatBackend {
   async controlPause(sessionId: string, id: string, action: "continue" | "stop", generation = this.streamGeneration): Promise<void> {
     this.checkGeneration(generation);
     const pause = this.controls.pauses.get(id);
-    if (sessionId !== this.session || !pause || !["continue", "stop"].includes(action)) {
+    const owner = this.controlOwners.get(id);
+    if (sessionId !== this.session || owner?.session !== sessionId || owner.generation !== generation || !pause || !["continue", "stop"].includes(action)) {
       throw new Error("This pause does not belong to the open conversation.");
     }
     if (pause.kind === "watchdog" && action === "continue" && !pause.token) {
@@ -310,14 +342,14 @@ export class CognitionBackend implements ChatBackend {
 
   /** Fetches the models the cognition can use and preselects the default. */
   private async fetchModels(): Promise<void> {
-    const generation = this.streamGeneration;
+    const endpoint = this.endpoint;
     try {
-      const body = await this.request(`/v1/models?${this.workspaceQuery()}`, { method: "GET" });
+      const body = await this.request(`/v1/models?${this.workspaceQuery()}`, { method: "GET" }, "endpoint");
       this.models = parseModelList(body);
       if (typeof body?.default === "string") this.defaultModel = body.default;
       if (!this.selectedModel) this.selectedModel = this.defaultModel;
     } catch {
-      if (generation !== this.streamGeneration) return;
+      if (endpoint !== this.endpoint) return;
       // No model list (older server, unreadable models.json): the picker
       // stays empty and new sessions use the server's default.
       this.models = [];
@@ -417,6 +449,7 @@ export class CognitionBackend implements ChatBackend {
     this.turnTextDelta.clear();
     this.lastUsed = undefined;
     this.controls.reset();
+    this.controlOwners.clear();
     this.pendingControls.clear();
     this.replayThrough = undefined;
     this.previousRunThrough = -1;
@@ -490,6 +523,13 @@ export class CognitionBackend implements ChatBackend {
     if (this.session) return { session: this.session, generation: this.streamGeneration };
     this.abortStream();
     const generation = this.streamGeneration;
+    if (!this.resumeId) {
+      this.resetTranscript();
+      this.emit({ type: "history", items: [] });
+    } else {
+      this.transcript = this.transcript.map(message => ({ ...message, generation }));
+      this.bindControlOwners();
+    }
     this.emit({ type: "conversationOpened", id: this.resumeId, title: "Starting conversation" });
     this.emit({ type: "status", state: "connecting" });
     await this.waitForEndpoint();
@@ -776,6 +816,8 @@ export class CognitionBackend implements ChatBackend {
   private emit(message: HostToWebview): void {
     if (message.generation !== undefined && message.generation !== this.streamGeneration) return;
     message = { ...message, generation: this.streamGeneration };
+    if (message.type === "permission" && this.session) this.controlOwners.set(`permission:${message.card.requestId}`, { session: this.session, generation: this.streamGeneration });
+    if (message.type === "pause" && this.session) this.controlOwners.set(message.id, { session: this.session, generation: this.streamGeneration });
     if (message.type === "permissionState" && !["pending", "error"].includes(message.resolution)) {
       this.pendingControls.delete(`${this.currentConversationId()}:permission:${message.requestId}`);
     }
@@ -801,8 +843,21 @@ export class CognitionBackend implements ChatBackend {
     return String(error);
   }
 
-  private async request(path: string, init: RequestInit): Promise<any> {
+  private bindControlOwners(): void {
+    this.controlOwners.clear();
+    const session = this.currentConversationId();
+    if (!session) return;
+    for (const id of this.controls.permissions.keys()) this.controlOwners.set(`permission:${id}`, { session, generation: this.streamGeneration });
+    for (const id of this.controls.pauses.keys()) this.controlOwners.set(id, { session, generation: this.streamGeneration });
+  }
+
+  private async request(path: string, init: RequestInit, scope: "conversation" | "endpoint" = "conversation"): Promise<any> {
     const generation = this.streamGeneration;
+    const endpoint = this.endpoint;
+    const check = (): void => {
+      if (endpoint !== this.endpoint || this.disposed) throw new Error("Server endpoint changed");
+      if (scope === "conversation") this.checkGeneration(generation);
+    };
     if (!this.endpoint) throw new Error("cognition server not announced yet");
     let response: Response;
     try {
@@ -815,12 +870,12 @@ export class CognitionBackend implements ChatBackend {
         },
       });
     } catch (error) {
-      this.checkGeneration(generation);
+      check();
       const message = this.errorText(error);
       this.emit({ type: "status", state: "error", message });
       throw new Error(`cognition server unreachable: ${message}`);
     }
-    this.checkGeneration(generation);
+    check();
     if (response.status === 401) {
       const message = "cognition server rejected the token (401)";
       this.emit({ type: "status", state: "error", message });
@@ -844,7 +899,7 @@ export class CognitionBackend implements ChatBackend {
     // JSON parse crash.
     if (response.status === 204) return undefined;
     const raw = await response.text();
-    this.checkGeneration(generation);
+    check();
     return raw ? JSON.parse(raw) : undefined;
   }
 }

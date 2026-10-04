@@ -12,7 +12,7 @@ const rawPost = vscode.postMessage.bind(vscode);
 const identity = new ConversationIdentity(() => {
   for (const button of document.querySelectorAll<HTMLButtonElement>(".control-card button, .control-card textarea")) button.disabled = true;
 });
-vscode.postMessage = message => rawPost({ ...message, generation: identity.generation });
+const post = (message: WebviewToHost): void => rawPost({ ...message, generation: identity.generation });
 const transcript = document.querySelector<HTMLElement>("#transcript")!;
 const empty = document.querySelector<HTMLElement>("#empty")!;
 const status = document.querySelector<HTMLElement>("#status")!;
@@ -28,10 +28,10 @@ const usage = document.querySelector<HTMLElement>("#usage")!;
 const usageFill = document.querySelector<HTMLElement>("#usage-fill")!;
 const usageLabel = document.querySelector<HTMLElement>("#usage-label")!;
 modelSelect.addEventListener("change", () => {
-  if (modelSelect.value) vscode.postMessage({ type: "selectModel", alias: modelSelect.value });
+  if (modelSelect.value) post({ type: "selectModel", alias: modelSelect.value });
 });
 includeContext.checked = vscode.getState()?.includeContext ?? true;
-const conversations = mountConversations(message => vscode.postMessage(message), () => {
+const conversations = mountConversations(message => post(message), () => {
   if (!prompt.disabled) prompt.focus();
   else document.querySelector<HTMLElement>(".conv-trigger")?.focus();
 });
@@ -124,7 +124,7 @@ function navigatorNote(text: string): HTMLElement {
     link.type = "button";
     link.title = `Open ${wake.path}${wake.line ? ` at line ${wake.line}` : ""}`;
     const target = { path: wake.path, line: wake.line };
-    link.addEventListener("click", () => vscode.postMessage({ type: "openFile", ...target }));
+    link.addEventListener("click", () => post({ type: "openFile", ...target }));
     meta.append(link);
   }
   if (wake.score) {
@@ -266,7 +266,7 @@ function activity(item: Turn, event: Extract<HostToWebview, { type: "tool" }>): 
     row.append(el("span", "tool-verb", summary.slice(0, at)));
     const link = el("button", "file-link", target.path + (target.line ? `:${target.line}` : ""));
     link.type = "button";
-    link.addEventListener("click", () => vscode.postMessage({ type: "openFile", ...target }));
+    link.addEventListener("click", () => post({ type: "openFile", ...target }));
     row.append(link);
   } else {
     row.append(el("span", "tool-text", summary));
@@ -606,7 +606,7 @@ form.addEventListener("submit", event => {
   const text = prompt.value.trim();
   if (!text || prompt.disabled || sending) return;
   sending = true;
-  vscode.postMessage({ type: "send", text, includeContext: includeContext.checked });
+  post({ type: "send", text, includeContext: includeContext.checked });
   updateControls();
   stickToBottom = true;
   follow();
@@ -626,5 +626,5 @@ prompt.addEventListener("keydown", event => {
     form.requestSubmit();
   }
 });
-stop.addEventListener("click", () => vscode.postMessage({ type: "stop" }));
-vscode.postMessage({ type: "ready" });
+stop.addEventListener("click", () => post({ type: "stop" }));
+post({ type: "ready" });

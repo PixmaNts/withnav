@@ -8,3 +8,4 @@ await build({
   outdir: "out/tests",
   external: ["vscode"],
 });
+await build({ entryPoints: ["src/webview/chat.ts"], bundle: true, platform: "browser", format: "iife", outfile: "out/tests/chat-browser.js" });

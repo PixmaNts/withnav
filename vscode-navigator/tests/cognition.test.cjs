@@ -413,3 +413,83 @@ test("recreated view requeues interrupted child enrichment and retains completed
   assert.equal(reads, 2);
   backend.dispose();
 });
+
+test("restart A with failed bootstrap then create B never relabels A controls or history", async t => {
+  const { backend, permission, apply } = setup(t);
+  backend.connect = async () => {};
+  permission({ request_id: "RA" });
+  const pause = apply("agent.yield", { kind: "watchdog", details: { pause_token: { incarnation: "A", hold_id: "H" } } }, 10);
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    calls.push({ url, ...init });
+    if (url.includes("/v1/models")) return new Response(JSON.stringify({ models: [] }));
+    if (url.includes("/v1/sessions?")) return new Response(JSON.stringify({ error: "Unavailable" }), { status: 503 });
+    if (url.endsWith("/v1/sessions")) return new Response(JSON.stringify({ session_id: "B" }));
+    return new Response(JSON.stringify({ accepted: true }));
+  });
+  backend.setServerInfo({ port: 4321, token: "new" });
+  await new Promise(resolve => setImmediate(resolve));
+  await backend.send("New request");
+  assert.equal(backend.currentConversationId(), "B");
+  assert.equal(backend.history().some(m => ["permission", "pause"].includes(m.type)), false);
+  const generation = backend.currentGeneration();
+  await assert.rejects(backend.answerPermission("B", "RA", "allow_once", undefined, generation));
+  for (const action of ["continue", "stop"]) await assert.rejects(backend.controlPause("B", pause.id, action, generation));
+  assert.equal(calls.some(c => /\/permissions\/|\/continue$|\/stop$/.test(c.url)), false);
+  backend.dispose();
+});
+
+for (const status of [404, 503]) {
+  test(`failed open ${status} restores A transcript, subscription and answerable permission`, async t => {
+    const { backend, permission } = setup(t);
+    permission({ request_id: "RA" });
+    let connects = 0;
+    backend.connect = async () => { connects++; };
+    let requests = 0;
+    t.mock.method(globalThis, "fetch", async url => {
+      if (url.endsWith("/B")) { requests++; return new Response(JSON.stringify({ error: "Cannot open B" }), { status }); }
+      return new Response(JSON.stringify({ accepted: true }));
+    });
+    await assert.rejects(backend.openConversation("B"), /Cannot open B/);
+    assert.equal(backend.currentConversationId(), "parent");
+    assert.equal(backend.history().some(m => m.type === "permission" && m.card.requestId === "RA"), true);
+    assert.equal(connects, 1);
+    assert.equal(requests, 3);
+    await backend.answerPermission("parent", "RA", "allow_once", undefined, backend.currentGeneration());
+    backend.dispose();
+  });
+}
+
+test("server-wide catalog installs after bootstrap changes conversation generation", async t => {
+  const { backend } = setup(t);
+  backend.session = undefined;
+  backend.connect = async () => {};
+  backend.listConversations = async () => [];
+  let finish;
+  t.mock.method(globalThis, "fetch", async url => {
+    if (url.includes("/v1/models")) return new Promise(resolve => { finish = resolve; });
+    if (url.includes("/v1/sessions?")) return new Response(JSON.stringify({ sessions: [{ id: "parent" }] }));
+    if (url.endsWith("/v1/sessions")) return new Response(JSON.stringify({ session_id: "parent" }));
+    return new Response(JSON.stringify({ current_seq: 0, actor_state: "idle", model: "model" }));
+  });
+  const pending = backend.fetchModels();
+  await backend.bootstrapConversations();
+  assert.equal(backend.currentConversationId(), "parent");
+  finish(new Response(JSON.stringify({ models: [{ alias: "cognition", model: "model" }], default: "cognition" })));
+  await pending;
+  assert.equal(backend.models[0].alias, "cognition");
+  backend.dispose();
+});
+
+test("obsolete endpoint catalog cannot replace current models", async t => {
+  const { backend } = setup(t);
+  let finish;
+  t.mock.method(globalThis, "fetch", async () => new Promise(resolve => { finish = resolve; }));
+  const pending = backend.fetchModels();
+  backend.endpoint = { port: 4321, token: "new" };
+  backend.models = [{ alias: "current", model: "new" }];
+  finish(new Response(JSON.stringify({ models: [{ alias: "obsolete", model: "old" }] })));
+  await pending;
+  assert.equal(backend.models[0].alias, "current");
+  backend.dispose();
+});

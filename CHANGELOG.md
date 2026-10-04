@@ -22,6 +22,10 @@ requests land in `develop`.
   conversation, and a superseded session creation cancels its send without clearing your draft.
   Reopened pauses from an ended run stay historical. Failed history reconciliation retries,
   and reopening the chat view resumes interrupted child-call previews.
+- **VS Code chat startup and recovery**: the panel works with VS Code's frozen webview API.
+  A server restart clears the previous run's controls, failed conversation opens restore the
+  conversation you were using, and the model picker loads even when startup opens a conversation
+  before the model catalog arrives.
 ### Changed
 
 - The driver's own latest request counts as authorized intent in permission review; parent-agent

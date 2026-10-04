@@ -208,10 +208,22 @@ impl TestServerConfig {
             alias_entry["default_variant"] = json!(default);
         }
         let mut models = serde_json::Map::new();
+        let mut layers = serde_json::Map::new();
         models.insert(self.alias.clone(), alias_entry.clone());
         for (alias, model) in &self.extra_aliases {
             let mut entry = alias_entry.clone();
             entry["model"] = json!(model);
+            if matches!(alias.as_str(), "instinct" | "metacognition" | "reflex") {
+                entry["api"] = json!(match alias.as_str() {
+                    "instinct" => "systemone",
+                    "reflex" => "fim",
+                    _ => "chat",
+                });
+                let name = format!("{PROVIDER}/{model}");
+                models.insert(name.clone(), entry.clone());
+                layers.insert(alias.clone(), json!(name));
+                continue;
+            }
             models.insert(alias.clone(), entry);
         }
         let mut provider = json!({
@@ -237,7 +249,7 @@ impl TestServerConfig {
         std::fs::create_dir_all(&config_dir).expect("config dir");
         std::fs::write(
             config_dir.join("config.json"),
-            r#"{"permissions":{"scratch_dirs":[]}}"#,
+            json!({"permissions":{"scratch_dirs":[]}, "layers":layers}).to_string(),
         )
         .expect("isolated scratch settings");
         write_auth_file(&config_dir, PROVIDER, "test-key");

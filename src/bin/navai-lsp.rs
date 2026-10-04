@@ -13,7 +13,6 @@ use navai::navigator::bootstrap;
 use navai::navigator::models::DecisionAdapter;
 use navai::provider::auth;
 use navai::provider::openai::ClientCache;
-use navai::provider::systemone::SystemOneClient;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -135,12 +134,8 @@ async fn run_replay(
         let models = bootstrap::load_models(cli.models.as_deref())?;
         let config_dir = auth::default_config_dir()
             .ok_or_else(|| anyhow::anyhow!("cannot resolve config dir for the instinct API key"))?;
-        let alias = pipeline.snapshot().model_alias().to_string();
         let client =
-            SystemOneClient::from_alias(&models, &alias, &config_dir, Arc::new(ClientCache::new()))
-                .map_err(|e| {
-                    anyhow::anyhow!("cannot build the instinct model on '{alias}': {e}")
-                })?;
+            navai::provider::layers::instinct(&models, &config_dir, Arc::new(ClientCache::new()))?;
         let decision = DecisionAdapter(client);
         Replayer::with_reask(&pipeline, &decision).run(&log).await
     } else {

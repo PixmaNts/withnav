@@ -144,13 +144,6 @@ impl<'a> AssignmentResolver<'a> {
                 actual: api_name(assigned.resolved.model.api),
             }));
         }
-        if let Some(variant) = invalid_variant(&assigned) {
-            return Ok(LayerAssignment::Disabled(LayerDisabled::InvalidVariant {
-                layer,
-                model: assignment.model,
-                variant,
-            }));
-        }
         if layer == Layer::Metacognition && assignment.variant == AssignmentVariant::Default {
             if effective_variants(&assigned.resolved, &[]).contains_key("low") {
                 assigned.variant = Some("low".into());
@@ -158,6 +151,13 @@ impl<'a> AssignmentResolver<'a> {
                 assigned.prefer_low = assigned.resolved.model.variants.is_none()
                     && assigned.resolved.provider.catalog_format.is_some();
             }
+        }
+        if let Some(variant) = invalid_variant(&assigned) {
+            return Ok(LayerAssignment::Disabled(LayerDisabled::InvalidVariant {
+                layer,
+                model: assignment.model,
+                variant,
+            }));
         }
         Ok(LayerAssignment::Enabled(Box::new(assigned)))
     }

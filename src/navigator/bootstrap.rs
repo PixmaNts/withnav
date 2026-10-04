@@ -20,7 +20,6 @@ use crate::provider::catalog::{resolve_chat, ModelCatalog};
 use crate::provider::config::ModelsConfig;
 use crate::provider::fim::InceptionFim;
 use crate::provider::openai::ClientCache;
-use crate::provider::systemone::SystemOneClient;
 
 /// Resolves the models config: explicit path, workspace copy (it carries the
 /// navigator aliases), then the config dir.
@@ -95,9 +94,14 @@ fn build_layers_from(
         metacognition: None,
         disabled: Vec::new(),
     };
-    // Reflex: Mercury FIM on the `reflex` alias.
-    match models.resolve("reflex") {
-        Ok(resolved) => {
+    // Reflex uses the configured FIM assignment.
+    match crate::provider::layers::assigned(
+        models,
+        config_dir,
+        crate::provider::assignments::Layer::Reflex,
+    ) {
+        Ok(assigned) => {
+            let resolved = assigned.resolved;
             let model_id = resolved.model.model.clone();
             match auth::resolve_key(
                 config_dir,
@@ -124,9 +128,8 @@ fn build_layers_from(
         }
     }
 
-    // Instinct: System One on the `instinct` alias (the pipeline snapshot
-    // names its own alias; the shipped ones all use `instinct`).
-    match SystemOneClient::from_alias(models, "instinct", config_dir, clients.clone()) {
+    // Pipeline labels never override the configured instinct assignment.
+    match crate::provider::layers::instinct(models, config_dir, clients.clone()) {
         Ok(client) => {
             layers.instinct_model = Some(client.model().to_string());
             layers.decision = Some(Arc::new(DecisionAdapter(client)));
@@ -137,7 +140,7 @@ fn build_layers_from(
         }
     }
 
-    // Metacognition: the fast chat commenter on the `metacognition` alias,
+    // Metacognition: the configured fast chat commenter,
     // logging to the navigator log. Only its config and key are checked
     // here; the context window is resolved on first use, so startup never
     // waits for the provider's model list.
@@ -170,6 +173,7 @@ fn build_layers_from(
 /// bounds, once obtained, are kept for the life of the process; a failure is
 /// retried on a later use (the catalog backs off between attempts).
 pub(crate) struct LazyCommenter {
+    assigned: crate::provider::assignments::AssignedModel,
     resolved: crate::provider::config::ResolvedModel,
     api_key: String,
     catalog: ModelCatalog,
@@ -182,15 +186,18 @@ pub(crate) struct LazyCommenter {
 impl LazyCommenter {
     pub(crate) fn new(
         models: &ModelsConfig,
-        alias: &str,
+        _alias: &str,
         config_dir: &Path,
         catalog: &ModelCatalog,
         clients: Arc<ClientCache>,
         log_path: PathBuf,
     ) -> anyhow::Result<Self> {
-        let resolved = models
-            .resolve(alias)
-            .map_err(|e| anyhow::anyhow!("cannot resolve alias '{alias}': {e}"))?;
+        let assigned = crate::provider::layers::assigned(
+            models,
+            config_dir,
+            crate::provider::assignments::Layer::Metacognition,
+        )?;
+        let resolved = assigned.resolved.clone();
         let api_key = auth::resolve_key(
             config_dir,
             &resolved.provider_name,
@@ -200,6 +207,7 @@ impl LazyCommenter {
             anyhow::anyhow!("no API key for provider '{}': {e}", resolved.provider_name)
         })?;
         Ok(Self {
+            assigned,
             resolved,
             api_key,
             catalog: catalog.clone(),
@@ -227,10 +235,8 @@ impl LazyCommenter {
                             e.alias, e.provider, e.model
                         )
                     })?;
-                let variant = chat
-                    .default_override(&self.resolved.alias)
-                    .map_err(|e| format!("{e}; fix `default_variant` in models.json"))?
-                    .map(|(_, v)| v);
+                let variant = crate::provider::layers::chat_variant(&self.assigned, &chat)
+                    .map_err(|e| e.to_string())?;
                 let mut resolved = self.resolved.clone();
                 resolved.model.context_window = Some(chat.window);
                 resolved.model.max_input_tokens = chat.max_input_tokens;
@@ -474,6 +480,122 @@ impl Metacognition for FailingCommenter {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn permission_reviewer_transmits_configured_variant_and_upstream_identity() {
+        use crate::agent::permission_gate::{
+            PermissionReviewInput, PermissionReviewer, ReviewDecision,
+        };
+        use crate::provider::test_support::{assert_layer_body, layer_chat_fixture};
+        for runtime in [false, true] {
+            for (variant, effort) in [
+                (None, Some("low")),
+                (Some(serde_json::json!("off")), None),
+                (Some(serde_json::Value::Null), None),
+                (Some(serde_json::json!("high")), Some("high")),
+            ] {
+                let (dir, server, models) = layer_chat_fixture(
+                    variant,
+                    runtime,
+                    r#"{"decision":"approve","reason":"safe"}"#,
+                )
+                .await;
+                let reviewer = LazyCommenter::new(
+                    &models,
+                    "ignored",
+                    dir.path(),
+                    &ModelCatalog::new(Some(dir.path().join("data"))),
+                    Arc::new(ClientCache::new()),
+                    dir.path().join("log"),
+                )
+                .unwrap();
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    reviewer.review(
+                        &PermissionReviewInput {
+                            state: "untrusted call".into(),
+                            questions: Default::default(),
+                        },
+                        &tokio_util::sync::CancellationToken::new(),
+                    ),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert_eq!(result.decision, ReviewDecision::Approve);
+                assert_layer_body(&server, effort).await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_runtime_variant_cannot_approve_permission() {
+        use crate::agent::permission_gate::{PermissionReviewInput, PermissionReviewer};
+        let (dir, server, models) = crate::provider::test_support::layer_chat_fixture(
+            Some(serde_json::json!("missing")),
+            true,
+            r#"{"decision":"approve","reason":"safe"}"#,
+        )
+        .await;
+        let reviewer = LazyCommenter::new(
+            &models,
+            "ignored",
+            dir.path(),
+            &ModelCatalog::new(Some(dir.path().join("data"))),
+            Arc::new(ClientCache::new()),
+            dir.path().join("log"),
+        )
+        .unwrap();
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            reviewer.review(
+                &PermissionReviewInput {
+                    state: "call".into(),
+                    questions: Default::default()
+                },
+                &tokio_util::sync::CancellationToken::new()
+            )
+        )
+        .await
+        .unwrap()
+        .is_err());
+        assert!(server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.method != "POST"));
+    }
+
+    #[tokio::test]
+    async fn unavailable_provider_cannot_approve_permission() {
+        use crate::agent::permission_gate::{PermissionReviewInput, PermissionReviewer};
+        let (dir, server, models) =
+            crate::provider::test_support::layer_chat_fixture(None, false, "unused").await;
+        server.reset().await;
+        let reviewer = LazyCommenter::new(
+            &models,
+            "ignored",
+            dir.path(),
+            &ModelCatalog::new(Some(dir.path().join("data"))),
+            Arc::new(ClientCache::new()),
+            dir.path().join("log"),
+        )
+        .unwrap();
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            reviewer.review(
+                &PermissionReviewInput {
+                    state: "call".into(),
+                    questions: Default::default()
+                },
+                &tokio_util::sync::CancellationToken::new()
+            )
+        )
+        .await
+        .unwrap()
+        .is_err());
+    }
+
     /// A provider nothing listens on, with the three navigator aliases on
     /// it. `metacognition_window` of `None` leaves that alias without a
     /// window, so only discovery could supply one.
@@ -491,9 +613,9 @@ mod tests {
                     "connect_timeout_ms": 200, "request_timeout_ms": 500
                 }},
                 "models": {
-                    "metacognition": metacognition,
-                    "reflex": { "provider": "omni", "model": "m-fim", "api": "fim" },
-                    "instinct": { "provider": "omni", "model": "m-s1", "api": "systemone" }
+                    "omni/m-chat": metacognition,
+                    "omni/m-fim": { "provider": "omni", "model": "m-fim", "api": "fim" },
+                    "omni/m-s1": { "provider": "omni", "model": "m-s1", "api": "systemone" }
                 }
             })
             .to_string(),
@@ -505,6 +627,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let cfg = dir.path().join("cfg");
         auth::set_key(&cfg, "omni", "test-key").expect("key");
+        std::fs::write(cfg.join("config.json"), r#"{"layers":{"reflex":"omni/m-fim","instinct":"omni/m-s1","metacognition":"omni/m-chat"}}"#).unwrap();
         let layers = build_layers_from(
             models,
             &cfg,
@@ -539,7 +662,7 @@ mod tests {
                 .expect_err("no window from any source");
             let text = err.to_string();
             assert!(
-                text.contains("no known context window") && text.contains("'metacognition'"),
+                text.contains("no known context window") && text.contains("'omni/m-chat'"),
                 "{text}"
             );
         }
@@ -581,7 +704,7 @@ mod tests {
         let models = ModelsConfig::parse(
             &serde_json::json!({
                 "providers": { "omni": { "base_url": format!("{}/v1", server.uri()) }},
-                "models": { "metacognition": {
+                "models": { "omni/m-chat": {
                     "provider": "omni", "model": "m-chat", "supports_tools": true
                 }}
             })

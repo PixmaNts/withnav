@@ -327,7 +327,7 @@ pub async fn resolve_permission(
                 Gated::Ask(fresh, fresh_destination)
                     if fresh_destination == destination && fresh.scope == request.scope =>
                 {
-                    if decision == PermissionDecision::AllowFolder {
+                    if decision == PermissionDecision::AllowFolder && call.name == "fetch" {
                         actor
                             .grants
                             .grant(&request.agent, &request.tool, request.scope.clone());
@@ -479,6 +479,12 @@ fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
         Gate::Needs(needed) => needed,
     };
     let agent = role.id.as_str();
+    if super::permission_gate::protected_call(actor, call, &needed) {
+        let mut request = PermissionRequest::new(call, needed.scope, agent);
+        request.reason =
+            "Navai configuration is driver-only; approve this call once or deny".into();
+        return Gated::Ask(request, needed.destination);
+    }
     if matches!(call.name.as_str(), "bash" | "write" | "edit") {
         return Gated::Reviewed(needed);
     }
@@ -1987,6 +1993,51 @@ mod tests {
         decision: Option<super::super::permission_gate::ReviewDecision>,
         captured: std::sync::Mutex<Option<CancellationToken>>,
         hangs: bool,
+    }
+
+    #[tokio::test]
+    async fn protected_config_always_asks_even_with_approving_models_and_scratch() {
+        for workspace_is_config in [false, true] {
+            let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+            let config = if workspace_is_config {
+                actor.tool_context.workspace.clone()
+            } else {
+                actor.tool_context.workspace.join("config")
+            };
+            std::fs::create_dir_all(config.join("agents")).unwrap();
+            actor.protected_config_root = Some(config.clone());
+            actor.scratch_dir = Some(actor.tool_context.workspace.clone());
+            actor.permission_reviewer = Some(Arc::new(Meta {
+                decision: Some(super::super::permission_gate::ReviewDecision::Approve),
+                captured: Default::default(),
+                hangs: false,
+            }));
+            let alias = actor.tool_context.workspace.join("config-alias");
+            std::os::unix::fs::symlink(&config, &alias).unwrap();
+            for name in ["models.json", "auth.json", "agents/x.md", "config.json"] {
+                for root in [&config, &alias] {
+                    let target = root.join(name);
+                    let call = ToolCall {
+                        id: "c".into(),
+                        name: "write".into(),
+                        args: serde_json::json!({"path":target,"content":"x"}),
+                        args_valid: true,
+                    };
+                    let mut count = 0;
+                    assert!(matches!(
+                        run_gated(&mut actor, &call, &mut |event| {
+                            if matches!(event, AgentEvent::PreCall { .. }) {
+                                count += 1;
+                            }
+                        })
+                        .await,
+                        One::Ask(..)
+                    ));
+                    assert_eq!(count, 0);
+                    assert!(!target.exists());
+                }
+            }
+        }
     }
 
     struct WaitingJudge(std::sync::Mutex<Option<CancellationToken>>);

@@ -2064,14 +2064,30 @@ impl Service {
             &self.config.config_dir,
         );
         actor.automatic_permission_review = execution.automatic_permission_review;
+        actor.protected_config_root = Some(
+            self.config
+                .config_dir
+                .canonicalize()
+                .unwrap_or_else(|_| self.config.config_dir.clone()),
+        );
         match crate::settings::load(&self.config.config_dir)
             .map_err(|e| e.to_string())
             .and_then(|settings| settings.permissions_scratch_dir())
         {
             Ok(Some(path)) => match crate::agent::scratch::prepare(&path) {
                 Ok(path) => {
-                    actor.tool_context.writable_roots.push(path.clone());
-                    actor.scratch_dir = Some(path.clone());
+                    if actor
+                        .protected_config_root
+                        .as_ref()
+                        .is_some_and(|root| root.starts_with(&path) || path.starts_with(root))
+                    {
+                        crate::agent::scratch::warn_once(
+                            "scratch overlaps protected config directory",
+                        );
+                    } else {
+                        actor.tool_context.writable_roots.push(path.clone());
+                        actor.scratch_dir = Some(path.clone());
+                    }
                 }
                 Err(error) => crate::agent::scratch::warn_once(&error),
             },

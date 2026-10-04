@@ -362,7 +362,34 @@ pub enum Judged {
     Interrupted,
 }
 
+pub fn protected_call(actor: &super::actor::AgentActor, call: &ToolCall, needed: &Needed) -> bool {
+    let Some(root) = &actor.protected_config_root else {
+        return false;
+    };
+    if needed
+        .destination
+        .as_ref()
+        .is_some_and(|path| path.starts_with(root))
+    {
+        return true;
+    }
+    call.name == "bash"
+        && call
+            .args
+            .get("command")
+            .and_then(Value::as_str)
+            .is_some_and(|command| {
+                command.contains(root.to_string_lossy().as_ref())
+                    || command.contains("~/.config/navai")
+            })
+}
+
 pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: &Needed) -> Judged {
+    if protected_call(actor, call, needed) {
+        return Judged::Ask(
+            "Navai configuration is driver-only; approve this call once or deny".into(),
+        );
+    }
     if actor.cancel.is_cancelled() {
         return Judged::Interrupted;
     }
@@ -431,9 +458,21 @@ mod tests {
     use super::*;
     #[test]
     fn duplicate_review_fields_never_authorize() {
-        for text in [r#"{"decision":"reject","decision":"approve","reason":"ok"}"#, r#"{"decision":"approve","decision":"reject","reason":"ok"}"#, r#"{"decision":"approve","decision":"approve","reason":"ok"}"#, r#"{"decision":"approve","reason":"no","reason":"ok"}"#, r#"{"decision":"approve","reason":"ok","extra":true}"#] { assert!(parse_review(text).is_err()); }
+        for text in [
+            r#"{"decision":"reject","decision":"approve","reason":"ok"}"#,
+            r#"{"decision":"approve","decision":"reject","reason":"ok"}"#,
+            r#"{"decision":"approve","decision":"approve","reason":"ok"}"#,
+            r#"{"decision":"approve","reason":"no","reason":"ok"}"#,
+            r#"{"decision":"approve","reason":"ok","extra":true}"#,
+        ] {
+            assert!(parse_review(text).is_err());
+        }
         for decision in ["approve", "reject", "unsure"] {
-            let review = parse_review(&format!(r#"{{"decision":"{decision}","reason":"{}"}}"#, "x".repeat(600))).unwrap();
+            let review = parse_review(&format!(
+                r#"{{"decision":"{decision}","reason":"{}"}}"#,
+                "x".repeat(600)
+            ))
+            .unwrap();
             assert!(review.reason.len() <= 512);
         }
     }

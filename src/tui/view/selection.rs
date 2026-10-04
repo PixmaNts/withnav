@@ -12,9 +12,43 @@ pub struct TranscriptMap {
     pub text: String,
     pub cells: Vec<(u16, u16, usize, usize)>,
     pub scroll: u16,
+    pub senders: Vec<(std::ops::Range<usize>, String)>,
 }
 
 impl TranscriptMap {
+    /// Single-block excerpts stay clean; multi-block excerpts carry speaker context.
+    pub fn selected_text(&self, a: usize, b: usize) -> Option<String> {
+        let range = a.min(b)..a.max(b);
+        let raw = self.text.get(range.clone())?;
+        let parts: Vec<_> = self
+            .senders
+            .iter()
+            .filter_map(|(block, sender)| {
+                let start = range.start.max(block.start);
+                let end = range.end.min(block.end);
+                (start < end).then(|| (sender, &self.text[start..end]))
+            })
+            .collect();
+        if parts.len() < 2 {
+            return Some(raw.to_owned());
+        }
+        let mut result = String::new();
+        let mut previous = None;
+        for (sender, text) in parts {
+            if previous != Some(sender) {
+                if !result.is_empty() {
+                    result.push_str("\n\n");
+                }
+                result.push_str(sender);
+                result.push_str(":\n");
+            } else {
+                result.push_str("\n\n");
+            }
+            result.push_str(text.trim_end_matches('\n'));
+            previous = Some(sender);
+        }
+        Some(result)
+    }
     pub fn hit(&self, x: u16, y: u16) -> Option<(usize, usize)> {
         if !self.area.contains((x, y).into()) {
             return None;
@@ -157,6 +191,25 @@ pub fn rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn multiple_messages_group_senders_but_single_excerpt_stays_raw() {
+        let mut map = TranscriptMap::default();
+        for (sender, text) in [
+            ("You", "fix parser\n"),
+            ("build", "changed it\n"),
+            ("build", "tested it\n"),
+            ("You", "thanks\n"),
+        ] {
+            let start = map.text.len();
+            map.text.push_str(text);
+            map.senders.push((start..map.text.len(), sender.into()));
+        }
+        assert_eq!(
+            map.selected_text(0, map.text.len()).unwrap(),
+            "You:\nfix parser\n\nbuild:\nchanged it\n\ntested it\n\nYou:\nthanks"
+        );
+        assert_eq!(map.selected_text(11, 18).unwrap(), "changed");
+    }
     #[test]
     fn literal_fences_and_ellipsis_are_content_and_tabs_match_paint() {
         use ratatui::{backend::TestBackend, widgets::Paragraph, Terminal};

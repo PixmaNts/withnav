@@ -1,38 +1,20 @@
 # Handoff: Navigator — TUI, VS Code extension, WebUI
 
-> **Design handoff, not as-built.** This file is the design brief the screens were drawn from. It is
-> kept as written. The terminal client was built from it and differs in places; the VS Code
-> extension and the WebUI mostly follow later. Where the code differs, **the code is right**:
-> [`ARCHITECTURE.md`](../../ARCHITECTURE.md) maps the terminal client, [`CONTEXT.md`](../../CONTEXT.md)
-> holds the vocabulary.
+> **Design reference, not as-built.** The source of truth for vocabulary and configuration is
+> [`CONTEXT.md`](../../CONTEXT.md) and, for 0.5.0, the layers/models/agents spec
+> (`.scratch/models-layers-agents/spec.md`). Where this design and the spec differ, the spec is right.
 >
-> Where the code differs from this design today:
+> **Two design files in this bundle.**
+> - `Navigator.dc.html` — sessions, model picker, palette, subagent view, pipeline editor (this README).
+> - `Navai Settings and Flows.dc.html` — Settings (WebUI + VS Code) and the Jev flows editor (see
+>   **SETTINGS_AND_FLOWS.md**). Both are planned for 0.6.0.
 >
-> - **The plan agent keeps all its tools.** It is not read-only. With the navigator profile it keeps
->   the `intent` tool too, so it can update the intent record, and it writes markdown files freely; every other write, edit, `bash` and `fetch` is checked
->   by Jev (the role guard) and, if not cleared, asked to the driver as **allow once or deny** (no
->   "always"). The build agent asks for every write, edit, `bash` and `fetch`.
-> - **Header** reads `◆ navai`, not `◆ navigator`.
-> - **Right column** (36 columns, from 140 columns, `alt+r`) shows Agents (the one in use and its
->   role), Context (the breakdown of the next request and the last compaction), Skills (listed and
->   omitted) and Changes (git). There is no intent record, drift bar, layer status, MCP or plugins
->   section yet; a section with no data shows `—`.
-> - **Key bar** lists the keys that apply now (`tab build/plan`, `ctrl+p palette`, `alt+1…9 tabs`,
->   `esc stop`, `alt+r panel`, `f1 help`) and the permission keys while a prompt waits. There is no
->   `ctrl+l` pipeline or `ctrl+t` subagents key.
-> - **Model switching** is `/model <alias>` on the open conversation (server side). The terminal
->   client's picker and `/model <alias>` still open a new tab on the chosen model.
-> - **Subagent view, pipeline editor, MCP, plugins, `@file` and `!shell`:** not built.
-> - **Agent files** are read from `~/.config/navai/agents/` and the project's `.navai/agents/` (and
->   read-only from `~/.config/opencode/agents/`), not from `.navigator/agents/`.
-> - **VS Code ids** are `navai.*`: `navai.markUseful`, `navai.markNoise`, `navai.dismiss`,
->   `navai.setIntent`, `navai.focusChat`. The icon is `media/navai.svg`.
-> - **Variants** are named request overrides in `models.json` (or provider effort tiers), not a fixed
->   `off · low · medium · high` scale, and a model without variants simply offers none.
-> - **Tabs** are in a left sidebar 22 columns wide (hidden under 80 columns), up to nine, as designed;
->   subagents are not nested because they cannot start yet.
-> - **Themes** and their colours match the table below. The choice is saved in
->   `~/.config/navai/config.json` (`tui.theme`).
+> **Vocabulary (0.5.0):** there are no model *aliases*. Reflex, Instinct and Metacognition are
+> **layers** with exactly one model each (fim, systemone, chat). The Cognition runs **agents**
+> (build, plan, explore, review, and your own such as librarian or oracle), each with its own model
+> and variant; there is a **default agent** (`default_agent`, `build` by default), not a default
+> model. Models are catalog names `<gateway>/<id>` (`omniroute/cc/claude-opus-5-5`,
+> `openai/gpt-6-astra`). Wherever this README says "alias", read "layer", "agent" or "model".
 
 ## Overview
 Navigator is the pair-programming system built on Navai (repo `PixmaNts/Navai`). The human (Driver) keeps the keyboard; four layers assist: **Reflex** (ghost-text suggestions), **Instinct** (typed decisions), **Metacognition** (line-anchored Remarks, can Wake the cognition) and **Cognition** (the agentic chat, with build/plan agents, subagents, tools, skills, MCP, plugins).
@@ -61,8 +43,8 @@ Driver, Navigator, Reflex, Instinct, Metacognition, Cognition, Suggestion, Remar
 ### Shared across surfaces
 | Screen | What it shows |
 | --- | --- |
-| Session | Driver ↔ Cognition transcript, streamed. Tool calls collapsed into a list with status (✓ done, ⠹ running). Permission prompt for edit/write/bash (allow once / always for folder / deny; blocked in plan mode). Remark block (accent left rule) with Verdict actions. Wake block (red left rule) "metacognition → cognition · drift 0.86". |
-| Model picker | Layer selector (cognition, metacognition, instinct, reflex) → model list from `models.json` (name, provider, context, capabilities, which aliases use it) → **variant** = thinking level `off · low · medium · high`. Variants are disabled for models without thinking (`typesafe/jev-1.13`, `mercury-edit-2`). Writes the alias in `~/.config/navai/models.json`. |
+| Session | Driver ↔ Cognition transcript, streamed. Tool calls collapsed into a list with status (✓ done, ⠹ running). Permission prompt for edit/write/bash/read outside the project (allow once / deny; "allow origin" only for fetch), showing who reviewed it (Jev, metacognition). Remark block (accent left rule) with Verdict actions. Wake block (red left rule) "metacognition → cognition · drift 0.86". |
+| Model picker | In a session: picks a model for the **current agent in this session only** (an override, kept with the session; it never edits a config file). Models are grouped by **gateway**, then by **provider** inside a gateway (`omniroute` → `cc`, `cx`, `combo`…), each group collapsible; search ignores collapsed groups. Then the **variant** offered by that model. Layer and agent assignments are edited in Settings (0.6.0), which writes `~/.config/navai/config.json`. |
 | Command palette | Grouped commands (Agent, Navigator, Session, Extensions) with key hints: switch agent, select model, open subagent, delegate, edit intent record, edit pipeline, replay, mark remark useful, new/open conversation, run skill, MCP servers. |
 | Subagent view | Breadcrumb `parent › @explore`, status (running · elapsed), task text, spawned-by, tools, access (read-only), delivery mode (next-turn / steer / interrupt), model; tool-call list; findings so far (file:line links); note that the result returns as `subagent.done` on the parent's next turn; Steer / Stop. |
 | Pipeline editor | See WebUI. TUI has a text version (`ctrl+l`). |

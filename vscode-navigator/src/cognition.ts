@@ -83,6 +83,20 @@ export class CognitionBackend implements ChatBackend {
   private layers: LayerInfo[] = [];
   private defaultAgent = "build";
   private assignmentToken = 0;
+  private recomputeInitialSelection(): void {
+    if (this.currentConversationId()) return;
+    const base = this.agents.find(a => a.id === this.state.agent)?.assignment ?? this.agents.find(a => a.id === this.state.agent)?.effective;
+    const model = this.state.modelOverride ?? base?.model;
+    if (!model) return;
+    const catalogDefault = this.models.find(m => m.name === model)?.defaultVariant ?? null;
+    const inheritedVariant = this.state.modelOverride ? catalogDefault : base && Object.hasOwn(base, "variant") ? base.variant : catalogDefault;
+    this.state.selectedModel = model;
+    this.state.selection = {
+      model, source: this.state.modelOverride ? "override" : base?.source ?? "config",
+      variant: this.state.startVariant !== undefined ? this.state.startVariant : inheritedVariant,
+      variant_source: this.state.startVariant !== undefined ? "override" : this.state.modelOverride ? "model_default" : base?.variant_source ?? "model_default",
+    };
+  }
   private emitAssignments(): void {
     this.emit({ type: "assignments", agents: this.agents, layers: this.layers, current: this.state.agent,
       models: this.models.filter(m => m.api === "chat" && m.enabled !== false), locked: this.state.starting || this.state.readOnly, variant_source: this.state.selection?.variant_source, model: this.state.selectedModel, variant: this.state.selection?.variant, source: this.state.modelOverride ? "override" : this.state.selection?.source });
@@ -101,10 +115,9 @@ export class CognitionBackend implements ChatBackend {
     this.agents = (Array.isArray(agents?.agents) ? agents.agents : []).filter((a: any) => typeof a?.id === "string" && typeof a.description === "string" && ["primary", "all"].includes(a.mode));
     this.layers = (Array.isArray(layers?.layers) ? layers.layers : []).filter((l: any) => ["reflex", "instinct", "metacognition"].includes(l?.layer) && ["usable", "disabled"].includes(l.status));
     this.defaultAgent = typeof agents?.default_agent === "string" ? agents.default_agent : "build";
-    if (!session && !this.state.modelOverride) {
+    if (!session) {
       if (!this.state.agentChosen || !this.agents.some(a => a.id === this.state.agent)) this.state.agent = this.defaultAgent;
-      const effective = this.agents.find(a => a.id === this.state.agent)?.effective;
-      if (effective) { this.state.selection = effective; this.state.selectedModel = effective.model; }
+      this.recomputeInitialSelection();
     }
     this.emitAssignments(); this.emitModels();
   }
@@ -116,12 +129,14 @@ export class CognitionBackend implements ChatBackend {
     this.state.agentChosen = true;
     this.state.selection = this.agents.find(a => a.id === id)?.effective ?? undefined;
     this.state.selectedModel = this.state.selection?.model;
+    this.recomputeInitialSelection();
     this.emit({ type: "agent", name: id }); this.emitAssignments(); this.emitModels();
   }
   publishCompaction(): void { if (this.state.compaction) { const { request: _request, ...view } = this.state.compaction; this.emit({ type: "compaction", ...view }); } }
   publishSubagents(): void { this.emit({ type: "viewMode", readOnly: this.state.readOnly, archiveReason: this.state.archiveReason }); if (!this.state.archiveReason) this.emitChildren(); }
   isReadOnly(): boolean { return this.state.readOnly; }
   private emitChildren(): void {
+    if (this.state.archiveReason) { this.emit({ type: "viewMode", readOnly: true, archiveReason: this.state.archiveReason }); return; }
     const parent = this.parentState();
     if (parent.session ?? parent.resumeId) this.emit({ type: "subagents", parentId: (parent.session ?? parent.resumeId)!, items: [...parent.children.values()].map(c => ({ ...c })) });
     this.emit({ type: "childView", child: this.state.readOnly ? parent.children.get(this.state.session!) : undefined,
@@ -295,10 +310,7 @@ export class CognitionBackend implements ChatBackend {
         const model = this.models.find(m => m.name === this.state.selectedModel);
         if (!["off", "inherit"].includes(args) && !model?.variants?.includes(args)) throw new Error("Unknown variant for this model");
         this.state.startVariant = args === "inherit" ? undefined : args === "off" ? null : args;
-        const assigned = this.agents.find(a => a.id === this.state.agent)?.effective;
-        this.state.selection = { model: this.state.selectedModel ?? assigned?.model ?? "", source: this.state.modelOverride ? "override" : assigned?.source ?? "config",
-          variant: args === "inherit" ? assigned?.variant ?? model?.defaultVariant : this.state.startVariant,
-          variant_source: args === "inherit" ? assigned?.variant_source ?? "model_default" : "override" };
+        this.recomputeInitialSelection();
         this.emitAssignments();
         this.emit({ type: "notice", text: `Starting variant: ${args}` });
         return true;
@@ -399,6 +411,7 @@ export class CognitionBackend implements ChatBackend {
       !!this.endpoint && (this.endpoint.port !== info.port || this.endpoint.token !== info.token);
     const first = !this.endpoint;
     if (restarted) {
+      this.terminalChild = false;
       this.abortStream();
       const generation = this.currentGeneration();
       this.state = new ConversationState();
@@ -461,6 +474,8 @@ export class CognitionBackend implements ChatBackend {
 
   async openConversation(id: string): Promise<void> {
     const previous = this.state;
+    const previousTerminal = this.terminalChild;
+    this.terminalChild = false;
     this.abortStream();
     // Its create/open operation is now abandoned. A rollback must restore an
     // idle origin, not depend on that obsolete operation's cleanup.
@@ -523,6 +538,7 @@ export class CognitionBackend implements ChatBackend {
     } catch (error) {
       if (generation === this.state.streamGeneration) {
         this.state = previous;
+        this.terminalChild = previousTerminal;
         this.state.streamGeneration = generation;
         this.state.transcript = this.state.transcript.map(message => ({ ...message, generation }));
         this.bindControlOwners();
@@ -554,6 +570,7 @@ export class CognitionBackend implements ChatBackend {
     this.state.selection = this.agents.find(a => a.id === this.defaultAgent)?.effective ?? undefined;
     this.state.selectedModel = this.state.selection?.model;
     this.emit({ type: "conversationOpened", title: "New conversation" });
+    this.recomputeInitialSelection();
     this.emit({ type: "history", items: [] });
     this.emit({ type: "status", state: "ready" });
     this.emitConversations();
@@ -731,6 +748,7 @@ export class CognitionBackend implements ChatBackend {
       this.models = [];
     }
     this.emitModels();
+    this.recomputeInitialSelection(); this.emitAssignments();
   }
 
   /** A conversation that exists on the server keeps its model (option A). */
@@ -760,9 +778,8 @@ export class CognitionBackend implements ChatBackend {
     if (!this.models.some((m) => m.name === name)) return;
     this.state.selectedModel = name;
     this.state.modelOverride = name;
-    this.state.selection = { model: name, source: "override", variant_source: "model_default" };
-    this.emitAssignments();
     this.state.startVariant = undefined;
+    this.recomputeInitialSelection(); this.emitAssignments();
     this.emitModels();
   }
 

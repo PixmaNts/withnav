@@ -297,7 +297,9 @@ test('review3 archive mode persists on ready and list refresh, inert history and
   await b.openConversation('archive');assert.equal(posts,0);b.publishSubagents();
   event('permission.requested',{request_id:'R',tool:'bash',agent:'plan',arguments:'{}',reason:'historic'});event('agent.yield',{kind:'budget'});
   b.publishSubagents();assert.equal(dom.window.document.querySelector('#prompt').disabled,true);assert.equal(dom.window.document.querySelector('[aria-label="Conversation agent"]').disabled,true);assert.equal([...dom.window.document.querySelectorAll('.control-card button')].length,0);assert.match(dom.window.document.querySelector('.child-header').textContent,/archive/);assert.doesNotMatch(dom.window.document.querySelector('.child-header').textContent,/subagent of/);
-  await b.listConversations();await tick();assert.equal(dom.window.document.querySelector('#prompt').disabled,true);
+  delete b.listConversations;
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({sessions:[{id:'archive',title:'Old history',read_only:true,promptable:false}]})));
+  await b.listConversations();await tick();assert.equal(dom.window.document.querySelector('#prompt').disabled,true);assert.equal(dom.window.document.querySelector('#composer').hidden,true);assert.match(dom.window.document.querySelector('.child-header').textContent,/archive/);assert.equal([...dom.window.document.querySelectorAll('.control-card button')].length,0);
   const messages=[];let receive;provider.resolveWebviewView({webview:{cspSource:'test',asWebviewUri:v=>v,postMessage:m=>messages.push(m),onDidReceiveMessage:fn=>{receive=fn;return noopDisposable();}},onDidDispose(){}});receive({type:'ready'});assert(messages.some(m=>m.type==='viewMode'&&m.readOnly&&m.archiveReason));
   await b.newConversation();assert.equal(b.isReadOnly(),false);assert.equal(b.terminalChild,false);
 });
@@ -320,6 +322,35 @@ test('review2 send before endpoint announcement also omits unselected agent',asy
   let available;b.waitForEndpoint=()=>new Promise(resolve=>available=resolve);const bodies=[];
   t.mock.method(globalThis,'fetch',async(url,init)=>{if(init.method==='POST')bodies.push(JSON.parse(init.body));return new Response(JSON.stringify(url.endsWith('/messages')?{accepted:true}:{session_id:'S'}));});
   send('before announcement');await tick();assert.equal(bodies.length,0);b.endpoint={port:1234,token:'t'};available();await tick();assert.equal(bodies[0].agent,undefined);
+});
+test('round2 archive terminal flag resets on saved open and restart, rollback restores it and root EOF reconnects',async t=>{
+  const {b,dom,tick}=fullChat(t);b.refreshAssignments=async()=>{};b.fetchModels=async()=>{};b.bootstrapConversations=async()=>{};b.refreshCommands=async()=>{};
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({current_seq:1,read_only:true,resume_disabled_reason:'old identity',title:'Archive'})));
+  await b.openConversation('archive');assert.equal(b.terminalChild,true);
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({error:'missing'}),{status:404}));await b.openConversation('missing').catch(()=>{});assert.equal(b.terminalChild,true);assert.equal(b.isReadOnly(),true);assert.match(dom.window.document.querySelector('.child-header').textContent,/archive/);
+  let streams=0;delete b.connect;
+  t.mock.method(globalThis,'fetch',async(url,init)=>{
+    if(url.endsWith('/events')){streams++;return new Response(new ReadableStream({start(controller){init.signal.addEventListener('abort',()=>{try{controller.close();}catch{}});if(streams===1)controller.close();}}));}
+    return new Response(JSON.stringify(url.endsWith('/v1/sessions')?{session_id:'saved'}:{current_seq:1,agent:'build',model:'gw/chat',variant:null,source:'config',variant_source:'config',actor_state:'idle'}));
+  });
+  await b.openConversation('saved');assert.equal(b.terminalChild,false);await new Promise(resolve=>setTimeout(resolve,650));assert(streams>=2);b.abortStream();
+  b.terminalChild=true;b.setServerInfo({port:5678,token:'restart'});assert.equal(b.terminalChild,false);b.dispose();await tick();
+});
+for(const choice of ['high','off'])test(`round2 initial ${choice} variant preview survives async assignment refresh`,async t=>{
+  const {b,dom,send,tick}=fullChat(t);b.state.session=undefined;b.models=[{name:'gw/A',gateway:'gw',provider_group:'gw',upstream_id:'A',api:'chat',variants:['high'],defaultVariant:'high'}];b.state.selectedModel='gw/A';b.commands.push({name:'variant',description:'Variant',args_hint:''});
+  send('/variant '+choice);await tick();
+  t.mock.method(globalThis,'fetch',async url=>new Response(JSON.stringify(url.includes('/agents?')?{default_agent:'build',agents:[{id:'build',description:'Build',mode:'primary',assignment:{model:'gw/A',variant:null,source:'config',variant_source:'config'},effective:{model:'gw/A',variant:null,source:'config',variant_source:'config'}}]}:{layers:[]})));
+  await b.refreshAssignments();assert.equal(b.state.selection.variant,choice==='off'?null:'high');assert.match(dom.window.document.querySelector('.topbar').title,/model source: config.*variant source: override/);
+});
+test('round2 model override inherit uses its model default, assignment null stays explicitly off',async t=>{
+  const {b,dom,send,tick}=fullChat(t);b.state.session=undefined;b.commands.push({name:'variant',description:'Variant',args_hint:''});
+  b.models=[{name:'gw/A',gateway:'gw',provider_group:'gw',upstream_id:'A',api:'chat',variants:['high'],defaultVariant:'high'},{name:'gw/B',gateway:'gw',provider_group:'gw',upstream_id:'B',api:'chat',variants:['low'],defaultVariant:'low'}];
+  const base={model:'gw/A',variant:null,source:'config',variant_source:'config'};b.agents=[{id:'build',description:'Build',mode:'primary',assignment:base,effective:base}];
+  t.mock.method(globalThis,'fetch',async url=>new Response(JSON.stringify(url.includes('/agents?')?{default_agent:'build',agents:b.agents}:{layers:[]})));
+  await b.refreshAssignments();assert.equal(b.state.selection.variant,null);assert.match(dom.window.document.querySelector('.topbar').title,/variant off/);
+  b.emit({type:'models',items:b.models,locked:false});const {key,type}=focusedKeys(dom);dom.window.document.querySelector('#model').focus();key('Enter');type('gw/B');key('Enter');await tick();
+  send('/variant inherit');await tick();assert.equal(b.state.selection.model,'gw/B');assert.equal(b.state.selection.variant,'low');assert.match(dom.window.document.querySelector('.topbar').title,/model source: override.*variant source: model_default/);
+  await b.refreshAssignments();assert.equal(b.state.selection.variant,'low');
 });
 function fullChat(t) {
   const { JSDOM } = require('jsdom');

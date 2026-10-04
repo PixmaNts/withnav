@@ -41,6 +41,7 @@ const childrenSummary = document.createElement("summary"); childrenSummary.textC
 const childrenRows = document.createElement("div"); childrenSection.append(childrenSummary, childrenRows);
 form.before(childrenSection);
 let readOnly = false;
+let archiveReadOnly = false;
 let parentId = "";
 const childStates: Record<ChildInfo["state"], string> = { unknown: "Unknown", running: "Running", permission: "Waiting for permission", budget: "Out of steps", watchdog: "In doubt · watchdog paused", done: "Done", failed: "Failed", stopped: "Stopped" };
 function childActions(child: ChildInfo): HTMLElement {
@@ -586,6 +587,7 @@ function renderPause(event: Extract<HostToWebview, { type: "pause" }>): void {
 function receive(event: HostToWebview): void {
   if (!identity.receive(event)) return;
   if (event.type === "conversationOpened") {
+    archiveReadOnly = false;
     compacting = false; compactionRow = undefined;
     usage.removeAttribute("aria-busy"); usage.removeAttribute("data-updating");
     readOnly = false; parentId = ""; childHeader.hidden = true; childrenSection.hidden = true;
@@ -630,6 +632,7 @@ function receive(event: HostToWebview): void {
       break;
     }
     case "viewMode": {
+      archiveReadOnly = !!event.archiveReason;
       readOnly = event.readOnly;
       agentSelect.disabled = readOnly;
       if (event.archiveReason) { childHeader.hidden = false; childHeader.replaceChildren(el("strong", "", "Read-only archive"), el("p", "", event.archiveReason)); form.hidden = true; }
@@ -637,6 +640,7 @@ function receive(event: HostToWebview): void {
       updateControls(); break;
     }
     case "childView": {
+      if (archiveReadOnly) break;
       readOnly = !!event.child;
       if (event.child) parentId = event.parentId ?? "";
       childHeader.replaceChildren(); childHeader.hidden = !readOnly;
@@ -657,9 +661,9 @@ function receive(event: HostToWebview): void {
       if (event.models) renderModels({ type: "models", items: event.models, current: event.model, locked: !!event.locked });
       agentSelect.replaceChildren(...event.agents.map(agent => { const option = el("option", "", agent.id); option.value = agent.id; option.title = `${agent.description} · ${agent.effective?.model ?? "Unassigned"}${agent.warning ? ` · ${agent.warning}` : ""}`; return option; }));
       agentSelect.value = event.current; agentSelect.disabled = readOnly || !!event.locked;
-      agentLabel.textContent = `${event.current}${event.source === "override" ? " · override" : ""}`;
+      agentLabel.textContent = `${event.current}${event.source === "override" ? " · model override" : ""}${event.variant_source === "override" ? " · variant override" : ""}`;
       const types: Record<string,string> = { reflex: "FIM · editor", instinct: "SystemOne", metacognition: "Chat" };
-      const tooltip = [`Cognition · ${event.current}: ${event.model ?? "Unassigned"}${event.variant === null ? " · variant off" : event.variant ? ` · ${event.variant}` : ""} · ${event.source ?? "assignment"}`, ...event.layers.map(layer => `${layer.layer} (${types[layer.layer]}): ${layer.model ?? "Unassigned"}${layer.variant ? ` · ${layer.variant}` : ""} · ${layer.status}${layer.reason ? ` — ${layer.reason}` : ""}`), "Usable describes configuration, not network availability. Assignments are read-only."].join("\n");
+      const tooltip = [`Cognition · ${event.current}: ${event.model ?? "Unassigned"}${event.variant === null ? " · variant off" : event.variant ? ` · ${event.variant}` : ""} · model source: ${event.source ?? "assignment"} · variant source: ${event.variant_source ?? "assignment"}`, ...event.layers.map(layer => `${layer.layer} (${types[layer.layer]}): ${layer.model ?? "Unassigned"}${layer.variant ? ` · ${layer.variant}` : ""} · ${layer.status}${layer.reason ? ` — ${layer.reason}` : ""}`), "Usable describes configuration, not network availability. Assignments are read-only."].join("\n");
       document.querySelector<HTMLElement>(".topbar")!.title = tooltip; agentLabel.title = tooltip;
       break;
     }

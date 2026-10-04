@@ -199,9 +199,12 @@ pub fn effective_history(
     let pruned: HashSet<usize> = compaction.pruned_message_indices.iter().copied().collect();
     let mut out = Vec::with_capacity(transcript.len().saturating_sub(first) + 2);
     out.extend(summary_messages(&compaction.checkpoint.summary));
-    if let Some(batch) = latest_user_batch(transcript).filter(|b| b.start < first) {
-        out.extend(transcript[batch].iter().cloned());
-    }
+    out.extend(
+        protected_driver_messages(transcript)
+            .into_iter()
+            .filter(|&i| i < first)
+            .map(|i| transcript[i].clone()),
+    );
     for (i, message) in transcript.iter().enumerate().skip(first) {
         out.push(if pruned.contains(&i) {
             elided(message)
@@ -265,6 +268,15 @@ pub fn latest_user_batch(transcript: &[ChatMessage]) -> Option<std::ops::Range<u
     Some(start..end)
 }
 
+/// Discovery includes interleaved input; only actual driver instructions are irreducible.
+fn protected_driver_messages(transcript: &[ChatMessage]) -> Vec<usize> {
+    latest_user_batch(transcript)
+        .into_iter()
+        .flatten()
+        .filter(|&i| transcript[i].is_driver_message())
+        .collect()
+}
+
 fn elided(message: &ChatMessage) -> ChatMessage {
     match message {
         ChatMessage::Tool {
@@ -316,13 +328,10 @@ pub fn validate(
     }
     // The latest user request is never only in the summary: the prompt this
     // checkpoint makes must carry it verbatim.
-    if let Some(batch) = latest_user_batch(transcript) {
-        let prompt = effective_history(transcript, Some(compaction));
-        let wanted = &transcript[batch];
-        let kept = prompt
-            .windows(wanted.len())
-            .any(|window| window.iter().zip(wanted).all(|(a, b)| same_user_text(a, b)));
-        if !kept {
+    let prompt = effective_history(transcript, Some(compaction));
+    let mut remaining = prompt.iter();
+    for index in protected_driver_messages(transcript) {
+        if !remaining.any(|message| same_user_text(message, &transcript[index])) {
             return invalid(
                 "the checkpoint would drop the latest user request from the prompt".into(),
             );
@@ -371,7 +380,7 @@ pub fn validate(
 }
 
 fn same_user_text(a: &ChatMessage, b: &ChatMessage) -> bool {
-    matches!((a, b), (ChatMessage::User { content: x, .. }, ChatMessage::User { content: y, .. }) if x == y)
+    matches!((a, b), (ChatMessage::User { content: x, provenance: p }, ChatMessage::User { content: y, provenance: q }) if x == y && p == q)
 }
 
 /// The id of a tool call before `at` whose result is not also before `at`,
@@ -516,12 +525,13 @@ pub fn plan(
 
     let fixed = components.fixed_tokens() + summary_reserve_tokens();
     // The latest user batch is carried verbatim when the boundary is past it.
-    let batch = latest_user_batch(transcript);
+    let protected = protected_driver_messages(transcript);
     let suffix = |cost: &[u64], from: usize| {
-        let carried: u64 = batch
-            .as_ref()
-            .filter(|b| b.start < from)
-            .map_or(0, |b| cost[b.clone()].iter().sum());
+        let carried: u64 = protected
+            .iter()
+            .filter(|&&i| i < from)
+            .map(|&i| cost[i])
+            .sum();
         fixed + carried + cost[from..].iter().sum::<u64>()
     };
 

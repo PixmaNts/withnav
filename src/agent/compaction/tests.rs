@@ -631,10 +631,81 @@ fn mid_turn_checkpoint_preserves_interleaved_driver_selections_and_navigator_pro
     };
     let prompt = effective_history(&transcript, Some(&compacted));
     assert_eq!(
-        serde_json::to_value(&prompt[2..5]).unwrap(),
-        serde_json::to_value(&transcript[..3]).unwrap()
+        serde_json::to_value(&prompt[2..4]).unwrap(),
+        serde_json::to_value([&transcript[0], &transcript[2]]).unwrap()
+    );
+    assert!(!prompt.iter().any(|message| matches!(
+        message,
+        ChatMessage::User {
+            provenance: UserProvenance::Navigator,
+            ..
+        }
+    )));
+    // Before the boundary passes it, navigator input stays in place and keeps its provenance.
+    let uncompact = effective_history(&transcript, None);
+    assert_eq!(
+        serde_json::to_value(&uncompact[1]).unwrap(),
+        serde_json::to_value(&transcript[1]).unwrap()
     );
     validate(&compacted, &transcript).unwrap();
+}
+
+#[test]
+fn adjacent_non_driver_input_does_not_inflate_no_skill_minimum_capacity() {
+    use crate::provider::openai::UserProvenance;
+    for provenance in [UserProvenance::Navigator, UserProvenance::Parent] {
+        let transcript = vec![
+            user("inspect it"),
+            ChatMessage::User {
+                content: "n".repeat(16 * 1024),
+                provenance,
+            },
+            ChatMessage::User {
+                content: "s".repeat(16 * 1024),
+                provenance: UserProvenance::Subagent,
+            },
+            call("first", "read", "{}"),
+            result("first", 4_000),
+            call("last", "read", "{}"),
+            result("last", 20_000),
+        ];
+        let CompactionError::Capacity { needed, .. } =
+            plan(&transcript, None, &components(), 1, Aim::FitMidTurn).unwrap_err()
+        else {
+            panic!("capacity")
+        };
+        assert_eq!(needed, 7_432);
+        let baseline: Vec<_> = transcript
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != 1 && *i != 2)
+            .map(|(_, message)| message.clone())
+            .collect();
+        let CompactionError::Capacity {
+            needed: baseline_needed,
+            ..
+        } = plan(&baseline, None, &components(), 1, Aim::FitMidTurn).unwrap_err()
+        else {
+            panic!("baseline capacity")
+        };
+        assert_eq!(
+            needed, baseline_needed,
+            "adjacent non-driver input adds no irreducible cost"
+        );
+        let planned = plan(&transcript, None, &components(), 14_000, Aim::FitMidTurn).unwrap();
+        let compacted = Compaction {
+            checkpoint: Checkpoint {
+                through_message: planned.through_message,
+                summary: "earlier observations".into(),
+                generation: 1,
+            },
+            pruned_message_indices: planned.kept_pruned(),
+        };
+        validate(&compacted, &transcript).unwrap();
+        let history = effective_history(&transcript, Some(&compacted));
+        assert!(history.iter().any(|message| matches!(message, ChatMessage::User { content, .. } if content == "inspect it")));
+        assert!(planned.estimated_after <= 14_000);
+    }
 }
 
 #[test]

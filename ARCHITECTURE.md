@@ -143,8 +143,10 @@ excludes correlated whole-message refusals, so resume and new children keep the 
 `message.received.selected_skill` records `{name,origin:"driver"}` for live and replayed clients.
 No synthetic tool exchange or model-visible provenance argument is used. Selected instructions
 stay with their driver message through storage and latest-batch compaction protection. Multiple
-queued selections all stay verbatim, including a user-message run with interleaved navigator input
-whose provenance is retained, or the existing capacity error prevents the request; no
+queued driver selections all stay verbatim even with interleaved navigator input. Discovery covers
+the consecutive user-message run, but only Driver-provenance messages are protected, carried and
+charged as irreducible. Non-driver input retains its provenance in the unsummarized tail and may
+be summarized before a checkpoint. If driver selections cannot fit, the capacity error prevents the request; no
 skill is silently truncated. Event text remains driver text only for display.
 This does not change the event catalog or execute a skill's scripts.
 

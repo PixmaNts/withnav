@@ -274,6 +274,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         }
         Some(EventKind::AgentYield) => {
             let v = e.payload;
+            s.watchdog_paused = v["kind"] == "watchdog" || v["kind"] == "budget";
             let q = v["question"].as_str().ok_or_else(bad)?;
             s.activity = Activity::AwaitingUser;
             s.conversation.blocks.push(block(
@@ -284,6 +285,9 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         Some(EventKind::TurnEnd) => {
             let v = e.payload;
             let outcome = v["outcome"].as_str().unwrap_or("");
+            if outcome != "yielded" {
+                s.watchdog_paused = false;
+            }
             s.activity = match outcome {
                 "yielded" => Activity::AwaitingUser,
                 "interrupted" | "done" | "error" => Activity::Idle,
@@ -497,6 +501,14 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         }
         Some(EventKind::CommandResult) => {
             let v = e.payload;
+            if v["name"] == "watchdog" {
+                let text = v["data"]["message"].as_str().ok_or_else(bad)?;
+                s.conversation.blocks.push(block(
+                    e.seq.to_string(),
+                    BlockKind::Notice(strip_controls(text)),
+                ));
+                return Ok(());
+            }
             let name = v["name"].as_str().ok_or_else(bad)?.to_string();
             let ok = v["ok"].as_bool().ok_or_else(bad)?;
             // `/model`: the result of an operation settles the switch waiting on it (a deferred

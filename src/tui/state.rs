@@ -206,6 +206,8 @@ pub struct Tab {
     pub parent_session_id: Option<String>,
     pub child_status: ChildStatus,
     pub child_status_seq: Option<u64>,
+    /// A watchdog doubt or renewable step budget, never an ask or permission.
+    pub watchdog_paused: bool,
     /// The workspace's branch and changes at the last read; `None` until read, or when the
     /// workspace is not a git repository.
     pub git: Option<super::git::GitStatus>,

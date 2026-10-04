@@ -18,6 +18,48 @@ use ulid::Ulid;
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
 #[test]
+fn root_watchdog_notice_and_pause_render_and_continue_is_not_an_ask_answer() {
+    let mut s = subagent_parent();
+    let mut ui = UiState::default();
+    let mut script = Script::new();
+    script.raw("command.result", json!({"name":"watchdog","ok":true,"data":{"message":"Stopped by watchdog: looping; partial work kept"}}));
+    script.raw(
+        "agent.yield",
+        json!({"kind":"watchdog","question":"Paused: alt+c continue or Stop"}),
+    );
+    for envelope in script.out {
+        let generation = s.generation.clone();
+        update(
+            &mut s,
+            ClientEvent::Envelope {
+                generation,
+                envelope,
+            },
+        )
+        .unwrap();
+    }
+    assert!(
+        matches!(&s.conversation.blocks[0].kind, BlockKind::Notice(text) if text.contains("Stopped by watchdog"))
+    );
+    assert!(
+        matches!(&s.conversation.blocks[1].kind, BlockKind::YieldQuestion(text) if text.contains("alt+c"))
+    );
+    assert!(s.watchdog_paused);
+    assert_eq!(s.activity, Activity::AwaitingUser);
+    handle_action(&mut s, &mut ui, Action::ContinueChild);
+    assert_eq!(
+        ui.child_confirm
+            .as_ref()
+            .map(|(parent, child, _)| (parent.clone(), child.clone())),
+        Some((Ulid(1).to_string(), Ulid(1).to_string()))
+    );
+    ui.child_confirm = None;
+    s.watchdog_paused = false;
+    handle_action(&mut s, &mut ui, Action::ContinueChild);
+    assert!(ui.child_confirm.is_none());
+}
+
+#[test]
 fn interrupted_steering_keeps_watched_and_open_children_running_then_parked() {
     for opened in [false, true] {
         for close_parent in [false, true] {

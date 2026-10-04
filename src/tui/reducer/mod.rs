@@ -666,12 +666,20 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             ..
         } => match result {
             Ok(()) => {
+                if s.session
+                    .as_ref()
+                    .is_some_and(|session| session.session_id == child_session_id)
+                    && s.parent_session_id.is_none()
+                {
+                    s.watchdog_paused = false;
+                    s.activity = crate::tui::state::Activity::Running;
+                }
                 let text = match control {
                     super::protocol::ChildControl::Stop => {
                         "stop accepted; waiting for the subagent to finish"
                     }
                     super::protocol::ChildControl::Continue => {
-                        "continue accepted; waiting for the subagent"
+                        "continue accepted; waiting for the agent"
                     }
                 };
                 push_local(s, BlockKind::Notice(text.into()));

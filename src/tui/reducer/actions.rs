@@ -648,6 +648,20 @@ fn confirm_child(
     ui: &mut UiState,
     control: crate::tui::protocol::ChildControl,
 ) -> Vec<Effect> {
+    if control == crate::tui::protocol::ChildControl::Continue
+        && s.parent_session_id.is_none()
+        && s.watchdog_paused
+        && s.open_permission().is_none()
+    {
+        if let Some(session) = &s.session {
+            ui.child_confirm = Some((
+                session.session_id.clone(),
+                session.session_id.clone(),
+                control,
+            ));
+        }
+        return vec![];
+    }
     let status = s.active_child_status();
     let allowed = match control {
         crate::tui::protocol::ChildControl::Stop => matches!(
@@ -658,7 +672,10 @@ fn confirm_child(
                 | crate::tui::state::ChildStatus::OutOfSteps
         ),
         crate::tui::protocol::ChildControl::Continue => {
-            status == crate::tui::state::ChildStatus::OutOfSteps
+            matches!(
+                status,
+                crate::tui::state::ChildStatus::OutOfSteps | crate::tui::state::ChildStatus::Doubt
+            )
         }
     };
     if allowed {

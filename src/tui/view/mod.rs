@@ -77,8 +77,17 @@ fn key_bar(choices: &[Hints], width: usize, theme: &Theme) -> Vec<Span<'static>>
 /// choices always shown, shorter when the row is narrow), the deny message's while one is typed,
 /// else the everyday ones.
 fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
+    if state.watchdog_paused {
+        return &[Hints {
+            hints: &["alt+c continue", "esc stop"],
+            required: 1,
+        }];
+    }
     if state.read_only() {
-        if state.active_child_status() == crate::tui::state::ChildStatus::OutOfSteps {
+        if matches!(
+            state.active_child_status(),
+            crate::tui::state::ChildStatus::OutOfSteps | crate::tui::state::ChildStatus::Doubt
+        ) {
             return &[Hints {
                 hints: &[
                     "alt+c continue",

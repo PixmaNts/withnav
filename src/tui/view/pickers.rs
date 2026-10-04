@@ -104,7 +104,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
             .iter()
             .filter(|(key, _)| match *key {
                 "alt+s" => state.tabs.iter().any(|t| !t.children.is_empty()),
-                "alt+c" => state.read_only(),
+                "alt+c" => state.read_only() || state.watchdog_paused,
                 _ => true,
             })
             .map(|(key, description)| {

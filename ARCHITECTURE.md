@@ -137,10 +137,14 @@ The turn's pinned agent policy is checked again after admission: an intervening 
 refuse the whole command before answering an ask, cancelling permission, changing the driver task,
 appending text or persisting child delivery. A durable `command.result` uses its command id as
 operation id, causation and correlation; other queued commands proceed.
+Policy pinning does not consume a pending ask or clear its permission slot or answer claim:
+only accepted input or a matching answer starts interaction consumption. Replay task lookup
+excludes correlated whole-message refusals, so resume and new children keep the real driver task.
 `message.received.selected_skill` records `{name,origin:"driver"}` for live and replayed clients.
 No synthetic tool exchange or model-visible provenance argument is used. Selected instructions
 stay with their driver message through storage and latest-batch compaction protection. Multiple
-queued selections all stay verbatim, or the existing capacity error prevents the request; no
+queued selections all stay verbatim, including a user-message run with interleaved navigator input
+whose provenance is retained, or the existing capacity error prevents the request; no
 skill is silently truncated. Event text remains driver text only for display.
 This does not change the event catalog or execute a skill's scripts.
 

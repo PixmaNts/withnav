@@ -794,7 +794,7 @@ mod tests {
             serde_json::from_value(serde_json::to_value(&actor.transcript).unwrap()).unwrap();
         assert_eq!(
             crate::agent::compaction::latest_user_batch(&restored),
-            Some(0..1)
+            Some(0..2)
         );
         assert_eq!(
             user_texts(&actor),

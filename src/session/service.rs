@@ -616,6 +616,20 @@ impl Service {
         &self.history
     }
 
+    /// Debug-build observation seam for resume and child inheritance tests.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn driver_task_probe(&self, id: SessionId) -> Option<String> {
+        let handle = self.handle(id)?;
+        let task = handle
+            .status
+            .driver_task_probe
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        task
+    }
+
     /// The sessions the registry holds (live or stopping). Client
     /// connects/disconnects never touch the registry: only session creation
     /// inserts and each session occupies one entry, so a connect-then-drop

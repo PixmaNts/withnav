@@ -603,6 +603,41 @@ fn a_mid_turn_checkpoint_carries_the_latest_user_request_verbatim() {
 }
 
 #[test]
+fn mid_turn_checkpoint_preserves_interleaved_driver_selections_and_navigator_provenance() {
+    use crate::provider::openai::UserProvenance;
+    let mut transcript = vec![
+        user("Driver A\n<driver_selected_skill>BODY A</driver_selected_skill>"),
+        ChatMessage::User {
+            content: "navigator wake".into(),
+            provenance: UserProvenance::Navigator,
+        },
+        user("Driver B\n<driver_selected_skill>BODY B</driver_selected_skill>"),
+    ];
+    for n in 0..12 {
+        transcript.push(call(&format!("c{n}"), "read", "{}"));
+        transcript.push(result(&format!("c{n}"), 8_000));
+    }
+    assert_eq!(latest_user_batch(&transcript), Some(0..3));
+    let budget = 3_000 + summary_reserve_tokens();
+    let plan = plan(&transcript, None, &components(), budget, Aim::FitMidTurn).unwrap();
+    assert!(plan.through_message > 2);
+    let compacted = Compaction {
+        checkpoint: Checkpoint {
+            through_message: plan.through_message,
+            summary: "work so far".into(),
+            generation: 1,
+        },
+        pruned_message_indices: plan.kept_pruned(),
+    };
+    let prompt = effective_history(&transcript, Some(&compacted));
+    assert_eq!(
+        serde_json::to_value(&prompt[2..5]).unwrap(),
+        serde_json::to_value(&transcript[..3]).unwrap()
+    );
+    validate(&compacted, &transcript).unwrap();
+}
+
+#[test]
 fn delivered_subagent_output_does_not_displace_checkpoint_driver_request() {
     use crate::provider::openai::UserProvenance;
     let mut transcript = vec![

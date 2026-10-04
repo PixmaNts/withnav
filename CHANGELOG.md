@@ -19,6 +19,7 @@ requests land in `develop`.
 ### Fixed
 
 - **Selected skills**: instructions stay in the driver's own message through compaction. An agent switch that disables skills refuses the whole message before it reaches the conversation; selections remain visible on replay.
+- **Selected skills**: refused input no longer replaces the driver task after resume or child creation, races with permission answers preserve the pending claim, and interleaved navigator wakes cannot remove queued selections during compaction.
 
 ## [0.4.1] - 2026-10-04
 

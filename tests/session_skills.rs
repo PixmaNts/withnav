@@ -412,6 +412,87 @@ async fn agent_switch_during_loading_refuses_whole_command_before_mutation() {
         .contains("keep this instruction"));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refused_selection_does_not_replace_resumed_or_inherited_driver_task() {
+    let env = env();
+    let agents = env.root.join("cfg/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join("no-skills.md"),
+        "---\ndescription: No skills\nmode: primary\ntools:\n  skill: false\n---\nNo skills.",
+    )
+    .unwrap();
+    let provider =
+        spawn_capturing_provider(vec![answer("original done"), answer("child done")]).await;
+    let state = state(&env, &provider, "default", false);
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    converse(&state, id, "previous real driver task").await;
+    let barrier = navai::session::ChildPreparationBarrier::default();
+    state.pause_skill_loading(barrier.clone());
+    let sub = state.subscribe(id, None).await.unwrap();
+    let sender = state.clone();
+    let pending = tokio::spawn(async move {
+        sender
+            .send(Command {
+                command_id: ulid::Ulid::new(),
+                session_id: id,
+                source_actor_id: "user:test".into(),
+                target_actor_id: "agent:main".into(),
+                mode: DeliveryMode::NextTurn,
+                created_at: std::time::SystemTime::now(),
+                content: vec![
+                    ContentBlock::Text {
+                        text: "REFUSED TASK".into(),
+                    },
+                    ContentBlock::Skill {
+                        name: "ask-matt".into(),
+                    },
+                ],
+            })
+            .await
+    });
+    barrier.reached.notified().await;
+    assert!(
+        state
+            .run_command(id, "agent", "no-skills")
+            .await
+            .unwrap()
+            .ok
+    );
+    barrier.release.notify_one();
+    pending.await.unwrap().unwrap();
+    collect_until(sub, |event| {
+        event.kind == "command.result" && event.payload["name"] == "skill"
+    })
+    .await;
+    state.close_session(id).await.unwrap();
+    state
+        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .await
+        .unwrap();
+    assert_eq!(
+        state.driver_task_probe(id).as_deref(),
+        Some("previous real driver task")
+    );
+    assert_eq!(
+        state
+            .history()
+            .latest_driver_message(id)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("previous real driver task")
+    );
+    let child = state
+        .create_child_session(id, "explore", "delegated work")
+        .await
+        .unwrap();
+    assert_eq!(
+        state.driver_task_probe(child).as_deref(),
+        Some("previous real driver task")
+    );
+}
+
 // Given a home library (nested) and a project skill, plus a rules file
 // When a session is created, a message is sent, the model calls `skill`
 // Then the request is: contract, rules, CATALOG, user; the catalog lists the

@@ -250,14 +250,17 @@ fn drop_empty_assistants(mut history: Vec<ChatMessage>) -> Vec<ChatMessage> {
     history
 }
 
-/// The user messages that started the turn the conversation is in: the last
-/// run of consecutive user messages (the inbox hands them to the runtime as
-/// one batch). `None` for a transcript without a user message.
+/// The consecutive user-message run containing the latest driver input, including
+/// interleaved navigator/parent input with its original provenance. `None` without driver input.
 pub fn latest_user_batch(transcript: &[ChatMessage]) -> Option<std::ops::Range<usize>> {
-    let end = transcript.iter().rposition(|m| m.is_driver_message())? + 1;
+    let driver = transcript.iter().rposition(|m| m.is_driver_message())?;
+    let end = transcript[driver..]
+        .iter()
+        .position(|m| !matches!(m, ChatMessage::User { .. }))
+        .map_or(transcript.len(), |offset| driver + offset);
     let start = transcript[..end]
         .iter()
-        .rposition(|m| !m.is_driver_message())
+        .rposition(|m| !matches!(m, ChatMessage::User { .. }))
         .map_or(0, |i| i + 1);
     Some(start..end)
 }

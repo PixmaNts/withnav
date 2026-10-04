@@ -15,6 +15,9 @@ requests land in `develop`.
 
 - Permission evidence includes typed verdicts, deterministic overrides, reviewer model ids,
   stage latencies and an excerpt-truncation flag on existing tool and permission events.
+- **Terminal client**: a tool block says who auto-approved a reviewed call (`auto · Jev`,
+  `auto · metacognition`, `driver approved`); expanded, it shows the reason, Jev's verdicts and
+  the plan role check. Copies include it.
 
 ## [0.4.3] - 2026-10-04
 

@@ -266,10 +266,9 @@ impl crate::agent::permission_gate::PermissionReviewer for LazyCommenter {
         >,
     > {
         Box::pin(async move {
-            let commenter = self
-                .get()
-                .await
-                .map_err(|_| crate::agent::permission_gate::ReviewError)?;
+            let commenter = self.get().await.map_err(|_| {
+                crate::agent::permission_gate::ReviewError("answer malformed (invalid response)")
+            })?;
             crate::agent::permission_gate::PermissionReviewer::review(
                 commenter.as_ref(),
                 input,

@@ -1646,12 +1646,10 @@ mod tests {
         actor.push_user("go");
         let mut noop = |_e: AgentEvent| {};
         let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
-        assert!(matches!(outcome, RunOutcome::Done(_)));
-        assert!(!actor.has_pending());
+        assert!(matches!(outcome, RunOutcome::PermissionRequired(_)));
+        assert!(actor.has_pending());
         assert!(!outside.path().join("new").exists(), "nothing was created");
-        let result: serde_json::Value =
-            serde_json::from_str(&tool_result_of(&actor, "w1").unwrap()).unwrap();
-        assert_eq!(result["status"], "error");
+        assert!(tool_result_of(&actor, "w1").is_none());
     }
 
     #[tokio::test]
@@ -2151,7 +2149,9 @@ mod tests {
                         decision,
                         reason: "reviewed".into(),
                     })
-                    .ok_or(super::super::permission_gate::ReviewError)
+                    .ok_or(super::super::permission_gate::ReviewError(
+                        "answer malformed (invalid response)",
+                    ))
             })
         }
     }

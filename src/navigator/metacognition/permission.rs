@@ -18,21 +18,27 @@ fn check_budget(
     messages: &[ChatMessage],
     tools: &[ToolDef],
 ) -> Result<(), ReviewError> {
-    let budget = Budget::compute(window, max_input, Some(output), None).map_err(|_| ReviewError)?;
+    let budget = Budget::compute(window, max_input, Some(output), None)
+        .map_err(|_| ReviewError("unavailable (provider error)"))?;
     let estimate = messages
         .iter()
         .map(message_tokens)
         .sum::<u64>()
         .saturating_add(tools_tokens(tools));
     if estimate > budget.input_budget {
-        return Err(ReviewError);
+        return Err(ReviewError("answer malformed (invalid response)"));
     }
     Ok(())
 }
 
 fn answer(message: &crate::provider::AssistantMessage) -> Result<PermissionReview, ReviewError> {
     if !message.tool_calls.is_empty() {
-        return Err(ReviewError);
+        return Err(ReviewError("answer malformed (invalid response)"));
+    }
+    if message.text.trim().is_empty() {
+        return Err(ReviewError(
+            "answer malformed (empty content; reasoning-only or exhausted output)",
+        ));
     }
     parse_review(&message.text)
 }
@@ -58,9 +64,12 @@ impl PermissionReviewer for super::LlmCommenter {
                 .resolved
                 .model
                 .max_output_tokens
-                .map_or(1024, |limit| limit.min(1024));
+                .map_or(4096, |limit| limit.min(4096));
             check_budget(
-                self.resolved.model.context_window.ok_or(ReviewError)?,
+                self.resolved
+                    .model
+                    .context_window
+                    .ok_or(ReviewError("answer malformed (invalid response)"))?,
                 self.resolved.model.max_input_tokens,
                 output,
                 &messages,
@@ -69,12 +78,16 @@ impl PermissionReviewer for super::LlmCommenter {
             let client = self
                 .clients
                 .get(&self.resolved.provider_name, &self.resolved.provider)
-                .map_err(|_| ReviewError)?;
+                .map_err(|_| ReviewError("unavailable (provider error)"))?;
             let message = self
-                .chat_round(&client, &messages, tools, cancel)
+                .chat_round_capped(&client, &messages, tools, cancel, output)
                 .await
-                .map_err(|_| ReviewError)?;
-            answer(&message)
+                .map_err(|_| ReviewError("unavailable (provider error)"))?;
+            let result = answer(&message);
+            if result.is_err() {
+                tracing::debug!(answer = %crate::tools::bound_output(&message.text, 2048).0, reasoning_bytes = message.thinking.len(), finish = ?message.finish_reason, "malformed permission reviewer answer");
+            }
+            result
         })
     }
 }
@@ -82,6 +95,19 @@ impl PermissionReviewer for super::LlmCommenter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn live_reasoning_only_response_never_authorizes_and_content_is_separate() {
+        let mut message = crate::provider::AssistantMessage {
+            thinking: "We need review a tool call: creating a test file. Decision: approve.".into(),
+            ..Default::default()
+        };
+        assert!(answer(&message).unwrap_err().0.contains("empty content"));
+        message.text = r#"{"decision":"approve","reason":"Benign test file creation in /tmp; no destructive or security-sensitive operation."}"#.into();
+        assert_eq!(
+            answer(&message).unwrap().decision,
+            crate::agent::permission_gate::ReviewDecision::Approve
+        );
+    }
 
     #[test]
     fn budget_counts_actual_system_messages_and_clamps_to_window() {

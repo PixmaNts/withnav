@@ -13,6 +13,50 @@ use navai::server::{app, AppState};
 mod common;
 
 #[tokio::test]
+async fn live_agent_switch_restores_model_and_off_override_after_restart() {
+    let env = env();
+    let config = TestServerConfig::unreachable(&env.root)
+        .extra_alias("plan-key", "plan-model")
+        .variants(json!({"low":{"reasoning_effort":"low"}}), Some("low"))
+        .config();
+    std::fs::write(
+        env.root.join("cfg/config.json"),
+        json!({"agents":{"build":{"model":"mock/mock-model"},"plan":{"model":"mock/plan-model"}}})
+            .to_string(),
+    )
+    .unwrap();
+    let state = AppState::new(config.clone()).unwrap();
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    assert!(
+        state
+            .run_command(id, "model", "mock/plan-model")
+            .await
+            .unwrap()
+            .ok
+    );
+    assert!(state.run_command(id, "variant", "off").await.unwrap().ok);
+    assert!(state.run_command(id, "agent", "plan").await.unwrap().ok);
+    let plan = state.session_summary(id).await.unwrap();
+    assert_eq!(plan.agent, "plan");
+    assert_eq!(plan.variant.as_deref(), Some("low"));
+    assert!(state.run_command(id, "agent", "build").await.unwrap().ok);
+    let build = state.session_summary(id).await.unwrap();
+    assert_eq!(build.agent, "build");
+    assert_eq!(build.model, "mock/plan-model");
+    assert_eq!(build.variant, None);
+    state.close_session(id).await.unwrap();
+    let reopened = AppState::new(config).unwrap();
+    reopened
+        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .await
+        .unwrap();
+    let restored = reopened.session_summary(id).await.unwrap();
+    assert_eq!(restored.agent, "build");
+    assert_eq!(restored.model, "mock/plan-model");
+    assert_eq!(restored.variant, None);
+}
+
+#[tokio::test]
 async fn configured_agent_fallback_header_precedence_and_invalid_defaults() {
     let env = env();
     let config = TestServerConfig::unreachable(&env.root)

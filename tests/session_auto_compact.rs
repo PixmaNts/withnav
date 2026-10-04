@@ -680,13 +680,9 @@ async fn controls_during_an_automatic_summary_are_refused_or_wait_their_turn() {
     assert!(again.ok, "{again:?}");
 }
 
-// Given a switch to a smaller window whose second commit (the switch and its
-//       model.changed) cannot be written, after the checkpoint was committed
-// Then the switch is refused and the conversation stays on the OLD model with
-//      the new checkpoint, which a stop and a resume restore: the old model
-//      then answers from the summary and the recent turns
+// A failed destination selection must not install its staged compaction.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_failed_switch_after_its_checkpoint_leaves_the_old_model_with_the_checkpoint() {
+async fn a_failed_switch_rolls_back_the_staged_checkpoint_and_selection() {
     let env = env();
     let a = spawn_capturing_provider(vec![answer(SUMMARY), answer("still the old model")]).await;
     let b = spawn_capturing_provider(vec![]).await;
@@ -699,7 +695,7 @@ async fn a_failed_switch_after_its_checkpoint_leaves_the_old_model_with_the_chec
     // seqs after the notice: only that strict insert can trip over them.
     let head = state.session_summary(id).await.unwrap().current_seq + 1;
     let conn = rusqlite::Connection::open(env.root.join("history.db")).unwrap();
-    for seq in head + 1..=head + 3 {
+    for seq in head..=head {
         conn.execute(
             "INSERT INTO events (session_id, seq, kind, envelope) VALUES (?1, ?2, 'x', '{}')",
             rusqlite::params![id.to_string(), seq as i64],
@@ -712,15 +708,14 @@ async fn a_failed_switch_after_its_checkpoint_leaves_the_old_model_with_the_chec
     assert!(out.error.unwrap().contains("could not be saved"));
     assert_eq!(state.session_summary(id).await.unwrap().model, "default");
     assert!(stored(&state, id, "model.changed").await.is_empty());
-    // The checkpoint stands, in the store and in the notice.
+    // Neither the staged checkpoint nor its notice survives the failed transaction.
     let notices = stored(&state, id, "context.compacted").await;
-    assert_eq!(notices.len(), 1);
-    assert_eq!(notices[0].payload["reason"], "switch");
+    assert!(notices.is_empty());
     let meta = state.history().meta(id).await.unwrap().unwrap();
     assert_eq!(meta.model, "default");
     assert!(!meta.model_resolution.unwrap().contains("model-b"));
     let (_, _, checkpoint) = state.history().load_for_resume(id).await.unwrap().unwrap();
-    assert_eq!(checkpoint.expect("the checkpoint").checkpoint.generation, 1);
+    assert!(checkpoint.is_none());
 
     // A stop and a resume: still the old model, still the checkpoint.
     state.close_session(id).await.unwrap();
@@ -737,10 +732,13 @@ async fn a_failed_switch_after_its_checkpoint_leaves_the_old_model_with_the_chec
     let request = body(&a, 1);
     assert_eq!(request["model"], "model-a");
     let text = all_text(&request);
-    assert!(text.contains("Goal: finish the parser."), "the checkpoint");
+    assert!(
+        !text.contains("Goal: finish the parser."),
+        "no staged checkpoint installed"
+    );
     assert!(text.contains("go on"));
     assert!(
-        !text.contains("answer 0 "),
-        "the early turns are summarized"
+        text.contains("answer 0 "),
+        "the original transcript is retained"
     );
 }

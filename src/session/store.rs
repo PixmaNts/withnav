@@ -381,7 +381,10 @@ impl HistoryStore {
         if envelopes.is_empty()
             || envelopes.iter().any(|e| {
                 e.session_id != id
-                    || !matches!(e.kind.as_str(), "model.changed" | "session.agent_changed")
+                    || !matches!(
+                        e.kind.as_str(),
+                        "model.changed" | "session.agent_changed" | "context.compacted"
+                    )
             })
         {
             return Err(

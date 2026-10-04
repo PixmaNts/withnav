@@ -54,6 +54,13 @@ pub type AckedCommit = Box<
             -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
         + Send,
 >;
+pub type AckedBatchCommit = Box<
+    dyn FnOnce(
+            Vec<EventEnvelope>,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+        + Send,
+>;
 
 /// Ack returned AFTER the event is sequenced and the command committed.
 #[derive(Debug, Clone, Copy)]
@@ -64,6 +71,11 @@ pub struct AcceptReceipt {
 /// Control + candidate messages drained by the single sequencer task.
 #[allow(clippy::type_complexity)]
 pub enum Ingress {
+    CommitBatch {
+        candidates: Vec<Candidate>,
+        commit: AckedBatchCommit,
+        reply: oneshot::Sender<Result<u64, String>>,
+    },
     /// An unsequenced event candidate from any producer.
     Candidate(Candidate),
     /// Event-before-action acceptance: sequence + emit `message.received`
@@ -175,6 +187,28 @@ pub struct Sequencer {
 }
 
 impl Sequencer {
+    pub async fn commit_batch_acked(
+        &self,
+        candidates: Vec<Candidate>,
+        commit: AckedBatchCommit,
+    ) -> Result<u64, String> {
+        if candidates.is_empty() {
+            return Err("empty event commit".into());
+        }
+        let (reply, answer) = oneshot::channel();
+        ingress_send(
+            &self.ingress_tx,
+            Ingress::CommitBatch {
+                candidates,
+                commit,
+                reply,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        answer
+            .await
+            .map_err(|_| BusError::SequencerClosed.to_string())?
+    }
     /// Spawns the ONE authoritative sequencer task for a session. It assigns
     /// seqs from `next_seq`: 0 for a fresh session, `last_seq + 1` for a
     /// resumed one so stored and live seqs form one gapless sequence.
@@ -377,6 +411,38 @@ async fn run(
                 };
                 emitter.emit(stamp(session_id, seq, candidate));
                 let _ = reply.send(seq);
+            }
+            Ingress::CommitBatch {
+                candidates,
+                commit,
+                reply,
+            } => {
+                let first = next_seq;
+                let count = candidates.len();
+                let mut envelopes = Vec::new();
+                for candidate in candidates {
+                    let Some(seq) = take_seq(&mut next_seq) else {
+                        break;
+                    };
+                    envelopes.push(stamp(session_id, seq, candidate));
+                }
+                if envelopes.len() != count {
+                    next_seq = first;
+                    let _ = reply.send(Err(BusError::SeqSpaceExhausted.to_string()));
+                    continue;
+                }
+                match commit(envelopes.clone()).await {
+                    Ok(()) => {
+                        for envelope in envelopes {
+                            emitter.emit(envelope);
+                        }
+                        let _ = reply.send(Ok(first));
+                    }
+                    Err(why) => {
+                        next_seq = first;
+                        let _ = reply.send(Err(why));
+                    }
+                }
             }
             Ingress::CommitAcked {
                 candidate,

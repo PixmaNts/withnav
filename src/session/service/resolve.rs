@@ -135,7 +135,7 @@ pub(crate) struct Offer {
 }
 
 impl Service {
-    pub(super) fn assignments_configured(&self) -> Result<bool, ServerError> {
+    pub(crate) fn assignments_configured(&self) -> Result<bool, ServerError> {
         let path = crate::settings::path(&self.config.config_dir);
         let raw = match std::fs::read_to_string(path) {
             Ok(raw) => raw,
@@ -517,15 +517,102 @@ impl Service {
         };
         let resolver = {
             let (service, selected) = (self.clone(), selected.clone());
-            move |alias: String| {
+            move |request: crate::bus::runtime::model::SelectionRequest| {
                 let (service, selected, workspace) =
                     (service.clone(), selected.clone(), workspace.clone());
                 Box::pin(async move {
-                    let running = lock(&selected).resolution.clone();
-                    service
-                        .resolve_switch_target(id, &workspace, &alias, running.as_deref())
+                    let current = lock(&selected).clone();
+                    let meta = service
+                        .history
+                        .meta(id)
                         .await
-                        .map_err(|e| e.to_string())
+                        .map_err(|e| e.to_string())?
+                        .ok_or("session missing")?;
+                    let agent_name = request
+                        .target_agent
+                        .as_deref()
+                        .unwrap_or(&request.requesting_agent);
+                    let agents = service.load_agents(&workspace, id, false).await;
+                    let agent = agents
+                        .get(agent_name)
+                        .filter(|a| a.mode.is_primary())
+                        .cloned()
+                        .ok_or_else(|| format!("unknown primary agent '{agent_name}'"))?;
+                    let configured = service
+                        .assignments_configured()
+                        .map_err(|e| e.to_string())?;
+                    let saved = meta.agent_overrides.get(agent_name).cloned();
+                    let (alias, choice, override_value) = if request.command == "agent" {
+                        let assigned = if configured {
+                            service
+                                .assigned_agent_model(&workspace, &agents, agent_name, false)
+                                .map_err(|e| e.to_string())?
+                        } else {
+                            None
+                        };
+                        let (base, variant) =
+                            assigned.unwrap_or((current.alias.clone(), VariantChoice::Default));
+                        let choice = match saved.as_ref().map(|s| &s.variant) {
+                            Some(super::super::store::AgentVariantOverride::Off) => {
+                                VariantChoice::Clear
+                            }
+                            Some(super::super::store::AgentVariantOverride::Named(name)) => {
+                                VariantChoice::Exact(name.clone())
+                            }
+                            Some(super::super::store::AgentVariantOverride::Inherit)
+                                if saved.as_ref().and_then(|s| s.model.as_ref()).is_some() =>
+                            {
+                                VariantChoice::Default
+                            }
+                            _ => variant,
+                        };
+                        (
+                            saved.as_ref().and_then(|s| s.model.clone()).unwrap_or(base),
+                            choice,
+                            saved,
+                        )
+                    } else if request.command == "variant" {
+                        let choice = request.variant.clone().unwrap_or(VariantChoice::Default);
+                        let value = super::super::store::AgentOverride {
+                            model: Some(current.alias.clone()),
+                            variant: choice.clone().into(),
+                        };
+                        (current.alias.clone(), choice, Some(value))
+                    } else {
+                        let value = super::super::store::AgentOverride {
+                            model: Some(request.alias.clone()),
+                            variant: super::super::store::AgentVariantOverride::Inherit,
+                        };
+                        (request.alias.clone(), VariantChoice::Default, Some(value))
+                    };
+                    let mut target = service
+                        .resolve_switch_target(
+                            id,
+                            &workspace,
+                            &alias,
+                            current.resolution.as_deref(),
+                            &choice,
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    target.agent = Some(agent);
+                    target.override_value = override_value.map(|value| {
+                        (
+                            value.model,
+                            match value.variant {
+                                super::super::store::AgentVariantOverride::Inherit => {
+                                    VariantChoice::Default
+                                }
+                                super::super::store::AgentVariantOverride::Off => {
+                                    VariantChoice::Clear
+                                }
+                                super::super::store::AgentVariantOverride::Named(name) => {
+                                    VariantChoice::Exact(name)
+                                }
+                            },
+                        )
+                    });
+                    Ok(target)
                 }) as crate::bus::runtime::BoxFuture<Result<ModelTarget, String>>
             }
         };
@@ -537,20 +624,44 @@ impl Service {
             let (service, selected) = (self.clone(), selected);
             move |target: ModelTarget,
                   floor: usize,
-                  envelope: crate::bus::event::EventEnvelope,
+                  staged: Option<crate::bus::runtime::model::StagedCheckpoint>,
+                  envelopes: Vec<crate::bus::event::EventEnvelope>,
                   install: crate::bus::runtime::Install| {
                 let (service, selected) = (service.clone(), selected.clone());
                 Box::pin(async move {
-                    let revision = envelope.payload["revision"].as_u64().unwrap_or(0);
+                    let revision = envelopes
+                        .iter()
+                        .find(|e| e.kind == "model.changed")
+                        .and_then(|e| e.payload["revision"].as_u64())
+                        .unwrap_or(0);
                     service
                         .history
-                        .switch_model(
+                        .commit_agent_selection_with_checkpoint(
                             id,
-                            &target.alias,
-                            &target.resolution,
-                            target.variant.as_ref(),
-                            floor,
-                            envelope,
+                            target.agent.as_ref().expect("resolved agent").id.as_str(),
+                            target.override_value.clone().map(|(model, variant)| {
+                                super::super::store::AgentOverride {
+                                    model,
+                                    variant: variant.into(),
+                                }
+                            }),
+                            super::super::store::EffectiveAgentSelection {
+                                model: target.alias.clone(),
+                                resolution: target.resolution.clone(),
+                                variant: target.variant.clone(),
+                                primary_agent: target
+                                    .agent
+                                    .as_ref()
+                                    .expect("resolved agent")
+                                    .id
+                                    .to_string(),
+                                reasoning_floor: floor,
+                            },
+                            staged.map(|staged| super::super::store::SelectionCheckpoint {
+                                transcript: staged.transcript,
+                                checkpoint: staged.checkpoint,
+                            }),
+                            envelopes,
                         )
                         .await?;
                     service.before_switch_install().await;
@@ -559,6 +670,12 @@ impl Service {
                     // reader sees the old selection or the new, never a mix.
                     let mut guard = lock(&selected);
                     install();
+                    guard.agent = target
+                        .agent
+                        .as_ref()
+                        .expect("resolved agent")
+                        .id
+                        .to_string();
                     guard.alias = target.alias.clone();
                     if let Some(execution) = &guard.execution {
                         let mut resolved = execution.resolved.clone();
@@ -606,6 +723,7 @@ impl Service {
         workspace: &Path,
         alias: &str,
         running: Option<&ModelResolution>,
+        choice: &VariantChoice,
     ) -> Result<ModelTarget, ServerError> {
         let (mut resolved, models_file) = self.resolve_model(workspace, alias)?;
         if resolved.model.api != crate::provider::config::ApiKind::Chat {
@@ -636,7 +754,7 @@ impl Service {
                 &resolved,
                 &api_key,
                 &models_file,
-                VariantStart::Choice(&VariantChoice::Default),
+                VariantStart::Choice(choice),
             )
             .await?;
         let limits = crate::agent::context::ContextLimits::from_resolution(
@@ -661,6 +779,8 @@ impl Service {
                 model: String::new(),
             });
         Ok(ModelTarget {
+            agent: None,
+            override_value: None,
             alias: alias.to_string(),
             provider: resolved.provider.clone(),
             api_key,

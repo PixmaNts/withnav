@@ -130,6 +130,7 @@ pub use crate::bus::event::{SkillEntry, SkillsBody};
 /// variant of another. A model switch installs all of it under one lock.
 #[derive(Debug, Clone)]
 pub struct SelectedModel {
+    pub agent: String,
     pub(crate) execution: Option<Arc<EffectiveExecution>>,
     pub alias: String,
     /// The saved resolution (identity, window, where the window came from)
@@ -710,7 +711,13 @@ impl Service {
         if parent_handle.parent_session_id.is_some() {
             return Err(ServerError::ChildReadOnly);
         }
-        let parent_role = parent_handle.status.selection.current();
+        let parent_role = parent_handle
+            .status
+            .selection
+            .agents()
+            .get(&parent_handle.selected().agent)
+            .cloned()
+            .ok_or_else(|| ServerError::History("selected parent agent missing".into()))?;
         let agents = self
             .load_agents(&parent_handle.workspace, parent, false)
             .await;
@@ -1641,7 +1648,7 @@ impl Service {
             workspace: handle.workspace.display().to_string(),
             variant: selected.variant_name(),
             model: selected.alias,
-            agent: handle.status.selection.current().id.to_string(),
+            agent: selected.agent,
             current_seq,
             parent_session_id: handle.parent_session_id.map(|id| id.to_string()),
             child_status: if handle.parent_session_id.is_some() {
@@ -2612,6 +2619,7 @@ impl Service {
             1
         };
         let selected_model = Arc::new(Mutex::new(SelectedModel {
+            agent: status.selection.current().id.to_string(),
             execution: Some(execution),
             alias: alias.clone(),
             resolution: Some(Arc::new(snapshot.clone())),

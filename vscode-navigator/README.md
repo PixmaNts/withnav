@@ -13,7 +13,8 @@ diagnostics and user feedback, and hosts the Cognition chat view.
 - **Cognition chat**: a webview in the Navai activity-bar container (view id `navai.chat`, named
   "Cognition"). It talks to the session server that `navai-lsp` runs over HTTP and SSE. It streams
   the conversation, lists past conversations of the workspace to resume, and has a model picker for
-  the next new conversation (an open conversation keeps its model) and a gauge of the context used.
+  the next new conversation (an open conversation keeps its model) and a gauge of the next request's
+  estimated context against its input budget; hover or focus it for the breakdown and last request count.
   Navigator wakes appear in it as messages from the navigator. It sends the open file and selection
   as editor context.
 - **Agent controls in chat**: permission cards show the full reason and command (or a file path

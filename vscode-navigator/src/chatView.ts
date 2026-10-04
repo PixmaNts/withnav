@@ -62,12 +62,13 @@ export function registerChatView(
         if (message?.type !== "ready" && message?.generation !== backend.currentGeneration()) return;
         switch (message?.type) {
           case "ready":
+            const cachedUsage = lastUsage;
             if (lastConversations) post(lastConversations);
             post({ type: "conversationOpened", id: backend.currentConversationId(),
               title: lastConversationOpened?.type === "conversationOpened" ? lastConversationOpened.title : "Conversation" });
             post({ type: "history", items: backend.history() });
             if (lastModels) post(lastModels);
-            if (lastUsage) post(lastUsage);
+            if (cachedUsage) post(cachedUsage);
             pushContext();
             backend.resumePermissionReads();
             break;

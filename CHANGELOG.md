@@ -4,6 +4,11 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
+- The VS Code context meter now shows what the next request will send, against the usable input
+  budget, with a breakdown on hover and the provider's last request count clearly labelled.
+
 ## [0.4.5] - 2026-10-04
 
 The VS Code chat can now answer the agent's permission requests and continue a paused agent.

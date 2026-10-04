@@ -158,6 +158,7 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 .usage[data-level=mid] .usage-fill { background: var(--vscode-editorWarning-foreground, var(--vscode-progressBar-background)); }
 .usage[data-level=high] .usage-fill { background: var(--vscode-errorForeground); }
 .usage[data-level=high] .usage-label { color: var(--vscode-errorForeground); }
+.usage[data-level=mid] .usage-label { color: var(--vscode-editorWarning-foreground); }
 .skill-note { margin-left: 9px; font-weight: normal; color: var(--vscode-descriptionForeground); }
 .message.subagent { padding-left: 10px; border-left: 2px solid var(--vscode-descriptionForeground); }
 .control-card { margin: 14px 0; padding: 12px; border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); border-left: 2px solid var(--vscode-focusBorder); border-radius: 4px; background: var(--vscode-editor-background); overflow-wrap: anywhere; }

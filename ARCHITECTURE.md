@@ -206,8 +206,10 @@ status line shows the active tab's.
 `needs_permission`, which validates the call and its paths. Every `bash`, `write` and `edit` then goes
 through review, as do native single-file `read` calls outside readable roots or targeting credentials.
 `grep`/`glob` outside readable roots are refused; inside walks skip sensitive entries before opening
-them and report a count. Directory grep uses the builtin walker because rg exclusions cannot fully
-express the sensitive-component rule; ordinary single-file grep may still use rg.
+them and report a count. Directory grep uses ripgrep's normal ignore/hidden rules with case-insensitive
+pre-open exclusions generated from the same sensitive-name rules as the gate. Only when ripgrep is
+missing, an `ignore::WalkBuilder` fallback runs on a blocking worker with cancellation, deadline,
+entry/depth/per-file/total-byte/match limits and partial-result notices.
 Inside-root ordinary reads remain ungated but bound. Native reads bind one canonical target, re-resolve
 before dispatch and hold a no-follow descriptor; they never expand readable roots. Deterministic
 credential/key flags on native reads require metacognition and then the driver even after model approval. Reading

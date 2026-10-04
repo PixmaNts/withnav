@@ -446,6 +446,11 @@ pub fn needs_permission(
                 return Gate::Rejected("read requires a specific file, not a directory".into());
             }
             if tool != "read" {
+                if super::permission_gate::sensitive_read(&path)
+                    || super::permission_gate::sensitive_read(&resolved)
+                {
+                    return Gate::Rejected("sensitive search root: use read on individual files; each read is reviewed".into());
+                }
                 return if inside {
                     Gate::Bound(resolved)
                 } else {

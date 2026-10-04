@@ -11,8 +11,6 @@ use crate::tools::{
     bound_output, nofollow, validate_path, Tool, ToolContext, ToolResult, DEFAULT_MAX_OUTPUT_BYTES,
 };
 
-const GREP_MAX_MATCHES: usize = 1000;
-
 fn arg_str(args: &Value, key: &str) -> Result<String, ToolError> {
     crate::tools::reject_reserved_args(args)?;
     args.get(key)
@@ -69,7 +67,9 @@ impl Tool for ReadTool {
                     let target =
                         crate::agent::permissions::resolve_read_target(Path::new(&path), cx)?;
                     let target = validate_path(&cx.read_roots(), &target)?;
-                    if crate::agent::permission_gate::sensitive_read(&target) {
+                    if crate::agent::permission_gate::sensitive_read(&target)
+                        || crate::agent::permission_gate::sensitive_read(Path::new(&path))
+                    {
                         return Err(ToolError::Denied {
                             code: "permission_required".into(),
                             message: "sensitive file: read requires driver review".into(),
@@ -313,150 +313,57 @@ impl Tool for GrepTool {
                     code: "outside_project".into(),
                     message: crate::tools::OUTSIDE_SEARCH.into(),
                 })?;
-
-            if search_root.is_file()
-                && !crate::agent::permission_gate::sensitive_read(&search_root)
-                && rg_available()
+            if crate::agent::permission_gate::sensitive_read(Path::new(&path))
+                || crate::agent::permission_gate::sensitive_read(&search_root)
             {
-                if let Some(result) = grep_rg(&pattern, &search_root).await {
-                    return Ok(result);
-                }
+                return Err(ToolError::Denied {
+                    code: "sensitive_path".into(),
+                    message:
+                        "sensitive search root: use read on individual files; each read is reviewed"
+                            .into(),
+                });
             }
-            // Directory exclusions cannot reliably express every sensitive path component;
-            // use the checked walker rather than let rg read then post-filter secrets.
-            grep_builtin(&pattern, &search_root)
+            super::grep::search(pattern, search_root, _cancel).await
         })
     }
 }
 
-fn rg_available() -> bool {
-    if std::env::var("NAVAI_FORCE_BUILTIN_GREP").is_ok() {
-        return false;
-    }
-    which_rg().is_some()
-}
-
-fn which_rg() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join("rg");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-async fn grep_rg(pattern: &str, root: &Path) -> Option<ToolResult> {
-    let output = rg_command(pattern, root).output().await.ok()?;
-    let code = output.status.code().unwrap_or(-1);
-    if code >= 2 {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let bounded = bound_matches(&stdout);
-    Some(bounded.with_metadata(json!({"engine": "rg"})))
-}
-
-fn rg_command(pattern: &str, root: &Path) -> tokio::process::Command {
-    let mut command = tokio::process::Command::new("rg");
-    command
-        .kill_on_drop(true)
-        .arg("--no-config")
-        .arg("--line-number")
-        .arg("--no-heading")
-        .arg("--color=never")
-        .arg("--regexp")
-        .arg(pattern)
-        .arg("--")
-        .arg(root);
-    command
-}
-
+#[cfg(test)]
+use super::grep::rg_command;
+#[cfg(test)]
 fn grep_builtin(pattern: &str, root: &Path) -> Result<ToolResult, ToolError> {
-    let re = regex::Regex::new(pattern).map_err(|e| ToolError::Denied {
-        code: "invalid_regex".into(),
-        message: e.to_string(),
-    })?;
-    let mut out = String::new();
-    let mut matches = 0usize;
-    let mut skipped = 0usize;
-    if crate::agent::permission_gate::sensitive_read(root) {
-        return Ok(search_result(String::new(), "builtin", 1));
-    }
-    if root.is_file() {
-        let content = std::fs::read_to_string(root)?;
-        for (lineno, line) in content.lines().enumerate() {
-            if re.is_match(line) && matches < GREP_MAX_MATCHES {
-                out.push_str(&format!("{}:{}:{}\n", root.display(), lineno + 1, line));
-                matches += 1;
-            }
-        }
-        return Ok(bound_matches(&out).with_metadata(json!({"engine": "builtin"})));
-    }
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            // The kind of the entry itself: a link is neither searched nor
-            // followed, so a link out of a readable root or back to an
-            // ancestor cannot widen or loop the search (as `rg` does by
-            // default). Only the root, already validated, may be a link.
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
-            let p = entry.path();
-            if crate::agent::permission_gate::sensitive_read(&p) {
-                skipped += 1;
-                continue;
-            }
-            if kind.is_dir() {
-                stack.push(p);
-                continue;
-            }
-            if !kind.is_file() {
-                continue;
-            }
-            let Ok(content) = std::fs::read_to_string(&p) else {
-                continue;
-            };
-            for (lineno, line) in content.lines().enumerate() {
-                if matches >= GREP_MAX_MATCHES {
-                    break;
-                }
-                if re.is_match(line) {
-                    out.push_str(&format!("{}:{}:{}\n", p.display(), lineno + 1, line));
-                    matches += 1;
-                }
-            }
-        }
-    }
-    Ok(search_result(out, "builtin", skipped))
-}
-
-fn search_result(mut output: String, engine: &str, skipped: usize) -> ToolResult {
-    if skipped > 0 {
-        output.push_str(&format!(
-            "\n{skipped} sensitive files skipped; read them individually (reviewed)"
-        ));
-    }
-    bound_matches(&output).with_metadata(json!({"engine": engine, "sensitive_skipped": skipped}))
-}
-
-fn bound_matches(s: &str) -> ToolResult {
-    let (out, truncated) = bound_output(s, DEFAULT_MAX_OUTPUT_BYTES);
-    let mut result = ToolResult::ok(out);
-    if let Some(orig) = truncated {
-        result = result.with_truncation(orig);
-    }
-    result
+    super::grep::builtin_sync(pattern, root)
 }
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn unbound_native_read_and_search_reject_sensitive_alias_spellings() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("ordinary.txt"), "secret").unwrap();
+        std::fs::create_dir(tmp.path().join("ordinary-dir")).unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("ordinary.txt"), tmp.path().join(".env"))
+            .unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("ordinary-dir"), tmp.path().join(".ssh"))
+            .unwrap();
+        let cx = ctx(tmp.path());
+        for (tool, path) in [
+            (&ReadTool as &dyn Tool, ".env"),
+            (&GrepTool as &dyn Tool, ".env"),
+            (&GrepTool as &dyn Tool, ".ssh"),
+            (&crate::tools::glob::GlobTool as &dyn Tool, ".ssh"),
+        ] {
+            let error = tool
+                .call(
+                    json!({"path":path,"pattern":"."}),
+                    CancellationToken::new(),
+                    &cx,
+                )
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("sensitive"));
+        }
+    }
     #[tokio::test]
     async fn grep_skips_sensitive_files_before_opening_with_rg_available_or_builtin() {
         let tmp = tempfile::tempdir().unwrap();
@@ -484,13 +391,13 @@ mod tests {
             .unwrap();
         assert!(result.output.contains("ordinary credentials word"));
         assert!(!result.output.contains("TOPSECRET"));
-        assert!(result.output.contains("6 sensitive files skipped"));
-        let builtin = grep_builtin(".", root).unwrap();
-        assert_eq!(result.output, builtin.output);
-        assert_eq!(
-            result.metadata["engine"], "builtin",
-            "directory searches deliberately fall back even when rg exists"
+        assert!(
+            result.output.contains("sensitive files skipped"),
+            "{result:?}"
         );
+        let builtin = grep_builtin(".", root).unwrap();
+        assert!(!builtin.output.contains("TOPSECRET"));
+        assert_eq!(result.metadata["engine"], "rg");
     }
 
     #[tokio::test]
@@ -519,17 +426,17 @@ mod tests {
                 .map(|arg| arg.to_str().unwrap())
                 .collect();
             assert_eq!(
-                args,
-                [
+                &args[..4],
+                &[
                     "--no-config",
                     "--line-number",
                     "--no-heading",
-                    "--color=never",
-                    "--regexp",
-                    pattern,
-                    "--",
-                    "/validated/root"
+                    "--color=never"
                 ]
+            );
+            assert_eq!(
+                &args[args.len() - 4..],
+                &["--regexp", pattern, "--", "/validated/root"]
             );
         }
     }

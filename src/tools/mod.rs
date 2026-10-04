@@ -15,6 +15,7 @@ pub mod control;
 pub mod decide_subagent;
 pub mod fetch;
 pub mod glob;
+mod grep;
 pub mod native;
 pub mod nofollow;
 pub mod steer_subagent;

@@ -10,7 +10,9 @@ Review every enabled bash, write and edit call before dispatch, and native singl
 outside readable roots or targeting credentials. Only single-file `read` gets outside-root review;
 outside `grep`/`glob` stay refused. Ordinary inside-root reads remain ungated, with canonical
 no-follow dispatch even without review. Searches skip sensitive entries before opening and report
-a count; directory grep falls back to the builtin walker instead of unreliable rg exclusions.
+a count; directory grep uses ripgrep with pre-open case-insensitive exclusions generated from the
+same sensitive-name rules as the gate. The missing-ripgrep fallback uses `ignore::WalkBuilder` on
+a bounded cancellable blocking worker, preserving ignore and hidden rules.
 Approvals bind a canonical target, re-resolved before no-follow dispatch; no root is added.
 The instinct answers effects, scope and risk together. Non-risky read-only calls and low-risk project changes may run; risky or
 outside-project changes require synchronous metacognition approval. Any uncertainty or reviewer

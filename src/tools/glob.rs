@@ -87,14 +87,26 @@ impl Tool for GlobTool {
                 }
                 None => cx.workspace.clone(),
             };
+            if crate::agent::permission_gate::sensitive_read(&requested) {
+                return Err(denied(
+                    "sensitive_path",
+                    "sensitive search root: use read on individual files; each read is reviewed",
+                ));
+            }
             let requested = cx
                 .binding
                 .as_ref()
                 .map(|binding| binding.destination.clone())
                 .unwrap_or(requested);
             let roots = cx.read_roots();
-            validate_path(&roots, &requested)
+            let canonical = validate_path(&roots, &requested)
                 .map_err(|_| denied("outside_project", crate::tools::OUTSIDE_SEARCH))?;
+            if crate::agent::permission_gate::sensitive_read(&canonical) {
+                return Err(denied(
+                    "sensitive_path",
+                    "sensitive search root: use read on individual files; each read is reviewed",
+                ));
+            }
             search(
                 roots,
                 requested,

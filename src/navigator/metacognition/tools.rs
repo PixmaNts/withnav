@@ -180,6 +180,23 @@ mod tests {
         );
         let mut ctx = RemarkContext::build("file:///file", "text", "", "", vec![], None);
         ctx.workspace = Some(tmp.path().to_path_buf());
+        std::fs::write(tmp.path().join("ordinary.txt"), "secret").unwrap();
+        std::fs::create_dir(tmp.path().join("ordinary-dir")).unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("ordinary.txt"), tmp.path().join(".env"))
+            .unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("ordinary-dir"), tmp.path().join(".ssh"))
+            .unwrap();
+        for (tool, path) in [("read", ".env"), ("grep", ".env"), ("grep", ".ssh")] {
+            let call = crate::provider::ToolCall {
+                id: tool.into(),
+                name: tool.into(),
+                args: serde_json::json!({"path":path,"pattern":"."}),
+                args_valid: true,
+            };
+            let output = commenter.execute_tool(&ctx, &call).await;
+            assert!(output.contains("sensitive"), "{output}");
+            assert!(!output.contains("secret"));
+        }
         ctx.open_buffers
             .insert("/etc/hostname".into(), "secret buffer".into());
         for tool in ["read", "grep"] {

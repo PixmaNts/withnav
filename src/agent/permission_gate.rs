@@ -27,29 +27,42 @@ pub struct Overrides {
 }
 
 /// Credential names are host facts, independent of a model's classification.
+pub const SENSITIVE_NAMES: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".netrc",
+    "auth.json",
+    "keyrings",
+    ".aws",
+    "gcloud",
+    "credentials",
+    "credentials.json",
+    "application_default_credentials.json",
+    ".env*",
+    "*id_rsa*",
+    "*id_ed25519*",
+    "*id_ecdsa*",
+    "*.pem",
+    "*.key",
+    "*.keyring",
+];
+
 pub fn sensitive_read(path: &std::path::Path) -> bool {
-    path.components().any(|part| {
-        let name = part.as_os_str().to_string_lossy().to_ascii_lowercase();
-        matches!(
-            name.as_str(),
-            ".ssh"
-                | ".gnupg"
-                | ".netrc"
-                | "auth.json"
-                | "keyrings"
-                | ".aws"
-                | "gcloud"
-                | "credentials"
-                | "credentials.json"
-                | "application_default_credentials.json"
-        ) || name.starts_with(".env")
-            || name.contains("id_rsa")
-            || name.contains("id_ed25519")
-            || name.contains("id_ecdsa")
-            || name.ends_with(".pem")
-            || name.ends_with(".key")
-            || name.ends_with(".keyring")
-    })
+    static MATCHER: std::sync::OnceLock<globset::GlobSet> = std::sync::OnceLock::new();
+    let matcher = MATCHER.get_or_init(|| {
+        let mut builder = globset::GlobSetBuilder::new();
+        for pattern in SENSITIVE_NAMES {
+            builder.add(
+                globset::GlobBuilder::new(pattern)
+                    .case_insensitive(true)
+                    .build()
+                    .expect("fixed sensitive pattern"),
+            );
+        }
+        builder.build().expect("fixed sensitive matcher")
+    });
+    path.components()
+        .any(|part| matcher.is_match(std::path::Path::new(part.as_os_str())))
 }
 
 pub fn prefilter(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> Overrides {
@@ -678,7 +691,9 @@ fn supported_read_only_bash(call: &ToolCall) -> bool {
     let Some(command) = call.args.get("command").and_then(Value::as_str) else {
         return false;
     };
-    if command.contains(['>', '<', '|', '&', ';', '\n', '$', '`', '(', ')']) {
+    if command.contains([
+        '>', '<', '|', '&', ';', '\n', '$', '`', '(', ')', '\'', '"', '\\', '*', '?', '[',
+    ]) {
         return false;
     }
     let mut words = command.split_whitespace();
@@ -687,11 +702,11 @@ fn supported_read_only_bash(call: &ToolCall) -> bool {
     };
     if !matches!(
         program,
-        "cat" | "head" | "tail" | "less" | "wc" | "ls" | "stat" | "grep" | "diff" | "file"
+        "cat" | "head" | "tail" | "wc" | "ls" | "stat" | "grep" | "diff" | "file"
     ) {
         return false;
     }
-    words.all(|word| !word.starts_with('-'))
+    words.all(|word| !word.starts_with(['-', '+']))
 }
 
 fn choice<'a>(answers: &'a Answers, name: &str) -> Option<&'a str> {

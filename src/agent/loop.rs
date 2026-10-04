@@ -2018,6 +2018,46 @@ mod tests {
     struct OptimisticReadOnlyJudge;
     struct ReadJudge;
     #[tokio::test]
+    async fn sensitive_file_and_directory_aliases_are_refused_before_canonical_dispatch() {
+        let mut actor = plan_actor(None, "http://unused");
+        as_build(&mut actor);
+        actor
+            .registry
+            .register(Box::new(crate::tools::native::GrepTool));
+        actor
+            .registry
+            .register(Box::new(crate::tools::glob::GlobTool));
+        let root = &actor.tool_context.workspace;
+        std::fs::write(root.join("settings.txt"), "secret").unwrap();
+        std::fs::create_dir(root.join("ordinary-dir")).unwrap();
+        std::os::unix::fs::symlink(root.join("settings.txt"), root.join(".env")).unwrap();
+        std::os::unix::fs::symlink(root.join("ordinary-dir"), root.join(".ssh")).unwrap();
+        for (tool, path) in [("grep", ".env"), ("grep", ".ssh"), ("glob", ".ssh")] {
+            let call = ToolCall {
+                id: tool.into(),
+                name: tool.into(),
+                args: serde_json::json!({"path":path,"pattern":"."}),
+                args_valid: true,
+            };
+            assert!(
+                matches!(gate(&actor,&call),Gated::Rejected(message) if message.contains("sensitive search root"))
+            );
+        }
+        let call = ToolCall {
+            id: "read".into(),
+            name: "read".into(),
+            args: serde_json::json!({"path":".env"}),
+            args_valid: true,
+        };
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut |_| panic!(
+                "secret must not dispatch"
+            ))
+            .await,
+            One::Ask(..)
+        ));
+    }
+    #[tokio::test]
     async fn forged_read_and_grep_bindings_are_rejected_at_agent_ingress() {
         let mut actor = plan_actor(None, "http://unused");
         as_build(&mut actor);
@@ -2159,6 +2199,14 @@ mod tests {
             hangs: false,
         }));
         for command in [
+            format!(
+                "less '--log-file={}/config.json' /dev/stdin",
+                tmp.path().display()
+            ),
+            format!("less \\-O{}/config.json /dev/stdin", tmp.path().display()),
+            format!("file '-C' '-m{}/magic'", tmp.path().display()),
+            format!("cat +command {}/config.json", tmp.path().display()),
+            format!("cat {}/config*.json", tmp.path().display()),
             format!("curl -o {}/config.json URL", tmp.path().display()),
             format!("sort -o {}/config.json x", tmp.path().display()),
             format!("rsync x {}/", tmp.path().display()),

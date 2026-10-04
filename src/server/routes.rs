@@ -3,6 +3,8 @@
 //!
 //! Response bodies are FROZEN:
 //! - `GET  /v1/health`        -> `{status:"ok"}`
+//! - `GET /v1/layers?workspace=` -> `{layers:[{layer,status,model,variant,gateway,upstream_id,api,reason}]}`; exactly three lower layers, usable means validated assignment/API, not connectivity.
+//! - `GET /v1/agents?workspace=&session_id=` -> `{default_agent,agents:[{id,description,mode,assignment,effective,override?,warning,inherits_parent}]}`; canonical model identities and sanitized source/variant summaries only.
 //! - `GET  /v1/models?workspace=` -> `{models:[{alias, model, context_window?, enabled?, disabled_reason?, window_source?, stale?, stale_age_secs?, refresh_error?, reported_output?, max_input_tokens?, discrepancy?, variants?, default_variant?, default_variant_unavailable?}], default?}`
 //! - `POST /v1/sessions`      -> `{session_id, root_actor_id:"agent:main", actor_state:"idle"}`
 //!   (422 `{"error", "reason":"no_context_window"}` for a chat alias with no known window)
@@ -128,6 +130,8 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/v1/health", get(health))
         .route("/v1/models", get(list_models))
+        .route("/v1/layers", get(list_layers))
+        .route("/v1/agents", get(list_agents))
         .route("/v1/sessions", get(list_sessions).post(create_session))
         .route("/v1/sessions/{id}", get(get_session).delete(delete_session))
         .route("/v1/sessions/{id}/messages", post(post_message))
@@ -260,6 +264,55 @@ async fn shutdown_signal(state: AppState) {
 
 async fn health() -> Json<HealthBody> {
     Json(HealthBody { status: "ok" })
+}
+
+#[derive(Deserialize)]
+struct AssignmentQuery {
+    workspace: Option<String>,
+    session_id: Option<String>,
+}
+
+async fn list_layers(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<AssignmentQuery>,
+) -> Response {
+    let Some(workspace) = query.workspace else {
+        return error_response(ServerError::MalformedBody(
+            "missing query parameter: workspace".into(),
+        ));
+    };
+    match state
+        .assignment_layers(std::path::Path::new(&workspace))
+        .await
+    {
+        Ok(body) => Json(body).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn list_agents(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<AssignmentQuery>,
+) -> Response {
+    let Some(workspace) = query.workspace else {
+        return error_response(ServerError::MalformedBody(
+            "missing query parameter: workspace".into(),
+        ));
+    };
+    let session = match query.session_id {
+        Some(id) => match id.parse() {
+            Ok(id) => Some(id),
+            Err(_) => return error_response(ServerError::SessionNotFound(id)),
+        },
+        None => None,
+    };
+    match state
+        .assignment_agents(std::path::Path::new(&workspace), session)
+        .await
+    {
+        Ok(body) => Json(body).into_response(),
+        Err(error) => error_response(error),
+    }
 }
 
 async fn create_session(

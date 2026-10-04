@@ -130,6 +130,117 @@ class CatalogTests(unittest.TestCase):
             self.assertIn("conflicting metadata", result.stderr)
             self.assertEqual(before, {p.name: p.read_bytes() for p in d.iterdir()})
 
+    def test_identity_change_requires_explicit_credential(self):
+        for credential in (None, "", "{env:NEW_KEY}", "synthetic-new-key"):
+            with self.subTest(credential_kind=bool(credential)), tempfile.TemporaryDirectory() as tmp:
+                d = Path(tmp)
+                oc = source()
+                if credential is None:
+                    del oc["provider"]["omniroute"]["options"]["apiKey"]
+                else:
+                    oc["provider"]["omniroute"]["options"]["apiKey"] = credential
+                (d / "source.jsonc").write_text(json.dumps(oc))
+                (d / "models.json").write_text(json.dumps({"providers": {
+                    "omniroute": {"base_url": "http://localhost:9999/old-path",
+                                   "api_key_env": "TEST_KEY"}}}))
+                (d / "auth.json").write_text(json.dumps({
+                    "omniroute": {"api_key": "synthetic-old-key"},
+                    "unrelated": {"api_key": "synthetic-unrelated"}}))
+                before = {p.name: p.read_bytes() for p in d.iterdir()}
+                result = self.cli(d)
+                if not credential:
+                    self.assertEqual(result.returncode, 1)
+                    self.assertEqual(before, {p.name: p.read_bytes() for p in d.iterdir()})
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    auth = json.loads((d / "auth.json").read_text())
+                    self.assertEqual(auth["unrelated"], {"api_key": "synthetic-unrelated"})
+                    if credential.startswith("{env:"):
+                        self.assertNotIn("omniroute", auth)
+                    else:
+                        self.assertEqual(auth["omniroute"], {"api_key": credential})
+
+    def test_secret_errors_are_value_free_and_write_free(self):
+        secret = "synthetic-secret"
+        bad_providers = ({"base_url": "http://localhost/v1", "api_key": secret},
+                         {"base_url": f"http://user:{secret}@localhost/v1"},
+                         {"base_url": "http://localhost/v1", "headers": {"Authorization": secret}})
+        for bad in (*bad_providers, None):
+            with self.subTest(case=bad is None), tempfile.TemporaryDirectory() as tmp:
+                d = Path(tmp)
+                oc = source(secret + "{file:x}" if bad is None else "{env:TEST_KEY}")
+                (d / "source.jsonc").write_text(json.dumps(oc))
+                if bad is not None:
+                    (d / "models.json").write_text(json.dumps({"providers": {"retained": bad}}))
+                before = {p.name: p.read_bytes() for p in d.iterdir()}
+                result = self.cli(d)
+                self.assertEqual(result.returncode, 1)
+                self.assertNotIn(secret, result.stdout + result.stderr)
+                self.assertEqual(before, {p.name: p.read_bytes() for p in d.iterdir()})
+
+    def test_refresh_limits_capabilities_and_idempotence(self):
+        oc = source()
+        mid = "combo/gpt-6-astra"
+        name = "omniroute/" + mid
+        oc["provider"]["omniroute"]["models"][mid] = {
+            "limit": {"context": 32000, "output": 1000}, "supports_tools": True, "api": "chat"}
+        p, m, _, _ = importer.convert(oc, True, lambda _: None)
+        m[name]["variants"]["custom"] = {"reasoning_effort": "low"}
+        m[name]["default_variant"] = "custom"
+        old = {"providers": p, "models": m}
+        oc["provider"]["omniroute"]["models"][mid].update({
+            "limit": {"context": 64000, "output": 2000}, "supports_tools": False,
+            "supports_parallel_tool_calls": False, "api": "fim"})
+        p2, m2, _, _ = importer.convert(oc, True, lambda _: None)
+        p2, m2 = importer.merge_catalog(p2, m2, old)
+        self.assertEqual(m2[name]["context_window"], 64000)
+        self.assertEqual(m2[name]["max_output_tokens"], 2000)
+        self.assertFalse(m2[name]["supports_tools"])
+        self.assertFalse(m2[name]["supports_parallel_tool_calls"])
+        self.assertEqual(m2[name]["api"], "fim")
+        self.assertEqual(m2[name]["default_variant"], "custom")
+        self.assertIn("custom", m2[name]["variants"])
+        fresh_p, fresh_m, _, _ = importer.convert(oc, True, lambda _: None)
+        self.assertEqual(importer.merge_catalog(fresh_p, fresh_m, {"providers": p2, "models": m2}),
+                         (p2, m2))
+        fresh_p, fresh_m, _, _ = importer.convert(oc, False, lambda _: None)
+        _, merged = importer.merge_catalog(fresh_p, fresh_m, old)
+        self.assertEqual(merged[name]["context_window"], 32000)
+
+    def test_comment_cannot_join_tokens(self):
+        with self.assertRaises(ValueError):
+            importer.load_json('{"value":1/*comment*/2}', jsonc=True)
+        self.assertEqual(importer.load_json('{"value":1/*comment*/}', jsonc=True), {"value": 1})
+
+    def test_source_matching_dedicated_api_limits_stay_manual(self):
+        oc = source()
+        models = oc["provider"]["omniroute"]["models"]
+        models["typesafe/jev-1.13"] = {"limit": {"context": 90000, "output": 9000}}
+        models["mercury-edit-2"] = {"limit": {"context": 90000, "output": 9000}}
+        p, m, _, _ = importer.convert(oc, True, lambda _: None)
+        old = {"models": {mid: {"provider": "omniroute", "model": mid, "api": api,
+                                 "context_window": window, "max_output_tokens": output}
+                          for mid, api, window, output in (
+                              ("typesafe/jev-1.13", "systemone", 64000, 2048),
+                              ("mercury-edit-2", "fim", 128000, 512))}}
+        _, merged = importer.merge_catalog(p, m, old)
+        for mid, entry in old["models"].items():
+            self.assertEqual(merged["omniroute/" + mid]["context_window"], entry["context_window"])
+            self.assertEqual(merged["omniroute/" + mid]["max_output_tokens"], entry["max_output_tokens"])
+
+    def test_provider_identity_full_url_and_routing(self):
+        base = {"base_url": "http://localhost:9999/v1", "api_key_env": "TEST_KEY"}
+        for field, value in (("base_url", "https://localhost:9999/v1"),
+                             ("base_url", "http://localhost:9998/v1"),
+                             ("base_url", "http://otherhost:9999/v1"),
+                             ("headers", {"X-Destination": "other"}),
+                             ("api_key_env", "OTHER_KEY")):
+            with self.assertRaises(importer.ImportError_):
+                importer.check_provider_changes({"omniroute": {**base, field: value}},
+                                                {"providers": {"omniroute": base}}, {}, set())
+        importer.check_provider_changes({"omniroute": base}, {"providers": {
+            "omniroute": {**base, "base_url": base["base_url"] + "/"}}}, {}, set())
+
 
 if __name__ == "__main__":
     unittest.main()

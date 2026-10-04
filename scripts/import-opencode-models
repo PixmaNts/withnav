@@ -8,6 +8,15 @@ Existing catalog metadata and unmanaged providers are preserved. Literal keys
 go to auth.json (0600), never to models.json. OmniRoute combo models receive
 low/medium/high reasoning_effort variants; manual variants take precedence.
 
+Refresh contract: matching source ids own provider/model identity and supplied
+api, supports_tools, supports_parallel_tool_calls (or OpenCode toolcall), and
+reasoning_history fields. With --with-windows, supplied limit.context/input/output
+refresh context_window/max_input_tokens/max_output_tokens. Otherwise existing
+windows remain manual. Missing source fields retain existing values, except
+supports_tools/parallel defaults remain source-generated True. Variants and
+default_variant always remain manual; unmanaged entries remain unchanged.
+Existing fim/systemone token limits remain manual even for matching source ids.
+
 What it imports:
   - Only OpenAI-compatible providers (`npm` is `@ai-sdk/openai-compatible` or
     `@ai-sdk/openai`). Any other provider is skipped with a warning.
@@ -65,14 +74,45 @@ def load_json(text, jsonc=False):
                       object_pairs_hook=unique_object)
 
 
+def validate_provider(pname, provider):
+    if not isinstance(provider, dict) or not isinstance(provider.get("base_url"), str):
+        raise ImportError_("catalog provider requires an object and base_url string")
+
+    def check_fields(fields):
+        for field, value in fields.items():
+            if field != "api_key_env" and KEYLIKE.search(field):
+                raise ImportError_("catalog provider contains an inline credential field")
+            if isinstance(value, dict):
+                check_fields(value)
+    check_fields(provider)
+    return {**provider, "base_url": check_base_url(pname, provider["base_url"])}
+
+
+def provider_identity(provider):
+    # Conservatively include unknown routing fields, headers and env selection.
+    return {key: value for key, value in provider.items()
+            if key not in ("catalog_format", "connect_timeout_ms", "request_timeout_ms")}
+
+
+def check_provider_changes(imported, existing, keys, env_providers):
+    for pname, old in existing.get("providers", {}).items():
+        old = validate_provider(pname, old)
+        if pname in imported and provider_identity(old) != provider_identity(imported[pname]):
+            if pname not in keys and pname not in env_providers:
+                raise ImportError_("provider identity changed; an explicit literal apiKey "
+                                   "or {env:NAME} reference is required")
+
+
 def merge_catalog(providers, models, existing):
-    """Normalize old models, refusing ambiguous metadata; manual settings win."""
+    """Normalize aliases and apply the source-managed refresh contract above."""
     if not isinstance(existing, dict):
         raise ImportError_("existing models.json is not a JSON object")
     old_providers = existing.get("providers", {})
     old_models = existing.get("models", {})
     if not isinstance(old_providers, dict) or not isinstance(old_models, dict):
         raise ImportError_("existing catalog providers/models must be objects")
+    old_providers = {name: validate_provider(name, entry)
+                     for name, entry in old_providers.items()}
     preserved = {}
     for entry in old_models.values():
         if not isinstance(entry, dict):
@@ -90,6 +130,14 @@ def merge_catalog(providers, models, existing):
     for name, manual in preserved.items():
         generated = models.get(name, {})
         entry = {**generated, **manual}
+        for field in ("provider", "model", "api", "supports_tools",
+                      "supports_parallel_tool_calls", "reasoning_history",
+                      "context_window", "max_input_tokens", "max_output_tokens"):
+            if field in generated:
+                if (manual.get("api") in ("systemone", "fim")
+                        and field in ("context_window", "max_input_tokens", "max_output_tokens")):
+                    continue  # Dedicated API limits are manual, not chat catalog limits.
+                entry[field] = generated[field]
         if "variants" in generated or "variants" in manual:
             variants = manual.get("variants", {})
             if not isinstance(variants, dict):
@@ -131,7 +179,7 @@ def strip_jsonc(text: str) -> str:
     """Drop comments and trailing commas, outside strings only.
 
     >>> strip_jsonc('{"a": 1, // note\\n "b": [1, 2,], /* x */ }')
-    '{"a": 1, \\n "b": [1, 2]  }'
+    '{"a": 1,  \\n "b": [1, 2]   }'
     >>> strip_jsonc('{"x": "keep,]", "y": "//no", "z": "/*no*/",}')
     '{"x": "keep,]", "y": "//no", "z": "/*no*/"}'
     >>> strip_jsonc('{"q": "a\\\\"b,}"}')
@@ -151,10 +199,12 @@ def strip_jsonc(text: str) -> str:
             in_str = True
             out.append(c)
         elif text.startswith("//", i):
+            out.append(" ")
             while i < len(text) and text[i] != "\n":
                 i += 1
             continue
         elif text.startswith("/*", i):
+            out.append(" ")
             end = text.find("*/", i + 2)
             if end < 0:
                 raise ImportError_("unterminated /* comment in the OpenCode config")
@@ -182,7 +232,7 @@ def check_base_url(pname: str, base: str) -> str:
     for name, _ in parse_qsl(parts.query, keep_blank_values=True):
         if KEYLIKE.search(name):
             raise ImportError_(
-                f"provider '{pname}': baseURL has a key-like query parameter '{name}'; "
+                f"provider '{pname}': baseURL has a key-like query parameter; "
                 "Navai would store it in models.json")
     return base.rstrip("/")
 
@@ -198,7 +248,7 @@ def read_api_key(pname: str, raw):
         return None, m.group(1)
     if "{" in raw and "}" in raw and re.search(r"\{[a-z]+:", raw):
         raise ImportError_(
-            f"provider '{pname}': apiKey is the reference {raw.split(':')[0]}:...}}; only "
+            f"provider '{pname}': apiKey contains an unsupported reference; only "
             "{env:NAME} is supported. Put the key in an environment variable, or write the "
             "literal key.")
     return raw, None
@@ -248,8 +298,17 @@ def convert(oc: dict, with_windows: bool, warn):
                 raise ImportError_(f"model '{name}': limit must be an object")
             entry = {"provider": pname, "model": mid, "supports_tools": True,
                      "supports_parallel_tool_calls": True}
-            if with_windows and lim.get("context"):
-                entry["context_window"] = int(lim["context"])
+            for field in ("api", "supports_tools", "supports_parallel_tool_calls", "reasoning_history"):
+                if field in m:
+                    entry[field] = m[field]
+            if "toolcall" in m and "supports_tools" not in m:
+                entry["supports_tools"] = m["toolcall"]
+            if with_windows:
+                for source, target in (("context", "context_window"),
+                                       ("input", "max_input_tokens"),
+                                       ("output", "max_output_tokens")):
+                    if lim.get(source):
+                        entry[target] = int(lim[source])
             models[name] = entry
     if "omniroute" not in providers:
         raise ImportError_("no usable omniroute provider in the OpenCode config")
@@ -429,8 +488,11 @@ def main() -> int:
         d = Path(args.config_dir)
         catalog_path = d / "models.json"
         if catalog_path.exists():
-            providers, models = merge_catalog(providers, models,
-                                               load_json(catalog_path.read_text()))
+            existing = load_json(catalog_path.read_text())
+            # Validate shape and retained providers before checking identity/auth.
+            imported = providers
+            providers, models = merge_catalog(providers, models, existing)
+            check_provider_changes(imported, existing, keys, env_providers)
         auth_path = d / "auth.json"
         auth = {}
         if auth_path.exists():

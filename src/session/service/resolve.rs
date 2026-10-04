@@ -490,6 +490,7 @@ impl Service {
                             Some(target.resolution.bounds.context_window);
                         resolved.model.max_input_tokens = target.resolution.bounds.max_input_tokens;
                         guard.execution = Some(Arc::new(super::EffectiveExecution {
+                            automatic_permission_review: execution.automatic_permission_review,
                             resolved,
                             api_key: target.api_key.clone(),
                         }));

@@ -7,6 +7,14 @@ requests land in `develop`.
 ### Added
 
 - **Terminal client**: `/skills` opens a searchable list of this conversation's skills. Choose one to fill `/skill <name>`, add your request, and send to load its instructions before the agent starts thinking.
+- Select and copy conversation text with a mouse drag, or double-click a word; wrapping,
+  sidebar and tool labels stay out of the clipboard. The wheel scrolls the conversation and
+  dragging beyond its edge scrolls the selection. In transcript focus, `y` copies the whole
+  message or tool output; `ctrl+shift+c` copies selected text. Clipboard writes use OSC 52
+  (including over SSH); `shift+drag` keeps native terminal selection reachable.
+- Clipboard copying requires terminal OSC 52 support; under tmux use
+  `set -g set-clipboard on`. In transcript focus, `y` portably copies the selection
+  or focused block; `ctrl+shift+c` is best-effort and plain `ctrl+c` remains stop/quit.
 
 ### Fixed
 
@@ -15,6 +23,13 @@ requests land in `develop`.
 ## [0.4.1] - 2026-10-04
 
 Fixes from daily use of 0.4.0, mostly in the terminal client.
+
+### Changed
+
+- Per-call permission review replaces “allow folder” for bash, write and edit. Saved bash/file
+  grants from 0.4.1 are ignored for execution; fetch keeps origin grants.
+- `permissions.automatic_review` defaults to true. Set it to false to ask for every bash, write
+  and edit call; invalid values disable automatic approval with a diagnostic.
 
 ### Changed
 

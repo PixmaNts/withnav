@@ -4,7 +4,7 @@ use std::sync::Once;
 
 use crossterm::{
     cursor::Show,
-    event::{DisableBracketedPaste, EnableBracketedPaste},
+    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -42,7 +42,7 @@ impl TerminalGuard {
     fn setup() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
         enable_raw_mode()?;
         let mut out = io::stdout();
-        execute!(out, EnterAlternateScreen, EnableBracketedPaste)?;
+        setup_modes(&mut out)?;
         Terminal::new(CrosstermBackend::new(out))
     }
 
@@ -73,12 +73,26 @@ impl Drop for TerminalGuard {
 /// the panic hook, where nothing can be done about a failure.
 fn restore() {
     let _ = disable_raw_mode();
-    let _ = execute!(
-        io::stdout(),
+    let _ = restore_modes(&mut io::stdout());
+}
+
+fn setup_modes(out: &mut impl io::Write) -> io::Result<()> {
+    execute!(
+        out,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture
+    )
+}
+
+fn restore_modes(out: &mut impl io::Write) -> io::Result<()> {
+    execute!(
+        out,
+        DisableMouseCapture,
         DisableBracketedPaste,
         LeaveAlternateScreen,
         Show
-    );
+    )
 }
 
 /// Restores the terminal before the previous hook prints its message, so the
@@ -92,4 +106,18 @@ fn install_panic_hook() {
             previous(info);
         }));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn mouse_modes_are_balanced() {
+        let mut start = Vec::new();
+        let mut end = Vec::new();
+        setup_modes(&mut start).unwrap();
+        restore_modes(&mut end).unwrap();
+        assert!(String::from_utf8(start).unwrap().contains("\x1b[?1006h"));
+        assert!(String::from_utf8(end).unwrap().contains("\x1b[?1006l"));
+    }
 }

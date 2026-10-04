@@ -45,13 +45,21 @@ fn write_call(path: &Path) -> Vec<u8> {
 }
 
 fn verdict(choice: &str) -> Vec<u8> {
-    let body = json!({"answers": {"role_conformance": {
+    let mut value = json!({"answers": {"role_conformance": {
         "type": "choice",
         "choice": choice,
         "probabilities": {"conforms": 0.1, "violates": 0.1, "uncertain": 0.1},
         "confidence": 0.9,
-    }}})
-    .to_string();
+    }}});
+    for (name, choice) in [
+        ("call_effect", "read_write"),
+        ("call_scope", "inside"),
+        ("call_risk", "low"),
+    ] {
+        value["answers"][name] =
+            json!({"type":"choice", "choice":choice, "probabilities":{}, "confidence":1.0});
+    }
+    let body = value.to_string();
     format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
@@ -72,7 +80,7 @@ async fn provider(chat: Vec<Vec<u8>>, jev: Vec<Vec<u8>>) -> CapturingProvider {
             n.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         };
         if request.starts_with("POST /v1/systemone") || request.contains("/systemone ") {
-            jev[next(&jev_n)].clone()
+            { let mut response = jev[next(&jev_n)].clone(); if !request.contains("role_conformance") { let text = String::from_utf8(response).unwrap(); let body = text.split("\r\n\r\n").nth(1).unwrap(); let mut value: Value = serde_json::from_str(body).unwrap(); value["answers"].as_object_mut().unwrap().remove("role_conformance"); let body = value.to_string(); response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes(); } response }
         } else {
             chat[next(&chat_n)].clone()
         }
@@ -153,7 +161,7 @@ async fn wake(state: &AppState, id: ulid::Ulid, text: &str) {
 fn task_asked(provider: &CapturingProvider, n: usize) -> Value {
     let body: Value = serde_json::from_str(&system_one_requests(provider)[n]).unwrap();
     let state: Value = serde_json::from_str(body["state"].as_str().unwrap()).unwrap();
-    state["untrusted_evidence"]["task"].clone()
+    state["untrusted_evidence"]["driver_task"].clone()
 }
 
 async fn plan_session(state: &AppState, env: &Env) -> ulid::Ulid {
@@ -177,7 +185,7 @@ fn system_one_requests(provider: &CapturingProvider) -> Vec<String> {
 async fn plan_writes_notes_md_without_a_request() {
     let env = env();
     let target = env.ws.join("notes.md");
-    let provider = provider(vec![write_call(&target), done()], vec![]).await;
+    let provider = provider(vec![write_call(&target), done()], vec![verdict("conforms")]).await;
     let state = state(&env, &provider, true);
     let id = plan_session(&state, &env).await;
     say(&state, id, "write the notes").await;
@@ -226,8 +234,11 @@ async fn a_conforming_exception_runs_and_is_recorded() {
         "the role prompt"
     );
     let evidence = &described["untrusted_evidence"];
-    assert_eq!(evidence["task"], "write the stub");
-    assert_eq!(evidence["resolved_target"], target.to_str().unwrap());
+    assert_eq!(evidence["driver_task"], "write the stub");
+    assert_eq!(
+        described["host_facts"]["destination"],
+        target.to_str().unwrap()
+    );
     assert_eq!(
         evidence["arguments"],
         json!({"path": target, "content": "x"}),
@@ -236,13 +247,17 @@ async fn a_conforming_exception_runs_and_is_recorded() {
     assert!(body["questions"]["role_conformance"]["instructions"]
         .as_str()
         .unwrap()
-        .contains("UNTRUSTED"));
+        .contains("untrusted"));
 
     let post = events(&state, id, "tool.post_call").await;
     assert_eq!(post.len(), 1);
     assert_eq!(
         post[0].payload["metadata"]["guard"],
-        json!({"by": "jev", "verdict": "conforms", "role": "plan"})
+        json!({"by":"jev","verdict":"conforms","role":"plan"})
+    );
+    assert_eq!(
+        post[0].payload["metadata"]["permission_gate"],
+        json!({"policy_version":1,"source":"jev"})
     );
 }
 
@@ -252,10 +267,10 @@ async fn a_conforming_exception_runs_and_is_recorded() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn violates_uncertain_and_no_jev_all_ask_the_driver() {
     for (jev, with_jev, reason) in [
-        (vec![verdict("violates")], true, "outside the plan role"),
-        (vec![verdict("uncertain")], true, "could not tell"),
-        (vec![verdict("perhaps")], true, "cannot be used"),
-        (vec![], false, "Jev is not available"),
+        (vec![verdict("violates")], true, "uncertain"),
+        (vec![verdict("uncertain")], true, "uncertain"),
+        (vec![verdict("perhaps")], true, "malformed"),
+        (vec![], false, "Jev unavailable"),
     ] {
         let env = env();
         let target = env.ws.join("main.rs");
@@ -299,14 +314,14 @@ async fn build_is_not_guarded() {
     let env = env();
     let target = env.ws.join("main.rs");
     let provider = provider(vec![write_call(&target), done()], vec![]).await;
-    let state = state(&env, &provider, true);
+    let state = state(&env, &provider, false);
     let id = state.create_session(&env.ws, None, None).await.unwrap();
     say(&state, id, "write the stub").await;
     let requested = wait_events(&state, id, "permission.requested", 1).await;
     assert!(requested[0].payload["reason"]
         .as_str()
         .unwrap()
-        .starts_with("`write` acts in"));
+        .contains("Jev unavailable"));
     assert!(system_one_requests(&provider).is_empty());
 }
 

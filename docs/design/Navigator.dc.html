@@ -122,11 +122,11 @@
   <sc-if value="{{ modelsOpen }}" hint-placeholder-val="{{ false }}">
   <div style="position:absolute;inset:0;background:rgba(0,0,0,.45);display:flex;justify-content:center;padding-top:70px" onClick="{{ toSession }}">
     <div onClick="{{ stop }}" style="width:700px;height:fit-content;background:var(--pn);border:1px solid var(--ac);border-radius:6px;padding:10px 0">
-      <div style="padding:0 14px 8px;display:flex;gap:8px;align-items:center"><span style="color:var(--ac)">select model</span><span style="color:var(--mu)">for</span><sc-for list="{{ layers }}" as="l" hint-placeholder-count="4"><button onClick="{{ l.click }}" style="background:{{ l.bg }};color:{{ l.fg }};border:1px solid {{ l.bd }};border-radius:3px;padding:0 6px;font:inherit;cursor:pointer">{{ l.label }}</button></sc-for></div>
+      <div style="padding:0 14px 8px;display:flex;gap:8px;align-items:center"><span style="color:var(--ac)">model for this session</span><span style="color:var(--mu)">agent</span><sc-for list="{{ layers }}" as="l" hint-placeholder-count="4"><button onClick="{{ l.click }}" style="background:{{ l.bg }};color:{{ l.fg }};border:1px solid {{ l.bd }};border-radius:3px;padding:0 6px;font:inherit;cursor:pointer">{{ l.label }}</button></sc-for></div>
       <div style="padding:6px 14px;border-top:1px solid var(--bd);border-bottom:1px solid var(--bd);margin-bottom:4px"><span style="color:var(--ac)">❯</span> <span style="color:var(--mu)">filter models…</span></div>
-      <sc-for list="{{ models }}" as="m" hint-placeholder-count="5"><div onClick="{{ m.click }}" style="padding:4px 14px;background:{{ m.bg }};display:grid;grid-template-columns:16px 260px 84px 44px minmax(0,1fr);gap:8px;cursor:pointer"><span style="color:var(--ac)">{{ m.mark }}</span><span>{{ m.name }}</span><span style="color:var(--mu)">{{ m.prov }}</span><span style="color:var(--mu)">{{ m.ctx }}</span><span style="color:var(--mu)">{{ m.aliases }}</span></div></sc-for>
+      <sc-for list="{{ models }}" as="m" hint-placeholder-count="6"><sc-if value="{{ m.isGw }}" hint-placeholder-val="{{ false }}"><div onClick="{{ m.click }}" style="padding:3px 14px;cursor:pointer">{{ m.caret }} {{ m.label }} <span style="color:var(--mu)">· {{ m.count }} models</span></div></sc-if><sc-if value="{{ m.isPv }}" hint-placeholder-val="{{ false }}"><div onClick="{{ m.click }}" style="padding:2px 14px 2px 30px;cursor:pointer;color:var(--mu)">{{ m.caret }} {{ m.label }}</div></sc-if><sc-if value="{{ m.isM }}" hint-placeholder-val="{{ true }}"><div onClick="{{ m.click }}" style="padding:3px 14px 3px 48px;background:{{ m.bg }};display:grid;grid-template-columns:16px 220px 44px minmax(0,1fr);gap:8px;cursor:pointer"><span style="color:var(--ac)">{{ m.mark }}</span><span>{{ m.id }}</span><span style="color:var(--mu)">{{ m.ctx }}</span><span style="color:var(--mu)">{{ m.used }}</span></div></sc-if></sc-for>
       <div style="padding:10px 14px 4px;border-top:1px solid var(--bd);margin-top:6px;display:flex;gap:8px;align-items:center"><span style="color:var(--mu)">variant</span><sc-for list="{{ variants }}" as="v" hint-placeholder-count="4"><button onClick="{{ v.click }}" style="background:{{ v.bg }};color:{{ v.fg }};border:1px solid {{ v.bd }};border-radius:3px;padding:0 8px;font:inherit;cursor:pointer">{{ v.label }}</button></sc-for><span style="color:var(--mu)">{{ variantDesc }}</span></div>
-      <div style="padding:6px 14px 0;color:var(--mu)">↑↓ model  ←→ variant  tab layer  enter apply  esc close</div>
+      <div style="padding:6px 14px 0;color:var(--mu)">↑↓ model  space fold  ←→ variant  tab agent  enter apply · session only  esc close</div>
     </div>
   </div>
   </sc-if>
@@ -208,9 +208,9 @@
   <sc-if value="{{ modelsOpen }}" hint-placeholder-val="{{ false }}">
   <div onClick="{{ toSession }}" style="position:absolute;inset:0;z-index:5">
     <div onClick="{{ stop }}" style="position:absolute;top:8px;left:50%;transform:translateX(-50%);width:620px;background:var(--pn);border:1px solid var(--bd);border-radius:6px;box-shadow:0 10px 30px rgba(0,0,0,.35);padding:6px;font-size:12.5px">
-      <div style="display:flex;gap:6px;align-items:center;padding:2px 4px 6px"><span style="color:var(--mu)">Navigator: Select Model for</span><sc-for list="{{ layers }}" as="l" hint-placeholder-count="4"><button onClick="{{ l.click }}" style="background:{{ l.bg }};color:{{ l.fg }};border:1px solid {{ l.bd }};border-radius:3px;padding:0 6px;font-size:12px;cursor:pointer">{{ l.label }}</button></sc-for></div>
+      <div style="display:flex;gap:6px;align-items:center;padding:2px 4px 6px"><span style="color:var(--mu)">Navai: Session Model for</span><sc-for list="{{ layers }}" as="l" hint-placeholder-count="4"><button onClick="{{ l.click }}" style="background:{{ l.bg }};color:{{ l.fg }};border:1px solid {{ l.bd }};border-radius:3px;padding:0 6px;font-size:12px;cursor:pointer">{{ l.label }}</button></sc-for></div>
       <div style="border:1px solid var(--ac);border-radius:4px;padding:5px 8px;background:var(--bg);margin-bottom:4px;color:var(--mu)">Filter models</div>
-      <sc-for list="{{ models }}" as="m" hint-placeholder-count="5"><div onClick="{{ m.click }}" style="display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:6px;padding:5px 8px;border-radius:4px;background:{{ m.bg }};cursor:pointer"><i class="ph ph-check" style="opacity:{{ m.op }};color:var(--ac)"></i><div><div class="mono">{{ m.name }}</div><div style="color:var(--mu);font-size:11.5px">{{ m.prov }} · {{ m.ctx }} · {{ m.caps }}</div></div><span style="color:var(--mu);font-size:11.5px">{{ m.aliases }}</span></div></sc-for>
+      <sc-for list="{{ models }}" as="m" hint-placeholder-count="6"><sc-if value="{{ m.isGw }}" hint-placeholder-val="{{ false }}"><div onClick="{{ m.click }}" style="display:flex;gap:6px;align-items:center;padding:6px 8px 3px;cursor:pointer;color:var(--mu);font-size:11.5px;border-top:1px solid var(--bd)"><i class="{{ m.icon }}"></i><span class="mono">{{ m.label }}</span><span style="margin-left:auto">{{ m.count }} models</span></div></sc-if><sc-if value="{{ m.isPv }}" hint-placeholder-val="{{ false }}"><div onClick="{{ m.click }}" style="display:flex;gap:6px;align-items:center;padding:3px 8px 3px 22px;cursor:pointer;color:var(--mu);font-size:11.5px"><i class="{{ m.icon }}"></i><span class="mono">{{ m.label }}</span></div></sc-if><sc-if value="{{ m.isM }}" hint-placeholder-val="{{ true }}"><div onClick="{{ m.click }}" style="display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:6px;padding:4px 8px 4px 36px;border-radius:4px;background:{{ m.bg }};cursor:pointer"><i class="ph ph-check" style="opacity:{{ m.op }};color:var(--ac)"></i><div><div class="mono">{{ m.id }}</div><div style="color:var(--mu);font-size:11px" class="mono">{{ m.name }} · {{ m.ctx }}</div></div><span style="color:var(--mu);font-size:11.5px">{{ m.used }}</span></div></sc-if></sc-for>
       <div style="display:flex;gap:6px;align-items:center;padding:8px 8px 4px;border-top:1px solid var(--bd);margin-top:4px"><span style="color:var(--mu)">Variant</span><sc-for list="{{ variants }}" as="v" hint-placeholder-count="4"><button onClick="{{ v.click }}" style="background:{{ v.bg }};color:{{ v.fg }};border:1px solid {{ v.bd }};border-radius:3px;padding:1px 8px;font-size:12px;cursor:pointer">{{ v.label }}</button></sc-for><span style="color:var(--mu);font-size:11.5px;margin-left:4px">{{ variantDesc }}</span></div>
     </div>
   </div>
@@ -280,9 +280,9 @@
       <div onClick="{{ stop }}" style="position:absolute;left:28px;bottom:70px;width:580px;background:var(--pn);border:1px solid var(--bd);border-radius:8px;box-shadow:0 14px 40px rgba(0,0,0,.35);overflow:hidden">
         <div style="display:flex;border-bottom:1px solid var(--bd);padding:0 6px"><sc-for list="{{ layers }}" as="l" hint-placeholder-count="4"><button onClick="{{ l.click }}" style="background:none;border:0;border-bottom:2px solid {{ l.bd }};color:{{ l.fg }};padding:8px 10px 6px;text-align:left;cursor:pointer;display:flex;flex-direction:column;gap:1px"><span style="font-size:12.5px;text-transform:capitalize">{{ l.label }}</span><span class="mono" style="font-size:10.5px;color:var(--mu)">{{ l.short }}</span></button></sc-for></div>
         <div style="padding:10px 12px 6px"><div style="border:1px solid var(--bd);background:var(--bg);border-radius:6px;padding:6px 10px;color:var(--mu);display:flex;gap:6px;align-items:center"><i class="ph ph-magnifying-glass"></i>Search models</div></div>
-        <div style="padding:0 6px 6px"><sc-for list="{{ models }}" as="m" hint-placeholder-count="5"><div onClick="{{ m.click }}" style="display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:8px;align-items:center;padding:6px 8px;border-radius:6px;background:{{ m.bg }};cursor:pointer"><span style="color:var(--ac)">{{ m.mark }}</span><div><div class="mono" style="font-size:12.5px">{{ m.name }}</div><div style="color:var(--mu);font-size:11.5px">{{ m.prov }} · {{ m.ctx }} context · {{ m.caps }}</div></div><span style="color:var(--mu);font-size:11.5px">{{ m.aliases }}</span></div></sc-for></div>
-        <div style="border-top:1px solid var(--bd);padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div style="display:flex;gap:6px;align-items:center"><span style="color:var(--mu);font-size:11px;width:92px">VARIANT · thinking</span><sc-for list="{{ variants }}" as="v" hint-placeholder-count="4"><button onClick="{{ v.click }}" style="background:{{ v.bg }};color:{{ v.fg }};border:1px solid {{ v.bd }};border-radius:5px;padding:3px 10px;font-size:12px;cursor:pointer">{{ v.label }}</button></sc-for></div><div style="color:var(--mu);font-size:11.5px;padding-left:98px">{{ variantDesc }}</div></div>
-        <div style="border-top:1px solid var(--bd);padding:7px 12px;color:var(--mu);font-size:11.5px" class="mono">{{ layerName }}</div>
+        <div style="padding:0 6px 6px;max-height:300px;overflow:auto"><sc-for list="{{ models }}" as="m" hint-placeholder-count="6"><sc-if value="{{ m.isGw }}" hint-placeholder-val="{{ false }}"><div onClick="{{ m.click }}" style="display:flex;gap:7px;align-items:center;padding:7px 8px 4px;cursor:pointer;font-weight:500;font-size:12.5px"><i class="{{ m.icon }}" style="color:var(--mu);font-size:11px"></i><i class="ph ph-plugs" style="color:var(--mu)"></i><span class="mono">{{ m.label }}</span><span style="margin-left:auto;color:var(--mu);font-size:11.5px;font-weight:400">{{ m.count }} models</span></div></sc-if><sc-if value="{{ m.isPv }}" hint-placeholder-val="{{ false }}"><div onClick="{{ m.click }}" style="display:flex;gap:7px;align-items:center;padding:4px 8px 4px 26px;cursor:pointer;color:var(--mu);font-size:12px"><i class="{{ m.icon }}" style="font-size:10px"></i><span class="mono">{{ m.label }}</span><span style="margin-left:auto;font-size:11px">{{ m.count }}</span></div></sc-if><sc-if value="{{ m.isM }}" hint-placeholder-val="{{ true }}"><div onClick="{{ m.click }}" style="display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:8px;align-items:center;padding:5px 8px 5px 44px;border-radius:6px;background:{{ m.bg }};cursor:pointer"><span style="color:var(--ac)">{{ m.mark }}</span><div><div class="mono" style="font-size:12.5px">{{ m.id }}</div><div class="mono" style="color:var(--mu);font-size:11px">{{ m.name }} · {{ m.ctx }} · {{ m.caps }}</div></div><span style="color:var(--mu);font-size:11.5px">{{ m.used }}</span></div></sc-if></sc-for></div>
+        <div style="border-top:1px solid var(--bd);padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div style="display:flex;gap:6px;align-items:center"><span style="color:var(--mu);font-size:11px;width:92px">VARIANT</span><sc-for list="{{ variants }}" as="v" hint-placeholder-count="4"><button onClick="{{ v.click }}" style="background:{{ v.bg }};color:{{ v.fg }};border:1px solid {{ v.bd }};border-radius:5px;padding:3px 10px;font-size:12px;cursor:pointer">{{ v.label }}</button></sc-for></div><div style="color:var(--mu);font-size:11.5px;padding-left:98px">{{ variantDesc }}</div></div>
+        <div style="border-top:1px solid var(--bd);padding:7px 12px;color:var(--mu);font-size:11.5px;display:flex;gap:8px;align-items:center"><span class="mono">{{ layerName }}</span><button onClick="{{ resetOv }}" style="margin-left:auto;display:{{ ovDisp }};background:none;border:1px solid var(--bd);color:var(--at);border-radius:5px;padding:2px 8px;font-size:11.5px;cursor:pointer">Back to config</button></div>
       </div>
     </div>
     </sc-if>
@@ -354,12 +354,12 @@
         <div style="border:1px solid var(--bd);border-radius:6px;padding:7px 10px;display:flex;gap:8px"><span style="color:var(--or)">●</span>plugin:notify<span style="margin-left:auto;color:var(--mu)">hook: session.idle</span></div>
       </sc-if>
       <sc-if value="{{ tabConfig }}" hint-placeholder-val="{{ false }}">
-        <div style="color:var(--mu);font-size:11px;margin-bottom:5px">LAYERS · models.json</div>
+        <div style="color:var(--mu);font-size:11px;margin-bottom:5px">LAYERS · config.json</div>
         <div style="display:flex;flex-direction:column;gap:5px;margin-bottom:14px">
           <div style="border:1px solid var(--bd);border-radius:5px;padding:5px 8px;display:flex"><span>Reflex</span><span class="mono" style="margin-left:auto;color:var(--mu)">{{ mReflex }}</span></div>
           <div style="border:1px solid var(--bd);border-radius:5px;padding:5px 8px;display:flex"><span>Instinct</span><span class="mono" style="margin-left:auto;color:var(--mu)">{{ mInstinct }}</span></div>
           <div style="border:1px solid var(--bd);border-radius:5px;padding:5px 8px;display:flex"><span>Metacognition</span><span class="mono" style="margin-left:auto;color:var(--mu)">{{ mMeta }}</span></div>
-          <div style="border:1px solid var(--bd);border-radius:5px;padding:5px 8px;display:flex"><span>Cognition · {{ modeName }}</span><span class="mono" style="margin-left:auto;color:var(--mu)">{{ cogModel }} · {{ cogVariant }}</span></div></div>
+          <div style="border:1px solid var(--bd);border-radius:5px;padding:5px 8px;display:flex"><span>Cognition · {{ modeName }}</span><span class="mono" style="margin-left:auto;color:var(--mu)">{{ cfgCog }}</span></div></div>
         <div style="color:var(--mu);font-size:11px;margin-bottom:5px">TOOL PERMISSIONS</div>
         <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:14px"><tbody>
           <tr><td style="padding:5px 0" class="mono">read · grep</td><td style="color:var(--gr);text-align:right">allow</td></tr>
@@ -420,7 +420,7 @@
 <script type="text/x-dc" data-dc-script>
 class Component extends DCLogic {
   state = { s: 'tui', th: 'ayuDark', mode: 'build', perm: 'pending', verdict: 'pending', tab: 'intent', scr: 'session', layer: 'cognition', tuiTab: 1, conv: 'refactor-parser', ws: 'ra', sess: 'refactor-parser', pipeTrig: 'edit',
-    assign: { build: { m: 'opus', v: 'high' }, plan: { m: 'glm', v: 'high' }, metacognition: { m: 'combo', v: 'low' }, instinct: { m: 'jev', v: null }, reflex: { m: 'mercury', v: null } } };
+    mcol: {}, assign: { build: { m: 'opus', v: 'high' }, plan: { m: 'glm', v: 'high' }, metacognition: { m: 'combo', v: 'low' }, instinct: { m: 'jev', v: null }, reflex: { m: 'mercury', v: null } } };
   navExtra(st, set) {
     const tint = 'color-mix(in srgb,var(--ac) 16%,transparent)';
     const go = (scr) => () => this.setState({ scr });
@@ -429,26 +429,41 @@ class Component extends DCLogic {
     if (st.s !== 'vsc') sl.push(['pipeline', 'Pipeline editor']);
     const screens = sl.map(([k, label]) => { const on = st.scr === k; return { label, click: go(k), bg: on ? tint : 'transparent', fg: on ? 'var(--tx)' : 'var(--mu)', bd: on ? 'var(--ac)' : 'var(--bd)' }; });
     const M = [
-      { k: 'opus', name: 'cc/claude-opus-5-5', prov: 'omniroute', ctx: '200k', caps: 'tools · parallel · thinking', think: true, api: 'chat' },
-      { k: 'glm', name: 'glm-5.3', prov: 'omniroute', ctx: '200k', caps: 'tools · parallel · thinking', think: true, api: 'chat' },
-      { k: 'luna', name: 'gpt-6-luna', prov: 'omniroute', ctx: '400k', caps: 'tools · parallel · thinking', think: true, api: 'chat' },
-      { k: 'dsflash', name: 'opencode-go/deepseek-v4-flash', prov: 'omniroute', ctx: '128k', caps: 'tools · parallel · thinking', think: true, api: 'chat' },
-      { k: 'combo', name: 'combo/deepseek-v4-flash', prov: 'omniroute', ctx: '128k', caps: 'tools · thinking', think: true, api: 'chat' },
-      { k: 'jev', name: 'typesafe/jev-1.13', prov: 'omniroute', ctx: '64k', caps: 'systemone · typed answers', think: false, api: 'systemone' },
-      { k: 'mercury', name: 'mercury-edit-2', prov: 'inception', ctx: '128k', caps: 'fim · 512 out', think: false, api: 'fim' }
-    ];
+      { k: 'opus', gw: 'omniroute', pv: 'cc', id: 'claude-opus-5-5', ctx: '200k', caps: 'tools · parallel', vars: ['high', 'low'], api: 'chat' },
+      { k: 'glm', gw: 'omniroute', pv: 'zai', id: 'glm-5.3', ctx: '200k', caps: 'tools · parallel', vars: ['high', 'low'], api: 'chat' },
+      { k: 'luna', gw: 'omniroute', pv: 'openai', id: 'gpt-6-luna', ctx: '400k', caps: 'tools · parallel', vars: ['low', 'medium', 'high'], api: 'chat' },
+      { k: 'astra', gw: 'omniroute', pv: 'openai', id: 'gpt-6-astra', ctx: '400k', caps: 'tools · parallel', vars: ['medium', 'high', 'xhigh'], api: 'chat' },
+      { k: 'dsflash', gw: 'omniroute', pv: 'opencode-go', id: 'deepseek-v4-flash', ctx: '128k', caps: 'tools · parallel', vars: ['low', 'high'], api: 'chat' },
+      { k: 'combo', gw: 'omniroute', pv: 'combo', id: 'deepseek-v4-flash', ctx: '128k', caps: 'tools', vars: ['low', 'high'], api: 'chat' },
+      { k: 'jev', gw: 'omniroute', pv: 'typesafe', id: 'jev-1.13', ctx: '64k', caps: 'typed answers', vars: [], api: 'systemone' },
+      { k: 'mercury', gw: 'inception', pv: '', id: 'mercury-edit-2', ctx: '128k', caps: 'fim · 512 out', vars: [], api: 'fim' }
+    ].map((m) => ({ ...m, name: m.gw + '/' + (m.pv ? m.pv + '/' : '') + m.id }));
     const byK = Object.fromEntries(M.map((m) => [m.k, m]));
-    const A = st.assign, L = st.layer, K = L === 'cognition' ? st.mode : L, cur = A[K], curM = byK[cur.m];
-    const LAPI = { cognition: 'chat', metacognition: 'chat', instinct: 'systemone', reflex: 'fim' };
-    const keyLabel = (k) => k === 'build' || k === 'plan' ? 'cognition · ' + k : k;
-    const layers = ['cognition', 'metacognition', 'instinct', 'reflex'].map((k) => { const on = k === L; const kk = k === 'cognition' ? st.mode : k; const m = byK[A[kk].m]; return { label: k === 'cognition' ? 'cognition · ' + st.mode : k, short: m.name.split('/').pop() + (A[kk].v ? ' · ' + A[kk].v : ''), click: set({ layer: k }), fg: on ? 'var(--tx)' : 'var(--mu)', bd: on ? 'var(--ac)' : 'transparent', bg: on ? tint : 'transparent' }; });
-    const models = M.filter((m) => m.api === LAPI[L]).map((m) => { const on = cur.m === m.k; return { ...m, aliases: Object.keys(A).filter((k) => A[k].m === m.k).map(keyLabel).join(', '), mark: on ? '●' : '○', op: on ? '1' : '0', bg: on ? tint : 'transparent', click: () => this.setState((s) => ({ assign: { ...s.assign, [K]: { m: m.k, v: m.think ? (s.assign[K].v || (K === 'metacognition' ? 'low' : 'medium')) : null } } })) }; });
-    const V = { off: 'No reasoning, lowest latency.', low: 'Short reasoning before answering.', medium: 'Balanced reasoning.', high: 'Deep reasoning, slowest and most expensive.' };
-    const variants = Object.keys(V).map((v) => { const on = cur.v === v; return { label: v, click: curM.think ? () => this.setState((s) => ({ assign: { ...s.assign, [K]: { ...s.assign[K], v } } })) : () => {}, bg: on ? tint : 'transparent', fg: curM.think ? (on ? 'var(--tx)' : 'var(--mu)') : 'var(--bd)', bd: on ? 'var(--ac)' : 'var(--bd)' }; });
+    const CFG = { build: { m: 'opus', v: 'high' }, plan: { m: 'glm', v: 'high' }, metacognition: { m: 'combo', v: 'low' }, instinct: { m: 'jev', v: null }, reflex: { m: 'mercury', v: null } };
+    const A = st.assign, K = st.layer === 'build' || st.layer === 'plan' ? st.layer : st.mode, cur = A[K], curM = byK[cur.m];
+    const isOv = (k) => A[k].m !== CFG[k].m || A[k].v !== CFG[k].v;
+    const layers = ['build', 'plan'].map((k) => { const on = k === K; const m = byK[A[k].m]; return { label: k + (k === st.mode ? ' · active' : ''), short: m.id + (A[k].v ? ' · ' + A[k].v : '') + (isOv(k) ? ' · session' : ''), click: set({ layer: k }), fg: on ? 'var(--tx)' : 'var(--mu)', bd: on ? 'var(--ac)' : 'transparent', bg: on ? tint : 'transparent' }; });
+    const mcol = st.mcol || {};
+    const togG = (key) => () => this.setState((s) => ({ mcol: { ...(s.mcol || {}), [key]: !(s.mcol || {})[key] } }));
+    const chatM = M.filter((m) => m.api === 'chat');
+    const models = [];
+    [...new Set(chatM.map((m) => m.gw))].forEach((g) => {
+      const gk = 'g:' + g, gOpen = !mcol[gk], gms = chatM.filter((m) => m.gw === g);
+      models.push({ isGw: true, isPv: false, isM: false, label: g, count: gms.length, caret: gOpen ? '▾' : '▸', icon: gOpen ? 'ph ph-caret-down' : 'ph ph-caret-right', click: togG(gk) });
+      if (!gOpen) return;
+      [...new Set(gms.map((m) => m.pv))].forEach((p) => {
+        const pk = 'p:' + g + '/' + p, pOpen = !mcol[pk], pms = gms.filter((m) => m.pv === p);
+        models.push({ isGw: false, isPv: true, isM: false, label: p, count: pms.length, caret: pOpen ? '▾' : '▸', icon: pOpen ? 'ph ph-caret-down' : 'ph ph-caret-right', click: togG(pk) });
+        if (!pOpen) return;
+        pms.forEach((m) => { const on = cur.m === m.k; models.push({ isGw: false, isPv: false, isM: true, ...m, used: ['build', 'plan'].filter((k) => A[k].m === m.k).join(', '), mark: on ? '●' : '○', op: on ? '1' : '0', bg: on ? tint : 'transparent', click: () => this.setState((s) => ({ assign: { ...s.assign, [K]: { m: m.k, v: m.vars.includes(s.assign[K].v) ? s.assign[K].v : (m.vars[0] || null) } } })) }); });
+      });
+    });
+    const variants = curM.vars.map((v) => { const on = cur.v === v; return { label: v, click: () => this.setState((s) => ({ assign: { ...s.assign, [K]: { ...s.assign[K], v } } })), bg: on ? tint : 'transparent', fg: on ? 'var(--tx)' : 'var(--mu)', bd: on ? 'var(--ac)' : 'var(--bd)' }; });
+    const ovK = isOv(K);
     const build = st.mode === 'build';
     const P = [
       ['Switch agent to ' + (build ? 'plan' : 'build'), 'Agent', 'tab', () => this.setState({ mode: build ? 'plan' : 'build', scr: 'session' })],
-      ['Select model and variant…', 'Agent', '/models', go('models')],
+      ['Model for this session…', 'Agent', '/model', go('models')],
       ['Open subagent: explore', 'Agent', 'ctrl+t', go('subagent')],
       ['Delegate to cognition', 'Agent', '/delegate', go('session')],
       ['Edit intent record', 'Navigator', '/intent', go('session')],
@@ -505,13 +520,14 @@ class Component extends DCLogic {
       ['14:32', 'save', 'config.rs', 'drift 0.86 · has_intent', 'wake', 'wake', 'useful'],
       ['14:40', 'conversation', '', 'contradicts 0.83', 'remark', 'remark', 'useful']
     ].map(([t, trig, file, ans, prev, now, verdict]) => ({ t, trig, file, ans, prev, now, verdict, ncol: aCol(now), vcol: verdict === 'useful' ? 'var(--gr)' : 'var(--rd)' }));
-    const short = (k) => { const m = byK[A[k].m]; return m.name + (A[k].v ? ' · ' + A[k].v : ''); };
+    const short = (k) => { const c = CFG[k], m = byK[c.m]; return m.name + (c.v ? ' · ' + c.v : ''); };
     return {
       screens, layers, models, variants, palette, subCalls, subFindings, tuiTabs, convs, workspaces, pipeTrigTabs, pipeEvents, pipeFilters, pipeQuestions, pipeBranches, replayRows,
-      variantDesc: curM.think ? (V[cur.v] || '') + (K === 'metacognition' ? ' low is recommended for this layer.' : '') : 'This model has no thinking variants.',
-      layerName: L === 'cognition' ? 'profile ' + st.mode + ' · .navai/agents/' + st.mode + '.md' : 'layer ' + L + ' · one model at a time · ~/.config/navai/models.json',
+      variantDesc: (curM.vars.length ? '' : 'No variants for this model. ') + (ovK ? 'Session override for ' + K + '; config.json keeps ' + short(K) + '.' : 'Same as config.json → agents.' + K + '.'),
+      layerName: ovK ? 'session override · agent ' + K + ' · config.json unchanged' : 'agent ' + K + ' · from config.json → agents.' + K + '.model',
+      resetOv: () => this.setState((s) => ({ assign: { ...s.assign, [K]: CFG[K] } })), ovDisp: ovK ? 'inline-block' : 'none', cfgCog: short(st.mode),
       cogModel: byK[A[st.mode].m].name, cogVariant: A[st.mode].v || 'default', mReflex: short('reflex'), mInstinct: short('instinct'), mMeta: short('metacognition'),
-      subModel: 'opencode-go/deepseek-v4-flash · low', convTitle: st.conv, wsName: curW.name, sessName: st.sess,
+      subModel: 'omniroute/opencode-go/deepseek-v4-flash · low', convTitle: st.conv, wsName: curW.name, sessName: st.sess,
       webCrumb: st.scr === 'pipeline' ? 'pipeline' : st.scr === 'subagent' ? st.sess + ' / explore' : st.sess,
       pipeStatePrompt: edit ? 'prompts/state.md' : 'prompts/conversation_state.md',
       modelsOpen: st.scr === 'models', palOpen: st.scr === 'palette', toSession: stopE, stop: (e) => e.stopPropagation(), goSub: go('subagent'), goModels: go('models'),

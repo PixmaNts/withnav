@@ -11,6 +11,22 @@ use navai::bus::command::{Command, ContentBlock, DeliveryMode};
 use navai::server::AppState;
 
 mod common;
+
+#[test]
+fn message_received_type_roundtrips_optional_driver_selection() {
+    use navai::bus::event::MessageReceived;
+    let mut payload = json!({"command_id":ulid::Ulid::new(), "source":"user:http", "target":"agent:main", "mode":"next-turn", "content":"driver text"});
+    let legacy: MessageReceived = serde_json::from_value(payload.clone()).unwrap();
+    assert!(legacy.selected_skill.is_none());
+    assert!(serde_json::to_value(legacy)
+        .unwrap()
+        .get("selected_skill")
+        .is_none());
+    payload["selected_skill"] = json!({"name":"review","origin":"driver"});
+    let selected: MessageReceived = serde_json::from_value(payload.clone()).unwrap();
+    assert_eq!(selected.selected_skill.as_ref().unwrap().name, "review");
+    assert_eq!(serde_json::to_value(selected).unwrap(), payload);
+}
 use common::server::{collect_until, TestServerConfig};
 use common::sse::CapturingProvider;
 use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_chunk, tool_call_chunk};
@@ -219,47 +235,43 @@ async fn driver_selection_loads_the_skill_before_the_first_model_request() {
     }
     let sent = body(&provider, 0);
     let messages = sent["messages"].as_array().unwrap();
-    assert!(messages
-        .iter()
-        .any(|message| message["role"] == "user" && message["content"] == "follow this workflow"));
-    let call = messages
-        .iter()
-        .find(|message| message["tool_calls"][0]["function"]["name"] == "skill")
-        .unwrap();
-    let result = messages
-        .iter()
-        .find(|message| message["role"] == "tool")
-        .unwrap();
-    assert_eq!(result["tool_call_id"], call["tool_calls"][0]["id"]);
-    let id = call["tool_calls"][0]["id"].as_str().unwrap();
-    assert!(id.starts_with("call_skill_"));
-    assert!(id
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'));
-    let args: Value = serde_json::from_str(
-        call["tool_calls"][0]["function"]["arguments"]
+    assert!(messages.iter().any(|message| message["role"] == "user"
+        && message["content"]
             .as_str()
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(args["origin"], "driver_selected");
-    assert!(result["content"]
+            .is_some_and(|text| text.starts_with("follow this workflow\n\n"))));
+    assert!(!messages
+        .iter()
+        .any(|message| message["role"] == "tool" || message.get("tool_calls").is_some()));
+    let selected_message = messages
+        .iter()
+        .find(|message| message["role"] == "user")
+        .unwrap()["content"]
+        .as_str()
+        .unwrap();
+    let encoded = selected_message
+        .split("<driver_selected_skill encoding=\"json\">\n")
+        .nth(1)
+        .unwrap()
+        .split("\n</driver_selected_skill>")
+        .next()
+        .unwrap();
+    let loaded: Value = serde_json::from_str(encoded).unwrap();
+    assert_eq!(loaded["name"], "ask-matt");
+    assert_eq!(loaded["selected_by"], "driver");
+    assert!(loaded["content"]
         .as_str()
         .unwrap()
         .contains("STEP ONE: ask Matt."));
-    assert!(result["content"].as_str().unwrap().contains("checklist.md"));
+    assert!(loaded["content"].as_str().unwrap().contains("checklist.md"));
     let (_, stored, _) = state
         .history()
         .load_for_resume(selected.session_id)
         .await
         .unwrap()
         .unwrap();
-    let serialized = serde_json::to_string(&stored).unwrap();
     let restored: Vec<navai::provider::openai::ChatMessage> =
-        serde_json::from_str(&serialized).unwrap();
-    assert!(restored.iter().any(|message| matches!(message,
-        navai::provider::openai::ChatMessage::Assistant { tool_calls, .. }
-        if tool_calls.iter().any(|call| call.function.arguments.contains("driver_selected")))));
+        serde_json::from_str(&serde_json::to_string(&stored).unwrap()).unwrap();
+    assert!(restored.iter().any(|message| matches!(message, navai::provider::openai::ChatMessage::User { content, .. } if content == selected_message)));
 }
 
 #[tokio::test]
@@ -318,7 +330,7 @@ async fn clients_cannot_supply_loaded_skill_tool_provenance() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_switch_during_skill_loading_drops_preload_and_reports_refusal() {
+async fn agent_switch_during_loading_refuses_whole_command_before_mutation() {
     let env = env();
     let agents = env.root.join("cfg/agents");
     std::fs::create_dir_all(&agents).unwrap();
@@ -364,17 +376,40 @@ async fn agent_switch_during_skill_loading_drops_preload_and_reports_refusal() {
     );
     barrier.release.notify_one();
     pending.await.unwrap().unwrap();
-    let events = collect_until(sub, |event| event.kind == "turn.end").await;
-    assert!(events.iter().any(|event| event.kind == "command.result"
-        && event.payload["name"] == "skill"
-        && event.payload["ok"] == false));
+    let events = collect_until(sub, |event| {
+        event.kind == "command.result" && event.payload["name"] == "skill"
+    })
+    .await;
+    let refused = events
+        .iter()
+        .find(|event| event.kind == "command.result" && event.payload["name"] == "skill")
+        .unwrap();
+    let received = events
+        .iter()
+        .find(|event| event.kind == "message.received")
+        .unwrap();
+    assert_eq!(
+        refused.payload["operation_id"],
+        received.payload["command_id"]
+    );
+    assert_eq!(
+        refused.correlation_id.unwrap().to_string(),
+        received.payload["command_id"].as_str().unwrap()
+    );
+    assert!(provider.requests().is_empty());
+    converse(&state, id, "allowed instruction").await;
     let sent = messages(&provider, 0);
     assert!(sent
         .iter()
         .any(|(_, text)| text.contains("NO SKILL POLICY")));
-    assert!(sent.iter().any(|(_, text)| text == "keep this instruction"));
-    assert!(!sent.iter().any(|(role, _)| role == "tool"));
-    assert!(!sent.iter().any(|(_, text)| text.contains("STEP ONE")));
+    assert!(sent.iter().any(|(_, text)| text == "allowed instruction"));
+    assert!(!sent
+        .iter()
+        .any(|(_, text)| text.contains("keep this instruction") || text.contains("STEP ONE")));
+    let (_, stored, _) = state.history().load_for_resume(id).await.unwrap().unwrap();
+    assert!(!serde_json::to_string(&stored)
+        .unwrap()
+        .contains("keep this instruction"));
 }
 
 // Given a home library (nested) and a project skill, plus a rules file

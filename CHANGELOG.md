@@ -10,7 +10,7 @@ requests land in `develop`.
 
 ### Fixed
 
-- **Selected skills**: preloads use provider-compatible tool ids, stay marked as driver-selected on replay and in summaries, respect an agent switch during loading, and preserve all queued driver instructions during compaction.
+- **Selected skills**: instructions stay in the driver's own message through compaction. An agent switch that disables skills refuses the whole message before it reaches the conversation; selections remain visible on replay.
 
 ## [0.4.1] - 2026-10-04
 

@@ -474,20 +474,23 @@ fn take_seq(next_seq: &mut u64) -> Option<u64> {
 }
 
 fn message_received_candidate(command: &PendingCommand) -> Candidate {
-    let mut candidate = Candidate::new(
+    Candidate::new(
         EventKind::MessageReceived,
-        serde_json::json!({
-            "command_id": command.command_id,
-            "source": command.source,
-            "target": command.target,
-            "mode": command.mode,
-            "content": command.content,
-        }),
-    );
-    if let Some(name) = &command.selected_skill {
-        candidate.payload["selected_skill"] = serde_json::json!({"name":name,"origin":"driver"});
-    }
-    candidate
+        serde_json::to_value(crate::bus::event::MessageReceived {
+            command_id: command.command_id,
+            source: command.source.clone(),
+            target: command.target.clone(),
+            mode: command.mode.clone(),
+            content: command.content.clone(),
+            selected_skill: command.selected_skill.as_ref().map(|name| {
+                crate::bus::event::SelectedSkill {
+                    name: name.clone(),
+                    origin: "driver".into(),
+                }
+            }),
+        })
+        .expect("message payload serializes"),
+    )
 }
 
 fn stamp(session_id: Ulid, seq: u64, candidate: Candidate) -> EventEnvelope {

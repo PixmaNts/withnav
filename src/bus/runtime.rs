@@ -887,7 +887,10 @@ async fn runtime_loop(
         let Some(inbound) = inbound else {
             break;
         };
-        let preload_start = actor.transcript.len();
+        // Pin the consuming role before applying any command or persisting delivery.
+        let (role, variant) = status.begin_turn().await;
+        actor.role = role;
+        actor.variant = variant.map(|(_, variant)| variant);
 
         // A decision resumes the held call; a batch of commands starts a
         // turn the usual way.
@@ -900,8 +903,20 @@ async fn runtime_loop(
             Inbound::Batch(_) => {
                 let held = actor.pending_permission().cloned();
                 let applied = inbox.apply_batch_to_actor(&mut actor);
+                for (command_id, error) in &applied.refused {
+                    let mut candidate = crate::bus::sequencer::Candidate::new(
+                        EventKind::CommandResult,
+                        serde_json::json!({
+                            "operation_id":command_id, "name":"skill", "ok":false, "error":error,
+                        }),
+                    );
+                    candidate.causation_id = Some(*command_id);
+                    candidate.correlation_id = Some(*command_id);
+                    let _ = sequencer.publish(candidate);
+                }
                 // Only commands that were held: nothing changed, no turn.
                 let Some(first) = applied.first_applied else {
+                    status.end_turn(&actor);
                     continue;
                 };
                 if active_task_id.is_none() {
@@ -926,6 +941,7 @@ async fn runtime_loop(
                     .filter(|request| request.id == answer.request_id)
                     .cloned();
                 let Some(request) = held else {
+                    status.end_turn(&actor);
                     let _ = answer
                         .reply
                         .send(Err(crate::agent::permissions::PermissionError::Stale));
@@ -943,24 +959,15 @@ async fn runtime_loop(
                 Some((answer.request_id, decision))
             }
         };
-        // The turn runs as the agent and the variant selected now; a later
+        // Only validated commands can reach a callback that persists the transcript.
         if let Err(error) = delivery::apply(&mut actor, &status, &sequencer).await {
             tracing::error!(%error, "subagent transcript delivery failed");
+            status.end_turn(&actor);
             break;
         }
-        // change waits for the turn to end.
-        let (role, variant) = status.begin_turn().await;
         status
             .budget_parked
             .store(false, std::sync::atomic::Ordering::Release);
-        actor.role = role;
-        for name in crate::bus::inbox::revalidate_preloads(&mut actor, preload_start) {
-            let _ = sequencer.publish(crate::bus::sequencer::Candidate::new(EventKind::CommandResult, serde_json::json!({
-                "operation_id":Ulid::new(), "name":"skill", "ok":false,
-                "error":format!("skill {name:?} was not loaded: this turn's agent cannot use the skill tool; your message was delivered")
-            })));
-        }
-        actor.variant = variant.map(|(_, variant)| variant);
         // A request that would not fit this budget is compacted first.
         actor.input_budget = status.context_snapshot().map(|s| s.input_budget);
 
@@ -1537,6 +1544,77 @@ mod tests {
     use crate::provider::test_support::{http_sse, sse_body};
     use crate::tools::{Registry, ToolContext};
     use std::collections::BTreeMap;
+
+    #[tokio::test]
+    async fn rejected_skill_never_enters_completion_commit_or_crash_resume_storage() {
+        use crate::agent::{definitions::Agents, selection::AgentSelection};
+        use crate::provider::openai::{ChatMessage, UserProvenance};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("history.db");
+        let store = Arc::new(crate::session::store::HistoryStore::open(&path).unwrap());
+        let id = Ulid::new();
+        store
+            .record_session(id, "/workspace", "test-model", None)
+            .await
+            .unwrap();
+        let agents = Arc::new(Agents::builtin());
+        let mut denying = (**agents.get("build").unwrap()).clone();
+        denying.tools.insert("skill".into(), false);
+        let status = Arc::new(RuntimeStatus::with_selection(AgentSelection::new(
+            agents,
+            Arc::new(denying),
+        )));
+        let persisted = Arc::new(tokio::sync::Notify::new());
+        let done = persisted.clone();
+        let history = store.clone();
+        status.install_delivery(Arc::new(move |mut transcript, _| {
+            let history = history.clone();
+            let done = done.clone();
+            Box::pin(async move {
+                transcript.push(ChatMessage::User {
+                    content: "child completion".into(),
+                    provenance: UserProvenance::Subagent,
+                });
+                history.save_transcript(id, transcript.clone());
+                history.load_for_resume(id).await.unwrap();
+                done.notify_one();
+                Err(crate::agent::boundary::BoundaryError {
+                    message: "crash after completion commit".into(),
+                    committed: Some(transcript),
+                })
+            })
+        }));
+        let (tx, mut inbox) = ActorInbox::channel();
+        let mut denied = text_command(id, "REJECTED DRIVER INPUT");
+        denied.content.push(ContentBlock::LoadedSkill {
+            name: "review".into(),
+            content: "REJECTED SKILL BODY".into(),
+        });
+        tx.try_send(denied).unwrap();
+        tx.try_send(text_command(id, "accepted sibling")).unwrap();
+        inbox.drain_transport();
+        let sequencer = Sequencer::spawn(id, crate::bus::SessionBus::default(), 0);
+        let handle = spawn_with_status(
+            id,
+            make_actor("http://127.0.0.1:1".into(), CancellationToken::new()),
+            inbox,
+            sequencer,
+            CancellationToken::new(),
+            None,
+            status,
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), persisted.notified())
+            .await
+            .unwrap();
+        let actor = handle.await.unwrap();
+        assert!(actor.transcript.iter().any(|message| matches!(message, ChatMessage::User { content, .. } if content == "child completion")));
+        drop(store);
+        let reopened = crate::session::store::HistoryStore::open(&path).unwrap();
+        let (_, restored, _) = reopened.load_for_resume(id).await.unwrap().unwrap();
+        let raw = serde_json::to_string(&restored).unwrap();
+        assert!(raw.contains("accepted sibling") && raw.contains("child completion"));
+        assert!(!raw.contains("REJECTED DRIVER INPUT") && !raw.contains("REJECTED SKILL BODY"));
+    }
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

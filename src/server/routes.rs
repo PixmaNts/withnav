@@ -22,11 +22,11 @@
 //! - `GET /v1/sessions/:id/skills` -> `{skills:[{name,description}],disabled_reason?}`: only catalog-listed skills; no rows when the agent disables `skill`.
 //!   Message content accepts one `{type:"skill",name}` alongside text. Admission loads it through
 //!   the skill tool's bounded loader before accepting the message; unknown, omitted, disabled or
-//!   unreadable skills return 400 without sending anything. Loaded content is a tool result before
-//!   the first model request, never client-supplied tool provenance.
+//!   unreadable skills return 400 without sending anything. The exact bounded tool-loader output
+//!   is JSON-escaped into a delimited block in the driver's own user message, never a synthetic tool call.
 //!   Accepted selection is recorded as optional `message.received.selected_skill:{name,origin:"driver"}`.
-//!   If the consuming turn's agent disables skills after admission, only the preload is dropped;
-//!   driver text is delivered and a durable `command.result` refusal explains why.
+//!   If the consuming turn's pinned agent disables skills, the whole command is refused before
+//!   transcript mutation; `command.result` carries its command id as operation id and correlation.
 //! - `GET  /v1/commands`      -> `{commands:[{name, description, args_hint}]}`
 //! - `POST /v1/sessions/:id/commands` `{name, arguments?}` -> `{operation_id, ok, data?, error?}`
 //!   (a command that cannot run is 200 with `ok:false` and an `error`; the same

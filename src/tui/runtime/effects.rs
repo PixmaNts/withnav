@@ -178,6 +178,26 @@ impl Executor {
                     }
                 });
             }
+            Effect::FetchAgents(session_id) => {
+                let (client, workspace) = (self.client.clone(), ctx.workspace.clone());
+                self.spawn_event(async move {
+                    let result = client.agents(&workspace, session_id.as_deref()).await;
+                    ClientEvent::Agents {
+                        generation,
+                        session_id,
+                        result,
+                    }
+                });
+            }
+            Effect::FetchLayers => {
+                let (client, workspace) = (self.client.clone(), ctx.workspace.clone());
+                self.spawn_event(async move {
+                    ClientEvent::Layers {
+                        generation,
+                        result: client.layers(&workspace).await,
+                    }
+                });
+            }
             Effect::FetchSkills(session_id) => {
                 let client = self.client.clone();
                 self.spawn_event(async move {

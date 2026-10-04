@@ -1,8 +1,9 @@
 ---
 source: tests/tui_view.rs
+assertion_line: 319
 expression: snapshot
 ---
- Conversations       │ ◆ navai  ~/dev/project     ▌build  cognition · cc/claude-opus-5-5 · — / 200k 
+ Conversations       │ ◆ navai  ~/dev/project               ▌build  cognition · assigned · — / 200k 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
 ▌  build · idle      │                                                                              
                      │                                                                              
@@ -10,9 +11,9 @@ expression: snapshot
                      │                                                                              
             ┌──────────────────────────────── Commands ────────────────────────────────┐            
             │ ❯ type a command…                                                        │            
-            │▌/new [alias]          new conversation in a new tab                      │            
+            │▌/new [agent]          new conversation in a new tab                      │            
             │ /sessions             browse conversations                               │            
-            │ /model [alias]        switch this conversation's model                   │            
+            │ /model [model_id]     switch this conversation's model                   │            
             │ /skills               choose a skill to load for your next message       │            
             │ /variant [name|off]   choose the model variant for this conversation     │            
             │ /stop                 stop generation                                    │            

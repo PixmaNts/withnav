@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ navai  ~/dev/project     ▌build  cognition · cc/claude-opus-5-5 · — / 200k 
+ Conversations       │ ◆ navai  ~/dev/project               ▌build  cognition · assigned · — / 200k 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
 ▌  build · idle      │                                                                              
                      │                                                                              
@@ -16,11 +16,11 @@ expression: snapshot
             ┌────────────────────── Switch this conversation to… ──────────────────────┐            
             │ ❯ opus                                                                   │            
             │ switches the model only; /variant after the switch · ctrl+n new tab      │            
+            │ ▾ gateway                                                                │            
             │▌opus              cc/claude-opus-5-5                  1M  low high max   │            
             │                                                                          │            
-            │ ↑↓ move  enter choose  esc close                                         │            
+            │ ↑↓ move  ←→ fold  enter choose/fold  esc close                           │            
             └──────────────────────────────────────────────────────────────────────────┘            
-                     │                                                                              
                      │                                                                              
                      │                                                                              
                      │                                                                              

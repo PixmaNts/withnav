@@ -100,7 +100,7 @@ pub struct Conversation {
     /// The server's estimate of the next request, from `context.updated` or
     /// `GET /context`; the status line shows it. `context_tokens` stays the
     /// provider's last prompt count.
-    pub context: Option<crate::bus::event::ContextSnapshot>,
+    pub context: Option<crate::tui::protocol::ContextSnapshot>,
     /// Bumped on every resume and every stream (re)connection: a context fetch answered
     /// under an older epoch is dropped.
     pub context_epoch: u64,
@@ -141,6 +141,9 @@ pub struct TabView {
 /// no other tab.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Tab {
+    pub model_source: String,
+    pub variant_source: String,
+    pub start_model: Option<String>,
     pub skills: crate::bus::event::SkillsBody,
     /// Stable for the life of the tab, unlike `generation`.
     pub id: u64,
@@ -151,7 +154,7 @@ pub struct Tab {
     pub resuming: Option<String>,
     /// Metadata must establish whether this session accepts prompts before a resume is sent.
     pub inspecting: bool,
-    pub selected_model_alias: Option<String>,
+    pub selected_model_id: Option<String>,
     pub selected_model_name: Option<String>,
     pub context_window: Option<u64>,
     pub conversation: Conversation,
@@ -178,10 +181,10 @@ pub struct Tab {
     pub agent_seq: Option<u64>,
     pub variant_seq: Option<u64>,
     /// The variant chosen in the model picker for a conversation not created yet: `None` leaves
-    /// the alias's default, `Some(None)` asks for none.
+    /// the model_id's default, `Some(None)` asks for none.
     pub start_variant: Option<Option<String>>,
     /// The last `/model` this client sent, from the send until the server settles it: the header
-    /// shows `→ alias (after this turn)` once it is accepted for after the running turn.
+    /// shows `→ model_id (after this turn)` once it is accepted for after the running turn.
     pub model_switch: Option<ModelSwitch>,
     /// The last token given to a command request of this tab.
     pub command_token: u64,
@@ -226,7 +229,11 @@ pub const PLAN_AGENT: &str = "plan";
 
 impl Tab {
     pub fn read_only(&self) -> bool {
-        self.parent_session_id.is_some() || self.session.as_ref().is_some_and(|m| !m.promptable)
+        self.parent_session_id.is_some()
+            || self
+                .session
+                .as_ref()
+                .is_some_and(|m| !m.promptable || m.read_only)
     }
 
     /// The oldest permission request still open, if any.
@@ -256,7 +263,8 @@ impl Tab {
 /// A `/model` this client sent and the server has not settled.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ModelSwitch {
-    pub alias: String,
+    pub agent: String,
+    pub model_id: String,
     /// The token of the request that asked for it: only its HTTP answer binds the operation.
     pub token: u64,
     /// The operation the server gave the command; `None` until its HTTP answer.
@@ -266,12 +274,12 @@ pub struct ModelSwitch {
 }
 
 impl Tab {
-    /// The alias a switch accepted for after this turn goes to, while it waits.
+    /// The model_id a switch accepted for after this turn goes to, while it waits.
     pub fn pending_model(&self) -> Option<&str> {
         self.model_switch
             .as_ref()
             .filter(|m| m.deferred)
-            .map(|m| m.alias.as_str())
+            .map(|m| m.model_id.as_str())
     }
 }
 
@@ -362,6 +370,9 @@ impl ChildStatus {
 /// the active tab through `Deref`, so code that handles one conversation stays as it was.
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
+    pub agents: Vec<super::protocol::AgentEntry>,
+    pub layers: Vec<super::protocol::LayerEntry>,
+    pub default_agent: String,
     pub tabs: Vec<Tab>,
     /// Index of the tab on screen; always valid.
     pub active: usize,
@@ -382,6 +393,9 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            agents: vec![],
+            layers: vec![],
+            default_agent: DEFAULT_AGENT.into(),
             tabs: vec![Tab::default()],
             active: 0,
             issued: 0,
@@ -467,7 +481,7 @@ impl std::ops::DerefMut for State {
 /// What a choice in the variant list applies to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VariantPick {
-    /// The second step of the model picker: the variant a new conversation on `alias` starts on.
+    /// The second step of the model picker: the variant a new conversation on `model_id` starts on.
     NewConversation(String),
     /// `/variant`: the active conversation's variant, changed through the server.
     Current,
@@ -501,6 +515,7 @@ pub enum Focus {
 }
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UiState {
+    pub collapsed_models: std::collections::HashSet<String>,
     pub child_confirm: Option<(String, String, super::protocol::ChildControl)>,
     pub child_confirm_token: Option<crate::bus::event::PauseToken>,
     pub focus: Focus,

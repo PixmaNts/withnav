@@ -5,8 +5,10 @@ use serde::{Deserialize, Serialize};
 pub struct Generation(pub u64);
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ModelEntry {
-    pub alias: String,
-    pub model: String,
+    pub name: String,
+    pub gateway: String,
+    pub provider_group: String,
+    pub upstream_id: String,
     pub context_window: Option<u64>,
     /// Added by the catalog: absent in a payload from an older server, and
     /// then not written back.
@@ -28,7 +30,7 @@ pub struct ModelEntry {
     pub max_input_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discrepancy: Option<Discrepancy>,
-    /// The variant names the alias offers.
+    /// The variant names the model_id offers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<String>,
     /// The variant a new conversation starts on when none is chosen.
@@ -43,7 +45,87 @@ pub struct Discrepancy {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelsBody {
     pub models: Vec<ModelEntry>,
-    pub default: Option<String>,
+    pub default_agent: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Selection {
+    pub model: String,
+    pub variant: Option<String>,
+    pub source: String,
+    pub variant_source: String,
+}
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AgentEntry {
+    pub id: String,
+    pub description: String,
+    pub mode: String,
+    pub assignment: Option<Selection>,
+    pub effective: Option<Selection>,
+    pub warning: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentsBody {
+    pub default_agent: String,
+    pub agents: Vec<AgentEntry>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LayerEntry {
+    pub layer: String,
+    pub status: String,
+    pub model: Option<String>,
+    pub variant: Option<String>,
+    pub reason: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LayersBody {
+    pub layers: Vec<LayerEntry>,
+}
+
+// Local wire types keep this client independent of the server's catalog cutover.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastUsage {
+    pub model: String,
+    pub gateway: String,
+    pub upstream_id: String,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub step: ulid::Ulid,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextSnapshot {
+    pub model: String,
+    pub gateway: String,
+    pub upstream_id: String,
+    pub variant: Option<String>,
+    pub window: u64,
+    pub window_source: String,
+    pub estimate_total: u64,
+    pub breakdown: crate::bus::event::Breakdown,
+    pub output_reserve: u64,
+    pub margin: u64,
+    pub input_budget: u64,
+    pub percent: u64,
+    pub last_usage: Option<LastUsage>,
+    #[serde(default)]
+    pub skills: crate::bus::event::SkillCounts,
+    #[serde(default)]
+    pub rule_files: u64,
+    pub incarnation: ulid::Ulid,
+    pub revision: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelIdentity {
+    pub agent: String,
+    #[serde(flatten)]
+    pub selection: Selection,
+}
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelChanged {
+    pub previous: Option<ModelIdentity>,
+    pub new: ModelIdentity,
+    pub window: u64,
+    pub reason: String,
+    pub operation_id: Option<ulid::Ulid>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionListEntry {
@@ -86,8 +168,8 @@ pub struct CreateSessionRequest {
     /// The primary agent a new conversation starts as; the server's default (build) when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
-    /// The variant a new conversation starts on: absent for the alias's default, `null` for none,
-    /// else a name the alias offers.
+    /// The variant a new conversation starts on: absent for the model_id's default, `null` for none,
+    /// else a name the model_id offers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant: Option<Option<String>>,
 }
@@ -103,6 +185,14 @@ pub struct SessionMetadata {
     pub actor_state: String,
     pub workspace: String,
     pub model: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub variant_source: String,
+    #[serde(default)]
+    pub read_only: bool,
+    #[serde(default)]
+    pub resume_disabled_reason: Option<String>,
     /// The primary agent; absent from an older server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
@@ -182,6 +272,15 @@ pub struct CommandResponse {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientEvent {
+    Agents {
+        generation: Generation,
+        session_id: Option<String>,
+        result: Result<AgentsBody, String>,
+    },
+    Layers {
+        generation: Generation,
+        result: Result<LayersBody, String>,
+    },
     Skills {
         generation: Generation,
         result: Result<crate::bus::event::SkillsBody, String>,
@@ -231,7 +330,7 @@ pub enum ClientEvent {
         generation: Generation,
         /// The conversation's context epoch when the fetch was issued.
         epoch: u64,
-        result: Result<crate::bus::event::ContextSnapshot, String>,
+        result: Result<ContextSnapshot, String>,
     },
     Submitted {
         generation: Generation,
@@ -296,6 +395,7 @@ pub enum Mode {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
+    PickAgent(String),
     Submit(String),
     OpenOverlay(Overlay),
     CloseOverlay,
@@ -307,7 +407,7 @@ pub enum Action {
     ConfirmChildControl,
     CancelChildControl,
     PickModel(String),
-    /// Moves the active conversation to `alias` (`/model <alias>`); on a tab with no
+    /// Moves the active conversation to `model_id` (`/model <model_id>`); on a tab with no
     /// conversation yet, the conversation will start on it.
     SwitchModel(String),
     Stop,
@@ -354,6 +454,7 @@ pub enum Action {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
+    Agents,
     Skills,
     Models,
     Sessions,
@@ -372,6 +473,8 @@ pub enum ChildControl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
+    FetchAgents(Option<String>),
+    FetchLayers,
     FetchSkills(String),
     WatchChild {
         parent_session_id: String,

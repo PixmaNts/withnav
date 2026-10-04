@@ -393,10 +393,10 @@ fn options(model: Option<&str>) -> TuiOptions {
 #[tokio::test]
 async fn startup_presets_the_model_and_asks_for_catalog_and_sessions() {
     let mut runtime = Runtime::new(&options(Some("fast")));
-    assert_eq!(runtime.state.selected_model_alias.as_deref(), Some("fast"));
+    assert_eq!(runtime.state.selected_model_id.as_deref(), Some("fast"));
     runtime.start(None);
     let mut kinds = Vec::new();
-    for _ in 0..2 {
+    for _ in 0..4 {
         let event = tokio::time::timeout(Duration::from_secs(10), runtime.recv())
             .await
             .expect("in time")
@@ -404,11 +404,13 @@ async fn startup_presets_the_model_and_asks_for_catalog_and_sessions() {
         kinds.push(match event {
             ClientEvent::Models { .. } => "models",
             ClientEvent::Sessions { .. } => "sessions",
+            ClientEvent::Agents { .. } => "agents",
+            ClientEvent::Layers { .. } => "layers",
             other => panic!("unexpected event {other:?}"),
         });
     }
     kinds.sort_unstable();
-    assert_eq!(kinds, ["models", "sessions"]);
+    assert_eq!(kinds, ["agents", "layers", "models", "sessions"]);
 }
 
 #[tokio::test]
@@ -564,6 +566,7 @@ async fn a_tabs_editor_keeps_its_cursor_and_history_across_a_switch() {
     runtime.handle_terminal_event(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
     assert_eq!(runtime.state.active, 1);
     assert_eq!(runtime.editor.text(), "");
+    runtime.handle_terminal_event(key(KeyCode::Esc, KeyModifiers::NONE));
     runtime.handle_terminal_event(key(KeyCode::Char('x'), KeyModifiers::NONE));
     runtime.handle_terminal_event(key(KeyCode::Char('1'), KeyModifiers::ALT));
     assert_eq!(runtime.state.active, 0);

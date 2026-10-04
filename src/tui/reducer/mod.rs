@@ -35,6 +35,9 @@ use super::{
 /// The generation an event is tagged with: the tab it belongs to.
 pub fn generation(e: &ClientEvent) -> &Generation {
     match e {
+        ClientEvent::Agents { generation, .. } | ClientEvent::Layers { generation, .. } => {
+            generation
+        }
         ClientEvent::ChildEnvelope { generation, .. } => generation,
         ClientEvent::Envelope { generation, .. }
         | ClientEvent::Resync { generation }
@@ -186,7 +189,7 @@ pub(crate) fn set_variant_offer(s: &mut State, data: &serde_json::Value) {
     }
 }
 
-/// Refreshes the display name and context window from the catalog for the selected alias, for a
+/// Refreshes the display name and context window from the catalog for the selected model_id, for a
 /// tab whose conversation has not reported its selection yet. Once a `model.changed` committed it,
 /// the server's identity and window stay: the catalog only fills the picker.
 pub(crate) fn refresh_model(s: &mut State) {
@@ -203,11 +206,11 @@ fn refresh_tab_model(catalog: &[super::protocol::ModelEntry], tab: &mut super::s
     if tab.model_seq.is_some() {
         return;
     }
-    let Some(alias) = tab.selected_model_alias.clone() else {
+    let Some(model_id) = tab.selected_model_id.clone() else {
         return;
     };
-    let found = catalog.iter().find(|m| m.alias == alias);
-    tab.selected_model_name = found.map(|m| m.model.clone());
+    let found = catalog.iter().find(|m| m.name == model_id);
+    tab.selected_model_name = found.map(|m| m.name.clone());
     tab.context_window = found.and_then(|m| m.context_window);
 }
 
@@ -292,6 +295,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             project_child(s, &child_session_id, &envelope);
         }
         ClientEvent::Envelope { envelope, .. } => {
+            let selection_changed = envelope.kind == "model.changed";
             let spawned = (envelope.kind == "subagent.spawned"
                 && envelope.payload["parent_session_id"].as_str()
                     == s.session
@@ -326,6 +330,16 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 }
             }
             envelope::apply_envelope(s, envelope)?;
+            if selection_changed {
+                if let Some(id) = s
+                    .session
+                    .as_ref()
+                    .map(|m| m.session_id.clone())
+                    .or(s.resuming.clone())
+                {
+                    effects.push(Effect::FetchAgents(Some(id)));
+                }
+            }
             let terminal = s
                 .children
                 .iter()
@@ -415,24 +429,54 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         ClientEvent::Models { result, .. } => {
             if let Ok(body) = result {
                 s.catalog = body.models;
-                let default = body
-                    .default
-                    .filter(|a| s.catalog.iter().any(|m| &m.alias == a))
-                    .or_else(|| {
-                        s.catalog
-                            .iter()
-                            .find(|m| m.alias == "default")
-                            .map(|m| m.alias.clone())
-                    });
+                if let Some(agent) = body.default_agent {
+                    s.default_agent = agent;
+                }
                 // Every tab, on screen or not: a default where none is chosen, and the display
                 // name and window refreshed from the new catalog.
                 let State { tabs, catalog, .. } = s;
                 for tab in tabs {
-                    if tab.selected_model_alias.is_none() {
-                        tab.selected_model_alias = default.clone();
-                    }
                     refresh_tab_model(catalog, tab);
                 }
+            }
+        }
+        ClientEvent::Agents {
+            session_id, result, ..
+        } => {
+            let current = s
+                .session
+                .as_ref()
+                .map(|m| m.session_id.as_str())
+                .or(s.resuming.as_deref());
+            if session_id.as_deref() != current {
+                return Ok(vec![]);
+            }
+            if let Ok(body) = result {
+                s.default_agent = body.default_agent;
+                s.agents = body.agents;
+                if !occupied(s) && s.start_model.is_none() {
+                    if s.agent.is_none() {
+                        s.agent = Some(s.default_agent.clone());
+                    }
+                    if let Some(choice) = s
+                        .agents
+                        .iter()
+                        .find(|a| a.id == s.agent_name())
+                        .and_then(|a| a.effective.clone())
+                    {
+                        s.selected_model_id = Some(choice.model.clone());
+                        s.selected_model_name = Some(choice.model);
+                        s.variant = choice.variant;
+                        s.model_source = choice.source;
+                        s.variant_source = choice.variant_source;
+                        refresh_model(s);
+                    }
+                }
+            }
+        }
+        ClientEvent::Layers { result, .. } => {
+            if let Ok(body) = result {
+                s.layers = body.layers;
             }
         }
         ClientEvent::PermissionAnswered {
@@ -566,18 +610,23 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     session_id: r.session_id.clone(),
                     actor_state: r.actor_state,
                     workspace: s.workspace.clone(),
-                    model: s.selected_model_alias.clone().unwrap_or_default(),
+                    model: s.selected_model_id.clone().unwrap_or_default(),
                     agent: s.agent.clone(),
                     variant: None,
                     parent_session_id: None,
                     promptable: true,
                     child_status: None,
+                    source: String::new(),
+                    variant_source: String::new(),
+                    read_only: false,
+                    resume_disabled_reason: None,
                     current_seq: s.last_applied_seq.unwrap_or(0),
                 });
                 if s.activity == Activity::Stopped {
                     s.activity = Activity::Idle;
                 }
                 effects.push(Effect::FetchMetadata(r.session_id.clone()));
+                effects.push(Effect::FetchAgents(Some(r.session_id.clone())));
                 effects.extend(read_git(s));
                 // `None` for a fresh conversation; the kept cursor when resuming the same one.
                 effects.push(Effect::Subscribe {
@@ -607,7 +656,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 m.parent_session_id = m.parent_session_id.as_deref().map(strip_controls);
                 m.child_status = m.child_status.as_deref().map(strip_controls);
                 if std::mem::take(&mut s.inspecting) {
-                    if m.parent_session_id.is_some() || !m.promptable {
+                    if m.parent_session_id.is_some() || !m.promptable || m.read_only {
                         s.parent_session_id = m.parent_session_id.clone();
                         s.child_status = super::state::ChildStatus::from_wire(
                             m.child_status.as_deref().unwrap_or(""),
@@ -651,7 +700,9 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     s.variant = m.variant.clone();
                 }
                 if newer(s.model_seq) {
-                    s.selected_model_alias = Some(m.model.clone());
+                    s.selected_model_id = Some(m.model.clone());
+                    s.model_source = strip_controls(&m.source);
+                    s.variant_source = strip_controls(&m.variant_source);
                     refresh_model(s);
                 }
                 s.session = Some(m);

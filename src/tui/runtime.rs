@@ -61,7 +61,8 @@ impl Runtime {
             workspace,
             ..State::default()
         };
-        state.selected_model_alias = options.initial_model.clone();
+        state.selected_model_id = options.initial_model.clone();
+        state.start_model = options.initial_model.clone();
         let ui = UiState {
             follow_bottom: true,
             theme: options
@@ -93,6 +94,8 @@ impl Runtime {
     pub fn start(&mut self, session: Option<String>) {
         self.run_effects(vec![
             Effect::FetchModels,
+            Effect::FetchAgents(None),
+            Effect::FetchLayers,
             Effect::ListSessions,
             Effect::FetchCommands,
         ]);

@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ navai                    ▌build  cognition · cc/claude-opus-5-5 · — / 200k 
+ Conversations       │ ◆ navai                              ▌build  cognition · assigned · — / 200k 
 ▌1 new conversation  │──────────────────────────────────────────────────────────────────────────────
 ▌  build · idle      │                                                                              
                      │                                                                              

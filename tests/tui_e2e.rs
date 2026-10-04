@@ -320,7 +320,7 @@ async fn pick_send_stream_tool_reconnect_stop_and_resume() {
     let mut rt = started(&env).await;
 
     pick_model(&mut rt, 1);
-    assert_eq!(rt.state.selected_model_alias.as_deref(), Some("beta"));
+    assert_eq!(rt.state.selected_model_id.as_deref(), Some("beta"));
     assert!(rt.state.session.is_none(), "picking alone creates nothing");
 
     type_and_send(&mut rt, "read the notes");
@@ -769,7 +769,7 @@ async fn variant_step_and_slash_variant_drive_the_server() {
         .state
         .catalog
         .iter()
-        .find(|m| m.alias == "alpha")
+        .find(|m| m.name == "alpha")
         .expect("alpha")
         .clone();
     assert_eq!(alpha.variants, ["high", "low"]);
@@ -1104,7 +1104,7 @@ async fn the_model_list_and_slash_model_switch_the_live_conversation_between_pro
         has_final(rt, "From a.")
     })
     .await;
-    assert_eq!(rt.state.selected_model_alias.as_deref(), Some("alpha"));
+    assert_eq!(rt.state.selected_model_id.as_deref(), Some("alpha"));
 
     // the model list on a live tab: enter on luna switches the model; the server applies its
     // default variant
@@ -1115,7 +1115,7 @@ async fn the_model_list_and_slash_model_switch_the_live_conversation_between_pro
     press(&mut rt, KeyCode::Enter);
     assert_eq!(rt.ui.overlay, None, "no variant step");
     until("the switch", &mut rt, |_, rt| {
-        rt.state.selected_model_alias.as_deref() == Some("luna")
+        rt.state.selected_model_id.as_deref() == Some("luna")
     })
     .await;
     assert_eq!(rt.state.tabs.len(), 1, "no new tab");
@@ -1151,7 +1151,7 @@ async fn the_model_list_and_slash_model_switch_the_live_conversation_between_pro
     // `/model alpha` typed in the editor switches back, in the same tab
     type_and_send(&mut rt, "/model alpha");
     until("the switch back", &mut rt, |_, rt| {
-        rt.state.selected_model_alias.as_deref() == Some("alpha")
+        rt.state.selected_model_id.as_deref() == Some("alpha")
     })
     .await;
     assert_eq!(rt.state.tabs.len(), 1);
@@ -1172,15 +1172,12 @@ async fn the_model_list_and_slash_model_switch_the_live_conversation_between_pro
     )));
     press(&mut rt, KeyCode::Enter);
     assert_eq!((rt.state.tabs.len(), rt.state.active), (2, 1));
-    assert_eq!(rt.state.selected_model_alias.as_deref(), Some("luna"));
+    assert_eq!(rt.state.selected_model_id.as_deref(), Some("luna"));
     assert!(
         rt.state.session.is_none(),
         "it starts with the first message"
     );
-    assert_eq!(
-        rt.state.tabs[0].selected_model_alias.as_deref(),
-        Some("alpha")
-    );
+    assert_eq!(rt.state.tabs[0].selected_model_id.as_deref(), Some("alpha"));
 }
 
 // Given a conversation on `alpha` whose answer is still streaming
@@ -1213,7 +1210,7 @@ async fn a_switch_typed_during_a_turn_waits_for_it_and_shows_in_the_header() {
         rt.state.pending_model() == Some("luna")
     })
     .await;
-    assert_eq!(rt.state.selected_model_alias.as_deref(), Some("alpha"));
+    assert_eq!(rt.state.selected_model_id.as_deref(), Some("alpha"));
     let header = screen(&mut rt)
         .lines()
         .next()
@@ -1225,8 +1222,7 @@ async fn a_switch_typed_during_a_turn_waits_for_it_and_shows_in_the_header() {
     answer.send(usage_chunk("stop", usage(10, 2))).unwrap();
     drop(answer);
     until("the switch after the turn", &mut rt, |_, rt| {
-        rt.state.selected_model_alias.as_deref() == Some("luna")
-            && rt.state.pending_model().is_none()
+        rt.state.selected_model_id.as_deref() == Some("luna") && rt.state.pending_model().is_none()
     })
     .await;
     let header = screen(&mut rt)

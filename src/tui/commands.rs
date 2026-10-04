@@ -8,14 +8,14 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub struct Command {
     pub name: &'static str,
     pub description: &'static str,
-    /// Argument synopsis, empty when the command takes none (`[alias]`).
+    /// Argument synopsis, empty when the command takes none (`[model_id]`).
     pub args_hint: &'static str,
 }
 pub const CATALOG: &[Command] = &[
     Command {
         name: "/new",
         description: "new conversation in a new tab",
-        args_hint: "[alias]",
+        args_hint: "[agent]",
     },
     Command {
         name: "/sessions",
@@ -25,7 +25,7 @@ pub const CATALOG: &[Command] = &[
     Command {
         name: "/model",
         description: "switch this conversation's model",
-        args_hint: "[alias]",
+        args_hint: "[model_id]",
     },
     Command {
         name: "/skills",
@@ -184,8 +184,8 @@ pub const KEYS: &[(&str, &str)] = &[
 /// `off` (always: a live conversation can drop its variant), starting on the variant in use.
 pub fn variant_choices(state: &State, pick: &VariantPick) -> (Vec<String>, usize) {
     let (mut rows, wanted) = match pick {
-        VariantPick::NewConversation(alias) => {
-            let entry = state.catalog.iter().find(|m| &m.alias == alias);
+        VariantPick::NewConversation(model_id) => {
+            let entry = state.catalog.iter().find(|m| &m.name == model_id);
             let rows: Vec<String> = entry.map(|m| m.variants.clone()).unwrap_or_default();
             if rows.is_empty() {
                 // Nothing to choose: the list shows a note instead.
@@ -275,16 +275,16 @@ enum Local {
 fn local_action(name: &str, arguments: &str, mode: Mode) -> Local {
     let has_args = !arguments.is_empty();
     match name {
-        // `/new <alias>` opens a tab on that model; `/model <alias>` moves this conversation to it.
+        // `/new <model_id>` opens a tab on that model; `/model <model_id>` moves this conversation to it.
         "new" | "model" if has_args => {
             if arguments.contains(char::is_whitespace) {
-                return Local::Refuse(format!("usage: /{name} [alias]"));
+                return Local::Refuse(format!("usage: /{name} [agent or model]"));
             }
-            let alias = arguments.to_string();
+            let model_id = arguments.to_string();
             Local::Run(if name == "new" {
-                Action::PickModel(alias)
+                Action::PickAgent(model_id)
             } else {
-                Action::SwitchModel(alias)
+                Action::SwitchModel(model_id)
             })
         }
         // With arguments, `/variant` is the server's; alone it opens the list.

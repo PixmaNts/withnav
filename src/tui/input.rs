@@ -353,7 +353,7 @@ pub fn route_key(
         editor.area_mut().insert_newline();
         true
     } else {
-        editor.area_mut().input_without_shortcuts(key)
+        editor_input(editor, key)
     };
     if changed {
         editor.bump();
@@ -411,7 +411,7 @@ fn typed_palette_key(
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         return None;
     }
-    if editor.area_mut().input_without_shortcuts(key) {
+    if editor_input(editor, key) {
         editor.bump();
     }
     follow_typed_line(state, ui, editor)
@@ -535,6 +535,18 @@ fn follow_typed_line(state: &State, ui: &mut UiState, editor: &Editor) -> Option
     None
 }
 
+fn editor_input(editor: &mut Editor, key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Left
+        | KeyCode::Right
+        | KeyCode::Up
+        | KeyCode::Down
+        | KeyCode::Home
+        | KeyCode::End => editor.area_mut().input(key),
+        _ => editor.area_mut().input_without_shortcuts(key),
+    }
+}
+
 fn close_palette(ui: &mut UiState) {
     ui.overlay = None;
     ui.palette_typed = false;
@@ -630,4 +642,33 @@ pub fn route_paste(
         return follow_typed_line(state, ui, editor);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_keys_navigate_multiline_drafts_without_editing() {
+        let mut editor = Editor::new();
+        editor.set_text("first\nsecond");
+        let revision = editor.revision();
+        for (code, expected) in [
+            (KeyCode::Right, (0, 1)),
+            (KeyCode::End, (0, 5)),
+            (KeyCode::Down, (1, 5)),
+            (KeyCode::Home, (1, 0)),
+            (KeyCode::Right, (1, 1)),
+            (KeyCode::Left, (1, 0)),
+            (KeyCode::Up, (0, 0)),
+        ] {
+            assert!(!editor_input(
+                &mut editor,
+                KeyEvent::new(code, KeyModifiers::NONE)
+            ));
+            assert_eq!(editor.area().cursor(), expected);
+        }
+        assert_eq!(editor.revision(), revision);
+        assert_eq!(editor.text(), "first\nsecond");
+    }
 }

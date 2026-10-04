@@ -36,6 +36,7 @@ export interface PauseToken { incarnation: string; hold_id: string }
 
 /** Host -> webview messages. */
 export type HostToWebview = { generation?: number } & (
+  | { type: "compaction"; operationId: string; pending: boolean; text: string; ok?: boolean }
   | { type: "subagents"; parentId: string; items: ChildInfo[] }
   | { type: "childView"; child?: ChildInfo; parentId?: string; parentTitle?: string }
   | { type: "status"; state: "connecting" | "ready" | "busy" | "error"; message?: string }
@@ -136,6 +137,7 @@ export type WebviewToHost = { generation?: number } & (
 
 /** What the chat view needs from the host side; implemented by the cognition bridge. */
 export interface ChatBackend {
+  publishCompaction(): void;
   dispose(): void;
   captureChildControl(parentId: string, childId: string, action: "stop" | "continue", generation?: number): object;
   publishSubagents(): void;

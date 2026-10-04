@@ -4,6 +4,18 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **VS Code pickers are searchable.** Model, skill, variant, command and conversation lists open
+  with a search field: match names, model IDs or descriptions, see the number of matches and
+  choose with the arrow keys and Enter. Escape clears the search before closing. Long lists show
+  the first 50 matches and ask you to narrow the search instead of drawing hundreds of rows.
+- **VS Code compaction no longer looks frozen.** A “Compacting the conversation…” indicator
+  stays visible until completion or refusal, and the context meter is marked as updating.
+  The composer stays usable and explains that messages sent now are queued until compaction ends;
+  the command's own completion replaces the progress
+  row with the result, and failures show their reason without losing your draft.
+
 ## [0.4.6] - 2026-10-04
 
 The VS Code chat gets the terminal client's controls: slash commands, subagents and the context

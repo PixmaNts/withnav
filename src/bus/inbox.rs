@@ -227,6 +227,28 @@ impl ActorInbox {
                 actor.driver_task = Some(text.clone());
             }
             actor.push_user_with_provenance(text, cmd.user_provenance());
+            for block in cmd.content {
+                if let crate::bus::command::ContentBlock::LoadedSkill { name, content } = block {
+                    use crate::provider::openai::{ChatMessage, RequestFunction, RequestToolCall};
+                    let id = format!("skill:{}", cmd.command_id);
+                    actor.transcript.push(ChatMessage::Assistant {
+                        content: None,
+                        reasoning_content: None,
+                        tool_calls: vec![RequestToolCall {
+                            id: id.clone(),
+                            kind: "function".into(),
+                            function: RequestFunction {
+                                name: "skill".into(),
+                                arguments: serde_json::json!({"name":name}).to_string(),
+                            },
+                        }],
+                    });
+                    actor.transcript.push(ChatMessage::Tool {
+                        tool_call_id: id,
+                        content,
+                    });
+                }
+            }
         }
         outcome
     }

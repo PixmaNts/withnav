@@ -36,6 +36,15 @@ pub(super) async fn accept(
         )));
     }
     command.validate_content()?;
+    if command
+        .content
+        .iter()
+        .any(|block| matches!(block, crate::bus::command::ContentBlock::Skill { .. }))
+    {
+        return Err(ServerError::MalformedBody(
+            "skill selection must be resolved by the session service".into(),
+        ));
+    }
     route(handle, command).await
 }
 

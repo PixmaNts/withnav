@@ -409,6 +409,19 @@ pub struct AgentYield {
     pub details: Option<Value>,
 }
 
+/// Read-only catalog projection; this is an HTTP body, not a new event kind.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct SkillsBody {
+    pub skills: Vec<SkillEntry>,
+    pub disabled_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SkillEntry {
+    pub name: String,
+    pub description: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskDone {
     pub task_id: Ulid,

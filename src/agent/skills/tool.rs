@@ -182,7 +182,7 @@ fn opened_path(file: &std::fs::File, path: &Path) -> Result<PathBuf, String> {
     }
 }
 
-fn load(skill: &Skill, roots: &[PathBuf]) -> ToolResult {
+pub(super) fn load(skill: &Skill, roots: &[PathBuf]) -> ToolResult {
     let unreadable = |why: String| {
         ToolResult::error(
             "skill_unreadable",

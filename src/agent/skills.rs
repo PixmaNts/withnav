@@ -144,6 +144,39 @@ pub struct Skills {
 }
 
 impl Skills {
+    /// The same ranked, bounded prefix offered in the model's catalog.
+    pub fn listed(&self) -> Vec<&Skill> {
+        let mut skills: Vec<_> = self
+            .winners
+            .values()
+            .filter(|skill| !skill.disabled)
+            .collect();
+        skills.sort_by(|a, b| a.rank.cmp(&b.rank).then_with(|| a.name.cmp(&b.name)));
+        skills.truncate(self.catalog_listed);
+        skills
+    }
+
+    /// Loads with the same provenance, resource listing and bounds as the skill tool.
+    pub async fn load_listed(&self, name: &str) -> crate::tools::ToolResult {
+        let Some(skill) = self
+            .listed()
+            .into_iter()
+            .find(|skill| skill.name == name)
+            .cloned()
+        else {
+            return crate::tools::ToolResult::error(
+                "skill_unknown",
+                format!("no listed skill with the id {name:?}"),
+            );
+        };
+        let roots = self.roots.clone();
+        tokio::task::spawn_blocking(move || tool::load(&skill, &roots))
+            .await
+            .unwrap_or_else(|error| {
+                crate::tools::ToolResult::error("skill_unreadable", error.to_string())
+            })
+    }
+
     /// Discovers the skills of `workspace`. Blocking file I/O: call it from a
     /// blocking context.
     pub fn load(roots: &RulesRoots, workspace: &Path) -> Self {

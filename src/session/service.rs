@@ -91,6 +91,7 @@ pub enum Lifecycle {
 /// so no lock is ever held across an await.
 #[derive(Clone)]
 pub struct SessionHandle {
+    pub(crate) skills: Arc<Skills>,
     pub(crate) publications: Arc<Mutex<Vec<CancellationToken>>>,
     pub incarnation: Ulid,
     /// Bounded per-actor command transport (message routes post here).
@@ -120,6 +121,8 @@ pub struct SessionHandle {
     /// Owner of this session when it is a background child.
     pub parent_session_id: Option<SessionId>,
 }
+
+pub use crate::bus::event::{SkillEntry, SkillsBody};
 
 /// The model selection of a live session, as the service sees it: the alias,
 /// its saved resolution, the variant chosen on it and what it offers are one
@@ -1105,12 +1108,87 @@ impl Service {
     /// active, the target the root agent and the content text-only. The
     /// caller names the source actor. `message.received` is sequenced before
     /// the command reaches the inbox, and only for an accepted command.
-    pub async fn send(&self, command: Command) -> Result<MessageAccepted, ServerError> {
+    pub async fn send(&self, mut command: Command) -> Result<MessageAccepted, ServerError> {
         let handle = self.routable_handle(command.session_id).await?;
         if handle.parent_session_id.is_some() {
             return Err(ServerError::ChildReadOnly);
         }
+        command.validate_content()?;
+        if command
+            .content
+            .iter()
+            .any(|block| matches!(block, crate::bus::command::ContentBlock::LoadedSkill { .. }))
+        {
+            return Err(ServerError::MalformedBody(
+                "loaded skill content is server-only".into(),
+            ));
+        }
+        let names: Vec<_> = command
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                crate::bus::command::ContentBlock::Skill { name } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        if names.len() > 1 {
+            return Err(ServerError::MalformedBody(
+                "select one skill per message".into(),
+            ));
+        }
+        if let Some(name) = names.first() {
+            if !command.from_driver()
+                || handle.status.selection.current().tools.get("skill") == Some(&false)
+            {
+                return Err(ServerError::MalformedBody(
+                    "this agent cannot use the skill tool".into(),
+                ));
+            }
+            let result = handle.skills.load_listed(name).await;
+            if result.status != crate::tools::ToolStatus::Ok {
+                return Err(ServerError::MalformedBody(
+                    result
+                        .error
+                        .map(|error| format!("{}: {}", error.code, error.message))
+                        .unwrap_or(result.output),
+                ));
+            }
+            for block in &mut command.content {
+                if matches!(block, crate::bus::command::ContentBlock::Skill { .. }) {
+                    *block = crate::bus::command::ContentBlock::LoadedSkill {
+                        name: name.clone(),
+                        content: result.output.clone(),
+                    };
+                }
+            }
+        }
         accept(&handle, command).await
+    }
+
+    /// Lists only the session snapshot's catalog-visible skills and current tool policy.
+    pub async fn skills(&self, id: SessionId) -> Result<SkillsBody, ServerError> {
+        let handle = self.routable_handle(id).await?;
+        let allowed = handle.status.selection.current().tools.get("skill") != Some(&false);
+        Ok(SkillsBody {
+            skills: if allowed {
+                handle
+                    .skills
+                    .listed()
+                    .into_iter()
+                    .map(|skill| SkillEntry {
+                        name: skill.name.clone(),
+                        description: skill
+                            .description
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    })
+                    .collect()
+            } else {
+                vec![]
+            },
+            disabled_reason: (!allowed).then(|| "this agent cannot use the skill tool".into()),
+        })
     }
 
     pub async fn continue_child(
@@ -2191,6 +2269,7 @@ impl Service {
             ContextTracker::new(limits, actor.context_breakdown()),
             actor.system_prompt.clone(),
         );
+        let skills = actor.skills.clone();
         let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn_with_completion(
             session_id,
             actor,
@@ -2203,6 +2282,7 @@ impl Service {
         ))));
 
         let handle = SessionHandle {
+            skills,
             publications: Arc::default(),
             incarnation: Ulid::new(),
             inbox_tx,

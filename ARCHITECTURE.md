@@ -123,6 +123,16 @@ generation, so late results of its previous session are ignored. Picking a model
 conversation sends `/model <alias>` on that same session; on an empty tab it changes the starting
 configuration. A conversation is created on the first message, not before.
 
+**Driver-selected skills.** `/skills` reads `GET /v1/sessions/{id}/skills`: the session snapshot's
+catalog-listed names and descriptions, or a disabled reason when its agent disallows `skill`.
+The searchable picker fills `/skill <name> ` without sending anything. Sending adds a typed
+`{type:"skill",name}` content block beside the driver's text; with no request the text is
+`Apply the <name> skill.`. Session admission resolves one listed skill through the skill tool's
+bounded loader before accepting anything. The inbox appends a synthetic assistant `skill` call
+and its tool result after the user message, before the first provider request. Unknown, omitted,
+disabled or unreadable selections refuse the whole message; clients cannot supply loaded content.
+This does not change the event catalog or execute a skill's scripts.
+
 **Permission prompts (terminal client).** `permission.requested` adds a `BlockKind::Permission` to the
 tab and its id to `Conversation::open_permissions`; the matching `permission.resolved` closes it and
 settles the held tool (denied, or interrupted on a cancel or an expiry). Because both are durable

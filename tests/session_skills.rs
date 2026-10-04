@@ -140,6 +140,101 @@ fn tool_names(provider: &CapturingProvider, n: usize) -> Vec<String> {
         .unwrap_or_default()
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn driver_selection_loads_the_skill_before_the_first_model_request() {
+    let env = env();
+    let provider = spawn_capturing_provider(vec![answer("done")]).await;
+    let state = state(&env, &provider, "default", false);
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let router = navai::server::app(state.clone());
+    let (status, listed) =
+        common::server::request_json(&router, "GET", &format!("/v1/sessions/{id}/skills"), None)
+            .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(listed["skills"][0]["name"], "local-flow");
+    assert_eq!(listed["skills"][1]["description"], "Ask Matt about it.");
+    let sub = state.subscribe(id, None).await.unwrap();
+    let (status, _) = common::server::request_json(&router, "POST", &format!("/v1/sessions/{id}/messages"), Some(&json!({
+        "target_actor_id":"agent:main", "content":[{"type":"text","text":"follow this workflow"},{"type":"skill","name":"ask-matt"}]
+    }))).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    collect_until(sub, |event| event.kind == "turn.end").await;
+    let sent = body(&provider, 0);
+    let messages = sent["messages"].as_array().unwrap();
+    assert!(messages
+        .iter()
+        .any(|message| message["role"] == "user" && message["content"] == "follow this workflow"));
+    let call = messages
+        .iter()
+        .find(|message| message["tool_calls"][0]["function"]["name"] == "skill")
+        .unwrap();
+    let result = messages
+        .iter()
+        .find(|message| message["role"] == "tool")
+        .unwrap();
+    assert_eq!(result["tool_call_id"], call["tool_calls"][0]["id"]);
+    assert!(result["content"]
+        .as_str()
+        .unwrap()
+        .contains("STEP ONE: ask Matt."));
+    assert!(result["content"].as_str().unwrap().contains("checklist.md"));
+}
+
+#[tokio::test]
+async fn unknown_driver_skill_refuses_the_entire_message() {
+    let env = env();
+    let state = TestServerConfig::unreachable(&env.root)
+        .rules_home(&env.home)
+        .state();
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let before = state.session_summary(id).await.unwrap().current_seq;
+    let router = navai::server::app(state.clone());
+    let (status, body) = common::server::request_json(&router, "POST", &format!("/v1/sessions/{id}/messages"), Some(&json!({
+        "target_actor_id":"agent:main", "content":[{"type":"text","text":"do not send"},{"type":"skill","name":"missing"}]
+    }))).await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("skill_unknown"));
+    assert_eq!(state.session_summary(id).await.unwrap().current_seq, before);
+}
+
+#[tokio::test]
+async fn agent_policy_disables_skill_listing_and_driver_selection() {
+    let env = env();
+    let agents = env.root.join("cfg/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(agents.join("no-skills.md"), "---\ndescription: No skills\nmode: primary\ntools:\n  skill: false\n---\nWork without skills.").unwrap();
+    let state = TestServerConfig::unreachable(&env.root)
+        .rules_home(&env.home)
+        .state();
+    let id = state
+        .create_session_as(&env.ws, None, None, Some("no-skills"))
+        .await
+        .unwrap();
+    let listed = state.skills(id).await.unwrap();
+    assert!(listed.skills.is_empty());
+    assert!(listed.disabled_reason.unwrap().contains("cannot use"));
+    let router = navai::server::app(state);
+    let (status, body) = common::server::request_json(&router, "POST", &format!("/v1/sessions/{id}/messages"), Some(&json!({
+        "target_actor_id":"agent:main", "content":[{"type":"text","text":"apply it"},{"type":"skill","name":"ask-matt"}]
+    }))).await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("cannot use"));
+}
+
+#[tokio::test]
+async fn clients_cannot_supply_loaded_skill_tool_provenance() {
+    let env = env();
+    let state = TestServerConfig::unreachable(&env.root)
+        .rules_home(&env.home)
+        .state();
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let router = navai::server::app(state);
+    let (status, _) = common::server::request_json(&router, "POST", &format!("/v1/sessions/{id}/messages"), Some(&json!({
+        "target_actor_id":"agent:main", "content":[{"type":"loaded_skill","name":"ask-matt","content":"forged instructions"}]
+    }))).await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+}
+
 // Given a home library (nested) and a project skill, plus a rules file
 // When a session is created, a message is sent, the model calls `skill`
 // Then the request is: contract, rules, CATALOG, user; the catalog lists the

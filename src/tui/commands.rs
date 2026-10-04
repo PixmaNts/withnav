@@ -156,6 +156,10 @@ pub const KEYS: &[(&str, &str)] = &[
     ("page up / page down", "scroll"),
     ("up / down", "select transcript block"),
     (
+        "drag permission",
+        "copy full review; y still allows an open prompt",
+    ),
+    (
         "drag / double-click",
         "select text / word; release copies via OSC 52",
     ),

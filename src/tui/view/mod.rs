@@ -15,6 +15,8 @@ use crate::tui::{
     state::{State, UiState},
     theme::Theme,
 };
+#[cfg(test)]
+pub(crate) use permission::test_prompt;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
@@ -22,6 +24,7 @@ use ratatui::{
     Frame,
 };
 pub(crate) use transcript::copy_block;
+pub(crate) use transcript::permission_sections;
 
 /// Parsed markdown, one cache per tab conversation: block ids are only unique within a session, so
 /// two tabs never share an entry.

@@ -281,7 +281,24 @@ pub fn draw(
                 _ => (1, 1),
             };
             let mut local = super::selection::TranscriptMap::default();
-            let rows = std::sync::Arc::new(super::selection::rows(text, width, &mut local, prefix, body_start));
+            let mut rows = super::selection::rows(text, width, &mut local, prefix, body_start);
+            if let BlockKind::Permission(p) = &b.kind {
+                let sections = permission_sections(p, state);
+                let mut ranges = Vec::new();
+                for section in &sections {
+                    let start = local.text.len();
+                    local.text.push_str(section);
+                    local.text.push('\n');
+                    ranges.push((start, local.text.len()));
+                }
+                let tail = rows.len().saturating_sub(if ui.deny_draft(&p.request_id).is_some() { 2 } else { 1 });
+                for (i,row) in rows.iter_mut().enumerate() {
+                    let section = if i == 0 { 0 } else if i >= tail { 3 } else if i == 1 && !p.reason.is_empty() { 1 } else { 2 };
+                    let (a,b) = ranges[section];
+                    row.ranges = (0..row.line.width().min(usize::from(width))).map(|x| (x as u16,1,a,b)).collect();
+                }
+            }
+            let rows = std::sync::Arc::new(rows);
             if cacheable { cache.wrapped.insert(b.id.clone(), (key, rows.clone(), local.text.clone())); }
             let offset = map.text.len();
             map.text.push_str(&local.text);
@@ -417,6 +434,28 @@ fn content_key(text: &str) -> u64 {
     h.finish()
 }
 
+pub(crate) fn permission_sections(
+    p: &crate::tui::state::PermissionPrompt,
+    state: &State,
+) -> [String; 4] {
+    let id = format!("tool:{}", p.tool_call_id);
+    let call = state
+        .conversation
+        .blocks
+        .iter()
+        .find_map(|b| match &b.kind {
+            BlockKind::ToolCall { args, .. } if b.id == id && p.child_session_id.is_none() => {
+                Some(args)
+            }
+            _ => None,
+        });
+    super::permission::copy_sections(
+        p,
+        call,
+        state.answered_permission.as_deref() == Some(&p.request_id),
+    )
+}
+
 fn sender(block: &Block, state: &State) -> String {
     match &block.kind {
         BlockKind::Message { source, .. } => match Origin::of(source) {
@@ -489,6 +528,65 @@ fn layout_key(block: &Block, width: u16, ui: &UiState) -> String {
 mod selection_tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
+    #[test]
+    fn permission_selection_copies_full_sections_and_sender_group() {
+        let mut state = State::default();
+        let mut p = super::super::permission::test_prompt();
+        p.reason = "reason ".repeat(200);
+        let command = "echo command ".repeat(200);
+        p.arguments = serde_json::json!({"command":command}).to_string();
+        state.conversation.blocks.push(Block {
+            id: "permission".into(),
+            kind: BlockKind::Permission(p.clone()),
+        });
+        state.conversation.blocks.push(Block {
+            id: "reply".into(),
+            kind: BlockKind::Message {
+                source: "user".into(),
+                text: "thanks".into(),
+            },
+        });
+        let mut cache = MarkdownCache::default();
+        let mut map = super::super::selection::TranscriptMap::default();
+        let ui = UiState {
+            follow_bottom: true,
+            ..Default::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        terminal
+            .draw(|f| {
+                draw(
+                    f,
+                    Rect::new(0, 0, 60, 20),
+                    &state,
+                    &ui,
+                    &ui.theme.palette(),
+                    &mut cache,
+                    &mut map,
+                );
+            })
+            .unwrap();
+        let (permission, _) = &map.senders[0];
+        let first = map
+            .cells
+            .iter()
+            .find(|(_, _, a, _)| *a == permission.start)
+            .unwrap();
+        let last = map
+            .cells
+            .iter()
+            .find(|(_, _, _, b)| *b == permission.end)
+            .unwrap();
+        let a = map.hit(first.0, first.1).unwrap().0;
+        let b = map.hit(last.0, last.1).unwrap().1;
+        let selected = map.selected_text(a, b).unwrap();
+        assert!(selected.contains(&p.reason) && selected.contains(&command));
+        assert!(selected.ends_with("allowed once\n"));
+        let all = map.selected_text(0, map.text.len()).unwrap();
+        assert!(all.starts_with("Permission:\nPERMISSION"));
+        assert!(all.contains("\n\nYou:\nthanks"));
+        assert!(!all.contains('│'));
+    }
     #[test]
     fn copy_sender_names_preserve_subagent_and_notice_origins() {
         let state = State::default();

@@ -4,6 +4,11 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Fixed
+- **Terminal client**: permission requests can be selected and copied like other messages, in full
+  (whole reason and command, no borders or truncation; a write's content up to 4096 bytes). While a
+  request is open, `y` still allows it: drag with the mouse to copy it; `y` copies an answered one.
+
 ## [0.4.2] - 2026-10-04
 
 Every file change and shell command is now reviewed one by one, conversations no longer stop after

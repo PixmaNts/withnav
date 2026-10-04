@@ -112,7 +112,8 @@ pub fn outcome_text(name: &str, ok: bool, data: Option<&Value>, error: Option<&s
 
 /// `842`, `42k`, `1M`, `1.5M`: rounded for a one-line summary.
 pub fn tokens(n: u64) -> String {
-    if n >= 1_000_000 {
+    // 999_500 and up round to 1000k: show them as 1M.
+    if n >= 999_500 {
         let tenths = (n + 50_000) / 100_000;
         return if tenths.is_multiple_of(10) {
             format!("{}M", tenths / 10)
@@ -124,4 +125,22 @@ pub fn tokens(n: u64) -> String {
         return format!("{}k", (n + 500) / 1000);
     }
     n.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tokens;
+    use crate::tui::view::status::number;
+
+    #[test]
+    fn a_million_is_never_shown_as_a_thousand_k() {
+        assert_eq!(tokens(999_499), "999k");
+        assert_eq!(tokens(999_500), "1M");
+        assert_eq!(tokens(1_000_000), "1M");
+        assert_eq!(tokens(1_500_000), "1.5M");
+        assert_eq!(number(Some(1_000_000)), "1M");
+        assert_eq!(number(Some(999_950)), "1M");
+        assert_eq!(number(Some(999_900)), "999.9k");
+        assert_eq!(number(Some(200_000)), "200k");
+    }
 }

@@ -4,6 +4,16 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
+- **Folder grants persist**: an "allow folder" answer is saved per workspace in
+  `<data dir>/grants.json` and applies to later sessions in that workspace. Subagents keep theirs in
+  memory. Delete the workspace's entry in that file to revoke.
+
+### Fixed
+
+- **Terminal client**: a 1M context window no longer shows as `1000k`.
+
 ### Fixed
 
 - **Terminal client**: moving or resizing the terminal window no longer closes the client with

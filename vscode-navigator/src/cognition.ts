@@ -31,6 +31,7 @@ class ConversationState {
   selectedModel: string | undefined;
   context: ContextSnapshot | undefined;
   contextEpoch = 0;
+  contextRefresh: { session: string; generation: number; pending: boolean; done: Promise<void> } | undefined;
   retiredIncarnations: string[] = [];
   resumeId: string | undefined;
   streamAbort: AbortController | undefined;
@@ -445,13 +446,29 @@ export class CognitionBackend implements ChatBackend {
     const origin = this.state;
     const session = this.currentConversationId();
     const generation = origin.streamGeneration;
-    const epoch = ++origin.contextEpoch;
+    ++origin.contextEpoch;
     if (!session) return;
-    try {
-      const snapshot = await this.request(`/v1/sessions/${encodeURIComponent(session)}/context`, { method: "GET" });
-      if (origin !== this.state || generation !== this.state.streamGeneration || session !== this.currentConversationId() || epoch !== origin.contextEpoch) return;
-      this.acceptContext(snapshot, true);
-    } catch { /* Keep the last estimate; never substitute last-call usage. */ }
+    const active = origin.contextRefresh;
+    if (active?.session === session && active.generation === generation) {
+      active.pending = true;
+      return active.done;
+    }
+    const refresh = { session, generation, pending: false, done: Promise.resolve() };
+    origin.contextRefresh = refresh;
+    const current = (): boolean => origin === this.state && generation === this.state.streamGeneration && session === this.currentConversationId();
+    refresh.done = (async () => {
+      do {
+        refresh.pending = false;
+        const epoch = origin.contextEpoch;
+        try {
+          const snapshot = await this.request(`/v1/sessions/${encodeURIComponent(session)}/context`, { method: "GET" });
+          if (current() && epoch === origin.contextEpoch) this.acceptContext(snapshot, true);
+        } catch { /* Keep the last estimate; never substitute last-call usage. */ }
+      } while (current() && refresh.pending);
+    })().finally(() => {
+      if (origin.contextRefresh === refresh) origin.contextRefresh = undefined;
+    });
+    return refresh.done;
   }
 
   private emitConversations(): void {

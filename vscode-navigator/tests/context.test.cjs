@@ -115,6 +115,29 @@ test("each stream connection refreshes the next-request snapshot", async t => {
   backend.dispose();
 });
 
+test("foreign-incarnation bursts coalesce into one in-flight GET and one trailing reconciliation", async t => {
+  const backend = new CognitionBackend(); backend.endpoint = { port: 1234, token: "secret" }; backend.state.session = "A";
+  backend.acceptContext(snapshot(1, { incarnation: "J" }), true);
+  const replies = []; let concurrent = 0; let maximum = 0;
+  t.mock.method(globalThis, "fetch", () => {
+    concurrent++; maximum = Math.max(maximum, concurrent);
+    return new Promise(resolve => replies.push(body => { concurrent--; resolve(new Response(JSON.stringify(body))); }));
+  });
+  const refresh = backend.fetchContext();
+  for (let seq = 1; seq <= 100; seq++) backend.mapEvent({ seq, kind: "context.updated", payload: snapshot(seq, { incarnation: "I" }) });
+  assert.equal(replies.length, 1); assert.equal(maximum, 1);
+  assert.equal(backend.currentContext().incarnation, "J");
+  replies[0](snapshot(999, { incarnation: "I" }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(replies.length, 2); assert.equal(maximum, 1);
+  assert.equal(backend.currentContext().incarnation, "J");
+  replies[1](snapshot(2, { incarnation: "J" })); await refresh;
+  assert.equal(replies.length, 2); assert.equal(backend.currentContext().revision, 2);
+  backend.mapEvent({ seq: 101, kind: "context.updated", payload: snapshot(3, { incarnation: "J" }) });
+  assert.equal(backend.currentContext().revision, 3); assert.equal(replies.length, 2);
+  backend.dispose();
+});
+
 test("real webview shows estimate and detail, rejects old generation, hides on new conversation", () => {
   const { JSDOM } = require("jsdom"); const fs = require("node:fs");
   const { chatHtml } = require("../out/tests/chatHtml.js");

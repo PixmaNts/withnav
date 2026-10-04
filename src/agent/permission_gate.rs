@@ -404,7 +404,24 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
             .destination
             .as_ref()
             .is_some_and(|path| path.starts_with(root))
-    }) {
+    }) && !actor
+        .scratch_identity
+        .as_ref()
+        .is_some_and(|identity| identity.valid())
+    {
+        flags.outside = true;
+    }
+    if actor
+        .scratch_identity
+        .as_ref()
+        .is_some_and(|identity| identity.valid())
+        && actor.scratch_dir.as_ref().is_some_and(|root| {
+            needed
+                .destination
+                .as_ref()
+                .is_some_and(|path| path.starts_with(root))
+        })
+    {
         flags.outside = false;
     }
     let Some(input) = describe(actor, call, needed, &flags) else {

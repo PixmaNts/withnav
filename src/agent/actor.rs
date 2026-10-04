@@ -45,6 +45,7 @@ pub enum PendingInteraction {
 }
 
 pub struct AgentActor {
+    pub scratch_identity: Option<super::scratch::Identity>,
     pub protected_config_root: Option<std::path::PathBuf>,
     pub permission_reviewer_unavailable: &'static str,
     pub scratch_dir: Option<std::path::PathBuf>,
@@ -131,6 +132,7 @@ impl AgentActor {
         cancel: CancellationToken,
     ) -> Self {
         Self {
+            scratch_identity: None,
             protected_config_root: None,
             permission_reviewer_unavailable: "no alias",
             scratch_dir: None,

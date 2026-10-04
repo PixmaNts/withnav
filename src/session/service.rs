@@ -2087,6 +2087,8 @@ impl Service {
                     } else {
                         actor.tool_context.writable_roots.push(path.clone());
                         actor.scratch_dir = Some(path.clone());
+                        actor.scratch_identity =
+                            crate::agent::scratch::Identity::capture(&path).ok();
                     }
                 }
                 Err(error) => crate::agent::scratch::warn_once(&error),

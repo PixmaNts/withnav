@@ -4,6 +4,37 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-10-04
+
+The per-call review now treats your own request as what you want, and the terminal client shows
+who approved each call.
+
+### Changed
+
+- **Your request counts in the permission review**: Jev and metacognition receive your latest
+  request as your intent, so a write you explicitly asked for (for example a file in your home
+  folder) can be approved instead of refused as "untrusted". Its text is never an instruction to
+  the reviewers, and claims made by the agent, a subagent or a tool still prove nothing. Navai's
+  config directory still always asks you.
+- **Incomplete requests never authorize**: your request is sent to the reviewers in full when it
+  fits; when it does not, every reviewed `bash`, `write` and `edit` call asks you.
+- `git` commands stay reviewed as changes: even `git status` or `git diff` can run programs
+  configured in the repository.
+
+### Added
+
+- **Terminal client**: a tool block says who approved a reviewed call (`auto · Jev`,
+  `auto · metacognition`, `driver approved`); expanded, it shows the reason, Jev's verdicts and the
+  plan role check. Copies include it.
+- **Review evidence**: the permission review records Jev's verdicts, the deterministic checks that
+  tightened the call, the reviewer models and their response times on the tool and permission
+  events, also when you approved the call yourself.
+
+### Fixed
+
+- Four tests that failed now and then on a loaded machine; when `git status` for the Changes panel
+  passes its deadline, Navai now ends and reaps the process itself.
+
 ## [0.4.3] - 2026-10-04
 
 Fixes from trying 0.4.2's per-call permission review, including a security fix: metacognition could

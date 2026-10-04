@@ -57,6 +57,8 @@ impl std::fmt::Display for Scope {
 /// A gated call waiting for a decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_gate: Option<Box<Value>>,
     pub id: Ulid,
     pub tool_call_id: String,
     pub tool: String,
@@ -79,6 +81,7 @@ impl PermissionRequest {
             Scope::Origin(origin) => format!("`{}` reaches {origin}", call.name),
         };
         Self {
+            permission_gate: None,
             id: Ulid::new(),
             tool_call_id: call.id.clone(),
             tool: call.name.clone(),

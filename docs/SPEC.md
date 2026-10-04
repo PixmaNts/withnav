@@ -2169,3 +2169,25 @@ Version 0.1 is complete when all of the following are true:
 15. No out-of-scope provider, UI, runtime, marketplace, self-recompile, or forced-todo feature has entered the design.
 
 The central success criterion is not feature count. It is that one small, owned agent loop can support many faces and behaviors through a coherent event-driven boundary without fighting its operator.
+# Permission review evidence
+
+Existing `tool.pre_call.permission_gate`, `tool.post_call.metadata.permission_gate` and
+`permission.requested.permission_gate` may carry:
+
+```json
+{
+  "policy_version": 1,
+  "source": "jev",
+  "reason": "Read-only or low-risk project effects",
+  "verdicts": {"effect": "read_only", "scope": "inside", "risk": "low"},
+  "overrides": ["read_write", "outside_project", "risky"],
+  "models": {"jev": "model-id", "metacognition": "model-id"},
+  "latency_ms": {"jev": 12, "metacognition": 500},
+  "truncated": false
+}
+```
+
+`source` is `jev`, `metacognition` or `driver`. Verdicts are validated typed Jev answers, not
+the deterministic effective classification. Override names are fixed. Unknown model ids, verdicts
+and latencies are omitted. `truncated` reports bounded context excerpts, never cut tool arguments.
+Old events without these optional fields remain valid. No event kind is added; the catalog stays 22.

@@ -6,8 +6,10 @@ requests land in `develop`.
 
 ### Changed
 
-- The VS Code context meter now shows what the next request will send, against the usable input
-  budget, with a breakdown on hover and the provider's last request count clearly labelled.
+- **VS Code chat**: the context meter shows what the next request will send, as the terminal
+  client does (`~42k / 1M · 4%`), instead of the last call's usage. Hover or focus it for the
+  breakdown (system, rules, skills catalog, tools, messages), the input budget, the output reserve
+  and the provider's count for the last request.
 
 ## [0.4.5] - 2026-10-04
 

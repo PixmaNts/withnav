@@ -34,8 +34,9 @@ export function tokens(n: number): string {
 }
 
 export function contextMeter(snapshot: ContextSnapshot) {
-  // The server percent uses the full window; this meter uses the usable input budget.
-  const percent = snapshot.input_budget > 0 ? Math.round(snapshot.estimate_total / snapshot.input_budget * 100) : snapshot.estimate_total > 0 ? 100 : 0;
+  // The server's percent (estimate over the full window) is what the terminal client shows too, so
+  // one conversation reads the same in both clients; the input budget stays in the detail.
+  const percent = snapshot.percent;
   const rows = [
     "Next request · estimated tokens",
     `System: ${tokens(snapshot.breakdown.system)}`,
@@ -51,5 +52,5 @@ export function contextMeter(snapshot: ContextSnapshot) {
   if (snapshot.last_usage) rows.push(`Last request · provider count: ${tokens(snapshot.last_usage.prompt_tokens)} prompt + ${tokens(snapshot.last_usage.completion_tokens)} completion (step ${snapshot.last_usage.step})`);
   else rows.push("Last request · provider count: —");
   return { percent, fill: Math.min(100, percent), level: percent >= 90 ? "high" : percent >= 70 ? "mid" : "low",
-    label: `~${tokens(snapshot.estimate_total)} / ${tokens(snapshot.input_budget)} · ${percent}%`, detail: rows.join("\n") };
+    label: `~${tokens(snapshot.estimate_total)} / ${tokens(snapshot.window)} · ${percent}%`, detail: rows.join("\n") };
 }

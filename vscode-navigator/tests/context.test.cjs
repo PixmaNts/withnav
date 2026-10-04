@@ -10,12 +10,13 @@ const snapshot = (revision = 1, extra = {}) => ({ alias: "model", window: 100000
   breakdown: { system: 842, rules: 1000, skills_catalog: 2000, tools: 3000, messages: 35158 },
   output_reserve: 100000, margin: 100000, input_budget: 800000, percent: 4, revision, incarnation: "I", ...extra });
 
-test("next request mapping uses input budget, formats millions and labels last request", () => {
+test("next request mapping uses the server percent over the window, formats millions and labels last request", () => {
   for (const [n, text] of [[842,"842"],[42000,"42k"],[999500,"1M"],[1000000,"1M"],[1500000,"1.5M"]]) assert.equal(tokens(n), text);
-  const meter = contextMeter(snapshot(1, { estimate_total: 560000, last_usage: { prompt_tokens: 42000, completion_tokens: 842, step: 2 } }));
+  const meter = contextMeter(snapshot(1, { estimate_total: 700000, percent: 70, last_usage: { prompt_tokens: 42000, completion_tokens: 842, step: 2 } }));
   assert.equal(meter.percent, 70);
   assert.equal(meter.level, "mid");
-  assert.equal(contextMeter(snapshot(2, { estimate_total: 720000 })).level, "high");
+  assert.equal(contextMeter(snapshot(2, { estimate_total: 900000, percent: 90 })).level, "high");
+  assert.match(meter.label, /^~700k \/ 1M · 70%$/);
   assert.equal(contextMeter(snapshot()).level, "low");
   assert.match(meter.detail, /Window: 1M \(catalog\)/);
   assert.match(meter.detail, /Last request · provider count: 42k prompt \+ 842 completion/);
@@ -94,10 +95,10 @@ test("real webview shows estimate and detail, rejects old generation, hides on n
   receive({ type: "conversationOpened", id: "A", title: "Conversation A", generation: 2 });
   receive({ type: "usage", snapshot: snapshot(), generation: 2 });
   const gauge = dom.window.document.querySelector("#usage");
-  assert.equal(gauge.hidden, false); assert.match(gauge.textContent, /~42k \/ 800k · 5%/);
+  assert.equal(gauge.hidden, false); assert.match(gauge.textContent, /~42k \/ 1M · 4%/);
   assert.match(gauge.title, /Skills catalog: 2k/); assert.equal(gauge.tabIndex, 0);
-  receive({ type: "usage", snapshot: snapshot(99, { estimate_total: 800000 }), generation: 1 });
-  assert.match(gauge.textContent, /5%/);
+  receive({ type: "usage", snapshot: snapshot(99, { estimate_total: 800000, percent: 80 }), generation: 1 });
+  assert.match(gauge.textContent, /4%/);
   receive({ type: "conversationOpened", title: "New conversation", generation: 3 }); receive({ type: "history", items: [], generation: 3 });
   assert.equal(gauge.hidden, true); dom.window.close();
 });

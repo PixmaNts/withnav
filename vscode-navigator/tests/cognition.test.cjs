@@ -13,7 +13,7 @@ const shortened = text => `${text.slice(0, 2000)}\n...[output elided]...\n${text
 function setup(t, response = { accepted: true }, status = 200) {
   const backend = new CognitionBackend();
   backend.endpoint = { port: 1234, token: "secret" };
-  backend.session = "parent";
+  backend.state.session = "parent";
   const calls = [];
   t.mock.method(globalThis, "fetch", async (url, init) => {
     calls.push({ url, ...init });
@@ -69,7 +69,7 @@ test("duplicate permission clicks post once; late failure cannot change another 
   await backend.answerPermission("parent", "R", "deny");
   assert.equal(count, 1);
   backend.resetTranscript();
-  backend.session = "other";
+  backend.state.session = "other";
   finish(new Response(JSON.stringify({ error: "Old request" }), { status: 409 }));
   await answer;
   assert.equal(backend.hasOpenPermissions(), false);
@@ -108,20 +108,20 @@ test("budget Continue sends null token; refusal stays visible and retryable", as
   await assert.rejects(backend.controlPause("parent", pause.id, "continue"), /refused/);
   assert.deepEqual(JSON.parse(calls[0].body), { pause_token: null });
   assert.equal(backend.history().at(-1).state, "error");
-  assert.equal(backend.controls.pauses.size, 1);
+  assert.equal(backend.state.controls.pauses.size, 1);
 });
 
 test("Stop refusal preserves open session and pause; accepted Stop resolves it", async t => {
   const { backend, calls, apply } = setup(t, { accepted: false, actor_state: "running" });
   const pause = apply("agent.yield", { kind: "watchdog", details: { pause_token: { incarnation: "I", hold_id: "H" } } });
   await assert.rejects(backend.controlPause("parent", pause.id, "stop"), /Stop refused: running/);
-  assert.equal(backend.session, "parent");
+  assert.equal(backend.state.session, "parent");
   assert.equal(calls[0].url, "http://127.0.0.1:1234/v1/sessions/parent/stop");
   assert.equal(calls[0].body, undefined);
   t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ accepted: true })));
   await backend.controlPause("parent", pause.id, "stop");
-  assert.equal(backend.session, undefined);
-  assert.equal(backend.resumeId, "parent");
+  assert.equal(backend.state.session, undefined);
+  assert.equal(backend.state.resumeId, "parent");
   assert.equal(backend.history().at(-1).state, "resolved");
 });
 
@@ -186,7 +186,7 @@ test("sequential permission answers post once until durable resolution, failures
   await backend.answerPermission("parent", "R", "deny");
   assert.equal(calls.length, 1);
   apply("permission.resolved", { request_id: "R", resolution: "allow_once" });
-  assert.equal(backend.pendingControls.size, 0);
+  assert.equal(backend.state.pendingControls.size, 0);
   permission({ request_id: "retry" });
   let attempts = 0;
   t.mock.method(globalThis, "fetch", async () => {
@@ -197,7 +197,7 @@ test("sequential permission answers post once until durable resolution, failures
   await backend.answerPermission("parent", "retry", "deny");
   assert.equal(attempts, 2);
   backend.resetTranscript();
-  assert.equal(backend.pendingControls.size, 0);
+  assert.equal(backend.state.pendingControls.size, 0);
 });
 
 test("resolved historical child requests open no streams; open requests coalesce with concurrency capped at two", async t => {
@@ -230,7 +230,7 @@ test("resolved historical child requests open no streams; open requests coalesce
   backend.dispose();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(active, 0);
-  assert.equal(backend.childReadQueue.size, 0);
+  assert.equal(backend.state.childReadQueue.size, 0);
 });
 
 for (const action of ["switch", "dispose"]) {
@@ -251,7 +251,7 @@ for (const action of ["switch", "dispose"]) {
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(signal.aborted, true);
     assert.equal(cancelled, true);
-    assert.equal(backend.childReads.size, 0);
+    assert.equal(backend.state.childReads.size, 0);
   });
 }
 
@@ -273,7 +273,7 @@ test("child replay byte cap cancels oversized streams without enriching", async 
 
 test("slow parent replay finishes before any historical child enrichment starts", async t => {
   const { backend, calls } = setup(t);
-  backend.replayThrough = 3;
+  backend.state.replayThrough = 3;
   backend.handleFrame({ id: "1", envelope: { seq: 1, kind: "permission.requested", payload: {
     request_id: "historical", tool_call_id: "C", tool: "bash", arguments: "{}", child_session_id: "child",
   } } });
@@ -307,7 +307,7 @@ test("child request mismatch or ambiguous latest response keeps the request's ow
 
 test("host rejects an old generation even when session and pause ids collide", async t => {
   const { backend, calls, apply } = setup(t);
-  backend.streamGeneration = 2;
+  backend.state.streamGeneration = 2;
   const pause = apply("agent.yield", { kind: "watchdog", details: { pause_token: { incarnation: "B", hold_id: "H" } } }, 10);
   await assert.rejects(backend.controlPause("parent", pause.id, "continue", 1), /conversation changed/);
   await assert.rejects(backend.controlPause("parent", pause.id, "stop", 1), /conversation changed/);
@@ -316,7 +316,7 @@ test("host rejects an old generation even when session and pause ids collide", a
 
 test("delayed A creation after opening B cannot install A or send its message", async t => {
   const { backend, permission } = setup(t);
-  backend.session = undefined;
+  backend.state.session = undefined;
   backend.connect = async () => {};
   backend.listConversations = async () => [];
   let finishA;
@@ -336,7 +336,7 @@ test("delayed A creation after opening B cannot install A or send its message", 
   await assert.rejects(pending, /Send cancelled.*draft was kept/);
   assert.equal(backend.currentConversationId(), "B");
   assert.equal(backend.currentGeneration(), generation);
-  assert.equal(backend.controls.permissions.has("B-request"), true);
+  assert.equal(backend.state.controls.permissions.has("B-request"), true);
   assert.equal(requests.some(r => r.url.endsWith("/messages")), false);
   assert.equal(backend.history().some(m => m.type === "conversationOpened" && m.id === "A"), false);
   backend.dispose();
@@ -357,17 +357,17 @@ test("resumed server replay omitting historical session.end leaves old budget re
   apply("agent.yield", { kind: "budget" }, 10);
   apply("turn.end", { outcome: "yielded" }, 11);
   // Actual resumed subscriptions omit the old session.end at seq 12.
-  assert.equal(backend.controls.pauses.size, 0);
+  assert.equal(backend.state.controls.pauses.size, 0);
   assert.equal(messages.find(m => m.type === "pauseState").message, "Ended with the previous run");
   apply("agent.yield", { kind: "budget" }, 14);
-  assert.equal(backend.controls.pauses.size, 1);
+  assert.equal(backend.state.controls.pauses.size, 1);
   backend.dispose();
 });
 
 test("summary 503 retries then reconciles and releases child enrichment", async t => {
   const { backend, permission } = setup(t);
-  backend.replayThrough = Infinity;
-  backend.delivered.add(4);
+  backend.state.replayThrough = Infinity;
+  backend.state.delivered.add(4);
   permission({ child_session_id: "child" });
   backend.scheduleChildRead("child");
   let summaries = 0;
@@ -462,7 +462,7 @@ for (const status of [404, 503]) {
 
 test("server-wide catalog installs after bootstrap changes conversation generation", async t => {
   const { backend } = setup(t);
-  backend.session = undefined;
+  backend.state.session = undefined;
   backend.connect = async () => {};
   backend.listConversations = async () => [];
   let finish;
@@ -491,5 +491,108 @@ test("obsolete endpoint catalog cannot replace current models", async t => {
   finish(new Response(JSON.stringify({ models: [{ alias: "obsolete", model: "old" }] })));
   await pending;
   assert.equal(backend.models[0].alias, "current");
+  backend.dispose();
+});
+
+for (const child of [undefined, "child"]) {
+  test(`accepted ${child ? "mirrored child" : "root"} permission stays submitted across failed open`, async t => {
+    const { backend, permission } = setup(t);
+    backend.connect = async () => {};
+    permission({ request_id: "RA", child_session_id: child });
+    let posts = 0;
+    t.mock.method(globalThis, "fetch", async url => {
+      if (url.endsWith("/B")) return new Response(JSON.stringify({ error: "missing" }), { status: 404 });
+      posts++;
+      return new Response(JSON.stringify({ accepted: true }));
+    });
+    await backend.answerPermission("parent", "RA", "allow_once");
+    await assert.rejects(backend.openConversation("B"));
+    await backend.answerPermission("parent", "RA", "deny");
+    assert.equal(posts, 1);
+    assert.equal(backend.history().filter(m => m.type === "permissionState").at(-1).resolution, "pending");
+    backend.dispose();
+  });
+}
+
+for (const status of [200, 503]) {
+  test(`in-flight permission ${status} settles its restored conversation operation`, async t => {
+    const { backend, permission } = setup(t);
+    backend.connect = async () => {};
+    permission({ request_id: "RA", child_session_id: "child" });
+    let finish;
+    let posts = 0;
+    t.mock.method(globalThis, "fetch", async url => {
+      if (url.endsWith("/B")) return new Response(JSON.stringify({ error: "missing" }), { status: 404 });
+      posts++;
+      if (posts === 1) return new Promise(resolve => { finish = resolve; });
+      return new Response(JSON.stringify({ accepted: true }));
+    });
+    const pending = backend.answerPermission("parent", "RA", "allow_once");
+    const observed = pending.catch(error => error);
+    await assert.rejects(backend.openConversation("B"));
+    finish(new Response(JSON.stringify(status === 200 ? { accepted: true } : { error: "retryable" }), { status }));
+    const result = await observed;
+    if (status === 200) {
+      assert.equal(result, undefined);
+      await backend.answerPermission("parent", "RA", "deny");
+      assert.equal(posts, 1);
+    } else {
+      assert.match(result.message, /retryable/);
+      assert.equal(backend.history().at(-1).resolution, "error");
+      await backend.answerPermission("parent", "RA", "deny");
+      assert.equal(posts, 2);
+    }
+    backend.dispose();
+  });
+}
+
+test("failed open mid-stream preserves live-delta dedup and usage", async t => {
+  const { backend, apply } = setup(t);
+  backend.connect = async () => {};
+  apply("turn.start", { turn_id: "T" });
+  apply("llm.delta", { turn_id: "T", delta: { delta_type: "text", text: "Hello" } });
+  backend.state.lastUsed = 42;
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ error: "missing" }), { status: 404 }));
+  await assert.rejects(backend.openConversation("B"));
+  apply("llm.response", { turn_id: "T", message: { text: "Hello" } });
+  assert.equal(backend.history().filter(m => m.type === "delta").map(m => m.text).join(""), "Hello");
+  assert.equal(backend.state.lastUsed, 42);
+  backend.dispose();
+});
+
+test("failed open between tool calls preserves summary and approval evidence", async t => {
+  const { backend, apply } = setup(t);
+  backend.connect = async () => {};
+  const evidence = { source: "jev", policy_version: 1, reason: "Read only" };
+  apply("turn.start", { turn_id: "T" });
+  apply("tool.pre_call", { tool_call_id: "C", name: "bash", args: { command: "pwd" }, permission_gate: evidence });
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ error: "missing" }), { status: 404 }));
+  await assert.rejects(backend.openConversation("B"));
+  const tool = apply("tool.post_call", { tool_call_id: "C", name: "bash", status: "ok" });
+  assert.equal(tool.summary, "bash: pwd");
+  assert.deepEqual(tool.evidence, evidence);
+  assert.equal(tool.id, "T");
+  backend.dispose();
+});
+
+test("older answer completion cannot clear or fail a newer submitted operation", async t => {
+  const { backend, permission, apply } = setup(t);
+  permission({ request_id: "RA" });
+  let finish;
+  let posts = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    posts++;
+    if (posts === 1) return new Promise(resolve => { finish = resolve; });
+    return new Response(JSON.stringify({ accepted: true }));
+  });
+  const older = backend.answerPermission("parent", "RA", "allow_once");
+  apply("permission.resolved", { request_id: "RA", resolution: "allow_once" });
+  permission({ request_id: "RA" });
+  await backend.answerPermission("parent", "RA", "deny");
+  finish(new Response(JSON.stringify({ error: "old failure" }), { status: 503 }));
+  await older;
+  await backend.answerPermission("parent", "RA", "allow_once");
+  assert.equal(posts, 2);
+  assert.equal(backend.history().filter(m => m.type === "permissionState").at(-1).resolution, "pending");
   backend.dispose();
 });

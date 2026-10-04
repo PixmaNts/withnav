@@ -27,6 +27,8 @@ requests land in `develop`.
   A server restart clears the previous run's controls, failed conversation opens restore the
   conversation you were using, and the model picker loads even when startup opens a conversation
   before the model catalog arrives.
+- **VS Code failed-open recovery**: submitted approvals, live streamed text and tool review details
+  survive a failed conversation switch; an approval still awaiting resolution cannot be sent again.
 ### Added
 
 - **VS Code chat**: tool rows show who automatically approved a call (Jev or metacognition),

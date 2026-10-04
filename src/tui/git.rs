@@ -125,7 +125,16 @@ pub async fn read(workspace: &Path) -> Option<GitStatus> {
 
 /// [`read`] with the program and the deadline given: tests use a stand-in that hangs.
 pub async fn read_with(program: &Path, workspace: &Path, deadline: Duration) -> Option<GitStatus> {
-    let mut child = tokio::process::Command::new(program)
+    let mut command = tokio::process::Command::new(program);
+    read_command(&mut command, workspace, deadline).await
+}
+
+async fn read_command(
+    command: &mut tokio::process::Command,
+    workspace: &Path,
+    deadline: Duration,
+) -> Option<GitStatus> {
+    let child = command
         .arg("-C")
         .arg(workspace)
         .args([
@@ -143,6 +152,10 @@ pub async fn read_with(program: &Path, workspace: &Path, deadline: Duration) -> 
         .kill_on_drop(true)
         .spawn()
         .ok()?;
+    read_child(child, deadline).await
+}
+
+async fn read_child(mut child: tokio::process::Child, deadline: Duration) -> Option<GitStatus> {
     let stdout = child.stdout.take()?;
     let stderr = child.stderr.take()?;
     let work = async {
@@ -202,8 +215,14 @@ pub async fn read_with(program: &Path, workspace: &Path, deadline: Duration) -> 
             .then(|| parser.map(Parser::finish))
             .flatten()
     };
-    // At the deadline the future is dropped, and `kill_on_drop` ends git.
-    tokio::time::timeout(deadline, work).await.ok().flatten()
+    match tokio::time::timeout(deadline, work).await {
+        Ok(status) => status,
+        Err(_) => {
+            // Reap after killing rather than leaving cleanup to Tokio's orphan queue.
+            let _ = child.kill().await;
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -283,44 +302,37 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn fake_git(dir: &Path, body: &str) -> std::path::PathBuf {
-        use std::os::unix::fs::PermissionsExt;
+    fn fake_git(dir: &Path, body: &str) -> tokio::process::Command {
         let path = dir.join("git");
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        path
+        // In October 2026, parallel subprocess forks could inherit an open writer while the
+        // fixture was being written, making direct execution fail with ETXTBSY. Read it instead.
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.arg(path);
+        command
     }
 
     #[cfg(unix)]
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_git_that_hangs_is_killed_at_the_deadline() {
-        let dir = tempfile::tempdir().unwrap();
-        let pid_file = dir.path().join("pid");
-        // The script becomes the hanging process itself, so its pid is the one git would have.
-        let git = fake_git(
-            dir.path(),
-            &format!("echo $$ > '{}'; exec sleep 30", pid_file.display()),
-        );
-        let started = std::time::Instant::now();
-        let read = read_with(&git, dir.path(), Duration::from_millis(300)).await;
+        // In October 2026, the deadline could kill the fixture before it wrote its pid file.
+        // The parent already knows the pid; a virtual clock tests the deadline, not scheduling.
+        let child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let deadline = Duration::from_millis(300);
+        let started = tokio::time::Instant::now();
+        let read = read_child(child, deadline).await;
         assert_eq!(read, None);
+        assert_eq!(started.elapsed(), deadline, "returned at the deadline");
         assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "returned at the deadline"
-        );
-        let pid = std::fs::read_to_string(&pid_file).unwrap();
-        let alive = || std::path::Path::new(&format!("/proc/{}", pid.trim())).exists();
-        for _ in 0..50 {
-            if !alive() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        // Killed and reaped: no process is left behind (a zombie counts as gone here).
-        let state = std::fs::read_to_string(format!("/proc/{}/stat", pid.trim()));
-        assert!(
-            state.map_or(true, |s| s.contains(") Z ")),
-            "git was killed at the deadline"
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "git was killed and reaped at the deadline"
         );
     }
 
@@ -329,14 +341,19 @@ mod tests {
     async fn a_large_output_is_counted_and_only_the_first_files_kept() {
         let dir = tempfile::tempdir().unwrap();
         // 50 000 changed files and 1 MB of error output: read through, nothing buffered whole.
-        let git = fake_git(
+        let mut git = fake_git(
             dir.path(),
             "printf '## main\\0'; i=0; while [ $i -lt 50000 ]; do printf ' M file_%d\\0' $i; i=$((i+1)); done; \
              head -c 1000000 /dev/zero >&2",
         );
-        let read = read_with(&git, dir.path(), Duration::from_secs(60))
+        let inherited_writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.path().join("git"))
+            .unwrap();
+        let read = read_command(&mut git, dir.path(), Duration::from_secs(60))
             .await
             .expect("a status");
+        drop(inherited_writer);
         assert_eq!(read.dirty, 50_000);
         assert_eq!(read.files.len(), MAX_FILES);
         assert_eq!(read.files[0].path, "file_0");
@@ -347,10 +364,10 @@ mod tests {
     #[tokio::test]
     async fn a_failing_git_shows_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let git = fake_git(
+        let mut git = fake_git(
             dir.path(),
             "echo 'fatal: not a git repository' >&2; exit 128",
         );
-        assert_eq!(read_with(&git, dir.path(), DEADLINE).await, None);
+        assert_eq!(read_command(&mut git, dir.path(), DEADLINE).await, None);
     }
 }

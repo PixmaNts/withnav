@@ -15,6 +15,7 @@ pub mod catalog;
 pub mod client;
 pub mod config;
 pub mod fim;
+pub mod layers;
 pub mod model_name;
 pub mod openai;
 pub mod sse;

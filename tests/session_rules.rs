@@ -250,6 +250,7 @@ async fn navai_run_sends_the_rules_too() {
 
     let sent = messages(&provider, 0);
     let roles: Vec<&str> = sent.iter().map(|(r, _)| r.as_str()).collect();
-    assert_eq!(roles, ["system", "system", "user"], "{sent:?}");
-    assert!(sent[1].1.contains("global rule") && sent[1].1.contains("project rule"));
+    assert_eq!(roles, ["system", "system", "system", "user"], "{sent:?}");
+    assert!(sent[1].1.contains("/tmp/navai"));
+    assert!(sent[2].1.contains("global rule") && sent[2].1.contains("project rule"));
 }

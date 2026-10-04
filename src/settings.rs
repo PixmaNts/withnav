@@ -200,6 +200,28 @@ pub fn save_tui_theme(config_dir: &Path, id: &str) -> Result<(), SettingsError> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scratch_setting_disables_or_selects_an_absolute_path() {
+        for value in [serde_json::Value::Null, serde_json::json!(false)] {
+            let settings = super::Settings {
+                root: serde_json::json!({"permissions":{"scratch_dir":value}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            };
+            assert_eq!(settings.permissions_scratch_dir().unwrap(), None);
+        }
+        let settings = super::Settings {
+            root: serde_json::json!({"permissions":{"scratch_dir":"/tmp/custom-scratch"}})
+                .as_object()
+                .unwrap()
+                .clone(),
+        };
+        assert_eq!(
+            settings.permissions_scratch_dir().unwrap(),
+            Some("/tmp/custom-scratch".into())
+        );
+    }
     use super::*;
     #[test]
     fn watchdog_interval_defaults_disables_and_rejects_invalid_values() {

@@ -235,6 +235,11 @@ impl TestServerConfig {
         .expect("write models.json");
         let config_dir = self.root.join("cfg");
         std::fs::create_dir_all(&config_dir).expect("config dir");
+        std::fs::write(
+            config_dir.join("config.json"),
+            r#"{"permissions":{"scratch_dir":false}}"#,
+        )
+        .expect("isolated scratch settings");
         write_auth_file(&config_dir, PROVIDER, "test-key");
         ServerConfig {
             bind: "127.0.0.1:0".parse().expect("loopback bind"),

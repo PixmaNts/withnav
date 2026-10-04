@@ -215,13 +215,31 @@ pub trait PermissionReviewer: Send + Sync {
 
 pub fn parse_review(text: &str) -> Result<PermissionReview, ReviewError> {
     if text.len() > 2048 {
-        return Err(ReviewError("malformed JSON or invalid decision/reason"));
+        return Err(ReviewError("answer malformed (too long)"));
     }
-    let review: PermissionReview =
-        serde_json::from_str(text).map_err(|_| ReviewError("malformed JSON"))?;
-    if review.reason.trim().is_empty() || review.reason.len() > 512 {
-        return Err(ReviewError("malformed JSON or invalid decision/reason"));
+    if text.trim().is_empty() {
+        return Err(ReviewError("answer malformed (empty)"));
     }
+    let value: Value =
+        serde_json::from_str(text).map_err(|_| ReviewError("answer malformed (not JSON)"))?;
+    let object = value
+        .as_object()
+        .ok_or(ReviewError("answer malformed (not JSON)"))?;
+    if object.len() != 2 || !object.contains_key("decision") || !object.contains_key("reason") {
+        return Err(ReviewError("answer malformed (not JSON)"));
+    }
+    if !matches!(
+        value["decision"].as_str(),
+        Some("approve" | "reject" | "unsure")
+    ) {
+        return Err(ReviewError("answer malformed (unknown decision)"));
+    }
+    let mut review: PermissionReview =
+        serde_json::from_value(value).map_err(|_| ReviewError("answer malformed (bad reason)"))?;
+    if review.reason.trim().is_empty() {
+        return Err(ReviewError("answer malformed (bad reason)"));
+    }
+    review.reason = crate::tools::bound_output(&review.reason, 512).0;
     Ok(review)
 }
 
@@ -376,7 +394,10 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
             Ok(Route::Run) => Judged::Run(approval_note(&input, "jev", None)),
             Ok(Route::Review) => {
                 let Some(reviewer) = &actor.permission_reviewer else {
-                    return Judged::Ask("Jev: risky or outside project. Metacognition unavailable; approve once or deny".into());
+                    return Judged::Ask(format!(
+                        "metacognition unavailable ({}); approve once or deny",
+                        actor.permission_reviewer_unavailable
+                    ));
                 };
                 let review = tokio::select! { biased; _ = actor.cancel.cancelled() => return Judged::Interrupted, review = tokio::time::timeout(Duration::from_secs(20), reviewer.review(&input, &review_cancel)) => review };
                 match review {
@@ -408,6 +429,28 @@ fn approval_note(input: &PermissionReviewInput, source: &str, reason: Option<&st
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn failure_categories_and_display_only_reason_truncation() {
+        for (text, category) in [
+            ("", "empty"),
+            ("```json\n{}\n```", "not JSON"),
+            (r#"{"decision":"maybe","reason":"ok"}"#, "unknown decision"),
+            (r#"{"decision":"approve","reason":""}"#, "bad reason"),
+        ] {
+            assert!(parse_review(text).unwrap_err().0.contains(category));
+        }
+        let review = parse_review(&format!(
+            r#"{{"decision":"reject","reason":"{}"}}"#,
+            "bounded explanation ".repeat(40)
+        ))
+        .unwrap();
+        assert_eq!(review.decision, ReviewDecision::Reject);
+        assert!(review.reason.len() <= 512);
+        assert!(parse_review(&"x".repeat(2049))
+            .unwrap_err()
+            .0
+            .contains("too long"));
+    }
 
     #[test]
     fn strict_review_answers_never_repair_malformed_authorization() {
@@ -423,7 +466,7 @@ mod tests {
             r#"{{"decision":"approve","reason":"{}"}}"#,
             "x".repeat(513)
         ))
-        .is_err());
+        .is_ok());
     }
 
     #[test]

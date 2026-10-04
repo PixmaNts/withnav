@@ -45,6 +45,7 @@ pub enum PendingInteraction {
 }
 
 pub struct AgentActor {
+    pub permission_reviewer_unavailable: &'static str,
     pub scratch_dir: Option<std::path::PathBuf>,
     pub automatic_permission_review: bool,
     pub permission_judge: Option<Arc<dyn super::permission_gate::PermissionJudge>>,
@@ -129,6 +130,7 @@ impl AgentActor {
         cancel: CancellationToken,
     ) -> Self {
         Self {
+            permission_reviewer_unavailable: "no alias",
             scratch_dir: None,
             automatic_permission_review: true,
             permission_judge: None,
@@ -172,10 +174,19 @@ impl AgentActor {
     /// when both are empty, which is the case for the default `build` agent
     /// on a session without a profile.
     pub fn role_message(&self) -> Option<String> {
-        compose_role_message(
+        let message = compose_role_message(
             self.role.as_ref().map(|role| role.prompt.as_str()),
             self.system_prompt.as_deref(),
-        )
+        );
+        if let Some(path) = &self.scratch_dir {
+            Some(format!(
+                "{}\nPrivate temporary files may use {}. Scratch mutations count as project-local.",
+                message.as_deref().unwrap_or(""),
+                path.display()
+            ))
+        } else {
+            message
+        }
     }
 
     /// Installs the skills snapshot: with at least one skill, the `skill` tool

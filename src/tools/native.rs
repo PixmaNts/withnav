@@ -105,7 +105,7 @@ impl Tool for WriteTool {
     }
     fn schema(&self) -> Value {
         json!({
-            "description": "Create or replace a file atomically. Sessions normally allow private temporary files in /tmp/navai (permissions.scratch_dir can change or disable it).",
+            "description": "Create or replace a file atomically.",
             "parameters": {
                 "type": "object",
                 "properties": {

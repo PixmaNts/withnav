@@ -26,7 +26,7 @@ fn check_budget(
         .sum::<u64>()
         .saturating_add(tools_tokens(tools));
     if estimate > budget.input_budget {
-        return Err(ReviewError("answer malformed (invalid response)"));
+        return Err(ReviewError("answer malformed (tool call)"));
     }
     Ok(())
 }
@@ -37,7 +37,11 @@ fn answer(message: &crate::provider::AssistantMessage) -> Result<PermissionRevie
     }
     if message.text.trim().is_empty() {
         return Err(ReviewError(
-            "answer malformed (empty content; reasoning-only or exhausted output)",
+            if !message.thinking.is_empty() && message.finish_reason.as_deref() == Some("length") {
+                "output exhausted by reasoning"
+            } else {
+                "answer malformed (empty)"
+            },
         ));
     }
     parse_review(&message.text)
@@ -84,7 +88,18 @@ impl PermissionReviewer for super::LlmCommenter {
                 .await
                 .map_err(|_| ReviewError("unavailable (provider error)"))?;
             let result = answer(&message);
-            if result.is_err() {
+            tracing::debug!(answer = %crate::tools::bound_output(&message.text, 2048).0, "permission reviewer final answer");
+            if let Err(error) = &result {
+                if let Some(log) = &self.log {
+                    let excerpt = diagnostic_excerpt(&message.text);
+                    log.append(
+                        &crate::navigator::log::LogRecord::PermissionReviewDiagnostic {
+                            level: "debug",
+                            category: error.0,
+                            excerpt: &excerpt,
+                        },
+                    );
+                }
                 tracing::debug!(answer = %crate::tools::bound_output(&message.text, 2048).0, reasoning_bytes = message.thinking.len(), finish = ?message.finish_reason, "malformed permission reviewer answer");
             }
             result
@@ -92,16 +107,42 @@ impl PermissionReviewer for super::LlmCommenter {
     }
 }
 
+fn diagnostic_excerpt(text: &str) -> String {
+    let escaped: String = text
+        .chars()
+        .flat_map(|character| character.escape_debug())
+        .collect();
+    let mut end = escaped.len().min(512);
+    while !escaped.is_char_boundary(end) {
+        end -= 1;
+    }
+    escaped[..end].to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn malformed_diagnostic_is_escaped_and_bounded() {
+        let excerpt = diagnostic_excerpt(&format!("\n\r\x1b{}", "x".repeat(1000)));
+        assert!(excerpt.len() <= 512);
+        assert!(!excerpt.chars().any(char::is_control));
+    }
+    #[test]
+    fn live_write_rejection_shape_is_a_real_verdict() {
+        let review = parse_review(r#"{"decision":"reject","reason":"Write target /tmp/opencode/e2e-out/x.txt is outside all writable roots (/tmp/opencode/e2e, /home/pixma/.config/navai, /tmp/navai) and outside scratch root /tmp/navai. No human approval; write may overwrite an existing file with unknown prior contents."}"#).unwrap();
+        assert_eq!(
+            review.decision,
+            crate::agent::permission_gate::ReviewDecision::Reject
+        );
+    }
     #[test]
     fn live_reasoning_only_response_never_authorizes_and_content_is_separate() {
         let mut message = crate::provider::AssistantMessage {
             thinking: "We need review a tool call: creating a test file. Decision: approve.".into(),
             ..Default::default()
         };
-        assert!(answer(&message).unwrap_err().0.contains("empty content"));
+        assert!(answer(&message).unwrap_err().0.contains("empty"));
         message.text = r#"{"decision":"approve","reason":"Benign test file creation in /tmp; no destructive or security-sensitive operation."}"#.into();
         assert_eq!(
             answer(&message).unwrap().decision,

@@ -2,6 +2,13 @@
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn warn_once(error: &str) {
+    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::warn!("scratch directory disabled: {error}");
+    }
+}
+
 pub fn prepare(path: &Path) -> Result<PathBuf, String> {
     if !path.is_absolute() {
         return Err("scratch directory must be absolute".into());
@@ -18,7 +25,7 @@ pub fn prepare(path: &Path) -> Result<PathBuf, String> {
     }
     let metadata = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     let uid = nix::unistd::Uid::current().as_raw();
-    if !metadata.is_dir() || metadata.file_type().is_symlink() || metadata.uid() != uid {
+    if !acceptable(&metadata, uid) {
         return Err("scratch directory must be a real directory owned by the current user".into());
     }
     if metadata.permissions().mode() & 0o777 != 0o700 {
@@ -26,6 +33,10 @@ pub fn prepare(path: &Path) -> Result<PathBuf, String> {
             .map_err(|e| e.to_string())?;
     }
     path.canonicalize().map_err(|e| e.to_string())
+}
+
+fn acceptable(metadata: &std::fs::Metadata, uid: u32) -> bool {
+    metadata.is_dir() && !metadata.file_type().is_symlink() && metadata.uid() == uid
 }
 
 #[cfg(test)]
@@ -43,5 +54,7 @@ mod tests {
         let link = temp.path().join("link");
         std::os::unix::fs::symlink(path, &link).unwrap();
         assert!(prepare(&link).is_err());
+        let metadata = std::fs::metadata(temp.path()).unwrap();
+        assert!(!acceptable(&metadata, metadata.uid().wrapping_add(1)));
     }
 }

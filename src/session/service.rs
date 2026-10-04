@@ -2073,10 +2073,10 @@ impl Service {
                     actor.tool_context.writable_roots.push(path.clone());
                     actor.scratch_dir = Some(path.clone());
                 }
-                Err(error) => tracing::warn!("scratch directory disabled: {error}"),
+                Err(error) => crate::agent::scratch::warn_once(&error),
             },
             Ok(None) => {}
-            Err(error) => tracing::warn!("scratch directory disabled: {error}"),
+            Err(error) => crate::agent::scratch::warn_once(&error),
         }
         if let Some((_, _, _, driver_task)) = &child_policy {
             actor.driver_task = driver_task.clone();
@@ -2086,6 +2086,11 @@ impl Service {
             &workspace,
             &self.config.config_dir,
         ) {
+            actor.permission_reviewer_unavailable = if models.resolve("metacognition").is_ok() {
+                "no key"
+            } else {
+                "no alias"
+            };
             actor.permission_reviewer = crate::navigator::bootstrap::LazyCommenter::new(
                 &models,
                 "metacognition",

@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 import type { HostToWebview, WebviewToHost, PermissionEvidence, PermissionDecision } from "../chatProtocol";
 import { evidenceLabel, permissionOutcome } from "../eventView";
+import { contextMeter } from "../contextMeter";
 import { ConversationIdentity } from "./conversationIdentity";
 import { mountConversations } from "./conversations";
 import { diffKind, parseWake } from "./wake";
@@ -434,7 +435,7 @@ function receive(event: HostToWebview): void {
     }
     case "notice": add(el("article", "message control-notice", event.text)); break;
     case "models": renderModels(event); break;
-    case "usage": renderUsage(event.used, event.window); break;
+    case "usage": renderUsage(event.snapshot); break;
     case "editorContext":
       contextPreview.textContent = event.label;
       contextPreview.title = `Attached to your next message: ${event.label}`;
@@ -499,27 +500,23 @@ function renderModels(event: Extract<HostToWebview, { type: "models" }>): void {
   modelSelect.title = event.locked ? "Model of this conversation · start a new conversation to change it" : "Model for the new conversation";
 }
 
+/** The next request's estimate, against the usable input budget. */
 function tokens(count: number): string {
   return count >= 1000 ? `${Math.round(count / 1000)}k` : String(count);
 }
 
-/** The context gauge: used tokens, and the share of the window when it is known. */
-function renderUsage(used: number, window?: number): void {
+function renderUsage(snapshot: import("../contextMeter").ContextSnapshot): void {
+  const meter = contextMeter(snapshot);
   usage.hidden = false;
-  if (window && window > 0) {
-    const percent = Math.min(100, Math.round((used / window) * 100));
-    usageFill.style.width = `${percent}%`;
-    usage.dataset.level = percent >= 90 ? "high" : percent >= 70 ? "mid" : "low";
-    usageLabel.textContent = `${tokens(used)} / ${tokens(window)} · ${percent}%`;
-    usage.setAttribute("aria-valuenow", String(percent));
-    usage.title = `${used.toLocaleString()} of ${window.toLocaleString()} tokens used · ${(window - used).toLocaleString()} left`;
-    usage.querySelector<HTMLElement>(".usage-bar")!.hidden = false;
-  } else {
-    usageLabel.textContent = `${tokens(used)} tokens`;
-    usage.removeAttribute("aria-valuenow");
-    usage.title = `${used.toLocaleString()} tokens used · context window unknown`;
-    usage.querySelector<HTMLElement>(".usage-bar")!.hidden = true;
-  }
+  usageFill.style.width = `${meter.fill}%`;
+  usage.dataset.level = meter.level;
+  usageLabel.textContent = meter.label;
+  usage.setAttribute("aria-valuenow", String(meter.fill));
+  usage.setAttribute("aria-valuetext", meter.detail);
+  usage.tabIndex = 0;
+  usage.setAttribute("aria-label", "Next request context estimate");
+  usage.title = meter.detail;
+  usage.querySelector<HTMLElement>(".usage-bar")!.hidden = false;
 }
 
 // All source text is inserted as text nodes. Only explicitly created elements become markup.

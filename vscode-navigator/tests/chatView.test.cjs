@@ -23,9 +23,10 @@ Module._load = function (id, ...args) {
 const { registerChatView } = require("../out/tests/chatView.js");
 Module._load = originalLoad;
 
-test("late-created and recreated views receive current session identity before replay", () => {
+test("late-created and recreated views receive existing context after identity and replay without events", () => {
   let cancelled = 0;
   const backend = {
+    currentContext: () => ({ incarnation: "I", revision: 3, estimate_total: 42 }),
     currentGeneration: () => 1,
     resumePermissionReads: () => {},
     currentConversationId: () => "already-open",
@@ -49,6 +50,7 @@ test("late-created and recreated views receive current session identity before r
     receive({ type: "ready" });
     assert.deepEqual(messages[0], { type: "conversationOpened", id: "already-open", title: "Conversation", generation: 1 });
     assert.equal(messages[1].type, "history");
+    assert.deepEqual(messages[2], { type: "usage", snapshot: backend.currentContext(), generation: 1 });
     dispose();
   }
   assert.equal(cancelled, 2);

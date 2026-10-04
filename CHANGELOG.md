@@ -4,6 +4,13 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
+- **VS Code chat**: the context meter shows what the next request will send, as the terminal
+  client does (`~42k / 1M · 4%`), instead of the last call's usage. Hover or focus it for the
+  breakdown (system, rules, skills catalog, tools, messages), the input budget, the output reserve
+  and the provider's count for the last request.
+
 ## [0.4.5] - 2026-10-04
 
 The VS Code chat can now answer the agent's permission requests and continue a paused agent.

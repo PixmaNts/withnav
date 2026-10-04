@@ -25,6 +25,9 @@ impl StyleSheet for ThemeStyles {
     fn code(&self) -> Style {
         self.0.code_ref()
     }
+    fn code_block_fence(&self) -> &str {
+        "\u{e000}"
+    }
     fn link(&self) -> Style {
         self.0.code_ref().add_modifier(Modifier::UNDERLINED)
     }
@@ -88,6 +91,8 @@ fn options(theme: Theme) -> Options<ThemeStyles> {
 
 #[derive(Debug, Default)]
 pub struct MarkdownCache {
+    pub(crate) wrapped:
+        HashMap<String, (String, std::sync::Arc<Vec<super::selection::Row>>, String)>,
     entries: HashMap<(String, u64, u16), Text<'static>>,
     /// Options for the current theme and table width; rebuilt only when either changes, since
     /// they hold a copy of the syntax-highlighting theme.
@@ -100,6 +105,7 @@ impl MarkdownCache {
     pub fn set_theme(&mut self, theme: Theme) {
         if self.theme != theme {
             self.entries.clear();
+            self.wrapped.clear();
             self.theme = theme;
         }
     }
@@ -139,13 +145,33 @@ impl MarkdownCache {
                     .lines
                     .into_iter()
                     .map(|line| {
+                        let fence = line
+                            .spans
+                            .iter()
+                            .map(|s| s.content.as_ref())
+                            .collect::<String>()
+                            .trim_start()
+                            .starts_with('\u{e000}');
                         Line::from(
                             line.spans
                                 .into_iter()
-                                .map(|span| Span::styled(span.content.into_owned(), span.style))
+                                .map(|span| {
+                                    Span::styled(
+                                        if fence {
+                                            span.content.replace('\u{e000}', "```")
+                                        } else {
+                                            span.content.into_owned()
+                                        },
+                                        span.style,
+                                    )
+                                })
                                 .collect::<Vec<_>>(),
                         )
-                        .style(line.style)
+                        .style(if fence {
+                            line.style.add_modifier(Modifier::HIDDEN)
+                        } else {
+                            line.style
+                        })
                     })
                     .collect::<Vec<_>>(),
             );

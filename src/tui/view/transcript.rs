@@ -254,7 +254,14 @@ pub fn draw(
         .iter()
         .map(|b| {
             if matches!(&b.kind, BlockKind::AssistantStep { text, thinking, .. } if text.is_empty() && thinking.is_empty()) {
-                return (b, Vec::new());
+                return (b, std::sync::Arc::new(Vec::new()), map.text.len());
+            }
+            let key = format!("{width}:{:?}:{}:{}", b.kind, ui.expanded.contains(&b.id), if matches!(b.kind, BlockKind::Permission(_) | BlockKind::ToolCall { .. }) { ui.tick } else { 0 });
+            if let Some((old, rows, text)) = cache.wrapped.get(&b.id).filter(|(old,_,_)| old == &key) {
+                let _ = old;
+                let offset = map.text.len();
+                map.text.push_str(text);
+                return (b, rows.clone(), offset);
             }
             let text = block_text(b, state, ui, theme, cache, width);
             let (prefix, body_start) = match &b.kind {
@@ -271,13 +278,17 @@ pub fn draw(
                 ),
                 _ => (1, 1),
             };
-            let rows = super::selection::rows(text, width, map, prefix, body_start);
-            (b, rows)
+            let mut local = super::selection::TranscriptMap::default();
+            let rows = std::sync::Arc::new(super::selection::rows(text, width, &mut local, prefix, body_start));
+            cache.wrapped.insert(b.id.clone(), (key, rows.clone(), local.text.clone()));
+            let offset = map.text.len();
+            map.text.push_str(&local.text);
+            (b, rows, offset)
         })
         .collect();
     let total: usize = blocks
         .iter()
-        .map(|(_, rows)| rows.len() + usize::from(!rows.is_empty()))
+        .map(|(_, rows, _)| rows.len() + usize::from(!rows.is_empty()))
         .sum();
     let viewport = usize::from(area.height);
     let mut start = if ui.follow_bottom {
@@ -290,7 +301,7 @@ pub fn draw(
     if !ui.follow_bottom {
         if let Some(selected) = &ui.selected_block {
             let mut offset = 0;
-            for (block, rows) in &blocks {
+            for (block, rows, _) in &blocks {
                 let height = rows.len() + usize::from(!rows.is_empty());
                 if &block.id == selected {
                     if offset < start {
@@ -306,7 +317,11 @@ pub fn draw(
         }
     }
     let mut cursor = 0usize;
-    for (block, rows) in blocks {
+    map.scroll = total
+        .saturating_sub(viewport)
+        .saturating_sub(start)
+        .min(u16::MAX as usize) as u16;
+    for (block, rows, offset) in blocks {
         let height = rows.len() + usize::from(!rows.is_empty());
         let from = cursor;
         cursor += height;
@@ -364,17 +379,18 @@ pub fn draw(
                 .set_symbol(bar)
                 .set_style(gutter);
         }
-        for (dy, text_row) in rows.into_iter().skip(skipped).take(visible).enumerate() {
+        for (dy, text_row) in rows.iter().skip(skipped).take(visible).enumerate() {
             let y = row + dy as u16;
             frame.render_widget(
-                Paragraph::new(text_row.line),
+                Paragraph::new(text_row.line.clone()),
                 Rect::new(area.x + 3, y, width, 1),
             );
             map.cells.extend(
                 text_row
                     .cells
-                    .into_iter()
-                    .map(|(x, a, b)| (area.x + 3 + x, y, a, b)),
+                    .iter()
+                    .copied()
+                    .map(|(x, a, b)| (area.x + 3 + x, y, a + offset, b + offset)),
             );
         }
     }

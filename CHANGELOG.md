@@ -10,6 +10,9 @@ requests land in `develop`.
   dragging beyond its edge scrolls the selection. In transcript focus, `y` copies the whole
   message or tool output; `ctrl+shift+c` copies selected text. Clipboard writes use OSC 52
   (including over SSH); `shift+drag` keeps native terminal selection reachable.
+- Clipboard copying requires terminal OSC 52 support; under tmux use
+  `set -g set-clipboard on`. In transcript focus, `y` portably copies the selection
+  or focused block; `ctrl+shift+c` is best-effort and plain `ctrl+c` remains stop/quit.
 
 ## [0.4.1] - 2026-10-04
 

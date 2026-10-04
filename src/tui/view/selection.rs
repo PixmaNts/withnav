@@ -11,6 +11,7 @@ pub struct TranscriptMap {
     pub area: Rect,
     pub text: String,
     pub cells: Vec<(u16, u16, usize, usize)>,
+    pub scroll: u16,
 }
 
 impl TranscriptMap {
@@ -49,6 +50,7 @@ impl TranscriptMap {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct Row {
     pub line: Line<'static>,
     pub cells: Vec<(u16, usize, usize)>,
@@ -64,13 +66,33 @@ pub fn rows(
 ) -> Vec<Row> {
     let mut rows = Vec::new();
     for (index, line) in text.lines.into_iter().enumerate() {
+        let marked = line
+            .style
+            .add_modifier
+            .contains(ratatui::style::Modifier::HIDDEN)
+            || line.spans.iter().any(|s| {
+                s.style
+                    .add_modifier
+                    .contains(ratatui::style::Modifier::HIDDEN)
+            });
+        let line = Line::from(
+            line.spans
+                .into_iter()
+                .map(|s| {
+                    Span::styled(
+                        s.content.replace('\t', "    "),
+                        s.style.remove_modifier(ratatui::style::Modifier::HIDDEN),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )
+        .style(line.style.remove_modifier(ratatui::style::Modifier::HIDDEN));
         let plain = line
             .spans
             .iter()
             .map(|s| s.content.as_ref())
             .collect::<String>();
-        let fence = plain.trim_start().starts_with("```");
-        let copyable = index >= body_start && !fence && !plain.trim_start().starts_with("… ");
+        let copyable = index >= body_start && !marked;
         let skip = plain
             .char_indices()
             .nth(prefix)
@@ -88,7 +110,11 @@ pub fn rows(
         let mut byte = 0;
         for span in line.spans {
             for g in span.content.graphemes(true) {
-                let w = columns(g).max(1).min(usize::from(width.max(1))) as u16;
+                let w = columns(g).min(usize::from(width.max(1))) as u16;
+                if w == 0 {
+                    byte += g.len();
+                    continue;
+                }
                 let word_start = !g.chars().all(char::is_whitespace)
                     && (byte == 0
                         || plain[..byte]
@@ -110,7 +136,11 @@ pub fn rows(
                     };
                     col = 0;
                 }
-                row.line.spans.push(Span::styled(g.to_owned(), span.style));
+                if let Some(last) = row.line.spans.last_mut().filter(|s| s.style == span.style) {
+                    last.content.to_mut().push_str(g);
+                } else {
+                    row.line.spans.push(Span::styled(g.to_owned(), span.style));
+                }
                 if copyable && byte >= skip {
                     for dx in 0..w {
                         row.cells.push((
@@ -133,15 +163,60 @@ pub fn rows(
 mod tests {
     use super::*;
     #[test]
+    fn literal_fences_and_ellipsis_are_content_and_tabs_match_paint() {
+        use ratatui::{backend::TestBackend, widgets::Paragraph, Terminal};
+        let mut map = TranscriptMap::default();
+        let rows = rows(
+            Text::from(" a\tb e\u{301} 👩‍💻 界\n ```literal\n … real"),
+            40,
+            &mut map,
+            1,
+            0,
+        );
+        assert!(map.text.contains("```literal\n… real"));
+        let mut terminal = Terminal::new(TestBackend::new(40, 5)).unwrap();
+        terminal
+            .draw(|f| {
+                for (y, row) in rows.iter().enumerate() {
+                    f.render_widget(
+                        Paragraph::new(row.line.clone()),
+                        Rect::new(0, y as u16, 40, 1),
+                    );
+                }
+            })
+            .unwrap();
+        for (y, row) in rows.iter().enumerate() {
+            for &(x, a, b) in &row.cells {
+                let g = &map.text[a..b];
+                if x > 0
+                    && row
+                        .cells
+                        .iter()
+                        .any(|&(px, pa, pb)| px == x - 1 && pa == a && pb == b)
+                {
+                    continue;
+                }
+                assert_eq!(terminal.backend().buffer()[(x, y as u16)].symbol(), g);
+            }
+        }
+        assert!(rows[0].line.spans.len() < 4);
+    }
+    #[test]
     fn wraps_without_copying_chrome_or_fences() {
         let mut map = TranscriptMap::default();
         let rows = rows(
             Text::from(vec![
                 Line::raw("ASSISTANT"),
                 Line::raw(" hello world"),
-                Line::raw(" ```rust"),
+                Line::styled(
+                    " ```rust",
+                    ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::HIDDEN),
+                ),
                 Line::raw("   x();"),
-                Line::raw(" ```"),
+                Line::styled(
+                    " ```",
+                    ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::HIDDEN),
+                ),
             ]),
             6,
             &mut map,

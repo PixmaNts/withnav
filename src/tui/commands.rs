@@ -155,11 +155,11 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     (
         "y / ctrl+shift+c",
-        "copy block / selection; block keeps Markdown",
+        "y copies selection/block; ctrl+shift+c best-effort",
     ),
     (
         "shift+drag",
-        "native selection; allow OSC 52 for app copying",
+        "native selection; OSC 52: tmux set-clipboard on",
     ),
     ("space / enter", "expand selected block"),
     ("ctrl+end", "follow newest"),

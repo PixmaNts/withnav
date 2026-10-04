@@ -54,6 +54,22 @@ impl Runtime {
 
     pub(super) fn selection_mouse(&mut self, event: MouseEvent) {
         if self.ui.overlay.is_some() || self.ui.child_confirm.is_some() {
+            if self.ui.overlay.is_some()
+                && matches!(
+                    event.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                )
+            {
+                let code = if event.kind == MouseEventKind::ScrollUp {
+                    KeyCode::Up
+                } else {
+                    KeyCode::Down
+                };
+                self.handle_terminal_event(crossterm::event::Event::Key(KeyEvent::new(
+                    code,
+                    KeyModifiers::NONE,
+                )));
+            }
             return;
         }
         let map = &self.cache.transcript;
@@ -62,6 +78,7 @@ impl Runtime {
                 if map.area.contains((event.column, event.row).into()) =>
             {
                 self.ui.selected_block = None;
+                self.ui.scroll = map.scroll;
                 self.ui.follow_bottom = false;
                 self.dispatch(Action::Scroll(if event.kind == MouseEventKind::ScrollUp {
                     3
@@ -83,6 +100,8 @@ impl Runtime {
                     self.selection.range = Some(hit);
                     self.selection.pointer = Some((event.column, event.row));
                     self.ui.focus = Focus::Transcript;
+                    self.ui.scroll = map.scroll;
+                    self.ui.follow_bottom = false;
                     self.ui.selected_block = None;
                 } else {
                     self.selection.range = None;
@@ -108,7 +127,7 @@ impl Runtime {
                     }
                 }
             }
-            _ => {}
+            _ => return,
         }
         self.dirty = true;
     }

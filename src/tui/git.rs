@@ -134,7 +134,7 @@ async fn read_command(
     workspace: &Path,
     deadline: Duration,
 ) -> Option<GitStatus> {
-    let mut child = command
+    let child = command
         .arg("-C")
         .arg(workspace)
         .args([
@@ -152,6 +152,10 @@ async fn read_command(
         .kill_on_drop(true)
         .spawn()
         .ok()?;
+    read_child(child, deadline).await
+}
+
+async fn read_child(mut child: tokio::process::Child, deadline: Duration) -> Option<GitStatus> {
     let stdout = child.stdout.take()?;
     let stderr = child.stderr.take()?;
     let work = async {
@@ -211,8 +215,14 @@ async fn read_command(
             .then(|| parser.map(Parser::finish))
             .flatten()
     };
-    // At the deadline the future is dropped, and `kill_on_drop` ends git.
-    tokio::time::timeout(deadline, work).await.ok().flatten()
+    match tokio::time::timeout(deadline, work).await {
+        Ok(status) => status,
+        Err(_) => {
+            // Reap after killing rather than leaving cleanup to Tokio's orphan queue.
+            let _ = child.kill().await;
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -303,35 +313,26 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_git_that_hangs_is_killed_at_the_deadline() {
-        let dir = tempfile::tempdir().unwrap();
-        let pid_file = dir.path().join("pid");
-        // The script becomes the hanging process itself, so its pid is the one git would have.
-        let mut git = fake_git(
-            dir.path(),
-            &format!("echo $$ > '{}'; exec sleep 30", pid_file.display()),
-        );
-        let started = std::time::Instant::now();
-        let read = read_command(&mut git, dir.path(), Duration::from_millis(300)).await;
+        // In October 2026, the deadline could kill the fixture before it wrote its pid file.
+        // The parent already knows the pid; a virtual clock tests the deadline, not scheduling.
+        let child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let deadline = Duration::from_millis(300);
+        let started = tokio::time::Instant::now();
+        let read = read_child(child, deadline).await;
         assert_eq!(read, None);
+        assert_eq!(started.elapsed(), deadline, "returned at the deadline");
         assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "returned at the deadline"
-        );
-        let pid = std::fs::read_to_string(&pid_file).unwrap();
-        let alive = || std::path::Path::new(&format!("/proc/{}", pid.trim())).exists();
-        for _ in 0..50 {
-            if !alive() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        // Killed and reaped: no process is left behind (a zombie counts as gone here).
-        let state = std::fs::read_to_string(format!("/proc/{}/stat", pid.trim()));
-        assert!(
-            state.map_or(true, |s| s.contains(") Z ")),
-            "git was killed at the deadline"
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "git was killed and reaped at the deadline"
         );
     }
 

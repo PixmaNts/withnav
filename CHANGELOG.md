@@ -6,6 +6,13 @@ requests land in `develop`.
 
 ### Changed
 
+- Per-call permission review replaces “allow folder” for bash, write and edit. Saved bash/file
+  grants from 0.4.1 are ignored for execution; fetch keeps origin grants.
+- `permissions.automatic_review` defaults to true. Set it to false to ask for every bash, write
+  and edit call; invalid values disable automatic approval with a diagnostic.
+
+### Changed
+
 - **Folder grants persist**: an "allow folder" answer is saved per workspace in
   `<data dir>/grants.json` and applies to later sessions in that workspace. Subagents keep theirs in
   memory. Delete the workspace's entry in that file to revoke.

@@ -4,6 +4,10 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-04
+
+Fixes from daily use of 0.4.0, mostly in the terminal client.
+
 ### Changed
 
 - **Folder grants persist**: an "allow folder" answer is saved per workspace in

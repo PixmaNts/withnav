@@ -169,7 +169,7 @@ fn build_layers_from(
 /// window is refused then, with one warning, and only the remarks stop. The
 /// bounds, once obtained, are kept for the life of the process; a failure is
 /// retried on a later use (the catalog backs off between attempts).
-struct LazyCommenter {
+pub(crate) struct LazyCommenter {
     resolved: crate::provider::config::ResolvedModel,
     api_key: String,
     catalog: ModelCatalog,
@@ -180,7 +180,7 @@ struct LazyCommenter {
 }
 
 impl LazyCommenter {
-    fn new(
+    pub(crate) fn new(
         models: &ModelsConfig,
         alias: &str,
         config_dir: &Path,
@@ -250,6 +250,33 @@ impl LazyCommenter {
                 }
                 ModelError::Unavailable(format!("metacognition: {reason}"))
             })
+    }
+}
+
+impl crate::agent::permission_gate::PermissionReviewer for LazyCommenter {
+    fn review<'a>(
+        &'a self,
+        input: &'a crate::agent::permission_gate::PermissionReviewInput,
+        cancel: &'a tokio_util::sync::CancellationToken,
+    ) -> futures::future::BoxFuture<
+        'a,
+        Result<
+            crate::agent::permission_gate::PermissionReview,
+            crate::agent::permission_gate::ReviewError,
+        >,
+    > {
+        Box::pin(async move {
+            let commenter = self
+                .get()
+                .await
+                .map_err(|_| crate::agent::permission_gate::ReviewError)?;
+            crate::agent::permission_gate::PermissionReviewer::review(
+                commenter.as_ref(),
+                input,
+                cancel,
+            )
+            .await
+        })
     }
 }
 

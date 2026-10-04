@@ -236,7 +236,10 @@ pub fn describe(
     let state = json!({
         "host_facts": { "workspace": actor.tool_context.workspace.canonicalize().ok(), "cwd": actor.tool_context.workspace, "role": role.id.as_str(), "destination": needed.destination, "writable_roots": actor.tool_context.writable_roots, "mutation": flags.mutation, "risky": flags.risky, "outside": flags.outside },
         "role_policy": if check_role { Some(role.prompt.as_str()) } else { None },
-        "untrusted_evidence": { "tool": call.name, "arguments": call.args, "driver_task": actor.driver_task.as_deref().map(|s| crate::tools::bound_output(s, 2048).0) }
+        "untrusted_evidence": { "tool": call.name, "arguments": call.args, "driver_task": actor.driver_task.as_deref().map(|s| crate::tools::bound_output(s, 2048).0),
+            "assistant_text": actor.transcript.iter().rev().find_map(|message| match message { crate::provider::openai::ChatMessage::Assistant { content, .. } => content.as_deref(), _ => None }).map(|text| crate::tools::bound_output(text, 1024).0),
+            "parent_agent_evidence": actor.transcript.iter().find_map(|message| match message { crate::provider::openai::ChatMessage::User { content, provenance: crate::provider::openai::UserProvenance::Parent } => Some(crate::tools::bound_output(content, 1024).0), _ => None })
+        }
     }).to_string();
     let size = state.len() + serde_json::to_vec(&questions).ok()?.len();
     (size <= super::guard::MAX_INPUT_BYTES).then_some(PermissionReviewInput { state, questions })

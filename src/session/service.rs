@@ -1881,6 +1881,24 @@ impl Service {
             &workspace,
             &self.config.config_dir,
         );
+        if let Ok((models, _)) = crate::provider::config::load_models(
+            self.config.models_path.as_deref(),
+            &workspace,
+            &self.config.config_dir,
+        ) {
+            actor.permission_reviewer = crate::navigator::bootstrap::LazyCommenter::new(
+                &models,
+                "metacognition",
+                &self.config.config_dir,
+                &self.catalog,
+                Arc::new(crate::provider::openai::ClientCache::new()),
+                self.config.data_dir.join("navai.jsonl"),
+            )
+            .ok()
+            .map(|reviewer| {
+                Arc::new(reviewer) as Arc<dyn crate::agent::permission_gate::PermissionReviewer>
+            });
+        }
         self.hooks.configure_actor(profile, &mut actor);
         if let Some((allowed, _)) = &child_policy {
             actor

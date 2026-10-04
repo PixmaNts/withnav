@@ -172,30 +172,32 @@ async fn malformed_body_is_a_malformed_error() {
 #[tokio::test]
 async fn cancelled_call_stops_waiting() {
     let server = MockServer::start().await;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let trigger = cancel.clone();
     Mock::given(method("POST"))
         .and(path("/fim/completions"))
-        .respond_with(
+        .respond_with(move |_: &wiremock::Request| {
+            // In October 2026, a timer could cancel before the request reached the mock under
+            // load. Cancel only after receipt, while the delayed response is still outstanding.
+            trigger.cancel();
             ResponseTemplate::new(200)
                 .set_body_json(json!({
                     "choices": [{"text": "late"}]
                 }))
-                .set_delay(Duration::from_secs(10)),
-        )
+                .set_delay(Duration::from_secs(10))
+        })
         .expect(1)
         .mount(&server)
         .await;
 
     let engine = engine(server.uri(), "test-key");
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let cancel2 = cancel.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        cancel2.cancel();
-    });
-    let started = std::time::Instant::now();
-    let result = engine.complete(PROMPT, SUFFIX, MAX_TOKENS, &cancel).await;
-    assert!(result.is_err());
-    assert!(started.elapsed() < Duration::from_secs(5));
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        engine.complete(PROMPT, SUFFIX, MAX_TOKENS, &cancel),
+    )
+    .await
+    .expect("cancellation stops waiting for the delayed response");
+    assert!(matches!(result, Err(ProviderError::Canceled { .. })));
 }
 
 /// The repo's models.json resolves the `reflex` alias exactly as this

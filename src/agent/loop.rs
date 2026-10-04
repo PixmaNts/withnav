@@ -2018,6 +2018,41 @@ mod tests {
     struct OptimisticReadOnlyJudge;
     struct ReadJudge;
     #[tokio::test]
+    async fn relative_reads_in_sensitive_named_workspace_alias_require_review() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ordinary = tmp.path().join("ordinary");
+        std::fs::create_dir(&ordinary).unwrap();
+        std::fs::write(ordinary.join("config"), "secret").unwrap();
+        let workspace = tmp.path().join(".ssh");
+        std::os::unix::fs::symlink(&ordinary, &workspace).unwrap();
+        let mut actor = plan_actor(None, "http://unused");
+        as_build(&mut actor);
+        actor.tool_context.workspace = workspace.clone();
+        actor.tool_context.writable_roots = vec![workspace];
+        actor.permission_judge = Some(Arc::new(ReadJudge));
+        actor
+            .registry
+            .register(Box::new(crate::tools::native::GrepTool));
+        for (tool, path) in [("read", "config"), ("grep", ".")] {
+            let call = ToolCall {
+                id: tool.into(),
+                name: tool.into(),
+                args: serde_json::json!({"path":path,"pattern":"."}),
+                args_valid: true,
+            };
+            if tool == "read" {
+                assert!(matches!(
+                    run_gated(&mut actor, &call, &mut |_| panic!("secret read")).await,
+                    One::Ask(..)
+                ));
+            } else {
+                assert!(
+                    matches!(gate(&actor,&call),Gated::Rejected(message) if message.contains("sensitive"))
+                );
+            }
+        }
+    }
+    #[tokio::test]
     async fn sensitive_file_and_directory_aliases_are_refused_before_canonical_dispatch() {
         let mut actor = plan_actor(None, "http://unused");
         as_build(&mut actor);
@@ -2199,6 +2234,11 @@ mod tests {
             hangs: false,
         }));
         for command in [
+            format!("file {{-C,-m{}/magic}}", tmp.path().display()),
+            format!(
+                "file {{--compile,--magic-file={}/magic}}",
+                tmp.path().display()
+            ),
             format!(
                 "less '--log-file={}/config.json' /dev/stdin",
                 tmp.path().display()
@@ -2226,6 +2266,22 @@ mod tests {
                 .await,
                 One::Ask(..)
             ));
+        }
+        for command in [
+            format!("cat {}/config.json", tmp.path().display()),
+            format!("ls {}", tmp.path().display()),
+            format!("wc {}/config.json", tmp.path().display()),
+        ] {
+            let call = ToolCall {
+                id: "bash".into(),
+                name: "bash".into(),
+                args: serde_json::json!({"command":command}),
+                args_valid: true,
+            };
+            assert!(
+                matches!(gate(&actor, &call), Gated::Reviewed(_)),
+                "plain config reads stay eligible"
+            );
         }
     }
     impl super::super::permission_gate::PermissionJudge for ReadJudge {

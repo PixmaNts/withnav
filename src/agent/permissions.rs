@@ -378,6 +378,11 @@ pub fn still_resolves(args: &Value, destination: Option<&Path>, cx: &ToolContext
 }
 
 pub fn resolve_read_target(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolError> {
+    let path = requested_path(path, cx)?;
+    validate_path(&[PathBuf::from("/")], &path)
+}
+
+pub fn requested_path(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolError> {
     let path = if path.starts_with("~") {
         let home =
             std::env::var_os("HOME").ok_or_else(|| ToolError::PathTraversal(path.to_path_buf()))?;
@@ -393,7 +398,7 @@ pub fn resolve_read_target(path: &Path, cx: &ToolContext) -> Result<PathBuf, Too
     if path.as_os_str().is_empty() || path.to_string_lossy().contains('\0') {
         return Err(ToolError::PathTraversal(path));
     }
-    validate_path(&[PathBuf::from("/")], &path)
+    Ok(path)
 }
 
 /// What the gate decides about a call, with no side effect.
@@ -442,6 +447,10 @@ pub fn needs_permission(
                 Err(error) => return Gate::Rejected(error.to_string()),
             };
             let inside = validate_path(&cx.read_roots(), &resolved).is_ok();
+            let path = match requested_path(&path, cx) {
+                Ok(path) => path,
+                Err(error) => return Gate::Rejected(error.to_string()),
+            };
             if tool == "read" && resolved.is_dir() {
                 return Gate::Rejected("read requires a specific file, not a directory".into());
             }

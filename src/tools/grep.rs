@@ -1,8 +1,7 @@
 //! Ignore-aware bounded grep. Sensitive exclusions are applied before opening files.
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde_json::json;
@@ -91,9 +90,8 @@ fn rg_command_with_hidden(pattern: &str, root: &Path, hidden: bool) -> tokio::pr
 }
 
 fn rg_available() -> bool {
-    std::env::var_os("NAVAI_FORCE_BUILTIN_GREP").is_none()
-        && std::env::var_os("PATH")
-            .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("rg").is_file()))
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("rg").is_file()))
 }
 
 pub(super) async fn search(
@@ -101,10 +99,35 @@ pub(super) async fn search(
     root: PathBuf,
     cancel: CancellationToken,
 ) -> Result<ToolResult, ToolError> {
+    search_with(Engine::Auto, pattern, root, cancel).await
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Engine {
+    Auto,
+    #[cfg(test)]
+    Rg,
+    #[cfg(test)]
+    Builtin,
+}
+
+pub(super) async fn search_with(
+    engine: Engine,
+    pattern: String,
+    root: PathBuf,
+    cancel: CancellationToken,
+) -> Result<ToolResult, ToolError> {
     if sensitive_read(&root) {
         return Ok(result(String::new(), "builtin", 1, None, 0));
     }
-    if rg_available() {
+    let use_rg = match engine {
+        Engine::Auto => rg_available(),
+        #[cfg(test)]
+        Engine::Rg => true,
+        #[cfg(test)]
+        Engine::Builtin => false,
+    };
+    if use_rg {
         rg_search(&pattern, &root, &cancel).await
     } else {
         builtin(pattern, root, cancel, Limits::default()).await
@@ -138,7 +161,7 @@ async fn rg_search(
         _ = cancel.cancelled() => None,
         read = tokio::time::timeout(DEADLINE, bounded_stdout.read_to_end(&mut bytes)) => Some(read),
     };
-    let partial = if read.is_none() {
+    let mut partial = if read.is_none() {
         Some("cancelled")
     } else if matches!(read, Some(Err(_))) {
         Some("timeout")
@@ -174,62 +197,128 @@ async fn rg_search(
         ));
     }
     // Defense in depth only: rg exclusions above prevented sensitive opens.
-    let text = String::from_utf8_lossy(&bytes)
+    let decoded = String::from_utf8_lossy(&bytes);
+    let matches: Vec<_> = decoded
         .lines()
         .filter(|line| {
             line.split_once(':')
                 .is_none_or(|(path, _)| !sensitive_read(Path::new(path)))
         })
+        .take(MAX_MATCHES + 1)
+        .collect();
+    if matches.len() > MAX_MATCHES {
+        partial = Some("match limit");
+    }
+    let text = matches
+        .into_iter()
         .take(MAX_MATCHES)
         .collect::<Vec<_>>()
         .join("\n");
-    let token = cancel.child_token();
-    let _count_guard = token.clone().drop_guard();
-    let count_root = root.to_path_buf();
-    let counted = tokio::task::spawn_blocking(move || count_sensitive(&count_root, &token));
-    let skipped = tokio::time::timeout(DEADLINE, counted)
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or(0);
-    Ok(result(text, "rg", skipped, partial, 0))
+    count_after_rg(text, partial, root.to_path_buf(), cancel, Limits::default()).await
 }
 
-fn builder(
-    root: &Path,
-    hidden: bool,
-    depth: usize,
-    skipped: Arc<AtomicUsize>,
-) -> ignore::WalkBuilder {
+async fn count_after_rg(
+    text: String,
+    partial: Option<&str>,
+    root: PathBuf,
+    cancel: &CancellationToken,
+    limits: Limits,
+) -> Result<ToolResult, ToolError> {
+    count_after_rg_with(
+        text,
+        partial,
+        root,
+        cancel,
+        limits,
+        std::sync::Arc::new(|| {}),
+    )
+    .await
+}
+
+async fn count_after_rg_with(
+    text: String,
+    partial: Option<&str>,
+    root: PathBuf,
+    cancel: &CancellationToken,
+    limits: Limits,
+    hook: std::sync::Arc<dyn Fn() + Send + Sync>,
+) -> Result<ToolResult, ToolError> {
+    let token = cancel.child_token();
+    let _count_guard = token.clone().drop_guard();
+    let counted = tokio::task::spawn_blocking(move || {
+        count_sensitive_with(&root, &token, limits, hook.as_ref())
+    });
+    let count = tokio::select! { biased;
+        _ = cancel.cancelled() => return Ok(ToolResult::interrupted()),
+        counted = tokio::time::timeout(limits.duration + Duration::from_millis(500), counted) => counted,
+    };
+    let (skipped, complete, visited) = match count {
+        Ok(Ok(count)) => count,
+        _ => (0, false, 0),
+    };
+    if cancel.is_cancelled() {
+        return Ok(ToolResult::interrupted());
+    }
+    let mut result = result(text, "rg", skipped, partial, visited);
+    result.metadata["count_complete"] = json!(complete);
+    if !complete {
+        result.output.push_str("\n[sensitive count incomplete]");
+    }
+    Ok(result)
+}
+
+fn builder(root: &Path, hidden: bool, depth: usize) -> ignore::WalkBuilder {
     let mut builder = ignore::WalkBuilder::new(root);
     builder
         .hidden(hidden)
         .max_depth(Some(depth))
         .follow_links(false)
-        .filter_entry(move |entry| {
-            if sensitive_read(entry.path()) {
-                skipped.fetch_add(1, Ordering::Relaxed);
-                false
-            } else {
-                true
-            }
-        });
+        .threads(1);
     builder.add_custom_ignore_filename(".rgignore");
     builder
 }
 
-fn count_sensitive(root: &Path, cancel: &CancellationToken) -> usize {
-    let skipped = Arc::new(AtomicUsize::new(0));
+fn count_sensitive_with(
+    root: &Path,
+    cancel: &CancellationToken,
+    limits: Limits,
+    hook: &(dyn Fn() + Sync),
+) -> (usize, bool, usize) {
+    use ignore::WalkState::{Continue, Quit, Skip};
     let started = Instant::now();
-    for _ in builder(root, false, MAX_DEPTH, skipped.clone())
-        .build()
-        .take(MAX_ENTRIES)
-    {
-        if cancel.is_cancelled() || started.elapsed() >= DEADLINE {
-            break;
-        }
-    }
-    skipped.load(Ordering::Relaxed)
+    let state = Mutex::new((0, true, 0));
+    builder(root, false, limits.depth).build_parallel().run(|| {
+        Box::new(|entry| {
+            let mut state = state.lock().expect("count state");
+            let (skipped, complete, visited) = &mut *state;
+            hook();
+            if cancel.is_cancelled()
+                || started.elapsed() >= limits.duration
+                || *visited >= limits.entries
+            {
+                *complete = false;
+                return Quit;
+            }
+            *visited += 1;
+            let Ok(entry) = entry else {
+                return Continue;
+            };
+            if sensitive_read(entry.path()) {
+                *skipped += 1;
+                return Skip;
+            }
+            // See hidden sensitive names without descending into hidden trees rg excludes.
+            if entry.depth() > 0 && entry.file_name().to_string_lossy().starts_with('.') {
+                return Skip;
+            }
+            if entry.depth() == limits.depth && entry.file_type().is_some_and(|kind| kind.is_dir())
+            {
+                *complete = false;
+            }
+            Continue
+        })
+    });
+    state.into_inner().expect("count state")
 }
 
 async fn builtin(
@@ -258,6 +347,17 @@ fn walk(
     cancel: &CancellationToken,
     limits: Limits,
 ) -> Result<ToolResult, ToolError> {
+    walk_with(pattern, root, cancel, limits, &|| {}, &|_| {})
+}
+
+fn walk_with(
+    pattern: &str,
+    root: &Path,
+    cancel: &CancellationToken,
+    limits: Limits,
+    visit_hook: &(dyn Fn() + Sync),
+    read_hook: &(dyn Fn(&Path) + Sync),
+) -> Result<ToolResult, ToolError> {
     if cancel.is_cancelled() {
         return Ok(ToolResult::interrupted());
     }
@@ -265,91 +365,111 @@ fn walk(
         code: "invalid_regex".into(),
         message: error.to_string(),
     })?;
-    let skipped = Arc::new(AtomicUsize::new(0));
     let started = Instant::now();
-    let mut text = String::new();
-    let mut visited = 0;
-    let mut bytes_read = 0;
-    let mut matches = 0;
-    let mut partial = None;
-    'walk: for entry in builder(root, true, limits.depth, skipped.clone()).build() {
-        if cancel.is_cancelled() {
-            return Ok(ToolResult::interrupted());
-        }
-        if started.elapsed() >= limits.duration {
-            partial = Some("timeout");
-            break;
-        }
-        if visited >= limits.entries {
-            partial = Some("entry limit");
-            break;
-        }
-        visited += 1;
-        let Ok(entry) = entry else {
-            continue;
-        };
-        if entry.depth() == limits.depth && entry.file_type().is_some_and(|kind| kind.is_dir()) {
-            partial = Some("depth limit");
-        }
-        if !entry.file_type().is_some_and(|kind| kind.is_file()) || sensitive_read(entry.path()) {
-            continue;
-        }
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        if metadata.len() > limits.file_bytes {
-            partial = Some("file size limit");
-            continue;
-        }
-        if bytes_read + metadata.len() > limits.total_bytes {
-            partial = Some("total byte limit");
-            break;
-        }
-        let Ok(file) = std::fs::File::open(entry.path()) else {
-            continue;
-        };
-        let mut bytes = Vec::new();
-        if file
-            .take(limits.file_bytes + 1)
-            .read_to_end(&mut bytes)
-            .is_err()
-        {
-            continue;
-        }
-        if bytes.len() as u64 > limits.file_bytes {
-            partial = Some("file size limit");
-            continue;
-        }
-        bytes_read += bytes.len() as u64;
-        for (line, content) in String::from_utf8_lossy(&bytes).lines().enumerate() {
+    // A visitor can Quit the walker itself; a filter cannot stop a next() that
+    // keeps consuming rejected sensitive entries. One worker keeps budgets exact.
+    use ignore::WalkState::{Continue, Quit, Skip};
+    let state = Mutex::new((String::new(), 0usize, 0u64, 0usize, 0usize, None));
+    builder(root, true, limits.depth).build_parallel().run(|| {
+        Box::new(|entry| {
+            visit_hook();
+            let mut state = state.lock().expect("grep state");
+            let (text, visited, bytes_read, matches, skipped, partial) = &mut *state;
             if cancel.is_cancelled() {
-                return Ok(ToolResult::interrupted());
+                return Quit;
             }
             if started.elapsed() >= limits.duration {
-                partial = Some("timeout");
-                break 'walk;
+                *partial = Some("timeout");
+                return Quit;
             }
-            if regex.is_match(content) {
-                text.push_str(&format!(
-                    "{}:{}:{}\n",
-                    entry.path().display(),
-                    line + 1,
-                    content
-                ));
-                matches += 1;
-                if matches >= limits.matches {
-                    partial = Some("match limit");
-                    break 'walk;
+            if *visited >= limits.entries {
+                *partial = Some("entry limit");
+                return Quit;
+            }
+            *visited += 1;
+            let Ok(entry) = entry else {
+                return Continue;
+            };
+            if sensitive_read(entry.path()) {
+                *skipped += 1;
+                return Skip;
+            }
+            if entry.depth() == limits.depth && entry.file_type().is_some_and(|kind| kind.is_dir())
+            {
+                *partial = Some("depth limit");
+            }
+            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                return Continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                return Continue;
+            };
+            if metadata.len() > limits.file_bytes {
+                *partial = Some("file size limit");
+                return Continue;
+            }
+            let remaining = limits.total_bytes.saturating_sub(*bytes_read);
+            if remaining == 0 || metadata.len() > remaining {
+                *partial = Some("total byte limit");
+                return Quit;
+            }
+            read_hook(entry.path());
+            let Ok(file) = std::fs::File::open(entry.path()) else {
+                return Continue;
+            };
+            let cap = limits.file_bytes.min(remaining);
+            let mut bytes = Vec::new();
+            let read = file.take(cap).read_to_end(&mut bytes);
+            *bytes_read += bytes.len() as u64;
+            // At the cap, conservatively report partial rather than read another
+            // probe byte outside the total budget. Error reads are charged too.
+            if bytes.len() as u64 == cap {
+                *partial = Some(if cap == remaining {
+                    "total byte limit"
+                } else {
+                    "file size limit"
+                });
+                return if cap == remaining { Quit } else { Continue };
+            }
+            if read.is_err() {
+                return Continue;
+            }
+            for (line, content) in String::from_utf8_lossy(&bytes).lines().enumerate() {
+                if cancel.is_cancelled() {
+                    return Quit;
                 }
-                if text.len() >= DEFAULT_MAX_OUTPUT_BYTES {
-                    partial = Some("output limit");
-                    break 'walk;
+                if started.elapsed() >= limits.duration {
+                    *partial = Some("timeout");
+                    return Quit;
+                }
+                if regex.is_match(content) {
+                    text.push_str(&format!(
+                        "{}:{}:{}\n",
+                        entry.path().display(),
+                        line + 1,
+                        content
+                    ));
+                    *matches += 1;
+                    if *matches >= limits.matches {
+                        *partial = Some("match limit");
+                        return Quit;
+                    }
+                    if text.len() >= DEFAULT_MAX_OUTPUT_BYTES {
+                        *partial = Some("output limit");
+                        return Quit;
+                    }
                 }
             }
-        }
+            Continue
+        })
+    });
+    if cancel.is_cancelled() {
+        return Ok(ToolResult::interrupted());
     }
-    let count = skipped.load(Ordering::Relaxed);
-    Ok(result(text, "builtin", count, partial, visited))
+    let (text, visited, bytes_read, _, skipped, partial) = state.into_inner().expect("grep state");
+    let mut result = result(text, "builtin", skipped, partial, visited);
+    result.metadata["bytes_read"] = json!(bytes_read);
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -360,6 +480,132 @@ pub(super) fn builtin_sync(pattern: &str, root: &Path) -> Result<ToolResult, Too
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn rg_match_limit_reports_partial_instead_of_silently_dropping_extra_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("short"), "x\n".repeat(MAX_MATCHES + 1)).unwrap();
+        let result = search_with(
+            Engine::Rg,
+            "x".into(),
+            tmp.path().into(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.metadata["partial"], "match limit");
+        assert!(result.output.contains("partial results: match limit"));
+        assert_eq!(
+            result
+                .output
+                .lines()
+                .filter(|line| line.ends_with(":x"))
+                .count(),
+            MAX_MATCHES
+        );
+    }
+
+    #[tokio::test]
+    async fn sensitive_count_cancellation_interrupts_and_hidden_tree_is_not_descended() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        for i in 0..500 {
+            std::fs::write(tmp.path().join(format!(".git/{i}.key")), "secret").unwrap();
+        }
+        std::fs::write(tmp.path().join(".env"), "secret").unwrap();
+        let (_, complete, visited) = count_sensitive_with(
+            tmp.path(),
+            &CancellationToken::new(),
+            Limits::default(),
+            &|| {},
+        );
+        assert!(complete);
+        assert!(visited < 10, "visited {visited}");
+        let cancel = CancellationToken::new();
+        let hook_cancel = cancel.clone();
+        let result = count_after_rg_with(
+            "ordinary".into(),
+            None,
+            tmp.path().into(),
+            &cancel,
+            Limits::default(),
+            std::sync::Arc::new(move || hook_cancel.cancel()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.status, super::super::ToolStatus::Interrupted);
+        let result = count_after_rg(
+            "ordinary".into(),
+            None,
+            tmp.path().into(),
+            &CancellationToken::new(),
+            Limits {
+                duration: Duration::ZERO,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.metadata["count_complete"], false);
+        assert!(result.output.contains("count incomplete"));
+    }
+
+    #[test]
+    fn filtered_entries_share_limits_cancellation_and_growing_reads_charge_actual_bytes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..100 {
+            std::fs::write(tmp.path().join(format!("{i}.key")), "secret").unwrap();
+        }
+        let result = walk(
+            ".",
+            tmp.path(),
+            &CancellationToken::new(),
+            Limits {
+                entries: 5,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(result.metadata["partial"], "entry limit");
+        assert_eq!(result.metadata["visited"], 5);
+        let calls = AtomicUsize::new(0);
+        let cancel = CancellationToken::new();
+        let result = walk_with(
+            ".",
+            tmp.path(),
+            &cancel,
+            Limits::default(),
+            &|| {
+                if calls.fetch_add(1, Ordering::SeqCst) == 2 {
+                    cancel.cancel();
+                }
+            },
+            &|_| {},
+        )
+        .unwrap();
+        assert_eq!(result.status, super::super::ToolStatus::Interrupted);
+        assert!(calls.load(Ordering::SeqCst) < 10);
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("grow"), "x").unwrap();
+        let result = walk_with(
+            "x",
+            tmp.path(),
+            &CancellationToken::new(),
+            Limits {
+                total_bytes: 8,
+                file_bytes: 16,
+                ..Default::default()
+            },
+            &|| {},
+            &|path| {
+                std::fs::write(path, "x".repeat(100)).unwrap();
+            },
+        )
+        .unwrap();
+        assert_eq!(result.metadata["bytes_read"], 8);
+        assert_eq!(result.metadata["partial"], "total byte limit");
+        assert!(!result.output.contains(":1:"));
+    }
     #[tokio::test]
     #[ignore = "manual real-worktree timing"]
     async fn real_worktree_directory_grep_timing() {
@@ -469,6 +715,17 @@ mod tests {
             let name = rule.replace('*', "example");
             assert!(sensitive_read(Path::new(&name)), "{rule}");
             let file = tmp.path().join(&name);
+            std::fs::write(&file, "needle").unwrap();
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o0)).unwrap();
+        }
+        for name in [
+            "AuTh.JsOn",
+            "nested/.SsH/private",
+            "nested/GcLoUd/token",
+            "odd[bracket].key",
+        ] {
+            let file = tmp.path().join(name);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(&file, "needle").unwrap();
             std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o0)).unwrap();
         }

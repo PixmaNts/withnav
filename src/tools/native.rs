@@ -68,7 +68,9 @@ impl Tool for ReadTool {
                         crate::agent::permissions::resolve_read_target(Path::new(&path), cx)?;
                     let target = validate_path(&cx.read_roots(), &target)?;
                     if crate::agent::permission_gate::sensitive_read(&target)
-                        || crate::agent::permission_gate::sensitive_read(Path::new(&path))
+                        || crate::agent::permission_gate::sensitive_read(
+                            &crate::agent::permissions::requested_path(Path::new(&path), cx)?,
+                        )
                     {
                         return Err(ToolError::Denied {
                             code: "permission_required".into(),
@@ -313,8 +315,9 @@ impl Tool for GrepTool {
                     code: "outside_project".into(),
                     message: crate::tools::OUTSIDE_SEARCH.into(),
                 })?;
-            if crate::agent::permission_gate::sensitive_read(Path::new(&path))
-                || crate::agent::permission_gate::sensitive_read(&search_root)
+            if crate::agent::permission_gate::sensitive_read(
+                &crate::agent::permissions::requested_path(Path::new(&path), cx)?,
+            ) || crate::agent::permission_gate::sensitive_read(&search_root)
             {
                 return Err(ToolError::Denied {
                     code: "sensitive_path".into(),
@@ -337,6 +340,30 @@ fn grep_builtin(pattern: &str, root: &Path) -> Result<ToolResult, ToolError> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn unbound_relative_reads_preserve_sensitive_workspace_spelling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ordinary = tmp.path().join("ordinary");
+        std::fs::create_dir(&ordinary).unwrap();
+        std::fs::write(ordinary.join("config"), "secret").unwrap();
+        let workspace = tmp.path().join(".ssh");
+        std::os::unix::fs::symlink(ordinary, &workspace).unwrap();
+        let cx = ctx(&workspace);
+        for (tool, path) in [
+            (&ReadTool as &dyn Tool, "config"),
+            (&GrepTool as &dyn Tool, "."),
+        ] {
+            let error = tool
+                .call(
+                    json!({"path":path,"pattern":"."}),
+                    CancellationToken::new(),
+                    &cx,
+                )
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("sensitive"));
+        }
+    }
     #[tokio::test]
     async fn unbound_native_read_and_search_reject_sensitive_alias_spellings() {
         let tmp = tempfile::tempdir().unwrap();
@@ -631,18 +658,15 @@ mod tests {
     #[tokio::test]
     async fn grep_builtin_fallback_same_shape() {
         let tmp = tempfile::tempdir().unwrap();
-        let cx = ctx(tmp.path());
         std::fs::write(tmp.path().join("a.txt"), "needle here\nother\n").unwrap();
-        std::env::set_var("NAVAI_FORCE_BUILTIN_GREP", "1");
-        let res = GrepTool
-            .call(
-                json!({"pattern": "needle", "path": tmp.path().to_str().unwrap()}),
-                CancellationToken::new(),
-                &cx,
-            )
-            .await
-            .unwrap();
-        std::env::remove_var("NAVAI_FORCE_BUILTIN_GREP");
+        let res = super::super::grep::search_with(
+            super::super::grep::Engine::Builtin,
+            "needle".into(),
+            tmp.path().into(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         assert!(res.output.contains("needle"));
         assert_eq!(res.metadata["engine"], "builtin");
     }
@@ -687,22 +711,14 @@ mod tests {
         std::fs::write(outside.join("b.txt"), "needle outside\n").unwrap();
         std::os::unix::fs::symlink(&outside, root.join("out")).unwrap();
         std::os::unix::fs::symlink(&root, root.join("loop")).unwrap();
-        let cx = ToolContext {
-            binding: None,
-            workspace: root.clone(),
-            writable_roots: Vec::new(),
-            readable_roots: vec![root.clone()],
-        };
-        std::env::set_var("NAVAI_FORCE_BUILTIN_GREP", "1");
-        let res = GrepTool
-            .call(
-                json!({"pattern": "needle", "path": root.to_str().unwrap()}),
-                CancellationToken::new(),
-                &cx,
-            )
-            .await
-            .unwrap();
-        std::env::remove_var("NAVAI_FORCE_BUILTIN_GREP");
+        let res = super::super::grep::search_with(
+            super::super::grep::Engine::Builtin,
+            "needle".into(),
+            root,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         assert!(res.output.contains("needle inside"), "{}", res.output);
         assert!(!res.output.contains("outside"), "{}", res.output);
     }

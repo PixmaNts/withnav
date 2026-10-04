@@ -664,7 +664,10 @@ fn sensitive_call(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> bool {
                 call.args
                     .get(key)
                     .and_then(Value::as_str)
-                    .is_some_and(|value| sensitive_read(std::path::Path::new(value)))
+                    .is_some_and(|value| {
+                        super::permissions::requested_path(std::path::Path::new(value), cx)
+                            .is_ok_and(|path| sensitive_read(&path))
+                    })
             }))
         || (call.name == "bash"
             && call
@@ -692,7 +695,7 @@ fn supported_read_only_bash(call: &ToolCall) -> bool {
         return false;
     };
     if command.contains([
-        '>', '<', '|', '&', ';', '\n', '$', '`', '(', ')', '\'', '"', '\\', '*', '?', '[',
+        '>', '<', '|', '&', ';', '\n', '$', '`', '(', ')', '\'', '"', '\\', '*', '?', '[', '{', '}',
     ]) {
         return false;
     }

@@ -45,6 +45,8 @@ pub enum PendingInteraction {
 }
 
 pub struct AgentActor {
+    pub permission_judge: Option<Arc<dyn super::permission_gate::PermissionJudge>>,
+    pub permission_reviewer: Option<Arc<dyn super::permission_gate::PermissionReviewer>>,
     pub safe_boundary: Option<super::boundary::SafeBoundary>,
     pub transcript: Vec<ChatMessage>,
     /// The installed compaction: what stands for the start of `transcript`
@@ -122,6 +124,8 @@ impl AgentActor {
         cancel: CancellationToken,
     ) -> Self {
         Self {
+            permission_judge: None,
+            permission_reviewer: None,
             transcript: Vec::new(),
             compaction: None,
             registry,

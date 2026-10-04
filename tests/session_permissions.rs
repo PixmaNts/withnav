@@ -291,17 +291,28 @@ async fn allow_folder_covers_descendants_and_deny_reaches_the_model() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // w2 runs on the grant; w3 is in another folder and asks.
+    // The old folder answer is one approval; even the descendant asks again.
     let requested = wait_events(&state, id, "permission.requested", 2).await;
     assert_eq!(requested.len(), 2, "exactly one more request");
-    assert_eq!(requested[1].payload["tool_call_id"], "w3");
-    assert!(first.exists() && nested.exists(), "w1 and w2 ran");
+    assert_eq!(requested[1].payload["tool_call_id"], "w2");
+    assert!(first.exists() && !nested.exists(), "only w1 ran");
     assert!(!other.exists());
+
+    answer(
+        &router,
+        id,
+        &request_id(&requested[1]),
+        json!({"decision": "allow_once"}),
+    )
+    .await;
+    let requested = wait_events(&state, id, "permission.requested", 3).await;
+    assert_eq!(requested[2].payload["tool_call_id"], "w3");
+    assert!(nested.exists());
 
     let (status, _) = answer(
         &router,
         id,
-        &request_id(&requested[1]),
+        &request_id(&requested[2]),
         json!({"decision": "deny", "message": "keep out of other/"}),
     )
     .await;
@@ -314,8 +325,8 @@ async fn allow_folder_covers_descendants_and_deny_reaches_the_model() {
 
     let resolved = events(&state, id, "permission.resolved").await;
     assert_eq!(resolved[0].payload["resolution"], "allow_folder");
-    assert_eq!(resolved[1].payload["resolution"], "deny");
-    assert_eq!(resolved[1].payload["message"], "keep out of other/");
+    assert_eq!(resolved[2].payload["resolution"], "deny");
+    assert_eq!(resolved[2].payload["message"], "keep out of other/");
 }
 
 // Given two writes in one assistant message

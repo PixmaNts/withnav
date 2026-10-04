@@ -315,7 +315,7 @@ pub async fn resolve_permission(
                 // An exception of a guarded agent: the driver's approval is
                 // for this one call and never becomes a grant, whatever the
                 // decision said.
-                Gated::Guarded(needed)
+                Gated::Guarded(needed) | Gated::Reviewed(needed)
                     if needed.destination == destination && needed.scope == request.scope =>
                 {
                     run_reviewed(actor, &call, destination.as_deref(), observe).await
@@ -427,6 +427,7 @@ enum Gated {
     /// An exception of a guarded agent: the role guard is asked before the
     /// driver is. See [`guard_step`].
     Guarded(Needed),
+    Reviewed(Needed),
 }
 
 fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
@@ -445,6 +446,9 @@ fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
         Gate::Needs(needed) => needed,
     };
     let agent = role.id.as_str();
+    if matches!(call.name.as_str(), "bash" | "write" | "edit") {
+        return Gated::Reviewed(needed);
+    }
     // A guarded agent writes its markdown without asking; everything else it
     // does is an exception, and no folder grant covers an exception.
     if is_guarded(role) {
@@ -495,6 +499,25 @@ async fn run_gated(
                 return One::Settled;
             }
             Gated::Run(destination) => (destination, None),
+            Gated::Reviewed(needed) => {
+                match super::permission_gate::consult(actor, call, &needed).await {
+                    super::permission_gate::Judged::Run(note) => (needed.destination, Some(note)),
+                    super::permission_gate::Judged::Interrupted => return One::Interrupted,
+                    super::permission_gate::Judged::Ask(reason) => {
+                        let mut request = PermissionRequest::new(
+                            call,
+                            needed.scope,
+                            actor
+                                .role
+                                .as_ref()
+                                .map(|r| r.id.as_str())
+                                .unwrap_or("build"),
+                        );
+                        request.reason = reason;
+                        return One::Ask(request, needed.destination);
+                    }
+                }
+            }
             Gated::Ask(request, destination) => return One::Ask(request, destination),
             Gated::Guarded(needed) => match guard_step(actor, call, needed).await {
                 GuardStep::Run(note, destination) => (destination, Some(note)),
@@ -1235,7 +1258,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_granted_folder_lets_a_second_write_through_without_yielding() {
+    async fn a_saved_folder_grant_never_bypasses_review() {
         let mut actor = make_actor(
             "http://127.0.0.1:1/v1".into(),
             registry_gated(),
@@ -1262,9 +1285,9 @@ mod tests {
         actor.push_user("go");
         let mut noop = |_e: AgentEvent| {};
         let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
-        assert!(matches!(outcome, RunOutcome::Done(_)));
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
-        assert!(!actor.has_pending());
+        assert!(matches!(outcome, RunOutcome::PermissionRequired(_)));
+        assert!(!target.exists());
+        assert!(actor.has_pending());
     }
 
     /// A build actor with a scripted provider, yielded on a pending `write`
@@ -1345,7 +1368,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn allow_folder_lets_the_sibling_through_and_the_turn_continues() {
+    async fn old_allow_folder_answer_runs_once_then_reviews_the_sibling() {
         let done = http_sse(&sse_body(&[&text_chunk("all written")]));
         let (mut actor, a, b, server) = yielded_on_two_writes(vec![done]).await;
         let id = pending_id(&actor);
@@ -1354,15 +1377,12 @@ mod tests {
             resolve_permission(&mut actor, id, PermissionDecision::AllowFolder, &mut noop)
                 .await
                 .unwrap();
-        // `a.txt` sits in the workspace, `sub/b.txt` below it: one grant.
-        assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "all written"));
+        assert!(matches!(outcome, RunOutcome::PermissionRequired(_)));
         assert_eq!(std::fs::read_to_string(&a).unwrap(), "A");
-        assert_eq!(std::fs::read_to_string(&b).unwrap(), "B");
-        assert!(!actor.has_pending());
+        assert!(!b.exists());
+        assert!(actor.has_pending());
         let requests = server.requests.lock().await;
-        assert_eq!(requests.len(), 2);
-        assert!(requests[1].contains("\"tool_call_id\":\"w1\""));
-        assert!(requests[1].contains("\"tool_call_id\":\"w2\""));
+        assert_eq!(requests.len(), 1);
     }
 
     #[tokio::test]
@@ -1830,6 +1850,50 @@ mod tests {
         }
     }
 
+    fn safety_answers(
+        input: &super::super::permission_gate::PermissionReviewInput,
+        verdict: Verdict,
+    ) -> crate::provider::systemone::Answers {
+        input
+            .questions
+            .keys()
+            .map(|name| {
+                let choice = match name.as_str() {
+                    "call_effect" => "read_write",
+                    "call_scope" => "inside",
+                    "call_risk" => "low",
+                    _ => verdict.as_str(),
+                };
+                (
+                    name.clone(),
+                    crate::provider::systemone::Answer::Choice {
+                        choice: choice.into(),
+                        probabilities: Default::default(),
+                        confidence: 1.0,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    impl super::super::permission_gate::PermissionJudge for FakeJev {
+        fn judge<'a>(
+            &'a self,
+            input: &'a super::super::permission_gate::PermissionReviewInput,
+            _cancel: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<'a, Result<crate::provider::systemone::Answers, String>>
+        {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.seen.lock().unwrap().push(input.state.clone());
+            let answer = self
+                .answer
+                .clone()
+                .map(|verdict| safety_answers(input, verdict))
+                .map_err(|_| "unavailable".into());
+            Box::pin(async move { answer })
+        }
+    }
+
     fn as_plan(actor: &mut AgentActor, guard: Option<Arc<FakeJev>>) {
         actor.role = Some(
             crate::agent::definitions::Agents::builtin()
@@ -1837,6 +1901,9 @@ mod tests {
                 .unwrap()
                 .clone(),
         );
+        actor.permission_judge = guard
+            .clone()
+            .map(|g| g as Arc<dyn super::super::permission_gate::PermissionJudge>);
         actor.guard = guard.map(|g| g as Arc<dyn RoleGuard>);
     }
 
@@ -1875,7 +1942,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plan_writes_markdown_without_a_request_or_a_question() {
+    async fn plan_markdown_is_safety_reviewed_without_a_role_question() {
         let jev = FakeJev::new(Ok(Verdict::Violates));
         let mut actor = plan_actor(Some(jev.clone()), "http://127.0.0.1:1/v1");
         let target = actor.tool_context.workspace.join("notes.md");
@@ -1884,7 +1951,8 @@ mod tests {
         let outcome = run_plan(&mut actor, &mut Notes::default()).await.unwrap();
         assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
-        assert_eq!(jev.asked(), 0, "a markdown write is not an exception");
+        assert_eq!(jev.asked(), 1, "markdown still needs safety review");
+        assert!(!jev.seen.lock().unwrap()[0].contains("plan only"));
     }
 
     #[tokio::test]
@@ -1901,25 +1969,25 @@ mod tests {
         assert_eq!(jev.asked(), 1);
         assert_eq!(
             notes.0,
-            vec![serde_json::json!({"by": "jev", "verdict": "conforms", "role": "plan"})]
+            vec![serde_json::json!({"permission_gate": {"policy_version": 1, "source": "jev"}})]
         );
     }
 
     #[tokio::test]
     async fn anything_but_a_valid_conforms_asks_the_driver_with_the_reason() {
         let cases: [(Option<Result<Verdict, GuardError>>, &str); 6] = [
-            (Some(Ok(Verdict::Violates)), "outside the plan role"),
-            (Some(Ok(Verdict::Uncertain)), "could not tell"),
-            (Some(Err(GuardError::TimedOut)), "did not answer"),
+            (Some(Ok(Verdict::Violates)), "uncertain"),
+            (Some(Ok(Verdict::Uncertain)), "uncertain"),
+            (Some(Err(GuardError::TimedOut)), "unavailable"),
             (
                 Some(Err(GuardError::Unavailable("no key".into()))),
-                "not available (no key)",
+                "unavailable",
             ),
             (
                 Some(Err(GuardError::Malformed("maybe".into()))),
-                "cannot be used (maybe)",
+                "unavailable",
             ),
-            (None, "Jev is not available"),
+            (None, "Jev unavailable"),
         ];
         for (answer, reason) in cases {
             let jev = answer.map(FakeJev::new);
@@ -1955,7 +2023,7 @@ mod tests {
         let RunOutcome::PermissionRequired(request) = outcome else {
             panic!("expected a request, got {outcome:?}");
         };
-        assert!(request.reason.contains("too large"), "{}", request.reason);
+        assert!(request.reason.contains("oversized"), "{}", request.reason);
         assert_eq!(jev.asked(), 0);
         assert!(!target.exists());
     }
@@ -2075,8 +2143,22 @@ mod tests {
                 })
             }
         }
+        impl super::super::permission_gate::PermissionJudge for Hangs {
+            fn judge<'a>(
+                &'a self,
+                _input: &'a super::super::permission_gate::PermissionReviewInput,
+                cancel: &'a CancellationToken,
+            ) -> futures::future::BoxFuture<'a, Result<crate::provider::systemone::Answers, String>>
+            {
+                Box::pin(async move {
+                    cancel.cancelled().await;
+                    Err("cancelled".into())
+                })
+            }
+        }
         let mut actor = plan_actor(None, "http://127.0.0.1:1/v1");
         actor.guard = Some(Arc::new(Hangs));
+        actor.permission_judge = Some(Arc::new(Hangs));
         let target = actor.tool_context.workspace.join("main.rs");
         let server = spawn_mock(write_script(&target)).await;
         actor.provider.base_url = server.url.clone();
@@ -2115,12 +2197,11 @@ mod tests {
             panic!("build asks the driver");
         };
         assert!(
-            request.reason.starts_with("`write` acts in"),
+            request.reason.contains("Jev unavailable"),
             "{}",
             request.reason
         );
         assert_eq!(jev.asked(), 0);
-        // And its folder grants still work.
         resolve_permission(
             &mut actor,
             request.id,
@@ -2129,7 +2210,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(actor
+        assert!(!actor
             .grants
             .covers("build", "write", &request.scope, &actor.tool_context));
     }
@@ -2155,6 +2236,22 @@ mod tests {
             Box::pin(async move { Ok(verdict) })
         }
     }
+    impl super::super::permission_gate::PermissionJudge for ScriptedJev {
+        fn judge<'a>(
+            &'a self,
+            input: &'a super::super::permission_gate::PermissionReviewInput,
+            _cancel: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<'a, Result<crate::provider::systemone::Answers, String>>
+        {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Some(during) = self.during.lock().unwrap().take() {
+                during();
+            }
+            let verdict = self.answers.lock().unwrap().remove(0);
+            let answers = safety_answers(input, verdict);
+            Box::pin(async move { Ok(answers) })
+        }
+    }
 
     #[tokio::test]
     async fn markdown_swapped_for_a_link_to_code_between_check_and_dispatch_is_gated_again() {
@@ -2177,7 +2274,11 @@ mod tests {
         let RunOutcome::PermissionRequired(request) = outcome else {
             panic!("a moved target must be checked again, got {outcome:?}");
         };
-        assert_eq!(jev.asked(), 1, "the guard saw the new target");
+        assert_eq!(
+            jev.asked(),
+            2,
+            "safety and then the new target were reviewed"
+        );
         assert_eq!(
             request.scope,
             Scope::Folder(ws.clone()),
@@ -2210,6 +2311,8 @@ mod tests {
             asked: std::sync::atomic::AtomicUsize::new(0),
         });
         actor.guard = Some(jev.clone() as Arc<dyn RoleGuard>);
+        actor.permission_judge =
+            Some(jev.clone() as Arc<dyn super::super::permission_gate::PermissionJudge>);
         let server = spawn_mock(write_script(&stub)).await;
         actor.provider.base_url = server.url.clone();
         let outcome = run_plan(&mut actor, &mut Notes::default()).await.unwrap();
@@ -2284,7 +2387,7 @@ mod tests {
             let RunOutcome::PermissionRequired(_) = outcome else {
                 panic!("{tool}: the moved target is checked again: {outcome:?}");
             };
-            assert_eq!(jev.asked(), 1, "{tool}: the guard saw the new target");
+            assert_eq!(jev.asked(), 2, "{tool}: safety and new target reviewed");
             assert_eq!(
                 std::fs::read_to_string(&code).unwrap(),
                 "fn main() {}",

@@ -5,6 +5,7 @@ pub mod context;
 pub mod definitions;
 pub mod guard;
 pub mod instructions;
+pub mod permission_gate;
 pub mod permissions;
 pub mod prompt;
 pub mod response;

@@ -1876,6 +1876,11 @@ impl Service {
             &workspace,
             &self.config.config_dir,
         );
+        actor.permission_judge = super::guard::permission_judge(
+            self.config.models_path.as_deref(),
+            &workspace,
+            &self.config.config_dir,
+        );
         self.hooks.configure_actor(profile, &mut actor);
         if let Some((allowed, _)) = &child_policy {
             actor

@@ -2195,23 +2195,16 @@ impl Service {
             &workspace,
             &self.config.config_dir,
         ) {
-            let configured_layer = settings
-                .layer_assignment(crate::provider::assignments::Layer::Metacognition)
-                .map_err(ServerError::History)?;
-            let reviewer_present = if configured_layer.is_some() {
-                // Layer consumer wiring will reuse its shared assigned helper here.
-                matches!(
-                    crate::provider::assignments::AssignmentResolver::new(&models, &settings)
-                        .layer_assignment(crate::provider::assignments::Layer::Metacognition),
-                    Ok(crate::provider::assignments::LayerAssignment::Enabled(_))
-                )
-            } else {
-                models.resolve("metacognition").is_ok()
-            };
+            let reviewer_present = crate::provider::layers::assigned(
+                &models,
+                &self.config.config_dir,
+                crate::provider::assignments::Layer::Metacognition,
+            )
+            .is_ok();
             actor.permission_reviewer_unavailable = if reviewer_present {
                 "no key"
             } else {
-                "no alias"
+                "metacognition layer unavailable"
             };
             actor.permission_reviewer = crate::navigator::bootstrap::LazyCommenter::new(
                 &models,

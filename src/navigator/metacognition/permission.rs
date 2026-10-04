@@ -19,21 +19,21 @@ fn check_budget(
     tools: &[ToolDef],
 ) -> Result<(), ReviewError> {
     let budget = Budget::compute(window, max_input, Some(output), None)
-        .map_err(|_| ReviewError("unavailable (provider error)"))?;
+        .map_err(|_| ReviewError("input too large"))?;
     let estimate = messages
         .iter()
         .map(message_tokens)
         .sum::<u64>()
         .saturating_add(tools_tokens(tools));
     if estimate > budget.input_budget {
-        return Err(ReviewError("answer malformed (tool call)"));
+        return Err(ReviewError("input too large"));
     }
     Ok(())
 }
 
 fn answer(message: &crate::provider::AssistantMessage) -> Result<PermissionReview, ReviewError> {
     if !message.tool_calls.is_empty() {
-        return Err(ReviewError("answer malformed (invalid response)"));
+        return Err(ReviewError("answer malformed (tool call)"));
     }
     if message.text.trim().is_empty() {
         return Err(ReviewError(
@@ -73,7 +73,7 @@ impl PermissionReviewer for super::LlmCommenter {
                 self.resolved
                     .model
                     .context_window
-                    .ok_or(ReviewError("answer malformed (invalid response)"))?,
+                    .ok_or(ReviewError("unavailable (configuration)"))?,
                 self.resolved.model.max_input_tokens,
                 output,
                 &messages,
@@ -122,6 +122,26 @@ fn diagnostic_excerpt(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reasoning_reserve_budget_boundary_uses_4096_tokens() {
+        let window = 16384;
+        let budget = Budget::compute(window, None, Some(4096), None).unwrap();
+        let messages = vec![ChatMessage::User {
+            provenance: Default::default(),
+            content: "x".repeat(((budget.input_budget - 4) * 4) as usize),
+        }];
+        assert!(check_budget(window, None, 4096, &messages, &[]).is_ok());
+        let mut oversized = messages;
+        if let ChatMessage::User { content, .. } = &mut oversized[0] {
+            content.push('x');
+        }
+        assert_eq!(
+            check_budget(window, None, 4096, &oversized, &[])
+                .unwrap_err()
+                .0,
+            "input too large"
+        );
+    }
     #[test]
     fn malformed_diagnostic_is_escaped_and_bounded() {
         let excerpt = diagnostic_excerpt(&format!("\n\r\x1b{}", "x".repeat(1000)));

@@ -1996,6 +1996,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn external_native_write_and_edit_approval_matrix_preserves_roots() {
+        for tool in ["write", "edit"] {
+            for route in ["meta", "driver", "deny"] {
+                let mut actor =
+                    plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+                actor
+                    .registry
+                    .register(Box::new(crate::tools::native::EditTool));
+                let external = tempfile::tempdir().unwrap();
+                let target = external.path().join("file.txt");
+                std::fs::write(&target, "old").unwrap();
+                let roots = actor.tool_context.writable_roots.clone();
+                let args = if tool == "write" {
+                    serde_json::json!({"path":target,"content":"new"})
+                } else {
+                    serde_json::json!({"path":target,"old_string":"old","new_string":"new"})
+                };
+                let call = ToolCall {
+                    id: "c".into(),
+                    name: tool.into(),
+                    args,
+                    args_valid: true,
+                };
+                if route == "meta" {
+                    actor.permission_reviewer = Some(Arc::new(Meta {
+                        decision: Some(super::super::permission_gate::ReviewDecision::Approve),
+                        captured: Default::default(),
+                        hangs: false,
+                    }));
+                }
+                let outcome = run_gated(&mut actor, &call, &mut |_| {}).await;
+                match outcome {
+                    One::Ask(_, destination) if route == "driver" => {
+                        assert!(matches!(
+                            run_reviewed(&mut actor, &call, destination.as_deref(), &mut |_| {})
+                                .await,
+                            One::Settled
+                        ));
+                    }
+                    One::Ask(..) if route == "deny" => {}
+                    One::Settled if route == "meta" => {}
+                    _ => panic!("unexpected approval route"),
+                }
+                assert_eq!(
+                    std::fs::read_to_string(target).unwrap(),
+                    if route == "deny" { "old" } else { "new" }
+                );
+                assert_eq!(actor.tool_context.writable_roots, roots);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn protected_config_always_asks_even_with_approving_models_and_scratch() {
         for workspace_is_config in [false, true] {
             let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");

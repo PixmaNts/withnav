@@ -78,7 +78,15 @@ pub struct Identity {
 impl Identity {
     pub fn capture(path: &Path) -> Result<Self, String> {
         let path = prepare(path)?;
-        let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_DIRECTORY)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        let metadata = file.metadata().map_err(|e| e.to_string())?;
+        if !acceptable(&metadata, nix::unistd::Uid::current().as_raw()) {
+            return Err("scratch owner changed".into());
+        }
         Ok(Self {
             path,
             dev: metadata.dev(),
@@ -86,7 +94,8 @@ impl Identity {
         })
     }
     pub fn valid(&self) -> bool {
-        prepare(&self.path).is_ok()
+        self.path.exists()
+            && prepare(&self.path).is_ok()
             && std::fs::metadata(&self.path)
                 .is_ok_and(|m| m.dev() == self.dev && m.ino() == self.ino)
     }

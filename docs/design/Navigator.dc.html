@@ -282,7 +282,7 @@
         <div style="padding:10px 12px 6px"><div style="border:1px solid var(--bd);background:var(--bg);border-radius:6px;padding:6px 10px;color:var(--mu);display:flex;gap:6px;align-items:center"><i class="ph ph-magnifying-glass"></i>Search models</div></div>
         <div style="padding:0 6px 6px"><sc-for list="{{ models }}" as="m" hint-placeholder-count="5"><div onClick="{{ m.click }}" style="display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:8px;align-items:center;padding:6px 8px;border-radius:6px;background:{{ m.bg }};cursor:pointer"><span style="color:var(--ac)">{{ m.mark }}</span><div><div class="mono" style="font-size:12.5px">{{ m.name }}</div><div style="color:var(--mu);font-size:11.5px">{{ m.prov }} · {{ m.ctx }} context · {{ m.caps }}</div></div><span style="color:var(--mu);font-size:11.5px">{{ m.aliases }}</span></div></sc-for></div>
         <div style="border-top:1px solid var(--bd);padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div style="display:flex;gap:6px;align-items:center"><span style="color:var(--mu);font-size:11px;width:92px">VARIANT · thinking</span><sc-for list="{{ variants }}" as="v" hint-placeholder-count="4"><button onClick="{{ v.click }}" style="background:{{ v.bg }};color:{{ v.fg }};border:1px solid {{ v.bd }};border-radius:5px;padding:3px 10px;font-size:12px;cursor:pointer">{{ v.label }}</button></sc-for></div><div style="color:var(--mu);font-size:11.5px;padding-left:98px">{{ variantDesc }}</div></div>
-        <div style="border-top:1px solid var(--bd);padding:7px 12px;color:var(--mu);font-size:11.5px" class="mono">alias “{{ layerName }}” · ~/.config/rust-agent/models.json</div>
+        <div style="border-top:1px solid var(--bd);padding:7px 12px;color:var(--mu);font-size:11.5px" class="mono">{{ layerName }}</div>
       </div>
     </div>
     </sc-if>
@@ -354,12 +354,12 @@
         <div style="border:1px solid var(--bd);border-radius:6px;padding:7px 10px;display:flex;gap:8px"><span style="color:var(--or)">●</span>plugin:notify<span style="margin-left:auto;color:var(--mu)">hook: session.idle</span></div>
       </sc-if>
       <sc-if value="{{ tabConfig }}" hint-placeholder-val="{{ false }}">
-        <div style="color:var(--mu);font-size:11px;margin-bottom:5px">MODEL ALIASES · models.json</div>
+        <div style="color:var(--mu);font-size:11px;margin-bottom:5px">LAYERS · models.json</div>
         <div style="display:flex;flex-direction:column;gap:5px;margin-bottom:14px">
           <div style="border:1px solid var(--bd);border-radius:5px;padding:5px 8px;display:flex"><span>Reflex</span><span class="mono" style="margin-left:auto;color:var(--mu)">{{ mReflex }}</span></div>
           <div style="border:1px solid var(--bd);border-radius:5px;padding:5px 8px;display:flex"><span>Instinct</span><span class="mono" style="margin-left:auto;color:var(--mu)">{{ mInstinct }}</span></div>
           <div style="border:1px solid var(--bd);border-radius:5px;padding:5px 8px;display:flex"><span>Metacognition</span><span class="mono" style="margin-left:auto;color:var(--mu)">{{ mMeta }}</span></div>
-          <div style="border:1px solid var(--bd);border-radius:5px;padding:5px 8px;display:flex"><span>Cognition</span><span class="mono" style="margin-left:auto;color:var(--mu)">{{ cogModel }} · {{ cogVariant }}</span></div></div>
+          <div style="border:1px solid var(--bd);border-radius:5px;padding:5px 8px;display:flex"><span>Cognition · {{ modeName }}</span><span class="mono" style="margin-left:auto;color:var(--mu)">{{ cogModel }} · {{ cogVariant }}</span></div></div>
         <div style="color:var(--mu);font-size:11px;margin-bottom:5px">TOOL PERMISSIONS</div>
         <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:14px"><tbody>
           <tr><td style="padding:5px 0" class="mono">read · grep</td><td style="color:var(--gr);text-align:right">allow</td></tr>
@@ -420,7 +420,7 @@
 <script type="text/x-dc" data-dc-script>
 class Component extends DCLogic {
   state = { s: 'tui', th: 'ayuDark', mode: 'build', perm: 'pending', verdict: 'pending', tab: 'intent', scr: 'session', layer: 'cognition', tuiTab: 1, conv: 'refactor-parser', ws: 'ra', sess: 'refactor-parser', pipeTrig: 'edit',
-    assign: { cognition: { m: 'opus', v: 'high' }, metacognition: { m: 'combo', v: 'off' }, instinct: { m: 'jev', v: null }, reflex: { m: 'mercury', v: null } } };
+    assign: { build: { m: 'opus', v: 'high' }, plan: { m: 'glm', v: 'high' }, metacognition: { m: 'combo', v: 'low' }, instinct: { m: 'jev', v: null }, reflex: { m: 'mercury', v: null } } };
   navExtra(st, set) {
     const tint = 'color-mix(in srgb,var(--ac) 16%,transparent)';
     const go = (scr) => () => this.setState({ scr });
@@ -429,18 +429,22 @@ class Component extends DCLogic {
     if (st.s !== 'vsc') sl.push(['pipeline', 'Pipeline editor']);
     const screens = sl.map(([k, label]) => { const on = st.scr === k; return { label, click: go(k), bg: on ? tint : 'transparent', fg: on ? 'var(--tx)' : 'var(--mu)', bd: on ? 'var(--ac)' : 'var(--bd)' }; });
     const M = [
-      { k: 'opus', name: 'cc/claude-opus-5-5', prov: 'omniroute', ctx: '200k', caps: 'tools · parallel · thinking', think: true },
-      { k: 'dsflash', name: 'opencode-go/deepseek-v4-flash', prov: 'omniroute', ctx: '128k', caps: 'tools · parallel · thinking', think: true },
-      { k: 'combo', name: 'combo/deepseek-v4-flash', prov: 'omniroute', ctx: '128k', caps: 'tools · thinking', think: true },
-      { k: 'jev', name: 'typesafe/jev-1.13', prov: 'omniroute', ctx: '64k', caps: 'systemone · typed answers', think: false },
-      { k: 'mercury', name: 'mercury-edit-2', prov: 'inception', ctx: '128k', caps: 'fim · 512 out', think: false }
+      { k: 'opus', name: 'cc/claude-opus-5-5', prov: 'omniroute', ctx: '200k', caps: 'tools · parallel · thinking', think: true, api: 'chat' },
+      { k: 'glm', name: 'glm-5.3', prov: 'omniroute', ctx: '200k', caps: 'tools · parallel · thinking', think: true, api: 'chat' },
+      { k: 'luna', name: 'gpt-6-luna', prov: 'omniroute', ctx: '400k', caps: 'tools · parallel · thinking', think: true, api: 'chat' },
+      { k: 'dsflash', name: 'opencode-go/deepseek-v4-flash', prov: 'omniroute', ctx: '128k', caps: 'tools · parallel · thinking', think: true, api: 'chat' },
+      { k: 'combo', name: 'combo/deepseek-v4-flash', prov: 'omniroute', ctx: '128k', caps: 'tools · thinking', think: true, api: 'chat' },
+      { k: 'jev', name: 'typesafe/jev-1.13', prov: 'omniroute', ctx: '64k', caps: 'systemone · typed answers', think: false, api: 'systemone' },
+      { k: 'mercury', name: 'mercury-edit-2', prov: 'inception', ctx: '128k', caps: 'fim · 512 out', think: false, api: 'fim' }
     ];
     const byK = Object.fromEntries(M.map((m) => [m.k, m]));
-    const A = st.assign, L = st.layer, cur = A[L], curM = byK[cur.m];
-    const layers = ['cognition', 'metacognition', 'instinct', 'reflex'].map((k) => { const on = k === L; const m = byK[A[k].m]; return { label: k, short: m.name.split('/').pop() + (A[k].v ? ' · ' + A[k].v : ''), click: set({ layer: k }), fg: on ? 'var(--tx)' : 'var(--mu)', bd: on ? 'var(--ac)' : 'transparent', bg: on ? tint : 'transparent' }; });
-    const models = M.map((m) => { const on = cur.m === m.k; return { ...m, aliases: Object.keys(A).filter((k) => A[k].m === m.k).join(', '), mark: on ? '●' : '○', op: on ? '1' : '0', bg: on ? tint : 'transparent', click: () => this.setState((s) => ({ assign: { ...s.assign, [L]: { m: m.k, v: m.think ? (s.assign[L].v || 'medium') : null } } })) }; });
+    const A = st.assign, L = st.layer, K = L === 'cognition' ? st.mode : L, cur = A[K], curM = byK[cur.m];
+    const LAPI = { cognition: 'chat', metacognition: 'chat', instinct: 'systemone', reflex: 'fim' };
+    const keyLabel = (k) => k === 'build' || k === 'plan' ? 'cognition · ' + k : k;
+    const layers = ['cognition', 'metacognition', 'instinct', 'reflex'].map((k) => { const on = k === L; const kk = k === 'cognition' ? st.mode : k; const m = byK[A[kk].m]; return { label: k === 'cognition' ? 'cognition · ' + st.mode : k, short: m.name.split('/').pop() + (A[kk].v ? ' · ' + A[kk].v : ''), click: set({ layer: k }), fg: on ? 'var(--tx)' : 'var(--mu)', bd: on ? 'var(--ac)' : 'transparent', bg: on ? tint : 'transparent' }; });
+    const models = M.filter((m) => m.api === LAPI[L]).map((m) => { const on = cur.m === m.k; return { ...m, aliases: Object.keys(A).filter((k) => A[k].m === m.k).map(keyLabel).join(', '), mark: on ? '●' : '○', op: on ? '1' : '0', bg: on ? tint : 'transparent', click: () => this.setState((s) => ({ assign: { ...s.assign, [K]: { m: m.k, v: m.think ? (s.assign[K].v || (K === 'metacognition' ? 'low' : 'medium')) : null } } })) }; });
     const V = { off: 'No reasoning, lowest latency.', low: 'Short reasoning before answering.', medium: 'Balanced reasoning.', high: 'Deep reasoning, slowest and most expensive.' };
-    const variants = Object.keys(V).map((v) => { const on = cur.v === v; return { label: v, click: curM.think ? () => this.setState((s) => ({ assign: { ...s.assign, [L]: { ...s.assign[L], v } } })) : () => {}, bg: on ? tint : 'transparent', fg: curM.think ? (on ? 'var(--tx)' : 'var(--mu)') : 'var(--bd)', bd: on ? 'var(--ac)' : 'var(--bd)' }; });
+    const variants = Object.keys(V).map((v) => { const on = cur.v === v; return { label: v, click: curM.think ? () => this.setState((s) => ({ assign: { ...s.assign, [K]: { ...s.assign[K], v } } })) : () => {}, bg: on ? tint : 'transparent', fg: curM.think ? (on ? 'var(--tx)' : 'var(--mu)') : 'var(--bd)', bd: on ? 'var(--ac)' : 'var(--bd)' }; });
     const build = st.mode === 'build';
     const P = [
       ['Switch agent to ' + (build ? 'plan' : 'build'), 'Agent', 'tab', () => this.setState({ mode: build ? 'plan' : 'build', scr: 'session' })],
@@ -504,8 +508,9 @@ class Component extends DCLogic {
     const short = (k) => { const m = byK[A[k].m]; return m.name + (A[k].v ? ' · ' + A[k].v : ''); };
     return {
       screens, layers, models, variants, palette, subCalls, subFindings, tuiTabs, convs, workspaces, pipeTrigTabs, pipeEvents, pipeFilters, pipeQuestions, pipeBranches, replayRows,
-      variantDesc: curM.think ? (V[cur.v] || '') : 'This model has no thinking variants.', layerName: L,
-      cogModel: byK[A.cognition.m].name, cogVariant: A.cognition.v || 'default', mReflex: short('reflex'), mInstinct: short('instinct'), mMeta: short('metacognition'),
+      variantDesc: curM.think ? (V[cur.v] || '') + (K === 'metacognition' ? ' low is recommended for this layer.' : '') : 'This model has no thinking variants.',
+      layerName: L === 'cognition' ? 'profile ' + st.mode + ' · .navai/agents/' + st.mode + '.md' : 'layer ' + L + ' · one model at a time · ~/.config/navai/models.json',
+      cogModel: byK[A[st.mode].m].name, cogVariant: A[st.mode].v || 'default', mReflex: short('reflex'), mInstinct: short('instinct'), mMeta: short('metacognition'),
       subModel: 'opencode-go/deepseek-v4-flash · low', convTitle: st.conv, wsName: curW.name, sessName: st.sess,
       webCrumb: st.scr === 'pipeline' ? 'pipeline' : st.scr === 'subagent' ? st.sess + ' / explore' : st.sess,
       pipeStatePrompt: edit ? 'prompts/state.md' : 'prompts/conversation_state.md',

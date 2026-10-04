@@ -5,6 +5,7 @@ const originalLoad = Module._load;
 const noopDisposable = () => ({ dispose() {} });
 let provider;
 const vscode = {
+  ViewColumn: { Active: 1 },
   window: {
     showErrorMessage() {},
     visibleTextEditors: [],
@@ -25,6 +26,131 @@ const { registerChatView } = require("../out/tests/chatView.js");
 const { CognitionBackend } = require("../out/tests/cognition.js");
 Module._load = originalLoad;
 
+test('S1 real watchdog doubt continues with null; S3 confirmation revision rejects changed child; S4 late acceptance retains done', async t => {
+  const {b,event,dom,tick}=fullChat(t);b.state.session='P';b.scheduleChildRead=()=>{};
+  event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'plan',goal:'work'});
+  event('subagent.watchdog',{parent_session_id:'P',child_session_id:'C',verdict:'doubt'});
+  let confirm;vscode.window.showWarningMessage=()=>new Promise(r=>confirm=r);
+  let finish;const calls=[];t.mock.method(globalThis,'fetch',(url,init)=>{calls.push({url,...init});return new Promise(r=>finish=r);});
+  const continueButton=()=>[...dom.window.document.querySelectorAll('.child-row button')].find(x=>x.textContent==='Continue');
+  continueButton().click();event('subagent.done',{parent_session_id:'P',child_session_id:'C',outcome:'done'});confirm('Confirm');await tick();assert.equal(calls.length,0);
+  b.state.children.get('C').state='watchdog';b.publishSubagents();
+  vscode.window.showWarningMessage=async()=> 'Confirm';continueButton().click();await tick();
+  assert.deepEqual(JSON.parse(calls[0].body),{pause_token:null});
+  event('subagent.done',{parent_session_id:'P',child_session_id:'C',outcome:'done'});finish(new Response(JSON.stringify({accepted:true})));await tick();
+  assert.equal(b.state.children.get('C').state,'done');assert.equal(continueButton(),undefined);
+});
+test('S2 panel inspection preserves pending parent send, skill refusal and model result; S9 parent snapshot stays', async t => {
+  const {b,event,dom,tick,send,panels,prompt}=fullChat(t);b.state.session='P';b.scheduleChildRead=()=>{};
+  event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'plan',goal:'work'});
+  const generation=b.currentGeneration();let finish;
+  t.mock.method(globalThis,'fetch',(url)=>url.endsWith('/messages')?new Promise(r=>finish=r):Promise.resolve(new Response(JSON.stringify({parent_session_id:'P',promptable:false,child_status:'done',agent:'plan'}))));
+  send('hello');dom.window.document.querySelector('.child-open').click();await tick();await tick();
+  assert.equal(panels.length,1);assert.equal(b.currentGeneration(),generation);assert.equal(b.currentConversationId(),'P');
+  finish(new Response(JSON.stringify({accepted:true})));await tick();assert.equal(prompt.value,'');
+  assert.equal(panels[0].page.window.document.querySelector('#composer').hidden,true);
+  const snapshot={incarnation:'I',revision:1,estimate_total:42,window:1000,breakdown:{system:1,rules:1,skills:1,tools:1,messages:38}};b.state.context=snapshot;b.emit({type:'usage',snapshot});
+  const label=dom.window.document.querySelector('#usage-label').textContent;
+  panels[0].send({type:'send',text:'forged',generation});await tick();assert.equal(prompt.value,'');
+  assert.equal(dom.window.document.querySelector('#usage-label').textContent,label);
+  send('/skill review check');await tick();finish(new Response(JSON.stringify({error:'Skill refused'}),{status:400}));await tick();assert.match(dom.window.document.querySelector('.command-error').textContent,/Skill refused/);
+  b.state.commands.set('M',{draft:'/model next',name:'model',arguments:'next'});event('command.result',{operation_id:'M',name:'model',ok:false,error:'Model refused'});
+  assert.match(dom.window.document.querySelector('.command-error').textContent,/Model refused/);
+  panels[0].panel.dispose();
+});
+test('S5 panel replay cannot regress seq100 budget row; S6 terminal metadata seeds done; S8 panel disposal cancels stream', async t=>{
+  const {b,event,dom,tick,panels}=fullChat(t);b.state.session='P';b.scheduleChildRead=()=>{};
+  event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'plan',goal:'work'});
+  b.state.children.get('C').state='budget';b.state.childStateSeq.set('C',100);
+  let controller;let signal;const encoder=new TextEncoder();
+  t.mock.method(globalThis,'fetch',async(url,init)=>{
+    if(url.endsWith('/events')){signal=init.signal;return new Response(new ReadableStream({start(c){controller=c;signal.addEventListener('abort',()=>c.close());}}));}
+    return new Response(JSON.stringify({parent_session_id:'P',promptable:false,agent:'plan',child_status:'out_of_steps'}));
+  });
+  dom.window.document.querySelector('.child-open').click();await tick();await tick();
+  controller.enqueue(encoder.encode('id: 10\ndata: '+JSON.stringify({seq:10,kind:'turn.start',payload:{turn_id:'T'}})+'\n\n'));await tick();
+  assert.equal(b.state.children.get('C').state,'budget');
+  panels[0].panel.dispose();assert.equal(signal.aborted,true);
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({sessions:[{id:'C',parent_session_id:'P',promptable:false,child_status:'done'}]})));
+  delete b.listConversations;await b.listConversations();assert.equal(b.state.children.get('C').state,'done');
+});
+test('S7 two child reader EOFs both retry and resync clears cursor; S8 chat disposal cancels readers', async t=>{
+  const {b,event,tick}=fullChat(t);b.state.session='P';
+  const counts={};const encoder=new TextEncoder();
+  t.mock.method(globalThis,'fetch',async(url,init)=>{
+    const id=url.includes('/C/')?'C':'D';counts[id]=(counts[id]??0)+1;
+    if(counts[id]===1)return new Response('event: resync\ndata: {}\n\n');
+    return new Response(new ReadableStream({start(c){init.signal.addEventListener('abort',()=>{try{c.close();}catch{}});}}));
+  });
+  for(const id of ['C','D']){event('subagent.spawned',{parent_session_id:'P',child_session_id:id,agent:'plan',goal:'work'});b.state.childStateCursors.set(id,'100');}
+  await new Promise(r=>setTimeout(r,900));await tick();
+  assert(counts.C>=2&&counts.D>=2);assert.equal(b.state.childStateCursors.has('C'),false);assert.equal(b.state.childStateCursors.has('D'),false);
+  const signals=[...b.state.childReads.values()];b.cancelPermissionReads();assert(signals.every(x=>x.signal.aborted));assert.equal(b.state.childRetryTimers.size,0);
+});
+test('S3 panel disposal cancels confirmation; S8 terminal panel replay EOF never reconnects', async t=>{
+  const {b,event,dom,tick,panels}=fullChat(t);b.state.session='P';b.scheduleChildRead=()=>{};
+  event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'plan',goal:'work'});
+  let streams=0;let posts=0;
+  t.mock.method(globalThis,'fetch',async(url,init)=>{
+    if(init.method==='POST'){posts++;return new Response(JSON.stringify({accepted:true}));}
+    if(url.endsWith('/events')){streams++;return new Response('');}
+    return new Response(JSON.stringify({parent_session_id:'P',promptable:false,agent:'plan',child_status:'done'}));
+  });
+  dom.window.document.querySelector('.child-open').click();await tick();await tick();
+  await new Promise(r=>setTimeout(r,650));assert.equal(streams,1);
+  b.state.children.get('C').state='budget';b.publishSubagents();
+  let confirm;vscode.window.showWarningMessage=()=>new Promise(r=>confirm=r);
+  panels[0].send({type:'controlChild',parentId:'P',childId:'C',action:'continue',generation:b.currentGeneration()});
+  panels[0].panel.dispose();confirm('Confirm');await tick();assert.equal(posts,0);
+});
+test('S2.1 concurrent delayed opens reserve one panel then close and reopen', async t=>{
+  const {b,event,dom,tick,panels}=fullChat(t);b.state.session='P';b.scheduleChildRead=()=>{};
+  event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'plan',goal:'work'});
+  let finish;let count=0;
+  t.mock.method(globalThis,'fetch',()=>{count++;return new Promise(r=>finish=r);});
+  const open=()=>dom.window.document.querySelector('.child-open').click();open();open();assert.equal(count,1);
+  finish(new Response(JSON.stringify({parent_session_id:'P',promptable:false,child_status:'done'})));await tick();await tick();assert.equal(panels.length,1);
+  panels[0].panel.dispose();const before=count;open();assert.equal(count,before+1);
+  finish(new Response(JSON.stringify({parent_session_id:'P',promptable:false,child_status:'done'})));await tick();await tick();assert.equal(panels.length,2);panels[1].panel.dispose();
+});
+test('S2.2 running metadata is real running but preserves newer budget and terminal projections', async t=>{
+  const {b,event,dom,tick,panels}=fullChat(t);b.state.session='P';b.scheduleChildRead=()=>{};
+  event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'plan',goal:'work'});
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({parent_session_id:'P',promptable:false,child_status:'running'})));
+  event('agent.yield',{child_session_id:'C',kind:'budget'});
+  dom.window.document.querySelector('.child-open').click();await tick();await tick();assert.equal(b.state.children.get('C').state,'budget');
+  event('subagent.done',{parent_session_id:'P',child_session_id:'C',outcome:'done'});
+  b.seedChild(b.state,'C',{child_status:'active'});assert.equal(b.state.children.get('C').state,'done');
+  assert.equal(b.childStatus('running'),'running');assert.equal(b.childStatus('active'),'running');panels[0].panel.dispose();
+});
+test('S2.3 terminal replay coalesces, ignores yields, retries delayed metadata and cancels hanging lookup', async t=>{
+  const {b,event,tick}=fullChat(t);b.state.session='P';b.scheduleChildRead=()=>{};
+  event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'plan',goal:'work'});
+  let count=0;let finish;let signal;
+  t.mock.method(globalThis,'fetch',(_url,init)=>{count++;signal=init.signal;return new Promise(r=>finish=r);});
+  for(let i=0;i<50;i++)event('turn.end',{child_session_id:'C',outcome:'yielded'});assert.equal(count,0);
+  for(let i=0;i<50;i++)event('turn.end',{child_session_id:'C',outcome:'done'});assert.equal(count,1);
+  finish(new Response(JSON.stringify({child_status:'running'})));await new Promise(r=>setTimeout(r,150));assert.equal(count,2);
+  finish(new Response(JSON.stringify({child_status:'done'})));await tick();
+  if(count===3){finish(new Response(JSON.stringify({child_status:'done'})));await tick();}
+  assert.equal(b.state.children.get('C').state,'done');assert(count<=3);
+  b.state.children.get('C').state='running';event('session.end',{child_session_id:'C'});assert.equal(signal.aborted,false);b.dispose();assert.equal(signal.aborted,true);
+});
+test('S2.4 two outstanding confirmed descriptors across accepted completion send one POST', async t=>{
+  const {b,event,dom,tick}=fullChat(t);b.state.session='P';b.scheduleChildRead=()=>{};
+  event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'plan',goal:'work'});event('agent.yield',{child_session_id:'C',kind:'budget'});
+  const confirmations=[];vscode.window.showWarningMessage=()=>new Promise(r=>confirmations.push(r));
+  let count=0;t.mock.method(globalThis,'fetch',async()=>{count++;return new Response(JSON.stringify({accepted:true}));});
+  const button=[...dom.window.document.querySelectorAll('.child-row button')].find(x=>x.textContent==='Continue');button.click();button.click();
+  confirmations[0]('Confirm');await tick();confirmations[1]('Confirm');await tick();assert.equal(count,1);assert.equal(b.state.children.get('C').state,'budget');
+});
+test('S2.3 hanging terminal metadata GET times out and releases reconciliation', async t=>{
+  const {b,event,tick}=fullChat(t);b.state.session='P';b.scheduleChildRead=()=>{};
+  event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'plan',goal:'work'});
+  let signal;t.mock.method(globalThis,'fetch',(_url,init)=>{signal=init.signal;return new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(new Error('aborted'))));});
+  event('session.end',{child_session_id:'C'});
+  await new Promise(r=>setTimeout(r,2100));await tick();assert.equal(signal.aborted,true);assert.equal(b.childReconciliations.size,0);
+});
 function fullChat(t) {
   const { JSDOM } = require('jsdom');
   const { chatHtml } = require('../out/tests/chatHtml.js');
@@ -33,12 +159,27 @@ function fullChat(t) {
   b.connect = async () => {}; b.fetchContext = async () => {}; b.listConversations = async () => [];
   b.commands = ['model','agent','variant'].map(name => ({ name, description: name, args_hint: '' }));
   let receive;
+  const panels=[];
   const dom = new JSDOM(chatHtml('n','chat.js','chat.css','resource:'), { runScripts: 'outside-only' });
   t.after(() => dom.window.close());
   registerChatView({ extensionUri: 'extension' }, b);
   provider.resolveWebviewView({ webview: { cspSource: 'test', asWebviewUri: value => value,
     postMessage(data) { dom.window.dispatchEvent(new dom.window.MessageEvent('message', { data })); },
     onDidReceiveMessage(listener) { receive = listener; return noopDisposable(); } }, onDidDispose() {} });
+  vscode.ViewColumn = {Active:1};
+  vscode.window.createWebviewPanel = (_kind,title) => {
+    const page = new JSDOM(chatHtml('n','chat.js','chat.css','resource:'), {runScripts:'outside-only'});
+    const handlers=[];let handler;
+    const panel={title, reveal(){}, webview:{cspSource:'test',options:{},asWebviewUri:v=>v,
+      postMessage(data){page.window.dispatchEvent(new page.window.MessageEvent('message',{data}));},
+      onDidReceiveMessage(fn){handler=fn;return noopDisposable();}},
+      onDidDispose(fn){handlers.push(fn);return noopDisposable();},
+      dispose(){for(const fn of handlers.splice(0))fn();page.window.close();}};
+    panels.push({panel,page,send:m=>handler(m)});
+    // Start the shipped page once the panel host handler has been registered.
+    setImmediate(()=>{page.window.acquireVsCodeApi=()=>({postMessage:m=>handler(m),getState(){},setState(){}});page.window.eval(fs.readFileSync('out/chat.js','utf8'));});
+    return panel;
+  };
   dom.window.acquireVsCodeApi = () => ({ postMessage: message => receive(message), getState() {}, setState() {} });
   dom.window.eval(fs.readFileSync('out/chat.js','utf8'));
   const prompt = dom.window.document.querySelector('#prompt');
@@ -46,8 +187,44 @@ function fullChat(t) {
   let seq = 0;
   const event = (kind,payload) => b.handleFrame({ id: String(++seq), event: '', envelope: { seq,kind,payload } });
   const tick = () => new Promise(resolve => setImmediate(resolve));
-  return { b, dom, prompt, send, event, tick };
+  return { b, dom, prompt, send, event, tick, panels };
 }
+test('subagent Stop and Continue confirm, exact bodies, refusals and stale parent controls', async t => {
+  const { b,dom,event,tick } = fullChat(t); b.state.session='P'; b.scheduleChildRead=()=>{};
+  event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'build',goal:'work'});
+  event('agent.yield',{child_session_id:'C',kind:'budget'});
+  let confirmed=0; vscode.window.showWarningMessage=async()=>{confirmed++;return 'Confirm';};
+  const calls=[]; t.mock.method(globalThis,'fetch',async(url,init)=>{calls.push({url,...init});return new Response(JSON.stringify({accepted:false,error:'Not parked'}));});
+  [...dom.window.document.querySelectorAll('.child-row button')].find(x=>x.textContent==='Continue').click(); await tick();
+  assert.equal(confirmed,1); assert.deepEqual(JSON.parse(calls[0].body),{pause_token:null});
+  assert.match(calls[0].url,/\/P\/children\/C\/continue$/); assert.match(dom.window.document.querySelector('.child-row').textContent,/Not parked/);
+  const token={incarnation:'I',hold_id:'H'};
+  event('agent.yield',{child_session_id:'C',kind:'watchdog',details:{pause_token:token}});
+  t.mock.method(globalThis,'fetch',async(url,init)=>{calls.push({url,...init});return new Response(JSON.stringify({accepted:true}));});
+  [...dom.window.document.querySelectorAll('.child-row button')].find(x=>x.textContent==='Continue').click(); await tick();
+  assert.deepEqual(JSON.parse(calls.at(-1).body),{pause_token:null});
+  [...dom.window.document.querySelectorAll('.child-row button')].find(x=>x.textContent==='Stop').click(); await tick();
+  assert.match(calls.at(-1).url,/\/C\/stop$/); assert.equal(calls.at(-1).body,undefined);
+  const old=b.currentGeneration(); await b.newConversation();
+  await assert.rejects(b.controlChild('P','C','stop',old),/conversation changed/);
+});
+test('subagent session list seeds rows, replay preserves terminal states and watchdog resolution', async t => {
+  const { b,event,dom,tick } = fullChat(t);b.state.session='P';b.scheduleChildRead=()=>{};
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({sessions:[{id:'P',promptable:true},{id:'C',parent_session_id:'P',promptable:false,agent:'plan',child_status:'out_of_steps'}]})));
+  delete b.listConversations;await b.listConversations();
+  assert.equal(b.state.children.get('C').state,'budget');assert.match(dom.window.document.querySelector('.child-row').textContent,/Out of steps/);
+  const token={incarnation:'I',hold_id:'H'};
+  event('agent.yield',{child_session_id:'C',kind:'watchdog',details:{pause_token:token}});
+  assert.equal(b.state.children.get('C').state,'watchdog');
+  event('command.result',{child_session_id:'C',name:'watchdog',ok:true,data:{resolution:'continued',pause_token:token,message:'Continued'}});
+  assert.equal(b.state.children.get('C').state,'running');
+  event('subagent.done',{parent_session_id:'P',child_session_id:'C',outcome:'done'});
+  event('subagent.spawned',{parent_session_id:'P',child_session_id:'C',agent:'plan',goal:'replayed'});
+  assert.equal(b.state.children.get('C').state,'done');
+  const old=b.currentGeneration();b.fetchModels=async()=>{};b.bootstrapConversations=async()=>{};b.refreshCommands=async()=>{};
+  b.setServerInfo({port:5678,token:'new'});await tick();
+  await assert.rejects(b.controlChild('P','C','stop',old),/conversation changed/);
+});
 for (const early of [true,false]) test(`R3.1 end-to-end failed open unlocks abandoned creation with response ${early ? 'before' : 'after'} rollback`, async t => {
   const { b,send,tick,prompt } = fullChat(t);
   let finishCreate; let finishOpen;
@@ -149,7 +326,7 @@ test("R1 skill confirms permission cancellation before submission without editor
   let receive; let submitted = 0; let confirms = 0;
   vscode.window.showWarningMessage = async () => { confirms++; return "Send anyway"; };
   Object.defineProperty(vscode.window, "activeTextEditor", { configurable: true, get() { throw new Error("No editor context for skills"); } });
-  const backend = { captureOperation: () => ({ owner: {}, generation: 2 }), ownsOperation: () => true, currentGeneration: () => 2, currentConversationId: () => "S", subscribe: () => () => {}, hasOpenPermissions: () => true,
+  const backend = { isReadOnly: () => false, captureOperation: () => ({ owner: {}, generation: 2 }), ownsOperation: () => true, currentGeneration: () => 2, currentConversationId: () => "S", subscribe: () => () => {}, hasOpenPermissions: () => true,
     runComposerCommand: async () => { assert.equal(confirms, 1); submitted++; return false; } };
   registerChatView({ extensionUri: "extension" }, backend);
   provider.resolveWebviewView({ webview: { cspSource: "test", asWebviewUri: value => value, postMessage() {}, onDidReceiveMessage(listener) { receive = listener; return noopDisposable(); } }, onDidDispose() {} });
@@ -165,6 +342,7 @@ test("host routes slash commands before editor context or permission confirmatio
   let command;
   Object.defineProperty(vscode.window, "activeTextEditor", { configurable: true, get() { contextReads++; throw new Error("Editor must not be read"); } });
   const backend = {
+    isReadOnly: () => false,
     captureOperation: () => ({ owner: {}, generation: 2 }), ownsOperation: () => true,
     currentGeneration: () => 2,
     subscribe: () => () => {},
@@ -185,6 +363,7 @@ test("late-created and recreated views receive current session identity before r
   let cancelled = 0;
   const backend = {
     currentContext: () => ({ incarnation: "I", revision: 3, estimate_total: 42 }),
+    publishSubagents() {},
     currentGeneration: () => 1,
     refreshCommands: async () => {},
     resumePermissionReads: () => {},

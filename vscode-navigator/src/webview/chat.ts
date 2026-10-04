@@ -7,6 +7,7 @@ import { mountConversations } from "./conversations";
 import { diffKind, parseWake } from "./wake";
 import { commandRows } from "../commands";
 import type { CommandInfo } from "../chatProtocol";
+import type { ChildInfo } from "../chatProtocol";
 
 type ViewState = { includeContext?: boolean };
 declare function acquireVsCodeApi(): { postMessage(message: WebviewToHost): void; getState(): ViewState | undefined; setState(state: ViewState): void };
@@ -27,6 +28,30 @@ const stop = document.querySelector<HTMLButtonElement>("#stop")!;
 const includeContext = document.querySelector<HTMLInputElement>("#include-context")!;
 const contextPreview = document.querySelector<HTMLElement>("#context-preview")!;
 const modelSelect = document.querySelector<HTMLSelectElement>("#model")!;
+const childHeader = document.createElement("div");
+childHeader.className = "child-header"; childHeader.hidden = true;
+form.before(childHeader);
+const childrenSection = document.createElement("details");
+childrenSection.className = "subagents"; childrenSection.hidden = true;
+const childrenSummary = document.createElement("summary"); childrenSummary.textContent = "Subagents";
+const childrenRows = document.createElement("div"); childrenSection.append(childrenSummary, childrenRows);
+form.before(childrenSection);
+let readOnly = false;
+let parentId = "";
+const childStates: Record<ChildInfo["state"], string> = { unknown: "Unknown", running: "Running", permission: "Waiting for permission", budget: "Out of steps", watchdog: "In doubt · watchdog paused", done: "Done", failed: "Failed", stopped: "Stopped" };
+function childActions(child: ChildInfo): HTMLElement {
+  const actions = el("div", "child-actions");
+  const boundPost = identity.bind(rawPost);
+  for (const action of ["continue", "stop"] as const) {
+    if (["unknown", "done", "failed", "stopped"].includes(child.state) || (action === "continue" && !["budget", "watchdog"].includes(child.state))) continue;
+    const button = actionButton(action === "stop" ? "Stop" : "Continue", () => boundPost({ type: "controlChild", parentId, childId: child.id, action }));
+    button.disabled = !!child.pending;
+    if (button.disabled && !child.pending) button.title = "Pause token not yet available. Open the transcript to read the pause.";
+    actions.append(button);
+  }
+  if (child.error) actions.append(el("span", "command-error", child.error));
+  return actions;
+}
 const palette = document.createElement("div");
 palette.id = "command-palette";
 palette.className = "command-palette";
@@ -125,9 +150,10 @@ const permissionCards = new Map<string, { root: HTMLElement; outcome: HTMLElemen
 const pauseCards = new Map<string, { outcome: HTMLElement; controls: HTMLElement }>();
 
 function updateControls(): void {
-  prompt.disabled = state === "connecting";
+  prompt.disabled = readOnly || state === "connecting";
+  if (readOnly) modelSelect.disabled = true;
   send.disabled = prompt.disabled || sending || !prompt.value.trim();
-  stop.hidden = state !== "busy";
+  stop.hidden = readOnly || state !== "busy";
 }
 
 function setStatus(next: string, message?: string): void {
@@ -379,6 +405,12 @@ function actionButton(label: string, action: () => void, primary = false): HTMLB
 }
 
 function renderPermission(event: Extract<HostToWebview, { type: "permission" }>): void {
+  if (readOnly) {
+    const note = el("article", "control-card");
+    note.append(el("h3", "control-title", `Permission needed · ${event.card.agent}`), el("p", "permission-reason", event.card.reason));
+    note.append(el("p", "", `Review this permission in the parent conversation (${parentId}).`));
+    add(note); return;
+  }
   const post = identity.bind(rawPost);
   const card = event.card;
   const existing = permissionCards.get(card.requestId);
@@ -423,6 +455,7 @@ function renderPermission(event: Extract<HostToWebview, { type: "permission" }>)
 }
 
 function renderPause(event: Extract<HostToWebview, { type: "pause" }>): void {
+  if (readOnly) { add(el("article", "message control-notice", event.text)); return; }
   const post = identity.bind(rawPost);
   if (pauseCards.has(event.id)) return;
   const root = el("article", "control-card pause-card");
@@ -453,6 +486,7 @@ function renderPause(event: Extract<HostToWebview, { type: "pause" }>): void {
 function receive(event: HostToWebview): void {
   if (!identity.receive(event)) return;
   if (event.type === "conversationOpened") {
+    readOnly = false; parentId = ""; childHeader.hidden = true; childrenSection.hidden = true;
     sessionId = event.id ?? "";
     sending = false;
     lastConsumedDraft = undefined;
@@ -463,6 +497,36 @@ function receive(event: HostToWebview): void {
   }
   if (conversations(event)) return;
   switch (event.type) {
+    case "subagents": {
+      parentId = event.parentId;
+      childrenRows.replaceChildren();
+      childrenSection.hidden = !event.items.length || readOnly;
+      childrenSummary.textContent = `Subagents · ${event.items.length}`;
+      if (event.items.length) childrenSection.open = true;
+      const boundPost = identity.bind(rawPost);
+      for (const child of event.items) {
+        const row = el("article", "child-row");
+        const open = actionButton(`${child.agent} · ${childStates[child.state]}`, () => boundPost({ type: "openChild", parentId: event.parentId, childId: child.id }));
+        open.classList.add("child-open");
+        row.append(open, el("p", "child-goal", child.goal.slice(0,500)), childActions(child));
+        if (child.reason || child.delivery) row.append(el("p", "child-goal", [child.reason, child.delivery].filter(Boolean).join(" · ")));
+        childrenRows.append(row);
+      }
+      break;
+    }
+    case "childView": {
+      readOnly = !!event.child;
+      if (event.child) parentId = event.parentId ?? "";
+      childHeader.replaceChildren(); childHeader.hidden = !readOnly;
+      if (event.child) {
+        childHeader.append(el("p", "", `Read-only · subagent of ${event.parentTitle ?? "parent conversation"}`),
+          el("strong", "", `${event.child.agent} · ${childStates[event.child.state]}`), el("p", "", "Read-only subagent transcript. Send messages and answer permissions in the parent."), childActions(event.child));
+        childrenSection.hidden = true;
+      }
+      form.hidden = readOnly;
+      prompt.placeholder = readOnly ? "Read-only · return to parent to send" : "Message Navai…";
+      closePalette(); updateControls(); break;
+    }
     case "commands": commands = event.items; filterPalette(); break;
     case "commandError": commandError.textContent = event.text; commandError.hidden = false; sending = false; updateControls(); break;
     case "agent": agentLabel.textContent = event.name; break;
@@ -597,7 +661,7 @@ function renderModels(event: Extract<HostToWebview, { type: "models" }>): void {
   if (!options.length) options.push(el("option", undefined, "Default model"));
   modelSelect.replaceChildren(...options);
   if (event.current) modelSelect.value = event.current;
-  modelSelect.disabled = event.locked || event.items.length === 0;
+  modelSelect.disabled = readOnly || event.locked || event.items.length === 0;
   modelSelect.title = "Switch model · running turns finish before the switch";
 }
 

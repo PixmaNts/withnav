@@ -36,6 +36,8 @@ export interface PauseToken { incarnation: string; hold_id: string }
 
 /** Host -> webview messages. */
 export type HostToWebview = { generation?: number } & (
+  | { type: "subagents"; parentId: string; items: ChildInfo[] }
+  | { type: "childView"; child?: ChildInfo; parentId?: string; parentTitle?: string }
   | { type: "status"; state: "connecting" | "ready" | "busy" | "error"; message?: string }
   /** A message already complete when shown (the driver's own, or a navigator wake).
    *  `context` is the chip label of the editor context attached to a driver message;
@@ -97,10 +99,20 @@ export interface ModelInfo {
 }
 
 export interface CommandInfo { name: string; description: string; args_hint: string }
+export interface ChildInfo {
+  id: string; agent: string; goal: string;
+  state: "unknown" | "running" | "permission" | "budget" | "watchdog" | "done" | "failed" | "stopped";
+  revision?: number; reason?: string; delivery?: string;
+  pauseToken?: PauseToken;
+  pending?: boolean;
+  error?: string;
+}
 export interface ComposerOperation { owner: object; generation: number }
 
 /** Webview -> host messages. */
 export type WebviewToHost = { generation?: number } & (
+  | { type: "openChild"; parentId: string; childId: string }
+  | { type: "controlChild"; parentId: string; childId: string; action: "stop" | "continue" }
   /** The webview finished loading and wants the history. */
   | { type: "ready" }
   /** The driver sends a message to the cognition; the host appends the editor context when asked. */
@@ -124,6 +136,12 @@ export type WebviewToHost = { generation?: number } & (
 
 /** What the chat view needs from the host side; implemented by the cognition bridge. */
 export interface ChatBackend {
+  dispose(): void;
+  captureChildControl(parentId: string, childId: string, action: "stop" | "continue", generation?: number): object;
+  publishSubagents(): void;
+  openChild(parentId: string, childId: string, generation?: number): Promise<ChatBackend>;
+  controlChild(parentId: string, childId: string, action: "stop" | "continue", generation?: number, descriptor?: object): Promise<void>;
+  isReadOnly(): boolean;
   captureOperation(): ComposerOperation;
   ownsOperation(operation: ComposerOperation): boolean;
   currentContext(): import("./contextMeter").ContextSnapshot | undefined;

@@ -10,8 +10,11 @@ export function registerChatView(
   context: vscode.ExtensionContext,
   backend: ChatBackend,
 ): vscode.Disposable {
-  return vscode.window.registerWebviewViewProvider(CHAT_VIEW_ID, {
+  const panels = new Map<string, vscode.WebviewPanel>();
+  const openings = new Map<string, Promise<void>>();
+  const registration = vscode.window.registerWebviewViewProvider(CHAT_VIEW_ID, {
     resolveWebviewView(view) {
+      let disposed = false;
       const webview = view.webview;
       webview.options = {
         enableScripts: true,
@@ -63,6 +66,7 @@ export function registerChatView(
             if (lastConversations) post(lastConversations);
             post({ type: "conversationOpened", id: backend.currentConversationId(),
               title: lastConversationOpened?.type === "conversationOpened" ? lastConversationOpened.title : "Conversation" });
+            backend.publishSubagents();
             post({ type: "history", items: backend.history() });
             if (lastModels) post(lastModels);
             const snapshot = backend.currentContext();
@@ -72,6 +76,7 @@ export function registerChatView(
             void backend.refreshCommands().catch(showError);
             break;
           case "send":
+            if (backend.isReadOnly()) break;
             if (typeof message.text === "string" && message.text.trim()) {
               const operation = backend.captureOperation();
               void (async () => {
@@ -143,9 +148,40 @@ export function registerChatView(
           case "selectModel":
             if (typeof message.alias === "string") backend.selectModel(message.alias);
             break;
+          case "openChild":
+            if (typeof message.parentId === "string" && typeof message.childId === "string") {
+              const existing = panels.get(message.childId);
+              if (existing) { existing.reveal(); break; }
+              const opening = openings.get(message.childId);
+              if (opening) { void opening.then(() => panels.get(message.childId)?.reveal()); break; }
+              const pending = backend.openChild(message.parentId, message.childId, message.generation).then(childBackend => {
+                if (disposed || message.generation !== backend.currentGeneration()) { childBackend.dispose(); return; }
+                const panel = vscode.window.createWebviewPanel("navai.subagent", "Subagent", vscode.ViewColumn.Active, { enableScripts: true });
+                panels.set(message.childId, panel);
+                mountChildPanel(context, panel, childBackend, backend, message.parentId, message.childId);
+                panel.onDidDispose(() => { if (panels.get(message.childId) === panel) panels.delete(message.childId); childBackend.dispose(); });
+                const off = backend.subscribe(update => { if (update.generation !== message.generation) panel.dispose(); });
+                panel.onDidDispose(off);
+              }).catch(showError).finally(() => { if (openings.get(message.childId) === pending) openings.delete(message.childId); });
+              openings.set(message.childId, pending);
+            }
+            break;
+          case "controlChild":
+            if (typeof message.parentId === "string" && typeof message.childId === "string" && ["stop", "continue"].includes(message.action)) {
+              const generation = message.generation;
+              let descriptor: object;
+              try { descriptor = backend.captureChildControl(message.parentId, message.childId, message.action, generation); } catch (error) { showError(error); break; }
+              void (async () => {
+                const choice = await vscode.window.showWarningMessage(`${message.action === "stop" ? "Stop" : "Continue"} this subagent?`, { modal: true }, "Confirm");
+                if (disposed || choice !== "Confirm" || generation !== backend.currentGeneration()) return;
+                await backend.controlChild(message.parentId, message.childId, message.action, generation, descriptor);
+              })().catch(showError);
+            }
+            break;
         }
       });
       view.onDidDispose(() => {
+        disposed = true;
         backend.cancelPermissionReads();
         unsubscribe();
         messageSubscription.dispose();
@@ -154,6 +190,37 @@ export function registerChatView(
       });
     },
   });
+  return registration;
+}
+
+function mountChildPanel(context: vscode.ExtensionContext, panel: vscode.WebviewPanel, child: ChatBackend, parent: ChatBackend, parentId: string, childId: string): void {
+  let disposed = false;
+  const webview = panel.webview;
+  webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "out")] };
+  webview.html = chatHtml(randomNonce(), String(webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "out", "chat.js"))), String(webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "out", "chat.css"))), webview.cspSource);
+  const post = (m: HostToWebview): void => { if (!disposed) void webview.postMessage(m); };
+  const off = child.subscribe(post);
+  const parentOff = parent.subscribe(m => { if (m.type === "subagents") {
+    const row = m.items.find(c => c.id === childId);
+    if (row) { panel.title = `Subagent · ${row.agent} · ${row.goal.slice(0,80)}`; child.publishSubagents(); }
+  } });
+  webview.onDidReceiveMessage(async (m: WebviewToHost) => {
+    if (disposed || (m.type !== "ready" && m.generation !== child.currentGeneration())) return;
+    if (m.type === "ready") {
+      post({ type: "conversationOpened", id: childId, title: "Read-only subagent", generation: child.currentGeneration() });
+      child.publishSubagents();
+      post({ type: "history", items: child.history(), generation: child.currentGeneration() });
+      child.resumePermissionReads();
+    } else if (m.type === "controlChild" && m.parentId === parentId && m.childId === childId && ["stop", "continue"].includes(m.action)) {
+      try {
+        const descriptor = parent.captureChildControl(parentId, childId, m.action, m.generation);
+        const choice = await vscode.window.showWarningMessage(`${m.action === "stop" ? "Stop" : "Continue"} this subagent?`, { modal: true }, "Confirm");
+        if (!disposed && choice === "Confirm") await parent.controlChild(parentId, childId, m.action, m.generation, descriptor);
+      } catch (error) { if (!disposed) showError(error); }
+    }
+    // No send, resume, commands or permission answers in this panel.
+  });
+  panel.onDidDispose(() => { disposed = true; off(); parentOff(); child.dispose(); });
 }
 
 function randomNonce(): string {

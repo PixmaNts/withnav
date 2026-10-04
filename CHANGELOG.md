@@ -4,6 +4,49 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-04
+
+Every file change and shell command is now reviewed one by one, conversations no longer stop after
+50 steps, skills can be picked from a list, and the conversation can be selected and copied.
+
+### Added
+
+- **`/skills`**: opens a searchable list of the conversation's skills. Choosing one fills
+  `/skill <name>`; add your request and send: the skill's instructions are loaded into your message
+  before the agent's first model request, and the selection shows next to your message, also on
+  replay. If the agent cannot use skills, the whole message is refused.
+- **Select and copy the conversation**: drag with the mouse to select conversation text, or
+  double-click a word; releasing copies it. Wrapping, the sidebar, borders and tool labels stay out
+  of the clipboard. A selection across several messages names each sender (`You:`, the agent's name,
+  `Navigator:`…), once per run of consecutive messages; a selection inside one message copies only
+  its text. With the conversation focused, `y` copies the selection, or the whole selected message
+  or tool output; `ctrl+shift+c` works where the terminal sends it, and `ctrl+c` still stops. The
+  wheel scrolls the conversation, and the lists of `/model`, `/sessions` and other pickers.
+  Copying uses OSC 52, so it works over SSH when the terminal supports it; under tmux set
+  `set -g set-clipboard on`. `shift+drag` keeps the terminal's own selection.
+
+### Changed
+
+- **Per-call permission review**: every `bash`, `write` and `edit` call is reviewed before it runs,
+  instead of an "allow folder" answer letting every later call through. Jev classifies the call: a
+  read-only call, or a low-risk change inside the project, runs; a risky or outside-project change
+  needs metacognition's approval; anything else asks you, with the reason. "Allow folder" is gone
+  for these tools and the bash/file grants saved by 0.4.1 are ignored; `fetch` keeps its origin
+  grants. `permissions.automatic_review: false` in `config.json` asks for every such call; an
+  invalid value fails closed. The review is advisory, not a sandbox.
+- **No more 50-step limit**: a conversation's turn runs until it ends, is stopped, or the watchdog
+  stops it. Every 5 minutes (`agent.watchdog_interval_secs`) Jev checks it is making progress. Stuck:
+  the turn stops after its current tools finish, keeping the work done. In doubt: metacognition
+  decides; if it hesitates too, the turn pauses and asks you (`alt+c` continues, a new message
+  replaces the paused turn). With the watchdog off (`0`) or Jev unavailable, a 500-step cap applies,
+  renewed only by you. `NAVAI_MAX_STEPS` still sets an explicit cap. Subagents keep their 50-step
+  budget.
+
+### Fixed
+
+- **`grep` tool**: a pattern can no longer be read as a ripgrep option (such as `--pre`, which runs
+  a program), and ripgrep configuration files are ignored.
+
 ## [0.4.1] - 2026-10-04
 
 Fixes from daily use of 0.4.0, mostly in the terminal client.

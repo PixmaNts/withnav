@@ -244,6 +244,16 @@ impl Service {
         reason: &str,
     ) {
         handle.session_cancel.cancel();
+        handle.status.watchdog.supervisor_cancel.cancel();
+        let supervisor = handle
+            .status
+            .root_supervisor
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(supervisor) = supervisor {
+            let _ = supervisor.await;
+        }
         let pending = handle
             .publications
             .lock()
@@ -360,6 +370,7 @@ mod tests {
     /// exists for.
     fn wedged_runtime_handle() -> SessionHandle {
         SessionHandle {
+            skills: Arc::default(),
             publications: Arc::default(),
             incarnation: Ulid::new(),
             inbox_tx: mpsc::channel(1).0,

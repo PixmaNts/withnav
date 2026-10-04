@@ -91,6 +91,7 @@ pub enum Lifecycle {
 /// so no lock is ever held across an await.
 #[derive(Clone)]
 pub struct SessionHandle {
+    pub(crate) skills: Arc<Skills>,
     pub(crate) publications: Arc<Mutex<Vec<CancellationToken>>>,
     pub incarnation: Ulid,
     /// Bounded per-actor command transport (message routes post here).
@@ -121,6 +122,8 @@ pub struct SessionHandle {
     pub parent_session_id: Option<SessionId>,
 }
 
+pub use crate::bus::event::{SkillEntry, SkillsBody};
+
 /// The model selection of a live session, as the service sees it: the alias,
 /// its saved resolution, the variant chosen on it and what it offers are one
 /// value, so a reader never combines the alias of one selection with the
@@ -144,9 +147,12 @@ pub struct SelectedModel {
 
 #[derive(Clone)]
 pub(crate) struct EffectiveExecution {
+    pub(crate) automatic_permission_review: bool,
     pub(crate) resolved: crate::provider::config::ResolvedModel,
     pub(crate) api_key: String,
 }
+
+type ChildPolicy = (BTreeMap<String, bool>, bool, bool, Option<String>);
 impl std::fmt::Debug for EffectiveExecution {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("EffectiveExecution { .. }")
@@ -291,6 +297,8 @@ fn is_promptable(value: &bool) -> bool {
 #[derive(Clone, Debug)]
 pub struct Service {
     #[cfg(debug_assertions)]
+    skill_loading_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
     delivery_failure_countdown: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(debug_assertions)]
     pub(crate) shutdown_snapshot_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
@@ -306,6 +314,9 @@ pub struct Service {
     pub(crate) watchdog_teardown_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
     pub(crate) watchdog_test: Arc<Mutex<Option<super::subagents::supervisor::TestWatchdog>>>,
+    #[cfg(debug_assertions)]
+    pub(crate) root_watchdog_test:
+        Arc<Mutex<Option<super::subagents::root_watchdog::TestRootWatchdog>>>,
     _instance: Arc<super::instance::Instance>,
     /// The live sessions of this process; a closed session is removed.
     pub(super) sessions: Arc<Mutex<HashMap<SessionId, SessionHandle>>>,
@@ -565,6 +576,8 @@ impl Service {
             watchdog_teardown_barrier: Arc::default(),
             #[cfg(debug_assertions)]
             watchdog_test: Arc::default(),
+            #[cfg(debug_assertions)]
+            root_watchdog_test: Arc::default(),
             _instance: instance,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             config: Arc::new(config),
@@ -582,6 +595,8 @@ impl Service {
             catalog,
             #[cfg(debug_assertions)]
             child_preparation_barrier: Arc::default(),
+            #[cfg(debug_assertions)]
+            skill_loading_barrier: Arc::default(),
             #[cfg(debug_assertions)]
             child_publication_barrier: Arc::default(),
             #[cfg(debug_assertions)]
@@ -604,6 +619,20 @@ impl Service {
     /// The history store.
     pub fn history(&self) -> &super::store::HistoryStore {
         &self.history
+    }
+
+    /// Debug-build observation seam for resume and child inheritance tests.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn driver_task_probe(&self, id: SessionId) -> Option<String> {
+        let handle = self.handle(id)?;
+        let task = handle
+            .status
+            .driver_task_probe
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        task
     }
 
     /// The sessions the registry holds (live or stopping). Client
@@ -754,6 +783,15 @@ impl Service {
                     allowed,
                     definition.access == crate::agent::definitions::AgentAccess::ReadOnly
                         || parent_role.access == crate::agent::definitions::AgentAccess::ReadOnly,
+                    parent_handle
+                        .selected()
+                        .execution
+                        .as_ref()
+                        .is_some_and(|execution| execution.automatic_permission_review),
+                    self.history
+                        .latest_driver_message(parent)
+                        .await
+                        .map_err(ServerError::History)?,
                 )),
                 Some(parent),
                 definition.model.is_none().then_some(inherited),
@@ -1105,12 +1143,109 @@ impl Service {
     /// active, the target the root agent and the content text-only. The
     /// caller names the source actor. `message.received` is sequenced before
     /// the command reaches the inbox, and only for an accepted command.
-    pub async fn send(&self, command: Command) -> Result<MessageAccepted, ServerError> {
+    pub async fn send(&self, mut command: Command) -> Result<MessageAccepted, ServerError> {
         let handle = self.routable_handle(command.session_id).await?;
         if handle.parent_session_id.is_some() {
             return Err(ServerError::ChildReadOnly);
         }
+        command.validate_content()?;
+        if command
+            .content
+            .iter()
+            .any(|block| matches!(block, crate::bus::command::ContentBlock::LoadedSkill { .. }))
+        {
+            return Err(ServerError::MalformedBody(
+                "loaded skill content is server-only".into(),
+            ));
+        }
+        let names: Vec<_> = command
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                crate::bus::command::ContentBlock::Skill { name } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        if names.len() > 1 {
+            return Err(ServerError::MalformedBody(
+                "select one skill per message".into(),
+            ));
+        }
+        if let Some(name) = names.first() {
+            if !command.from_driver()
+                || handle.status.selection.current().tools.get("skill") == Some(&false)
+            {
+                return Err(ServerError::MalformedBody(
+                    "this agent cannot use the skill tool".into(),
+                ));
+            }
+            #[cfg(debug_assertions)]
+            {
+                let barrier = self
+                    .skill_loading_barrier
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take();
+                if let Some(barrier) = barrier {
+                    barrier.reached.notify_one();
+                    barrier.release.notified().await;
+                }
+            }
+            let result = handle.skills.load_listed(name).await;
+            if result.status != crate::tools::ToolStatus::Ok {
+                return Err(ServerError::MalformedBody(
+                    result
+                        .error
+                        .map(|error| format!("{}: {}", error.code, error.message))
+                        .unwrap_or(result.output),
+                ));
+            }
+            for block in &mut command.content {
+                if matches!(block, crate::bus::command::ContentBlock::Skill { .. }) {
+                    *block = crate::bus::command::ContentBlock::LoadedSkill {
+                        name: name.clone(),
+                        content: result.output.clone(),
+                    };
+                }
+            }
+        }
         accept(&handle, command).await
+    }
+
+    /// Debug-build seam to hold loading across an agent switch in deterministic tests.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_skill_loading(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .skill_loading_barrier
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(barrier);
+    }
+
+    /// Lists only the session snapshot's catalog-visible skills and current tool policy.
+    pub async fn skills(&self, id: SessionId) -> Result<SkillsBody, ServerError> {
+        let handle = self.routable_handle(id).await?;
+        let allowed = handle.status.selection.current().tools.get("skill") != Some(&false);
+        Ok(SkillsBody {
+            skills: if allowed {
+                handle
+                    .skills
+                    .listed()
+                    .into_iter()
+                    .map(|skill| SkillEntry {
+                        name: skill.name.clone(),
+                        description: skill
+                            .description
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    })
+                    .collect()
+            } else {
+                vec![]
+            },
+            disabled_reason: (!allowed).then(|| "this agent cannot use the skill tool".into()),
+        })
     }
 
     pub async fn continue_child(
@@ -1118,13 +1253,47 @@ impl Service {
         parent: SessionId,
         child: SessionId,
     ) -> Result<(), ServerError> {
+        self.continue_child_with_token(parent, child, None).await
+    }
+
+    pub async fn continue_child_with_token(
+        &self,
+        parent: SessionId,
+        child: SessionId,
+        token: Option<runtime::PauseToken>,
+    ) -> Result<(), ServerError> {
         let owner = self.routable_handle(parent).await?;
         if owner.parent_session_id.is_some() {
             return Err(ServerError::ChildReadOnly);
         }
         let handle = self.routable_handle(child).await?;
-        if handle.parent_session_id != Some(parent) {
+        if handle.parent_session_id != Some(parent)
+            && !(parent == child && handle.parent_session_id.is_none())
+        {
             return Err(ServerError::ChildReadOnly);
+        }
+        if handle.status.pending_permission().is_some() || handle.status.selection.ask_pending() {
+            return Err(ServerError::ChildNotParked);
+        }
+        if handle
+            .status
+            .awaiting_fresh_driver
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(ServerError::ChildNotParked);
+        }
+        if parent == child && handle.status.watchdog.root_hold().is_some() {
+            let token = token.ok_or(ServerError::ChildNotParked)?;
+            if !handle.status.watchdog.resolve_root(token, || {
+                runtime::publish_pause_resolution(&handle.sequencer, token, "continued");
+                handle.status.wake_continue();
+            }) {
+                return Err(ServerError::ChildNotParked);
+            }
+            return Ok(());
+        }
+        if token.is_some() {
+            return Err(ServerError::ChildNotParked);
         }
         if !handle.status.watchdog.resume() && !handle.status.continue_budget() {
             return Err(ServerError::ChildNotParked);
@@ -1647,7 +1816,7 @@ impl Service {
         resumed: Option<ResumedSession>,
         resume_workspace: &Path,
         variant: &VariantChoice,
-        child_policy: Option<(BTreeMap<String, bool>, bool)>,
+        child_policy: Option<ChildPolicy>,
         child_parent: Option<SessionId>,
         inherited: Option<SelectedModel>,
     ) -> Result<SessionId, ServerError> {
@@ -1679,7 +1848,7 @@ impl Service {
         resumed: Option<ResumedSession>,
         resume_workspace: &Path,
         variant: &VariantChoice,
-        child_policy: Option<(BTreeMap<String, bool>, bool)>,
+        child_policy: Option<ChildPolicy>,
         child_parent: Option<SessionId>,
         inherited: Option<SelectedModel>,
     ) -> Result<PreparedSession, ServerError> {
@@ -1801,13 +1970,26 @@ impl Service {
         })?;
         let session_cancel = CancellationToken::new();
         let execution = Arc::new(EffectiveExecution {
+            automatic_permission_review: match &child_policy {
+                Some((_, _, enabled, _)) => *enabled,
+                None => match crate::settings::load(&self.config.config_dir)
+                    .map_err(|e| e.to_string())
+                    .and_then(|settings| settings.permissions_automatic_review())
+                {
+                    Ok(enabled) => enabled,
+                    Err(error) => {
+                        tracing::warn!("automatic permission review disabled: {error}");
+                        false
+                    }
+                },
+            },
             resolved: resolved.clone(),
             api_key: api_key.clone(),
         });
         let root_tools_enabled =
             child_policy.is_none() && profile.is_none() && role.mode.is_primary();
         let mut actor = match &child_policy {
-            Some((allowed, read_only)) => build_child_actor(
+            Some((allowed, read_only, _, _)) => build_child_actor(
                 &workspace,
                 &self.config.config_dir,
                 resolved,
@@ -1876,8 +2058,38 @@ impl Service {
             &workspace,
             &self.config.config_dir,
         );
+        actor.permission_judge = super::guard::permission_judge(
+            self.config.models_path.as_deref(),
+            &workspace,
+            &self.config.config_dir,
+        );
+        actor.automatic_permission_review = execution.automatic_permission_review;
+        if let Some((_, _, _, driver_task)) = &child_policy {
+            actor.driver_task = driver_task.clone();
+        }
+        if let Ok((models, _)) = crate::provider::config::load_models(
+            self.config.models_path.as_deref(),
+            &workspace,
+            &self.config.config_dir,
+        ) {
+            actor.permission_reviewer = crate::navigator::bootstrap::LazyCommenter::new(
+                &models,
+                "metacognition",
+                &self.config.config_dir,
+                &self.catalog,
+                Arc::new(crate::provider::openai::ClientCache::new()),
+                self.config.data_dir.join("navai.jsonl"),
+            )
+            .ok()
+            .map(|reviewer| {
+                Arc::new(reviewer) as Arc<dyn crate::agent::permission_gate::PermissionReviewer>
+            });
+        }
         self.hooks.configure_actor(profile, &mut actor);
-        if let Some((allowed, _)) = &child_policy {
+        if child_policy.is_some() {
+            actor.max_steps = crate::agent::run_loop::max_steps();
+        }
+        if let Some((allowed, _, _, _)) = &child_policy {
             actor
                 .registry
                 .retain(|name| allowed.get(name).copied().unwrap_or(false));
@@ -1992,7 +2204,56 @@ impl Service {
         {
             emitter = emitter.with_permission_mirror(session_id, parent_id, parent.sequencer);
         }
+        let root_watchdog = if child_parent.is_none() {
+            Some(self.prepare_root_watchdog(&workspace)?)
+        } else {
+            None
+        };
         let sequencer = Sequencer::spawn(session_id, emitter, next_seq);
+        let mut awaiting_fresh_driver = false;
+        if is_resume && child_parent.is_none() {
+            let events = self
+                .history
+                .watchdog_events(session_id)
+                .await
+                .map_err(ServerError::History)?;
+            let mut pending = None;
+            for event in events {
+                if event.kind == "agent.yield" && event.payload["kind"] == "watchdog" {
+                    pending = serde_json::from_value::<runtime::PauseToken>(
+                        event.payload["details"]["pause_token"].clone(),
+                    )
+                    .ok();
+                }
+                if event.kind == "command.result"
+                    && event.payload["name"] == "watchdog"
+                    && event.payload["data"]["resolution"].is_string()
+                {
+                    pending = None;
+                    awaiting_fresh_driver = matches!(
+                        event.payload["data"]["resolution"].as_str(),
+                        Some("expired" | "superseded")
+                    );
+                }
+                if event.kind == "command.result"
+                    && event.payload["name"] == "watchdog"
+                    && event.payload["data"]["driver_committed"] == true
+                {
+                    awaiting_fresh_driver = false;
+                }
+            }
+            if let Some(token) = pending {
+                awaiting_fresh_driver = true;
+                runtime::publish_pause_resolution(&sequencer, token, "expired");
+            }
+        }
+        if root_watchdog
+            .as_ref()
+            .is_some_and(|watchdog| watchdog.unavailable())
+            && actor.max_steps == usize::MAX
+        {
+            actor.max_steps = crate::agent::run_loop::WATCHDOG_FALLBACK_STEPS;
+        }
 
         for (request_id, tool_call_id) in expired {
             let payload = serde_json::to_value(crate::bus::event::PermissionResolved {
@@ -2060,6 +2321,33 @@ impl Service {
             agents, role,
         )));
         status.init_variant(selected.clone());
+        if child_parent.is_none() {
+            let history = self.history.clone();
+            let driver_sequencer = sequencer.clone();
+            status.install_driver_commit(Arc::new(move |transcript| {
+                let (history, sequencer) = (history.clone(), driver_sequencer.clone());
+                Box::pin(async move {
+                    history.flush().await?;
+                    let candidate = Candidate::new(EventKind::CommandResult, serde_json::json!({
+                        "name":"watchdog","ok":true,"operation_id":Ulid::new(),
+                        "data":{"driver_committed":true,"message":"Fresh driver instruction checkpointed"}
+                    }));
+                    sequencer.commit_acked(candidate, Box::new(move |envelope| Box::pin(async move {
+                        history.consume_completions_committed(session_id,vec![],transcript,Some(envelope)).await
+                    }))).await.map(|_| ()).map_err(|error| error.to_string())
+                })
+            }));
+        }
+        status
+            .awaiting_fresh_driver
+            .store(awaiting_fresh_driver, std::sync::atomic::Ordering::Release);
+        status.watchdog_fallback_notice.store(
+            root_watchdog
+                .as_ref()
+                .is_some_and(|watchdog| watchdog.unavailable())
+                && actor.max_steps == crate::agent::run_loop::WATCHDOG_FALLBACK_STEPS,
+            std::sync::atomic::Ordering::Release,
+        );
         if child_parent.is_none() {
             let pending_history = self.history.clone();
             let eligible_history = self.history.clone();
@@ -2191,6 +2479,7 @@ impl Service {
             ContextTracker::new(limits, actor.context_breakdown()),
             actor.system_prompt.clone(),
         );
+        let skills = actor.skills.clone();
         let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn_with_completion(
             session_id,
             actor,
@@ -2202,9 +2491,12 @@ impl Service {
             completion,
         ))));
 
+        let incarnation = Ulid::new();
+        status.watchdog.install_incarnation(incarnation);
         let handle = SessionHandle {
+            skills,
             publications: Arc::default(),
-            incarnation: Ulid::new(),
+            incarnation,
             inbox_tx,
             permissions,
             sequencer,
@@ -2238,6 +2530,22 @@ impl Service {
             self.drain_completions(session_id).await;
             if let Some(owner) = self.handle(session_id) {
                 owner.status.wake_delivery();
+            }
+        }
+        if let Some(watchdog) = root_watchdog {
+            if let Some(owner) = self.handle(session_id) {
+                let mut task = owner
+                    .status
+                    .root_supervisor
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if !owner.status.watchdog.supervisor_cancel.is_cancelled() {
+                    *task = watchdog.start(
+                        owner.status.clone(),
+                        owner.sequencer.clone(),
+                        owner.session_cancel.clone(),
+                    );
+                }
             }
         }
         // The host learns of the session once it is routable. A session

@@ -339,7 +339,7 @@ pub fn switch_blocked(tab: &Tab) -> Option<&'static str> {
         Some("this subagent is read-only; its parent chooses its model")
     } else if tab.open_permission().is_some() {
         Some("a tool call is waiting for approval: answer it first, then switch model")
-    } else if tab.activity == Activity::AwaitingUser {
+    } else if tab.activity == Activity::AwaitingUser && !tab.watchdog_paused {
         Some("the agent is waiting for your answer: reply first, then switch model")
     } else {
         None
@@ -486,7 +486,12 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             else {
                 return vec![];
             };
-            if s.parent_session_id.as_ref() != Some(&parent_session_id)
+            let token = ui.child_confirm_token.take();
+            let root_self = s.parent_session_id.is_none()
+                && parent_session_id == child_session_id
+                && s.watchdog_paused
+                && s.pause_token == token;
+            if (!root_self && s.parent_session_id.as_ref() != Some(&parent_session_id))
                 || s.session.as_ref().map(|m| &m.session_id) != Some(&child_session_id)
             {
                 return vec![];
@@ -495,10 +500,12 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                 parent_session_id,
                 child_session_id,
                 control,
+                pause_token: token,
             }]
         }
         Action::CancelChildControl => {
             ui.child_confirm = None;
+            ui.child_confirm_token = None;
             vec![]
         }
         Action::PickModel(alias) => pick_model(s, ui, alias, None).unwrap_or_default(),
@@ -581,6 +588,28 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
         Action::OpenOverlay(o) => {
             ui.overlay = Some(o);
             match o {
+                Overlay::Skills => {
+                    ui.filter.clear();
+                    ui.selection.insert("Skills".into(), 0);
+                    s.skills = crate::bus::event::SkillsBody {
+                        skills: vec![],
+                        disabled_reason: Some(if s.read_only() {
+                            "this subagent is read-only; choose a skill in its parent".into()
+                        } else if s.session.is_none() {
+                            "send a message to start a conversation before choosing a skill".into()
+                        } else {
+                            "loading skills…".into()
+                        }),
+                    };
+                    if s.read_only() {
+                        vec![]
+                    } else {
+                        s.session
+                            .as_ref()
+                            .map(|session| vec![Effect::FetchSkills(session.session_id.clone())])
+                            .unwrap_or_default()
+                    }
+                }
                 Overlay::Models => {
                     ui.variant_pick = None;
                     vec![Effect::FetchModels]
@@ -648,6 +677,21 @@ fn confirm_child(
     ui: &mut UiState,
     control: crate::tui::protocol::ChildControl,
 ) -> Vec<Effect> {
+    if control == crate::tui::protocol::ChildControl::Continue
+        && s.parent_session_id.is_none()
+        && s.watchdog_paused
+        && s.open_permission().is_none()
+    {
+        if let Some(session) = &s.session {
+            ui.child_confirm = Some((
+                session.session_id.clone(),
+                session.session_id.clone(),
+                control,
+            ));
+            ui.child_confirm_token = s.pause_token;
+        }
+        return vec![];
+    }
     let status = s.active_child_status();
     let allowed = match control {
         crate::tui::protocol::ChildControl::Stop => matches!(
@@ -658,7 +702,10 @@ fn confirm_child(
                 | crate::tui::state::ChildStatus::OutOfSteps
         ),
         crate::tui::protocol::ChildControl::Continue => {
-            status == crate::tui::state::ChildStatus::OutOfSteps
+            matches!(
+                status,
+                crate::tui::state::ChildStatus::OutOfSteps | crate::tui::state::ChildStatus::Doubt
+            )
         }
     };
     if allowed {

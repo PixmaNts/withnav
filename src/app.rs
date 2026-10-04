@@ -348,6 +348,7 @@ async fn render_until_terminal(
     // turn.end{interrupted} event — just read the live stream to the terminal.
     // The turn that asked ends `yielded`; with `--yes` that is not the end.
     let mut answered = 0usize;
+    let mut watchdog_pause = false;
     while let Some(env) = live.recv().await {
         if let Some(ui) = event_to_ui(&env) {
             renderer.render(ui);
@@ -372,10 +373,13 @@ async fn render_until_terminal(
             }
             answered += 1;
         }
+        if env.kind == EventKind::AgentYield.as_str() && env.payload["kind"] == "watchdog" {
+            watchdog_pause = true;
+        }
         if env.kind == EventKind::TurnEnd.as_str() {
             let yielded = serde_json::from_value::<TurnEnd>(env.payload.clone())
                 .is_ok_and(|end| end.outcome == TurnEndOutcome::Yielded);
-            if yielded && answered > 0 {
+            if yielded && answered > 0 && !watchdog_pause {
                 answered -= 1;
                 continue;
             }
@@ -464,6 +468,12 @@ async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
 pub fn event_to_ui(envelope: &EventEnvelope) -> Option<UiEvent> {
     let kind = EventKind::from_wire(&envelope.kind)?;
     match kind {
+        EventKind::CommandResult if envelope.payload["name"] == "watchdog" => {
+            Some(UiEvent::AssistantText(format!(
+                "\n{}\n",
+                envelope.payload["data"]["message"].as_str()?
+            )))
+        }
         EventKind::LlmDelta => {
             let payload: LlmDelta = serde_json::from_value(envelope.payload.clone()).ok()?;
             match payload.delta {

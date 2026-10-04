@@ -10,7 +10,7 @@
 //!   (`variant` is the variant name or null; `POST /v1/sessions` takes an optional `variant`)
 //! - `POST /v1/sessions/:id/messages` -> `{command_id, accepted:true, actor_state, notice?}`
 //!   (frozen error bodies: 404 unknown id / 409 stopping / 503 `{"accepted":false,"reason":"inbox_full"}`
-//!   / 400 non-Text). All errors share the `{"error": ...}` shape.
+//!   / 400 unsupported content or invalid skill selection). All errors share the `{"error": ...}` shape.
 //!   A stopped conversation (stopped, or stored only) answers 409
 //!   `{"error", "reason":"resume_required"}`: resume it first.
 //! - `POST /v1/sessions/:id/stop` -> `{accepted:true, actor_state:"stopped"}`
@@ -19,6 +19,14 @@
 //!   malformed id, 409 `{"error","reason":"permission_stale"}` for a request that is not waiting
 //!   (answered, cancelled, expired, never existed), 400 for a body that is not a decision.
 //! - `GET  /v1/sessions/:id/context` -> the context snapshot (`alias, variant?, window, window_source, estimate_total, breakdown{system,rules,skills_catalog,tools,messages}, output_reserve, margin, input_budget, percent, last_usage?{prompt_tokens,completion_tokens,step}, revision`); an estimate of the NEXT request, `last_usage` is the provider's count for the last one
+//! - `GET /v1/sessions/:id/skills` -> `{skills:[{name,description}],disabled_reason?}`: only catalog-listed skills; no rows when the agent disables `skill`.
+//!   Message content accepts one `{type:"skill",name}` alongside text. Admission loads it through
+//!   the skill tool's bounded loader before accepting the message; unknown, omitted, disabled or
+//!   unreadable skills return 400 without sending anything. The exact bounded tool-loader output
+//!   is JSON-escaped into a delimited block in the driver's own user message, never a synthetic tool call.
+//!   Accepted selection is recorded as optional `message.received.selected_skill:{name,origin:"driver"}`.
+//!   If the consuming turn's pinned agent disables skills, the whole command is refused before
+//!   transcript mutation; `command.result` carries its command id as operation id and correlation.
 //! - `GET  /v1/commands`      -> `{commands:[{name, description, args_hint}]}`
 //! - `POST /v1/sessions/:id/commands` `{name, arguments?}` -> `{operation_id, ok, data?, error?}`
 //!   (a command that cannot run is 200 with `ok:false` and an `error`; the same
@@ -133,6 +141,7 @@ pub fn app(state: AppState) -> Router {
             post(answer_permission),
         )
         .route("/v1/sessions/{id}/context", get(get_context))
+        .route("/v1/sessions/{id}/skills", get(get_skills))
         .route("/v1/commands", get(list_commands))
         .route("/v1/sessions/{id}/commands", post(post_command))
         .route(
@@ -540,6 +549,17 @@ async fn get_context(State(state): State<AppState>, Path(id): Path<String>) -> R
     }
 }
 
+async fn get_skills(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let parsed = match id.parse() {
+        Ok(id) => id,
+        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+    };
+    match state.skills(parsed).await {
+        Ok(skills) => Json(skills).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
 /// `GET /v1/commands`: the registered session commands.
 async fn list_commands(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(json!({ "commands": state.list_commands() }))
@@ -722,11 +742,24 @@ async fn stop_session(State(state): State<AppState>, Path(id): Path<String>) -> 
 async fn continue_child(
     State(state): State<AppState>,
     Path((parent, child)): Path<(String, String)>,
+    body: Option<Json<serde_json::Value>>,
 ) -> Response {
     let (Ok(parent_id), Ok(child_id)) = (parent.parse(), child.parse()) else {
         return error_response(ServerError::SessionNotFound(child));
     };
-    match state.continue_child(parent_id, child_id).await {
+    let token = match body.and_then(|Json(value)| value.get("pause_token").cloned()) {
+        Some(value) if !value.is_null() => match serde_json::from_value(value) {
+            Ok(token) => Some(token),
+            Err(_) => {
+                return error_response(ServerError::MalformedBody("invalid pause token".into()))
+            }
+        },
+        _ => None,
+    };
+    match state
+        .continue_child_with_token(parent_id, child_id, token)
+        .await
+    {
         Ok(()) => Json(json!({"accepted":true})).into_response(),
         Err(error) => error_response(error),
     }

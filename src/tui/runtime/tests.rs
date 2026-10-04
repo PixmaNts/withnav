@@ -10,6 +10,133 @@ use crate::tui::protocol::{CreateSessionRequest, Generation, SubmitRequest};
 
 const DEAD_URL: &str = "http://127.0.0.1:1";
 
+#[tokio::test]
+async fn transcript_mouse_ignores_sidebar_and_scrolls_after_capture() {
+    use crate::tui::state::{Block, BlockKind};
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::{backend::TestBackend, Terminal};
+    let mut runtime = Runtime::new(&options(None));
+    runtime.state.conversation.blocks.push(Block {
+        id: "reply".into(),
+        kind: BlockKind::Message {
+            source: "assistant".into(),
+            text: "hello world".into(),
+        },
+    });
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal.draw(|frame| runtime.render(frame)).unwrap();
+    let area = runtime.cache.transcript.area;
+    runtime.handle_terminal_event(Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 1,
+        row: area.y,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert!(runtime.selection.range.is_none());
+    runtime.handle_terminal_event(Event::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: area.x,
+        row: area.y,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert_eq!(runtime.ui.scroll, 3);
+    assert!(!runtime.ui.follow_bottom);
+    let &(x, y, _, _) = runtime.cache.transcript.cells.first().unwrap();
+    runtime.handle_terminal_event(Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert!(runtime.selection.range.is_some());
+    runtime.handle_terminal_event(Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: x,
+        row: area.y - 1,
+        modifiers: KeyModifiers::NONE,
+    }));
+    runtime.on_tick();
+    assert_eq!(runtime.ui.scroll, 1);
+}
+
+#[tokio::test]
+async fn keyboard_viewport_survives_mouse_and_wheel() {
+    use crate::tui::state::{Block, BlockKind};
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::{backend::TestBackend, Terminal};
+    let mut runtime = Runtime::new(&options(None));
+    for i in 0..100 {
+        runtime.state.conversation.blocks.push(Block {
+            id: i.to_string(),
+            kind: BlockKind::Message {
+                source: "user".into(),
+                text: format!("message {i} text"),
+            },
+        });
+    }
+    runtime.ui.selected_block = Some("10".into());
+    runtime.ui.follow_bottom = false;
+    let mut terminal = Terminal::new(TestBackend::new(70, 20)).unwrap();
+    terminal.draw(|f| runtime.render(f)).unwrap();
+    let scroll = runtime.cache.transcript.scroll;
+    let &(x, y, a, b) = runtime.cache.transcript.cells.first().unwrap();
+    let clicked = runtime.cache.transcript.text[a..b].to_owned();
+    runtime.handle_terminal_event(Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    }));
+    terminal.draw(|f| runtime.render(f)).unwrap();
+    assert_eq!(runtime.cache.transcript.scroll, scroll);
+    runtime.handle_terminal_event(Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: x + 2,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    }));
+    let (a, b) = runtime.selection.range.unwrap();
+    assert!(runtime.cache.transcript.text[a..b].starts_with(&clicked));
+    runtime.handle_terminal_event(Event::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert_eq!(runtime.ui.scroll, scroll + 3);
+    assert!(runtime.cache.transcript.cells.len() <= 70 * 20);
+}
+
+#[tokio::test]
+async fn picker_wheel_navigates_without_transcript_scroll_and_motion_is_noop() {
+    use crate::tui::protocol::Overlay;
+    use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+    let mut runtime = Runtime::new(&options(None));
+    runtime.ui.overlay = Some(Overlay::Themes);
+    let theme = runtime.ui.theme;
+    runtime.handle_terminal_event(Event::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 1,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert_ne!(runtime.ui.theme, theme);
+    assert_eq!(runtime.ui.scroll, 0);
+    runtime.ui.overlay = None;
+    runtime.dirty = false;
+    runtime.handle_terminal_event(Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Moved,
+        column: 1,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert!(!runtime.dirty);
+    assert!(!runtime.selection_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('c'),
+        KeyModifiers::CONTROL
+    )));
+}
+
 fn executor() -> (Executor, mpsc::Receiver<ClientEvent>) {
     let (tx, rx) = mpsc::channel(16);
     (Executor::new(Client::new(DEAD_URL, None), tx), rx)
@@ -426,4 +553,32 @@ async fn a_tabs_editor_keeps_its_cursor_and_history_across_a_switch() {
     runtime.handle_terminal_event(key(KeyCode::Char('2'), KeyModifiers::ALT));
     assert_eq!(runtime.editor.text(), "x");
     assert_eq!(runtime.editor.area().cursor().1, 1);
+}
+
+#[tokio::test]
+async fn wheel_bursts_accumulate_before_render() {
+    use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+    let mut runtime = Runtime::new(&options(None));
+    runtime.cache.transcript.area = ratatui::layout::Rect::new(0, 0, 40, 10);
+    runtime.ui.follow_bottom = false;
+    for kind in [
+        MouseEventKind::ScrollUp,
+        MouseEventKind::ScrollUp,
+        MouseEventKind::ScrollUp,
+    ] {
+        runtime.handle_terminal_event(Event::Mouse(MouseEvent {
+            kind,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+    assert_eq!(runtime.ui.scroll, 9);
+    runtime.handle_terminal_event(Event::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 1,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert_eq!(runtime.ui.scroll, 6);
 }

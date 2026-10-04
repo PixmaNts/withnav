@@ -119,6 +119,31 @@ child result never cancels the parent's human interaction, instead waiting for t
 _Avoid_: stop (stop tears down the session)
 
 **Watchdog**:
+Root conversations have no default step cap. Their watchdog uses the same bounded observable
+evidence every 300 seconds (`agent.watchdog_interval_secs`; 0 disables), bound to the judged turn.
+`active` continues; `stuck` stops before the next provider request once every tool result is in.
+`doubt`, including two consecutive judge failures, gets one tool-free metacognition review with a
+20-second deadline. Continue resumes with the remaining steps; stop settles the batch and stops; hesitation, invalid
+output, timeout or an unavailable reviewer pauses at that boundary and asks the driver to Continue
+(`alt+c`) or Stop. Permission and ask waits are not judged or answered by this mechanism.
+At the settled boundary, a pause snapshots the transcript, publishes a typed yield with its turn
+identity and unique incarnation/hold token, and ends the turn as yielded. Owner Continue consumes
+that token once; late answers cannot release a newer pause. Resolution, expiry and driver-message
+supersession are sequenced notices. Restart expires the hold, retains the checkpoint and waits
+for fresh driver input. Navigator wakes and child results cannot release a hold or renew a parked
+budget. A real driver message replaces the paused turn and records its interruption.
+Recovery installs a separate fresh-driver gate even after publishing expiry; pending child
+completions and autonomous inbox messages stay held until HTTP or CLI driver input clears it.
+Only a consumed instruction checkpointed atomically with its gate-release event clears recovery's
+gate. Durable `message.received` is admission, not proof of transcript consumption. A crash before
+that checkpoint keeps the gate closed on the next recovery. Owner Continue on a budget-parked
+child claims accepted interrupt replacements exactly once before requesting another model step.
+Supersession names the old turn in the pause-resolution event, never a second terminal event.
+Accepted deferred model/compact operations receive correlated cancellation at a watchdog pause.
+Without instinct, or with supervision disabled, the session announces a renewable 500-step fallback
+cap instead. Only explicit owner Continue or fresh driver input renews it. An explicit
+`NAVAI_MAX_STEPS` keeps the existing budget parking behaviour; subagents keep their 50-step default.
+
 The instinct's separate progress check for a running background child, every 300 seconds by
 default (`subagents.watchdog_interval_secs`; 0 disables). It reads a bounded goal, time since
 message/tool activity, last tool call and result, and step count, never reasoning. `active` does
@@ -162,28 +187,27 @@ _Avoid_: tool, action (an action is what a pipeline branch decides)
 
 ## Permissions
 
+**Permission review**:
+An advisory per-call classification by the instinct, followed for risky or outside-project
+mutations by synchronous metacognition review. Only explicit approval runs those calls;
+uncertainty, malformed answers and deadlines escalate to the driver. Not a sandbox.
+
 **Permission request**:
-A tool call (`write`, `edit`, `bash`, `fetch`) that has not run and waits for the driver's decision:
-allow once, allow the folder, or deny with a message. Only a typed answer to that request resolves it;
-chat text never does. It does not survive a restart.
+A held tool call awaiting a typed driver decision. Bash, write and edit offer allow once or deny;
+fetch may also offer an origin grant. Chat text never approves a call. A pending request expires
+on restart. Reviewer rejection escalates to the driver rather than finally denying execution.
 _Avoid_: confirmation, approval prompt
 
 **Folder grant**:
-An "allow folder" answer: it lets the same agent run the same kind of call (file changes, `bash`,
-or `fetch` for an origin) in that folder and below without asking again. A root session saves it per
-workspace in `<data dir>/grants.json` (0600), so later sessions in that workspace start with it; a
-subagent keeps its grants in memory.
-A grant on the workspace never covers the config directory. For `bash` the folder is the scope the
-driver approved, not a confinement.
+Historical bash/file folder approvals remain readable on disk but never authorize execution.
+Only fetch origin grants bypass later requests. Root sessions save those per workspace; children
+keep them in memory. Approval never expands writable roots.
 _Avoid_: whitelist, permission rule
 
 **Role guard**:
-The check the `plan` agent's exceptions go through before the driver: a `write` or `edit` of a file
-that is not a regular `.md` file, and every `bash` and `fetch`. Jev (the instinct model) is asked one
-typed question, "does this call conform to the role?", with the exact call; only a valid "conforms"
-runs it, recorded on the call's result. "Violates", "uncertain", a bad answer, no answer or a call too
-large to send become a permission request that says why, answerable once or by denial only. Advisory,
-never a sandbox.
+Plan exceptions require instinct role conformance in the same batched request as safety review.
+Plain Markdown exempts only the role question, never permission review. Conformance is recorded
+in result metadata independently of safety approval. Advisory, not a sandbox.
 _Avoid_: filter, sandbox, policy
 
 **Pending interaction**:

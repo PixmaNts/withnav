@@ -43,6 +43,15 @@ impl Default for Activity {
     }
 }
 impl Activity {
+    pub(super) fn begin_turn(&self) {
+        let now = (self.1.lock().unwrap_or_else(|e| e.into_inner()))();
+        let mut progress = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        *progress = Progress {
+            last_message: now,
+            last_tool: now,
+            ..Progress::default()
+        };
+    }
     pub fn install_clock(&self, clock: Arc<dyn Fn() -> Instant + Send + Sync>) {
         let now = clock();
         *self.1.lock().unwrap_or_else(|e| e.into_inner()) = clock;

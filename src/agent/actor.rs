@@ -45,6 +45,9 @@ pub enum PendingInteraction {
 }
 
 pub struct AgentActor {
+    pub automatic_permission_review: bool,
+    pub permission_judge: Option<Arc<dyn super::permission_gate::PermissionJudge>>,
+    pub permission_reviewer: Option<Arc<dyn super::permission_gate::PermissionReviewer>>,
     pub safe_boundary: Option<super::boundary::SafeBoundary>,
     pub transcript: Vec<ChatMessage>,
     /// The installed compaction: what stands for the start of `transcript`
@@ -72,9 +75,11 @@ pub struct AgentActor {
     /// sends the request as built. The session runtime sets it at each turn
     /// start.
     pub variant: Option<crate::provider::config::Variant>,
-    /// Model steps one run may take before it yields; read from the
-    /// environment once, when the actor is built.
+    /// Model steps one run may take before it yields. Root actors default to
+    /// unbounded (`usize::MAX`); session preparation installs the child or
+    /// unavailable-instinct fallback budget. An explicit environment cap wins.
     pub max_steps: usize,
+    pub watchdog_steps_left: Option<usize>,
     /// An optional role prompt, sent as a second system message right after
     /// the system contract on every request. It is not part of the transcript.
     pub system_prompt: Option<String>,
@@ -98,10 +103,11 @@ pub struct AgentActor {
     pub grants: Grants,
     /// What the driver last asked for: the text of their latest message, or
     /// their answer to an `ask`. Set only from a command whose source is the
-    /// driver (`user:*`), never from a navigator wake. The role guard judges
+    /// driver (a human ingress identity), never from a navigator wake, delegated
+    /// text or a subagent result. The role guard and the permission review judge
     /// calls against it. Not stored on its own: a resumed session rebuilds it
-    /// from the stored `message.received` events (the newest from a `user:*`
-    /// source), so it is `None` only when the driver never spoke.
+    /// from the stored `message.received` events (the newest from the driver),
+    /// so it is `None` only when the driver never spoke.
     pub driver_task: Option<String>,
     /// The second opinion a guarded agent's exceptions go through before the
     /// driver. `None` when the session has no guard: every exception then goes
@@ -122,6 +128,9 @@ impl AgentActor {
         cancel: CancellationToken,
     ) -> Self {
         Self {
+            automatic_permission_review: true,
+            permission_judge: None,
+            permission_reviewer: None,
             transcript: Vec::new(),
             compaction: None,
             registry,
@@ -135,7 +144,8 @@ impl AgentActor {
             max_tokens,
             input_budget: None,
             variant: None,
-            max_steps: crate::agent::run_loop::max_steps(),
+            max_steps: crate::agent::run_loop::root_max_steps(),
+            watchdog_steps_left: None,
             system_prompt: None,
             role: None,
             rules: Instructions::default(),

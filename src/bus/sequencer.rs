@@ -28,6 +28,7 @@ use crate::error::BusError;
 /// fields; the server message route is the producer.
 #[derive(Debug, Clone)]
 pub struct PendingCommand {
+    pub selected_skill: Option<String>,
     pub command_id: Ulid,
     pub content: String,
     pub source: String,
@@ -475,13 +476,20 @@ fn take_seq(next_seq: &mut u64) -> Option<u64> {
 fn message_received_candidate(command: &PendingCommand) -> Candidate {
     Candidate::new(
         EventKind::MessageReceived,
-        serde_json::json!({
-            "command_id": command.command_id,
-            "source": command.source,
-            "target": command.target,
-            "mode": command.mode,
-            "content": command.content,
-        }),
+        serde_json::to_value(crate::bus::event::MessageReceived {
+            command_id: command.command_id,
+            source: command.source.clone(),
+            target: command.target.clone(),
+            mode: command.mode.clone(),
+            content: command.content.clone(),
+            selected_skill: command.selected_skill.as_ref().map(|name| {
+                crate::bus::event::SelectedSkill {
+                    name: name.clone(),
+                    origin: "driver".into(),
+                }
+            }),
+        })
+        .expect("message payload serializes"),
     )
 }
 
@@ -711,6 +719,7 @@ mod tests {
         let receipt = seq
             .accept_command(
                 PendingCommand {
+                    selected_skill: None,
                     command_id,
                     content: "hello there".into(),
                     source: "user:cli".into(),

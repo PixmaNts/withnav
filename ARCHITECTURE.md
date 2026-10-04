@@ -96,13 +96,14 @@ are read without depending on a newer server event enum. Missing data is not gue
 | `runtime.rs` | `Runtime`: owns state, editor, client and streams; runs an event's effects for the tab it reached; the event loop with its frame tick |
 | `runtime/effects.rs` | `Executor`: runs each `Effect` in a task and reports a tagged `ClientEvent`; owns one live stream per tab generation and stops those no tab holds |
 | `runtime/tests.rs` | executor and loop tests with no terminal and a dead server |
-| `terminal.rs` | raw mode and the alternate screen, restored on exit and on panic |
+| `terminal.rs` | raw mode, alternate screen, bracketed paste and mouse capture, restored on exit and on panic |
 | `theme.rs` | the four themes (`ThemeId`, the `Theme` colour roles), the RGB `blend` for tints, and the semantic styles the views draw with |
 | `view/mod.rs` | `draw`: layout of header, sidebar, transcript, right panel, status line, editor, key bar and overlays; the key bar lists the keys that apply now, the prompt's while one waits |
 | `view/header.rs` | the header row: `◆ navai`, workspace, git branch and change count, `▌agent` in its colour, alias · model · variant · context gauge, and an accepted model switch scheduled for after the turn; the path and model give way first |
 | `view/panel.rs` | the right panel (36 columns, hidden under 140 unless `alt+r` asks): Agents and role, Context breakdown and last compaction, Skills listed and omitted, and Changes from git; a section with no data shows `—` |
 | `view/sidebar.rs` | the left conversation sidebar: number, title, `<agent> · <state>`, unread mark, active tint and tab keys; hidden under 80 columns (`alt+b` also toggles it) |
 | `view/transcript.rs` | block layout and drawing: messages by origin, steps, tools, errors, permission prompts, scroll and selection |
+| `view/selection.rs`, `runtime/selection.rs` | the shared grapheme wrapping and transcript-only cell map; mouse selection, edge scrolling and bounded OSC 52 clipboard writes; whole-block copying keeps source Markdown and complete tool output |
 | `view/permission.rs` | the inline permission prompt: tool and scope, a short preview of the call (a write's first lines, an edit's change, a command, a URL), the answer keys or the outcome |
 | `view/tool.rs` | the one-line summary and the expanded output of a tool call |
 | `view/markdown.rs` | markdown to styled lines, cached per block revision |
@@ -122,6 +123,32 @@ into `State` (envelopes become blocks) and may return more effects. After each b
 generation, so late results of its previous session are ignored. Picking a model for a live
 conversation sends `/model <alias>` on that same session; on an empty tab it changes the starting
 configuration. A conversation is created on the first message, not before.
+
+**Driver-selected skills.** `/skills` reads `GET /v1/sessions/{id}/skills`: the session snapshot's
+catalog-listed names and descriptions, or a disabled reason when its agent disallows `skill`.
+The searchable picker fills `/skill <name> ` without sending anything. Sending adds a typed
+`{type:"skill",name}` content block beside the driver's text; with no request the text is
+`Apply the <name> skill.`. Session admission resolves one listed skill through the skill tool's
+bounded loader before accepting anything. The inbox appends its exact output as JSON in a
+`<driver_selected_skill encoding="json">` block in the driver's own user message. JSON escapes
+`<`, `>` and `&`, so loaded text cannot close the delimiter. Unknown, omitted,
+disabled or unreadable selections refuse the whole message; clients cannot supply loaded content.
+The turn's pinned agent policy is checked again after admission: an intervening agent switch can
+refuse the whole command before answering an ask, cancelling permission, changing the driver task,
+appending text or persisting child delivery. A durable `command.result` uses its command id as
+operation id, causation and correlation; other queued commands proceed.
+Policy pinning does not consume a pending ask or clear its permission slot or answer claim:
+only accepted input or a matching answer starts interaction consumption. Replay task lookup
+excludes correlated whole-message refusals, so resume and new children keep the real driver task.
+`message.received.selected_skill` records `{name,origin:"driver"}` for live and replayed clients.
+No synthetic tool exchange or model-visible provenance argument is used. Selected instructions
+stay with their driver message through storage and latest-batch compaction protection. Multiple
+queued driver selections all stay verbatim even with interleaved navigator input. Discovery covers
+the consecutive user-message run, but only Driver-provenance messages are protected, carried and
+charged as irreducible. Non-driver input retains its provenance in the unsummarized tail and may
+be summarized before a checkpoint. If driver selections cannot fit, the capacity error prevents the request; no
+skill is silently truncated. Event text remains driver text only for display.
+This does not change the event catalog or execute a skill's scripts.
 
 **Permission prompts (terminal client).** `permission.requested` adds a `BlockKind::Permission` to the
 tab and its id to `Conversation::open_permissions`; the matching `permission.resolved` closes it and
@@ -161,28 +188,39 @@ conversation keeps its snapshot, its epoch and its retired incarnations, a `cont
 status line shows the active tab's.
 
 **Permission request to answer.** Before each tool call of an assistant message, `run_loop` asks
-`needs_permission` and the actor's `Grants`. A call that needs approval is not run: it, and the calls
-behind it, become `PendingInteraction::Permission` and the turn yields (`RunOutcome::PermissionRequired`).
+`needs_permission`, which validates the call and its paths. Every `bash`, `write` and `edit` then goes
+to `permission_gate`: conservative deterministic checks (redirections, mutating and risky command
+families, canonical destinations) only tighten, then Jev answers `call_effect`, `call_scope` and
+`call_risk` in one bounded request (plus `role_conformance` for `plan`). A read-only call, or a
+low-risk change inside the project, runs. A risky or outside-project change goes to a synchronous,
+tool-free metacognition review (20 s); only `approve` runs it. Anything else (reject, unsure, a
+malformed answer, a timeout, an oversized call, no reviewer) becomes a permission request. The
+verdicts are recorded as `permission_gate` on `tool.pre_call`, `tool.post_call` and
+`permission.requested`. Only `fetch` keeps reusable origin grants (`Grants`); saved bash/file folder
+grants are never used. `permissions.automatic_review: false` asks for every such call; children
+inherit their parent's value. The review is advisory, never a sandbox (ADR 0010).
+
+A call that needs approval is not run: it, and the calls behind it, become
+`PendingInteraction::Permission` and the turn yields (`RunOutcome::PermissionRequired`).
 The runtime publishes `permission.requested` and the turn ends `yielded`. `POST
 /v1/sessions/{id}/permissions/{request_id}` reaches `Service::answer_permission`, which checks the
 request id against the runtime's status, then sends a typed `PermissionAnswer` on a channel of its own
 (never a `Command`). The runtime publishes `permission.resolved` and calls `resolve_permission`:
-the held call runs once (or is denied), the siblings go through the gate again, and the turn goes on.
-A stop or a chat message cancels the request; a resume expires every request that has no
-`permission.resolved` and settles its calls as interrupted.
+the held call runs once (or is denied) after fresh validation, a changed destination is reviewed
+again, the siblings go through the gate again, and the turn goes on. For `bash`, `write` and `edit`
+an "allow folder" answer counts as allow once. A stop or a chat message cancels the request; a
+resume expires every request that has no `permission.resolved` and settles its calls as interrupted.
 
-**Plan exception to the role guard.** For the `plan` agent `gate` does not look at grants. A `write` or
-`edit` whose path as written is not a symlink, and whose destination is an existing regular `.md` file
-or a missing `.md` file in an existing directory, runs without a request. A symlink path is not
-exempt, even if it points to another Markdown file. Every other `write`
-or `edit`, and every `bash` or `fetch`, goes to `guard_step`: `guard::consult` sends Jev one
-`role_conformance` choice (role prompt, latest user message, workspace, resolved target, tool,
-exact arguments, at most 16 KiB; a larger call skips Jev) under the `SystemOneClient` deadline and the
-actor's cancellation. Only a valid `conforms` runs the call, and the verdict is recorded as `guard` in
-the metadata of its durable `tool.post_call`. Anything else (`violates`, `uncertain`, a malformed
-answer, no `instinct` alias or key, a timeout, an oversized call) is an ordinary permission request
-whose `reason` says why; the runtime turns an "allow folder" answer for `plan` into allow once. Jev is
-advisory, never a sandbox.
+**Plan exception to the role guard.** For the `plan` agent, a `write` or `edit` whose path as
+written is not a symlink, and whose destination is an existing regular `.md` file or a missing `.md`
+file in an existing directory, needs no `role_conformance` answer; it still goes through the
+permission review. Every other `write` or `edit`, and every `bash`, asks Jev `role_conformance` in the
+same batched request (role prompt, the driver's latest message, workspace, resolved target, tool,
+exact arguments, at most 16 KiB); a `fetch` asks it alone. Only a valid `conforms` lets the call
+continue, and the verdict is recorded as `guard` in the metadata of its durable `tool.post_call`.
+Anything else (`violates`, `uncertain`, a malformed answer, no `instinct` alias or key, a timeout, an
+oversized call) is an ordinary permission request whose `reason` says why. Jev is advisory, never a
+sandbox.
 
 **Keystroke to suggestion (reflex).** The extension asks `navigator/inlineCompletion` after 150 ms
 of pause. `runtime/inline.rs` reads the document and the reflex context, `reflex.rs` builds the FIM
@@ -251,6 +289,38 @@ the self-contained completion outbox retains it after child deletion. Parent res
 fall back to next-turn delivery for pending human interactions; inbox commands and queued controls
 are checked before completion-only wakes. `subagent.spawned` and `subagent.done` payloads include
 `delivery`; no new event kind is introduced.
+
+**Root watchdog.** `session/subagents/root_watchdog.rs` reuses the child clock, evidence, judge and
+consecutive-failure rule. The service installs one task per root runtime. It skips idle and human
+waits, checks the turn generation again after each model await, and submits a safe-boundary stop or
+doubt hold through `WatchdogPark`. A local mockable `ProgressReviewer` performs one tool-free
+metacognition call within 20 seconds; undecidable reviews ask the driver. Notices reuse
+`command.result`; the runtime emits typed `agent.yield` at the final safe-boundary check after
+awaited delivery, snapshots settled tools and ends the paused turn. Hold identity is a session
+incarnation plus unique hold id. Continue consumes the matching token atomically and sequences
+resolution; restart/stop expires it. A driver message supersedes it and records interruption;
+autonomous inputs cannot release it or renew a parked budget. The event catalog remains 22 kinds.
+The typed boundary result carries the settled transcript on every watchdog exit and keeps the
+remaining steps. Interrupt-delivery checks revalidate the hold after awaiting notice eligibility.
+Recovery installs an awaiting-fresh-driver gate; neither delivery wakes nor delegated provenance
+can clear it. Deferred controls accepted in a paused turn receive operation-correlated cancellation.
+Driver admission events never clear the recovered gate. The runtime commits the consumed driver
+transcript and a `command.result` checkpoint marker atomically through the existing acknowledged
+transcript/event transaction before releasing the gate. Recovery reads that marker, not admission;
+an admitted but unconsumed correction therefore requires fresh input after another crash. Accepted
+interrupt guidance on a budget-parked child stays queued and is claimed once by authorized Continue
+before its first resumed provider request; the guidance itself never renews the budget.
+Progress parking filters autonomous-only batches before policy pinning. A driver batch pins its
+role before validating selected skills; held-only or refused batches release that pin without
+changing the interaction claim, progress generation, goal or recovery gate. Only applied commands
+supersede a watchdog hold and commit fresh input. `consume_turn` starts activity and the watchdog
+after that validation, using the updated driver task, before transcript-persisting turn delivery.
+Root `alt+c`
+uses the existing Continue route with the root as both owner and target, which cannot answer asks
+or permissions. Root turns are unbounded unless `NAVAI_MAX_STEPS` is set; unavailable instinct
+or disabled supervision installs a visible renewable 500-step fallback cap. Children keep their
+50-step budget. The root supervisor starts only after publication; runtime exit cancels and joins
+it outside admission and registry locks.
 
 **Child watchdog.** `session/subagents/watchdog.rs` owns the monotonic clock and judge seams,
 bounded evidence, separate `subagent_progress` System One choice and consecutive-failure rule.

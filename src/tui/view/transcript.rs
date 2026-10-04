@@ -1,8 +1,4 @@
-use super::{
-    markdown::{self, MarkdownCache},
-    permission::Keys,
-    tool,
-};
+use super::{markdown::MarkdownCache, permission::Keys, tool};
 use crate::tui::{
     state::{Block, BlockKind, State, UiState},
     theme::Theme,
@@ -11,7 +7,7 @@ use ratatui::{
     layout::Rect,
     style::Modifier,
     text::{Line, Span, Text},
-    widgets::{Paragraph, Wrap},
+    widgets::Paragraph,
     Frame,
 };
 
@@ -42,7 +38,7 @@ impl Origin {
     fn of(source: &str) -> Self {
         if source == "user:subagent" || source == "subagent" || source.starts_with("subagent:") {
             Self::Subagent
-        } else if source == "user" || source.starts_with("user:") {
+        } else if source == "user" || crate::bus::command::is_driver_source(source) {
             Self::User
         } else if source == "navigator" || source.starts_with("navigator:") {
             Self::Navigator
@@ -78,7 +74,7 @@ fn block_text(
             };
             lines.push(Line::styled(name, style.add_modifier(Modifier::BOLD)));
             if Origin::of(source) == Origin::Assistant {
-                let parsed = cache.get(&block.id, 0, width.saturating_sub(2), text);
+                let parsed = cache.get(&block.id, content_key(text), width.saturating_sub(2), text);
                 lines.extend(parsed.lines.iter().cloned().map(|line| {
                     Line::from(
                         std::iter::once(Span::raw(" "))
@@ -243,6 +239,7 @@ pub fn draw(
     ui: &UiState,
     theme: &Theme,
     cache: &mut MarkdownCache,
+    map: &mut super::selection::TranscriptMap,
 ) -> Option<String> {
     if area.width < 4 || area.height == 0 {
         return None;
@@ -250,89 +247,52 @@ pub fn draw(
     let open = state.open_permission().map(|p| p.request_id.as_str());
     let mut shown = None;
     let width = area.width.saturating_sub(3);
+    map.area = Rect::new(area.x + 3, area.y, width, area.height);
     let blocks: Vec<_> = state
         .conversation
         .blocks
         .iter()
         .map(|b| {
-            let height = match &b.kind {
-                BlockKind::Message { text, .. } if !text.is_empty() => {
-                    markdown::height(cache.get(&b.id, 0, width.saturating_sub(2), text), width) + 2
-                }
-                BlockKind::AssistantStep {
-                    text,
-                    thinking,
-                    revision,
-                } => {
-                    if text.is_empty() && thinking.is_empty() {
-                        return (b, 0);
-                    }
-                    let body = if text.is_empty() {
-                        0
-                    } else {
-                        markdown::height(
-                            cache.get(&b.id, *revision, width.saturating_sub(2), text),
-                            width,
-                        )
-                    };
-                    2 + body
-                        + usize::from(!thinking.is_empty())
+            if matches!(&b.kind, BlockKind::AssistantStep { text, thinking, .. } if text.is_empty() && thinking.is_empty()) {
+                return (b, std::sync::Arc::new(Vec::new()), map.text.len());
+            }
+            let key = layout_key(b, width, ui);
+            let cacheable = !matches!(b.kind, BlockKind::Permission(_));
+            if let Some((old, rows, text)) = cache.wrapped.get(&b.id).filter(|(old,_,_)| old == &key) {
+                let _ = old;
+                let offset = map.text.len();
+                map.text.push_str(text);
+                if offset < map.text.len() { map.senders.push((offset..map.text.len(), sender(b, state))); }
+                return (b, rows.clone(), offset);
+            }
+            let text = block_text(b, state, ui, theme, cache, width);
+            let (prefix, body_start) = match &b.kind {
+                BlockKind::ToolCall { .. } => (2, 1),
+                BlockKind::Permission(_) => (0, usize::MAX),
+                BlockKind::AssistantStep { thinking, .. } => (
+                    1,
+                    1 + usize::from(!thinking.is_empty())
                         + if ui.expanded.contains(&b.id) {
-                            thinking
-                                .lines()
-                                .map(|line| {
-                                    line.chars()
-                                        .count()
-                                        .max(1)
-                                        .div_ceil(usize::from(width.max(1)))
-                                })
-                                .sum::<usize>()
+                            thinking.lines().count()
                         } else {
                             0
-                        }
-                }
-                BlockKind::ToolCall { output, .. } => {
-                    2 + if ui.expanded.contains(&b.id) {
-                        output
-                            .lines()
-                            .take(20)
-                            .map(|line| {
-                                line.chars()
-                                    .count()
-                                    .saturating_add(2)
-                                    .max(1)
-                                    .div_ceil(usize::from(width.max(1)))
-                            })
-                            .sum::<usize>()
-                            + usize::from(output.lines().count() > 20)
-                    } else {
-                        0
-                    }
-                }
-                BlockKind::Message { .. } => 2,
-                // One row per line: the prompt cuts its lines to the width.
-                BlockKind::Permission(_) => {
-                    block_text(b, state, ui, theme, cache, width).lines.len() + 1
-                }
-                BlockKind::YieldQuestion(s)
-                | BlockKind::Error(s)
-                | BlockKind::Notice(s)
-                | BlockKind::Command { text: s, .. } => {
-                    2 + s
-                        .lines()
-                        .map(|line| {
-                            line.chars()
-                                .count()
-                                .max(1)
-                                .div_ceil(usize::from(width.max(1)))
-                        })
-                        .sum::<usize>()
-                }
+                        },
+                ),
+                _ => (1, 1),
             };
-            (b, height)
+            let mut local = super::selection::TranscriptMap::default();
+            let rows = std::sync::Arc::new(super::selection::rows(text, width, &mut local, prefix, body_start));
+            if cacheable { cache.wrapped.insert(b.id.clone(), (key, rows.clone(), local.text.clone())); }
+            let offset = map.text.len();
+            map.text.push_str(&local.text);
+            if offset < map.text.len() { map.senders.push((offset..map.text.len(), sender(b, state))); }
+            (b, rows, offset)
         })
         .collect();
-    let total: usize = blocks.iter().map(|(_, h)| h).sum();
+    let total: usize = blocks
+        .iter()
+        .map(|(_, rows, _)| rows.len() + usize::from(!rows.is_empty()))
+        .sum();
     let viewport = usize::from(area.height);
     let mut start = if ui.follow_bottom {
         total.saturating_sub(viewport)
@@ -344,7 +304,8 @@ pub fn draw(
     if !ui.follow_bottom {
         if let Some(selected) = &ui.selected_block {
             let mut offset = 0;
-            for (block, height) in &blocks {
+            for (block, rows, _) in &blocks {
+                let height = rows.len() + usize::from(!rows.is_empty());
                 if &block.id == selected {
                     if offset < start {
                         start = offset;
@@ -359,7 +320,12 @@ pub fn draw(
         }
     }
     let mut cursor = 0usize;
-    for (block, height) in blocks {
+    map.scroll = total
+        .saturating_sub(viewport)
+        .saturating_sub(start)
+        .min(u16::MAX as usize) as u16;
+    for (block, rows, offset) in blocks {
+        let height = rows.len() + usize::from(!rows.is_empty());
         let from = cursor;
         cursor += height;
         if let BlockKind::Permission(p) = &block.kind {
@@ -376,7 +342,6 @@ pub fn draw(
         if height == 0 {
             continue;
         }
-        let text = block_text(block, state, ui, theme, cache, width);
         let skipped = start.saturating_sub(from);
         let top = from.saturating_sub(start);
         let visible = height.saturating_sub(skipped).min(viewport - top);
@@ -417,13 +382,358 @@ pub fn draw(
                 .set_symbol(bar)
                 .set_style(gutter);
         }
-        let rect = Rect::new(area.x + 3, row, width, visible as u16);
-        frame.render_widget(
-            Paragraph::new(text)
-                .wrap(Wrap { trim: false })
-                .scroll((skipped as u16, 0)),
-            rect,
-        );
+        for (dy, text_row) in rows.iter().skip(skipped).take(visible).enumerate() {
+            let y = row + dy as u16;
+            frame.render_widget(
+                Paragraph::new(text_row.line.clone()),
+                Rect::new(area.x + 3, y, width, 1),
+            );
+            for &(x, width, a, b) in &text_row.ranges {
+                map.cells
+                    .extend((0..width).map(|dx| (area.x + 3 + x + dx, y, a + offset, b + offset)));
+            }
+        }
     }
     shown
+}
+
+/// Full source of the focused block, never a truncated tool preview or UI label.
+pub(crate) fn copy_block(block: &Block) -> Option<String> {
+    let text = match &block.kind {
+        BlockKind::Message { text, .. }
+        | BlockKind::AssistantStep { text, .. }
+        | BlockKind::Command { text, .. } => text,
+        BlockKind::ToolCall { output, .. } => output,
+        BlockKind::YieldQuestion(text) | BlockKind::Error(text) | BlockKind::Notice(text) => text,
+        BlockKind::Permission(_) => return None,
+    };
+    Some(clean(text))
+}
+
+fn content_key(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
+}
+
+fn sender(block: &Block, state: &State) -> String {
+    match &block.kind {
+        BlockKind::Message { source, .. } => match Origin::of(source) {
+            Origin::User => "You".into(),
+            Origin::Assistant => clean(state.agent_name()),
+            Origin::Navigator => "Navigator".into(),
+            Origin::Subagent => format!(
+                "Subagent {} · untrusted data",
+                clean(source.strip_prefix("subagent:").unwrap_or("output"))
+            ),
+            Origin::Other => clean(source),
+        },
+        BlockKind::AssistantStep { .. } => clean(state.agent_name()),
+        BlockKind::ToolCall { name, .. } => format!("Tool {}", clean(name)),
+        BlockKind::Notice(_) => "Notice".into(),
+        BlockKind::Error(_) => "Error".into(),
+        BlockKind::YieldQuestion(_) => clean(state.agent_name()),
+        BlockKind::Command { name, .. } => format!("/{}", clean(name)),
+        BlockKind::Permission(_) => "Permission".into(),
+    }
+}
+
+fn layout_key(block: &Block, width: u16, ui: &UiState) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    width.hash(&mut h);
+    ui.expanded.contains(&block.id).hash(&mut h);
+    std::mem::discriminant(&block.kind).hash(&mut h);
+    match &block.kind {
+        BlockKind::AssistantStep { revision, .. } => revision.hash(&mut h),
+        BlockKind::ToolCall {
+            name,
+            args,
+            status,
+            output,
+            duration_ms,
+            exit_code,
+            ..
+        } => {
+            name.hash(&mut h);
+            args.hash(&mut h);
+            status.map(|s| s as u8).hash(&mut h);
+            if status.is_none() && !args.is_null() {
+                (ui.tick % 2).hash(&mut h);
+            }
+            duration_ms.hash(&mut h);
+            exit_code.hash(&mut h);
+            if ui.expanded.contains(&block.id) {
+                output.hash(&mut h);
+            }
+        }
+        BlockKind::Message { source, text } => {
+            source.hash(&mut h);
+            text.hash(&mut h);
+        }
+        BlockKind::Command { name, ok, text } => {
+            name.hash(&mut h);
+            ok.hash(&mut h);
+            text.hash(&mut h);
+        }
+        BlockKind::Notice(text) | BlockKind::Error(text) | BlockKind::YieldQuestion(text) => {
+            text.hash(&mut h)
+        }
+        BlockKind::Permission(_) => {}
+    }
+    h.finish().to_string()
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+    #[test]
+    fn copy_sender_names_preserve_subagent_and_notice_origins() {
+        let state = State::default();
+        let block = |source: &str| Block {
+            id: "x".into(),
+            kind: BlockKind::Message {
+                source: source.into(),
+                text: "body".into(),
+            },
+        };
+        assert_eq!(
+            sender(&block("subagent:explore"), &state),
+            "Subagent explore · untrusted data"
+        );
+        assert_eq!(sender(&block("navigator"), &state), "Navigator");
+        assert_eq!(sender(&block("Jev"), &state), "Jev");
+        assert_eq!(
+            sender(
+                &Block {
+                    id: "n".into(),
+                    kind: BlockKind::Notice("notice".into())
+                },
+                &state
+            ),
+            "Notice"
+        );
+    }
+
+    #[test]
+    fn persistent_layout_updates_replaced_content_and_running_glyph() {
+        let mut state = State::default();
+        state.conversation.blocks.push(Block {
+            id: "message".into(),
+            kind: BlockKind::Message {
+                source: "assistant".into(),
+                text: "first".into(),
+            },
+        });
+        state.conversation.blocks.push(Block {
+            id: "command".into(),
+            kind: BlockKind::Command {
+                name: "test".into(),
+                ok: true,
+                text: "before".into(),
+            },
+        });
+        state.conversation.blocks.push(Block {
+            id: "tool".into(),
+            kind: BlockKind::ToolCall {
+                id: "call".into(),
+                name: "bash".into(),
+                args: serde_json::json!({"command":"ls"}),
+                status: None,
+                output: String::new(),
+                metadata: serde_json::Value::Null,
+                duration_ms: None,
+                exit_code: None,
+            },
+        });
+        let mut ui = UiState {
+            follow_bottom: true,
+            ..Default::default()
+        };
+        let mut cache = MarkdownCache::default();
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut paint = |state: &State, ui: &UiState| {
+            let mut map = super::super::selection::TranscriptMap::default();
+            terminal
+                .draw(|f| {
+                    draw(
+                        f,
+                        Rect::new(0, 0, 60, 20),
+                        state,
+                        ui,
+                        &ui.theme.palette(),
+                        &mut cache,
+                        &mut map,
+                    );
+                })
+                .unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>()
+        };
+        let first = paint(&state, &ui);
+        ui.tick = 1;
+        assert_ne!(first, paint(&state, &ui));
+        state.conversation.blocks[0].kind = BlockKind::Message {
+            source: "assistant".into(),
+            text: "other".into(),
+        };
+        state.conversation.blocks[1].kind = BlockKind::Command {
+            name: "test".into(),
+            ok: false,
+            text: "after".into(),
+        };
+        let changed = paint(&state, &ui);
+        assert!(
+            changed.contains("other") && changed.contains("after") && changed.contains("error")
+        );
+        if let BlockKind::ToolCall { status, .. } = &mut state.conversation.blocks[2].kind {
+            *status = Some(crate::tools::ToolStatus::Ok);
+        }
+        let settled = paint(&state, &ui);
+        ui.tick = 2;
+        assert_eq!(settled, paint(&state, &ui));
+    }
+
+    #[test]
+    fn streaming_reuses_history_layout_and_ranges_are_graphemes() {
+        let mut state = State::default();
+        state.conversation.blocks.push(Block {
+            id: "history".into(),
+            kind: BlockKind::Message {
+                source: "user".into(),
+                text: "界".repeat(1000),
+            },
+        });
+        state.conversation.blocks.push(Block {
+            id: "live".into(),
+            kind: BlockKind::AssistantStep {
+                text: "one".into(),
+                thinking: String::new(),
+                revision: 1,
+            },
+        });
+        let ui = UiState {
+            follow_bottom: true,
+            ..Default::default()
+        };
+        let mut cache = MarkdownCache::default();
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut map = super::super::selection::TranscriptMap::default();
+        terminal
+            .draw(|f| {
+                draw(
+                    f,
+                    Rect::new(0, 0, 60, 20),
+                    &state,
+                    &ui,
+                    &ui.theme.palette(),
+                    &mut cache,
+                    &mut map,
+                );
+            })
+            .unwrap();
+        let history = cache.wrapped["history"].1.clone();
+        let ranges: usize = history.iter().map(|r| r.ranges.len()).sum();
+        assert_eq!(ranges, 1000);
+        state.conversation.blocks[1].kind = BlockKind::AssistantStep {
+            text: "two".into(),
+            thinking: String::new(),
+            revision: 2,
+        };
+        map = Default::default();
+        terminal
+            .draw(|f| {
+                draw(
+                    f,
+                    Rect::new(0, 0, 60, 20),
+                    &state,
+                    &ui,
+                    &ui.theme.palette(),
+                    &mut cache,
+                    &mut map,
+                );
+            })
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &history,
+            &cache.wrapped["history"].1
+        ));
+        assert!(map.cells.len() <= 60 * 20);
+    }
+
+    #[test]
+    fn copy_full_source_and_map_narrow_transcript_only() {
+        let source = "Hello **world**\n\n```rust\n  println!(\"界\");\n```";
+        let block = Block {
+            id: "reply".into(),
+            kind: BlockKind::Message {
+                source: "assistant".into(),
+                text: source.into(),
+            },
+        };
+        assert_eq!(copy_block(&block).as_deref(), Some(source));
+        let mut state = State::default();
+        state.conversation.blocks.push(block);
+        let ui = UiState {
+            follow_bottom: true,
+            ..Default::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(70, 25)).unwrap();
+        let mut cache = MarkdownCache::default();
+        let mut map = super::super::selection::TranscriptMap::default();
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    Rect::new(25, 2, 40, 20),
+                    &state,
+                    &ui,
+                    &ui.theme.palette(),
+                    &mut cache,
+                    &mut map,
+                );
+            })
+            .unwrap();
+        assert!(map.text.contains("Hello world"));
+        assert!(map.text.contains("  println!(\"界\");"));
+        assert!(!map.text.contains("ASSISTANT"));
+        assert!(!map.text.contains("```"));
+        assert!(map
+            .cells
+            .iter()
+            .all(|(x, y, _, _)| *x >= 28 && *x < 65 && *y >= 2 && *y < 22));
+        assert!(map.hit(10, 3).is_none());
+    }
+
+    #[test]
+    fn tool_copy_is_not_limited_to_preview() {
+        // A block copy is the complete output even when the view only shows a preview.
+        let output = (0..40)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut block = Block {
+            id: "tool".into(),
+            kind: BlockKind::ToolCall {
+                id: "call".into(),
+                name: "bash".into(),
+                args: serde_json::Value::Null,
+                status: None,
+                output: output.clone(),
+                metadata: serde_json::Value::Null,
+                duration_ms: None,
+                exit_code: None,
+            },
+        };
+        assert_eq!(copy_block(&block), Some(output));
+        block.kind = BlockKind::Notice("\x1b[31munsafe".into());
+        assert!(!copy_block(&block).unwrap().contains('\x1b'));
+    }
 }

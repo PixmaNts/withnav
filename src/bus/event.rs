@@ -324,11 +324,19 @@ pub struct SessionEnd {
 /// typed `DeliveryMode` lives in `bus::command`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MessageReceived {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_skill: Option<SelectedSkill>,
     pub command_id: Ulid,
     pub source: String,
     pub target: String,
     pub mode: String,
     pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SelectedSkill {
+    pub name: String,
+    pub origin: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -407,6 +415,25 @@ pub struct AgentYield {
     pub kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PauseToken {
+    pub incarnation: Ulid,
+    pub hold_id: Ulid,
+}
+
+/// Read-only catalog projection; this is an HTTP body, not a new event kind.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct SkillsBody {
+    pub skills: Vec<SkillEntry>,
+    pub disabled_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SkillEntry {
+    pub name: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -906,6 +933,7 @@ mod tests {
             (
                 "message.received",
                 serde_json::to_value(&MessageReceived {
+                    selected_skill: None,
                     command_id: Ulid::new(),
                     source: "user:http".into(),
                     target: ROOT_ACTOR_ID.into(),

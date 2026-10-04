@@ -570,6 +570,10 @@ fn the_catalog_is_bounded_and_counts_what_it_omits() {
     let listed = catalog.lines().count() - 2;
     assert_eq!(listed + omitted, 200);
     assert!(omitted > 0 && listed > 0);
+    assert_eq!(skills.listed().len(), listed);
+    for skill in skills.listed() {
+        assert!(catalog.contains(&format!("{} —", skill.name)));
+    }
     // Nothing is cut when everything fits.
     assert!(!load_small().catalog().unwrap().contains("omitted"));
 }

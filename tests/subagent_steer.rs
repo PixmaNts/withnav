@@ -10,6 +10,72 @@ fn body(request: &str) -> Value {
 }
 
 #[tokio::test]
+async fn budget_parked_child_claims_interrupt_once_after_owner_continue() {
+    let mut provider = spawn_streaming_provider().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let state = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(128000)
+        .state();
+    let parent = state.create_session(&ws, None, None).await.unwrap();
+    let child = state
+        .create_child_session(parent, "explore", "original delegated task")
+        .await
+        .unwrap();
+    for step in 0..navai::agent::run_loop::max_steps() {
+        let (_, stream) = provider
+            .requests
+            .recv()
+            .bounded(file!(), line!())
+            .await
+            .unwrap();
+        stream
+            .send(tool_call_chunk(
+                &format!("glob-{step}"),
+                "glob",
+                &json!({"pattern":"*"}),
+            ))
+            .unwrap();
+        drop(stream);
+    }
+    common::server::collect_until(state.subscribe(child, None).await.unwrap(), |e| {
+        e.kind == "turn.end"
+    })
+    .await;
+    state
+        .steer_child(parent, child, "accepted budget replacement", true)
+        .await
+        .unwrap();
+    assert!(
+        provider.requests.try_recv().is_err(),
+        "interrupt cannot renew budget"
+    );
+    state.continue_child(parent, child).await.unwrap();
+    let (request, stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let messages = body(&request)["messages"].as_array().unwrap().clone();
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|m| m["content"] == "accepted budget replacement")
+            .count(),
+        1
+    );
+    stream.send(text_chunk("finished replacement")).unwrap();
+    drop(stream);
+    common::server::collect_until(state.subscribe(child, None).await.unwrap(), |e| {
+        e.kind == "turn.end" && e.payload["outcome"] == "done"
+    })
+    .await;
+    state.close_all().await;
+}
+
+#[tokio::test]
 async fn completion_after_negative_eligibility_cannot_overtake_queued_driver() {
     let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
     let tmp = tempfile::tempdir().unwrap();
@@ -24,10 +90,7 @@ async fn completion_after_negative_eligibility_cannot_overtake_queued_driver() {
         .await
         .unwrap();
     state
-        .send(navai::bus::command::Command::child_prompt(
-            parent,
-            "original".into(),
-        ))
+        .send(common::server::driver_command(parent, "original".into()))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -49,7 +112,7 @@ async fn completion_after_negative_eligibility_cannot_overtake_queued_driver() {
         .await
         .unwrap();
     state
-        .send(navai::bus::command::Command::child_prompt(
+        .send(common::server::driver_command(
             parent,
             "driver correction".into(),
         ))
@@ -217,10 +280,7 @@ async fn result_interrupt_replacement_uses_accepted_deferred_model() {
         .await
         .unwrap();
     state
-        .send(navai::bus::command::Command::child_prompt(
-            parent,
-            "driver".into(),
-        ))
+        .send(common::server::driver_command(parent, "driver".into()))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -354,10 +414,7 @@ async fn queued_driver_without_result_preserves_running_turn_and_budget() {
         .await
         .unwrap();
     state
-        .send(navai::bus::command::Command::child_prompt(
-            parent,
-            "original".into(),
-        ))
+        .send(common::server::driver_command(parent, "original".into()))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -368,7 +425,7 @@ async fn queued_driver_without_result_preserves_running_turn_and_budget() {
         .await
         .unwrap();
     state
-        .send(navai::bus::command::Command::child_prompt(
+        .send(common::server::driver_command(
             parent,
             "next turn driver".into(),
         ))
@@ -424,10 +481,7 @@ async fn queued_driver_precedes_mid_turn_result_steer() {
         .await
         .unwrap();
     state
-        .send(navai::bus::command::Command::child_prompt(
-            parent,
-            "original".into(),
-        ))
+        .send(common::server::driver_command(parent, "original".into()))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -449,7 +503,7 @@ async fn queued_driver_precedes_mid_turn_result_steer() {
         .await
         .unwrap();
     state
-        .send(navai::bus::command::Command::child_prompt(
+        .send(common::server::driver_command(
             parent,
             "driver correction".into(),
         ))
@@ -859,7 +913,7 @@ async fn result_delivery_steer_is_mid_turn_and_interrupt_restarts_parent() {
             .await
             .unwrap();
         state
-            .send(navai::bus::command::Command::child_prompt(
+            .send(common::server::driver_command(
                 parent,
                 "driver instruction".into(),
             ))
@@ -948,7 +1002,7 @@ async fn interrupt_result_waits_for_parent_permission_and_queued_driver_goes_fir
         .await
         .unwrap();
     state
-        .send(navai::bus::command::Command::child_prompt(
+        .send(common::server::driver_command(
             parent,
             "driver instruction".into(),
         ))
@@ -1023,7 +1077,7 @@ async fn interrupt_result_waits_for_parent_permission_and_queued_driver_goes_fir
         .iter()
         .any(|e| e.kind == "permission.resolved"));
     state
-        .send(navai::bus::command::Command::child_prompt(
+        .send(common::server::driver_command(
             parent,
             "driver correction".into(),
         ))

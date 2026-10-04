@@ -13,6 +13,7 @@ expression: snapshot
             │▌/new [alias]          new conversation in a new tab                      │            
             │ /sessions             browse conversations                               │            
             │ /model [alias]        switch this conversation's model                   │            
+            │ /skills               choose a skill to load for your next message       │            
             │ /variant [name|off]   choose the model variant for this conversation     │            
             │ /stop                 stop generation                                    │            
             │ /mode                 cycle delivery mode (steer and interrupt send as n │            
@@ -25,7 +26,6 @@ expression: snapshot
             │                                                                          │            
             │ ↑↓ move  enter run  esc close                                            │            
             └──────────────────────────────────────────────────────────────────────────┘            
-                     │                                                                              
                      │──────────────────────────────────────────────────────────────────────────────
                      │ ready                                                          session — tok 
                      │┌ Message ───────────────────────────────────────────────────────────────────┐

@@ -140,6 +140,15 @@ pub fn route_key(
             KeyCode::Enter => {
                 let name = names.get(*selected)?;
                 let action = match overlay {
+                    Overlay::Skills => {
+                        editor.set_text(&format!("/skill {name} "));
+                        editor
+                            .area_mut()
+                            .move_cursor(ratatui_textarea::CursorMove::End);
+                        ui.overlay = None;
+                        ui.filter.clear();
+                        return Some(Action::CloseOverlay);
+                    }
                     // A live conversation switches to it, the model only (the server applies its
                     // default variant), refused with the reason while the agent waits for the
                     // driver. An empty tab goes on to choose the variant it starts on.
@@ -501,9 +510,13 @@ fn permission_key(
     match key.code {
         KeyCode::Char('y') => Some(Some(answer("allow_once", None))),
         // The plan agent's exceptions are allowed once or denied (the prompt shows no `a`).
-        KeyCode::Char('a') if open.agent == "plan" => Some(Some(Action::ShowNotice(
-            "this request can be allowed once or denied, not always".into(),
-        ))),
+        KeyCode::Char('a')
+            if open.agent == "plan" || matches!(open.tool.as_str(), "bash" | "write" | "edit") =>
+        {
+            Some(Some(Action::ShowNotice(
+                "this request can be allowed once or denied, not always".into(),
+            )))
+        }
         KeyCode::Char('a') => Some(Some(answer("allow_folder", None))),
         KeyCode::Char('n') => {
             ui.deny_message = Some(DenyDraft {
@@ -556,6 +569,10 @@ fn close_palette(ui: &mut UiState) {
 /// The keys of the rows an overlay lists under the current filter, in display order.
 fn overlay_names(overlay: Overlay, state: &State, ui: &UiState) -> Vec<String> {
     match overlay {
+        Overlay::Skills => commands::skill_rows(state, &ui.filter)
+            .into_iter()
+            .map(|skill| skill.name.clone())
+            .collect(),
         Overlay::Models => state
             .catalog
             .iter()
@@ -647,6 +664,64 @@ pub fn route_paste(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skills_palette_filters_description_and_enter_fills_draft() {
+        let mut state = State::default();
+        state.skills.skills = vec![
+            crate::bus::event::SkillEntry {
+                name: "review".into(),
+                description: "Check correctness".into(),
+            },
+            crate::bus::event::SkillEntry {
+                name: "test".into(),
+                description: "Check behavior".into(),
+            },
+        ];
+        assert!(commands::palette(&state)
+            .iter()
+            .any(|row| row.name == "/skills"));
+        assert_eq!(
+            commands::command_action("/skills", crate::tui::protocol::Mode::NextTurn),
+            Some(Action::OpenOverlay(Overlay::Skills))
+        );
+        let mut ui = UiState {
+            overlay: Some(Overlay::Skills),
+            filter: "check".into(),
+            ..Default::default()
+        };
+        let mut editor = Editor::new();
+        route_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &state,
+            &mut ui,
+            &mut editor,
+        );
+        assert_eq!(ui.selection["Skills"], 1);
+        route_key(
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            &state,
+            &mut ui,
+            &mut editor,
+        );
+        ui.filter = "correctness".into();
+        let action = route_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &state,
+            &mut ui,
+            &mut editor,
+        );
+        assert_eq!(action, Some(Action::CloseOverlay));
+        assert_eq!(editor.text(), "/skill review ");
+        assert_eq!(editor.area().cursor(), (0, 14));
+        let action = route_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &state,
+            &mut ui,
+            &mut editor,
+        );
+        assert!(matches!(action, Some(Action::SubmitAt { text, .. }) if text == "/skill review "));
+    }
 
     #[test]
     fn cursor_keys_navigate_multiline_drafts_without_editing() {

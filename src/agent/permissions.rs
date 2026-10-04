@@ -281,8 +281,14 @@ pub fn is_guarded(role: &AgentDefinition) -> bool {
 /// The decision that is applied for `agent`: a guarded agent's exceptions are
 /// offered once or denied, never "allow folder", so that answer counts as a
 /// single approval.
-pub fn offered_decision(agent: &str, decision: PermissionDecision) -> PermissionDecision {
-    if agent == crate::agent::definitions::PLAN && decision == PermissionDecision::AllowFolder {
+pub fn offered_decision(
+    agent: &str,
+    tool: &str,
+    decision: PermissionDecision,
+) -> PermissionDecision {
+    if (agent == crate::agent::definitions::PLAN || matches!(tool, "bash" | "write" | "edit"))
+        && decision == PermissionDecision::AllowFolder
+    {
         PermissionDecision::AllowOnce
     } else {
         decision

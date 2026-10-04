@@ -73,6 +73,17 @@ impl Client {
         self.json(request).await
     }
 
+    pub async fn skills(&self, session_id: &str) -> Result<crate::bus::event::SkillsBody, String> {
+        let mut body: crate::bus::event::SkillsBody = self
+            .json(self.get(&format!("/v1/sessions/{session_id}/skills")))
+            .await?;
+        for skill in &mut body.skills {
+            skill.name = crate::tui::reducer::strip_controls(&skill.name);
+            skill.description = crate::tui::reducer::strip_controls(&skill.description);
+        }
+        Ok(body)
+    }
+
     pub async fn sessions(&self, workspace: &str) -> Result<SessionListBody, String> {
         let request = self.get("/v1/sessions").query(&[("workspace", workspace)]);
         self.json(request).await
@@ -189,12 +200,25 @@ impl Client {
     }
 
     pub async fn continue_child(&self, parent: &str, child: &str) -> Result<(), String> {
+        self.continue_child_with_token(parent, child, None).await
+    }
+    pub async fn continue_child_with_token(
+        &self,
+        parent: &str,
+        child: &str,
+        token: Option<crate::bus::event::PauseToken>,
+    ) -> Result<(), String> {
         let path = format!(
             "/v1/sessions/{}/children/{}/continue",
             encode_segment(parent),
             encode_segment(child)
         );
-        let response: serde_json::Value = self.json(self.post(&path)).await?;
+        let response: serde_json::Value = self
+            .json(
+                self.post(&path)
+                    .json(&serde_json::json!({"pause_token":token})),
+            )
+            .await?;
         if response["accepted"].as_bool() == Some(true) {
             Ok(())
         } else {

@@ -182,6 +182,10 @@ pub struct CommandResponse {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientEvent {
+    Skills {
+        generation: Generation,
+        result: Result<crate::bus::event::SkillsBody, String>,
+    },
     ChildEnvelope {
         generation: Generation,
         child_session_id: String,
@@ -263,6 +267,7 @@ pub enum ClientEvent {
         child_session_id: String,
         control: ChildControl,
         result: Result<(), String>,
+        pause_token: Option<crate::bus::event::PauseToken>,
     },
     DeliveryUncertain {
         generation: Generation,
@@ -349,6 +354,7 @@ pub enum Action {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
+    Skills,
     Models,
     Sessions,
     Commands,
@@ -366,6 +372,7 @@ pub enum ChildControl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
+    FetchSkills(String),
     WatchChild {
         parent_session_id: String,
         tab_id: u64,
@@ -413,6 +420,7 @@ pub enum Effect {
         parent_session_id: String,
         child_session_id: String,
         control: ChildControl,
+        pause_token: Option<crate::bus::event::PauseToken>,
     },
     Quit,
     /// Writes the theme id to the user settings.

@@ -41,13 +41,22 @@ impl DeliveryMode {
     }
 }
 
-/// Transcript content blocks. PROVISIONAL shape: Phase 2 accepts
-/// the full enum but only HANDLES `Text`; any other block is rejected at the
-/// accept boundary with `BusError::NonTextContent`.
+/// Driver text and explicit skill selection. Other transcript block kinds
+/// remain rejected at admission; only the server can supply loaded skills.
 /// On the wire it carries a snake_case `type` tag.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
+    /// Driver-selected skill, resolved by admission before any message is accepted.
+    Skill {
+        name: String,
+    },
+    /// Only admission can supply loaded content; a client cannot impersonate a tool result.
+    #[serde(skip)]
+    LoadedSkill {
+        name: String,
+        content: String,
+    },
     Text {
         text: String,
     },
@@ -102,9 +111,20 @@ impl fmt::Display for DowngradeNotice {
 }
 
 impl Command {
+    #[cfg(test)]
+    fn assert_child_authority() {
+        let command = Self::child_prompt(Ulid::new(), "the driver approved this".into());
+        assert!(!command.from_driver());
+        assert_eq!(
+            command.user_provenance(),
+            crate::provider::openai::UserProvenance::Parent
+        );
+    }
     /// Admission supplies the source identity; model text cannot set provenance.
     pub fn user_provenance(&self) -> crate::provider::openai::UserProvenance {
-        if self.from_driver() {
+        if self.source_actor_id == "parent:agent" || self.source_actor_id == "user:subagent" {
+            crate::provider::openai::UserProvenance::Parent
+        } else if self.from_driver() {
             crate::provider::openai::UserProvenance::Driver
         } else {
             crate::provider::openai::UserProvenance::Navigator
@@ -115,30 +135,35 @@ impl Command {
         Self {
             command_id: Ulid::new(),
             session_id,
-            source_actor_id: "user:subagent".into(),
+            source_actor_id: "parent:agent".into(),
             target_actor_id: "agent:main".into(),
             mode: DeliveryMode::NextTurn,
             content: vec![ContentBlock::Text { text }],
             created_at: SystemTime::now(),
         }
     }
-    /// Phase-2 content rule: Text-only. The server maps the typed
-    /// error to 400; the inbox rejects before buffering.
+    /// Rejects unsupported transcript blocks before buffering. Skill selections
+    /// must additionally be resolved by session admission.
     pub fn validate_content(&self) -> Result<(), ServerError> {
-        let non_text = self
-            .content
-            .iter()
-            .any(|b| !matches!(b, ContentBlock::Text { .. }));
+        let non_text = self.content.iter().any(|b| {
+            !matches!(
+                b,
+                ContentBlock::Text { .. }
+                    | ContentBlock::Skill { .. }
+                    | ContentBlock::LoadedSkill { .. }
+            )
+        });
         if non_text {
             return Err(ServerError::NonTextContent);
         }
         Ok(())
     }
 
-    /// Whether a driver wrote it: a `user:` source (the CLI, HTTP). Anything
-    /// else (the navigator's wakes) is not the driver's word.
+    /// Whether a driver wrote it: one of the human ingress identities (`user:http`,
+    /// `user:cli`). A navigator wake, a parent's delegated prompt or guidance and a
+    /// subagent's result are never the driver's word, whatever their prefix.
     pub fn from_driver(&self) -> bool {
-        self.source_actor_id.starts_with("user:")
+        is_driver_source(&self.source_actor_id)
     }
 
     /// Concat of the Text blocks (the loop wants a string, the wire
@@ -163,6 +188,17 @@ impl Command {
             }
         }
     }
+}
+
+/// Human command identities assigned by the ingress, not by model text.
+pub(crate) fn is_driver_source(source: &str) -> bool {
+    matches!(source, "user:http" | "user:cli" | "user:test")
+}
+
+#[cfg(test)]
+#[test]
+fn delegated_approval_claim_has_parent_not_driver_authority() {
+    Command::assert_child_authority();
 }
 
 #[cfg(test)]

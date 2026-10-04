@@ -42,6 +42,7 @@ pub fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::StreamDisconnected { generation }
         | ClientEvent::Reconnecting { generation }
         | ClientEvent::Models { generation, .. }
+        | ClientEvent::Skills { generation, .. }
         | ClientEvent::Sessions { generation, .. }
         | ClientEvent::Created { generation, .. }
         | ClientEvent::Resumed { generation, .. }
@@ -140,6 +141,8 @@ pub(crate) fn push_local(s: &mut State, kind: BlockKind) {
 
 /// Clears the conversation projection and the cursor; the replay re-derives everything.
 fn reset_projection(s: &mut State) {
+    s.watchdog_paused = false;
+    s.pause_token = None;
     s.conversation = Default::default();
     s.children.clear();
     s.last_applied_seq = None;
@@ -209,11 +212,40 @@ fn refresh_tab_model(catalog: &[super::protocol::ModelEntry], tab: &mut super::s
 }
 
 pub(crate) fn send_effect(text: String, revision: u64) -> Effect {
+    let content = if let Some(arguments) = text
+        .strip_prefix("/skill")
+        .filter(|arguments| arguments.starts_with(char::is_whitespace))
+    {
+        let arguments = arguments.trim();
+        let (name, request) = arguments
+            .split_once(char::is_whitespace)
+            .unwrap_or((arguments, ""));
+        let request = request.trim();
+        vec![
+            crate::bus::command::ContentBlock::Text {
+                text: if request.is_empty() {
+                    format!("Apply the {name} skill.")
+                } else {
+                    request.to_string()
+                },
+            },
+            crate::bus::command::ContentBlock::Skill {
+                name: name.to_string(),
+            },
+        ]
+    } else {
+        let text = if text.starts_with("//skill") {
+            text[1..].to_string()
+        } else {
+            text
+        };
+        vec![crate::bus::command::ContentBlock::Text { text }]
+    };
     Effect::SendAt {
         request: SubmitRequest {
             target_actor_id: "agent:main".into(),
             mode: "next-turn".into(),
-            content: vec![crate::bus::command::ContentBlock::Text { text }],
+            content,
         },
         revision,
     }
@@ -371,6 +403,15 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         ClientEvent::StreamDisconnected { .. } => s.connection = ConnectionStatus::Disconnected,
         ClientEvent::Reconnecting { .. } => s.connection = ConnectionStatus::Reconnecting,
         ClientEvent::ProtocolError { message, .. } => s.last_protocol_error = Some(message),
+        ClientEvent::Skills { result, .. } => {
+            s.skills = match result {
+                Ok(skills) => skills,
+                Err(error) => crate::bus::event::SkillsBody {
+                    skills: vec![],
+                    disabled_reason: Some(error),
+                },
+            };
+        }
         ClientEvent::Models { result, .. } => {
             if let Ok(body) = result {
                 s.catalog = body.models;
@@ -663,15 +704,19 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             child_session_id,
             control,
             result,
+            pause_token,
             ..
         } => match result {
             Ok(()) => {
+                if pause_token.is_some() && s.pause_token != pause_token {
+                    return Ok(vec![]);
+                }
                 let text = match control {
                     super::protocol::ChildControl::Stop => {
                         "stop accepted; waiting for the subagent to finish"
                     }
                     super::protocol::ChildControl::Continue => {
-                        "continue accepted; waiting for the subagent"
+                        "continue accepted; waiting for the agent"
                     }
                 };
                 push_local(s, BlockKind::Notice(text.into()));
@@ -806,5 +851,49 @@ fn seed_children(s: &mut State) {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod skill_tests {
+    use super::*;
+    use crate::bus::command::ContentBlock;
+
+    #[test]
+    fn selected_skill_sends_a_typed_selection_and_driver_request() {
+        for (draft, expected) in [
+            ("/skill review check this", "check this"),
+            ("/skill review ", "Apply the review skill."),
+        ] {
+            let Effect::SendAt { request, revision } = send_effect(draft.into(), 42) else {
+                panic!("send")
+            };
+            assert_eq!(revision, 42);
+            assert_eq!(
+                request.content,
+                vec![
+                    ContentBlock::Text {
+                        text: expected.into()
+                    },
+                    ContentBlock::Skill {
+                        name: "review".into()
+                    }
+                ]
+            );
+        }
+        let routed =
+            crate::tui::commands::route("//skill review", crate::tui::protocol::Mode::NextTurn);
+        let crate::tui::commands::Routed::Message(text) = routed else {
+            panic!("literal message")
+        };
+        let Effect::SendAt { request, .. } = send_effect(text, 0) else {
+            panic!("send")
+        };
+        assert_eq!(
+            request.content,
+            vec![ContentBlock::Text {
+                text: "/skill review".into()
+            }]
+        );
     }
 }

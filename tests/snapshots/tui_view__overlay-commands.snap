@@ -9,12 +9,12 @@ expression: snapshot
                      │ │                                                                            
                      │ │ ASSISTANT                                                                  
                      │ │ ▸ Reasoning                                                                
-                     │ │  The parser treats an empty argument as a missing value.                   
             ┌──────────────────────────────── Commands ────────────────────────────────┐            
             │ ❯ type a command…                                                        │            
             │▌/new [alias]          new conversation in a new tab                      │            
             │ /sessions             browse conversations                               │            
             │ /model [alias]        switch this conversation's model                   │            
+            │ /skills               choose a skill to load for your next message       │            
             │ /variant [name|off]   choose the model variant for this conversation     │            
             │ /stop                 stop generation                                    │            
             │ /mode                 cycle delivery mode (steer and interrupt send as n │            

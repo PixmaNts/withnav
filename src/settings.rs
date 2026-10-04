@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+mod assignments;
+pub use assignments::ModelAssignment;
+
 pub const FILE_NAME: &str = "config.json";
 
 /// How many children one session may have running at once when the settings

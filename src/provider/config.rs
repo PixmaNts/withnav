@@ -133,6 +133,22 @@ pub struct ResolvedModel {
 }
 
 impl ModelsConfig {
+    /// Resolves the gateway and upstream id, independently of legacy map keys.
+    pub fn resolve_name(
+        &self,
+        name: &super::model_name::ModelName,
+    ) -> Result<ResolvedModel, ProviderError> {
+        let (key, _) = self
+            .models
+            .iter()
+            .find(|(_, model)| model.provider == name.gateway() && model.model == name.id())
+            .ok_or_else(|| ProviderError::UnknownModel(name.to_string()))?;
+        if !self.providers.contains_key(name.gateway()) {
+            return Err(ProviderError::UnknownModel(name.to_string()));
+        }
+        self.resolve(key)
+    }
+
     pub fn parse(s: &str) -> Result<Self, ConfigError> {
         let cfg: ModelsConfig = serde_json::from_str(s)?;
         cfg.validate_variants()?;

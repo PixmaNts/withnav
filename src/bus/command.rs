@@ -146,8 +146,9 @@ impl Command {
         Ok(())
     }
 
-    /// Whether a driver wrote it: a `user:` source (the CLI, HTTP). Anything
-    /// else (the navigator's wakes) is not the driver's word.
+    /// Whether a driver wrote it: one of the human ingress identities (`user:http`,
+    /// `user:cli`). A navigator wake, a parent's delegated prompt or guidance and a
+    /// subagent's result are never the driver's word, whatever their prefix.
     pub fn from_driver(&self) -> bool {
         is_driver_source(&self.source_actor_id)
     }

@@ -119,8 +119,9 @@ impl HistoryStore {
     }
 
     /// The text of the driver's latest message in one session: the newest
-    /// stored `message.received` whose source is a driver (`user:*`), which
-    /// also covers an answer to an `ask`. A navigator wake is not it. `None`
+    /// stored `message.received` whose source is a human ingress identity
+    /// (`user:http`, `user:cli`), which also covers an answer to an `ask`. A
+    /// navigator wake, delegated text or a subagent result is not it. `None`
     /// when the driver never spoke.
     pub async fn latest_driver_message(&self, id: Ulid) -> Result<Option<String>, String> {
         let path = Arc::clone(&self.path);

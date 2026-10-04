@@ -101,10 +101,11 @@ pub struct AgentActor {
     pub grants: Grants,
     /// What the driver last asked for: the text of their latest message, or
     /// their answer to an `ask`. Set only from a command whose source is the
-    /// driver (`user:*`), never from a navigator wake. The role guard judges
+    /// driver (a human ingress identity), never from a navigator wake, delegated
+    /// text or a subagent result. The role guard and the permission review judge
     /// calls against it. Not stored on its own: a resumed session rebuilds it
-    /// from the stored `message.received` events (the newest from a `user:*`
-    /// source), so it is `None` only when the driver never spoke.
+    /// from the stored `message.received` events (the newest from the driver),
+    /// so it is `None` only when the driver never spoke.
     pub driver_task: Option<String>,
     /// The second opinion a guarded agent's exceptions go through before the
     /// driver. `None` when the session has no guard: every exception then goes

@@ -182,9 +182,9 @@ async fn run_steps(
             &actor.model,
             role_message.as_deref(),
             actor.rules.message(),
-            actor.skills.catalog(),
+            actor.effective_skills_catalog(),
             actor.effective_history(),
-            actor.registry.schemas(),
+            actor.effective_tool_schemas(),
             actor.max_tokens,
         );
 
@@ -215,10 +215,7 @@ async fn run_steps(
 
         match crate::agent::response::classify_with_ask(
             message,
-            actor
-                .registry
-                .get(crate::agent::response::ASK_TOOL)
-                .is_some(),
+            actor.tool_allowed(crate::agent::response::ASK_TOOL),
         ) {
             StepOutcome::Done { response } => {
                 actor.state = AgentState::Idle;
@@ -470,7 +467,7 @@ fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
     {
         return Gated::Rejected("missing string argument: command".into());
     }
-    if actor.registry.get(&call.name).is_none() {
+    if !actor.tool_allowed(&call.name) {
         return Gated::Rejected(format!(
             "tool '{}' is disabled by this session's policy",
             call.name
@@ -939,6 +936,255 @@ mod tests {
         r.register(Box::new(BashTool));
         r.register(Box::new(AskTool));
         r
+    }
+
+    struct PolicyTool(&'static str);
+
+    impl crate::tools::Tool for PolicyTool {
+        fn name(&self) -> &str {
+            self.0
+        }
+
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"description":"policy test", "parameters":{"type":"object"}})
+        }
+
+        fn call<'a>(
+            &'a self,
+            _args: serde_json::Value,
+            _cancel: CancellationToken,
+            _cx: &'a ToolContext,
+        ) -> futures::future::BoxFuture<'a, Result<ToolResult, crate::error::ToolError>> {
+            panic!("denied tool {} must never dispatch", self.0);
+        }
+    }
+
+    fn policy_role(
+        access: crate::agent::definitions::AgentAccess,
+        denied: &[&str],
+    ) -> Arc<crate::agent::definitions::AgentDefinition> {
+        let mut role = crate::agent::definitions::Agents::builtin()
+            .get("build")
+            .unwrap()
+            .as_ref()
+            .clone();
+        role.access = access;
+        role.tools = denied.iter().map(|name| ((*name).into(), false)).collect();
+        Arc::new(role)
+    }
+
+    #[tokio::test]
+    async fn effective_policy_denies_direct_names_before_review_or_dispatch() {
+        use crate::agent::definitions::AgentAccess;
+        let names = [
+            "read",
+            "write",
+            "edit",
+            "bash",
+            "ask",
+            "task",
+            "steer_subagent",
+            "decide_subagent",
+            "intent",
+            "skill",
+            "fetch",
+            "grep",
+            "glob",
+            "custom",
+        ];
+        for access in [AgentAccess::Full, AgentAccess::ReadOnly] {
+            let mut registry = Registry::new();
+            for name in names {
+                registry.register(Box::new(PolicyTool(name)));
+            }
+            let mut actor = make_actor("http://unused".into(), registry, CancellationToken::new());
+            actor.role = Some(policy_role(
+                access,
+                if access == AgentAccess::Full {
+                    &names
+                } else {
+                    &[]
+                },
+            ));
+            let judge = FakeJev::new(Ok(Verdict::Conforms));
+            actor.permission_judge = Some(judge.clone());
+            actor.guard = Some(judge.clone());
+            let reviewer = Arc::new(Meta {
+                decision: Some(super::super::permission_gate::ReviewDecision::Approve),
+                hangs: false,
+                captured: std::sync::Mutex::new(None),
+            });
+            actor.permission_reviewer = Some(reviewer.clone());
+            let denied = if access == AgentAccess::Full {
+                names.to_vec()
+            } else {
+                vec![
+                    "write",
+                    "edit",
+                    "bash",
+                    "ask",
+                    "task",
+                    "steer_subagent",
+                    "decide_subagent",
+                    "intent",
+                ]
+            };
+            for name in denied {
+                assert!(actor.registry.get(name).is_some());
+                assert!(!actor.tool_allowed(name), "{name}");
+                assert!(actor
+                    .effective_tool_schemas()
+                    .iter()
+                    .all(|schema| schema.function.name != name));
+                let call = ToolCall {
+                    id: name.into(),
+                    name: name.into(),
+                    args: serde_json::json!({"command":"not executed", "path":"file", "content":"no"}),
+                    args_valid: true,
+                };
+                assert!(matches!(gate(&actor, &call), Gated::Rejected(_)));
+                assert!(matches!(
+                    run_gated(&mut actor, &call, &mut |_| {}).await,
+                    One::Settled
+                ));
+                assert!(
+                    matches!(actor.transcript.last(), Some(ChatMessage::Tool {content, ..}) if content.contains("disabled by this session's policy"))
+                );
+            }
+            assert_eq!(judge.asked(), 0);
+            assert!(reviewer.captured.lock().unwrap().is_none());
+            assert!(!actor.has_pending());
+            if access == AgentAccess::ReadOnly {
+                for name in ["read", "grep", "glob", "fetch", "skill", "custom"] {
+                    assert!(actor.tool_allowed(name), "{name}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn role_projection_switches_back_without_expanding_the_frozen_ceiling() {
+        use crate::agent::definitions::AgentAccess;
+        let mut registry = Registry::new();
+        for name in ["read", "write", "skill", "custom"] {
+            registry.register(Box::new(PolicyTool(name)));
+        }
+        let mut actor = make_actor("http://unused".into(), registry, CancellationToken::new());
+        let model = actor.model.clone();
+        let frozen = actor.registry.names();
+        let full = policy_role(AgentAccess::Full, &[]);
+        let narrow = policy_role(AgentAccess::ReadOnly, &["skill", "read"]);
+        actor.role = Some(full.clone());
+        let original = actor.effective_tool_schemas();
+        let projected = actor.effective_tool_schemas_for_role(Some(&narrow));
+        assert_eq!(projected.len(), 1);
+        actor.role = Some(narrow);
+        assert_eq!(
+            serde_json::to_value(actor.effective_tool_schemas()).unwrap(),
+            serde_json::to_value(projected).unwrap()
+        );
+        assert!(!actor.tool_allowed("write"));
+        assert!(!actor.tool_allowed("skill"));
+        assert!(!actor.tool_allowed("read"));
+        actor.role = Some(full);
+        assert_eq!(
+            serde_json::to_value(actor.effective_tool_schemas()).unwrap(),
+            serde_json::to_value(original).unwrap()
+        );
+        assert_eq!(actor.registry.names(), frozen);
+        assert_eq!(actor.model, model);
+        assert!(!actor.tool_allowed("bash"));
+        assert!(!actor.tool_allowed("task"));
+    }
+
+    #[tokio::test]
+    async fn disabled_ask_and_skill_are_hidden_and_cannot_bypass_policy() {
+        use crate::agent::definitions::AgentAccess;
+        let calls = calls_chunk(&[
+            (
+                "ask-denied",
+                "ask",
+                serde_json::json!({"question":"yield bypass?"}),
+            ),
+            (
+                "skill-denied",
+                "skill",
+                serde_json::json!({"name":"policy-skill"}),
+            ),
+        ]);
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[&calls])),
+            http_sse(&sse_body(&[&text_chunk("done")])),
+        ])
+        .await;
+        let mut actor = make_actor(server.url.clone(), registry_all(), CancellationToken::new());
+        let skill_dir = actor
+            .tool_context
+            .workspace
+            .join(".agents/skills/policy-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: policy-skill\ndescription: Policy catalog marker.\n---\nInstructions.\n",
+        )
+        .unwrap();
+        actor.set_skills(crate::agent::skills::Skills::load(
+            &crate::agent::instructions::RulesRoots::default(),
+            &actor.tool_context.workspace,
+        ));
+        assert!(actor.effective_skills_catalog().is_some());
+        let full = policy_role(AgentAccess::Full, &[]);
+        let denied = policy_role(AgentAccess::Full, &["ask", "skill"]);
+        assert!(actor
+            .effective_skills_catalog_for_role(Some(&denied))
+            .is_none());
+        actor.role = Some(denied);
+        let schemas = actor.effective_tool_schemas();
+        assert!(actor.components(None, &schemas).skills.is_none());
+        assert_eq!(
+            actor.context_breakdown().tools,
+            crate::agent::context::estimate(
+                actor.role_message().as_deref(),
+                actor.rules.message(),
+                actor.effective_skills_catalog(),
+                &actor.effective_history(),
+                &schemas,
+            )
+            .tools
+        );
+        assert_eq!(actor.context_breakdown().skills_catalog, 0);
+        assert!(actor.effective_skills_catalog().is_none());
+        actor.push_user("go");
+        assert!(matches!(
+            run_agent(&mut actor, &mut |_| {}).await.unwrap(),
+            RunOutcome::Done(_)
+        ));
+        assert!(!actor.has_pending());
+        for id in ["ask-denied", "skill-denied"] {
+            assert!(actor.transcript.iter().any(|message| matches!(message, ChatMessage::Tool {tool_call_id, content} if tool_call_id == id && content.contains("disabled by this session's policy"))));
+        }
+        let requests = server.requests.lock().await;
+        for request in requests.iter() {
+            let body: serde_json::Value =
+                serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+            assert!(body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|tool| !matches!(tool["function"]["name"].as_str(), Some("ask" | "skill"))));
+            assert!(!body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|message| message["role"] == "system"
+                    && message["content"]
+                        .as_str()
+                        .unwrap_or("")
+                        .contains("Policy catalog marker")));
+        }
+        actor.role = Some(full);
+        assert!(actor.effective_skills_catalog().is_some());
+        assert!(actor.context_breakdown().skills_catalog > 0);
     }
 
     #[tokio::test]

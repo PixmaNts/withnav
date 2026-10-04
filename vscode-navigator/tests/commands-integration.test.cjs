@@ -19,7 +19,7 @@ test('R11 model and compaction retain notices and refresh snapshot context befor
   const { b, messages, event } = backend();
   let refreshed = 0;
   b.fetchContext = async () => { refreshed++; };
-  event('model.changed', { operation_id: 'M', new: { alias: 'next' } });
+  event('model.changed', { operation_id: 'M', new: { agent: "build", source: "override", model: 'next' } });
   assert.equal(refreshed, 1);
   assert.equal(b.state.selectedModel, 'next');
   assert.match(messages.at(-1).text, /Model: next/);
@@ -59,10 +59,10 @@ test('R4 SSE before HTTP and reversed model HTTP responses keep latest requested
   const first = b.runComposerCommand('/model a'); const second = b.runComposerCommand('/model b');
   event('command.result', { operation_id: 'B', name: 'model', ok: true, data: { accepted: true, applies: 'after_turn' } });
   finishes[1](new Response(JSON.stringify({ operation_id: 'B' }))); await second;
-  assert.equal(b.state.pendingModel.alias, 'b');
+  assert.equal(b.state.pendingModel.name, 'b');
   finishes[0](new Response(JSON.stringify({ operation_id: 'A' }))); await first;
-  assert.equal(b.state.pendingModel.alias, 'b');
-  event('model.changed', { operation_id: 'B', new: { alias: 'b' } });
+  assert.equal(b.state.pendingModel.name, 'b');
+  event('model.changed', { operation_id: 'B', new: { agent: "build", source: "override", model: 'b' } });
   assert.equal(b.state.pendingModel, undefined);
 });
 test('R5 starting conversation blocks model agent and variant edits', async t => {
@@ -101,7 +101,7 @@ test('R7 local commands before endpoint and catalog survives generation change b
   finish(new Response(JSON.stringify({ commands: [] }))); await new Promise(resolve => setImmediate(resolve));
 });
 test('R8 live variant picker uses correlated pinned offer not catalog or replay', async t => {
-  const { b, messages, event } = backend(); b.models = [{ alias: 'a', variants: ['wrong'] }];
+  const { b, messages, event } = backend(); b.models = [{ name: 'a', variants: ['wrong'] }];
   t.mock.method(globalThis, 'fetch', async (_url, init) => { assert.deepEqual(JSON.parse(init.body), { name: 'variant', arguments: '' }); return new Response(JSON.stringify({ operation_id: 'V' })); });
   event('command.result', { operation_id: 'REPLAY', name: 'variant', ok: true, data: { offered: ['replay'] } });
   assert.equal(messages.some(m => m.type === 'commandPicker'), false);

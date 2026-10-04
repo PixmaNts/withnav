@@ -6,6 +6,18 @@ diagnostics and user feedback, and hosts the Cognition chat view.
 
 ## What it shows
 
+- **Agent-first conversations:** choose a primary agent (the configured default is preselected),
+  then optionally override its model. `/new [agent]` starts fresh on that agent's assignment,
+  without inheriting an earlier conversation's override. `/agent` uses the selected agent's own
+  assignment or saved session override. `/model` and `/variant` override only that agent in that
+  conversation; the server persists and restores the choice.
+- **Canonical model catalog:** searchable choices use exact `gateway/upstream_id` names, grouped
+  under collapsible gateway/provider headings. Search includes collapsed groups; only the first
+  50 matching choices render. Hover the chat header for lower layers' configured models, variants
+  and disabled reasons, and cognition's effective model/source. “Usable” means valid configuration,
+  not an online-status check. Assignments are read-only; config editing is out of scope. Remarks
+  use the configured metacognition layer; the old model-selection setting has been removed.
+
 - **Remarks**: short end-of-line comments from the metacognition, with a verdict (useful, noise,
   dismissed).
 - **Suggestions**: ghost text from the reflex layer, as native inline completion. Turn them off with
@@ -90,5 +102,4 @@ Keybindings are active only when a remark is visible (`navai.remarkVisible` cont
 | `navai.idleMs` | `3000` | Idle delay before the navigator may speak |
 | `navai.minChangedLines` | `3` | Minimum changed lines to consider speaking |
 | `navai.cooldownMs` | `20000` | Cooldown between remarks on one file |
-| `navai.modelAlias` | `metacognition` | Model alias (from `models.json`) used for remarks |
 | `navai.reflex.enabled` | `true` | Offer inline suggestions from the reflex layer |

@@ -1,7 +1,7 @@
 import type { CommandInfo } from "./chatProtocol";
 
 export const CLIENT_COMMANDS: CommandInfo[] = [
-  { name: "new", description: "Start a new conversation", args_hint: "[alias]" },
+  { name: "new", description: "Start a new conversation on an agent's assignment", args_hint: "[agent]" },
   { name: "help", description: "List available commands", args_hint: "" },
   { name: "skills", description: "Choose a skill for your next message", args_hint: "" },
   { name: "skill", description: "Send a request with a selected skill", args_hint: "<name> [request]" },

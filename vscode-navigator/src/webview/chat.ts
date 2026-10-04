@@ -28,6 +28,10 @@ const stop = document.querySelector<HTMLButtonElement>("#stop")!;
 const includeContext = document.querySelector<HTMLInputElement>("#include-context")!;
 const contextPreview = document.querySelector<HTMLElement>("#context-preview")!;
 const modelSelect = document.querySelector<HTMLSelectElement>("#model")!;
+const agentSelect = document.createElement("select");
+agentSelect.className = "model-select"; agentSelect.setAttribute("aria-label", "Conversation agent");
+modelSelect.before(agentSelect);
+agentSelect.addEventListener("change", () => post({ type: "selectAgent", id: agentSelect.value }));
 const childHeader = document.createElement("div");
 childHeader.className = "child-header"; childHeader.hidden = true;
 form.before(childHeader);
@@ -86,11 +90,12 @@ const pendingModel = document.createElement("span");
 pendingModel.className = "pending-model";
 modelSelect.after(agentLabel, pendingModel);
 let commands: CommandInfo[] = [];
-let paletteRows: { name: string; description: string; args_hint?: string }[] = [];
+let paletteRows: { name: string; description: string; args_hint?: string; gateway?: string; provider_group?: string }[] = [];
 let pickerItems: typeof paletteRows = [];
 let modelItems: typeof paletteRows = [];
 let paletteIndex = 0;
-let pickerKind: "model" | "variant" | "skills" | undefined;
+let pickerKind: "model" | "variant" | "skills" | "agent" | undefined;
+const collapsedGroups = new Set<string>();
 let selectorPicker = false;
 let paletteDismissed = false;
 function closePalette(): void {
@@ -105,7 +110,7 @@ function closePalette(): void {
 function choosePalette(index: number): void {
   const row = paletteRows[index];
   if (!row) return;
-  if (selectorPicker) post({ type: "selectModel", alias: row.name });
+  if (selectorPicker) post({ type: "selectModel", name: row.name });
   else if (pickerKind === "skills") prompt.value = `/skill ${row.name} `;
   else if (pickerKind) {
     const text = `/${pickerKind} ${row.name}`;
@@ -120,9 +125,11 @@ function choosePalette(index: number): void {
 }
 function renderPalette(): void {
   pickerOptions.replaceChildren();
-  const matches = ranked(pickerItems, pickerSearch.value, row => row.name, row => row.description);
+  if (pickerKind === "model") pickerItems.sort((a,b) => (a.gateway ?? "").localeCompare(b.gateway ?? "") || (a.provider_group ?? "").localeCompare(b.provider_group ?? ""));
+  const allMatches = ranked(pickerItems, pickerSearch.value, row => row.name, row => row.description);
+  const matches = pickerKind === "model" && !pickerSearch.value ? allMatches.filter(row => !row.gateway || (!collapsedGroups.has(row.gateway) && !collapsedGroups.has(`${row.gateway}/${row.provider_group}`))) : allMatches;
   paletteRows = matches.slice(0, PICKER_LIMIT);
-  pickerCount.textContent = `${matches.length} of ${pickerItems.length}${matches.length > PICKER_LIMIT ? " · Type to narrow (first 50 shown)" : ""}`;
+  pickerCount.textContent = `${allMatches.length} of ${pickerItems.length}${matches.length > PICKER_LIMIT ? " · Type to narrow (first 50 shown)" : ""}`;
   paletteIndex = Math.max(0, Math.min(paletteIndex, paletteRows.length - 1));
   palette.hidden = false;
   pickerSearch.setAttribute("aria-expanded", "true");
@@ -137,10 +144,27 @@ function renderPalette(): void {
     if (paletteRows.length) prompt.setAttribute("aria-activedescendant", `command-option-${paletteIndex}`);
     else prompt.removeAttribute("aria-activedescendant");
   }
+  let gateway = ""; let provider = "";
+  const group = (label: string, id: string): void => {
+    const button = el("button", "picker-group", label); button.type = "button";
+    button.setAttribute("aria-expanded", String(!collapsedGroups.has(id) || !!pickerSearch.value));
+    button.addEventListener("click", () => { if (collapsedGroups.has(id)) collapsedGroups.delete(id); else collapsedGroups.add(id); renderPalette(); });
+    pickerOptions.append(button);
+  };
+  if (pickerKind === "model" && !pickerSearch.value) for (const row of pickerItems) {
+    if (row.gateway && collapsedGroups.has(row.gateway) && row.gateway !== gateway) { group(row.gateway, row.gateway); gateway = row.gateway; }
+    else if (row.gateway && row.provider_group && row.provider_group !== row.gateway && collapsedGroups.has(`${row.gateway}/${row.provider_group}`) && provider !== `${row.gateway}/${row.provider_group}`) { group(row.provider_group, `${row.gateway}/${row.provider_group}`); provider = `${row.gateway}/${row.provider_group}`; }
+  }
+  gateway = "";
   for (const [index, row] of paletteRows.entries()) {
+    if (pickerKind === "model" && row.gateway) {
+      if (gateway !== row.gateway) { gateway = row.gateway; provider = ""; group(gateway, gateway); }
+      if (row.provider_group && row.provider_group !== gateway && provider !== row.provider_group) { provider = row.provider_group; group(provider, `${gateway}/${provider}`); }
+    }
     const option = document.createElement("div");
     option.id = `command-option-${index}`;
     option.className = "command-option";
+    option.title = row.name;
     option.setAttribute("role", "option");
     option.setAttribute("aria-selected", String(index === paletteIndex));
     const name = document.createElement("strong");
@@ -152,7 +176,7 @@ function renderPalette(): void {
     option.addEventListener("click", () => choosePalette(index));
     pickerOptions.append(option);
   }
-  pickerOptions.children[paletteIndex]?.scrollIntoView?.({ block: "nearest" });
+  pickerOptions.querySelector(`#command-option-${paletteIndex}`)?.scrollIntoView?.({ block: "nearest" });
 }
 function filterPalette(): void {
   if (paletteDismissed || !/^\/[^\s/]*$/.test(prompt.value)) { closePalette(); return; }
@@ -183,7 +207,7 @@ const usage = document.querySelector<HTMLElement>("#usage")!;
 const usageFill = document.querySelector<HTMLElement>("#usage-fill")!;
 const usageLabel = document.querySelector<HTMLElement>("#usage-label")!;
 modelSelect.addEventListener("change", () => {
-  if (modelSelect.value) post({ type: "selectModel", alias: modelSelect.value });
+  if (modelSelect.value) post({ type: "selectModel", name: modelSelect.value });
 });
 modelSelect.addEventListener("mousedown", event => {
   if (modelSelect.disabled) return;
@@ -613,7 +637,16 @@ function receive(event: HostToWebview): void {
     case "commands": commands = event.items; filterPalette(); break;
     case "commandError": commandError.textContent = event.text; commandError.hidden = false; updateControls(); break;
     case "agent": agentLabel.textContent = event.name; break;
-    case "modelPending": pendingModel.textContent = event.alias ? `→ ${event.alias} · pending after turn` : ""; break;
+    case "assignments": {
+      agentSelect.replaceChildren(...event.agents.map(agent => { const option = el("option", "", agent.id); option.value = agent.id; option.title = `${agent.description} · ${agent.effective?.model ?? "Unassigned"}${agent.warning ? ` · ${agent.warning}` : ""}`; return option; }));
+      agentSelect.value = event.current; agentSelect.disabled = readOnly;
+      agentLabel.textContent = `${event.current}${event.source === "override" ? " · override" : ""}`;
+      const types: Record<string,string> = { reflex: "FIM · editor", instinct: "SystemOne", metacognition: "Chat" };
+      const tooltip = [`Cognition · ${event.current}: ${event.model ?? "Unassigned"}${event.variant ? ` · ${event.variant}` : ""} · ${event.source ?? "assignment"}`, ...event.layers.map(layer => `${layer.layer} (${types[layer.layer]}): ${layer.model ?? "Unassigned"}${layer.variant ? ` · ${layer.variant}` : ""} · ${layer.status}${layer.reason ? ` — ${layer.reason}` : ""}`), "Usable describes configuration, not network availability. Assignments are read-only."].join("\n");
+      document.querySelector<HTMLElement>(".topbar")!.title = tooltip; agentLabel.title = tooltip;
+      break;
+    }
+    case "modelPending": pendingModel.textContent = event.name ? `→ ${event.name} · pending after turn` : ""; break;
     case "commandPicker":
       sending = false;
       if (event.disabledReason) { commandError.textContent = event.disabledReason; commandError.hidden = false; closePalette(); }
@@ -731,14 +764,14 @@ function receive(event: HostToWebview): void {
 
 /** Rebuilds the model picker; a locked picker shows the open conversation's model. */
 function renderModels(event: Extract<HostToWebview, { type: "models" }>): void {
-  modelItems = event.items.map(model => ({ name: model.alias, description: model.model }));
+  modelItems = event.items.filter(model => model.api === "chat" && model.enabled !== false).map(model => ({ name: model.name, description: model.upstream_id, gateway: model.gateway, provider_group: model.provider_group })).sort((a,b) => a.gateway.localeCompare(b.gateway) || a.provider_group.localeCompare(b.provider_group));
   const options = event.items.map(model => {
-    const option = el("option", undefined, model.alias);
-    option.value = model.alias;
-    option.title = model.contextWindow ? `${model.model} · ${tokens(model.contextWindow)} context` : model.model;
+    const option = el("option", undefined, model.name);
+    option.value = model.name;
+    option.title = model.contextWindow ? `${model.name} · ${tokens(model.contextWindow)} context` : model.name;
     return option;
   });
-  if (event.current && !event.items.some(model => model.alias === event.current)) {
+  if (event.current && !event.items.some(model => model.name === event.current)) {
     const option = el("option", undefined, event.current);
     option.value = event.current;
     options.push(option);

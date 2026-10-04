@@ -75,6 +75,7 @@ export function registerChatView(
             pushContext();
             backend.resumePermissionReads();
             void backend.refreshCommands().catch(showError);
+            void backend.refreshAssignments().catch(showError);
             break;
           case "send":
             if (backend.isReadOnly()) break;
@@ -147,7 +148,10 @@ export function registerChatView(
             }
             break;
           case "selectModel":
-            if (typeof message.alias === "string") backend.selectModel(message.alias);
+            if (typeof message.name === "string") backend.selectModel(message.name);
+            break;
+          case "selectAgent":
+            if (typeof message.id === "string") void backend.selectAgent(message.id).catch(showError);
             break;
           case "openChild":
             if (typeof message.parentId === "string" && typeof message.childId === "string") {

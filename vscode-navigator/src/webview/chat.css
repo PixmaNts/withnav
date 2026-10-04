@@ -1,4 +1,8 @@
 :root { color-scheme: light dark; }
+.picker-group { display: block; width: 100%; text-align: left; background: transparent; color: var(--vscode-descriptionForeground); border: 0; padding: 6px 8px; font-weight: 600; font-size: 11px; }
+.picker-group::before { content: "▾ "; }
+.picker-group[aria-expanded="false"]::before { content: "▸ "; }
+.command-option strong { overflow-wrap: anywhere; }
 .picker-search { display: block; width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); background: var(--vscode-input-background); color: var(--vscode-input-foreground); font: inherit; border-radius: 3px; }
 .picker-count, .picker-empty { padding: 5px 8px; font-size: 11px; color: var(--vscode-descriptionForeground); }
 .conv-row[aria-selected="true"] { background: var(--vscode-list-hoverBackground); }

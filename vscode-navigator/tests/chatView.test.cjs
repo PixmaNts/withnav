@@ -218,7 +218,7 @@ test('R2.1 registered host posts queued message while idle compact HTTP remains 
 });
 test('R2.2 cancelled selector cannot route slash completion as model selection, including after conversation switch',async t=>{
   const {b,dom,tick,prompt}=fullChat(t);b.state.session='P';b.refreshCommands=async()=>{};
-  b.commands.push({name:'compact',description:'Compact',args_hint:''});b.emit({type:'commands',items:b.commands});b.emit({type:'models',items:[{alias:'a',model:'provider/a'}],locked:false});
+  b.commands.push({name:'compact',description:'Compact',args_hint:''});b.emit({type:'commands',items:b.commands});b.emit({type:'models',items:[{name:'a',model:'provider/a'}],locked:false});
   await tick();b.emit({type:'commands',items:[{name:'compact',description:'Compact',args_hint:''}]});
   const {key,type}=focusedKeys(dom);let posts=0;
   t.mock.method(globalThis,'fetch',()=>{posts++;return new Promise(()=>{});});
@@ -229,6 +229,45 @@ test('R2.3 unknown bare slash reaches registered host validation and retains foc
   const {b,dom,tick,prompt}=fullChat(t);b.state.session='P';b.refreshCommands=async()=>{};b.emit({type:'commands',items:b.commands});
   let calls=0;t.mock.method(globalThis,'fetch',()=>{calls++;return new Promise(()=>{});});const {key,type}=focusedKeys(dom);
   prompt.focus();type('/nonexistent');key('ArrowDown');key('Enter');await tick();assert.match(dom.window.document.querySelector('.command-error').textContent,/Unknown command/);assert.equal(prompt.value,'/nonexistent');assert.equal(calls,0);
+});
+test('target configured default agent, editor creation body, agent switching and layer tooltip use canonical identities',async t=>{
+  const {b,dom,tick,event,send}=fullChat(t);b.state.session=undefined;
+  const assignments=[{id:'plan',description:'Plan changes',mode:'primary',effective:{model:'omniroute/combo/think',variant:'high',source:'config'}},{id:'build',description:'Build',mode:'all',effective:{model:'direct/model',variant:null,source:'config'}},{id:'child',description:'Child',mode:'subagent',effective:null}];
+  const calls=[];t.mock.method(globalThis,'fetch',async(url,init)=>{
+    calls.push({url,...init});
+    if(url.includes('/agents?'))return new Response(JSON.stringify({default_agent:'plan',agents:assignments}));
+    if(url.includes('/layers?'))return new Response(JSON.stringify({layers:[{layer:'reflex',status:'disabled',model:'direct/editor',reason:'wrong API'},{layer:'instinct',status:'usable',model:'omniroute/typesafe/jev',variant:null},{layer:'metacognition',status:'usable',model:'omniroute/combo/fast',variant:'low'}]}));
+    return new Response(JSON.stringify(url.endsWith('/messages')?{accepted:true}:{session_id:'S'}));
+  });
+  await b.refreshAssignments();assert.equal(b.state.agent,'plan');assert.equal(dom.window.document.querySelector('[aria-label="Conversation agent"]').value,'plan');assert.equal(dom.window.document.querySelectorAll('[aria-label="Conversation agent"] option').length,2);
+  assert.match(dom.window.document.querySelector('.topbar').title,/FIM.*disabled.*wrong API/);assert.match(dom.window.document.querySelector('.topbar').title,/not network availability/);
+  send('hello');await tick();const creation=calls.find(c=>c.url.endsWith('/v1/sessions'));assert.deepEqual(JSON.parse(creation.body),{workspace:process.cwd(),editor:true,agent:'plan'});
+  event('model.changed',{operation_id:'A',reason:'agent',new:{agent:'build',model:'direct/override',gateway:'direct',upstream_id:'override',variant:null,source:'override',variant_source:'override'}});
+  assert.equal(b.state.selectedModel,'direct/override');assert.match(dom.window.document.querySelector('.agent-label').textContent,/build.*override/);
+  event('model.changed',{operation_id:'B',reason:'agent',new:{agent:'plan',model:'omniroute/combo/think',gateway:'omniroute',upstream_id:'combo/think',variant:'high',source:'config',variant_source:'config'}});assert.equal(b.state.selectedModel,'omniroute/combo/think');
+  await b.newConversation();assert.equal(b.state.modelOverride,undefined);assert.equal(b.state.agent,'plan');
+});
+test('target stale agents and layers cannot update replacement conversation',async t=>{
+  const {b,dom}=fullChat(t);let finishAgents,finishLayers;b.refreshCommands=async()=>{};
+  t.mock.method(globalThis,'fetch',url=>new Promise(resolve=>{if(url.includes('/agents?'))finishAgents=resolve;else finishLayers=resolve;}));
+  const pending=b.refreshAssignments().catch(()=>{});await b.newConversation();
+  finishAgents(new Response(JSON.stringify({default_agent:'obsolete',agents:[{id:'obsolete',description:'old',mode:'primary',effective:{model:'gw/old',source:'config'}}]})));finishLayers(new Response(JSON.stringify({layers:[{layer:'reflex',status:'disabled',reason:'old reason'}]})));await pending;assert.notEqual(b.state.agent,'obsolete');assert.doesNotMatch(dom.window.document.querySelector('.topbar').title,/old reason/);
+});
+test('target grouped model picker canonical names collapse and search without choosing headers',async t=>{
+  const {b,dom,tick}=fullChat(t);b.state.session='P';b.refreshAssignments=async()=>{};
+  const models=[{name:'omniroute/combo/think',gateway:'omniroute',provider_group:'combo',upstream_id:'combo/think',api:'chat',enabled:true},{name:'direct/model',gateway:'direct',provider_group:'direct',upstream_id:'model',api:'chat',enabled:true}];
+  b.models=models;b.emit({type:'models',items:models,locked:false});const {key,type}=focusedKeys(dom);dom.window.document.querySelector('#model').focus();key('Enter');
+  const groups=[...dom.window.document.querySelectorAll('.picker-group')];assert.deepEqual(groups.map(g=>g.textContent),['direct','omniroute','combo']);
+  groups.find(g=>g.textContent==='omniroute').click();assert.equal(dom.window.document.querySelectorAll('#picker-options [role=option]').length,1);
+  const search=dom.window.document.querySelector('#command-palette .picker-search');search.focus();type('combo/think');assert.equal(dom.window.document.querySelectorAll('#picker-options [role=option]').length,1);assert.equal(dom.window.document.querySelector('#picker-options [role=option]').title,'omniroute/combo/think');
+  let request;t.mock.method(globalThis,'fetch',async(url,init)=>{request=JSON.parse(init.body);return new Response(JSON.stringify({operation_id:'M'}));});key('Enter');await tick();assert.deepEqual(request,{name:'model',arguments:'omniroute/combo/think'});
+});
+test('target reopened summary restores effective override and blocks stale metadata selection',async t=>{
+  const {b,dom,event}=fullChat(t);b.state.session='S';b.refreshAssignments=async()=>{};
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({current_seq:3,agent:'plan',model:'gw/saved',variant:'high',source:'override',variant_source:'override'})));
+  await b.loadSessionModel('S');assert.equal(b.state.selectedModel,'gw/saved');assert.match(dom.window.document.querySelector('.topbar').title,/gw\/saved.*override/);
+  for(let i=0;i<5;i++)event('model.changed',{new:{agent:'build',model:'gw/new',gateway:'gw',upstream_id:'new',variant:null,source:'config',variant_source:'config'}});
+  await b.loadSessionModel('S');assert.equal(b.state.selectedModel,'gw/new');
 });
 function fullChat(t) {
   const { JSDOM } = require('jsdom');
@@ -329,7 +368,7 @@ for (const early of [true,false]) test(`R3.1 end-to-end failed open unlocks aban
 });
 test('R3.2 end-to-end populated picker locks at nonzero opening generation and unlocks on completion', async t => {
   const { b,dom,tick } = fullChat(t);
-  b.models=[{alias:'a',model:'a'}];
+  b.models=[{name:'gw/a',gateway:'gw',provider_group:'gw',upstream_id:'a',api:'chat',enabled:true}];
   await b.newConversation();
   const picker=dom.window.document.querySelector('#model');
   assert(b.currentGeneration()>=1); assert.equal(picker.disabled,false);
@@ -385,7 +424,7 @@ test('R2.2 end-to-end restart abandons pending creation', async t => {
 });
 test('R2.3 end-to-end newer refused model relinquishes existing pending switch before HTTP', async t => {
   const { b,send,event,tick,dom } = fullChat(t); b.state.session='A';
-  b.state.pendingModel={alias:'old',operationId:'OLD'}; b.emit({type:'modelPending',alias:'old'});
+  b.state.pendingModel={name:'old',operationId:'OLD'}; b.emit({type:'modelPending',name:'old'});
   let finish; t.mock.method(globalThis,'fetch',() => new Promise(resolve => finish=resolve));
   send('/model next'); assert.equal(dom.window.document.querySelector('.pending-model').textContent,'');
   event('command.result',{name:'model',operation_id:'NEW',ok:false,error:'refused'});
@@ -398,7 +437,7 @@ test('R2.4 end-to-end failed open restores outstanding model command ownership',
   send('/model next'); const opening=b.openConversation('B').catch(() => {}); await opening;
   event('command.result',{name:'model',operation_id:'M',ok:true,data:{accepted:true,applies:'after_turn'}});
   finish(new Response(JSON.stringify({operation_id:'M'}))); await tick();
-  assert.equal(b.state.pendingModel.alias,'next'); assert.match(dom.window.document.querySelector('.pending-model').textContent,/next/);
+  assert.equal(b.state.pendingModel.name,'next'); assert.match(dom.window.document.querySelector('.pending-model').textContent,/next/);
 });
 
 test("R1 skill confirms permission cancellation before submission without editor context", async () => {
@@ -444,6 +483,7 @@ test("late-created and recreated views receive current session identity before r
     currentContext: () => ({ incarnation: "I", revision: 3, estimate_total: 42 }),
     publishSubagents() {},
     publishCompaction() {},
+    refreshAssignments: async()=>{},
     currentGeneration: () => 1,
     refreshCommands: async () => {},
     resumePermissionReads: () => {},

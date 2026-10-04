@@ -36,6 +36,7 @@ export interface PauseToken { incarnation: string; hold_id: string }
 
 /** Host -> webview messages. */
 export type HostToWebview = { generation?: number } & (
+  | { type: "assignments"; agents: AgentInfo[]; layers: LayerInfo[]; current: string; model?: string; variant?: string | null; source?: string }
   | { type: "compaction"; operationId: string; pending: boolean; text: string; ok?: boolean }
   | { type: "subagents"; parentId: string; items: ChildInfo[] }
   | { type: "childView"; child?: ChildInfo; parentId?: string; parentTitle?: string }
@@ -52,9 +53,9 @@ export type HostToWebview = { generation?: number } & (
   | { type: "notice"; text: string; operationId?: string; ok?: boolean; name?: string }
   | { type: "commands"; items: CommandInfo[] }
   | { type: "commandError"; text: string }
-  | { type: "commandPicker"; kind: "model" | "variant" | "skills"; items: { name: string; description: string }[]; disabledReason?: string }
+  | { type: "commandPicker"; kind: "model" | "variant" | "skills" | "agent"; items: { name: string; description: string; gateway?: string; provider_group?: string }[]; disabledReason?: string }
   | { type: "agent"; name: string }
-  | { type: "modelPending"; alias?: string }
+  | { type: "modelPending"; name?: string }
   | { type: "sendResult"; text: string; accepted: boolean; restoreDraft?: boolean }
   /** The cognition starts answering; deltas for this id follow. */
   | { type: "turnStart"; id: string }
@@ -76,8 +77,7 @@ export type HostToWebview = { generation?: number } & (
   | { type: "conversationOpened"; id?: string; title: string }
   /** Replace the whole transcript (sent when the view is (re)opened). */
   | { type: "history"; items: HostToWebview[] }
-  /** Models the cognition can use; `current` is the open conversation's (or the next new one's).
-   *  `locked`: the conversation exists, its model can no longer change. */
+  /** Chat models; current is effective selection. Locked only while opening/creating. */
   | { type: "models"; items: ModelInfo[]; current?: string; locked: boolean }
   /** Context of the last model call: `used` tokens out of `window` (absent when unknown). */
   | { type: "usage"; snapshot: import("./contextMeter").ContextSnapshot });
@@ -90,14 +90,22 @@ export interface ConversationSummary {
   messageCount: number;
 }
 
-/** One model alias from `GET /v1/models`. `contextWindow` is absent when models.json omits it. */
+/** One canonical catalog identity; never reconstruct its name from upstream_id. */
 export interface ModelInfo {
-  alias: string;
-  model: string;
+  name: string;
+  gateway: string;
+  provider_group: string;
+  upstream_id: string;
+  api?: string;
+  enabled?: boolean;
+  disabled_reason?: string;
   contextWindow?: number;
   variants?: string[];
   defaultVariant?: string;
 }
+export interface Selection { model: string; variant?: string | null; source: string; variant_source?: string }
+export interface AgentInfo { id: string; description: string; mode: string; effective: Selection | null; assignment?: Selection | null; warning?: string | null }
+export interface LayerInfo { layer: string; status: string; model?: string | null; variant?: string | null; api?: string; reason?: string | null }
 
 export interface CommandInfo { name: string; description: string; args_hint: string }
 export interface ChildInfo {
@@ -112,6 +120,7 @@ export interface ComposerOperation { owner: object; generation: number }
 
 /** Webview -> host messages. */
 export type WebviewToHost = { generation?: number } & (
+  | { type: "selectAgent"; id: string }
   | { type: "openChild"; parentId: string; childId: string }
   | { type: "controlChild"; parentId: string; childId: string; action: "stop" | "continue" }
   /** The webview finished loading and wants the history. */
@@ -133,10 +142,12 @@ export type WebviewToHost = { generation?: number } & (
   /** The driver deletes a saved conversation. */
   | { type: "deleteConversation"; id: string }
   /** The driver picks the model for the next new conversation. */
-  | { type: "selectModel"; alias: string });
+  | { type: "selectModel"; name: string });
 
 /** What the chat view needs from the host side; implemented by the cognition bridge. */
 export interface ChatBackend {
+  refreshAssignments(): Promise<void>;
+  selectAgent(id: string): Promise<void>;
   publishCompaction(): void;
   dispose(): void;
   captureChildControl(parentId: string, childId: string, action: "stop" | "continue", generation?: number): object;
@@ -171,6 +182,6 @@ export interface ChatBackend {
   deleteConversation(id: string): Promise<void>;
   /** The open conversation's id, if one exists yet. */
   currentConversationId(): string | undefined;
-  /** Model alias for the next new conversation (ignored while one is open with messages). */
-  selectModel(alias: string): void;
+  /** Model name for the next new conversation (ignored while one is open with messages). */
+  selectModel(name: string): void;
 }

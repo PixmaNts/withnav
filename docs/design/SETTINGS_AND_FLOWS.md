@@ -1,64 +1,59 @@
 # Handoff: Navai — Settings and Jev flows
 
+> **Design reference, not as-built; 0.6.0 proposals after grilling.** Agreed decisions,
+> [`CONTEXT.md`](../../CONTEXT.md) and the authoritative 0.5.0 target
+> `.scratch/models-layers-agents/spec.md` in the main checkout take precedence over the design.
+> Code documents current behavior, not authority to override the spec. The 0.5.0 foundations
+> are not claimed complete. Settings screens, flow runtime/editor and their controls below
+> are proposals requiring their own spec; mock behavior does not establish shipped functionality.
+
 Design reference: `Navai Settings and Flows.dc.html` (open in a browser next to `support.js`). Top bar switches **screen** (Jev flows · WebUI, Settings · WebUI, Settings · VS Code) and **theme** (Ayu Dark/Light, Nord Dark/Light, same tokens as `README.md` and `src/tui/theme.rs`).
 
-This is a design for **0.6.0**, not as-built. The source of truth for vocabulary and configuration is
-[`CONTEXT.md`](../../CONTEXT.md) and the 0.5.0 layers/models/agents spec
-(`.scratch/models-layers-agents/spec.md`): where this design differs, the spec is right. Items
-marked **(proposal)** do not exist in the code yet; the settings screens and the flows will get their
-own spec before they are built.
+HTML remains reference only, not a source of configuration or security requirements.
 
-## Vocabulary (supersedes "model aliases")
+## Vocabulary and storage (supersedes earlier drafts)
 
-There are no aliases in the UI. There are **layers**:
+No aliases in the UI. Four **layers**:
 
 | Layer | API | Models | Notes |
 | --- | --- | --- | --- |
-| Reflex | `fim` | exactly one | Editor sessions only: runs when an IDE is attached (VS Code now; Zed, IntelliJ later). |
-| Instinct | `systemone` | exactly one | Jev. Fixed 2 s deadline (`SYSTEMONE_DEADLINE`). Runs every Jev flow, the permission review's first pass, the role guard, the watchdog and the navigator pipeline. |
-| Metacognition | `chat` | exactly one | Prefer a fast (flash) model. It uses the variant `low` when its model offers one; otherwise the model's default variant. |
+| Reflex | `fim` | exactly one | LSP only: runs when an IDE is attached (VS Code now; Zed, IntelliJ later). |
+| Instinct | `systemone` | exactly one | Jev. Fixed 2 s deadline. Runs Jev flows, permission review, the navigator pipeline. |
+| Metacognition | `chat` | exactly one | Fast (flash) model. **Variant = one the model offers**: `low` when offered, otherwise the model's default variant. Also reviews risky calls (see Permissions). |
 | Cognition | `chat` | one per **agent** | Several agents and several flows (subagents) at once. |
 
-**Agents** (cognition only): `build`, `plan`, `explore`, `review` (built in) and your own such as
-`librarian` or `oracle`. Each has a model, an optional variant (a named request override offered by
-that model), a mode (`primary`, `subagent` or `all`) and a definition file
-(`.navai/agents/<name>.md`, or `~/.config/navai/agents/`). The cognition has a **default agent**
-(`default_agent`, `build` when absent), not a default model.
+**Agents** (the word is *agent*, never "profile"): `build`, `plan`, `librarian`, `explorer`, `oracle`, … Each has a model, a variant offered by that model, and a mode `primary`, `subagent` or `all` (as in `AgentMode`). Prompt, tools and access live in `.navai/agents/<name>.md` (also `~/.config/navai/agents/`). The cognition has a **default agent** (`default_agent`, a primary agent), not a default model. Flow inputs use `session.agent`; the flow action is "switch agent".
 
-**Models** are catalog names `<gateway>/<id>`: `omniroute/cc/claude-opus-5-5`,
-`omniroute/combo/gpt-6-astra`, `openai/gpt-6-astra` (a direct connection), `inception/mercury-edit-2`.
-Model lists group them by gateway, then by provider inside a gateway (`omniroute` → `cc`, `cx`,
-`combo`…), each group collapsible.
+**Storage:**
+- `models.json` = **catalogue only** (gateways and their models).
+- `config.json` = `layers` (one model each), `agents.<name>.model` / variant, `default_agent`, plus the existing keys (`permissions`, `subagents`, `agent`, `tui`). A model set in `config.json` **wins over** a `model:` line in the agent's `.md`.
 
-Example assignment used in the mocks: build → `omniroute/cc/claude-opus-5-5` · high, plan →
-`omniroute/glm-5.3`, librarian → `omniroute/combo/gpt-6-luna`, explore →
-`omniroute/opencode-go/deepseek-v4-flash` · low, oracle → `omniroute/combo/gpt-6-astra`.
+**Model names** are `<gateway>/<id>`, e.g. `omniroute/cc/claude-opus-5-5`, `omniroute/typesafe/jev-1.13`, `inception/mercury-edit-2`. Every model list is **grouped by gateway, then by provider** (the segment after the gateway: `cc`, `zai`, `openai`, `opencode-go`, `combo`, `typesafe`; none for `inception/mercury-edit-2`), with **collapsible groups**, and filtered by the target's API.
 
-In code and UI, use `layer`, `agent` and `model`; never `alias` or `profile`. A future "alias"
-(smart, fast, best-coder → a model) is out of scope.
+Mock assignment: build → `omniroute/cc/claude-opus-5-5` · high, plan → `omniroute/zai/glm-5.3` · high, librarian → `omniroute/openai/gpt-6-luna` · medium, explorer → `omniroute/opencode-go/deepseek-v4-flash` · low, oracle → `omniroute/openai/gpt-6-astra` · high (mode `all`). The `zai` / `openai` provider segments and every variant list are placeholders.
 
-Files: `~/.config/navai/models.json` is the **catalog** only (providers and models, generated by the
-OmniRoute import). `~/.config/navai/config.json` holds the **assignments**: `layers`,
-`default_agent`, `agents` (model and variant per agent), plus the app settings
-(`src/settings.rs`). An agent's `.md` file may carry a `model:`; `config.json` wins. A model picked
-inside a session is an override for that session and agent, never written to a file; the settings
-screens below are what write `config.json`.
+**Who writes what:** proposed Settings assignment controls write `config.json`; gateway/catalog controls target `models.json`, catalog only. The session model picker and `/model` / `/variant` are **overrides for the current (session, agent)**, persisted with the session, never assignment config edits. Switching agents and back restores the override; a subagent with its own model does not inherit it. A subagent without a model uses the parent's effective model. `/model` without a variant takes the new model's default variant. `default_agent` is `build` when absent. Search ignores collapsed gateway/provider groups.
+
+**Combo variants:** OmniRoute does not advertise effort tiers for combos; the client import declares `low`, `medium`, `high` on every `combo/*` catalog entry via the `reasoning_effort` request parameter. Import merges rather than overwrites manually declared variants. A combo name suffix is not an effort setting.
+
+**Security boundary:** no reusable bash/file folder approvals; only eligible `fetch` origin grants are reusable. Native config mutation always asks the driver before review or scratch exemptions. Literal config references in bash ask too, but bash has ambient access: detection/review is best effort, not a sandbox. Gated outside-project reads are reviewed; deterministic sensitive native reads require metacognition then the driver. These constraints apply to all proposed screens and flow actions, including an "allow" node.
 
 ## Settings
 
 ### WebUI — full page with sidebar
 Sidebar: Providers, Layers, Permissions, Subagents, Appearance (each with a one-line live summary), "Back to <workspace>", file paths at the bottom. Top bar: search, "Saved" status (settings save immediately, atomic write as in `settings::save`).
 
-- **Providers** — list (status dot, base URL, "used by N") + detail: Base URL, API key env + key source (environment / auth store, never shown), catalog format, connect / request timeout (note: instinct ignores it, 2 s), headers table, "Used by" chips (layers + agents). Actions: Test connection, Refresh catalog, Add provider.
+- **Gateways** (`models.json → providers`, catalogue only) — list (status, base URL, "used by N") + detail: Base URL, API key env + key source (environment / auth store, never shown), catalog format, connect / request timeout (instinct ignores it, 2 s), headers table, **catalogue grouped by provider** (collapsible; id, full name, API, context, variants), "Used by" chips (layers + agents). Actions: Test connection, Refresh catalog, Add gateway.
 - **Layers** — four cards (layer, API tag, current model, note). Selecting:
-  - Reflex / Instinct / Metacognition: Provider, API (locked to the layer), Model (picker filtered to that API), context window, max output. "One model at a time" lock pill. Metacognition shows the variants its model offers, with `low` tagged recommended when offered. Reflex lists editors (VS Code connected; Zed, IntelliJ planned).
-  - Cognition: default agent select (`default_agent`); agents table (agent, mode, model, gateway › provider, variant, "set default"); detail of the selected agent: model, variant buttons (from the model), mode (`primary` · `subagent` · `all`), file path, "up to N subagents per session" linking to Subagents. Saving writes `agents.<name>` in `config.json`.
-- **Permissions** — `permissions.automatic_review` toggle with On/Off explanation (on: every bash, write and edit call, and a read outside the project, is reviewed by Jev, then by metacognition when it is risky or outside the project; anything not cleared is asked as allow once or deny; Navai's config directory and secret files always ask; fetch keeps its origin grants; off: every such call is asked). `permissions.scratch_dirs` list (absolute paths, empty = off, reset to default `$XDG_RUNTIME_DIR/navai`, `/tmp/navai`).
+  - Reflex / Instinct / Metacognition: gateway › provider, API locked to the layer, model, context, max output, "one model at a time", key `config.json → layers.<layer>`. Metacognition adds **Variant** buttons from the model (`low` tagged default). Reflex lists editors (VS Code connected; Zed, IntelliJ planned).
+  - Cognition: default agent; agents table (agent, mode, model, gateway, variant, "set default" — primary/all only); detail: model with note "saved in `config.json → agents.<name>.model`, wins over `model:` in `<name>.md`", variant buttons from the model, mode `primary · subagent · all`, "up to N subagents per session" → Subagents.
+  - Below either: **catalogue picker** grouped gateway › provider (collapsible), filtered by the target's API; clicking assigns the model to the selected layer or agent.
+- **Permissions** — `permissions.automatic_review` (ADR 0010). On: each `bash`, `write` and `edit` is reviewed before it runs, shown as three steps — **1 Instinct** classifies effects, scope and risk; read-only and low-risk project changes run. **2 Metacognition** must approve risky or outside-project changes. **3 Driver** decides on any doubt, timeout or reviewer failure (allow once or deny); sensitive reads always end here. Off: every `bash`, `write` and `edit` is asked. `fetch` keeps its origin grants: **allow once, allow origin, or deny**. `permissions.scratch_dirs` list (absolute paths, empty = off, reset to default).
 - **Subagents** — `subagents.max_concurrent` stepper 1–64 (default 4) with slot preview; `subagents.watchdog_interval_secs` and `agent.watchdog_interval_secs` presets Off / 1 min / 5 min / 15 min / 1 h (default 300, 0 disables).
 - **Appearance** — four theme cards with mini previews; writes `tui.theme` (`ayu-dark`, `ayu-light`, `nord-dark`, `nord-light`).
 
 ### VS Code — native-style settings webview
-An editor tab "Navai Settings" that mimics the VS Code settings editor: search box with count, "open JSON" icon, scope tab, TOC on the left (Providers › each provider; Layers › reflex, instinct, metacognition, cognition › agents; Permissions; Subagents; Appearance), rows on the right as `Category › sub: **Title**`, description, control (text, number, dropdown, checkbox, list with "Add Item"), blue left bar + "Modified" for non-default values. The extension's own editor settings (`navai.idleMs`, `navai.reflex.enabled`, …) stay in VS Code settings; link to them from the TOC footer. Use VS Code theme colors (`--vscode-*`) in the real webview.
+An editor tab "Navai Settings" that mimics the VS Code settings editor: search box with count, "open JSON" icon, scope tab, TOC on the left (Gateways › each gateway; Layers › reflex, instinct, metacognition, cognition › agents; Permissions; Subagents; Appearance), rows on the right as `Category › sub: **Title**`, description, control (text, number, dropdown, checkbox, list with "Add Item"), blue left bar + "Modified" for non-default values. The extension's own editor settings (`navai.idleMs`, `navai.reflex.enabled`, …) stay in VS Code settings; link to them from the TOC footer. Use VS Code theme colors (`--vscode-*`) in the real webview.
 
 ## Jev flows (WebUI)
 
@@ -90,7 +85,7 @@ Inspector bottom: **Last sample run** — raw System One answer JSON (`noul` / `
 ### Example flows in the mock
 - `guard-mutations` on `tool.pre_call`, blocking 800 ms → choice `effect` → noul `asked_for` / sub-flow `trusted-host` / score `blast_radius` → expression `plan_overreach` → allow / ask / deny.
 - `compaction-advisor` on `context.updated` (async) → noul `natural_break` → compact → set var; or score `urgency` → expression → inject note / log.
-- `route-agent` on `message.received`, blocking 600 ms → choice `request_kind` → keep / switch agent plan / build → switch variant / spawn `oracle`.
+- `route-agent` on `message.received`, blocking 600 ms → choice `request_kind` → keep / switch agent plan / build → switch variant / spawn agent `oracle`.
 - `trusted-host` sub-flow → choice `host_kind` → noul `looks_safe` → return `trusted` / `unknown`.
 
 ### TOML (proposal)
@@ -117,13 +112,8 @@ local_change = "asked"
 ```
 The TOML view in the mock is generated from the canvas data and shows the full shape.
 
-## Implementation order (suggested, 0.6.0)
-0. Done in 0.5.0: catalog `<gateway>/<id>` in `models.json`; layers (one model each, API enforced),
-   agents with model and variant, and `default_agent` in `config.json`; per-session, per-agent
-   overrides.
-1. Server routes for settings read/write (writing `config.json`) and provider test; WebUI Settings
-   page; VS Code settings webview.
-2. Flow runtime: load/validate `.navai/flows/*.toml`, hook subscriptions on the bus, blocking with
-   budget + on-timeout, System One calls through the instinct client, expressions, sub-flows,
-   actions, variables; log every run (state, answers, ms, cost) for replay.
-3. WebUI flow editor: canvas, inspector, TOML view, sample run.
+## Implementation order (suggested, not shipped)
+1. Prerequisite 0.5.0 target, still requiring completion/validation: `models.json` as catalogue only; `config.json` gains `layers`, `agents.<name>.model`/variant and `default_agent` (config wins over `.md`); `<gateway>/<id>` names; persisted per-session/per-agent overrides. Not a 0.6.0 editor deliverable.
+2. Server routes for settings read/write and provider test; WebUI Settings page; VS Code settings webview.
+3. Flow runtime: load/validate `.navai/flows/*.toml`, hook subscriptions on the bus, blocking with budget + on-timeout, System One calls through the instinct client, expressions, sub-flows, actions, variables; log every run (state, answers, ms, cost) for replay.
+4. WebUI flow editor: canvas, inspector, TOML view, sample run.

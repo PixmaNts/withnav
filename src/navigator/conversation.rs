@@ -293,7 +293,7 @@ impl ConversationFeed {
         if content.trim().is_empty() {
             return;
         }
-        let driver = source.starts_with("user:");
+        let driver = crate::bus::command::is_driver_source(source);
         let flush = {
             let mut state = self.lock();
             let Some(entry) = state.sessions.get_mut(&envelope.session_id) else {

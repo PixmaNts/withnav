@@ -144,9 +144,12 @@ pub struct SelectedModel {
 
 #[derive(Clone)]
 pub(crate) struct EffectiveExecution {
+    pub(crate) automatic_permission_review: bool,
     pub(crate) resolved: crate::provider::config::ResolvedModel,
     pub(crate) api_key: String,
 }
+
+type ChildPolicy = (BTreeMap<String, bool>, bool, bool, Option<String>);
 impl std::fmt::Debug for EffectiveExecution {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("EffectiveExecution { .. }")
@@ -754,6 +757,15 @@ impl Service {
                     allowed,
                     definition.access == crate::agent::definitions::AgentAccess::ReadOnly
                         || parent_role.access == crate::agent::definitions::AgentAccess::ReadOnly,
+                    parent_handle
+                        .selected()
+                        .execution
+                        .as_ref()
+                        .is_some_and(|execution| execution.automatic_permission_review),
+                    self.history
+                        .latest_driver_message(parent)
+                        .await
+                        .map_err(ServerError::History)?,
                 )),
                 Some(parent),
                 definition.model.is_none().then_some(inherited),
@@ -1647,7 +1659,7 @@ impl Service {
         resumed: Option<ResumedSession>,
         resume_workspace: &Path,
         variant: &VariantChoice,
-        child_policy: Option<(BTreeMap<String, bool>, bool)>,
+        child_policy: Option<ChildPolicy>,
         child_parent: Option<SessionId>,
         inherited: Option<SelectedModel>,
     ) -> Result<SessionId, ServerError> {
@@ -1679,7 +1691,7 @@ impl Service {
         resumed: Option<ResumedSession>,
         resume_workspace: &Path,
         variant: &VariantChoice,
-        child_policy: Option<(BTreeMap<String, bool>, bool)>,
+        child_policy: Option<ChildPolicy>,
         child_parent: Option<SessionId>,
         inherited: Option<SelectedModel>,
     ) -> Result<PreparedSession, ServerError> {
@@ -1801,13 +1813,26 @@ impl Service {
         })?;
         let session_cancel = CancellationToken::new();
         let execution = Arc::new(EffectiveExecution {
+            automatic_permission_review: match &child_policy {
+                Some((_, _, enabled, _)) => *enabled,
+                None => match crate::settings::load(&self.config.config_dir)
+                    .map_err(|e| e.to_string())
+                    .and_then(|settings| settings.permissions_automatic_review())
+                {
+                    Ok(enabled) => enabled,
+                    Err(error) => {
+                        tracing::warn!("automatic permission review disabled: {error}");
+                        false
+                    }
+                },
+            },
             resolved: resolved.clone(),
             api_key: api_key.clone(),
         });
         let root_tools_enabled =
             child_policy.is_none() && profile.is_none() && role.mode.is_primary();
         let mut actor = match &child_policy {
-            Some((allowed, read_only)) => build_child_actor(
+            Some((allowed, read_only, _, _)) => build_child_actor(
                 &workspace,
                 &self.config.config_dir,
                 resolved,
@@ -1881,16 +1906,10 @@ impl Service {
             &workspace,
             &self.config.config_dir,
         );
-        actor.automatic_permission_review = match crate::settings::load(&self.config.config_dir)
-            .map_err(|e| e.to_string())
-            .and_then(|settings| settings.permissions_automatic_review())
-        {
-            Ok(enabled) => enabled,
-            Err(error) => {
-                tracing::warn!("automatic permission review disabled: {error}");
-                false
-            }
-        };
+        actor.automatic_permission_review = execution.automatic_permission_review;
+        if let Some((_, _, _, driver_task)) = &child_policy {
+            actor.driver_task = driver_task.clone();
+        }
         if let Ok((models, _)) = crate::provider::config::load_models(
             self.config.models_path.as_deref(),
             &workspace,
@@ -1910,7 +1929,7 @@ impl Service {
             });
         }
         self.hooks.configure_actor(profile, &mut actor);
-        if let Some((allowed, _)) = &child_policy {
+        if let Some((allowed, _, _, _)) = &child_policy {
             actor
                 .registry
                 .retain(|name| allowed.get(name).copied().unwrap_or(false));

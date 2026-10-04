@@ -143,7 +143,7 @@ impl HistoryStore {
                     let envelope = serde_json::from_str::<EventEnvelope>(&raw)
                         .map_err(|e| format!("event seq {seq} does not decode: {e}"))?;
                     let source = envelope.payload.get("source").and_then(|v| v.as_str());
-                    if source.is_some_and(|source| source.starts_with("user:")) {
+                    if source.is_some_and(crate::bus::command::is_driver_source) {
                         return Ok(envelope
                             .payload
                             .get("content")

@@ -73,6 +73,17 @@ impl Client {
         self.json(request).await
     }
 
+    pub async fn skills(&self, session_id: &str) -> Result<crate::bus::event::SkillsBody, String> {
+        let mut body: crate::bus::event::SkillsBody = self
+            .json(self.get(&format!("/v1/sessions/{session_id}/skills")))
+            .await?;
+        for skill in &mut body.skills {
+            skill.name = crate::tui::reducer::strip_controls(&skill.name);
+            skill.description = crate::tui::reducer::strip_controls(&skill.description);
+        }
+        Ok(body)
+    }
+
     pub async fn sessions(&self, workspace: &str) -> Result<SessionListBody, String> {
         let request = self.get("/v1/sessions").query(&[("workspace", workspace)]);
         self.json(request).await

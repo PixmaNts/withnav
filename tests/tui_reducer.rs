@@ -1033,6 +1033,7 @@ impl Script {
         self.push(
             EventKind::MessageReceived,
             &MessageReceived {
+                selected_skill: None,
                 command_id: Ulid(7),
                 source: "user:http".into(),
                 target: ROOT_ACTOR_ID.into(),

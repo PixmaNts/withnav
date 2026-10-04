@@ -52,10 +52,24 @@ async fn driver_message_supersedes_live_pause_but_navigator_does_not() {
     pause_lifecycle(1).await;
 }
 
+#[tokio::test]
+async fn skill_driver_message_supersedes_watchdog_pause_but_refused_skill_does_not() {
+    pause_lifecycle(3).await;
+}
+
 async fn pause_lifecycle(mode: u8) {
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path().join("ws");
     std::fs::create_dir(&ws).unwrap();
+    if mode == 3 {
+        let skill = ws.join(".agents/skills/review");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: review\ndescription: Review work\n---\nReview selected work carefully.",
+        )
+        .unwrap();
+    }
     let mut provider = spawn_streaming_provider().await;
     let service = TestServerConfig::mock(tmp.path(), &provider.url)
         .chat_tools(128000)
@@ -176,6 +190,20 @@ async fn pause_lifecycle(mode: u8) {
             .send(input_command(id, "user:cli", "replacement instruction"))
             .await
             .unwrap();
+    } else if mode == 3 {
+        use navai::bus::command::ContentBlock;
+        let mut refused = input_command(id, "user:http", "refused correction");
+        refused.content.push(ContentBlock::Skill {
+            name: "missing-skill".into(),
+        });
+        assert!(service.send(refused).await.is_err());
+        assert!(service.continue_child(id, id).await.is_err());
+        assert!(provider.requests.try_recv().is_err());
+        let mut selected = input_command(id, "user:http", "replacement instruction");
+        selected.content.push(ContentBlock::Skill {
+            name: "review".into(),
+        });
+        service.send(selected).await.unwrap();
     } else if mode == 1 {
         let command = navai::bus::command::Command {
             command_id: ulid::Ulid::new(),
@@ -217,6 +245,10 @@ async fn pause_lifecycle(mode: u8) {
     assert!(request.contains("\"role\":\"tool\""));
     if mode > 0 {
         assert!(request.contains("replacement instruction"));
+    }
+    if mode == 3 {
+        assert!(request.contains("Review selected work carefully."));
+        assert!(!request.contains("refused correction"));
     }
     if mode == 2 {
         assert!(!request.contains("lost admitted correction"));

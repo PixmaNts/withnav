@@ -138,11 +138,21 @@ impl AgentSelection {
     /// selected now, or `None` when this selection sends no role. The turn
     /// carries the answer to a waiting `ask`, so none waits any more.
     pub async fn begin_turn(&self) -> Option<Arc<AgentDefinition>> {
+        let role = self.pin_turn().await;
+        self.consume_interaction();
+        role
+    }
+
+    /// Pins policy without consuming an ask that a refused or held batch cannot answer.
+    pub async fn pin_turn(&self) -> Option<Arc<AgentDefinition>> {
         let _gate = self.gate.lock().await;
         let mut state = self.state();
         state.running = true;
-        state.ask_pending = false;
         self.send_role.then(|| state.current.clone())
+    }
+
+    pub fn consume_interaction(&self) {
+        self.state().ask_pending = false;
     }
 
     /// Marks the turn as over; `ask_pending` is whether it ended asking the

@@ -131,12 +131,24 @@ impl HistoryStore {
     /// The text of the driver's latest message in one session: the newest
     /// stored `message.received` whose source is a human ingress identity
     /// (`user:http`, `user:cli`), which also covers an answer to an `ask`. A
-    /// navigator wake, delegated text or a subagent result is not it. `None`
+    /// navigator wake, delegated text, subagent result or command with a correlated
+    /// whole-message skill refusal is not it. `None`
     /// when the driver never spoke.
     pub async fn latest_driver_message(&self, id: Ulid) -> Result<Option<String>, String> {
         let path = Arc::clone(&self.path);
         blocking(move || {
             with_read_tx(&path, |tx| {
+                let mut refusals = tx.prepare("SELECT envelope FROM events WHERE session_id = ?1 AND kind = 'command.result'")
+                    .map_err(|e| format!("prepare refusals: {e}"))?;
+                let rejected = refusals.query_map(params![id.to_string()], |row| row.get::<_, String>(0))
+                    .map_err(|e| format!("query refusals: {e}"))?
+                    .map(|row| {
+                        let raw = row.map_err(|e| format!("refusal row: {e}"))?;
+                        serde_json::from_str::<EventEnvelope>(&raw).map_err(|e| format!("refusal does not decode: {e}"))
+                    }).collect::<Result<Vec<_>, String>>()?
+                    .into_iter().filter(|event| event.payload["name"] == "skill" && event.payload["ok"] == false)
+                    .filter_map(|event| event.correlation_id.filter(|id| event.payload["operation_id"].as_str() == Some(id.to_string().as_str())))
+                    .collect::<std::collections::HashSet<_>>();
                 let mut stmt = tx
                     .prepare(
                         "SELECT seq, envelope FROM events
@@ -154,6 +166,9 @@ impl HistoryStore {
                     let envelope = serde_json::from_str::<EventEnvelope>(&raw)
                         .map_err(|e| format!("event seq {seq} does not decode: {e}"))?;
                     let source = envelope.payload.get("source").and_then(|v| v.as_str());
+                    if envelope.payload["command_id"].as_str().and_then(|id| id.parse::<Ulid>().ok()).is_some_and(|id| rejected.contains(&id)) {
+                        continue;
+                    }
                     if source.is_some_and(crate::bus::command::is_driver_source) {
                         return Ok(envelope
                             .payload

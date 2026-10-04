@@ -5,6 +5,13 @@ requests land in `develop`.
 ## [Unreleased]
 
 ### Added
+- **Terminal client**: `/skills` opens a searchable list of the conversation's skills. Choosing
+  one fills `/skill <name>`; add your request and send: the skill's instructions are loaded into
+  your message before the agent's first model request, and the selection shows next to your
+  message, also on replay. If the agent cannot use skills, the whole message is refused.
+- Copying a selection across conversation blocks includes plain-text sender headers
+  (`You:`, the agent's name, `Navigator:`…), one per run of consecutive messages from the same
+  sender. A selection inside one block and whole-block `y` copies stay header-free.
 - Select and copy conversation text with a mouse drag, or double-click a word; wrapping,
   sidebar and tool labels stay out of the clipboard. The wheel scrolls the conversation and
   dragging beyond its edge scrolls the selection. In transcript focus, `y` copies the whole
@@ -15,6 +22,14 @@ requests land in `develop`.
   or focused block; `ctrl+shift+c` is best-effort and plain `ctrl+c` remains stop/quit.
 
 ### Changed
+
+- **Per-call permission review**: every `bash`, `write` and `edit` call is reviewed before it runs,
+  instead of an "allow folder" answer letting every later call through. Jev classifies it; a
+  read-only call or a low-risk change inside the project runs; a risky or outside-project change
+  needs metacognition's approval; anything else asks you, with the reason. "Allow folder" is gone
+  for these tools and the bash/file grants saved by 0.4.1 are ignored; `fetch` keeps its origin
+  grants. `permissions.automatic_review: false` in `config.json` asks for every such call; an
+  invalid value fails closed. Advisory, not a sandbox.
 
 - **Root turns no longer have a 50-step limit**: progress supervision checks the instinct every
   300 seconds (`agent.watchdog_interval_secs` in `config.json`; 0 disables supervision and enables
@@ -28,10 +43,11 @@ requests land in `develop`.
   expiry and supersession are replayable, and a fresh driver message replaces a paused turn.
   Subagents retain their 50-step budget
   and their existing watchdog and owner Continue behaviour.
-- Per-call permission review replaces “allow folder” for bash, write and edit. Saved bash/file
-  grants from 0.4.1 are ignored for execution; fetch keeps origin grants.
-- `permissions.automatic_review` defaults to true. Set it to false to ask for every bash, write
-  and edit call; invalid values disable automatic approval with a diagnostic.
+
+### Fixed
+
+- **`grep` tool**: a pattern can no longer be read as a ripgrep option (such as `--pre`, which runs
+  a program), and ripgrep configuration files are ignored.
 
 ## [0.4.1] - 2026-10-04
 

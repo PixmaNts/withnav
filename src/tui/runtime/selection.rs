@@ -34,8 +34,7 @@ impl Runtime {
         let text = self
             .selection
             .range
-            .and_then(|(a, b)| self.cache.transcript.text.get(a.min(b)..a.max(b)))
-            .map(str::to_owned)
+            .and_then(|(a, b)| self.cache.transcript.selected_text(a, b))
             .filter(|s| !s.is_empty())
             .or_else(|| {
                 self.ui
@@ -118,13 +117,7 @@ impl Runtime {
                 self.selection.anchor = None;
                 self.selection.pointer = None;
                 if let Some((a, b)) = self.selection.range {
-                    if let Some(text) = self
-                        .cache
-                        .transcript
-                        .text
-                        .get(a.min(b)..a.max(b))
-                        .map(str::to_owned)
-                    {
+                    if let Some(text) = self.cache.transcript.selected_text(a, b) {
                         self.copy_text(&text);
                     }
                 }

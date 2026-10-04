@@ -262,6 +262,7 @@ pub fn draw(
                 let _ = old;
                 let offset = map.text.len();
                 map.text.push_str(text);
+                if offset < map.text.len() { map.senders.push((offset..map.text.len(), sender(b, state))); }
                 return (b, rows.clone(), offset);
             }
             let text = block_text(b, state, ui, theme, cache, width);
@@ -284,6 +285,7 @@ pub fn draw(
             if cacheable { cache.wrapped.insert(b.id.clone(), (key, rows.clone(), local.text.clone())); }
             let offset = map.text.len();
             map.text.push_str(&local.text);
+            if offset < map.text.len() { map.senders.push((offset..map.text.len(), sender(b, state))); }
             (b, rows, offset)
         })
         .collect();
@@ -415,6 +417,28 @@ fn content_key(text: &str) -> u64 {
     h.finish()
 }
 
+fn sender(block: &Block, state: &State) -> String {
+    match &block.kind {
+        BlockKind::Message { source, .. } => match Origin::of(source) {
+            Origin::User => "You".into(),
+            Origin::Assistant => clean(state.agent_name()),
+            Origin::Navigator => "Navigator".into(),
+            Origin::Subagent => format!(
+                "Subagent {} · untrusted data",
+                clean(source.strip_prefix("subagent:").unwrap_or("output"))
+            ),
+            Origin::Other => clean(source),
+        },
+        BlockKind::AssistantStep { .. } => clean(state.agent_name()),
+        BlockKind::ToolCall { name, .. } => format!("Tool {}", clean(name)),
+        BlockKind::Notice(_) => "Notice".into(),
+        BlockKind::Error(_) => "Error".into(),
+        BlockKind::YieldQuestion(_) => clean(state.agent_name()),
+        BlockKind::Command { name, .. } => format!("/{}", clean(name)),
+        BlockKind::Permission(_) => "Permission".into(),
+    }
+}
+
 fn layout_key(block: &Block, width: u16, ui: &UiState) -> String {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -465,6 +489,33 @@ fn layout_key(block: &Block, width: u16, ui: &UiState) -> String {
 mod selection_tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
+    #[test]
+    fn copy_sender_names_preserve_subagent_and_notice_origins() {
+        let state = State::default();
+        let block = |source: &str| Block {
+            id: "x".into(),
+            kind: BlockKind::Message {
+                source: source.into(),
+                text: "body".into(),
+            },
+        };
+        assert_eq!(
+            sender(&block("subagent:explore"), &state),
+            "Subagent explore · untrusted data"
+        );
+        assert_eq!(sender(&block("navigator"), &state), "Navigator");
+        assert_eq!(sender(&block("Jev"), &state), "Jev");
+        assert_eq!(
+            sender(
+                &Block {
+                    id: "n".into(),
+                    kind: BlockKind::Notice("notice".into())
+                },
+                &state
+            ),
+            "Notice"
+        );
+    }
 
     #[test]
     fn persistent_layout_updates_replaced_content_and_running_glyph() {

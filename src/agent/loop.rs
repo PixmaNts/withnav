@@ -2016,20 +2016,59 @@ mod tests {
         for tool in ["write", "edit"] {
             for at_open in [false, true] {
                 let mut actor = plan_actor(None, "http://unused");
-                actor.registry.register(Box::new(crate::tools::native::EditTool));
+                actor
+                    .registry
+                    .register(Box::new(crate::tools::native::EditTool));
                 let external = tempfile::tempdir().unwrap();
-                let target = external.path().join("target"); let secret = external.path().join("secret");
-                std::fs::write(&target, "old").unwrap(); std::fs::write(&secret, "keep").unwrap();
+                let target = external.path().join("target");
+                let secret = external.path().join("secret");
+                std::fs::write(&target, "old").unwrap();
+                std::fs::write(&secret, "keep").unwrap();
                 let roots = actor.tool_context.writable_roots.clone();
-                let args = if tool == "write" { serde_json::json!({"path":target,"content":"new"}) } else { serde_json::json!({"path":target,"old_string":"old","new_string":"new"}) };
-                let call = ToolCall { id:"c".into(), name:tool.into(), args, args_valid:true };
-                let One::Ask(request, destination) = run_gated(&mut actor, &call, &mut |_| {}).await else { panic!("expected held call"); };
+                let args = if tool == "write" {
+                    serde_json::json!({"path":target,"content":"new"})
+                } else {
+                    serde_json::json!({"path":target,"old_string":"old","new_string":"new"})
+                };
+                let call = ToolCall {
+                    id: "c".into(),
+                    name: tool.into(),
+                    args,
+                    args_valid: true,
+                };
+                let One::Ask(request, destination) =
+                    run_gated(&mut actor, &call, &mut |_| {}).await
+                else {
+                    panic!("expected held call");
+                };
                 let id = request.id;
-                actor.pending = Some(PendingInteraction::Permission { request:Box::new(request), call, remaining_calls:vec![], destination, steps_left:1 });
+                actor.pending = Some(PendingInteraction::Permission {
+                    request: Box::new(request),
+                    call,
+                    remaining_calls: vec![],
+                    destination,
+                    steps_left: 1,
+                });
                 actor.state = AgentState::Yielded;
-                let swap = { let target = target.clone(); let secret = secret.clone(); move || { std::fs::remove_file(&target).unwrap(); std::os::unix::fs::symlink(secret, target).unwrap(); } };
-                if at_open { crate::tools::nofollow::on_next_open(swap); } else { swap(); }
-                assert!(matches!(resolve_permission(&mut actor, id, PermissionDecision::AllowOnce, &mut |_| {}).await.unwrap(), RunOutcome::PermissionRequired(_)));
+                let swap = {
+                    let target = target.clone();
+                    let secret = secret.clone();
+                    move || {
+                        std::fs::remove_file(&target).unwrap();
+                        std::os::unix::fs::symlink(secret, target).unwrap();
+                    }
+                };
+                if at_open {
+                    crate::tools::nofollow::on_next_open(swap);
+                } else {
+                    swap();
+                }
+                assert!(matches!(
+                    resolve_permission(&mut actor, id, PermissionDecision::AllowOnce, &mut |_| {})
+                        .await
+                        .unwrap(),
+                    RunOutcome::PermissionRequired(_)
+                ));
                 assert_eq!(std::fs::read_to_string(secret).unwrap(), "keep");
                 assert_eq!(actor.tool_context.writable_roots, roots);
             }

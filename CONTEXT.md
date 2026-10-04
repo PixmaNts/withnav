@@ -134,6 +134,10 @@ for fresh driver input. Navigator wakes and child results cannot release a hold 
 budget. A real driver message replaces the paused turn and records its interruption.
 Recovery installs a separate fresh-driver gate even after publishing expiry; pending child
 completions and autonomous inbox messages stay held until HTTP or CLI driver input clears it.
+Only a consumed instruction checkpointed atomically with its gate-release event clears recovery's
+gate. Durable `message.received` is admission, not proof of transcript consumption. A crash before
+that checkpoint keeps the gate closed on the next recovery. Owner Continue on a budget-parked
+child claims accepted interrupt replacements exactly once before requesting another model step.
 Supersession names the old turn in the pause-resolution event, never a second terminal event.
 Accepted deferred model/compact operations receive correlated cancellation at a watchdog pause.
 Without instinct, or with supervision disabled, the session announces a renewable 500-step fallback

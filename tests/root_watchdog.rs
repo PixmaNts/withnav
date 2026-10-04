@@ -43,7 +43,7 @@ async fn root_doubt_parks_after_results_and_owner_continue_releases_the_same_tur
 }
 
 #[tokio::test]
-async fn fresh_driver_input_supersedes_pause_and_checkpoint_survives_restart() {
+async fn two_restarts_keep_fresh_driver_gate_when_only_admission_was_persisted() {
     pause_lifecycle(2).await;
 }
 
@@ -126,6 +126,28 @@ async fn pause_lifecycle(mode: u8) {
             .create_or_resume_session(&ws, None, None, Some(id))
             .await
             .unwrap();
+        // Admission is durable, but the crash precedes consumption into the transcript.
+        service.history().flush().await.unwrap();
+        let saved = service.history().load(id).await.unwrap().unwrap();
+        let admitted = navai::bus::event::EventEnvelope::new(
+            id,
+            saved.meta.last_seq + 1,
+            navai::bus::event::EventKind::MessageReceived,
+            serde_json::json!({
+                "source":"user:http","target":"agent:main","command_id":ulid::Ulid::new(),"mode":"next_turn","content":"lost admitted correction"
+            }),
+        );
+        service.close_session(id).await.unwrap();
+        // Install the admission last, as if the process died before its command was consumed.
+        let saved = service.history().load(id).await.unwrap().unwrap();
+        let mut admitted = admitted;
+        admitted.seq = saved.meta.last_seq + 1;
+        service.history().append_event(id, admitted);
+        service.history().flush().await.unwrap();
+        service
+            .create_or_resume_session(&ws, None, None, Some(id))
+            .await
+            .unwrap();
         assert!(
             !service
                 .history()
@@ -196,6 +218,9 @@ async fn pause_lifecycle(mode: u8) {
     if mode > 0 {
         assert!(request.contains("replacement instruction"));
     }
+    if mode == 2 {
+        assert!(!request.contains("lost admitted correction"));
+    }
     stream.send(text_chunk("finished")).unwrap();
     drop(stream);
     let sub = service.subscribe(id, None).await.unwrap();
@@ -212,6 +237,41 @@ async fn pause_lifecycle(mode: u8) {
     assert!(events
         .iter()
         .any(|e| e.payload["data"]["resolution"].is_string()));
+    if mode == 2 {
+        service.history().flush().await.unwrap();
+        let saved = service.history().load(id).await.unwrap().unwrap();
+        assert!(saved.transcript.iter().any(|message| matches!(message,navai::provider::openai::ChatMessage::User {content,..} if content == "replacement instruction")));
+        assert!(events
+            .iter()
+            .any(|event| event.payload["data"]["driver_committed"] == true));
+        service.close_session(id).await.unwrap();
+        service
+            .create_or_resume_session(&ws, None, None, Some(id))
+            .await
+            .unwrap();
+        service
+            .send(input_command(
+                id,
+                "navigator",
+                "healthy autonomous wake after committed correction",
+            ))
+            .await
+            .unwrap();
+        let (request, stream) = provider
+            .requests
+            .recv()
+            .bounded(file!(), line!())
+            .await
+            .unwrap();
+        assert!(request.contains("replacement instruction"));
+        assert!(!request.contains("lost admitted correction"));
+        stream.send(text_chunk("healthy recovery")).unwrap();
+        drop(stream);
+        collect_until(service.subscribe(id, None).await.unwrap(), |e| {
+            e.kind == "turn.end" && e.payload["outcome"] == "done"
+        })
+        .await;
+    }
     service.close_all().await;
     assert!(
         _next_tick.is_closed(),

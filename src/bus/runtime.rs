@@ -17,6 +17,7 @@ mod steering;
 mod watchdog;
 pub use delivery::BoundaryEligible;
 pub use delivery::Delivery;
+pub use delivery::DriverCommit;
 pub use delivery::PendingNotice;
 pub use watchdog::PauseToken;
 pub use watchdog::TerminalOwner;
@@ -115,6 +116,7 @@ pub struct RuntimeStatus {
     steering: Arc<steering::Steering>,
     budget_parked: std::sync::atomic::AtomicBool,
     delivery: Mutex<Option<delivery::DeliveryCell>>,
+    driver_commit: Mutex<Option<delivery::DriverCommitCell>>,
     variant: Mutex<VariantSlot>,
     /// The session's context gauge: written by the runtime at each boundary,
     /// read on demand by the service.
@@ -133,6 +135,27 @@ pub struct RuntimeStatus {
 }
 
 impl RuntimeStatus {
+    pub fn install_driver_commit(&self, commit: DriverCommit) {
+        *self.driver_commit.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(delivery::DriverCommitCell(commit));
+    }
+    async fn commit_driver(
+        &self,
+        transcript: Vec<crate::provider::openai::ChatMessage>,
+    ) -> Result<(), String> {
+        let commit = self
+            .driver_commit
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|cell| cell.0.clone());
+        if let Some(commit) = commit {
+            commit(transcript).await?;
+        }
+        self.awaiting_fresh_driver
+            .store(false, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
     fn progress_parked(&self) -> bool {
         self.awaiting_fresh_driver
             .load(std::sync::atomic::Ordering::Acquire)
@@ -938,7 +961,11 @@ async fn runtime_loop(
         // A decision resumes the held call; a batch of commands starts a
         // turn the usual way.
         let resume: Option<(Ulid, PermissionDecision)> = match inbound {
-            Inbound::Continue => None,
+            Inbound::Continue => {
+                let (transcript, _) = status.steering.claim_replacements(actor.transcript.clone());
+                actor.transcript = transcript;
+                None
+            }
             Inbound::Completion => {
                 active_task_id = Some(Ulid::new());
                 None
@@ -951,9 +978,6 @@ async fn runtime_loop(
                         continue;
                     }
                     actor.watchdog_steps_left = None;
-                    status
-                        .awaiting_fresh_driver
-                        .store(false, std::sync::atomic::Ordering::Release);
                     inbox.discard_held();
                     if let Some(hold) = status.watchdog.root_hold() {
                         status.watchdog.resolve_root(hold.token, || {
@@ -972,6 +996,12 @@ async fn runtime_loop(
                 let Some(first) = applied.first_applied else {
                     continue;
                 };
+                if parked {
+                    if let Err(error) = status.commit_driver(actor.transcript.clone()).await {
+                        tracing::error!(%error, "driver checkpoint commit failed");
+                        break;
+                    }
+                }
                 if active_task_id.is_none() {
                     active_task_id = Some(first);
                 }

@@ -2112,12 +2112,14 @@ impl Service {
                     && event.payload["data"]["resolution"].is_string()
                 {
                     pending = None;
-                    awaiting_fresh_driver = event.payload["data"]["resolution"] == "expired";
+                    awaiting_fresh_driver = matches!(
+                        event.payload["data"]["resolution"].as_str(),
+                        Some("expired" | "superseded")
+                    );
                 }
-                if event.kind == "message.received"
-                    && event.payload["source"]
-                        .as_str()
-                        .is_some_and(crate::bus::command::is_driver_source)
+                if event.kind == "command.result"
+                    && event.payload["name"] == "watchdog"
+                    && event.payload["data"]["driver_committed"] == true
                 {
                     awaiting_fresh_driver = false;
                 }
@@ -2201,6 +2203,23 @@ impl Service {
             agents, role,
         )));
         status.init_variant(selected.clone());
+        if child_parent.is_none() {
+            let history = self.history.clone();
+            let driver_sequencer = sequencer.clone();
+            status.install_driver_commit(Arc::new(move |transcript| {
+                let (history, sequencer) = (history.clone(), driver_sequencer.clone());
+                Box::pin(async move {
+                    history.flush().await?;
+                    let candidate = Candidate::new(EventKind::CommandResult, serde_json::json!({
+                        "name":"watchdog","ok":true,"operation_id":Ulid::new(),
+                        "data":{"driver_committed":true,"message":"Fresh driver instruction checkpointed"}
+                    }));
+                    sequencer.commit_acked(candidate, Box::new(move |envelope| Box::pin(async move {
+                        history.consume_completions_committed(session_id,vec![],transcript,Some(envelope)).await
+                    }))).await.map(|_| ()).map_err(|error| error.to_string())
+                })
+            }));
+        }
         status
             .awaiting_fresh_driver
             .store(awaiting_fresh_driver, std::sync::atomic::Ordering::Release);

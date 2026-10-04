@@ -278,6 +278,12 @@ The typed boundary result carries the settled transcript on every watchdog exit 
 remaining steps. Interrupt-delivery checks revalidate the hold after awaiting notice eligibility.
 Recovery installs an awaiting-fresh-driver gate; neither delivery wakes nor delegated provenance
 can clear it. Deferred controls accepted in a paused turn receive operation-correlated cancellation.
+Driver admission events never clear the recovered gate. The runtime commits the consumed driver
+transcript and a `command.result` checkpoint marker atomically through the existing acknowledged
+transcript/event transaction before releasing the gate. Recovery reads that marker, not admission;
+an admitted but unconsumed correction therefore requires fresh input after another crash. Accepted
+interrupt guidance on a budget-parked child stays queued and is claimed once by authorized Continue
+before its first resumed provider request; the guidance itself never renews the budget.
 Root `alt+c`
 uses the existing Continue route with the root as both owner and target, which cannot answer asks
 or permissions. Root turns are unbounded unless `NAVAI_MAX_STEPS` is set; unavailable instinct

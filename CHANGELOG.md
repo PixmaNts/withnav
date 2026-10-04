@@ -4,6 +4,10 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-04
+
+Fixes from daily use of 0.4.0, mostly in the terminal client.
+
 ### Changed
 
 - **Root turns no longer have a 50-step limit**: progress supervision checks the instinct every
@@ -20,6 +24,11 @@ requests land in `develop`.
 
 ### Fixed
 
+- **Terminal client**: running out of agent steps shows "Out of steps · send a message to
+  continue", no longer a question awaiting an answer.
+- **Terminal client**: a multiline draft grows to 20 lines, then scrolls with the cursor, and
+  leaves room for the conversation on a small terminal.
+- **Terminal client**: arrow keys and Home/End move the cursor in a draft, including between lines.
 - **Terminal client**: a 1M context window no longer shows as `1000k`.
 - **Terminal client**: moving or resizing the terminal window no longer closes the client with
   "cannot draw the screen: The cursor position could not be read within a normal duration". The

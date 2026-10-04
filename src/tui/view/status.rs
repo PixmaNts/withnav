@@ -69,6 +69,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
         }
         Activity::AwaitingUser if state.open_permission().is_some() => "permission needed",
         Activity::AwaitingUser => "awaiting answer",
+        Activity::OutOfSteps => "out of steps · send a message to continue",
         Activity::Stopped => "stopped",
         Activity::Idle => "ready",
     };
@@ -77,7 +78,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
         match state.activity {
             Activity::Running => theme.accent(),
             Activity::Idle => theme.success(),
-            Activity::AwaitingUser => theme.warning(),
+            Activity::AwaitingUser | Activity::OutOfSteps => theme.warning(),
             Activity::Stopped => theme.muted(),
         },
     )];

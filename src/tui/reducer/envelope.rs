@@ -23,6 +23,49 @@ use serde_json::Value;
 
 type StepKey = (String, String, String);
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use ulid::Ulid;
+
+    #[test]
+    fn budget_yield_stays_out_of_steps_through_turn_end_and_agent_state() {
+        for kind in [Some("budget"), Some("choice"), None] {
+            let mut state = State::default();
+            let session = Ulid::new();
+            for (seq, event, payload) in [
+                (
+                    1,
+                    EventKind::AgentYield,
+                    json!({"question":"step budget exhausted", "kind":kind}),
+                ),
+                (2, EventKind::TurnEnd, json!({"outcome":"yielded"})),
+                (3, EventKind::AgentState, json!({"to":"yielded"})),
+            ] {
+                apply_envelope(&mut state, EventEnvelope::new(session, seq, event, payload))
+                    .unwrap();
+                assert_eq!(
+                    state.activity,
+                    if kind == Some("budget") {
+                        Activity::OutOfSteps
+                    } else {
+                        Activity::AwaitingUser
+                    }
+                );
+            }
+            assert_eq!(
+                state.conversation.blocks[0].kind,
+                if kind == Some("budget") {
+                    BlockKind::Notice("Out of steps · send a message to continue".into())
+                } else {
+                    BlockKind::YieldQuestion("step budget exhausted".into())
+                }
+            );
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct DeltaPayload {
     turn_id: String,
@@ -276,10 +319,19 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             let v = e.payload;
             s.watchdog_paused = v["kind"] == "watchdog" || v["kind"] == "budget";
             let q = v["question"].as_str().ok_or_else(bad)?;
-            s.activity = Activity::AwaitingUser;
+            let budget = v["kind"].as_str() == Some("budget");
+            s.activity = if budget {
+                Activity::OutOfSteps
+            } else {
+                Activity::AwaitingUser
+            };
             s.conversation.blocks.push(block(
                 e.seq.to_string(),
-                BlockKind::YieldQuestion(strip_controls(q)),
+                if budget {
+                    BlockKind::Notice("Out of steps · send a message to continue".into())
+                } else {
+                    BlockKind::YieldQuestion(strip_controls(q))
+                },
             ));
         }
         Some(EventKind::TurnEnd) => {
@@ -289,6 +341,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 s.watchdog_paused = false;
             }
             s.activity = match outcome {
+                "yielded" if s.activity == Activity::OutOfSteps => Activity::OutOfSteps,
                 "yielded" => Activity::AwaitingUser,
                 "interrupted" | "done" | "error" => Activity::Idle,
                 _ => s.activity,
@@ -596,6 +649,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         Some(EventKind::AgentState) => {
             s.activity = match e.payload["to"].as_str().unwrap_or("") {
                 "running" => Activity::Running,
+                "yielded" if s.activity == Activity::OutOfSteps => Activity::OutOfSteps,
                 "yielded" => Activity::AwaitingUser,
                 "idle" => Activity::Idle,
                 _ => s.activity,

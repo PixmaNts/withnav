@@ -250,7 +250,7 @@ pub fn draw(
     } else {
         area
     };
-    let editor_height = (editor.text().lines().count().max(1) as u16 + 2).min(7);
+    let editor_height = editor_height(editor, area.height);
     let [header, rule, transcript, separator, status, input, hints] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -331,5 +331,69 @@ pub fn draw(
     pickers::draw(frame, full, state, ui, &theme);
     if let Some((_, _, control)) = &ui.child_confirm {
         pickers::confirm_child(frame, full, state.agent_name(), *control, &theme);
+    }
+}
+
+fn editor_height(editor: &Editor, available_height: u16) -> u16 {
+    // Five chrome rows and five transcript rows stay visible whenever the terminal permits; the
+    // editor itself never shrinks below one text line, so the driver can always type.
+    let desired = editor.area().lines().len().clamp(1, 20) as u16 + 2;
+    desired.min(available_height.saturating_sub(10).max(3))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui_textarea::CursorMove;
+
+    #[test]
+    fn draft_grows_to_twenty_lines_and_preserves_transcript_space() {
+        let mut editor = Editor::new();
+        for (lines, expected) in [(1, 3), (7, 9), (20, 22), (25, 22)] {
+            editor.set_text(&vec!["draft"; lines].join("\n"));
+            assert_eq!(editor_height(&editor, 40), expected);
+        }
+        assert_eq!(editor_height(&editor, 24), 14);
+        assert_eq!(editor_height(&editor, 8), 3);
+        editor.set_text("draft\n");
+        assert_eq!(editor_height(&editor, 40), 4);
+    }
+
+    #[test]
+    fn textarea_scrolls_to_keep_cursor_visible_beyond_twenty_lines() {
+        let mut editor = Editor::new();
+        editor.set_text(
+            &(0..25)
+                .map(|i| format!("line {i:02}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        editor.area_mut().move_cursor(CursorMove::Bottom);
+        let mut terminal = Terminal::new(TestBackend::new(30, 20)).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(editor.area(), frame.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let text = buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("line 24"));
+        assert!(!text.contains("line 00"));
+        editor.area_mut().move_cursor(CursorMove::Top);
+        terminal
+            .draw(|frame| frame.render_widget(editor.area(), frame.area()))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("line 00"));
+        assert!(!text.contains("line 24"));
     }
 }

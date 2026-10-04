@@ -5,7 +5,7 @@ import { contextMeter } from "../contextMeter";
 import { ConversationIdentity } from "./conversationIdentity";
 import { mountConversations } from "./conversations";
 import { diffKind, parseWake } from "./wake";
-import { commandRows } from "../commands";
+import { ranked, PICKER_LIMIT } from "./pickerSearch";
 import type { CommandInfo } from "../chatProtocol";
 import type { ChildInfo } from "../chatProtocol";
 
@@ -55,8 +55,23 @@ function childActions(child: ChildInfo): HTMLElement {
 const palette = document.createElement("div");
 palette.id = "command-palette";
 palette.className = "command-palette";
-palette.setAttribute("role", "listbox");
-palette.setAttribute("aria-label", "Commands");
+const pickerSearch = document.createElement("input");
+pickerSearch.className = "picker-search";
+pickerSearch.type = "search";
+pickerSearch.placeholder = "Search names and descriptions…";
+pickerSearch.setAttribute("aria-label", "Search choices");
+pickerSearch.setAttribute("role", "combobox");
+pickerSearch.setAttribute("aria-autocomplete", "list");
+pickerSearch.setAttribute("aria-controls", "picker-options");
+const pickerCount = document.createElement("div");
+pickerCount.className = "picker-count";
+pickerCount.setAttribute("role", "status");
+pickerCount.setAttribute("aria-live", "polite");
+const pickerOptions = document.createElement("div");
+pickerOptions.id = "picker-options";
+pickerOptions.setAttribute("role", "listbox");
+pickerOptions.setAttribute("aria-label", "Choices");
+palette.append(pickerSearch, pickerCount, pickerOptions);
 palette.hidden = true;
 form.prepend(palette);
 const commandError = document.createElement("div");
@@ -72,36 +87,56 @@ pendingModel.className = "pending-model";
 modelSelect.after(agentLabel, pendingModel);
 let commands: CommandInfo[] = [];
 let paletteRows: { name: string; description: string; args_hint?: string }[] = [];
+let pickerItems: typeof paletteRows = [];
+let modelItems: typeof paletteRows = [];
 let paletteIndex = 0;
 let pickerKind: "model" | "variant" | "skills" | undefined;
+let selectorPicker = false;
 let paletteDismissed = false;
 function closePalette(): void {
+  selectorPicker = false;
+  pickerKind = undefined;
   palette.hidden = true;
+  pickerSearch.setAttribute("aria-expanded", "false");
+  pickerSearch.removeAttribute("aria-activedescendant");
   prompt.removeAttribute("aria-activedescendant");
   prompt.setAttribute("aria-expanded", "false");
 }
 function choosePalette(index: number): void {
   const row = paletteRows[index];
   if (!row) return;
-  if (pickerKind === "skills") prompt.value = `/skill ${row.name} `;
+  if (selectorPicker) post({ type: "selectModel", alias: row.name });
+  else if (pickerKind === "skills") prompt.value = `/skill ${row.name} `;
   else if (pickerKind) {
     const text = `/${pickerKind} ${row.name}`;
     prompt.value = text;
     post({ type: "send", text, includeContext: false });
   } else prompt.value = `/${row.name} `;
   pickerKind = undefined;
+  selectorPicker = false;
   closePalette();
   prompt.focus();
   updateControls();
 }
 function renderPalette(): void {
-  palette.replaceChildren();
-  if (!paletteRows.length) { closePalette(); return; }
-  paletteIndex = Math.min(paletteIndex, paletteRows.length - 1);
+  pickerOptions.replaceChildren();
+  const matches = ranked(pickerItems, pickerSearch.value, row => row.name, row => row.description);
+  paletteRows = matches.slice(0, PICKER_LIMIT);
+  pickerCount.textContent = `${matches.length} of ${pickerItems.length}${matches.length > PICKER_LIMIT ? " · Type to narrow (first 50 shown)" : ""}`;
+  paletteIndex = Math.max(0, Math.min(paletteIndex, paletteRows.length - 1));
   palette.hidden = false;
-  prompt.setAttribute("aria-controls", palette.id);
-  prompt.setAttribute("aria-expanded", "true");
-  prompt.setAttribute("aria-activedescendant", `command-option-${paletteIndex}`);
+  pickerSearch.setAttribute("aria-expanded", "true");
+  pickerSearch.hidden = !pickerKind;
+  if (paletteRows.length) pickerSearch.setAttribute("aria-activedescendant", `command-option-${paletteIndex}`);
+  else { pickerSearch.removeAttribute("aria-activedescendant"); pickerOptions.append(el("p", "picker-empty", "No matches. Try another search.")); }
+  if (!pickerKind) {
+    prompt.setAttribute("role", "combobox");
+    prompt.setAttribute("aria-autocomplete", "list");
+    prompt.setAttribute("aria-controls", pickerOptions.id);
+    prompt.setAttribute("aria-expanded", "true");
+    if (paletteRows.length) prompt.setAttribute("aria-activedescendant", `command-option-${paletteIndex}`);
+    else prompt.removeAttribute("aria-activedescendant");
+  }
   for (const [index, row] of paletteRows.entries()) {
     const option = document.createElement("div");
     option.id = `command-option-${index}`;
@@ -115,21 +150,49 @@ function renderPalette(): void {
     option.append(name, description);
     option.addEventListener("mousedown", event => event.preventDefault());
     option.addEventListener("click", () => choosePalette(index));
-    palette.append(option);
+    pickerOptions.append(option);
   }
-  palette.children[paletteIndex]?.scrollIntoView?.({ block: "nearest" });
+  pickerOptions.children[paletteIndex]?.scrollIntoView?.({ block: "nearest" });
 }
 function filterPalette(): void {
+  if (paletteDismissed || !/^\/[^\s/]*$/.test(prompt.value)) { closePalette(); return; }
   pickerKind = undefined;
-  paletteRows = paletteDismissed ? [] : commandRows(commands, prompt.value);
+  selectorPicker = false;
+  pickerItems = commands;
+  pickerSearch.value = prompt.value.slice(1);
   paletteIndex = 0;
   renderPalette();
+  prompt.setAttribute("aria-controls", pickerOptions.id);
+  prompt.setAttribute("aria-expanded", "true");
+  if (paletteRows.length) prompt.setAttribute("aria-activedescendant", `command-option-${paletteIndex}`);
+  else prompt.removeAttribute("aria-activedescendant");
 }
+pickerSearch.addEventListener("input", () => { paletteIndex = 0; renderPalette(); });
+pickerSearch.addEventListener("keydown", event => {
+  if (event.isComposing) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    if (pickerSearch.value) { pickerSearch.value = ""; paletteIndex = 0; renderPalette(); }
+    else { paletteDismissed = true; closePalette(); prompt.focus(); }
+  } else if (["ArrowUp", "ArrowDown"].includes(event.key)) {
+    event.preventDefault();
+    if (paletteRows.length) { paletteIndex = (paletteIndex + (event.key === "ArrowDown" ? 1 : -1) + paletteRows.length) % paletteRows.length; renderPalette(); }
+  } else if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); choosePalette(paletteIndex); }
+});
 const usage = document.querySelector<HTMLElement>("#usage")!;
 const usageFill = document.querySelector<HTMLElement>("#usage-fill")!;
 const usageLabel = document.querySelector<HTMLElement>("#usage-label")!;
 modelSelect.addEventListener("change", () => {
   if (modelSelect.value) post({ type: "selectModel", alias: modelSelect.value });
+});
+modelSelect.addEventListener("mousedown", event => {
+  if (modelSelect.disabled) return;
+  event.preventDefault(); selectorPicker = true; pickerKind = "model"; pickerItems = modelItems; pickerSearch.value = ""; paletteIndex = 0; renderPalette(); pickerSearch.focus();
+});
+modelSelect.addEventListener("keydown", event => {
+  if (!modelSelect.disabled && ["Enter", " ", "ArrowDown"].includes(event.key)) {
+    event.preventDefault(); selectorPicker = true; pickerKind = "model"; pickerItems = modelItems; pickerSearch.value = ""; paletteIndex = 0; renderPalette(); pickerSearch.focus();
+  }
 });
 includeContext.checked = vscode.getState()?.includeContext ?? true;
 const conversations = mountConversations(message => post(message), () => {
@@ -145,15 +208,20 @@ let stickToBottom = true;
 let replaying = false;
 let sessionId = "";
 let sending = false;
+let pendingSendText: string | undefined;
+let compacting = false;
+let compactionRow: HTMLElement | undefined;
 let lastConsumedDraft: string | undefined;
 const permissionCards = new Map<string, { root: HTMLElement; outcome: HTMLElement; controls: HTMLElement; call: HTMLElement }>();
 const pauseCards = new Map<string, { outcome: HTMLElement; controls: HTMLElement }>();
 
 function updateControls(): void {
   prompt.disabled = readOnly || state === "connecting";
+  if (compacting) prompt.placeholder = "Messages you send now are queued until compaction ends";
+  else if (!readOnly) prompt.placeholder = "Message Navai…";
   if (readOnly) modelSelect.disabled = true;
   send.disabled = prompt.disabled || sending || !prompt.value.trim();
-  stop.hidden = readOnly || state !== "busy";
+  stop.hidden = readOnly || (state !== "busy" && !compacting);
 }
 
 function setStatus(next: string, message?: string): void {
@@ -486,9 +554,12 @@ function renderPause(event: Extract<HostToWebview, { type: "pause" }>): void {
 function receive(event: HostToWebview): void {
   if (!identity.receive(event)) return;
   if (event.type === "conversationOpened") {
+    compacting = false; compactionRow = undefined;
+    usage.removeAttribute("aria-busy"); usage.removeAttribute("data-updating");
     readOnly = false; parentId = ""; childHeader.hidden = true; childrenSection.hidden = true;
     sessionId = event.id ?? "";
     sending = false;
+    pendingSendText = undefined;
     lastConsumedDraft = undefined;
     closePalette();
     commandError.hidden = true;
@@ -497,6 +568,18 @@ function receive(event: HostToWebview): void {
   }
   if (conversations(event)) return;
   switch (event.type) {
+    case "compaction": {
+      compacting = event.pending;
+      if (!compactionRow || !compactionRow.isConnected) { compactionRow = el("article", "message compaction-progress"); add(compactionRow); }
+      compactionRow.textContent = event.text;
+      compactionRow.dataset.pending = String(event.pending);
+      compactionRow.dataset.operationId = event.operationId;
+      compactionRow.setAttribute("role", "status");
+      compactionRow.classList.toggle("command-error", event.ok === false);
+      usage.setAttribute("aria-busy", String(event.pending));
+      usage.dataset.updating = String(event.pending);
+      updateControls(); break;
+    }
     case "subagents": {
       parentId = event.parentId;
       childrenRows.replaceChildren();
@@ -528,16 +611,17 @@ function receive(event: HostToWebview): void {
       closePalette(); updateControls(); break;
     }
     case "commands": commands = event.items; filterPalette(); break;
-    case "commandError": commandError.textContent = event.text; commandError.hidden = false; sending = false; updateControls(); break;
+    case "commandError": commandError.textContent = event.text; commandError.hidden = false; updateControls(); break;
     case "agent": agentLabel.textContent = event.name; break;
     case "modelPending": pendingModel.textContent = event.alias ? `→ ${event.alias} · pending after turn` : ""; break;
     case "commandPicker":
       sending = false;
       if (event.disabledReason) { commandError.textContent = event.disabledReason; commandError.hidden = false; closePalette(); }
-      else { pickerKind = event.kind; paletteRows = event.items; paletteIndex = 0; renderPalette(); prompt.focus(); }
+      else { selectorPicker = false; pickerKind = event.kind; pickerItems = event.items; pickerSearch.value = ""; paletteIndex = 0; renderPalette(); pickerSearch.focus(); }
       updateControls();
       break;
     case "history":
+      compactionRow = undefined;
       if (!event.items.length) usage.hidden = true;
       transcript.replaceChildren(empty);
       empty.hidden = false;
@@ -555,7 +639,7 @@ function receive(event: HostToWebview): void {
     case "status": setStatus(event.state, event.message); break;
     case "message": message(event.author, event.text, event.context, event.selectedSkill, event.source); break;
     case "sendResult":
-      sending = false;
+      if (pendingSendText === event.text) { sending = false; pendingSendText = undefined; }
       if (event.accepted && prompt.value === event.text) { lastConsumedDraft = event.text; prompt.value = ""; }
       if (!event.accepted && event.restoreDraft && !prompt.value && lastConsumedDraft === event.text) {
         prompt.value = event.text;
@@ -647,6 +731,7 @@ function receive(event: HostToWebview): void {
 
 /** Rebuilds the model picker; a locked picker shows the open conversation's model. */
 function renderModels(event: Extract<HostToWebview, { type: "models" }>): void {
+  modelItems = event.items.map(model => ({ name: model.alias, description: model.model }));
   const options = event.items.map(model => {
     const option = el("option", undefined, model.alias);
     option.value = model.alias;
@@ -769,7 +854,9 @@ form.addEventListener("submit", event => {
   if (!text.trim() || prompt.disabled || sending) return;
   closePalette();
   commandError.hidden = true;
-  sending = true;
+  // Idle compaction holds its HTTP response until completion. It must not own
+  // the ordinary message submission lock while the server queues input safely.
+  if (!/^\/compact(?:\s|$)/.test(text)) { sending = true; pendingSendText = text; }
   post({ type: "send", text, includeContext: includeContext.checked });
   updateControls();
   stickToBottom = true;
@@ -788,9 +875,12 @@ prompt.addEventListener("keydown", event => {
   if (!palette.hidden && !event.isComposing) {
     if (event.key === "Escape") { event.preventDefault(); paletteDismissed = true; pickerKind = undefined; closePalette(); return; }
     if (["ArrowUp", "ArrowDown"].includes(event.key)) {
-      event.preventDefault(); paletteIndex = (paletteIndex + (event.key === "ArrowDown" ? 1 : -1) + paletteRows.length) % paletteRows.length; renderPalette(); return;
+      event.preventDefault(); if (paletteRows.length) { paletteIndex = (paletteIndex + (event.key === "ArrowDown" ? 1 : -1) + paletteRows.length) % paletteRows.length; renderPalette(); } return;
     }
-    if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") { event.preventDefault(); choosePalette(paletteIndex); return; }
+    if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
+      if (paletteRows.length || pickerKind || event.key === "Tab") { event.preventDefault(); choosePalette(paletteIndex); return; }
+      // An unknown slash command is still submitted for host validation.
+    }
   }
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();

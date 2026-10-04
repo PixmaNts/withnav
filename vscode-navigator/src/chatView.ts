@@ -68,6 +68,7 @@ export function registerChatView(
               title: lastConversationOpened?.type === "conversationOpened" ? lastConversationOpened.title : "Conversation" });
             backend.publishSubagents();
             post({ type: "history", items: backend.history() });
+            backend.publishCompaction();
             if (lastModels) post(lastModels);
             const snapshot = backend.currentContext();
             if (snapshot) post({ type: "usage", snapshot });

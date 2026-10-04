@@ -17,10 +17,11 @@ test("commands use exact body without context and unknown/no-session commands re
   await backend.runComposerCommand("/compact focus on tests");
   assert.deepEqual(JSON.parse(calls[0].body), { name: "compact", arguments: "focus on tests" });
   assert.match(calls[0].url, /\/parent\/commands$/);
+  backend.mapEvent({seq:1,kind:"context.compacted",payload:{estimate_before:100,estimate_after:50}});
   await assert.rejects(backend.runComposerCommand("/unknown"), /Unknown command/);
   backend.state.session = undefined;
   await assert.rejects(backend.runComposerCommand("/context"), /conversation is needed/);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.filter(c => c.method === "POST").length, 1);
 });
 test("deferred model resolves only its operation and agent replay updates display", async t => {
   const { backend, apply } = setup(t, { operation_id: "OP", ok: true });

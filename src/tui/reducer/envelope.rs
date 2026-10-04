@@ -302,6 +302,10 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             let patch = ToolPatch {
                 name: Some(name),
                 args: Some(v["args"].clone()).filter(|a| !a.is_null()),
+                metadata: v
+                    .get("permission_gate")
+                    .filter(|g| g.is_object())
+                    .map(|g| serde_json::json!({"permission_gate":g})),
                 ..Default::default()
             };
             tool_merge(s, &actor, &turn, id, patch);

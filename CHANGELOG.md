@@ -18,6 +18,7 @@ requests land in `develop`.
 
 - **VS Code chat**: tool rows show who automatically approved a call (Jev or metacognition),
   with the review reason and any available verdicts in an expandable note.
+- Tool blocks show who auto-approved a reviewed call; expanding reveals the server's reason, optional verdicts and role check, also in copied tool text.
 
 ## [0.4.3] - 2026-10-04
 

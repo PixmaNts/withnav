@@ -161,28 +161,39 @@ conversation keeps its snapshot, its epoch and its retired incarnations, a `cont
 status line shows the active tab's.
 
 **Permission request to answer.** Before each tool call of an assistant message, `run_loop` asks
-`needs_permission` and the actor's `Grants`. A call that needs approval is not run: it, and the calls
-behind it, become `PendingInteraction::Permission` and the turn yields (`RunOutcome::PermissionRequired`).
+`needs_permission`, which validates the call and its paths. Every `bash`, `write` and `edit` then goes
+to `permission_gate`: conservative deterministic checks (redirections, mutating and risky command
+families, canonical destinations) only tighten, then Jev answers `call_effect`, `call_scope` and
+`call_risk` in one bounded request (plus `role_conformance` for `plan`). A read-only call, or a
+low-risk change inside the project, runs. A risky or outside-project change goes to a synchronous,
+tool-free metacognition review (20 s); only `approve` runs it. Anything else (reject, unsure, a
+malformed answer, a timeout, an oversized call, no reviewer) becomes a permission request. The
+verdicts are recorded as `permission_gate` on `tool.pre_call`, `tool.post_call` and
+`permission.requested`. Only `fetch` keeps reusable origin grants (`Grants`); saved bash/file folder
+grants are never used. `permissions.automatic_review: false` asks for every such call; children
+inherit their parent's value. The review is advisory, never a sandbox (ADR 0010).
+
+A call that needs approval is not run: it, and the calls behind it, become
+`PendingInteraction::Permission` and the turn yields (`RunOutcome::PermissionRequired`).
 The runtime publishes `permission.requested` and the turn ends `yielded`. `POST
 /v1/sessions/{id}/permissions/{request_id}` reaches `Service::answer_permission`, which checks the
 request id against the runtime's status, then sends a typed `PermissionAnswer` on a channel of its own
 (never a `Command`). The runtime publishes `permission.resolved` and calls `resolve_permission`:
-the held call runs once (or is denied), the siblings go through the gate again, and the turn goes on.
-A stop or a chat message cancels the request; a resume expires every request that has no
-`permission.resolved` and settles its calls as interrupted.
+the held call runs once (or is denied) after fresh validation, a changed destination is reviewed
+again, the siblings go through the gate again, and the turn goes on. For `bash`, `write` and `edit`
+an "allow folder" answer counts as allow once. A stop or a chat message cancels the request; a
+resume expires every request that has no `permission.resolved` and settles its calls as interrupted.
 
-**Plan exception to the role guard.** For the `plan` agent `gate` does not look at grants. A `write` or
-`edit` whose path as written is not a symlink, and whose destination is an existing regular `.md` file
-or a missing `.md` file in an existing directory, runs without a request. A symlink path is not
-exempt, even if it points to another Markdown file. Every other `write`
-or `edit`, and every `bash` or `fetch`, goes to `guard_step`: `guard::consult` sends Jev one
-`role_conformance` choice (role prompt, latest user message, workspace, resolved target, tool,
-exact arguments, at most 16 KiB; a larger call skips Jev) under the `SystemOneClient` deadline and the
-actor's cancellation. Only a valid `conforms` runs the call, and the verdict is recorded as `guard` in
-the metadata of its durable `tool.post_call`. Anything else (`violates`, `uncertain`, a malformed
-answer, no `instinct` alias or key, a timeout, an oversized call) is an ordinary permission request
-whose `reason` says why; the runtime turns an "allow folder" answer for `plan` into allow once. Jev is
-advisory, never a sandbox.
+**Plan exception to the role guard.** For the `plan` agent, a `write` or `edit` whose path as
+written is not a symlink, and whose destination is an existing regular `.md` file or a missing `.md`
+file in an existing directory, needs no `role_conformance` answer; it still goes through the
+permission review. Every other `write` or `edit`, and every `bash`, asks Jev `role_conformance` in the
+same batched request (role prompt, the driver's latest message, workspace, resolved target, tool,
+exact arguments, at most 16 KiB); a `fetch` asks it alone. Only a valid `conforms` lets the call
+continue, and the verdict is recorded as `guard` in the metadata of its durable `tool.post_call`.
+Anything else (`violates`, `uncertain`, a malformed answer, no `instinct` alias or key, a timeout, an
+oversized call) is an ordinary permission request whose `reason` says why. Jev is advisory, never a
+sandbox.
 
 **Keystroke to suggestion (reflex).** The extension asks `navigator/inlineCompletion` after 150 ms
 of pause. `runtime/inline.rs` reads the document and the reflex context, `reflex.rs` builds the FIM

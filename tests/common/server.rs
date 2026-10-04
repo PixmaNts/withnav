@@ -18,6 +18,19 @@ use navai::server::{AppState, ServerConfig};
 
 use super::sse::spawn_mock_provider;
 
+/// An explicit driver message, rather than a parent-authored child prompt.
+pub fn driver_command(session: ulid::Ulid, text: String) -> Command {
+    Command {
+        command_id: ulid::Ulid::new(),
+        session_id: session,
+        source_actor_id: "user:test".into(),
+        target_actor_id: "agent:main".into(),
+        mode: DeliveryMode::NextTurn,
+        content: vec![ContentBlock::Text { text }],
+        created_at: std::time::SystemTime::now(),
+    }
+}
+
 /// A provider URL nothing listens on. Creating a session loads the models
 /// file but makes no network call, so it is never dialed.
 pub const UNREACHABLE_PROVIDER_URL: &str = "http://127.0.0.1:1/v1";

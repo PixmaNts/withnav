@@ -347,6 +347,12 @@ impl HistoryStore {
         selection: EffectiveAgentSelection,
         envelopes: Vec<EventEnvelope>,
     ) -> Result<(), String> {
+        if agent != selection.primary_agent {
+            return Err(format!(
+                "override agent '{agent}' does not match selection primary_agent '{}'",
+                selection.primary_agent
+            ));
+        }
         if envelopes.is_empty()
             || envelopes.iter().any(|e| {
                 e.session_id != id
@@ -1823,9 +1829,52 @@ mod tests {
         assert_eq!(before.meta.reasoning_floor, Some(4));
         assert_eq!(before.meta.agent_overrides["plan"], value);
         assert_eq!(before.envelopes.len(), 2);
-        let mut failed = selection;
+        let mut mismatched = selection.clone();
+        mismatched.model = "p/mismatched".into();
+        mismatched.resolution.model = "mismatched".into();
+        mismatched.primary_agent = "build".into();
+        mismatched.variant = None;
+        mismatched.reasoning_floor = 99;
+        let error = store
+            .commit_agent_selection(
+                id,
+                "plan",
+                None,
+                mismatched,
+                vec![
+                    EventEnvelope::new(id, 2, EventKind::ModelChanged, serde_json::json!({})),
+                    EventEnvelope::new(
+                        id,
+                        3,
+                        EventKind::SessionAgentChanged,
+                        serde_json::json!({}),
+                    ),
+                ],
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("does not match"));
+        let unchanged = store.load(id).await.unwrap().unwrap();
+        assert_eq!(unchanged.meta.agent_overrides, before.meta.agent_overrides);
+        assert_eq!(unchanged.meta.model, before.meta.model);
+        assert_eq!(
+            unchanged.meta.model_resolution,
+            before.meta.model_resolution
+        );
+        assert_eq!(unchanged.meta.variant, before.meta.variant);
+        assert_eq!(
+            unchanged.meta.variant_override,
+            before.meta.variant_override
+        );
+        assert_eq!(unchanged.meta.primary_agent, before.meta.primary_agent);
+        assert_eq!(unchanged.meta.reasoning_floor, before.meta.reasoning_floor);
+        assert_eq!(unchanged.meta.last_seq, before.meta.last_seq);
+        assert_eq!(
+            serde_json::to_value(&unchanged.envelopes).unwrap(),
+            serde_json::to_value(&before.envelopes).unwrap()
+        );
+        let mut failed = selection.clone();
         failed.model = "p/failed".into();
-        failed.primary_agent = "build".into();
         failed.variant = None;
         failed.resolution.model = "failed".into();
         let failing_events = vec![
@@ -1845,6 +1894,67 @@ mod tests {
         assert_eq!(after.meta.last_seq, before.meta.last_seq);
         assert_eq!(after.meta.agent_overrides, before.meta.agent_overrides);
         assert_eq!(after.envelopes.len(), 2);
+        store
+            .commit_agent_selection(
+                id,
+                "plan",
+                Some(value),
+                selection,
+                vec![
+                    EventEnvelope::new(id, 10, EventKind::ModelChanged, serde_json::json!({})),
+                    EventEnvelope::new(
+                        id,
+                        4,
+                        EventKind::SessionAgentChanged,
+                        serde_json::json!({}),
+                    ),
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.meta(id).await.unwrap().unwrap().last_seq, 10);
+    }
+
+    #[tokio::test]
+    async fn missing_session_override_updates_and_clears_fail() {
+        let (_dir, store) = temp_store();
+        let id = Ulid::new();
+        assert!(store
+            .update_agent_override(id, "build", AgentOverride::default())
+            .await
+            .unwrap_err()
+            .contains("no stored session"));
+        assert!(store
+            .clear_agent_override(id, "build")
+            .await
+            .unwrap_err()
+            .contains("no stored session"));
+    }
+
+    #[tokio::test]
+    async fn concurrent_store_handles_preserve_sibling_agent_overrides() {
+        let (dir, first) = temp_store();
+        let second = HistoryStore::open(dir.path().join("sessions.db")).unwrap();
+        let id = Ulid::new();
+        first.record_session(id, "/w", "old", None).await.unwrap();
+        let build = AgentOverride {
+            model: Some("p/build".into()),
+            variant: AgentVariantOverride::Off,
+        };
+        let plan = AgentOverride {
+            model: Some("p/plan".into()),
+            variant: AgentVariantOverride::Named("low".into()),
+        };
+        let (a, b) = tokio::join!(
+            first.update_agent_override(id, "build", build.clone()),
+            second.update_agent_override(id, "plan", plan.clone())
+        );
+        a.unwrap();
+        b.unwrap();
+        let saved = first.agent_overrides(id).await.unwrap().unwrap();
+        assert_eq!(saved.len(), 2);
+        assert_eq!(saved["build"], build);
+        assert_eq!(saved["plan"], plan);
     }
 
     #[tokio::test]

@@ -432,6 +432,17 @@ enum Gated {
 }
 
 fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
+    if !call.args_valid || !call.args.is_object() {
+        return Gated::Rejected("invalid tool arguments".into());
+    }
+    if call.name == "bash"
+        && !call
+            .args
+            .get("command")
+            .is_some_and(serde_json::Value::is_string)
+    {
+        return Gated::Rejected("missing string argument: command".into());
+    }
     if actor.registry.get(&call.name).is_none() {
         return Gated::Rejected(format!(
             "tool '{}' is disabled by this session's policy",
@@ -638,6 +649,9 @@ async fn execute_call(
     tests::before_dispatch();
     if !still_resolves(&call.args, destination, &actor.tool_context) {
         return None;
+    }
+    if actor.cancel.is_cancelled() {
+        return Some(ToolResult::interrupted());
     }
     observe(AgentEvent::PreCall {
         permission_gate: guard_note

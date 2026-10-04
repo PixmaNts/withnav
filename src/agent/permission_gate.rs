@@ -235,7 +235,7 @@ pub fn parse_review(text: &str) -> Result<PermissionReview, ReviewError> {
         return Err(ReviewError("answer malformed (unknown decision)"));
     }
     let mut review: PermissionReview =
-        serde_json::from_value(value).map_err(|_| ReviewError("answer malformed (bad reason)"))?;
+        serde_json::from_str(text).map_err(|_| ReviewError("answer malformed (bad reason)"))?;
     if review.reason.trim().is_empty() {
         return Err(ReviewError("answer malformed (bad reason)"));
     }
@@ -429,6 +429,14 @@ fn approval_note(input: &PermissionReviewInput, source: &str, reason: Option<&st
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn duplicate_review_fields_never_authorize() {
+        for text in [r#"{"decision":"reject","decision":"approve","reason":"ok"}"#, r#"{"decision":"approve","decision":"reject","reason":"ok"}"#, r#"{"decision":"approve","decision":"approve","reason":"ok"}"#, r#"{"decision":"approve","reason":"no","reason":"ok"}"#, r#"{"decision":"approve","reason":"ok","extra":true}"#] { assert!(parse_review(text).is_err()); }
+        for decision in ["approve", "reject", "unsure"] {
+            let review = parse_review(&format!(r#"{{"decision":"{decision}","reason":"{}"}}"#, "x".repeat(600))).unwrap();
+            assert!(review.reason.len() <= 512);
+        }
+    }
     #[test]
     fn failure_categories_and_display_only_reason_truncation() {
         for (text, category) in [

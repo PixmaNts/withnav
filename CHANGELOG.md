@@ -12,12 +12,11 @@ requests land in `develop`.
 
 ### Fixed
 
-- **Terminal client**: running out of agent steps now shows “Out of steps · send a message to continue”, not a question awaiting an answer.
-
-- **Terminal client**: multiline drafts grow to 20 text lines, then scroll with the cursor, while leaving room for the conversation on smaller terminals.
-
-- **Terminal client**: arrow keys and Home/End now move the cursor in message drafts, including between lines.
-
+- **Terminal client**: running out of agent steps shows "Out of steps · send a message to
+  continue", no longer a question awaiting an answer.
+- **Terminal client**: a multiline draft grows to 20 lines, then scrolls with the cursor, and
+  leaves room for the conversation on a small terminal.
+- **Terminal client**: arrow keys and Home/End move the cursor in a draft, including between lines.
 - **Terminal client**: a 1M context window no longer shows as `1000k`.
 - **Terminal client**: moving or resizing the terminal window no longer closes the client with
   "cannot draw the screen: The cursor position could not be read within a normal duration". The

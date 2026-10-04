@@ -546,17 +546,26 @@ for (const status of [200, 503]) {
   });
 }
 
-test("failed open mid-stream preserves live-delta dedup and usage", async t => {
+test("failed open preserves context state and emits restored usage with the current generation", async t => {
   const { backend, apply } = setup(t);
   backend.connect = async () => {};
   apply("turn.start", { turn_id: "T" });
   apply("llm.delta", { turn_id: "T", delta: { delta_type: "text", text: "Hello" } });
-  backend.state.lastUsed = 42;
+  const context = { incarnation: "I", revision: 3, estimate_total: 42 };
+  backend.state.context = context;
+  backend.state.contextEpoch = 7;
+  backend.state.retiredIncarnations = ["old"];
+  const seen = []; backend.subscribe(m => seen.push(m));
   t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ error: "missing" }), { status: 404 }));
   await assert.rejects(backend.openConversation("B"));
   apply("llm.response", { turn_id: "T", message: { text: "Hello" } });
   assert.equal(backend.history().filter(m => m.type === "delta").map(m => m.text).join(""), "Hello");
-  assert.equal(backend.state.lastUsed, 42);
+  assert.equal(backend.state.context, context);
+  assert.equal(backend.state.contextEpoch, 7);
+  assert.deepEqual(backend.state.retiredIncarnations, ["old"]);
+  const usage = seen.find(m => m.type === "usage");
+  assert.equal(usage.snapshot, context);
+  assert.equal(usage.generation, backend.currentGeneration());
   backend.dispose();
 });
 

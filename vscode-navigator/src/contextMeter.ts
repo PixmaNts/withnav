@@ -10,7 +10,7 @@ export interface ContextSnapshot {
   percent: number;
   revision: number;
   incarnation?: string;
-  last_usage?: { prompt_tokens: number; completion_tokens: number; step: number };
+  last_usage?: { prompt_tokens: number; completion_tokens: number; step: string } | null;
 }
 
 const count = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) >= 0;
@@ -21,7 +21,7 @@ export function parseContext(value: any): ContextSnapshot | undefined {
       ![value.window, value.estimate_total, value.output_reserve, value.margin, value.input_budget, value.percent, value.revision].every(count) ||
       !value.breakdown || !["system", "rules", "skills_catalog", "tools", "messages"].every(key => count(value.breakdown[key])) ||
       (value.incarnation !== undefined && typeof value.incarnation !== "string") ||
-      (value.last_usage != null && ![value.last_usage.prompt_tokens, value.last_usage.completion_tokens, value.last_usage.step].every(count))) return undefined;
+      (value.last_usage != null && (![value.last_usage.prompt_tokens, value.last_usage.completion_tokens].every(count) || typeof value.last_usage.step !== "string"))) return undefined;
   return value;
 }
 
@@ -49,7 +49,7 @@ export function contextMeter(snapshot: ContextSnapshot) {
     `Output reserve: ${tokens(snapshot.output_reserve)}`,
     `Safety margin: ${tokens(snapshot.margin)}`,
   ];
-  if (snapshot.last_usage) rows.push(`Last request · provider count: ${tokens(snapshot.last_usage.prompt_tokens)} prompt + ${tokens(snapshot.last_usage.completion_tokens)} completion (step ${snapshot.last_usage.step})`);
+  if (snapshot.last_usage) rows.push(`Last request · provider count: ${tokens(snapshot.last_usage.prompt_tokens)} prompt + ${tokens(snapshot.last_usage.completion_tokens)} completion`);
   else rows.push("Last request · provider count: —");
   return { percent, fill: Math.min(100, percent), level: percent >= 90 ? "high" : percent >= 70 ? "mid" : "low",
     label: `~${tokens(snapshot.estimate_total)} / ${tokens(snapshot.window)} · ${percent}%`, detail: rows.join("\n") };

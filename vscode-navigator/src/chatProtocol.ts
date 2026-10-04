@@ -114,6 +114,7 @@ export type WebviewToHost = { generation?: number } & (
 
 /** What the chat view needs from the host side; implemented by the cognition bridge. */
 export interface ChatBackend {
+  currentContext(): import("./contextMeter").ContextSnapshot | undefined;
   currentGeneration(): number;
   resumePermissionReads(): void;
   cancelPermissionReads(): void;

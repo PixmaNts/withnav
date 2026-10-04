@@ -12,7 +12,7 @@ const snapshot = (revision = 1, extra = {}) => ({ alias: "model", window: 100000
 
 test("next request mapping uses the server percent over the window, formats millions and labels last request", () => {
   for (const [n, text] of [[842,"842"],[42000,"42k"],[999500,"1M"],[1000000,"1M"],[1500000,"1.5M"]]) assert.equal(tokens(n), text);
-  const meter = contextMeter(snapshot(1, { estimate_total: 700000, percent: 70, last_usage: { prompt_tokens: 42000, completion_tokens: 842, step: 2 } }));
+  const meter = contextMeter(snapshot(1, { estimate_total: 700000, percent: 70, last_usage: { prompt_tokens: 42000, completion_tokens: 842, step: "01ARZ3NDEKTSV4RRFFQ69G5FAV" } }));
   assert.equal(meter.percent, 70);
   assert.equal(meter.level, "mid");
   assert.equal(contextMeter(snapshot(2, { estimate_total: 900000, percent: 90 })).level, "high");
@@ -29,9 +29,39 @@ test("context revisions and retired incarnations cannot move the estimate backwa
   const seen = []; backend.subscribe(m => seen.push(m));
   backend.acceptContext(snapshot(3)); backend.acceptContext(snapshot(2)); backend.acceptContext(snapshot(3));
   assert.equal(seen.length, 1);
-  backend.acceptContext(snapshot(0, { incarnation: "J" })); backend.acceptContext(snapshot(99));
+  backend.acceptContext(snapshot(0, { incarnation: "J" }), true);
   assert.equal(backend.state.context.incarnation, "J");
   assert.equal(seen.at(-1).generation, backend.currentGeneration());
+});
+
+test("GET and context.updated accept provider usage with a ULID request identifier", async t => {
+  const backend = new CognitionBackend(); backend.endpoint = { port: 1234, token: "secret" }; backend.state.session = "A";
+  const last_usage = { prompt_tokens: 42000, completion_tokens: 842, step: "01ARZ3NDEKTSV4RRFFQ69G5FAV" };
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify(snapshot(1, { last_usage }))));
+  await backend.fetchContext(); assert.deepEqual(backend.currentContext().last_usage, last_usage);
+  backend.mapEvent({ seq: 2, kind: "context.updated", payload: snapshot(2, { last_usage }) });
+  assert.equal(backend.currentContext().revision, 2);
+  assert.doesNotMatch(contextMeter(backend.currentContext()).detail, /step|01ARZ/);
+  assert.ok(parseContext(snapshot(3, { last_usage: null })));
+  assert.equal(parseContext(snapshot(3, { last_usage: { ...last_usage, step: 2 } })), undefined);
+  backend.dispose();
+});
+
+test("authoritative GET J survives queued unseen incarnation I and follows later J revisions", async t => {
+  const backend = new CognitionBackend(); backend.endpoint = { port: 1234, token: "secret" }; backend.state.session = "A";
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => { calls++; return new Response(JSON.stringify(snapshot(1, { incarnation: "J" }))); });
+  await backend.fetchContext();
+  backend.mapEvent({ seq: 2, kind: "context.updated", payload: snapshot(50) });
+  assert.equal(backend.currentContext().incarnation, "J");
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(calls, 2);
+  backend.mapEvent({ seq: 3, kind: "context.updated", payload: snapshot(2, { incarnation: "J" }) });
+  backend.mapEvent({ seq: 4, kind: "context.updated", payload: snapshot(3, { incarnation: "J" }) });
+  assert.equal(backend.currentContext().revision, 3);
+  backend.state.retiredIncarnations.push("I");
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify(snapshot(0))));
+  await backend.fetchContext(); assert.equal(backend.currentContext().incarnation, "I");
+  assert.ok(!backend.state.retiredIncarnations.includes("I")); backend.dispose();
 });
 
 test("open fetches context; events update it; model change and compaction refresh", async t => {

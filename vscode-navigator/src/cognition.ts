@@ -419,11 +419,17 @@ export class CognitionBackend implements ChatBackend {
     }
   }
 
-  private acceptContext(value: unknown): void {
+  currentContext(): ContextSnapshot | undefined { return this.state.context; }
+
+  private acceptContext(value: unknown, authoritative = false): void {
     const snapshot = parseContext(value);
     if (!snapshot || !this.currentConversationId()) return;
     const held = this.state.context;
-    if (snapshot.incarnation && this.state.retiredIncarnations.includes(snapshot.incarnation)) return;
+    if (!authoritative && held && held.incarnation !== snapshot.incarnation) {
+      void this.fetchContext();
+      return;
+    }
+    if (authoritative) this.state.retiredIncarnations = this.state.retiredIncarnations.filter(id => id !== snapshot.incarnation);
     if (held) {
       if (held.incarnation === snapshot.incarnation && snapshot.revision <= held.revision) return;
       if (held.incarnation && held.incarnation !== snapshot.incarnation) {
@@ -444,7 +450,7 @@ export class CognitionBackend implements ChatBackend {
     try {
       const snapshot = await this.request(`/v1/sessions/${encodeURIComponent(session)}/context`, { method: "GET" });
       if (origin !== this.state || generation !== this.state.streamGeneration || session !== this.currentConversationId() || epoch !== origin.contextEpoch) return;
-      this.acceptContext(snapshot);
+      this.acceptContext(snapshot, true);
     } catch { /* Keep the last estimate; never substitute last-call usage. */ }
   }
 
@@ -740,6 +746,8 @@ export class CognitionBackend implements ChatBackend {
 
   private mapEvent(envelope: WireEnvelope): HostToWebview | undefined {
     const payload = envelope.payload ?? {};
+    // Refresh context even when these events also project a notice.
+    if (envelope.kind === "context.compacted" || envelope.kind === "model.changed") void this.fetchContext();
     for (const update of this.state.controls.envelopeUpdates(envelope)) this.emit(update);
     const projected = eventView(envelope, this.state.currentTurn, this.state.controls.calls);
     if (projected?.type === "pause" && envelope.seq <= this.state.previousRunThrough) {
@@ -754,7 +762,6 @@ export class CognitionBackend implements ChatBackend {
         return undefined;
       case "context.compacted":
       case "model.changed":
-        void this.fetchContext();
         return undefined;
       case "turn.start": {
         this.state.currentTurn = String(payload.turn_id ?? envelope.seq);

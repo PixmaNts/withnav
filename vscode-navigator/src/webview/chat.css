@@ -158,3 +158,31 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 .usage[data-level=mid] .usage-fill { background: var(--vscode-editorWarning-foreground, var(--vscode-progressBar-background)); }
 .usage[data-level=high] .usage-fill { background: var(--vscode-errorForeground); }
 .usage[data-level=high] .usage-label { color: var(--vscode-errorForeground); }
+.skill-note { margin-left: 9px; font-weight: normal; color: var(--vscode-descriptionForeground); }
+.message.subagent { padding-left: 10px; border-left: 2px solid var(--vscode-descriptionForeground); }
+.control-card { margin: 14px 0; padding: 12px; border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); border-left: 2px solid var(--vscode-focusBorder); border-radius: 4px; background: var(--vscode-editor-background); overflow-wrap: anywhere; }
+.permission-card { border-left-color: var(--vscode-editorWarning-foreground, var(--vscode-focusBorder)); }
+.control-kicker { font-size: 11px; font-weight: 600; color: var(--vscode-descriptionForeground); }
+.control-title { margin: 4px 0 8px; font-size: 13px; }
+.control-meta { font-size: 11px; color: var(--vscode-descriptionForeground); white-space: pre-wrap; }
+.permission-reason { white-space: pre-wrap; }
+.control-card .code-block { margin: 10px 0; }
+.control-card pre code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.control-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.control-actions button { padding: 5px 9px; border: 1px solid transparent; border-radius: 3px; font-size: 12px; }
+.control-primary { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
+.control-primary:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
+.control-secondary { color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); }
+.control-secondary:hover:not(:disabled) { background: var(--vscode-button-secondaryHoverBackground); }
+.deny-message { min-height: 48px; margin-top: 8px; font-size: 12px; }
+.control-outcome { margin-top: 8px; font-size: 11px; color: var(--vscode-descriptionForeground); white-space: pre-wrap; }
+.permission-card[data-resolution=error] .control-outcome { color: var(--vscode-errorForeground); }
+.permission-card[data-resolution=allow_once], .permission-card[data-resolution=allow_folder], .permission-card[data-resolution=deny], .permission-card[data-resolution=expired], .permission-card[data-resolution=cancelled], .permission-card[data-resolution=stale] { border-left-color: var(--vscode-panel-border, var(--vscode-widget-border)); }
+.tool-row { flex-wrap: wrap; }
+.tool-row .tool-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-row > .approval-evidence { flex-basis: 100%; margin-left: 19px; overflow: visible; white-space: normal; }
+.approval-evidence { color: var(--vscode-descriptionForeground); font-size: 11px; min-width: 0; }
+.approval-evidence summary { cursor: pointer; width: fit-content; }
+.evidence-body { margin-top: 6px; padding: 6px 0 6px 8px; border-left: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); white-space: pre-wrap; overflow-wrap: anywhere; }
+.evidence-field { margin-top: 4px; }
+.control-notice { font-size: 12px; color: var(--vscode-descriptionForeground); white-space: pre-wrap; }

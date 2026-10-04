@@ -2,7 +2,7 @@
   "name": "navai",
   "displayName": "Navai",
   "description": "Pair-programming navigator: a language server watches your edits and offers short end-of-line remarks.",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "publisher": "pixmants",
   "private": true,
   "engines": {
@@ -123,6 +123,8 @@
     }
   },
   "scripts": {
+    "pretest": "npm run compile",
+    "test": "node test-build.mjs && node --test tests/*.test.cjs",
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p tsconfig.json && node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
@@ -138,6 +140,7 @@
     "@types/vscode": "^1.90.0",
     "@vscode/vsce": "^3.0.0",
     "esbuild": "^0.24.0",
+    "jsdom": "^26.1.0",
     "typescript": "^5.6.0"
   }
 }

@@ -71,6 +71,7 @@ export function activate(_context: vscode.ExtensionContext) {
 
   registerCommands();
   _context.subscriptions.push(registerChatView(_context, cognition));
+  _context.subscriptions.push(cognition);
   _context.subscriptions.push(vscode.commands.registerCommand("navai.focusChat", () => vscode.commands.executeCommand("workbench.view.extension.navai")));
 
   vscode.window.onDidChangeVisibleTextEditors((editors) => {

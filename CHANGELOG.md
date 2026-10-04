@@ -4,6 +4,34 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-10-04
+
+The VS Code chat can now answer the agent's permission requests and continue a paused agent.
+
+### Fixed
+
+- **VS Code chat: permission requests can be answered.** Before, the chat ignored them: a
+  conversation that needed your approval stayed blocked, and typing a message cancelled the
+  request. A card now shows the agent, the tool, the full reason and the call (the whole command;
+  a write or edit with its path, options such as `replace_all`, and its content up to 4096 bytes),
+  with **Allow once** and **Deny** (and an optional message). Subagents' requests appear in their
+  parent conversation. Answered, denied and expired requests stay visible when you reopen the
+  conversation. Sending a message while a request is open asks you first, since it cancels it.
+- **VS Code chat: subagent output is no longer shown as yours.** Only your own messages are shown
+  as you; a subagent's result is labelled as untrusted data. A skill you selected shows beside
+  your message.
+- **VS Code chat: paused agents can be continued.** "Out of steps" offers **Continue**; a watchdog
+  pause shows its reason with **Continue** and **Stop**. Refusals show the server's reason, and
+  pauses from a run that has ended stay as history, without buttons.
+- **VS Code chat: buttons always act on their own conversation**, including after switching
+  conversations, a failed open, a server restart or reopening the panel; an answer is never sent
+  twice.
+
+### Added
+
+- **VS Code chat**: tool rows show who approved a reviewed call (Jev or metacognition), with the
+  reason and Jev's verdicts in an expandable note, like the terminal client.
+
 ## [0.4.4] - 2026-10-04
 
 The per-call review now treats your own request as what you want, and the terminal client shows

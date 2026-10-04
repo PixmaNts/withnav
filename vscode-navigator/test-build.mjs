@@ -1,0 +1,10 @@
+import { build } from "esbuild";
+
+await build({
+  entryPoints: ["src/eventView.ts", "src/cognition.ts", "src/chatView.ts", "src/chatHtml.ts", "src/webview/conversationIdentity.ts"],
+  bundle: true,
+  platform: "node",
+  format: "cjs",
+  outdir: "out/tests",
+  external: ["vscode"],
+});

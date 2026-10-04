@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 mod assignments;
-pub use assignments::ModelAssignment;
+pub use assignments::{AssignmentVariant, ModelAssignment};
 
 pub const FILE_NAME: &str = "config.json";
 

@@ -2,21 +2,27 @@
 """Build Navai's models.json and auth.json from the OpenCode config.
 
 Reads ~/.config/opencode/opencode.jsonc (or --opencode PATH), takes every
-model of every openai-compatible provider, and writes one Navai alias per
-model id (same id), plus the role aliases Navai's layers use. The provider
-key goes to auth.json (0600), never to models.json.
+model of every openai-compatible provider, and writes catalog names of the
+form <gateway>/<exact upstream id>. No assignments or config.json are written.
+Existing catalog metadata and unmanaged providers are preserved. Literal keys
+go to auth.json (0600), never to models.json. OmniRoute combo models receive
+low/medium/high reasoning_effort variants; manual variants take precedence.
 
-The omniroute provider gets "catalog_format": "omniroute", so Navai reads
-each model's context window and variants from the provider's model list.
-Imported chat aliases therefore carry no context_window, unless you pass
---with-windows to copy the limits from the OpenCode config. The reflex and
-instinct aliases keep their fixed windows: they speak their own APIs.
+Refresh contract: matching source ids own provider/model identity and supplied
+api, supports_tools, supports_parallel_tool_calls (or OpenCode toolcall), and
+reasoning_history fields. With --with-windows, supplied limit.context/input/output
+refresh context_window/max_input_tokens/max_output_tokens. Otherwise existing
+windows remain manual. Missing source fields retain existing values, except
+supports_tools/parallel defaults remain source-generated True. Variants and
+default_variant always remain manual; unmanaged entries remain unchanged.
+Existing fim/systemone token limits remain manual even for matching source ids.
+Their API must match an explicitly supplied source API; changing it is refused.
 
 What it imports:
   - Only OpenAI-compatible providers (`npm` is `@ai-sdk/openai-compatible` or
     `@ai-sdk/openai`). Any other provider is skipped with a warning.
-  - The same model id from two providers: the first one is kept, the second
-    is skipped with a warning (the alias is the model id, so it must be unique).
+  - The same upstream id from two gateways is retained under distinct names.
+    Duplicate JSON keys and conflicting legacy catalog models are refused.
   - `apiKey` as a literal goes to auth.json (0600). `apiKey` as `{env:NAME}`
     becomes `"api_key_env": "NAME"` in models.json, nothing is stored for it,
     and a key already stored in auth.json for that provider is REMOVED (Navai
@@ -54,40 +60,109 @@ ENV_REF = re.compile(r"^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$")
 class ImportError_(Exception):
     """A problem the user must fix; nothing has been written."""
 
-# Role aliases: the layer -> (provider, model id, extra settings). Instinct
-# and reflex speak their own APIs and stay on their dedicated endpoints.
-ROLES = {
-    "cognition": ("cc/claude-opus-5-5", {}),
-    "default": ("combo/deepseek-v4-flash", {}),
-    "fast": ("combo/deepseek-v4-flash", {}),
-    "metacognition": ("combo/deepseek-v4-flash", {"supports_parallel_tool_calls": False}),
-}
-FIXED = {
-    "reflex": {
-        "provider": "inception",
-        "model": "mercury-edit-2",
-        "context_window": 128000,
-        "max_output_tokens": 512,
-        "supports_tools": False,
-        "supports_parallel_tool_calls": False,
-        "api": "fim",
-    },
-    "instinct": {
-        "provider": "omniroute",
-        "model": "typesafe/jev-1.13",
-        "context_window": 64000,
-        "max_output_tokens": 2048,
-        "supports_tools": False,
-        "supports_parallel_tool_calls": False,
-        "api": "systemone",
-    },
-}
-EXTRA_PROVIDERS = {
-    "inception": {
-        "base_url": "https://api.inceptionlabs.ai/v1",
-        "api_key_env": "INCEPTION_API_KEY",
-    },
-}
+def unique_object(pairs):
+    """Reject duplicate JSON keys without exposing their potentially secret values."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ImportError_("duplicate JSON object key (source must use unique names)")
+        result[key] = value
+    return result
+
+
+def load_json(text, jsonc=False):
+    return json.loads(strip_jsonc(text) if jsonc else text,
+                      object_pairs_hook=unique_object)
+
+
+def validate_provider(pname, provider):
+    if not isinstance(provider, dict) or not isinstance(provider.get("base_url"), str):
+        raise ImportError_("catalog provider requires an object and base_url string")
+    if "api_key_env" in provider:
+        env = provider["api_key_env"]
+        if not isinstance(env, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", env):
+            raise ImportError_("catalog provider api_key_env must be a valid environment variable name")
+
+    def check_fields(fields):
+        for field, value in fields.items():
+            if field != "api_key_env" and KEYLIKE.search(field):
+                raise ImportError_("catalog provider contains an inline credential field")
+            if isinstance(value, dict):
+                check_fields(value)
+    check_fields(provider)
+    return {**provider, "base_url": check_base_url(pname, provider["base_url"])}
+
+
+def provider_identity(provider):
+    # Conservatively include unknown routing fields, headers and env selection.
+    return {key: value for key, value in provider.items()
+            if key not in ("catalog_format", "connect_timeout_ms", "request_timeout_ms")}
+
+
+def check_provider_changes(imported, existing, keys, env_providers):
+    for pname, old in existing.get("providers", {}).items():
+        old = validate_provider(pname, old)
+        if pname in imported and provider_identity(old) != provider_identity(imported[pname]):
+            if pname not in keys and pname not in env_providers:
+                raise ImportError_("provider identity changed; an explicit literal apiKey "
+                                   "or {env:NAME} reference is required")
+
+
+def merge_catalog(providers, models, existing):
+    """Refresh source fields, refusing dedicated API changes and keeping their limits."""
+    if not isinstance(existing, dict):
+        raise ImportError_("existing models.json is not a JSON object")
+    old_providers = existing.get("providers", {})
+    old_models = existing.get("models", {})
+    if not isinstance(old_providers, dict) or not isinstance(old_models, dict):
+        raise ImportError_("existing catalog providers/models must be objects")
+    old_providers = {name: validate_provider(name, entry)
+                     for name, entry in old_providers.items()}
+    preserved = {}
+    for entry in old_models.values():
+        if not isinstance(entry, dict):
+            raise ImportError_("existing catalog model must be an object")
+        gateway, mid = entry.get("provider"), entry.get("model")
+        if not isinstance(gateway, str) or not gateway or not isinstance(mid, str) or not mid:
+            raise ImportError_("existing catalog model requires nonempty provider and model")
+        name = f"{gateway}/{mid}"
+        if gateway not in providers and gateway not in old_providers:
+            raise ImportError_(f"catalog model '{name}' has an undeclared provider")
+        if name in preserved and preserved[name] != entry:
+            raise ImportError_(f"conflicting metadata for qualified model '{name}'")
+        preserved[name] = dict(entry)
+    providers = {**old_providers, **providers}
+    for name, manual in preserved.items():
+        generated = models.get(name, {})
+        if (manual.get("api") in ("systemone", "fim") and "api" in generated
+                and generated["api"] != manual["api"]):
+            raise ImportError_(f"catalog model '{name}': source API conflicts with dedicated API")
+        entry = {**generated, **manual}
+        for field in ("provider", "model", "api", "supports_tools",
+                      "supports_parallel_tool_calls", "reasoning_history",
+                      "context_window", "max_input_tokens", "max_output_tokens"):
+            if field in generated:
+                if (manual.get("api") in ("systemone", "fim")
+                        and field in ("context_window", "max_input_tokens", "max_output_tokens")):
+                    continue  # Dedicated API limits are manual, not chat catalog limits.
+                entry[field] = generated[field]
+        if "variants" in generated or "variants" in manual:
+            variants = manual.get("variants", {})
+            if not isinstance(variants, dict):
+                raise ImportError_(f"catalog model '{name}' variants must be an object")
+            entry["variants"] = {**generated.get("variants", {}), **variants}
+        models[name] = entry
+    # Preserved combo entries also receive the standard variants.
+    for entry in models.values():
+        if entry["provider"] == "omniroute" and entry["model"].startswith("combo/"):
+            variants = entry.get("variants", {})
+            if not isinstance(variants, dict):
+                raise ImportError_("combo variants must be an object")
+            entry["variants"] = {
+                **{tier: {"reasoning_effort": tier} for tier in ("low", "medium", "high")},
+                **variants,
+            }
+    return providers, dict(sorted(models.items()))
 
 
 def _skip_gap(text: str, i: int) -> int:
@@ -112,7 +187,7 @@ def strip_jsonc(text: str) -> str:
     """Drop comments and trailing commas, outside strings only.
 
     >>> strip_jsonc('{"a": 1, // note\\n "b": [1, 2,], /* x */ }')
-    '{"a": 1, \\n "b": [1, 2]  }'
+    '{"a": 1,  \\n "b": [1, 2]   }'
     >>> strip_jsonc('{"x": "keep,]", "y": "//no", "z": "/*no*/",}')
     '{"x": "keep,]", "y": "//no", "z": "/*no*/"}'
     >>> strip_jsonc('{"q": "a\\\\"b,}"}')
@@ -132,10 +207,12 @@ def strip_jsonc(text: str) -> str:
             in_str = True
             out.append(c)
         elif text.startswith("//", i):
+            out.append(" ")
             while i < len(text) and text[i] != "\n":
                 i += 1
             continue
         elif text.startswith("/*", i):
+            out.append(" ")
             end = text.find("*/", i + 2)
             if end < 0:
                 raise ImportError_("unterminated /* comment in the OpenCode config")
@@ -163,7 +240,7 @@ def check_base_url(pname: str, base: str) -> str:
     for name, _ in parse_qsl(parts.query, keep_blank_values=True):
         if KEYLIKE.search(name):
             raise ImportError_(
-                f"provider '{pname}': baseURL has a key-like query parameter '{name}'; "
+                f"provider '{pname}': baseURL has a key-like query parameter; "
                 "Navai would store it in models.json")
     return base.rstrip("/")
 
@@ -179,7 +256,7 @@ def read_api_key(pname: str, raw):
         return None, m.group(1)
     if "{" in raw and "}" in raw and re.search(r"\{[a-z]+:", raw):
         raise ImportError_(
-            f"provider '{pname}': apiKey is the reference {raw.split(':')[0]}:...}}; only "
+            f"provider '{pname}': apiKey contains an unsupported reference; only "
             "{env:NAME} is supported. Put the key in an environment variable, or write the "
             "literal key.")
     return raw, None
@@ -189,12 +266,20 @@ def convert(oc: dict, with_windows: bool, warn):
     """OpenCode config -> (providers, models, keys, env_providers): `keys` are the
     literal keys to store, `env_providers` the providers whose key is an
     `{env:NAME}` reference. Raises ImportError_."""
+    if not isinstance(oc, dict) or not isinstance(oc.get("provider", {}), dict):
+        raise ImportError_("OpenCode config and provider map must be objects")
     providers, models, keys, env_providers = {}, {}, {}, set()
     for pname, p in oc.get("provider", {}).items():
+        if not isinstance(pname, str) or not pname or not isinstance(p, dict):
+            raise ImportError_("provider requires a nonempty name and an object")
         opts = p.get("options", {})
+        if not isinstance(opts, dict):
+            raise ImportError_(f"provider '{pname}': options must be an object")
         base = opts.get("baseURL")
         if not base:
             continue
+        if not isinstance(base, str):
+            raise ImportError_(f"provider '{pname}': baseURL must be a string")
         if p.get("npm") not in OPENAI_STYLE_NPM:
             warn(f"skipped provider '{pname}': npm {p.get('npm')!r} is not OpenAI-compatible")
             continue
@@ -207,29 +292,37 @@ def convert(oc: dict, with_windows: bool, warn):
             keys[pname] = key
         if env:
             env_providers.add(pname)
-        for mid, m in p.get("models", {}).items():
-            if mid in models:
-                warn(f"model '{mid}' of provider '{pname}' skipped: already imported from "
-                     f"'{models[mid]['provider']}' (the first one is kept)")
-                continue
+        source_models = p.get("models", {})
+        if not isinstance(source_models, dict):
+            raise ImportError_(f"provider '{pname}': models must be an object")
+        for mid, m in source_models.items():
+            if not isinstance(mid, str) or not mid or not isinstance(m, dict):
+                raise ImportError_(f"provider '{pname}': model requires a nonempty id and an object")
+            name = f"{pname}/{mid}"
+            if name in models:
+                raise ImportError_(f"duplicate qualified model '{name}'")
             lim = m.get("limit", {})
+            if not isinstance(lim, dict):
+                raise ImportError_(f"model '{name}': limit must be an object")
             entry = {"provider": pname, "model": mid, "supports_tools": True,
                      "supports_parallel_tool_calls": True}
-            if with_windows and lim.get("context"):
-                entry["context_window"] = int(lim["context"])
-            models[mid] = entry
+            for field in ("api", "supports_tools", "supports_parallel_tool_calls", "reasoning_history"):
+                if field in m:
+                    entry[field] = m[field]
+            if "toolcall" in m and "supports_tools" not in m:
+                entry["supports_tools"] = m["toolcall"]
+            if with_windows:
+                for source, target in (("context", "context_window"),
+                                       ("input", "max_input_tokens"),
+                                       ("output", "max_output_tokens")):
+                    if lim.get(source):
+                        entry[target] = int(lim[source])
+            models[name] = entry
     if "omniroute" not in providers:
         raise ImportError_("no usable omniroute provider in the OpenCode config")
-    for alias, (mid, extra) in ROLES.items():
-        base = dict(models.get(mid, {"provider": "omniroute", "model": mid,
-                                     "supports_tools": True}))
-        base.update(extra)
-        models[alias] = base
-    models.update(FIXED)
-    for k, v in EXTRA_PROVIDERS.items():
-        providers.setdefault(k, v)
     providers["omniroute"]["catalog_format"] = "omniroute"
-    return providers, dict(sorted(models.items())), keys, env_providers
+    providers, models = merge_catalog(providers, models, {})
+    return providers, models, keys, env_providers
 
 
 def stage(path: Path, text: str, mode: int) -> Path:
@@ -346,8 +439,9 @@ def self_test() -> int:
     auth = {"omniroute": {"api_key": "old"}, "unrelated": {"api_key": "x"}}
     check(update_auth(auth, keys, env_providers)[0] == {"unrelated": {"api_key": "x"}},
           "a stored key is removed for an env provider, others kept")
-    check(models["m"]["provider"] == "omniroute" and "n" in models, "first provider wins")
-    check("c" not in models and len(warnings) == 2, "skips and warns")
+    check("omniroute/m" in models and "other/m" in models and "other/n" in models,
+          "distinct gateways retained")
+    check("anthropic/c" not in models and len(warnings) == 1, "skips and warns")
     with tempfile.TemporaryDirectory() as tmpd:
         d = Path(tmpd)
         (d / "models.json").write_text("old")
@@ -395,16 +489,23 @@ def main() -> int:
     # Validate everything first: nothing is written until all of it is sound.
     try:
         try:
-            oc = json.loads(strip_jsonc(Path(args.opencode).read_text()))
+            oc = load_json(Path(args.opencode).read_text(), jsonc=True)
         except ValueError as e:
             raise ImportError_(f"{args.opencode} is not valid JSON/JSONC ({e})")
         providers, models, keys, env_providers = convert(oc, args.with_windows, warn)
         d = Path(args.config_dir)
+        catalog_path = d / "models.json"
+        if catalog_path.exists():
+            existing = load_json(catalog_path.read_text())
+            # Validate shape and retained providers before checking identity/auth.
+            imported = providers
+            providers, models = merge_catalog(providers, models, existing)
+            check_provider_changes(imported, existing, keys, env_providers)
         auth_path = d / "auth.json"
         auth = {}
         if auth_path.exists():
             try:
-                auth = json.loads(auth_path.read_text())
+                auth = load_json(auth_path.read_text())
             except ValueError as e:
                 raise ImportError_(f"{auth_path} is not valid JSON ({e}); fix or remove it")
             if not isinstance(auth, dict):
@@ -415,7 +516,7 @@ def main() -> int:
     old_auth = auth
     auth, removed = update_auth(old_auth, keys, env_providers)
     if args.dry_run:
-        print(f"{len(models)} aliases, providers {sorted(providers)}, keys {sorted(keys)}"
+        print(f"{len(models)} models, providers {sorted(providers)}, keys {sorted(keys)}"
               + (f", stored keys that would be removed {removed}" if removed else ""))
         return 0
     cfg = {"providers": providers, "models": models}
@@ -430,7 +531,7 @@ def main() -> int:
     except OSError as e:
         print(f"error: {e}; nothing was replaced", file=sys.stderr)
         return 1
-    print(f"wrote {d/'models.json'} ({len(models)} aliases)"
+    print(f"wrote {d/'models.json'} ({len(models)} models)"
           + (f" and {auth_path} (keys stored: {sorted(keys)})" if "auth.json" in files else ""))
     if removed:
         print(f"removed the stored key of {removed} from {auth_path}: its apiKey is an "

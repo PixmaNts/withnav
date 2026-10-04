@@ -165,7 +165,8 @@ fn metacognition_prefers_explicit_low_or_defers_to_runtime_offers() {
         ("cc/empty", None, false),
         ("cc/no-low", Some("high"), false),
     ] {
-        let settings = settings(json!({"layers":{"metacognition":format!("omniroute/{model}")}}));
+        let settings =
+            self::settings(json!({"layers":{"metacognition":format!("omniroute/{model}")}}));
         let assigned = enabled(
             AssignmentResolver::new(&catalog, &settings)
                 .layer_assignment(Layer::Metacognition)
@@ -223,7 +224,10 @@ fn agents_prefer_config_over_headers_and_return_warning_fallback() {
 #[test]
 fn default_agent_validates_name_and_requires_usable_model() {
     let catalog = catalog();
-    let known = [("build", Some("omniroute/cc/chat")), ("oracle", None)];
+    let known = [
+        ("build", Some("omniroute/cc/chat"), true),
+        ("oracle", None, true),
+    ];
     let empty = Settings::default();
     assert_eq!(
         AssignmentResolver::new(&catalog, &empty)
@@ -297,7 +301,7 @@ fn malformed_assignment_settings_name_the_offending_key() {
             "agents.build.model",
         ),
         (
-            json!({"agents":{"build":{"model":"omniroute/cc/chat","variant":null}}}),
+            json!({"agents":{"build":{"model":"omniroute/cc/chat","variant":false}}}),
             "agents.build.variant",
         ),
     ] {
@@ -322,6 +326,187 @@ fn assignment_getters_preserve_unknown_settings_on_save() {
     let settings = crate::settings::load(dir.path()).unwrap();
     settings.layer_assignment(Layer::Reflex).unwrap();
     settings.agent_assignment("build").unwrap();
+    crate::settings::save(dir.path(), &settings).unwrap();
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(crate::settings::path(dir.path())).unwrap())
+            .unwrap();
+    assert_eq!(saved, raw);
+}
+
+#[test]
+fn duplicate_identities_are_ambiguous_but_legacy_keys_remain_resolvable() {
+    for different_api in [false, true] {
+        let mut catalog = catalog();
+        let mut duplicate = catalog.models["old-chat"].clone();
+        if different_api {
+            duplicate.api = ApiKind::Fim;
+        }
+        catalog.models.insert("a-renamed".into(), duplicate);
+        let name = ModelName::parse("omniroute/cc/chat", &catalog).unwrap();
+        assert!(
+            matches!(catalog.resolve_name(&name), Err(ProviderError::AmbiguousModel { model, keys })
+            if model == "omniroute/cc/chat" && keys == ["a-renamed", "old-chat"])
+        );
+        assert!(catalog.resolve("old-chat").is_ok());
+        catalog.models.remove("old-chat");
+        assert_eq!(catalog.resolve_name(&name).unwrap().alias, "a-renamed");
+        let mut other = catalog.models["a-renamed"].clone();
+        other.provider = "inception".into();
+        catalog.models.insert("other-provider".into(), other);
+        assert!(catalog.resolve_name(&name).is_ok());
+        assert_eq!(
+            catalog
+                .resolve_name(&ModelName::parse("inception/cc/chat", &catalog).unwrap())
+                .unwrap()
+                .alias,
+            "other-provider"
+        );
+    }
+}
+
+#[test]
+fn agent_apis_are_chat_only_in_config_and_headers_and_default() {
+    let catalog = catalog();
+    for model in ["inception/mercury", "omniroute/typesafe/jev"] {
+        for from_config in [false, true] {
+            let settings = self::settings(if from_config {
+                json!({"agents":{"build":{"model":model}}})
+            } else {
+                json!({})
+            });
+            let resolver = AssignmentResolver::new(&catalog, &settings);
+            let header = if from_config {
+                "omniroute/cc/chat"
+            } else {
+                model
+            };
+            let AgentModel::Fallback(warning) =
+                resolver.agent_model("build", Some(header)).unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(warning.model, model);
+            assert!(warning.reason.contains("required API 'chat'"));
+            assert!(warning.reason.contains(if model.starts_with("inception") {
+                "fim"
+            } else {
+                "systemone"
+            }));
+            assert!(matches!(
+                resolver.default_agent_check(&[("build", Some(header), true)]),
+                Err(DefaultAgentError::NoUsableModel { .. })
+            ));
+        }
+    }
+}
+
+#[test]
+fn default_agent_requires_primary_and_lists_only_eligible_agents() {
+    let catalog = catalog();
+    let known = [
+        ("build", Some("omniroute/cc/chat"), true),
+        ("all", Some("omniroute/cc/chat"), true),
+        ("sub", Some("omniroute/cc/chat"), false),
+    ];
+    for name in ["build", "all"] {
+        let settings = self::settings(json!({"default_agent":name}));
+        assert_eq!(
+            AssignmentResolver::new(&catalog, &settings)
+                .default_agent_check(&known)
+                .unwrap(),
+            name
+        );
+    }
+    let settings = self::settings(json!({"default_agent":"sub"}));
+    assert!(
+        matches!(AssignmentResolver::new(&catalog, &settings).default_agent_check(&known), Err(DefaultAgentError::NotPrimary { valid_agents, .. }) if valid_agents == ["all", "build"])
+    );
+    let settings = self::settings(json!({"default_agent":"missing"}));
+    assert!(
+        matches!(AssignmentResolver::new(&catalog, &settings).default_agent_check(&known), Err(DefaultAgentError::Unknown { valid_agents, .. }) if valid_agents == ["all", "build"])
+    );
+    assert!(matches!(
+        AssignmentResolver::new(&catalog, &Settings::default())
+            .default_agent_check(&[("build", None, true)]),
+        Err(DefaultAgentError::NoUsableModel { .. })
+    ));
+}
+
+#[test]
+fn assignment_variants_preserve_off_validate_static_and_defer_discovery() {
+    let catalog = catalog();
+    for value in [json!(null), json!("off")] {
+        let settings = self::settings(
+            json!({"layers":{"metacognition":{"model":"omniroute/cc/chat","variant":value}}}),
+        );
+        let assigned = enabled(
+            AssignmentResolver::new(&catalog, &settings)
+                .layer_assignment(Layer::Metacognition)
+                .unwrap(),
+        );
+        assert_eq!(assigned.variant_choice, AssignmentVariant::Off);
+        assert_eq!(assigned.variant, None);
+        assert!(!assigned.prefer_low);
+    }
+    let settings = self::settings(json!({"layers":{"metacognition":"omniroute/cc/chat"}}));
+    let assigned = enabled(
+        AssignmentResolver::new(&catalog, &settings)
+            .layer_assignment(Layer::Metacognition)
+            .unwrap(),
+    );
+    assert_eq!(assigned.variant_choice, AssignmentVariant::Default);
+    assert_eq!(assigned.variant.as_deref(), Some("low"));
+    for model in [
+        "omniroute/cc/chat",
+        "omniroute/cc/empty",
+        "inception/mercury",
+    ] {
+        let layer = if model.starts_with("inception") {
+            Layer::Reflex
+        } else {
+            Layer::Metacognition
+        };
+        let settings = self::settings(
+            json!({"layers":{layer.config_key():{"model":model,"variant":"bogus"}},"agents":{"build":{"model":model,"variant":"bogus"}}}),
+        );
+        let resolver = AssignmentResolver::new(&catalog, &settings);
+        assert!(matches!(
+            resolver.layer_assignment(layer).unwrap(),
+            LayerAssignment::Disabled(LayerDisabled::InvalidVariant { .. })
+        ));
+        assert!(matches!(
+            resolver.agent_model("build", None).unwrap(),
+            AgentModel::Fallback(_)
+        ));
+        assert!(matches!(
+            resolver.default_agent_check(&[("build", None, true)]),
+            Err(DefaultAgentError::NoUsableModel { .. })
+        ));
+    }
+    let settings = self::settings(
+        json!({"agents":{"build":{"model":"omniroute/cc/discovered","variant":"future"}}}),
+    );
+    assert!(matches!(
+        AssignmentResolver::new(&catalog, &settings)
+            .agent_model("build", None)
+            .unwrap(),
+        AgentModel::Assigned(_)
+    ));
+}
+
+#[test]
+fn malformed_assignment_is_isolated_and_preserved_with_siblings() {
+    let dir = tempfile::tempdir().unwrap();
+    let raw = json!({"layers":{"reflex":{"model":false},"metacognition":"omniroute/cc/chat"},"agents":{"bad":{"model":3},"build":{"model":"omniroute/cc/chat"}},"editor":{"future":42}});
+    std::fs::write(crate::settings::path(dir.path()), raw.to_string()).unwrap();
+    let settings = crate::settings::load(dir.path()).unwrap();
+    assert!(settings.layer_assignment(Layer::Reflex).is_err());
+    assert!(settings.agent_assignment("bad").is_err());
+    assert!(settings
+        .layer_assignment(Layer::Metacognition)
+        .unwrap()
+        .is_some());
+    assert!(settings.agent_assignment("build").unwrap().is_some());
     crate::settings::save(dir.path(), &settings).unwrap();
     let saved: Value =
         serde_json::from_str(&std::fs::read_to_string(crate::settings::path(dir.path())).unwrap())

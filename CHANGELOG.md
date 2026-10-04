@@ -4,6 +4,30 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- **VS Code chat: slash commands and a command palette.** Type `/` to browse commands with
+  descriptions and argument hints, using the arrow keys, Enter, Tab or the mouse. Switch the
+  open conversation's model with the picker or `/model` (a running turn finishes first), choose
+  its variant or agent, compact context, inspect the context breakdown, select a skill for your
+  next request, stop, start fresh or show help. The current agent and a pending model switch
+  stay visible near the composer. Command outcomes appear as notices; refusals keep your draft.
+  Commands carry no editor context; `//text` sends a literal `/text` message.
+
+### Fixed
+
+- **VS Code composer lifecycle:** first and resumed messages clear their draft after delivery;
+  creation failures and skill refusals remain visible. Starting fresh or restarting the server
+  abandons the old creation safely. Model switches replace the previous pending choice when
+  requested, and an outstanding switch survives a failed attempt to open another conversation.
+
+- **VS Code command controls stay with their conversation.** Skill requests now confirm before
+  cancelling a pending permission, can start or resume a conversation, and restore a refused
+  request without replacing newer typing. Model switches remain pending regardless of HTTP/event
+  arrival order; controls cannot change starting conversations or leak late errors into another
+  one. Command discovery refreshes when the server starts or restarts, live variant choices use
+  the conversation's offer, reopened conversations retain their agent, and watchdog resolutions
+  close their pause controls.
 ### Changed
 
 - **VS Code chat**: the context meter shows what the next request will send, as the terminal

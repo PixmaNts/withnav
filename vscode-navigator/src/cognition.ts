@@ -3,6 +3,9 @@ import { ContextSnapshot, parseContext } from "./contextMeter";
 import { ChatBackend, ConversationSummary, HostToWebview, ModelInfo, PermissionDecision } from "./chatProtocol";
 import { ConversationControls, eventView, permissionCall, PermissionCallReplay, permissionEvidence, WireEnvelope } from "./eventView";
 import type { ServerInfoParams } from "./protocol";
+import { CLIENT_COMMANDS, routeComposer } from "./commands";
+import type { CommandInfo } from "./chatProtocol";
+import type { ComposerOperation } from "./chatProtocol";
 
 /** One SSE frame off the event stream: the seq id plus the parsed envelope. */
 interface EventFrame {
@@ -22,6 +25,16 @@ const RECONNECT_DELAY_MS = 500;
  * networking lives here; the webview never sees HTTP.
  */
 class ConversationState {
+  starting = false;
+  agentSeq = -1;
+  modelRequestToken = 0;
+  settledModelOps = new Set<string>();
+  commands: Map<string, { draft: string; name: string; arguments: string }> = new Map();
+  commandResults: Map<string, any> = new Map();
+  acceptedMessages: Set<string> = new Set();
+  pendingModel?: { alias: string; operationId: string };
+  agent = "build";
+  startVariant?: string | null;
   transcript: HostToWebview[] = [];
   session: string | undefined;
   lastSeq: string | undefined;
@@ -63,6 +76,139 @@ export class CognitionBackend implements ChatBackend {
   /** Models from GET /v1/models, and the alias the next new conversation uses
    *  (or the open conversation's, once it exists). */
   private models: ModelInfo[] = [];
+  private commands: CommandInfo[] = [];
+
+  async refreshCommands(): Promise<void> {
+    this.emit({ type: "commands", items: [...this.commands, ...CLIENT_COMMANDS.filter(c => !this.commands.some(s => s.name === c.name))] });
+    if (!this.endpoint) return;
+    const endpoint = this.endpoint;
+    const body = await this.request("/v1/commands", { method: "GET" }, "endpoint");
+    if (endpoint !== this.endpoint) return;
+    this.commands = (Array.isArray(body?.commands) ? body.commands : []).filter((c: any) =>
+      typeof c?.name === "string" && /^[a-z][a-z0-9_-]*$/.test(c.name) && typeof c.description === "string" && typeof c.args_hint === "string");
+    this.emit({ type: "commands", items: [...this.commands, ...CLIENT_COMMANDS.filter(c => !this.commands.some(s => s.name === c.name))] });
+  }
+
+  captureOperation(): ComposerOperation { return { owner: this.state, generation: this.currentGeneration() }; }
+  ownsOperation(operation: ComposerOperation): boolean { return !this.disposed && operation.owner === this.state && operation.generation === this.currentGeneration(); }
+
+  async runComposerCommand(draft: string, generation = this.currentGeneration(), operation?: ComposerOperation): Promise<boolean> {
+    this.checkGeneration(generation);
+    const routed = routeComposer(draft);
+    if (routed.kind !== "command") throw new Error("Not a command");
+    const { name, arguments: args } = routed;
+    if (this.state.starting && ["model", "variant", "agent", "skill"].includes(name)) throw new Error("Conversation is starting or opening. Try again when it is ready.");
+    if (typeof args !== "string") throw new Error("Command arguments must be text");
+    if (!this.commands.length) { await this.refreshCommands(); this.checkGeneration(generation); }
+    if (![...this.commands, ...CLIENT_COMMANDS].some(c => c.name === name)) throw new Error(`Unknown command: /${name}. Use /help.`);
+    if (["help", "skills", "stop"].includes(name) && args) throw new Error(`/${name} takes no arguments`);
+    if (name === "help") {
+      this.emit({ type: "notice", text: [...this.commands, ...CLIENT_COMMANDS.filter(c => !this.commands.some(s => s.name === c.name))].map(c => `/${c.name} ${c.args_hint} — ${c.description}`).join("\n") });
+      return true;
+    }
+    if (name === "new") {
+      if (args && !this.models.some(m => m.alias === args)) throw new Error("Unknown model alias");
+      const reset = this.newConversation();
+      const newGeneration = this.currentGeneration();
+      await reset;
+      this.checkGeneration(newGeneration);
+      if (args) this.selectModel(args);
+      this.emit({ type: "sendResult", text: draft, accepted: true, generation: newGeneration });
+      return true;
+    }
+    if (name === "model" && !args) {
+      this.emit({ type: "commandPicker", kind: "model", items: this.models.map(m => ({ name: m.alias, description: m.model })) });
+      return true;
+    }
+    if (name === "variant" && !args && !this.currentConversationId()) {
+      const model = this.models.find(m => m.alias === this.state.selectedModel);
+      this.emit({ type: "commandPicker", kind: "variant", items: [...(model?.variants ?? []), "off"].map(name => ({ name, description: name === "off" ? "No variant" : "Model variant" })) });
+      return true;
+    }
+    if (name === "skills") {
+      if (!this.state.session) throw new Error("A conversation is needed. Send a message first.");
+      const session = this.state.session;
+      const body = await this.request(`/v1/sessions/${encodeURIComponent(session)}/skills`, { method: "GET" });
+      this.checkGeneration(generation);
+      if (session !== this.state.session) throw new Error("Conversation changed");
+      this.emit({ type: "commandPicker", kind: "skills", items: (body?.skills ?? []).filter((s: any) => typeof s?.name === "string" && typeof s.description === "string"), disabledReason: body?.disabled_reason ?? undefined });
+      return true;
+    }
+    if (name === "skill") {
+      const match = /^(\S+)(?:\s+([\s\S]*))?$/.exec(args);
+      if (!match) throw new Error("Usage: /skill <name> [request]");
+      const ensured = await this.ensureSession(operation);
+      const session = ensured.session;
+      generation = ensured.generation;
+      this.checkGeneration(generation);
+      const result = await this.request(`/v1/sessions/${encodeURIComponent(session)}/messages`, { method: "POST", body: JSON.stringify({ target_actor_id: ROOT_ACTOR, content: [{ type: "text", text: match[2] || `Apply the ${match[1]} skill.` }, { type: "skill", name: match[1] }] }) });
+      this.checkGeneration(generation);
+      const operationId = result?.command_id ?? result?.operation_id;
+      if (typeof operationId === "string") this.trackCommand(operationId, { draft, name, arguments: args });
+      else if (result?.accepted === false || result?.ok === false) throw new Error(String(result.error ?? "Message refused"));
+      return typeof operationId !== "string";
+    }
+    if (name === "stop") { if (!this.state.session) throw new Error("A conversation is needed."); await this.stop(); this.checkGeneration(generation); return true; }
+    if (!this.state.session && !this.state.resumeId) {
+      if (!["model", "variant", "agent"].includes(name)) throw new Error("A conversation is needed. Send a message first.");
+      if (name === "model") { if (!this.models.some(m => m.alias === args)) throw new Error("Unknown model alias"); this.selectModel(args); return true; }
+      if (name === "variant") {
+        const model = this.models.find(m => m.alias === this.state.selectedModel);
+        if (args !== "off" && !model?.variants?.includes(args)) throw new Error("Unknown variant for this model");
+        this.state.startVariant = args === "off" ? null : args;
+        this.emit({ type: "notice", text: `Starting variant: ${args}` });
+        return true;
+      }
+      if (!args || /\s/.test(args)) throw new Error("Usage: /agent <name>");
+      this.state.agent = args;
+      this.emit({ type: "agent", name: args });
+      return true;
+    }
+    if (!this.state.session) throw new Error("The conversation is stopped. Send a message to resume it first.");
+    if (name === "model" && this.hasOpenPermissions()) throw new Error("Answer the pending permission before switching model.");
+    const session = this.state.session;
+    const origin = this.state;
+    const modelToken = name === "model" ? ++origin.modelRequestToken : undefined;
+    if (name === "model") { origin.pendingModel = undefined; this.emitForState(origin, { type: "modelPending" }); }
+    const result = await this.request(`/v1/sessions/${encodeURIComponent(session)}/commands`, { method: "POST", body: JSON.stringify({ name, arguments: args }) }, "operation");
+    if (session !== origin.session) throw new Error("Conversation changed");
+    if (typeof result?.operation_id !== "string") throw new Error("Command returned no operation id");
+    if (name === "model" && modelToken === origin.modelRequestToken && !origin.settledModelOps.has(result.operation_id)) {
+      origin.pendingModel = { alias: args, operationId: result.operation_id };
+      this.emitForState(origin, { type: "modelPending", alias: args });
+    }
+    if (origin === this.state) this.trackCommand(result.operation_id, { draft, name, arguments: args });
+    else origin.commands.set(result.operation_id, { draft, name, arguments: args });
+    return false; // Only the durable outcome consumes the draft.
+  }
+
+  private trackCommand(operation: string, command: { draft: string; name: string; arguments: string }): void {
+    this.state.commands.set(operation, command);
+    const outcome = this.state.commandResults.get(operation);
+    if (outcome) this.settleCommand(outcome);
+    else if (command.name === "skill" && this.state.acceptedMessages.has(operation)) this.emit({ type: "sendResult", text: command.draft, accepted: true });
+  }
+
+  private settleCommand(p: any): void {
+    const operation = p.operation_id;
+    if (typeof operation !== "string") return;
+    this.state.commandResults.set(operation, p);
+    const command = this.state.commands.get(operation);
+    if (command) {
+      this.emit({ type: "sendResult", text: command.draft, accepted: p.ok === true, restoreDraft: command.name === "skill" && p.ok !== true });
+      if (p.ok !== true) this.emit({ type: "commandError", text: String(p.error ?? "Command refused. Your draft was kept.") });
+      this.state.commands.delete(operation);
+    }
+    const deferred = p.ok === true && p.data?.accepted === true && p.data?.applies === "after_turn";
+    if (p.name === "model" && !deferred) this.state.settledModelOps.add(operation);
+    if (command?.name === "variant" && !command.arguments && p.ok === true && Array.isArray(p.data?.offered)) {
+      this.emit({ type: "commandPicker", kind: "variant", items: [...p.data.offered.filter((v: unknown) => typeof v === "string"), "off"].map(name => ({ name, description: name === (p.data.variant ?? "off") ? "Current variant" : "Model variant" })) });
+    }
+    if (this.state.pendingModel?.operationId === operation && !deferred) {
+      this.state.pendingModel = undefined;
+      this.emit({ type: "modelPending" });
+    }
+  }
   /** Default alias the server announced, restored by "new conversation". */
   private defaultModel?: string;
   /** Tokens of the last model call, re-sent when the model or list changes. */
@@ -86,15 +232,19 @@ export class CognitionBackend implements ChatBackend {
     const first = !this.endpoint;
     if (restarted) {
       this.abortStream();
-      this.state.session = undefined;
-      this.state.resumeId = undefined;
-      this.resetTranscript();
+      const generation = this.currentGeneration();
+      this.state = new ConversationState();
+      this.state.streamGeneration = generation;
       this.conversations = [];
       this.emit({ type: "conversationOpened", title: "Server restarted" });
       this.emit({ type: "history", items: [] });
       this.emit({ type: "status", state: "connecting" });
     }
     this.endpoint = info;
+    if (first || restarted) {
+      this.commands = [];
+      void this.refreshCommands().catch(() => undefined);
+    }
     if (this.state.session) {
       void this.connect();
       return;
@@ -134,9 +284,14 @@ export class CognitionBackend implements ChatBackend {
   async openConversation(id: string): Promise<void> {
     const previous = this.state;
     this.abortStream();
+    // Its create/open operation is now abandoned. A rollback must restore an
+    // idle origin, not depend on that obsolete operation's cleanup.
+    previous.starting = false;
     const generation = this.state.streamGeneration;
     this.state = new ConversationState();
     this.state.streamGeneration = generation;
+    this.state.starting = true;
+    this.emitModels();
     this.state.session = undefined;
     this.state.resumeId = undefined;
     this.emit({ type: "conversationOpened", title: "Opening conversation" });
@@ -147,6 +302,10 @@ export class CognitionBackend implements ChatBackend {
       const summary = this.conversations.find((c) => c.id === id);
       const before = await this.reconcileSession(id, generation);
       this.checkGeneration(generation);
+      if (typeof before.agent === "string") {
+        this.state.agent = before.agent;
+        this.state.agentSeq = before.current_seq;
+      }
       this.state.previousRunThrough = before.actor_state === "stopped" ? before.current_seq : -1;
       // Resume first: an unknown id (404) must leave the current view intact.
       const created = await this.request("/v1/sessions", {
@@ -158,9 +317,12 @@ export class CognitionBackend implements ChatBackend {
       if (!sessionId) throw new Error("cognition server: resume returned no id");
       // Stop streaming the previous conversation before switching.
       this.state.session = sessionId;
+      this.state.starting = false;
+      this.emitModels();
       this.state.resumeId = undefined;
       this.state.replayThrough = Infinity;
       this.emit({ type: "conversationOpened", id: sessionId, title: summary?.title ?? sessionId });
+      this.emit({ type: "agent", name: this.state.agent });
       this.emit({ type: "history", items: [] });
       this.emit({ type: "status", state: "ready" });
       void this.loadSessionModel(sessionId);
@@ -176,6 +338,9 @@ export class CognitionBackend implements ChatBackend {
         this.bindControlOwners();
         this.emit({ type: "conversationOpened", id: this.currentConversationId(), title: "Conversation" });
         this.emit({ type: "history", items: this.history() });
+        this.emitModels();
+        this.emit({ type: "modelPending", alias: this.state.pendingModel?.alias });
+        for (const result of this.state.commandResults.values()) this.settleCommand(result);
         if (this.state.context) this.emit({ type: "usage", snapshot: this.state.context });
         this.emit({ type: "status", state: "error", message: `Could not open conversation: ${this.errorText(error)}` });
         void this.connect();
@@ -188,10 +353,11 @@ export class CognitionBackend implements ChatBackend {
   async newConversation(): Promise<void> {
     // The previous conversation stays on disk; the next send creates fresh.
     this.abortStream();
-    this.state.session = undefined;
-    this.state.resumeId = undefined;
-    this.resetTranscript();
-    this.state.selectedModel = this.defaultModel ?? this.state.selectedModel;
+    const generation = this.currentGeneration();
+    const model = this.defaultModel ?? this.state.selectedModel;
+    this.state = new ConversationState();
+    this.state.streamGeneration = generation;
+    this.state.selectedModel = model;
     this.emit({ type: "conversationOpened", title: "New conversation" });
     this.emit({ type: "history", items: [] });
     this.emit({ type: "status", state: "ready" });
@@ -211,10 +377,10 @@ export class CognitionBackend implements ChatBackend {
     }
   }
 
-  async send(text: string, context?: string): Promise<void> {
+  async send(text: string, context?: string, operation?: ComposerOperation): Promise<void> {
     // The driver's message arrives as `message.received` on the stream; do
     // NOT emit an optimistic copy here (that duplicated it).
-    const { session, generation } = await this.ensureSession();
+    const { session, generation } = await this.ensureSession(operation);
     this.checkGeneration(generation);
     await this.request(`/v1/sessions/${session}/messages`, {
       method: "POST",
@@ -238,6 +404,8 @@ export class CognitionBackend implements ChatBackend {
     // conversation survives: the next send resumes it under the same id,
     // so keep the stream cursor to continue where this one ended.
     origin.resumeId = session;
+    origin.pendingModel = undefined;
+    this.emitForState(origin, { type: "modelPending" });
     this.emitForState(origin, { type: "status", state: "ready" });
   }
 
@@ -368,7 +536,7 @@ export class CognitionBackend implements ChatBackend {
 
   /** A conversation that exists on the server keeps its model (option A). */
   private modelLocked(): boolean {
-    return this.state.session !== undefined || this.state.resumeId !== undefined;
+    return this.state.starting || this.state.session !== undefined || this.state.resumeId !== undefined;
   }
 
   private emitModels(): void {
@@ -376,14 +544,22 @@ export class CognitionBackend implements ChatBackend {
       type: "models",
       items: [...this.models],
       current: this.state.selectedModel,
-      locked: this.modelLocked(),
+      locked: this.state.starting,
     });
   }
 
   selectModel(alias: string): void {
-    if (this.modelLocked()) return;
+    if (this.state.starting) { this.emit({ type: "commandError", text: "Conversation is starting or opening. Try again when it is ready." }); return; }
+    if (this.modelLocked()) {
+      const generation = this.currentGeneration();
+      const origin = this.state;
+      void this.runComposerCommand(`/model ${alias}`, generation).catch(error => {
+        if (origin === this.state && generation === this.currentGeneration()) this.emit({ type: "commandError", text: this.errorText(error), generation });
+      }); return;
+    }
     if (!this.models.some((m) => m.alias === alias)) return;
     this.state.selectedModel = alias;
+    this.state.startVariant = undefined;
     this.emitModels();
   }
 
@@ -394,6 +570,11 @@ export class CognitionBackend implements ChatBackend {
       const summary = await this.reconcileSession(id, generation);
       if (id !== this.state.session) return;
       if (typeof summary?.model === "string") this.state.selectedModel = summary.model;
+      if (typeof summary?.agent === "string" && summary.current_seq >= this.state.agentSeq) {
+        this.state.agent = summary.agent;
+        this.state.agentSeq = summary.current_seq;
+        this.emit({ type: "agent", name: summary.agent });
+      }
       this.state.replayThrough = typeof summary?.current_seq === "number" ? summary.current_seq : Infinity;
     } catch {
       // Keep the current selection: the picker is informative only here.
@@ -481,6 +662,14 @@ export class CognitionBackend implements ChatBackend {
 
   /** Drops everything that described the previous conversation. */
   private resetTranscript(): void {
+    this.state.commands.clear();
+    this.state.commandResults.clear();
+    this.state.acceptedMessages.clear();
+    this.state.pendingModel = undefined;
+    this.state.settledModelOps.clear();
+    this.state.agentSeq = -1;
+    this.state.agent = "build";
+    this.state.startVariant = undefined;
     this.state.transcript = [];
     this.state.lastSeq = undefined;
     this.state.delivered.clear();
@@ -563,12 +752,21 @@ export class CognitionBackend implements ChatBackend {
     }
   }
 
-  private async ensureSession(): Promise<{ session: string; generation: number }> {
+  private async ensureSession(operation?: ComposerOperation): Promise<{ session: string; generation: number }> {
+    if (this.state.starting) throw new Error("Conversation is starting or opening. Try again when it is ready.");
     if (this.state.session) return { session: this.state.session, generation: this.state.streamGeneration };
     this.abortStream();
     const generation = this.state.streamGeneration;
+    if (operation && operation.owner === this.state) operation.generation = generation;
+    this.state.starting = true;
+    this.emitModels();
+    try {
     if (!this.state.resumeId) {
+      const agent = this.state.agent;
+      const variant = this.state.startVariant;
       this.resetTranscript();
+      this.state.agent = agent;
+      this.state.startVariant = variant;
       this.emit({ type: "history", items: [] });
     } else {
       this.state.transcript = this.state.transcript.map(message => ({ ...message, generation }));
@@ -584,13 +782,14 @@ export class CognitionBackend implements ChatBackend {
       body: JSON.stringify(
         resume
           ? { workspace: this.workspacePath(), profile: "navigator", resume }
-          : { workspace: this.workspacePath(), profile: "navigator", model: this.state.selectedModel },
+           : { workspace: this.workspacePath(), profile: "navigator", model: this.state.selectedModel, agent: this.state.agent, ...(this.state.startVariant !== undefined ? { variant: this.state.startVariant } : {}) },
       ),
     });
     const sessionId = String(created?.session_id ?? "");
     this.checkGeneration(generation);
     if (!sessionId) throw new Error("cognition server: create session returned no id");
     this.state.session = sessionId;
+    this.state.starting = false;
     this.state.resumeId = undefined;
     if (!resume) {
       // A brand-new session restarts its seq space. (On resume: same
@@ -603,10 +802,14 @@ export class CognitionBackend implements ChatBackend {
     this.emit({ type: "status", state: "ready" });
     this.emitModels();
     this.emit({ type: "conversationOpened", id: sessionId, title: this.conversations.find(c => c.id === sessionId)?.title ?? "Conversation" });
+    this.emit({ type: "agent", name: this.state.agent });
     void this.fetchContext();
     void this.connect();
     void this.listConversations().catch(() => undefined);
     return { session: sessionId, generation };
+    } finally {
+      if (generation === this.currentGeneration()) { this.state.starting = false; this.emitModels(); }
+    }
   }
 
   /** Parses one SSE frame: `id:`, optional `event:`, joined `data:` lines. */
@@ -766,6 +969,38 @@ export class CognitionBackend implements ChatBackend {
     // Refresh context even when these events also project a notice.
     if (envelope.kind === "context.compacted" || envelope.kind === "model.changed") void this.fetchContext();
     for (const update of this.state.controls.envelopeUpdates(envelope)) this.emit(update);
+    if (envelope.kind === "message.received" && typeof payload.command_id === "string") {
+      this.state.acceptedMessages.add(payload.command_id);
+      const command = this.state.commands.get(payload.command_id);
+      if (command?.name === "skill") {
+        this.emit({ type: "sendResult", text: command.draft, accepted: true });
+      }
+    }
+    if (envelope.kind === "session.end") {
+      this.state.pendingModel = undefined;
+      this.emit({ type: "modelPending" });
+    }
+    if (envelope.kind === "command.result") {
+      this.settleCommand(payload);
+      return { type: "notice", operationId: payload.operation_id, name: String(payload.name ?? "command"), ok: payload.ok === true,
+        text: `/${String(payload.name ?? "command")} · ${payload.ok === false ? String(payload.error ?? "Refused") : payload.data?.applies === "after_turn" ? "Accepted · switches after this turn" : typeof payload.data?.message === "string" ? payload.data.message : JSON.stringify(payload.data ?? "Done", null, 2)}` };
+    }
+    if (envelope.kind === "session.agent_changed") {
+      this.state.agentSeq = envelope.seq;
+      this.state.agent = String(payload.agent ?? "build");
+      return { type: "agent", name: this.state.agent };
+    }
+    if (envelope.kind === "context.compacted") return { type: "notice", text: `Context compacted: ~${payload.estimate_before ?? "?"} → ~${payload.estimate_after ?? "?"} tokens` };
+    if (envelope.kind === "model.changed") {
+      if (typeof payload.operation_id === "string") this.state.settledModelOps.add(payload.operation_id);
+      if (typeof payload.new?.alias === "string") this.state.selectedModel = payload.new.alias;
+      if (payload.operation_id === this.state.pendingModel?.operationId) {
+        this.state.pendingModel = undefined;
+        this.emit({ type: "modelPending" });
+      }
+      this.emitModels();
+      return { type: "notice", text: `Model: ${payload.new?.alias ?? "unknown"}${payload.variant ? ` · ${payload.variant}` : ""}` };
+    }
     const projected = eventView(envelope, this.state.currentTurn, this.state.controls.calls);
     if (projected?.type === "pause" && envelope.seq <= this.state.previousRunThrough) {
       this.emit(projected);
@@ -776,9 +1011,6 @@ export class CognitionBackend implements ChatBackend {
       case "context.updated":
         this.state.contextEpoch++;
         this.acceptContext(payload);
-        return undefined;
-      case "context.compacted":
-      case "model.changed":
         return undefined;
       case "turn.start": {
         this.state.currentTurn = String(payload.turn_id ?? envelope.seq);
@@ -933,13 +1165,13 @@ export class CognitionBackend implements ChatBackend {
     } catch (error) {
       check();
       const message = this.errorText(error);
-      this.emit({ type: "status", state: "error", message });
+      if (scope !== "operation") this.emit({ type: "status", state: "error", message });
       throw new Error(`cognition server unreachable: ${message}`);
     }
     check();
     if (response.status === 401) {
       const message = "cognition server rejected the token (401)";
-      this.emit({ type: "status", state: "error", message });
+      if (scope !== "operation") this.emit({ type: "status", state: "error", message });
       throw new HttpError(response.status, message);
     }
     if (!response.ok) {
@@ -953,7 +1185,7 @@ export class CognitionBackend implements ChatBackend {
         }
       }
       const message = `cognition server: ${detail}`;
-      this.emit({ type: "status", state: "error", message });
+      if (scope !== "operation") this.emit({ type: "status", state: "error", message });
       throw new HttpError(response.status, message);
     }
     // DELETE answers 204 and other routes may answer empty: undefined, not a
@@ -996,6 +1228,8 @@ function parseModelList(body: any): ModelInfo[] {
       alias: m.alias,
       model: m.model,
       contextWindow: typeof m.context_window === "number" ? m.context_window : undefined,
+      variants: Array.isArray(m.variants) ? m.variants.filter((v: unknown) => typeof v === "string") : [],
+      defaultVariant: typeof m.default_variant === "string" ? m.default_variant : undefined,
     }));
 }
 

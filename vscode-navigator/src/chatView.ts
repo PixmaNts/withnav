@@ -2,6 +2,7 @@ import { chatHtml } from "./chatHtml";
 import * as vscode from "vscode";
 import { CHAT_VIEW_ID, ChatBackend, HostToWebview, WebviewToHost } from "./chatProtocol";
 import { buildEditorContext, presentMessage } from "./editorContext";
+import { routeComposer } from "./commands";
 
 const CONTEXT_DEBOUNCE_MS = 200;
 
@@ -68,24 +69,38 @@ export function registerChatView(
             if (snapshot) post({ type: "usage", snapshot });
             pushContext();
             backend.resumePermissionReads();
+            void backend.refreshCommands().catch(showError);
             break;
           case "send":
             if (typeof message.text === "string" && message.text.trim()) {
+              const operation = backend.captureOperation();
               void (async () => {
                 const session = backend.currentConversationId();
-                const generation = backend.currentGeneration();
+                 const generation = backend.currentGeneration();
+                 // Route before confirmation and, crucially, before reading editor content.
+                 const route = routeComposer(message.text);
+                 if (route.kind === "command" && route.name !== "skill") {
+                   return await backend.runComposerCommand(message.text, generation, operation);
+                 }
                 if (backend.hasOpenPermissions()) {
                   const answer = await vscode.window.showWarningMessage(
                     "Sending cancels the pending permission request", { modal: true }, "Send anyway",
                   );
                   if (answer !== "Send anyway") return false;
                 }
-                if (generation !== backend.currentGeneration() || session !== backend.currentConversationId()) throw new Error("The open conversation changed. Send again in the current conversation.");
+                 if (generation !== backend.currentGeneration() || session !== backend.currentConversationId()) throw new Error("The open conversation changed. Send again in the current conversation.");
+                 if (route.kind === "command") return await backend.runComposerCommand(message.text, generation, operation);
                 const context = message.includeContext === false ? undefined : buildEditorContext().block;
-                await backend.send(message.text, context);
+                 const routed = routeComposer(message.text);
+                 if (routed.kind === "message") await backend.send(routed.text, context, operation);
                 return true;
-              })().then(accepted => post({ type: "sendResult", text: message.text, accepted, generation: accepted ? backend.currentGeneration() : message.generation }))
-                .catch(error => { post({ type: "sendResult", text: message.text, accepted: false, generation: message.generation }); showError(error); });
+               })().then(accepted => {
+                 // /new deliberately changes identity. Its reset already released the composer;
+                 // never relabel an acknowledgement from the previous conversation.
+                 if (routeComposer(message.text).kind === "command" && message.text.match(/^\/new(?:\s|$)/)) return;
+                 if (backend.ownsOperation(operation)) post({ type: "sendResult", text: message.text, accepted, generation: operation.generation });
+               })
+                .catch(error => { if (!backend.ownsOperation(operation)) return; post({ type: "sendResult", text: message.text, accepted: false, generation: operation.generation }); post({ type: "commandError", text: error instanceof Error ? error.message : String(error), generation: operation.generation }); });
             }
             break;
           case "answerPermission":

@@ -46,8 +46,13 @@ export type HostToWebview = { generation?: number } & (
   | { type: "permissionState"; requestId: string; resolution: string; message?: string }
   | { type: "pause"; id: string; kind: "budget" | "watchdog"; text: string; token?: PauseToken }
   | { type: "pauseState"; id: string; state: "pending" | "resolved" | "error"; message?: string }
-  | { type: "notice"; text: string }
-  | { type: "sendResult"; text: string; accepted: boolean }
+  | { type: "notice"; text: string; operationId?: string; ok?: boolean; name?: string }
+  | { type: "commands"; items: CommandInfo[] }
+  | { type: "commandError"; text: string }
+  | { type: "commandPicker"; kind: "model" | "variant" | "skills"; items: { name: string; description: string }[]; disabledReason?: string }
+  | { type: "agent"; name: string }
+  | { type: "modelPending"; alias?: string }
+  | { type: "sendResult"; text: string; accepted: boolean; restoreDraft?: boolean }
   /** The cognition starts answering; deltas for this id follow. */
   | { type: "turnStart"; id: string }
   /** Streamed answer text for the current turn, to append. */
@@ -87,7 +92,12 @@ export interface ModelInfo {
   alias: string;
   model: string;
   contextWindow?: number;
+  variants?: string[];
+  defaultVariant?: string;
 }
+
+export interface CommandInfo { name: string; description: string; args_hint: string }
+export interface ComposerOperation { owner: object; generation: number }
 
 /** Webview -> host messages. */
 export type WebviewToHost = { generation?: number } & (
@@ -114,8 +124,12 @@ export type WebviewToHost = { generation?: number } & (
 
 /** What the chat view needs from the host side; implemented by the cognition bridge. */
 export interface ChatBackend {
+  captureOperation(): ComposerOperation;
+  ownsOperation(operation: ComposerOperation): boolean;
   currentContext(): import("./contextMeter").ContextSnapshot | undefined;
   currentGeneration(): number;
+  refreshCommands(): Promise<void>;
+  runComposerCommand(text: string, generation?: number, operation?: ComposerOperation): Promise<boolean>;
   resumePermissionReads(): void;
   cancelPermissionReads(): void;
   /** Current transcript, replayed into a freshly opened view. */
@@ -123,7 +137,7 @@ export interface ChatBackend {
   /** Subscribe to live messages; returns an unsubscribe function. */
   subscribe(listener: (message: HostToWebview) => void): () => void;
   /** `context` is an editor-context block appended after the driver's text. */
-  send(text: string, context?: string): Promise<void>;
+  send(text: string, context?: string, operation?: ComposerOperation): Promise<void>;
   stop(): Promise<void>;
   hasOpenPermissions(): boolean;
   answerPermission(sessionId: string, requestId: string, decision: PermissionDecision, message?: string, generation?: number): Promise<void>;

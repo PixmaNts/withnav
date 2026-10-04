@@ -1,7 +1,12 @@
 import * as vscode from "vscode";
+import { ContextSnapshot, parseContext } from "./contextMeter";
 import { ChatBackend, ConversationSummary, HostToWebview, ModelInfo, PermissionDecision } from "./chatProtocol";
 import { ConversationControls, eventView, permissionCall, PermissionCallReplay, permissionEvidence, WireEnvelope } from "./eventView";
 import type { ServerInfoParams } from "./protocol";
+import { CLIENT_COMMANDS, routeComposer } from "./commands";
+import type { CommandInfo } from "./chatProtocol";
+import type { ComposerOperation } from "./chatProtocol";
+import type { ChildInfo } from "./chatProtocol";
 
 /** One SSE frame off the event stream: the seq id plus the parsed envelope. */
 interface EventFrame {
@@ -21,6 +26,23 @@ const RECONNECT_DELAY_MS = 500;
  * networking lives here; the webview never sees HTTP.
  */
 class ConversationState {
+  title = "Parent conversation";
+  children = new Map<string, ChildInfo>();
+  childStateCursors = new Map<string, string>();
+  childStateSeq = new Map<string, number>();
+  childControlTokens = new Map<string, number>();
+  parent?: ConversationState;
+  readOnly = false;
+  starting = false;
+  agentSeq = -1;
+  modelRequestToken = 0;
+  settledModelOps = new Set<string>();
+  commands: Map<string, { draft: string; name: string; arguments: string }> = new Map();
+  commandResults: Map<string, any> = new Map();
+  acceptedMessages: Set<string> = new Set();
+  pendingModel?: { alias: string; operationId: string };
+  agent = "build";
+  startVariant?: string | null;
   transcript: HostToWebview[] = [];
   session: string | undefined;
   lastSeq: string | undefined;
@@ -28,7 +50,10 @@ class ConversationState {
   currentTurn: string | undefined;
   streaming: boolean = false;
   selectedModel: string | undefined;
-  lastUsed: number | undefined;
+  context: ContextSnapshot | undefined;
+  contextEpoch = 0;
+  contextRefresh: { session: string; generation: number; pending: boolean; done: Promise<void> } | undefined;
+  retiredIncarnations: string[] = [];
   resumeId: string | undefined;
   streamAbort: AbortController | undefined;
   streamGeneration: number = 0;
@@ -40,6 +65,7 @@ class ConversationState {
   childReadQueue: Set<string> = new Set();
   childReadsAttempted: Set<string> = new Set();
   childReadTimer: ReturnType<typeof setTimeout> | undefined;
+  childRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   replayThrough: number | undefined;
   previousRunThrough: number = -1;
   toolSummaries: Map<string, string> = new Map();
@@ -47,6 +73,84 @@ class ConversationState {
 }
 
 export class CognitionBackend implements ChatBackend {
+  publishSubagents(): void { this.emitChildren(); }
+  isReadOnly(): boolean { return this.state.readOnly; }
+  private emitChildren(): void {
+    const parent = this.parentState();
+    if (parent.session ?? parent.resumeId) this.emit({ type: "subagents", parentId: (parent.session ?? parent.resumeId)!, items: [...parent.children.values()].map(c => ({ ...c })) });
+    this.emit({ type: "childView", child: this.state.readOnly ? parent.children.get(this.state.session!) : undefined,
+      parentId: this.state.readOnly ? parent.session ?? parent.resumeId : undefined, parentTitle: parent.title });
+  }
+  private validateChild(parentId: string, childId: string, generation: number): { parent: ConversationState; child: ChildInfo } {
+    this.checkGeneration(generation);
+    const parent = this.parentState();
+    const child = parent.children.get(childId);
+    if ((parent.session ?? parent.resumeId) !== parentId || !child) throw new Error("This subagent does not belong to the open parent conversation.");
+    return { parent, child };
+  }
+  private panels = new Set<CognitionBackend>();
+  private panelOwner?: CognitionBackend;
+  private terminalChild = false;
+  private childReconciliations = new Map<string, { abort: AbortController; trailing: boolean; done: Promise<void> }>();
+  private parentState(): ConversationState { return this.state.parent ?? this.state; }
+  async openChild(parentId: string, childId: string, generation = this.currentGeneration()): Promise<ChatBackend> {
+    const { parent } = this.validateChild(parentId, childId, generation);
+    const metadata = await this.request(`/v1/sessions/${encodeURIComponent(childId)}`, { method: "GET" });
+    this.validateChild(parentId, childId, generation);
+    if (metadata?.parent_session_id !== parentId || metadata?.promptable !== false) throw new Error("The server did not confirm a read-only child of this parent.");
+    this.seedChild(parent, childId, metadata);
+    const panel = new CognitionBackend();
+    panel.endpoint = this.endpoint;
+    panel.state.session = childId;
+    panel.state.parent = parent;
+    panel.state.readOnly = true;
+    panel.state.streamGeneration = generation;
+    panel.panelOwner = this;
+    panel.terminalChild = this.isTerminal(parent.children.get(childId)!.state);
+    this.panels.add(panel);
+    this.emitChildren();
+    return panel;
+  }
+  private isTerminal(status: ChildInfo["state"]): boolean { return ["done", "failed", "stopped"].includes(status); }
+  private seedChild(parent: ConversationState, id: string, metadata: any): void {
+    const child = parent.children.get(id);
+    if (!child) return;
+    const status = this.childStatus(metadata?.child_status);
+    if (this.isTerminal(status) || (status !== "unknown" && !this.isTerminal(child.state) &&
+        !(status === "running" && ["permission", "budget", "watchdog"].includes(child.state)))) child.state = status;
+    if (typeof metadata?.agent === "string") child.agent = metadata.agent;
+    child.revision = (child.revision ?? 0) + 1;
+    this.emitChildren();
+    this.panelOwner?.emitChildren();
+  }
+  captureChildControl(parentId: string, childId: string, action: "stop" | "continue", generation = this.currentGeneration()): object {
+    if (this.panelOwner) return this.panelOwner.captureChildControl(parentId, childId, action, generation);
+    const { parent, child } = this.validateChild(parentId, childId, generation);
+    if (child.pending || child.state === "unknown" || this.isTerminal(child.state) ||
+        (action === "continue" && !["budget", "watchdog"].includes(child.state))) throw new Error("This subagent cannot perform that action now.");
+    return { parent, child, revision: child.revision ?? 0, state: child.state, action, token: parent.childControlTokens.get(childId) ?? 0 };
+  }
+  async controlChild(parentId: string, childId: string, action: "stop" | "continue", generation = this.currentGeneration(), descriptor?: object): Promise<void> {
+    if (this.panelOwner) return this.panelOwner.controlChild(parentId, childId, action, generation, descriptor);
+    const { parent, child } = this.validateChild(parentId, childId, generation);
+    if (descriptor) {
+      const d = descriptor as any;
+      if (d.parent !== parent || d.child !== child || d.revision !== (child.revision ?? 0) || d.state !== child.state || d.action !== action || d.token !== (parent.childControlTokens.get(childId) ?? 0)) throw new Error("The subagent changed, try again.");
+    }
+    if (!["stop", "continue"].includes(action) || ["done", "failed", "stopped"].includes(child.state) ||
+        (action === "continue" && !["budget", "watchdog"].includes(child.state))) throw new Error("This subagent cannot perform that action now.");
+    if (child.pending) return;
+    parent.childControlTokens.set(childId, (parent.childControlTokens.get(childId) ?? 0) + 1);
+    child.pending = true; child.error = undefined; this.emitChildren();
+    try {
+      const result = await this.request(action === "stop" ? `/v1/sessions/${encodeURIComponent(childId)}/stop` :
+        `/v1/sessions/${encodeURIComponent(parentId)}/children/${encodeURIComponent(childId)}/continue`,
+      { method: "POST", ...(action === "continue" ? { body: JSON.stringify({ pause_token: null }) } : {}) }, "operation");
+      if (result?.accepted !== true) throw new Error(String(result?.error ?? `${action} refused: ${result?.actor_state ?? "not accepted"}`));
+
+    } catch (error) { child.error = this.errorText(error); }
+    finally { child.pending = false; if (parent === this.parentState() && generation === this.currentGeneration()) this.emitChildren(); }
+  }
   private state = new ConversationState();
   private nextGeneration = 0;
   private endpoint?: ServerInfoParams;
@@ -59,6 +163,140 @@ export class CognitionBackend implements ChatBackend {
   /** Models from GET /v1/models, and the alias the next new conversation uses
    *  (or the open conversation's, once it exists). */
   private models: ModelInfo[] = [];
+  private commands: CommandInfo[] = [];
+
+  async refreshCommands(): Promise<void> {
+    this.emit({ type: "commands", items: [...this.commands, ...CLIENT_COMMANDS.filter(c => !this.commands.some(s => s.name === c.name))] });
+    if (!this.endpoint) return;
+    const endpoint = this.endpoint;
+    const body = await this.request("/v1/commands", { method: "GET" }, "endpoint");
+    if (endpoint !== this.endpoint) return;
+    this.commands = (Array.isArray(body?.commands) ? body.commands : []).filter((c: any) =>
+      typeof c?.name === "string" && /^[a-z][a-z0-9_-]*$/.test(c.name) && typeof c.description === "string" && typeof c.args_hint === "string");
+    this.emit({ type: "commands", items: [...this.commands, ...CLIENT_COMMANDS.filter(c => !this.commands.some(s => s.name === c.name))] });
+  }
+
+  captureOperation(): ComposerOperation { return { owner: this.state, generation: this.currentGeneration() }; }
+  ownsOperation(operation: ComposerOperation): boolean { return !this.disposed && operation.owner === this.state && operation.generation === this.currentGeneration(); }
+
+  async runComposerCommand(draft: string, generation = this.currentGeneration(), operation?: ComposerOperation): Promise<boolean> {
+    if (this.isReadOnly()) throw new Error("Subagent transcripts are read-only. Return to the parent to send messages or commands.");
+    this.checkGeneration(generation);
+    const routed = routeComposer(draft);
+    if (routed.kind !== "command") throw new Error("Not a command");
+    const { name, arguments: args } = routed;
+    if (this.state.starting && ["model", "variant", "agent", "skill"].includes(name)) throw new Error("Conversation is starting or opening. Try again when it is ready.");
+    if (typeof args !== "string") throw new Error("Command arguments must be text");
+    if (!this.commands.length) { await this.refreshCommands(); this.checkGeneration(generation); }
+    if (![...this.commands, ...CLIENT_COMMANDS].some(c => c.name === name)) throw new Error(`Unknown command: /${name}. Use /help.`);
+    if (["help", "skills", "stop"].includes(name) && args) throw new Error(`/${name} takes no arguments`);
+    if (name === "help") {
+      this.emit({ type: "notice", text: [...this.commands, ...CLIENT_COMMANDS.filter(c => !this.commands.some(s => s.name === c.name))].map(c => `/${c.name} ${c.args_hint} — ${c.description}`).join("\n") });
+      return true;
+    }
+    if (name === "new") {
+      if (args && !this.models.some(m => m.alias === args)) throw new Error("Unknown model alias");
+      const reset = this.newConversation();
+      const newGeneration = this.currentGeneration();
+      await reset;
+      this.checkGeneration(newGeneration);
+      if (args) this.selectModel(args);
+      this.emit({ type: "sendResult", text: draft, accepted: true, generation: newGeneration });
+      return true;
+    }
+    if (name === "model" && !args) {
+      this.emit({ type: "commandPicker", kind: "model", items: this.models.map(m => ({ name: m.alias, description: m.model })) });
+      return true;
+    }
+    if (name === "variant" && !args && !this.currentConversationId()) {
+      const model = this.models.find(m => m.alias === this.state.selectedModel);
+      this.emit({ type: "commandPicker", kind: "variant", items: [...(model?.variants ?? []), "off"].map(name => ({ name, description: name === "off" ? "No variant" : "Model variant" })) });
+      return true;
+    }
+    if (name === "skills") {
+      if (!this.state.session) throw new Error("A conversation is needed. Send a message first.");
+      const session = this.state.session;
+      const body = await this.request(`/v1/sessions/${encodeURIComponent(session)}/skills`, { method: "GET" });
+      this.checkGeneration(generation);
+      if (session !== this.state.session) throw new Error("Conversation changed");
+      this.emit({ type: "commandPicker", kind: "skills", items: (body?.skills ?? []).filter((s: any) => typeof s?.name === "string" && typeof s.description === "string"), disabledReason: body?.disabled_reason ?? undefined });
+      return true;
+    }
+    if (name === "skill") {
+      const match = /^(\S+)(?:\s+([\s\S]*))?$/.exec(args);
+      if (!match) throw new Error("Usage: /skill <name> [request]");
+      const ensured = await this.ensureSession(operation);
+      const session = ensured.session;
+      generation = ensured.generation;
+      this.checkGeneration(generation);
+      const result = await this.request(`/v1/sessions/${encodeURIComponent(session)}/messages`, { method: "POST", body: JSON.stringify({ target_actor_id: ROOT_ACTOR, content: [{ type: "text", text: match[2] || `Apply the ${match[1]} skill.` }, { type: "skill", name: match[1] }] }) });
+      this.checkGeneration(generation);
+      const operationId = result?.command_id ?? result?.operation_id;
+      if (typeof operationId === "string") this.trackCommand(operationId, { draft, name, arguments: args });
+      else if (result?.accepted === false || result?.ok === false) throw new Error(String(result.error ?? "Message refused"));
+      return typeof operationId !== "string";
+    }
+    if (name === "stop") { if (!this.state.session) throw new Error("A conversation is needed."); await this.stop(); this.checkGeneration(generation); return true; }
+    if (!this.state.session && !this.state.resumeId) {
+      if (!["model", "variant", "agent"].includes(name)) throw new Error("A conversation is needed. Send a message first.");
+      if (name === "model") { if (!this.models.some(m => m.alias === args)) throw new Error("Unknown model alias"); this.selectModel(args); return true; }
+      if (name === "variant") {
+        const model = this.models.find(m => m.alias === this.state.selectedModel);
+        if (args !== "off" && !model?.variants?.includes(args)) throw new Error("Unknown variant for this model");
+        this.state.startVariant = args === "off" ? null : args;
+        this.emit({ type: "notice", text: `Starting variant: ${args}` });
+        return true;
+      }
+      if (!args || /\s/.test(args)) throw new Error("Usage: /agent <name>");
+      this.state.agent = args;
+      this.emit({ type: "agent", name: args });
+      return true;
+    }
+    if (!this.state.session) throw new Error("The conversation is stopped. Send a message to resume it first.");
+    if (name === "model" && this.hasOpenPermissions()) throw new Error("Answer the pending permission before switching model.");
+    const session = this.state.session;
+    const origin = this.state;
+    const modelToken = name === "model" ? ++origin.modelRequestToken : undefined;
+    if (name === "model") { origin.pendingModel = undefined; this.emitForState(origin, { type: "modelPending" }); }
+    const result = await this.request(`/v1/sessions/${encodeURIComponent(session)}/commands`, { method: "POST", body: JSON.stringify({ name, arguments: args }) }, "operation");
+    if (session !== origin.session) throw new Error("Conversation changed");
+    if (typeof result?.operation_id !== "string") throw new Error("Command returned no operation id");
+    if (name === "model" && modelToken === origin.modelRequestToken && !origin.settledModelOps.has(result.operation_id)) {
+      origin.pendingModel = { alias: args, operationId: result.operation_id };
+      this.emitForState(origin, { type: "modelPending", alias: args });
+    }
+    if (origin === this.state) this.trackCommand(result.operation_id, { draft, name, arguments: args });
+    else origin.commands.set(result.operation_id, { draft, name, arguments: args });
+    return false; // Only the durable outcome consumes the draft.
+  }
+
+  private trackCommand(operation: string, command: { draft: string; name: string; arguments: string }): void {
+    this.state.commands.set(operation, command);
+    const outcome = this.state.commandResults.get(operation);
+    if (outcome) this.settleCommand(outcome);
+    else if (command.name === "skill" && this.state.acceptedMessages.has(operation)) this.emit({ type: "sendResult", text: command.draft, accepted: true });
+  }
+
+  private settleCommand(p: any): void {
+    const operation = p.operation_id;
+    if (typeof operation !== "string") return;
+    this.state.commandResults.set(operation, p);
+    const command = this.state.commands.get(operation);
+    if (command) {
+      this.emit({ type: "sendResult", text: command.draft, accepted: p.ok === true, restoreDraft: command.name === "skill" && p.ok !== true });
+      if (p.ok !== true) this.emit({ type: "commandError", text: String(p.error ?? "Command refused. Your draft was kept.") });
+      this.state.commands.delete(operation);
+    }
+    const deferred = p.ok === true && p.data?.accepted === true && p.data?.applies === "after_turn";
+    if (p.name === "model" && !deferred) this.state.settledModelOps.add(operation);
+    if (command?.name === "variant" && !command.arguments && p.ok === true && Array.isArray(p.data?.offered)) {
+      this.emit({ type: "commandPicker", kind: "variant", items: [...p.data.offered.filter((v: unknown) => typeof v === "string"), "off"].map(name => ({ name, description: name === (p.data.variant ?? "off") ? "Current variant" : "Model variant" })) });
+    }
+    if (this.state.pendingModel?.operationId === operation && !deferred) {
+      this.state.pendingModel = undefined;
+      this.emit({ type: "modelPending" });
+    }
+  }
   /** Default alias the server announced, restored by "new conversation". */
   private defaultModel?: string;
   /** Tokens of the last model call, re-sent when the model or list changes. */
@@ -82,15 +320,19 @@ export class CognitionBackend implements ChatBackend {
     const first = !this.endpoint;
     if (restarted) {
       this.abortStream();
-      this.state.session = undefined;
-      this.state.resumeId = undefined;
-      this.resetTranscript();
+      const generation = this.currentGeneration();
+      this.state = new ConversationState();
+      this.state.streamGeneration = generation;
       this.conversations = [];
       this.emit({ type: "conversationOpened", title: "Server restarted" });
       this.emit({ type: "history", items: [] });
       this.emit({ type: "status", state: "connecting" });
     }
     this.endpoint = info;
+    if (first || restarted) {
+      this.commands = [];
+      void this.refreshCommands().catch(() => undefined);
+    }
     if (this.state.session) {
       void this.connect();
       return;
@@ -122,6 +364,15 @@ export class CognitionBackend implements ChatBackend {
       return [];
     }
     const body = await this.request(`/v1/sessions?${this.workspaceQuery()}`, { method: "GET" });
+    const parent = this.parentState();
+    for (const s of Array.isArray(body?.sessions) ? body.sessions : []) {
+      if (typeof s.id === "string" && s.parent_session_id === (parent.session ?? parent.resumeId) && s.promptable === false) {
+        if (!parent.children.has(s.id)) parent.children.set(s.id, { id: s.id, agent: typeof s.agent === "string" ? s.agent : "subagent", goal: "", state: this.childStatus(s.child_status) });
+        else if (this.isTerminal(this.childStatus(s.child_status))) this.seedChild(parent, s.id, s);
+      }
+    }
+    this.emitChildren();
+    if (!this.isReadOnly()) this.resumePermissionReads();
     this.conversations = parseSessionList(body);
     this.emitConversations();
     return [...this.conversations];
@@ -130,9 +381,14 @@ export class CognitionBackend implements ChatBackend {
   async openConversation(id: string): Promise<void> {
     const previous = this.state;
     this.abortStream();
+    // Its create/open operation is now abandoned. A rollback must restore an
+    // idle origin, not depend on that obsolete operation's cleanup.
+    previous.starting = false;
     const generation = this.state.streamGeneration;
     this.state = new ConversationState();
     this.state.streamGeneration = generation;
+    this.state.starting = true;
+    this.emitModels();
     this.state.session = undefined;
     this.state.resumeId = undefined;
     this.emit({ type: "conversationOpened", title: "Opening conversation" });
@@ -143,6 +399,11 @@ export class CognitionBackend implements ChatBackend {
       const summary = this.conversations.find((c) => c.id === id);
       const before = await this.reconcileSession(id, generation);
       this.checkGeneration(generation);
+      if (before?.parent_session_id || before?.promptable === false) throw new Error("Open subagents from their parent; they cannot be resumed.");
+      if (typeof before.agent === "string") {
+        this.state.agent = before.agent;
+        this.state.agentSeq = before.current_seq;
+      }
       this.state.previousRunThrough = before.actor_state === "stopped" ? before.current_seq : -1;
       // Resume first: an unknown id (404) must leave the current view intact.
       const created = await this.request("/v1/sessions", {
@@ -154,12 +415,16 @@ export class CognitionBackend implements ChatBackend {
       if (!sessionId) throw new Error("cognition server: resume returned no id");
       // Stop streaming the previous conversation before switching.
       this.state.session = sessionId;
+      this.state.starting = false;
+      this.emitModels();
       this.state.resumeId = undefined;
       this.state.replayThrough = Infinity;
       this.emit({ type: "conversationOpened", id: sessionId, title: summary?.title ?? sessionId });
+      this.emit({ type: "agent", name: this.state.agent });
       this.emit({ type: "history", items: [] });
       this.emit({ type: "status", state: "ready" });
       void this.loadSessionModel(sessionId);
+      void this.fetchContext();
       // No Last-Event-ID: the stored events replay the whole conversation.
       void this.connect();
       void this.listConversations().catch(() => undefined);
@@ -170,7 +435,12 @@ export class CognitionBackend implements ChatBackend {
         this.state.transcript = this.state.transcript.map(message => ({ ...message, generation }));
         this.bindControlOwners();
         this.emit({ type: "conversationOpened", id: this.currentConversationId(), title: "Conversation" });
+        this.emitChildren();
         this.emit({ type: "history", items: this.history() });
+        this.emitModels();
+        this.emit({ type: "modelPending", alias: this.state.pendingModel?.alias });
+        for (const result of this.state.commandResults.values()) this.settleCommand(result);
+        if (this.state.context) this.emit({ type: "usage", snapshot: this.state.context });
         this.emit({ type: "status", state: "error", message: `Could not open conversation: ${this.errorText(error)}` });
         void this.connect();
         this.resumePermissionReads();
@@ -182,10 +452,11 @@ export class CognitionBackend implements ChatBackend {
   async newConversation(): Promise<void> {
     // The previous conversation stays on disk; the next send creates fresh.
     this.abortStream();
-    this.state.session = undefined;
-    this.state.resumeId = undefined;
-    this.resetTranscript();
-    this.state.selectedModel = this.defaultModel ?? this.state.selectedModel;
+    const generation = this.currentGeneration();
+    const model = this.defaultModel ?? this.state.selectedModel;
+    this.state = new ConversationState();
+    this.state.streamGeneration = generation;
+    this.state.selectedModel = model;
     this.emit({ type: "conversationOpened", title: "New conversation" });
     this.emit({ type: "history", items: [] });
     this.emit({ type: "status", state: "ready" });
@@ -205,10 +476,11 @@ export class CognitionBackend implements ChatBackend {
     }
   }
 
-  async send(text: string, context?: string): Promise<void> {
+  async send(text: string, context?: string, operation?: ComposerOperation): Promise<void> {
+    if (this.isReadOnly()) throw new Error("Subagent transcripts are read-only. Return to the parent.");
     // The driver's message arrives as `message.received` on the stream; do
     // NOT emit an optimistic copy here (that duplicated it).
-    const { session, generation } = await this.ensureSession();
+    const { session, generation } = await this.ensureSession(operation);
     this.checkGeneration(generation);
     await this.request(`/v1/sessions/${session}/messages`, {
       method: "POST",
@@ -219,7 +491,7 @@ export class CognitionBackend implements ChatBackend {
     });
   }
 
-  async stop(): Promise<void> { await this.stopState(this.state); }
+  async stop(): Promise<void> { if (this.isReadOnly()) throw new Error("Use the confirmed subagent Stop control."); await this.stopState(this.state); }
 
   private async stopState(origin: ConversationState): Promise<void> {
     if (!origin.session || !this.endpoint) return;
@@ -232,12 +504,15 @@ export class CognitionBackend implements ChatBackend {
     // conversation survives: the next send resumes it under the same id,
     // so keep the stream cursor to continue where this one ended.
     origin.resumeId = session;
+    origin.pendingModel = undefined;
+    this.emitForState(origin, { type: "modelPending" });
     this.emitForState(origin, { type: "status", state: "ready" });
   }
 
   hasOpenPermissions(): boolean { return this.state.controls.permissions.size > 0; }
 
   async answerPermission(sessionId: string, requestId: string, decision: PermissionDecision, message?: string, generation = this.state.streamGeneration): Promise<void> {
+    if (this.isReadOnly()) throw new Error("Answer subagent permissions in the parent conversation.");
     this.checkGeneration(generation);
     const card = this.state.controls.permissions.get(requestId);
     const owner = this.state.controlOwners.get(`permission:${requestId}`);
@@ -271,6 +546,7 @@ export class CognitionBackend implements ChatBackend {
   }
 
   async controlPause(sessionId: string, id: string, action: "continue" | "stop", generation = this.state.streamGeneration): Promise<void> {
+    if (this.isReadOnly()) throw new Error("Use the confirmed subagent controls in the parent.");
     this.checkGeneration(generation);
     const pause = this.state.controls.pauses.get(id);
     const owner = this.state.controlOwners.get(id);
@@ -362,7 +638,7 @@ export class CognitionBackend implements ChatBackend {
 
   /** A conversation that exists on the server keeps its model (option A). */
   private modelLocked(): boolean {
-    return this.state.session !== undefined || this.state.resumeId !== undefined;
+    return this.state.starting || this.state.session !== undefined || this.state.resumeId !== undefined;
   }
 
   private emitModels(): void {
@@ -370,17 +646,23 @@ export class CognitionBackend implements ChatBackend {
       type: "models",
       items: [...this.models],
       current: this.state.selectedModel,
-      locked: this.modelLocked(),
+      locked: this.state.starting,
     });
-    // The window depends on the model: a replay can report usage before the
-    // list or the conversation's model arrives, so re-send it with both.
-    if (this.state.lastUsed !== undefined) this.emitUsage();
   }
 
   selectModel(alias: string): void {
-    if (this.modelLocked()) return;
+    if (this.isReadOnly()) return;
+    if (this.state.starting) { this.emit({ type: "commandError", text: "Conversation is starting or opening. Try again when it is ready." }); return; }
+    if (this.modelLocked()) {
+      const generation = this.currentGeneration();
+      const origin = this.state;
+      void this.runComposerCommand(`/model ${alias}`, generation).catch(error => {
+        if (origin === this.state && generation === this.currentGeneration()) this.emit({ type: "commandError", text: this.errorText(error), generation });
+      }); return;
+    }
     if (!this.models.some((m) => m.alias === alias)) return;
     this.state.selectedModel = alias;
+    this.state.startVariant = undefined;
     this.emitModels();
   }
 
@@ -391,6 +673,11 @@ export class CognitionBackend implements ChatBackend {
       const summary = await this.reconcileSession(id, generation);
       if (id !== this.state.session) return;
       if (typeof summary?.model === "string") this.state.selectedModel = summary.model;
+      if (typeof summary?.agent === "string" && summary.current_seq >= this.state.agentSeq) {
+        this.state.agent = summary.agent;
+        this.state.agentSeq = summary.current_seq;
+        this.emit({ type: "agent", name: summary.agent });
+      }
       this.state.replayThrough = typeof summary?.current_seq === "number" ? summary.current_seq : Infinity;
     } catch {
       // Keep the current selection: the picker is informative only here.
@@ -417,20 +704,55 @@ export class CognitionBackend implements ChatBackend {
     }
   }
 
-  /** Records the context used by a model call (prompt + completion tokens). */
-  private recordUsage(usage: any): void {
-    const prompt = typeof usage?.prompt_tokens === "number" ? usage.prompt_tokens : 0;
-    const completion = typeof usage?.completion_tokens === "number" ? usage.completion_tokens : 0;
-    if (prompt + completion <= 0) return;
-    this.state.lastUsed = prompt + completion;
-    this.emitUsage();
+  currentContext(): ContextSnapshot | undefined { return this.state.context; }
+
+  private acceptContext(value: unknown, authoritative = false): void {
+    const snapshot = parseContext(value);
+    if (!snapshot || !this.currentConversationId()) return;
+    const held = this.state.context;
+    if (!authoritative && held && held.incarnation !== snapshot.incarnation) {
+      void this.fetchContext();
+      return;
+    }
+    if (authoritative) this.state.retiredIncarnations = this.state.retiredIncarnations.filter(id => id !== snapshot.incarnation);
+    if (held) {
+      if (held.incarnation === snapshot.incarnation && snapshot.revision <= held.revision) return;
+      if (held.incarnation && held.incarnation !== snapshot.incarnation) {
+        this.state.retiredIncarnations.push(held.incarnation);
+        this.state.retiredIncarnations = this.state.retiredIncarnations.slice(-8);
+      }
+    }
+    this.state.context = snapshot;
+    this.emit({ type: "usage", snapshot });
   }
 
-  /** The last usage against the current model's window (absent when unknown). */
-  private emitUsage(): void {
-    if (this.state.lastUsed === undefined) return;
-    const window = this.models.find((m) => m.alias === this.state.selectedModel)?.contextWindow;
-    this.emit({ type: "usage", used: this.state.lastUsed, window });
+  private async fetchContext(): Promise<void> {
+    const origin = this.state;
+    const session = this.currentConversationId();
+    const generation = origin.streamGeneration;
+    ++origin.contextEpoch;
+    if (!session) return;
+    const active = origin.contextRefresh;
+    if (active?.session === session && active.generation === generation) {
+      active.pending = true;
+      return active.done;
+    }
+    const refresh = { session, generation, pending: false, done: Promise.resolve() };
+    origin.contextRefresh = refresh;
+    const current = (): boolean => origin === this.state && generation === this.state.streamGeneration && session === this.currentConversationId();
+    refresh.done = (async () => {
+      do {
+        refresh.pending = false;
+        const epoch = origin.contextEpoch;
+        try {
+          const snapshot = await this.request(`/v1/sessions/${encodeURIComponent(session)}/context`, { method: "GET" });
+          if (current() && epoch === origin.contextEpoch) this.acceptContext(snapshot, true);
+        } catch { /* Keep the last estimate; never substitute last-call usage. */ }
+      } while (current() && refresh.pending);
+    })().finally(() => {
+      if (origin.contextRefresh === refresh) origin.contextRefresh = undefined;
+    });
+    return refresh.done;
   }
 
   private emitConversations(): void {
@@ -443,6 +765,15 @@ export class CognitionBackend implements ChatBackend {
 
   /** Drops everything that described the previous conversation. */
   private resetTranscript(): void {
+    this.state.children.clear();
+    this.state.commands.clear();
+    this.state.commandResults.clear();
+    this.state.acceptedMessages.clear();
+    this.state.pendingModel = undefined;
+    this.state.settledModelOps.clear();
+    this.state.agentSeq = -1;
+    this.state.agent = "build";
+    this.state.startVariant = undefined;
     this.state.transcript = [];
     this.state.lastSeq = undefined;
     this.state.delivered.clear();
@@ -450,7 +781,9 @@ export class CognitionBackend implements ChatBackend {
     this.state.toolSummaries.clear();
     this.state.toolEvidence.clear();
     this.state.turnTextDelta.clear();
-    this.state.lastUsed = undefined;
+    this.state.context = undefined;
+    this.state.contextEpoch++;
+    this.state.retiredIncarnations = [];
     this.state.controls.reset();
     this.state.controlOwners.clear();
     this.state.pendingControls.clear();
@@ -460,6 +793,10 @@ export class CognitionBackend implements ChatBackend {
 
   /** Stops the SSE fetch of the running stream, if any. */
   private abortStream(): void {
+    for (const operation of this.childReconciliations.values()) operation.abort.abort();
+    this.childReconciliations.clear();
+    for (const panel of this.panels) panel.dispose();
+    this.panels.clear();
     this.cancelPermissionReads();
     this.state.streamGeneration = ++this.nextGeneration;
     this.state.streaming = false;
@@ -487,6 +824,8 @@ export class CognitionBackend implements ChatBackend {
       if (!response.ok || !response.body) {
         throw new Error(`event stream: HTTP ${response.status}`);
       }
+      if (generation !== this.state.streamGeneration) return;
+      void this.fetchContext();
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -516,17 +855,28 @@ export class CognitionBackend implements ChatBackend {
     // session with the cursor, or picking up whatever session is current
     // (a send after Stop may have created one while this drained), unless
     // there is none (stop / new conversation / server restart).
-    if (this.state.session !== undefined) {
+    if (this.state.readOnly && this.state.session && !this.terminalChild) await this.reconcileChild(this.state.session, this.parentState());
+    if (this.state.session !== undefined && !this.terminalChild) {
       setTimeout(() => void this.connect(), RECONNECT_DELAY_MS);
     }
   }
 
-  private async ensureSession(): Promise<{ session: string; generation: number }> {
+  private async ensureSession(operation?: ComposerOperation): Promise<{ session: string; generation: number }> {
+    if (this.isReadOnly()) throw new Error("Subagents cannot be resumed or prompted.");
+    if (this.state.starting) throw new Error("Conversation is starting or opening. Try again when it is ready.");
     if (this.state.session) return { session: this.state.session, generation: this.state.streamGeneration };
     this.abortStream();
     const generation = this.state.streamGeneration;
+    if (operation && operation.owner === this.state) operation.generation = generation;
+    this.state.starting = true;
+    this.emitModels();
+    try {
     if (!this.state.resumeId) {
+      const agent = this.state.agent;
+      const variant = this.state.startVariant;
       this.resetTranscript();
+      this.state.agent = agent;
+      this.state.startVariant = variant;
       this.emit({ type: "history", items: [] });
     } else {
       this.state.transcript = this.state.transcript.map(message => ({ ...message, generation }));
@@ -542,13 +892,14 @@ export class CognitionBackend implements ChatBackend {
       body: JSON.stringify(
         resume
           ? { workspace: this.workspacePath(), profile: "navigator", resume }
-          : { workspace: this.workspacePath(), profile: "navigator", model: this.state.selectedModel },
+           : { workspace: this.workspacePath(), profile: "navigator", model: this.state.selectedModel, agent: this.state.agent, ...(this.state.startVariant !== undefined ? { variant: this.state.startVariant } : {}) },
       ),
     });
     const sessionId = String(created?.session_id ?? "");
     this.checkGeneration(generation);
     if (!sessionId) throw new Error("cognition server: create session returned no id");
     this.state.session = sessionId;
+    this.state.starting = false;
     this.state.resumeId = undefined;
     if (!resume) {
       // A brand-new session restarts its seq space. (On resume: same
@@ -561,9 +912,14 @@ export class CognitionBackend implements ChatBackend {
     this.emit({ type: "status", state: "ready" });
     this.emitModels();
     this.emit({ type: "conversationOpened", id: sessionId, title: this.conversations.find(c => c.id === sessionId)?.title ?? "Conversation" });
+    this.emit({ type: "agent", name: this.state.agent });
+    void this.fetchContext();
     void this.connect();
     void this.listConversations().catch(() => undefined);
     return { session: sessionId, generation };
+    } finally {
+      if (generation === this.currentGeneration()) { this.state.starting = false; this.emitModels(); }
+    }
   }
 
   /** Parses one SSE frame: `id:`, optional `event:`, joined `data:` lines. */
@@ -588,6 +944,7 @@ export class CognitionBackend implements ChatBackend {
 
   private handleFrame(frame: EventFrame | undefined): void {
     if (!frame) return;
+    if (frame.envelope?.session_id !== undefined && frame.envelope.session_id !== this.currentConversationId()) return;
     if (frame.id) this.state.lastSeq = frame.id;
     if (frame.event === "resync") {
       // The cursor is out of range: drop it, rebuild the view from what the
@@ -606,7 +963,7 @@ export class CognitionBackend implements ChatBackend {
     const message = this.mapEvent(frame.envelope);
     if (message) {
       this.emit(message);
-      if (message.type === "permission" && message.card.childSessionId) this.scheduleChildRead(message.card.childSessionId);
+      if (!this.isReadOnly() && message.type === "permission" && message.card.childSessionId) this.scheduleChildRead(message.card.childSessionId);
     }
     if (this.state.replayThrough !== undefined && Number(frame.id) >= this.state.replayThrough) {
       this.state.replayThrough = undefined;
@@ -615,6 +972,8 @@ export class CognitionBackend implements ChatBackend {
   }
 
   cancelPermissionReads(): void {
+    for (const timer of this.state.childRetryTimers.values()) clearTimeout(timer);
+    this.state.childRetryTimers.clear();
     if (this.state.childReadTimer) clearTimeout(this.state.childReadTimer);
     this.state.childReadTimer = undefined;
     this.state.childReadQueue.clear();
@@ -624,6 +983,8 @@ export class CognitionBackend implements ChatBackend {
   }
 
   resumePermissionReads(): void {
+    if (this.isReadOnly()) { void this.connect(); return; }
+    for (const child of this.state.children.values()) if (!["done", "failed", "stopped"].includes(child.state)) this.scheduleChildRead(child.id);
     const completed = new Set(this.state.transcript.filter(m => m.type === "permissionCall").map(m => m.type === "permissionCall" ? m.requestId : ""));
     for (const card of this.state.controls.permissions.values()) {
       if (card.childSessionId && !completed.has(card.requestId)) this.scheduleChildRead(card.childSessionId);
@@ -632,6 +993,7 @@ export class CognitionBackend implements ChatBackend {
 
   dispose(): void {
     this.disposed = true;
+    this.panelOwner?.panels.delete(this);
     this.abortStream();
     this.listeners.clear();
   }
@@ -651,13 +1013,26 @@ export class CognitionBackend implements ChatBackend {
       if (this.state.childReads.has(child)) continue;
       this.state.childReadQueue.delete(child);
       const cards = [...this.state.controls.permissions.values()].filter(card => card.childSessionId === child && !this.state.childReadsAttempted.has(card.requestId));
-      if (!cards.length) continue;
+      const row = this.state.children.get(child);
+      if (!cards.length && (!row || this.state.childReadsAttempted.has(`state:${child}`))) continue;
+      this.state.childReadsAttempted.add(`state:${child}`);
       for (const card of cards) this.state.childReadsAttempted.add(card.requestId);
       const abort = new AbortController();
       this.state.childReads.set(child, abort);
+      const readGeneration = this.currentGeneration();
       void this.loadChildPermissionCalls(child, cards, abort).finally(() => {
-        if (this.state.childReads.get(child) === abort) {
+        if (this.currentGeneration() === readGeneration && this.state.childReads.get(child) === abort) {
           this.state.childReads.delete(child);
+          const row = this.state.children.get(child);
+          if (row && !["done", "failed", "stopped"].includes(row.state)) {
+            this.state.childReadsAttempted.delete(`state:${child}`);
+            const origin = this.state;
+            const generation = this.currentGeneration();
+            this.state.childRetryTimers.set(child, setTimeout(() => {
+              origin.childRetryTimers.delete(child);
+              if (this.state === origin && this.currentGeneration() === generation && !this.disposed) this.scheduleChildRead(child);
+            }, RECONNECT_DELAY_MS));
+          }
           this.drainChildReads();
         }
       });
@@ -677,8 +1052,9 @@ export class CognitionBackend implements ChatBackend {
     const cancel = (): void => { void reader?.cancel().catch(() => undefined); };
     abort.signal.addEventListener("abort", cancel, { once: true });
     try {
+      const cursor = !cards.length ? this.state.childStateCursors.get(child) : undefined;
       const response = await fetch(`http://127.0.0.1:${endpoint.port}/v1/sessions/${encodeURIComponent(child)}/events`, {
-        headers: { authorization: `Bearer ${endpoint.token}` }, signal: abort.signal,
+        headers: { authorization: `Bearer ${endpoint.token}`, ...(cursor ? { "last-event-id": cursor } : {}) }, signal: abort.signal,
       });
       if (!response.ok || !response.body) return;
       reader = response.body.getReader();
@@ -695,8 +1071,18 @@ export class CognitionBackend implements ChatBackend {
         while ((split = buffer.indexOf("\n\n")) !== -1) {
           const raw = buffer.slice(0, split);
           buffer = buffer.slice(split + 2);
-          const event = this.parseFrame(raw)?.envelope;
+          const frame = this.parseFrame(raw);
+          if (frame?.event === "resync") { this.state.childStateCursors.delete(child); return; }
+          const event = frame?.envelope;
           if (!event) continue;
+          if (frame?.id && generation === this.currentGeneration()) this.state.childStateCursors.set(child, frame.id);
+          if (session === this.state.session && generation === this.currentGeneration()) {
+            const last = this.state.childStateSeq.get(child) ?? -1;
+            if (typeof event.seq === "number" && event.seq > last) {
+              this.state.childStateSeq.set(child, event.seq);
+              this.observeChildren({ ...event, payload: { ...event.payload, child_session_id: child } });
+            }
+          }
           replay.observe(event);
           if (event.kind === "permission.requested") {
             const p = event.payload;
@@ -707,7 +1093,7 @@ export class CognitionBackend implements ChatBackend {
               this.emit({ type: "permissionCall", requestId: card.requestId, call: permissionCall(card.tool, args) });
             }
             remaining.delete(card.requestId);
-            if (!remaining.size) return;
+            if (!remaining.size && cards.length) return;
           }
         }
       }
@@ -717,9 +1103,138 @@ export class CognitionBackend implements ChatBackend {
 
   // ---- event -> webview mapping ----
 
+  private childStatus(status: unknown): ChildInfo["state"] {
+    switch (status) {
+      case "running": case "active": return "running";
+      case "done": case "completed": return "done";
+      case "failed": return "failed";
+      case "stopped": return "stopped";
+      case "waiting_for_permission": case "permission": case "waiting_permission": case "awaiting_permission": return "permission";
+      case "out_of_steps": case "step_budget_exhausted": case "parked": return "budget";
+      case "doubt": case "watchdog_paused": return "watchdog";
+      default: return "unknown";
+    }
+  }
+  private observeChildren(e: WireEnvelope): void {
+    const p = e.payload ?? {};
+    const parent = this.parentState();
+    let id = typeof p.child_session_id === "string" ? p.child_session_id : this.state.readOnly ? this.state.session : undefined;
+    if (e.kind.startsWith("subagent.")) {
+      if (p.parent_session_id !== undefined && p.parent_session_id !== (parent.session ?? parent.resumeId)) return;
+      if (!id) return;
+      const child: ChildInfo = parent.children.get(id) ?? { id, agent: "subagent", goal: "", state: "running" };
+      if (typeof p.agent === "string") child.agent = p.agent;
+      if (typeof p.goal === "string") child.goal = p.goal.slice(0, 500);
+      if (e.kind === "subagent.done") { child.state = this.childStatus(p.outcome); child.pauseToken = undefined; }
+      else if (e.kind === "subagent.watchdog" && !["done", "failed", "stopped"].includes(child.state)) {
+        if (p.verdict === "doubt" || p.verdict === "stuck") child.state = "watchdog";
+        if (p.verdict === "active" && child.state === "watchdog") child.state = "running";
+      }
+      parent.children.set(id, child);
+      if (typeof p.reason === "string") child.reason = p.reason.slice(0,500);
+      if (typeof p.delivery === "string") child.delivery = p.delivery;
+      if (!this.isReadOnly() && e.kind === "subagent.spawned" && !["done", "failed", "stopped"].includes(child.state)) this.scheduleChildRead(id);
+    } else {
+      if (this.state.readOnly && id && typeof e.seq === "number") {
+        if (this.isTerminal(parent.children.get(id)?.state ?? "unknown")) return;
+        if (e.seq <= (parent.childStateSeq.get(id) ?? -1)) return;
+        parent.childStateSeq.set(id, e.seq);
+      }
+      if (e.kind === "permission.resolved" && !id) {
+        const card = this.state.controls.permissions.get(p.request_id); id = card?.childSessionId;
+      }
+      const child = id ? parent.children.get(id) : undefined;
+      if (!child || ["done", "failed", "stopped"].includes(child.state)) return;
+      if (e.kind === "permission.requested") child.state = "permission";
+      else if (e.kind === "permission.resolved" || e.kind === "turn.start") { child.state = "running"; child.pauseToken = undefined; }
+      else if (e.kind === "agent.yield" && ["budget", "watchdog"].includes(p.kind)) {
+        child.state = p.kind === "budget" ? "budget" : "watchdog";
+        const token = p.details?.pause_token;
+        child.pauseToken = typeof token?.incarnation === "string" && typeof token?.hold_id === "string" ? token : undefined;
+      } else if (e.kind === "command.result" && p.name === "watchdog" && p.data?.resolution &&
+          JSON.stringify(p.data.pause_token) === JSON.stringify(child.pauseToken)) { child.state = "running"; child.pauseToken = undefined; }
+      else if (e.kind === "session.end" || (e.kind === "turn.end" && ["done", "error"].includes(p.outcome))) { void this.reconcileChild(id!, parent); return; }
+      else return;
+    }
+    if (id) {
+      const child = parent.children.get(id);
+      if (child) child.revision = (child.revision ?? 0) + 1;
+    }
+    this.emitChildren();
+    this.panelOwner?.emitChildren();
+  }
+
+  private reconcileChild(id: string, parent: ConversationState): Promise<void> {
+    const existing = this.childReconciliations.get(id);
+    if (existing) { existing.trailing = true; return existing.done; }
+    const generation = this.currentGeneration();
+    const operation = { abort: new AbortController(), trailing: false, done: Promise.resolve() };
+    operation.done = (async () => {
+      // One active lookup and at most one trailing batch, each with bounded retries.
+      for (let batch = 0; batch < 2; batch++) {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const timeout = setTimeout(() => operation.abort.abort(), 2000);
+          try {
+            const metadata = await this.request(`/v1/sessions/${encodeURIComponent(id)}`, { method: "GET", signal: operation.abort.signal });
+            if (operation.abort.signal.aborted || generation !== this.currentGeneration()) return;
+            this.seedChild(parent, id, metadata);
+            const terminal = this.isTerminal(parent.children.get(id)!.state);
+            if (this.state.readOnly) this.terminalChild = terminal;
+            if (terminal) break;
+          } catch { if (operation.abort.signal.aborted || generation !== this.currentGeneration()) return; }
+          finally { clearTimeout(timeout); }
+          if (attempt < 2) await new Promise<void>(resolve => {
+            const timer = setTimeout(resolve, 100 * (attempt + 1));
+            operation.abort.signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+          });
+          if (operation.abort.signal.aborted) return;
+        }
+        if (!operation.trailing || operation.abort.signal.aborted) break;
+        operation.trailing = false;
+      }
+    })().finally(() => { if (this.childReconciliations.get(id) === operation) this.childReconciliations.delete(id); });
+    this.childReconciliations.set(id, operation);
+    return operation.done;
+  }
+
   private mapEvent(envelope: WireEnvelope): HostToWebview | undefined {
     const payload = envelope.payload ?? {};
+    this.observeChildren(envelope);
+    // Refresh context even when these events also project a notice.
+    if (envelope.kind === "context.compacted" || envelope.kind === "model.changed") void this.fetchContext();
     for (const update of this.state.controls.envelopeUpdates(envelope)) this.emit(update);
+    if (envelope.kind === "message.received" && typeof payload.command_id === "string") {
+      this.state.acceptedMessages.add(payload.command_id);
+      const command = this.state.commands.get(payload.command_id);
+      if (command?.name === "skill") {
+        this.emit({ type: "sendResult", text: command.draft, accepted: true });
+      }
+    }
+    if (envelope.kind === "session.end") {
+      this.state.pendingModel = undefined;
+      this.emit({ type: "modelPending" });
+    }
+    if (envelope.kind === "command.result") {
+      this.settleCommand(payload);
+      return { type: "notice", operationId: payload.operation_id, name: String(payload.name ?? "command"), ok: payload.ok === true,
+        text: `/${String(payload.name ?? "command")} · ${payload.ok === false ? String(payload.error ?? "Refused") : payload.data?.applies === "after_turn" ? "Accepted · switches after this turn" : typeof payload.data?.message === "string" ? payload.data.message : JSON.stringify(payload.data ?? "Done", null, 2)}` };
+    }
+    if (envelope.kind === "session.agent_changed") {
+      this.state.agentSeq = envelope.seq;
+      this.state.agent = String(payload.agent ?? "build");
+      return { type: "agent", name: this.state.agent };
+    }
+    if (envelope.kind === "context.compacted") return { type: "notice", text: `Context compacted: ~${payload.estimate_before ?? "?"} → ~${payload.estimate_after ?? "?"} tokens` };
+    if (envelope.kind === "model.changed") {
+      if (typeof payload.operation_id === "string") this.state.settledModelOps.add(payload.operation_id);
+      if (typeof payload.new?.alias === "string") this.state.selectedModel = payload.new.alias;
+      if (payload.operation_id === this.state.pendingModel?.operationId) {
+        this.state.pendingModel = undefined;
+        this.emit({ type: "modelPending" });
+      }
+      this.emitModels();
+      return { type: "notice", text: `Model: ${payload.new?.alias ?? "unknown"}${payload.variant ? ` · ${payload.variant}` : ""}` };
+    }
     const projected = eventView(envelope, this.state.currentTurn, this.state.controls.calls);
     if (projected?.type === "pause" && envelope.seq <= this.state.previousRunThrough) {
       this.emit(projected);
@@ -727,6 +1242,10 @@ export class CognitionBackend implements ChatBackend {
     }
     if (projected) return projected;
     switch (envelope.kind) {
+      case "context.updated":
+        this.state.contextEpoch++;
+        this.acceptContext(payload);
+        return undefined;
       case "turn.start": {
         this.state.currentTurn = String(payload.turn_id ?? envelope.seq);
         this.emit({ type: "status", state: "busy" });
@@ -750,7 +1269,6 @@ export class CognitionBackend implements ChatBackend {
         // no live text renders its final message as one delta. Live turns
         // (flagged above) must not be duplicated.
         const id = String(payload.turn_id ?? this.state.currentTurn ?? envelope.seq);
-        this.recordUsage(payload.usage ?? payload.message?.usage);
         const message = payload.message ?? {};
         const text = typeof message.text === "string" ? message.text : "";
         const thinking = typeof message.thinking === "string" ? message.thinking : "";
@@ -823,6 +1341,7 @@ export class CognitionBackend implements ChatBackend {
   }
 
   private emit(message: HostToWebview): void {
+    if (message.type === "conversationOpened") this.state.title = message.title;
     if (message.generation !== undefined && message.generation !== this.state.streamGeneration) return;
     message = { ...message, generation: this.state.streamGeneration };
     if (message.type === "permission" && this.state.session) this.state.controlOwners.set(`permission:${message.card.requestId}`, { session: this.state.session, generation: this.state.streamGeneration });
@@ -834,6 +1353,7 @@ export class CognitionBackend implements ChatBackend {
     // Conversation-list, model and usage metadata is pushed, never replayed
     // as transcript (the view caches the last ones for a reopen).
     const ephemeral =
+      message.type === "subagents" || message.type === "childView" ||
       message.type === "history" ||
       message.type === "conversations" ||
       message.type === "conversationOpened" ||
@@ -881,13 +1401,13 @@ export class CognitionBackend implements ChatBackend {
     } catch (error) {
       check();
       const message = this.errorText(error);
-      this.emit({ type: "status", state: "error", message });
+      if (scope !== "operation") this.emit({ type: "status", state: "error", message });
       throw new Error(`cognition server unreachable: ${message}`);
     }
     check();
     if (response.status === 401) {
       const message = "cognition server rejected the token (401)";
-      this.emit({ type: "status", state: "error", message });
+      if (scope !== "operation") this.emit({ type: "status", state: "error", message });
       throw new HttpError(response.status, message);
     }
     if (!response.ok) {
@@ -901,7 +1421,7 @@ export class CognitionBackend implements ChatBackend {
         }
       }
       const message = `cognition server: ${detail}`;
-      this.emit({ type: "status", state: "error", message });
+      if (scope !== "operation") this.emit({ type: "status", state: "error", message });
       throw new HttpError(response.status, message);
     }
     // DELETE answers 204 and other routes may answer empty: undefined, not a
@@ -926,7 +1446,7 @@ function isAbort(error: unknown): boolean {
 function parseSessionList(body: any): ConversationSummary[] {
   const sessions = Array.isArray(body?.sessions) ? body.sessions : [];
   return sessions
-    .filter((s: any) => s && typeof s.id === "string")
+    .filter((s: any) => s && typeof s.id === "string" && !s.parent_session_id && s.promptable !== false)
     .map((s: any) => ({
       id: s.id,
       title: typeof s.title === "string" && s.title ? s.title : "Untitled conversation",
@@ -944,6 +1464,8 @@ function parseModelList(body: any): ModelInfo[] {
       alias: m.alias,
       model: m.model,
       contextWindow: typeof m.context_window === "number" ? m.context_window : undefined,
+      variants: Array.isArray(m.variants) ? m.variants.filter((v: unknown) => typeof v === "string") : [],
+      defaultVariant: typeof m.default_variant === "string" ? m.default_variant : undefined,
     }));
 }
 

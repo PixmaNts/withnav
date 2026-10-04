@@ -36,6 +36,8 @@ export interface PauseToken { incarnation: string; hold_id: string }
 
 /** Host -> webview messages. */
 export type HostToWebview = { generation?: number } & (
+  | { type: "subagents"; parentId: string; items: ChildInfo[] }
+  | { type: "childView"; child?: ChildInfo; parentId?: string; parentTitle?: string }
   | { type: "status"; state: "connecting" | "ready" | "busy" | "error"; message?: string }
   /** A message already complete when shown (the driver's own, or a navigator wake).
    *  `context` is the chip label of the editor context attached to a driver message;
@@ -46,8 +48,13 @@ export type HostToWebview = { generation?: number } & (
   | { type: "permissionState"; requestId: string; resolution: string; message?: string }
   | { type: "pause"; id: string; kind: "budget" | "watchdog"; text: string; token?: PauseToken }
   | { type: "pauseState"; id: string; state: "pending" | "resolved" | "error"; message?: string }
-  | { type: "notice"; text: string }
-  | { type: "sendResult"; text: string; accepted: boolean }
+  | { type: "notice"; text: string; operationId?: string; ok?: boolean; name?: string }
+  | { type: "commands"; items: CommandInfo[] }
+  | { type: "commandError"; text: string }
+  | { type: "commandPicker"; kind: "model" | "variant" | "skills"; items: { name: string; description: string }[]; disabledReason?: string }
+  | { type: "agent"; name: string }
+  | { type: "modelPending"; alias?: string }
+  | { type: "sendResult"; text: string; accepted: boolean; restoreDraft?: boolean }
   /** The cognition starts answering; deltas for this id follow. */
   | { type: "turnStart"; id: string }
   /** Streamed answer text for the current turn, to append. */
@@ -72,7 +79,7 @@ export type HostToWebview = { generation?: number } & (
    *  `locked`: the conversation exists, its model can no longer change. */
   | { type: "models"; items: ModelInfo[]; current?: string; locked: boolean }
   /** Context of the last model call: `used` tokens out of `window` (absent when unknown). */
-  | { type: "usage"; used: number; window?: number });
+  | { type: "usage"; snapshot: import("./contextMeter").ContextSnapshot });
 
 /** One saved conversation, as listed in the panel. `updatedAt` is an RFC 3339 timestamp. */
 export interface ConversationSummary {
@@ -87,10 +94,25 @@ export interface ModelInfo {
   alias: string;
   model: string;
   contextWindow?: number;
+  variants?: string[];
+  defaultVariant?: string;
 }
+
+export interface CommandInfo { name: string; description: string; args_hint: string }
+export interface ChildInfo {
+  id: string; agent: string; goal: string;
+  state: "unknown" | "running" | "permission" | "budget" | "watchdog" | "done" | "failed" | "stopped";
+  revision?: number; reason?: string; delivery?: string;
+  pauseToken?: PauseToken;
+  pending?: boolean;
+  error?: string;
+}
+export interface ComposerOperation { owner: object; generation: number }
 
 /** Webview -> host messages. */
 export type WebviewToHost = { generation?: number } & (
+  | { type: "openChild"; parentId: string; childId: string }
+  | { type: "controlChild"; parentId: string; childId: string; action: "stop" | "continue" }
   /** The webview finished loading and wants the history. */
   | { type: "ready" }
   /** The driver sends a message to the cognition; the host appends the editor context when asked. */
@@ -114,7 +136,18 @@ export type WebviewToHost = { generation?: number } & (
 
 /** What the chat view needs from the host side; implemented by the cognition bridge. */
 export interface ChatBackend {
+  dispose(): void;
+  captureChildControl(parentId: string, childId: string, action: "stop" | "continue", generation?: number): object;
+  publishSubagents(): void;
+  openChild(parentId: string, childId: string, generation?: number): Promise<ChatBackend>;
+  controlChild(parentId: string, childId: string, action: "stop" | "continue", generation?: number, descriptor?: object): Promise<void>;
+  isReadOnly(): boolean;
+  captureOperation(): ComposerOperation;
+  ownsOperation(operation: ComposerOperation): boolean;
+  currentContext(): import("./contextMeter").ContextSnapshot | undefined;
   currentGeneration(): number;
+  refreshCommands(): Promise<void>;
+  runComposerCommand(text: string, generation?: number, operation?: ComposerOperation): Promise<boolean>;
   resumePermissionReads(): void;
   cancelPermissionReads(): void;
   /** Current transcript, replayed into a freshly opened view. */
@@ -122,7 +155,7 @@ export interface ChatBackend {
   /** Subscribe to live messages; returns an unsubscribe function. */
   subscribe(listener: (message: HostToWebview) => void): () => void;
   /** `context` is an editor-context block appended after the driver's text. */
-  send(text: string, context?: string): Promise<void>;
+  send(text: string, context?: string, operation?: ComposerOperation): Promise<void>;
   stop(): Promise<void>;
   hasOpenPermissions(): boolean;
   answerPermission(sessionId: string, requestId: string, decision: PermissionDecision, message?: string, generation?: number): Promise<void>;

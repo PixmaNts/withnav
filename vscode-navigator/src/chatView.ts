@@ -2,6 +2,7 @@ import { chatHtml } from "./chatHtml";
 import * as vscode from "vscode";
 import { CHAT_VIEW_ID, ChatBackend, HostToWebview, WebviewToHost } from "./chatProtocol";
 import { buildEditorContext, presentMessage } from "./editorContext";
+import { routeComposer } from "./commands";
 
 const CONTEXT_DEBOUNCE_MS = 200;
 
@@ -9,8 +10,11 @@ export function registerChatView(
   context: vscode.ExtensionContext,
   backend: ChatBackend,
 ): vscode.Disposable {
-  return vscode.window.registerWebviewViewProvider(CHAT_VIEW_ID, {
+  const panels = new Map<string, vscode.WebviewPanel>();
+  const openings = new Map<string, Promise<void>>();
+  const registration = vscode.window.registerWebviewViewProvider(CHAT_VIEW_ID, {
     resolveWebviewView(view) {
+      let disposed = false;
       const webview = view.webview;
       webview.options = {
         enableScripts: true,
@@ -31,16 +35,13 @@ export function registerChatView(
       let lastConversationOpened: HostToWebview | undefined;
       let lastConversations: HostToWebview | undefined;
       let lastModels: HostToWebview | undefined;
-      let lastUsage: HostToWebview | undefined;
       const post = (message: HostToWebview): void => {
         if (message.generation !== undefined && message.generation !== backend.currentGeneration()) return;
         message = { ...message, generation: backend.currentGeneration() };
         if (message.type === "conversationOpened") {
           lastConversationOpened = message;
-          lastUsage = undefined; // a new or reopened conversation re-reports its own
         } else if (message.type === "conversations") lastConversations = message;
         else if (message.type === "models") lastModels = message;
-        else if (message.type === "usage") lastUsage = message;
         void webview.postMessage(presentMessage(message));
       };
       const unsubscribe = backend.subscribe(post);
@@ -65,29 +66,46 @@ export function registerChatView(
             if (lastConversations) post(lastConversations);
             post({ type: "conversationOpened", id: backend.currentConversationId(),
               title: lastConversationOpened?.type === "conversationOpened" ? lastConversationOpened.title : "Conversation" });
+            backend.publishSubagents();
             post({ type: "history", items: backend.history() });
             if (lastModels) post(lastModels);
-            if (lastUsage) post(lastUsage);
+            const snapshot = backend.currentContext();
+            if (snapshot) post({ type: "usage", snapshot });
             pushContext();
             backend.resumePermissionReads();
+            void backend.refreshCommands().catch(showError);
             break;
           case "send":
+            if (backend.isReadOnly()) break;
             if (typeof message.text === "string" && message.text.trim()) {
+              const operation = backend.captureOperation();
               void (async () => {
                 const session = backend.currentConversationId();
-                const generation = backend.currentGeneration();
+                 const generation = backend.currentGeneration();
+                 // Route before confirmation and, crucially, before reading editor content.
+                 const route = routeComposer(message.text);
+                 if (route.kind === "command" && route.name !== "skill") {
+                   return await backend.runComposerCommand(message.text, generation, operation);
+                 }
                 if (backend.hasOpenPermissions()) {
                   const answer = await vscode.window.showWarningMessage(
                     "Sending cancels the pending permission request", { modal: true }, "Send anyway",
                   );
                   if (answer !== "Send anyway") return false;
                 }
-                if (generation !== backend.currentGeneration() || session !== backend.currentConversationId()) throw new Error("The open conversation changed. Send again in the current conversation.");
+                 if (generation !== backend.currentGeneration() || session !== backend.currentConversationId()) throw new Error("The open conversation changed. Send again in the current conversation.");
+                 if (route.kind === "command") return await backend.runComposerCommand(message.text, generation, operation);
                 const context = message.includeContext === false ? undefined : buildEditorContext().block;
-                await backend.send(message.text, context);
+                 const routed = routeComposer(message.text);
+                 if (routed.kind === "message") await backend.send(routed.text, context, operation);
                 return true;
-              })().then(accepted => post({ type: "sendResult", text: message.text, accepted, generation: accepted ? backend.currentGeneration() : message.generation }))
-                .catch(error => { post({ type: "sendResult", text: message.text, accepted: false, generation: message.generation }); showError(error); });
+               })().then(accepted => {
+                 // /new deliberately changes identity. Its reset already released the composer;
+                 // never relabel an acknowledgement from the previous conversation.
+                 if (routeComposer(message.text).kind === "command" && message.text.match(/^\/new(?:\s|$)/)) return;
+                 if (backend.ownsOperation(operation)) post({ type: "sendResult", text: message.text, accepted, generation: operation.generation });
+               })
+                .catch(error => { if (!backend.ownsOperation(operation)) return; post({ type: "sendResult", text: message.text, accepted: false, generation: operation.generation }); post({ type: "commandError", text: error instanceof Error ? error.message : String(error), generation: operation.generation }); });
             }
             break;
           case "answerPermission":
@@ -130,9 +148,40 @@ export function registerChatView(
           case "selectModel":
             if (typeof message.alias === "string") backend.selectModel(message.alias);
             break;
+          case "openChild":
+            if (typeof message.parentId === "string" && typeof message.childId === "string") {
+              const existing = panels.get(message.childId);
+              if (existing) { existing.reveal(); break; }
+              const opening = openings.get(message.childId);
+              if (opening) { void opening.then(() => panels.get(message.childId)?.reveal()); break; }
+              const pending = backend.openChild(message.parentId, message.childId, message.generation).then(childBackend => {
+                if (disposed || message.generation !== backend.currentGeneration()) { childBackend.dispose(); return; }
+                const panel = vscode.window.createWebviewPanel("navai.subagent", "Subagent", vscode.ViewColumn.Active, { enableScripts: true });
+                panels.set(message.childId, panel);
+                mountChildPanel(context, panel, childBackend, backend, message.parentId, message.childId);
+                panel.onDidDispose(() => { if (panels.get(message.childId) === panel) panels.delete(message.childId); childBackend.dispose(); });
+                const off = backend.subscribe(update => { if (update.generation !== message.generation) panel.dispose(); });
+                panel.onDidDispose(off);
+              }).catch(showError).finally(() => { if (openings.get(message.childId) === pending) openings.delete(message.childId); });
+              openings.set(message.childId, pending);
+            }
+            break;
+          case "controlChild":
+            if (typeof message.parentId === "string" && typeof message.childId === "string" && ["stop", "continue"].includes(message.action)) {
+              const generation = message.generation;
+              let descriptor: object;
+              try { descriptor = backend.captureChildControl(message.parentId, message.childId, message.action, generation); } catch (error) { showError(error); break; }
+              void (async () => {
+                const choice = await vscode.window.showWarningMessage(`${message.action === "stop" ? "Stop" : "Continue"} this subagent?`, { modal: true }, "Confirm");
+                if (disposed || choice !== "Confirm" || generation !== backend.currentGeneration()) return;
+                await backend.controlChild(message.parentId, message.childId, message.action, generation, descriptor);
+              })().catch(showError);
+            }
+            break;
         }
       });
       view.onDidDispose(() => {
+        disposed = true;
         backend.cancelPermissionReads();
         unsubscribe();
         messageSubscription.dispose();
@@ -141,6 +190,37 @@ export function registerChatView(
       });
     },
   });
+  return registration;
+}
+
+function mountChildPanel(context: vscode.ExtensionContext, panel: vscode.WebviewPanel, child: ChatBackend, parent: ChatBackend, parentId: string, childId: string): void {
+  let disposed = false;
+  const webview = panel.webview;
+  webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "out")] };
+  webview.html = chatHtml(randomNonce(), String(webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "out", "chat.js"))), String(webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "out", "chat.css"))), webview.cspSource);
+  const post = (m: HostToWebview): void => { if (!disposed) void webview.postMessage(m); };
+  const off = child.subscribe(post);
+  const parentOff = parent.subscribe(m => { if (m.type === "subagents") {
+    const row = m.items.find(c => c.id === childId);
+    if (row) { panel.title = `Subagent · ${row.agent} · ${row.goal.slice(0,80)}`; child.publishSubagents(); }
+  } });
+  webview.onDidReceiveMessage(async (m: WebviewToHost) => {
+    if (disposed || (m.type !== "ready" && m.generation !== child.currentGeneration())) return;
+    if (m.type === "ready") {
+      post({ type: "conversationOpened", id: childId, title: "Read-only subagent", generation: child.currentGeneration() });
+      child.publishSubagents();
+      post({ type: "history", items: child.history(), generation: child.currentGeneration() });
+      child.resumePermissionReads();
+    } else if (m.type === "controlChild" && m.parentId === parentId && m.childId === childId && ["stop", "continue"].includes(m.action)) {
+      try {
+        const descriptor = parent.captureChildControl(parentId, childId, m.action, m.generation);
+        const choice = await vscode.window.showWarningMessage(`${m.action === "stop" ? "Stop" : "Continue"} this subagent?`, { modal: true }, "Confirm");
+        if (!disposed && choice === "Confirm") await parent.controlChild(parentId, childId, m.action, m.generation, descriptor);
+      } catch (error) { if (!disposed) showError(error); }
+    }
+    // No send, resume, commands or permission answers in this panel.
+  });
+  panel.onDidDispose(() => { disposed = true; off(); parentOff(); child.dispose(); });
 }
 
 function randomNonce(): string {

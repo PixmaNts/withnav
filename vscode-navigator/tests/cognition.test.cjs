@@ -10,6 +10,51 @@ const { CognitionBackend } = require("../out/tests/cognition.js");
 Module._load = originalLoad;
 const shortened = text => `${text.slice(0, 2000)}\n...[output elided]...\n${text.slice(-2000)}`;
 
+const commandCatalog = ["model", "variant", "agent", "compact", "context"].map(name => ({ name, description: name, args_hint: "" }));
+test("commands use exact body without context and unknown/no-session commands retain draft", async t => {
+  const { backend, calls } = setup(t, { operation_id: "OP", ok: true });
+  backend.commands = commandCatalog;
+  await backend.runComposerCommand("/compact focus on tests");
+  assert.deepEqual(JSON.parse(calls[0].body), { name: "compact", arguments: "focus on tests" });
+  assert.match(calls[0].url, /\/parent\/commands$/);
+  await assert.rejects(backend.runComposerCommand("/unknown"), /Unknown command/);
+  backend.state.session = undefined;
+  await assert.rejects(backend.runComposerCommand("/context"), /conversation is needed/);
+  assert.equal(calls.length, 1);
+});
+test("deferred model resolves only its operation and agent replay updates display", async t => {
+  const { backend, apply } = setup(t, { operation_id: "OP", ok: true });
+  backend.commands = commandCatalog;
+  backend.state.currentTurn = "T";
+  await backend.runComposerCommand("/model next");
+  apply("command.result", { operation_id: "OP", name: "model", ok: true, data: { accepted: true, applies: "after_turn" } });
+  assert.equal(backend.state.pendingModel.alias, "next");
+  apply("model.changed", { operation_id: "OTHER", new: { alias: "other" } });
+  assert.equal(backend.state.pendingModel.alias, "next");
+  apply("model.changed", { operation_id: "OP", new: { alias: "next" } });
+  assert.equal(backend.state.pendingModel, undefined);
+  assert.equal(apply("session.agent_changed", { agent: "plan" }).name, "plan");
+});
+test("skill sends typed content; durable refusal retains draft and is operation correlated", async t => {
+  const { backend, calls, apply } = setup(t, { command_id: "SK", accepted: true });
+  backend.commands = commandCatalog;
+  assert.equal(await backend.runComposerCommand("/skill review check this"), false);
+  assert.deepEqual(JSON.parse(calls[0].body).content, [{ type: "text", text: "check this" }, { type: "skill", name: "review" }]);
+  apply("command.result", { operation_id: "OTHER", name: "message", ok: false, error: "unrelated" });
+  assert.equal(backend.state.commands.has("SK"), true);
+  const result = apply("command.result", { operation_id: "SK", name: "message", ok: false, error: "Skill disabled" });
+  assert.equal(result.operationId, "SK");
+  assert.match(result.text, /Skill disabled/);
+  assert.equal(backend.history().findLast(m => m.type === "sendResult"), undefined);
+  assert.equal(backend.state.commands.has("SK"), false);
+});
+test("stale command generation never posts", async t => {
+  const { backend, calls } = setup(t);
+  backend.commands = commandCatalog;
+  await assert.rejects(backend.runComposerCommand("/context", -1), /conversation changed/);
+  assert.equal(calls.length, 0);
+});
+
 function setup(t, response = { accepted: true }, status = 200) {
   const backend = new CognitionBackend();
   backend.endpoint = { port: 1234, token: "secret" };
@@ -546,17 +591,26 @@ for (const status of [200, 503]) {
   });
 }
 
-test("failed open mid-stream preserves live-delta dedup and usage", async t => {
+test("failed open preserves context state and emits restored usage with the current generation", async t => {
   const { backend, apply } = setup(t);
   backend.connect = async () => {};
   apply("turn.start", { turn_id: "T" });
   apply("llm.delta", { turn_id: "T", delta: { delta_type: "text", text: "Hello" } });
-  backend.state.lastUsed = 42;
+  const context = { incarnation: "I", revision: 3, estimate_total: 42 };
+  backend.state.context = context;
+  backend.state.contextEpoch = 7;
+  backend.state.retiredIncarnations = ["old"];
+  const seen = []; backend.subscribe(m => seen.push(m));
   t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ error: "missing" }), { status: 404 }));
   await assert.rejects(backend.openConversation("B"));
   apply("llm.response", { turn_id: "T", message: { text: "Hello" } });
   assert.equal(backend.history().filter(m => m.type === "delta").map(m => m.text).join(""), "Hello");
-  assert.equal(backend.state.lastUsed, 42);
+  assert.equal(backend.state.context, context);
+  assert.equal(backend.state.contextEpoch, 7);
+  assert.deepEqual(backend.state.retiredIncarnations, ["old"]);
+  const usage = seen.find(m => m.type === "usage");
+  assert.equal(usage.snapshot, context);
+  assert.equal(usage.generation, backend.currentGeneration());
   backend.dispose();
 });
 

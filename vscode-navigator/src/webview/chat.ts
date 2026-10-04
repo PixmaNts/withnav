@@ -1,9 +1,13 @@
 /// <reference lib="dom" />
 import type { HostToWebview, WebviewToHost, PermissionEvidence, PermissionDecision } from "../chatProtocol";
 import { evidenceLabel, permissionOutcome } from "../eventView";
+import { contextMeter } from "../contextMeter";
 import { ConversationIdentity } from "./conversationIdentity";
 import { mountConversations } from "./conversations";
 import { diffKind, parseWake } from "./wake";
+import { commandRows } from "../commands";
+import type { CommandInfo } from "../chatProtocol";
+import type { ChildInfo } from "../chatProtocol";
 
 type ViewState = { includeContext?: boolean };
 declare function acquireVsCodeApi(): { postMessage(message: WebviewToHost): void; getState(): ViewState | undefined; setState(state: ViewState): void };
@@ -24,6 +28,103 @@ const stop = document.querySelector<HTMLButtonElement>("#stop")!;
 const includeContext = document.querySelector<HTMLInputElement>("#include-context")!;
 const contextPreview = document.querySelector<HTMLElement>("#context-preview")!;
 const modelSelect = document.querySelector<HTMLSelectElement>("#model")!;
+const childHeader = document.createElement("div");
+childHeader.className = "child-header"; childHeader.hidden = true;
+form.before(childHeader);
+const childrenSection = document.createElement("details");
+childrenSection.className = "subagents"; childrenSection.hidden = true;
+const childrenSummary = document.createElement("summary"); childrenSummary.textContent = "Subagents";
+const childrenRows = document.createElement("div"); childrenSection.append(childrenSummary, childrenRows);
+form.before(childrenSection);
+let readOnly = false;
+let parentId = "";
+const childStates: Record<ChildInfo["state"], string> = { unknown: "Unknown", running: "Running", permission: "Waiting for permission", budget: "Out of steps", watchdog: "In doubt · watchdog paused", done: "Done", failed: "Failed", stopped: "Stopped" };
+function childActions(child: ChildInfo): HTMLElement {
+  const actions = el("div", "child-actions");
+  const boundPost = identity.bind(rawPost);
+  for (const action of ["continue", "stop"] as const) {
+    if (["unknown", "done", "failed", "stopped"].includes(child.state) || (action === "continue" && !["budget", "watchdog"].includes(child.state))) continue;
+    const button = actionButton(action === "stop" ? "Stop" : "Continue", () => boundPost({ type: "controlChild", parentId, childId: child.id, action }));
+    button.disabled = !!child.pending;
+    if (button.disabled && !child.pending) button.title = "Pause token not yet available. Open the transcript to read the pause.";
+    actions.append(button);
+  }
+  if (child.error) actions.append(el("span", "command-error", child.error));
+  return actions;
+}
+const palette = document.createElement("div");
+palette.id = "command-palette";
+palette.className = "command-palette";
+palette.setAttribute("role", "listbox");
+palette.setAttribute("aria-label", "Commands");
+palette.hidden = true;
+form.prepend(palette);
+const commandError = document.createElement("div");
+commandError.className = "command-error";
+commandError.setAttribute("role", "alert");
+commandError.hidden = true;
+prompt.after(commandError);
+const agentLabel = document.createElement("span");
+agentLabel.className = "agent-label";
+agentLabel.textContent = "build";
+const pendingModel = document.createElement("span");
+pendingModel.className = "pending-model";
+modelSelect.after(agentLabel, pendingModel);
+let commands: CommandInfo[] = [];
+let paletteRows: { name: string; description: string; args_hint?: string }[] = [];
+let paletteIndex = 0;
+let pickerKind: "model" | "variant" | "skills" | undefined;
+let paletteDismissed = false;
+function closePalette(): void {
+  palette.hidden = true;
+  prompt.removeAttribute("aria-activedescendant");
+  prompt.setAttribute("aria-expanded", "false");
+}
+function choosePalette(index: number): void {
+  const row = paletteRows[index];
+  if (!row) return;
+  if (pickerKind === "skills") prompt.value = `/skill ${row.name} `;
+  else if (pickerKind) {
+    const text = `/${pickerKind} ${row.name}`;
+    prompt.value = text;
+    post({ type: "send", text, includeContext: false });
+  } else prompt.value = `/${row.name} `;
+  pickerKind = undefined;
+  closePalette();
+  prompt.focus();
+  updateControls();
+}
+function renderPalette(): void {
+  palette.replaceChildren();
+  if (!paletteRows.length) { closePalette(); return; }
+  paletteIndex = Math.min(paletteIndex, paletteRows.length - 1);
+  palette.hidden = false;
+  prompt.setAttribute("aria-controls", palette.id);
+  prompt.setAttribute("aria-expanded", "true");
+  prompt.setAttribute("aria-activedescendant", `command-option-${paletteIndex}`);
+  for (const [index, row] of paletteRows.entries()) {
+    const option = document.createElement("div");
+    option.id = `command-option-${index}`;
+    option.className = "command-option";
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", String(index === paletteIndex));
+    const name = document.createElement("strong");
+    name.textContent = `${pickerKind ? "" : "/"}${row.name}${row.args_hint ? ` ${row.args_hint}` : ""}`;
+    const description = document.createElement("span");
+    description.textContent = row.description;
+    option.append(name, description);
+    option.addEventListener("mousedown", event => event.preventDefault());
+    option.addEventListener("click", () => choosePalette(index));
+    palette.append(option);
+  }
+  palette.children[paletteIndex]?.scrollIntoView?.({ block: "nearest" });
+}
+function filterPalette(): void {
+  pickerKind = undefined;
+  paletteRows = paletteDismissed ? [] : commandRows(commands, prompt.value);
+  paletteIndex = 0;
+  renderPalette();
+}
 const usage = document.querySelector<HTMLElement>("#usage")!;
 const usageFill = document.querySelector<HTMLElement>("#usage-fill")!;
 const usageLabel = document.querySelector<HTMLElement>("#usage-label")!;
@@ -44,13 +145,15 @@ let stickToBottom = true;
 let replaying = false;
 let sessionId = "";
 let sending = false;
+let lastConsumedDraft: string | undefined;
 const permissionCards = new Map<string, { root: HTMLElement; outcome: HTMLElement; controls: HTMLElement; call: HTMLElement }>();
 const pauseCards = new Map<string, { outcome: HTMLElement; controls: HTMLElement }>();
 
 function updateControls(): void {
-  prompt.disabled = state === "connecting";
+  prompt.disabled = readOnly || state === "connecting";
+  if (readOnly) modelSelect.disabled = true;
   send.disabled = prompt.disabled || sending || !prompt.value.trim();
-  stop.hidden = state !== "busy";
+  stop.hidden = readOnly || state !== "busy";
 }
 
 function setStatus(next: string, message?: string): void {
@@ -302,6 +405,12 @@ function actionButton(label: string, action: () => void, primary = false): HTMLB
 }
 
 function renderPermission(event: Extract<HostToWebview, { type: "permission" }>): void {
+  if (readOnly) {
+    const note = el("article", "control-card");
+    note.append(el("h3", "control-title", `Permission needed · ${event.card.agent}`), el("p", "permission-reason", event.card.reason));
+    note.append(el("p", "", `Review this permission in the parent conversation (${parentId}).`));
+    add(note); return;
+  }
   const post = identity.bind(rawPost);
   const card = event.card;
   const existing = permissionCards.get(card.requestId);
@@ -346,6 +455,7 @@ function renderPermission(event: Extract<HostToWebview, { type: "permission" }>)
 }
 
 function renderPause(event: Extract<HostToWebview, { type: "pause" }>): void {
+  if (readOnly) { add(el("article", "message control-notice", event.text)); return; }
   const post = identity.bind(rawPost);
   if (pauseCards.has(event.id)) return;
   const root = el("article", "control-card pause-card");
@@ -376,11 +486,57 @@ function renderPause(event: Extract<HostToWebview, { type: "pause" }>): void {
 function receive(event: HostToWebview): void {
   if (!identity.receive(event)) return;
   if (event.type === "conversationOpened") {
+    readOnly = false; parentId = ""; childHeader.hidden = true; childrenSection.hidden = true;
     sessionId = event.id ?? "";
     sending = false;
+    lastConsumedDraft = undefined;
+    closePalette();
+    commandError.hidden = true;
+    agentLabel.textContent = "build";
+    pendingModel.textContent = "";
   }
   if (conversations(event)) return;
   switch (event.type) {
+    case "subagents": {
+      parentId = event.parentId;
+      childrenRows.replaceChildren();
+      childrenSection.hidden = !event.items.length || readOnly;
+      childrenSummary.textContent = `Subagents · ${event.items.length}`;
+      if (event.items.length) childrenSection.open = true;
+      const boundPost = identity.bind(rawPost);
+      for (const child of event.items) {
+        const row = el("article", "child-row");
+        const open = actionButton(`${child.agent} · ${childStates[child.state]}`, () => boundPost({ type: "openChild", parentId: event.parentId, childId: child.id }));
+        open.classList.add("child-open");
+        row.append(open, el("p", "child-goal", child.goal.slice(0,500)), childActions(child));
+        if (child.reason || child.delivery) row.append(el("p", "child-goal", [child.reason, child.delivery].filter(Boolean).join(" · ")));
+        childrenRows.append(row);
+      }
+      break;
+    }
+    case "childView": {
+      readOnly = !!event.child;
+      if (event.child) parentId = event.parentId ?? "";
+      childHeader.replaceChildren(); childHeader.hidden = !readOnly;
+      if (event.child) {
+        childHeader.append(el("p", "", `Read-only · subagent of ${event.parentTitle ?? "parent conversation"}`),
+          el("strong", "", `${event.child.agent} · ${childStates[event.child.state]}`), el("p", "", "Read-only subagent transcript. Send messages and answer permissions in the parent."), childActions(event.child));
+        childrenSection.hidden = true;
+      }
+      form.hidden = readOnly;
+      prompt.placeholder = readOnly ? "Read-only · return to parent to send" : "Message Navai…";
+      closePalette(); updateControls(); break;
+    }
+    case "commands": commands = event.items; filterPalette(); break;
+    case "commandError": commandError.textContent = event.text; commandError.hidden = false; sending = false; updateControls(); break;
+    case "agent": agentLabel.textContent = event.name; break;
+    case "modelPending": pendingModel.textContent = event.alias ? `→ ${event.alias} · pending after turn` : ""; break;
+    case "commandPicker":
+      sending = false;
+      if (event.disabledReason) { commandError.textContent = event.disabledReason; commandError.hidden = false; closePalette(); }
+      else { pickerKind = event.kind; paletteRows = event.items; paletteIndex = 0; renderPalette(); prompt.focus(); }
+      updateControls();
+      break;
     case "history":
       if (!event.items.length) usage.hidden = true;
       transcript.replaceChildren(empty);
@@ -400,7 +556,11 @@ function receive(event: HostToWebview): void {
     case "message": message(event.author, event.text, event.context, event.selectedSkill, event.source); break;
     case "sendResult":
       sending = false;
-      if (event.accepted && prompt.value.trim() === event.text) prompt.value = "";
+      if (event.accepted && prompt.value === event.text) { lastConsumedDraft = event.text; prompt.value = ""; }
+      if (!event.accepted && event.restoreDraft && !prompt.value && lastConsumedDraft === event.text) {
+        prompt.value = event.text;
+        lastConsumedDraft = undefined;
+      }
       updateControls();
       break;
     case "permission": renderPermission(event); break;
@@ -432,9 +592,15 @@ function receive(event: HostToWebview): void {
       follow();
       break;
     }
-    case "notice": add(el("article", "message control-notice", event.text)); break;
+    case "notice": {
+      const notice = el("article", "message control-notice", event.text);
+      if (event.operationId) { notice.dataset.operationId = event.operationId; notice.title = `Operation: ${event.operationId}`; }
+      if (event.ok === false) notice.classList.add("command-error");
+      add(notice);
+      break;
+    }
     case "models": renderModels(event); break;
-    case "usage": renderUsage(event.used, event.window); break;
+    case "usage": renderUsage(event.snapshot); break;
     case "editorContext":
       contextPreview.textContent = event.label;
       contextPreview.title = `Attached to your next message: ${event.label}`;
@@ -495,31 +661,27 @@ function renderModels(event: Extract<HostToWebview, { type: "models" }>): void {
   if (!options.length) options.push(el("option", undefined, "Default model"));
   modelSelect.replaceChildren(...options);
   if (event.current) modelSelect.value = event.current;
-  modelSelect.disabled = event.locked || event.items.length === 0;
-  modelSelect.title = event.locked ? "Model of this conversation · start a new conversation to change it" : "Model for the new conversation";
+  modelSelect.disabled = readOnly || event.locked || event.items.length === 0;
+  modelSelect.title = "Switch model · running turns finish before the switch";
 }
 
+/** The next request's estimate, against the usable input budget. */
 function tokens(count: number): string {
   return count >= 1000 ? `${Math.round(count / 1000)}k` : String(count);
 }
 
-/** The context gauge: used tokens, and the share of the window when it is known. */
-function renderUsage(used: number, window?: number): void {
+function renderUsage(snapshot: import("../contextMeter").ContextSnapshot): void {
+  const meter = contextMeter(snapshot);
   usage.hidden = false;
-  if (window && window > 0) {
-    const percent = Math.min(100, Math.round((used / window) * 100));
-    usageFill.style.width = `${percent}%`;
-    usage.dataset.level = percent >= 90 ? "high" : percent >= 70 ? "mid" : "low";
-    usageLabel.textContent = `${tokens(used)} / ${tokens(window)} · ${percent}%`;
-    usage.setAttribute("aria-valuenow", String(percent));
-    usage.title = `${used.toLocaleString()} of ${window.toLocaleString()} tokens used · ${(window - used).toLocaleString()} left`;
-    usage.querySelector<HTMLElement>(".usage-bar")!.hidden = false;
-  } else {
-    usageLabel.textContent = `${tokens(used)} tokens`;
-    usage.removeAttribute("aria-valuenow");
-    usage.title = `${used.toLocaleString()} tokens used · context window unknown`;
-    usage.querySelector<HTMLElement>(".usage-bar")!.hidden = true;
-  }
+  usageFill.style.width = `${meter.fill}%`;
+  usage.dataset.level = meter.level;
+  usageLabel.textContent = meter.label;
+  usage.setAttribute("aria-valuenow", String(meter.fill));
+  usage.setAttribute("aria-valuetext", meter.detail);
+  usage.tabIndex = 0;
+  usage.setAttribute("aria-label", "Next request context estimate");
+  usage.title = meter.detail;
+  usage.querySelector<HTMLElement>(".usage-bar")!.hidden = false;
 }
 
 // All source text is inserted as text nodes. Only explicitly created elements become markup.
@@ -603,15 +765,17 @@ window.addEventListener("message", event => {
 });
 form.addEventListener("submit", event => {
   event.preventDefault();
-  const text = prompt.value.trim();
-  if (!text || prompt.disabled || sending) return;
+  const text = prompt.value;
+  if (!text.trim() || prompt.disabled || sending) return;
+  closePalette();
+  commandError.hidden = true;
   sending = true;
   post({ type: "send", text, includeContext: includeContext.checked });
   updateControls();
   stickToBottom = true;
   follow();
 });
-prompt.addEventListener("input", updateControls);
+prompt.addEventListener("input", () => { lastConsumedDraft = undefined; paletteDismissed = false; commandError.hidden = true; filterPalette(); updateControls(); });
 function updateContextToggle(): void {
   contextPreview.classList.toggle("off", !includeContext.checked);
 }
@@ -621,6 +785,13 @@ includeContext.addEventListener("change", () => {
 });
 updateContextToggle();
 prompt.addEventListener("keydown", event => {
+  if (!palette.hidden && !event.isComposing) {
+    if (event.key === "Escape") { event.preventDefault(); paletteDismissed = true; pickerKind = undefined; closePalette(); return; }
+    if (["ArrowUp", "ArrowDown"].includes(event.key)) {
+      event.preventDefault(); paletteIndex = (paletteIndex + (event.key === "ArrowDown" ? 1 : -1) + paletteRows.length) % paletteRows.length; renderPalette(); return;
+    }
+    if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") { event.preventDefault(); choosePalette(paletteIndex); return; }
+  }
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
     form.requestSubmit();

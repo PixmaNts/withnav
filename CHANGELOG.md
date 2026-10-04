@@ -4,6 +4,41 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-10-04
+
+The VS Code chat gets the terminal client's controls: slash commands, subagents and the context
+gauge. The server is unchanged.
+
+### Added
+
+- **VS Code chat: slash commands.** Type `/` to open a list of commands with their descriptions
+  (arrow keys, Enter or Tab, Esc, or the mouse). `/model` switches the open conversation's model,
+  and the model picker now works on an open conversation too; while the agent is answering, the
+  switch waits for the end of the turn and shows as pending. Also `/variant`, `/agent` (the current
+  agent is shown near the composer), `/compact`, `/context`, `/stop`, `/new` and `/help`. `/skills`
+  lists the conversation's skills; `/skill <name> <request>` sends your request with that skill.
+  A command is never sent to the model as text, nor with the editor context; `//text` sends
+  `/text` as a message. A refused command or skill keeps your draft.
+- **VS Code chat: subagents.** A Subagents section under the conversation lists each subagent with
+  its goal and state. **Open** shows a subagent's conversation in its own read-only editor tab,
+  without leaving or changing your conversation. **Stop** and **Continue** (out of steps, or paused
+  by the watchdog) ask for confirmation first. A subagent's permission requests are still answered
+  in the parent conversation.
+
+### Changed
+
+- **VS Code chat: the context meter shows what the next request will send**, like the terminal
+  client (`~42k / 1M · 4%`), instead of the last call's usage. Hover or focus it for the breakdown
+  (system, rules, skills catalog, tools, messages), the input budget, the output reserve and the
+  provider's count for the last request.
+
+### Fixed
+
+- **VS Code chat**: commands, model switches and subagent controls always act on the conversation
+  they were started from, including after switching conversations, a failed open, starting a new
+  one or a server restart; a sent message always clears your draft, and a control is sent only
+  once.
+
 ## [0.4.5] - 2026-10-04
 
 The VS Code chat can now answer the agent's permission requests and continue a paused agent.

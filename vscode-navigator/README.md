@@ -13,9 +13,16 @@ diagnostics and user feedback, and hosts the Cognition chat view.
 - **Cognition chat**: a webview in the Navai activity-bar container (view id `navai.chat`, named
   "Cognition"). It talks to the session server that `navai-lsp` runs over HTTP and SSE. It streams
   the conversation, lists past conversations of the workspace to resume, and has a model picker for
-  the next new conversation (an open conversation keeps its model) and a gauge of the context used.
+  new and open conversations (switches during a running turn apply after it finishes) and a gauge of the next request’s estimated context against the model’s window; hover or focus it for the breakdown, input budget and last request’s count.
+  Type `/` for a keyboard-accessible command palette: `/model`, `/variant`, `/agent`, `/compact`,
+  `/context`, `/skills`, `/stop`, `/new` and `/help`. `/skills` fills a selected skill into your
+  next request; command outcomes appear as notices. Commands never attach editor context;
+  `//text` sends the literal `/text`. Unknown or refused commands keep your draft.
   Navigator wakes appear in it as messages from the navigator. It sends the open file and selection
   as editor context.
+- **Subagents in chat:** see delegated goals and live states beneath the conversation. Open a
+  subagent's read-only transcript in a separate editor tab without leaving the parent chat. Stop or continue a parked subagent
+  with confirmation; permission requests are still reviewed in the parent conversation.
 - **Agent controls in chat**: permission cards show the full reason and command (or a file path
   and bounded content), with Allow once and Deny plus an optional deny message. Subagents' requests
   stay in the parent conversation. Sending while approval is pending asks for confirmation.

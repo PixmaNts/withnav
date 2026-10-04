@@ -1,4 +1,24 @@
 :root { color-scheme: light dark; }
+.subagents { flex: none; border-top: 1px solid var(--vscode-widget-border); padding: 8px 10px; max-height: 28vh; overflow: auto; }
+.subagents summary { cursor: pointer; font-size: 11px; font-weight: 600; color: var(--vscode-descriptionForeground); }
+.child-row { padding: 8px 0; border-bottom: 1px solid var(--vscode-widget-border); }
+.child-open { text-align: left; width: 100%; background: transparent; color: var(--vscode-foreground); border: 0; font-weight: 600; }
+.child-goal { margin: 3px 0 6px; font-size: 11px; color: var(--vscode-descriptionForeground); overflow-wrap: anywhere; white-space: pre-wrap; }
+.child-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.child-header { flex: none; padding: 10px; border-top: 1px solid var(--vscode-widget-border); background: var(--vscode-editor-background); }
+.child-header strong { display: block; margin-top: 6px; }
+.child-header p { color: var(--vscode-descriptionForeground); font-size: 11px; margin: 4px 0 8px; }
+.composer { position: relative; }
+.command-palette { position: absolute; bottom: calc(100% + 4px); left: 8px; right: 8px; max-height: min(300px, 45vh); overflow-y: auto; padding: 4px; border: 1px solid var(--vscode-widget-border); border-radius: 6px; background: var(--vscode-quickInput-background, var(--vscode-editor-background)); box-shadow: 0 8px 24px var(--vscode-widget-shadow); z-index: 4; }
+.command-option { padding: 7px 9px; border-radius: 3px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
+.command-option strong { font-size: 12px; font-weight: 600; }
+.command-option span { font-size: 11px; color: var(--vscode-descriptionForeground); overflow-wrap: anywhere; }
+.command-option:hover, .command-option[aria-selected="true"] { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.command-option[aria-selected="true"] span { color: inherit; opacity: .85; }
+.command-error { color: var(--vscode-errorForeground); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-label { font-size: 11px; color: var(--vscode-descriptionForeground); border-left: 1px solid var(--vscode-widget-border); padding-left: 8px; }
+.pending-model { color: var(--vscode-descriptionForeground); font-size: 11px; overflow-wrap: anywhere; }
+.control-notice { white-space: pre-wrap; }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body { color: var(--vscode-foreground); background: var(--vscode-sideBar-background, var(--vscode-editor-background)); font: var(--vscode-font-size) / 1.5 var(--vscode-font-family); }
@@ -158,6 +178,7 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 .usage[data-level=mid] .usage-fill { background: var(--vscode-editorWarning-foreground, var(--vscode-progressBar-background)); }
 .usage[data-level=high] .usage-fill { background: var(--vscode-errorForeground); }
 .usage[data-level=high] .usage-label { color: var(--vscode-errorForeground); }
+.usage[data-level=mid] .usage-label { color: var(--vscode-editorWarning-foreground); }
 .skill-note { margin-left: 9px; font-weight: normal; color: var(--vscode-descriptionForeground); }
 .message.subagent { padding-left: 10px; border-left: 2px solid var(--vscode-descriptionForeground); }
 .control-card { margin: 14px 0; padding: 12px; border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border)); border-left: 2px solid var(--vscode-focusBorder); border-radius: 4px; background: var(--vscode-editor-background); overflow-wrap: anywhere; }

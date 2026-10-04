@@ -256,6 +256,7 @@ impl Drop for ChildReservation {
 }
 
 struct PreparedSession {
+    initial_override: Option<super::store::AgentOverride>,
     execution: Arc<EffectiveExecution>,
     session_id: SessionId,
     workspace: PathBuf,
@@ -807,7 +808,7 @@ impl Service {
                         .unwrap_or_default(),
                 )),
                 Some(parent),
-                definition.model.is_none().then_some(inherited),
+                (self.assignments_configured()? || definition.model.is_none()).then_some(inherited),
             )
             .await;
         let prepared = prepared?;
@@ -1873,7 +1874,7 @@ impl Service {
             // session must mint its own id.
             None => Ulid::new(),
         };
-        let (workspace, alias, profile) = match &resumed {
+        let (workspace, mut alias, profile) = match &resumed {
             Some(loaded) => (
                 PathBuf::from(&loaded.meta.workspace),
                 loaded.meta.model.clone(),
@@ -1892,6 +1893,15 @@ impl Service {
         let agents = self
             .load_agents(&workspace, session_id, resumed.is_some())
             .await;
+        let configured = self.assignments_configured()?;
+        let settings = crate::settings::load(&self.config.config_dir)
+            .map_err(|e| ServerError::History(e.to_string()))?;
+        let wanted = if configured && agent.is_none() && resumed.is_none() && child_parent.is_none()
+        {
+            Some(settings.default_agent().map_err(ServerError::History)?)
+        } else {
+            agent
+        };
         let role = if child_parent.is_some() {
             let wanted = agent.unwrap_or_default();
             agents
@@ -1908,7 +1918,56 @@ impl Service {
                         .join(", "),
                 })?
         } else {
-            Self::pick_agent(&agents, session_id, agent, resumed.as_ref())?
+            Self::pick_agent(&agents, session_id, wanted, resumed.as_ref())?
+        };
+        let mut inherited = inherited;
+        let mut assignment_variant = variant.clone();
+        let initial_override = if configured {
+            if let Some(loaded) = &resumed {
+                if let Some(saved) = loaded.meta.agent_overrides.get(role.id.as_str()) {
+                    if saved
+                        .model
+                        .as_ref()
+                        .is_some_and(|model| model != &loaded.meta.model)
+                    {
+                        return Err(ServerError::History(
+                            "saved agent override disagrees with effective model".into(),
+                        ));
+                    }
+                }
+            }
+            let assignment = self.assigned_agent_model(
+                &workspace,
+                &agents,
+                role.id.as_str(),
+                child_parent.is_some(),
+            )?;
+            if resumed.is_none() {
+                if child_parent.is_some() {
+                    if let Some((name, choice)) = assignment {
+                        alias = name;
+                        assignment_variant = choice;
+                        inherited = None;
+                    }
+                } else if let Some(explicit) = model {
+                    alias = explicit.into();
+                } else if let Some((name, choice)) = assignment {
+                    alias = name;
+                    if *variant == VariantChoice::Default {
+                        assignment_variant = choice;
+                    }
+                }
+            }
+            (resumed.is_none()
+                && child_parent.is_none()
+                && (model.is_some() || *variant != VariantChoice::Default))
+                .then(|| super::store::AgentOverride {
+                    model: model.map(str::to_owned),
+                    variant: variant.clone().into(),
+                })
+        } else {
+            // Internal legacy creation path until the final catalog contract cutover.
+            None
         };
         let (resolved, api_key, snapshot, save_late, models_file) =
             if let Some(selection) = &inherited {
@@ -1931,8 +1990,17 @@ impl Service {
                 let api_key = execution.api_key.clone();
                 (resolved, api_key, snapshot, false, models_file)
             } else {
-                self.resolve_for_spawn(session_id, resume_workspace, &alias, resumed.as_ref())
-                    .await?
+                self.resolve_for_spawn(
+                    session_id,
+                    if configured {
+                        &workspace
+                    } else {
+                        resume_workspace
+                    },
+                    &alias,
+                    resumed.as_ref(),
+                )
+                .await?
             };
         // A resume keeps the variant the row saved; a fresh session takes the
         // request's choice. Either way it is checked against what the alias
@@ -1955,7 +2023,7 @@ impl Service {
                             }
                         }))
                     }
-                    None => VariantStart::Choice(variant),
+                    None => VariantStart::Choice(&assignment_variant),
                 },
             )
             .await?
@@ -2127,7 +2195,20 @@ impl Service {
             &workspace,
             &self.config.config_dir,
         ) {
-            actor.permission_reviewer_unavailable = if models.resolve("metacognition").is_ok() {
+            let configured_layer = settings
+                .layer_assignment(crate::provider::assignments::Layer::Metacognition)
+                .map_err(ServerError::History)?;
+            let reviewer_present = if configured_layer.is_some() {
+                // Layer consumer wiring will reuse its shared assigned helper here.
+                matches!(
+                    crate::provider::assignments::AssignmentResolver::new(&models, &settings)
+                        .layer_assignment(crate::provider::assignments::Layer::Metacognition),
+                    Ok(crate::provider::assignments::LayerAssignment::Enabled(_))
+                )
+            } else {
+                models.resolve("metacognition").is_ok()
+            };
+            actor.permission_reviewer_unavailable = if reviewer_present {
                 "no key"
             } else {
                 "no alias"
@@ -2166,6 +2247,7 @@ impl Service {
         };
 
         Ok(PreparedSession {
+            initial_override,
             execution,
             session_id,
             workspace,
@@ -2200,6 +2282,23 @@ impl Service {
             )
             .await
             .map_err(ServerError::History)?;
+        if let Some(value) = &prepared.initial_override {
+            if let Err(error) = self
+                .history
+                .update_agent_override(
+                    prepared.session_id,
+                    prepared.role.id.as_str(),
+                    value.clone(),
+                )
+                .await
+            {
+                self.history
+                    .delete(prepared.session_id)
+                    .await
+                    .map_err(ServerError::History)?;
+                return Err(ServerError::History(error));
+            }
+        }
         if prepared.save_late {
             self.save_legacy_snapshot(prepared.session_id, &prepared.snapshot)
                 .await?;
@@ -2209,6 +2308,7 @@ impl Service {
 
     async fn publish_session(&self, prepared: PreparedSession) -> Result<SessionId, ServerError> {
         let PreparedSession {
+            initial_override: _,
             execution,
             session_id,
             workspace,

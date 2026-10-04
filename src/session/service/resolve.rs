@@ -135,6 +135,75 @@ pub(crate) struct Offer {
 }
 
 impl Service {
+    pub(super) fn assignments_configured(&self) -> Result<bool, ServerError> {
+        let path = crate::settings::path(&self.config.config_dir);
+        let raw = match std::fs::read_to_string(path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(ServerError::History(error.to_string())),
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&raw).map_err(|e| ServerError::History(e.to_string()))?;
+        Ok(value.get("agents").is_some() || value.get("default_agent").is_some())
+    }
+
+    pub(super) fn assigned_agent_model(
+        &self,
+        workspace: &Path,
+        agents: &crate::agent::definitions::Agents,
+        agent: &str,
+        child: bool,
+    ) -> Result<Option<(String, VariantChoice)>, ServerError> {
+        use crate::provider::assignments::{AgentModel, AssignmentResolver};
+        use crate::settings::AssignmentVariant;
+        let settings = crate::settings::load(&self.config.config_dir)
+            .map_err(|e| ServerError::History(e.to_string()))?;
+        let (catalog, _) = load_models(
+            self.config.models_path.as_deref(),
+            workspace,
+            &self.config.config_dir,
+        )?;
+        let resolver = AssignmentResolver::new(&catalog, &settings);
+        let records: Vec<_> = agents
+            .all()
+            .map(|a| (a.id.as_str(), a.model.as_deref(), a.mode.is_primary()))
+            .collect();
+        let default = resolver
+            .default_agent_check(&records)
+            .map_err(|e| ServerError::History(e.to_string()))?;
+        let header = agents.get(agent).and_then(|a| a.model.as_deref());
+        let outcome = resolver
+            .agent_model(agent, header)
+            .map_err(ServerError::History)?;
+        let assigned = match outcome {
+            AgentModel::Assigned(model) => model,
+            AgentModel::Unassigned if child => return Ok(None),
+            outcome => {
+                if let AgentModel::Fallback(warning) = outcome {
+                    tracing::warn!("{warning}");
+                }
+                let header = agents.get(&default).and_then(|a| a.model.as_deref());
+                match resolver
+                    .agent_model(&default, header)
+                    .map_err(ServerError::History)?
+                {
+                    AgentModel::Assigned(model) => model,
+                    _ => {
+                        return Err(ServerError::History(format!(
+                            "default_agent '{default}' has no usable model"
+                        )))
+                    }
+                }
+            }
+        };
+        let variant = match assigned.variant_choice {
+            AssignmentVariant::Default => VariantChoice::Default,
+            AssignmentVariant::Off => VariantChoice::Clear,
+            AssignmentVariant::Named(name) => VariantChoice::Exact(name),
+        };
+        Ok(Some((assigned.name.to_string(), variant)))
+    }
+
     pub(super) fn resolve_model(
         &self,
         workspace: &Path,
@@ -145,7 +214,15 @@ impl Service {
             workspace,
             &self.config.config_dir,
         )?;
-        Ok((config.resolve(alias)?, path))
+        let resolved = if self.assignments_configured()? {
+            let name = crate::provider::model_name::ModelName::parse(alias, &config)
+                .map_err(|e| ServerError::History(e.to_string()))?;
+            config.resolve_name(&name)?
+        } else {
+            // Internal transition for unconfigured installations; remove at catalog contract cutover.
+            config.resolve(alias)?
+        };
+        Ok((resolved, path))
     }
 
     pub async fn resolve_model_metadata(
@@ -183,6 +260,11 @@ impl Service {
         resumed: Option<&ResumedSession>,
     ) -> Result<(ResolvedModel, String, ModelResolution, bool, PathBuf), ServerError> {
         let (resolved, models_file) = self.resolve_model(workspace, alias)?;
+        if resolved.model.api != crate::provider::config::ApiKind::Chat {
+            return Err(ServerError::History(format!(
+                "model '{alias}' requires API 'chat'"
+            )));
+        }
         let api_key = auth::resolve_key(
             &self.config.config_dir,
             &resolved.provider_name,

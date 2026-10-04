@@ -14,6 +14,9 @@ use crate::bus::event::EventEnvelope;
 use crate::provider::openai::ChatMessage;
 
 impl HistoryStore {
+    pub async fn agent_overrides(&self, id: Ulid) -> Result<Option<super::AgentOverrides>, String> {
+        Ok(self.meta(id).await?.map(|meta| meta.agent_overrides))
+    }
     /// Progress holds use only typed yield and watchdog-resolution rows; unrelated corrupt
     /// command rows must not hide an outstanding hold on recovery.
     pub async fn watchdog_events(&self, id: Ulid) -> Result<Vec<EventEnvelope>, String> {
@@ -40,7 +43,7 @@ impl HistoryStore {
                 tx.query_row(
                     "SELECT id, workspace, model, profile, title, created_at, updated_at, last_seq,
                             model_resolution, variant, variant_override, primary_agent,
-                            reasoning_floor
+                            reasoning_floor, agent_overrides
                      FROM sessions WHERE id = ?1",
                     params![id.to_string()],
                     row_to_session,
@@ -252,6 +255,16 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSession> {
     let id: String = row.get(0)?;
     let profile: Option<String> = row.get(3)?;
     Ok(StoredSession {
+        agent_overrides: super::decode_agent_overrides(
+            row.get::<_, Option<String>>(13)?.as_deref(),
+        )
+        .map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                13,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::other(e)),
+            )
+        })?,
         id: Ulid::from_string(&id).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
         })?,
@@ -277,7 +290,7 @@ fn list_sync(path: &Path, workspace: &str) -> Result<Vec<ListedSession>, String>
                 "SELECT s.id, s.workspace, s.model, s.profile, s.title,
                         s.created_at, s.updated_at, s.last_seq,
                         s.model_resolution, s.variant, s.variant_override, s.primary_agent,
-                        s.reasoning_floor,
+                        s.reasoning_floor, s.agent_overrides,
                         (SELECT COUNT(*) FROM events e
                          WHERE e.session_id = s.id AND e.kind = 'message.received')
                  FROM sessions s WHERE s.workspace = ?1
@@ -288,7 +301,7 @@ fn list_sync(path: &Path, workspace: &str) -> Result<Vec<ListedSession>, String>
             .query_map(params![workspace], |row| {
                 Ok(ListedSession {
                     meta: row_to_session(row)?,
-                    message_count: row.get::<_, i64>(13)?.max(0) as u64,
+                    message_count: row.get::<_, i64>(14)?.max(0) as u64,
                 })
             })
             .map_err(|e| format!("query: {e}"))?;
@@ -296,6 +309,9 @@ fn list_sync(path: &Path, workspace: &str) -> Result<Vec<ListedSession>, String>
         for row in rows {
             match row {
                 Ok(session) => out.push(session),
+                Err(err @ rusqlite::Error::FromSqlConversionFailure(13, _, _)) => {
+                    return Err(format!("history list: bad agent_overrides: {err}"));
+                }
                 Err(err) => tracing::error!("history list: bad row skipped: {err}"),
             }
         }
@@ -311,13 +327,13 @@ fn resume_tx(tx: &Transaction<'_>, id: Ulid) -> Result<Option<Resumed>, String> 
         .query_row(
             "SELECT id, workspace, model, profile, title, created_at, updated_at, last_seq,
                     model_resolution, variant, variant_override, primary_agent, reasoning_floor,
-                    transcript, checkpoint
+                    agent_overrides, transcript, checkpoint
              FROM sessions WHERE id = ?1",
             params![id.to_string()],
             |row| {
                 let meta = row_to_session(row)?;
-                let transcript: Option<String> = row.get(13)?;
-                let checkpoint: Option<String> = row.get(14)?;
+                let transcript: Option<String> = row.get(14)?;
+                let checkpoint: Option<String> = row.get(15)?;
                 Ok((meta, transcript, checkpoint))
             },
         )

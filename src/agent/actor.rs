@@ -45,6 +45,7 @@ pub enum PendingInteraction {
 }
 
 pub struct AgentActor {
+    pub automatic_permission_review: bool,
     pub permission_judge: Option<Arc<dyn super::permission_gate::PermissionJudge>>,
     pub permission_reviewer: Option<Arc<dyn super::permission_gate::PermissionReviewer>>,
     pub safe_boundary: Option<super::boundary::SafeBoundary>,
@@ -124,6 +125,7 @@ impl AgentActor {
         cancel: CancellationToken,
     ) -> Self {
         Self {
+            automatic_permission_review: true,
             permission_judge: None,
             permission_reviewer: None,
             transcript: Vec::new(),

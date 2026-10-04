@@ -1881,6 +1881,16 @@ impl Service {
             &workspace,
             &self.config.config_dir,
         );
+        actor.automatic_permission_review = match crate::settings::load(&self.config.config_dir)
+            .map_err(|e| e.to_string())
+            .and_then(|settings| settings.permissions_automatic_review())
+        {
+            Ok(enabled) => enabled,
+            Err(error) => {
+                tracing::warn!("automatic permission review disabled: {error}");
+                false
+            }
+        };
         if let Ok((models, _)) = crate::provider::config::load_models(
             self.config.models_path.as_deref(),
             &workspace,

@@ -347,6 +347,11 @@ pub async fn consult(actor: &super::actor::AgentActor, call: &ToolCall, needed: 
     if actor.cancel.is_cancelled() {
         return Judged::Interrupted;
     }
+    if !actor.automatic_permission_review {
+        return Judged::Ask(
+            "Automatic permission review disabled; approve this call once or deny".into(),
+        );
+    }
     let flags = prefilter(call, needed, &actor.tool_context);
     let Some(input) = describe(actor, call, needed, &flags) else {
         return Judged::Ask("Permission review: oversized input; approve once or deny".into());

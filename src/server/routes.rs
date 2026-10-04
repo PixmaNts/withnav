@@ -24,6 +24,9 @@
 //!   the skill tool's bounded loader before accepting the message; unknown, omitted, disabled or
 //!   unreadable skills return 400 without sending anything. Loaded content is a tool result before
 //!   the first model request, never client-supplied tool provenance.
+//!   Accepted selection is recorded as optional `message.received.selected_skill:{name,origin:"driver"}`.
+//!   If the consuming turn's agent disables skills after admission, only the preload is dropped;
+//!   driver text is delivered and a durable `command.result` refusal explains why.
 //! - `GET  /v1/commands`      -> `{commands:[{name, description, args_hint}]}`
 //! - `POST /v1/sessions/:id/commands` `{name, arguments?}` -> `{operation_id, ok, data?, error?}`
 //!   (a command that cannot run is 200 with `ok:false` and an `error`; the same

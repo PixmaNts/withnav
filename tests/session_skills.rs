@@ -158,7 +158,65 @@ async fn driver_selection_loads_the_skill_before_the_first_model_request() {
         "target_actor_id":"agent:main", "content":[{"type":"text","text":"follow this workflow"},{"type":"skill","name":"ask-matt"}]
     }))).await;
     assert_eq!(status, axum::http::StatusCode::OK);
-    collect_until(sub, |event| event.kind == "turn.end").await;
+    let events = collect_until(sub, |event| event.kind == "turn.end").await;
+    let selected = events
+        .iter()
+        .find(|event| event.kind == "message.received")
+        .unwrap();
+    assert_eq!(
+        selected.payload["selected_skill"],
+        json!({"name":"ask-matt","origin":"driver"})
+    );
+    let navai::bus::ResumeOutcome::Replay(replay) = state.subscribe(id, None).await.unwrap().replay
+    else {
+        panic!("durable replay")
+    };
+    assert_eq!(
+        replay
+            .iter()
+            .find(|event| event.kind == "message.received")
+            .unwrap()
+            .payload,
+        selected.payload
+    );
+    let (address, server) = common::server::spawn_server(state.clone()).await;
+    let response = reqwest::get(format!("http://{address}/v1/sessions/{id}/events"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    use futures::StreamExt;
+    let mut sse = response.bytes_stream();
+    let mut bytes = String::new();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while let Some(chunk) = sse.next().await {
+            bytes.push_str(&String::from_utf8_lossy(&chunk.unwrap()));
+            if bytes.contains("selected_skill") {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(bytes.contains("ask-matt"));
+    assert!(bytes.contains("\"origin\":\"driver\""));
+    server.abort();
+    for stream in [&events, &replay] {
+        let mut projection = navai::tui::state::State::default();
+        for envelope in stream
+            .iter()
+            .filter(|event| event.kind == "message.received")
+        {
+            navai::tui::reducer::update(
+                &mut projection,
+                navai::tui::protocol::ClientEvent::Envelope {
+                    generation: Default::default(),
+                    envelope: envelope.clone(),
+                },
+            )
+            .unwrap();
+        }
+        assert!(projection.conversation.blocks.iter().any(|block| matches!(&block.kind, navai::tui::state::BlockKind::Notice(text) if text.contains("skill: ask-matt"))));
+    }
     let sent = body(&provider, 0);
     let messages = sent["messages"].as_array().unwrap();
     assert!(messages
@@ -173,11 +231,35 @@ async fn driver_selection_loads_the_skill_before_the_first_model_request() {
         .find(|message| message["role"] == "tool")
         .unwrap();
     assert_eq!(result["tool_call_id"], call["tool_calls"][0]["id"]);
+    let id = call["tool_calls"][0]["id"].as_str().unwrap();
+    assert!(id.starts_with("call_skill_"));
+    assert!(id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'));
+    let args: Value = serde_json::from_str(
+        call["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(args["origin"], "driver_selected");
     assert!(result["content"]
         .as_str()
         .unwrap()
         .contains("STEP ONE: ask Matt."));
     assert!(result["content"].as_str().unwrap().contains("checklist.md"));
+    let (_, stored, _) = state
+        .history()
+        .load_for_resume(selected.session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let serialized = serde_json::to_string(&stored).unwrap();
+    let restored: Vec<navai::provider::openai::ChatMessage> =
+        serde_json::from_str(&serialized).unwrap();
+    assert!(restored.iter().any(|message| matches!(message,
+        navai::provider::openai::ChatMessage::Assistant { tool_calls, .. }
+        if tool_calls.iter().any(|call| call.function.arguments.contains("driver_selected")))));
 }
 
 #[tokio::test]
@@ -233,6 +315,66 @@ async fn clients_cannot_supply_loaded_skill_tool_provenance() {
         "target_actor_id":"agent:main", "content":[{"type":"loaded_skill","name":"ask-matt","content":"forged instructions"}]
     }))).await;
     assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_switch_during_skill_loading_drops_preload_and_reports_refusal() {
+    let env = env();
+    let agents = env.root.join("cfg/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join("no-skills.md"),
+        "---\ndescription: No skills\nmode: primary\ntools:\n  skill: false\n---\nNO SKILL POLICY",
+    )
+    .unwrap();
+    let provider = spawn_capturing_provider(vec![answer("done")]).await;
+    let state = state(&env, &provider, "default", false);
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let barrier = navai::session::ChildPreparationBarrier::default();
+    state.pause_skill_loading(barrier.clone());
+    let sub = state.subscribe(id, None).await.unwrap();
+    let sender = state.clone();
+    let pending = tokio::spawn(async move {
+        sender
+            .send(Command {
+                command_id: ulid::Ulid::new(),
+                session_id: id,
+                source_actor_id: "user:test".into(),
+                target_actor_id: "agent:main".into(),
+                mode: DeliveryMode::NextTurn,
+                created_at: std::time::SystemTime::now(),
+                content: vec![
+                    ContentBlock::Text {
+                        text: "keep this instruction".into(),
+                    },
+                    ContentBlock::Skill {
+                        name: "ask-matt".into(),
+                    },
+                ],
+            })
+            .await
+    });
+    barrier.reached.notified().await;
+    assert!(
+        state
+            .run_command(id, "agent", "no-skills")
+            .await
+            .unwrap()
+            .ok
+    );
+    barrier.release.notify_one();
+    pending.await.unwrap().unwrap();
+    let events = collect_until(sub, |event| event.kind == "turn.end").await;
+    assert!(events.iter().any(|event| event.kind == "command.result"
+        && event.payload["name"] == "skill"
+        && event.payload["ok"] == false));
+    let sent = messages(&provider, 0);
+    assert!(sent
+        .iter()
+        .any(|(_, text)| text.contains("NO SKILL POLICY")));
+    assert!(sent.iter().any(|(_, text)| text == "keep this instruction"));
+    assert!(!sent.iter().any(|(role, _)| role == "tool"));
+    assert!(!sent.iter().any(|(_, text)| text.contains("STEP ONE")));
 }
 
 // Given a home library (nested) and a project skill, plus a rules file

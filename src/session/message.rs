@@ -67,6 +67,10 @@ async fn route(handle: &SessionHandle, command: Command) -> Result<MessageAccept
     let actor_state = handle.actor_state.clone();
     let notice = command.downgrade_notice().map(|n| n.to_string());
     let pending = PendingCommand {
+        selected_skill: command.content.iter().find_map(|block| match block {
+            crate::bus::command::ContentBlock::LoadedSkill { name, .. } => Some(name.clone()),
+            _ => None,
+        }),
         command_id,
         content: command.text_content(),
         source: command.source_actor_id.clone(),

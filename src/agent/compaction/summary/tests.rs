@@ -8,6 +8,20 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
+#[test]
+fn summary_labels_driver_selected_skill_provenance_after_transcript_roundtrip() {
+    let transcript = vec![call(
+        "call_skill_123",
+        "skill",
+        r#"{"name":"review","origin":"driver_selected"}"#,
+    )];
+    let restored: Vec<ChatMessage> =
+        serde_json::from_str(&serde_json::to_string(&transcript).unwrap()).unwrap();
+    let rendered = render_part(None, &restored, 0, restored.len(), &HashSet::new());
+    assert!(rendered.contains("driver_selected_skill_call"));
+    assert!(rendered.contains("driver_selected"));
+}
+
 fn user(text: &str) -> ChatMessage {
     ChatMessage::User {
         provenance: Default::default(),

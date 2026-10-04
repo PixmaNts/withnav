@@ -233,7 +233,7 @@ fn render_part(
                 }
                 for call in tool_calls {
                     messages.push(json!({
-                        "role": "assistant_tool_call",
+                        "role": if serde_json::from_str::<serde_json::Value>(&call.function.arguments).ok().is_some_and(|args| args["origin"] == "driver_selected") { "driver_selected_skill_call" } else { "assistant_tool_call" },
                         "id": call.id,
                         "name": call.function.name,
                         "arguments": call.function.arguments,

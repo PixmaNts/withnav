@@ -16,6 +16,45 @@ use crate::error::BusError;
 
 pub const INBOX_CAPACITY: usize = 256;
 
+/// Check the role pinned for this turn, not the role observed before loading awaited.
+pub(crate) fn revalidate_preloads(actor: &mut AgentActor, start: usize) -> Vec<String> {
+    if actor
+        .role
+        .as_ref()
+        .is_none_or(|role| role.tools.get("skill") != Some(&false))
+    {
+        return vec![];
+    }
+    use crate::provider::openai::ChatMessage;
+    let mut rejected = Vec::new();
+    let mut ids = std::collections::HashSet::new();
+    for message in &actor.transcript[start..] {
+        if let ChatMessage::Assistant { tool_calls, .. } = message {
+            for call in tool_calls {
+                if let Ok(args) =
+                    serde_json::from_str::<serde_json::Value>(&call.function.arguments)
+                {
+                    if call.function.name == "skill" && args["origin"] == "driver_selected" {
+                        ids.insert(call.id.clone());
+                        rejected.push(args["name"].as_str().unwrap_or("skill").to_string());
+                    }
+                }
+            }
+        }
+    }
+    let tail = actor.transcript.split_off(start);
+    actor
+        .transcript
+        .extend(tail.into_iter().filter(|message| match message {
+            ChatMessage::Assistant { tool_calls, .. } => {
+                !tool_calls.iter().any(|call| ids.contains(&call.id))
+            }
+            ChatMessage::Tool { tool_call_id, .. } => !ids.contains(tool_call_id),
+            _ => true,
+        }));
+    rejected
+}
+
 /// How many decisions may wait for the runtime at once.
 const ANSWER_CAPACITY: usize = 16;
 
@@ -194,6 +233,7 @@ impl ActorInbox {
     /// meaning. Stop is not a command: it goes through session cancellation.
     pub fn apply_batch_to_actor(&mut self, actor: &mut AgentActor) -> BatchOutcome {
         let mut outcome = BatchOutcome::default();
+        let mut preloads = Vec::new();
         for cmd in std::mem::take(&mut self.commands) {
             if cmd.from_driver() {
                 if let Some(count) = &self.queued_driver {
@@ -230,8 +270,8 @@ impl ActorInbox {
             for block in cmd.content {
                 if let crate::bus::command::ContentBlock::LoadedSkill { name, content } = block {
                     use crate::provider::openai::{ChatMessage, RequestFunction, RequestToolCall};
-                    let id = format!("skill:{}", cmd.command_id);
-                    actor.transcript.push(ChatMessage::Assistant {
+                    let id = format!("call_skill_{}", cmd.command_id);
+                    preloads.push(ChatMessage::Assistant {
                         content: None,
                         reasoning_content: None,
                         tool_calls: vec![RequestToolCall {
@@ -239,17 +279,19 @@ impl ActorInbox {
                             kind: "function".into(),
                             function: RequestFunction {
                                 name: "skill".into(),
-                                arguments: serde_json::json!({"name":name}).to_string(),
+                                arguments: serde_json::json!({"name":name,"origin":"driver_selected","command_id":cmd.command_id}).to_string(),
                             },
                         }],
                     });
-                    actor.transcript.push(ChatMessage::Tool {
+                    preloads.push(ChatMessage::Tool {
                         tool_call_id: id,
                         content,
                     });
                 }
             }
         }
+        // Preserve the whole unseen driver batch as the contiguous protected compaction tail.
+        actor.transcript.extend(preloads);
         outcome
     }
 }
@@ -265,6 +307,66 @@ mod tests {
     use std::collections::BTreeMap;
     use std::time::SystemTime;
     use ulid::Ulid;
+
+    #[test]
+    fn queued_skill_batch_survives_forced_compaction_verbatim_and_paired() {
+        use crate::agent::compaction::{self, Aim, Checkpoint, Compaction, Components};
+        let (_, mut inbox) = ActorInbox::channel();
+        let mut actor = test_actor();
+        for i in 0..6 {
+            actor.push_user(format!("old {i}"));
+            actor.transcript.push(ChatMessage::Assistant {
+                content: Some("old answer".repeat(300)),
+                reasoning_content: None,
+                tool_calls: vec![],
+            });
+        }
+        let mut first = text_command(DeliveryMode::NextTurn, "instruction A verbatim");
+        first.content.push(ContentBlock::LoadedSkill {
+            name: "review".into(),
+            content: "skill instructions".into(),
+        });
+        inbox.commands = vec![
+            first,
+            text_command(DeliveryMode::NextTurn, "instruction B verbatim"),
+        ];
+        inbox.apply_batch_to_actor(&mut actor);
+        assert_eq!(
+            compaction::latest_user_batch(&actor.transcript),
+            Some(12..14)
+        );
+        let raw = serde_json::to_string(&actor.transcript).unwrap();
+        let restored: Vec<ChatMessage> = serde_json::from_str(&raw).unwrap();
+        assert!(raw.contains("driver_selected"));
+        let components = Components {
+            system_prompt: None,
+            rules: None,
+            skills: None,
+            tools: &[],
+        };
+        let plan = compaction::plan(&restored, None, &components, 100_000, Aim::Shrink).unwrap();
+        let compacted = Compaction {
+            checkpoint: Checkpoint {
+                through_message: plan.through_message,
+                summary: "earlier work".into(),
+                generation: 1,
+            },
+            pruned_message_indices: plan.kept_pruned(),
+        };
+        let history = compaction::effective_history(&restored, Some(&compacted));
+        for wanted in ["instruction A verbatim", "instruction B verbatim"] {
+            assert!(history.iter().any(
+                |message| matches!(message, ChatMessage::User { content, .. } if content == wanted)
+            ));
+        }
+        for message in &history {
+            if let ChatMessage::Assistant { tool_calls, .. } = message {
+                for call in tool_calls {
+                    assert!(history.iter().any(|result| matches!(result, ChatMessage::Tool { tool_call_id, .. } if tool_call_id == &call.id)));
+                }
+            }
+        }
+    }
 
     fn text_command(mode: DeliveryMode, text: &str) -> Command {
         Command {

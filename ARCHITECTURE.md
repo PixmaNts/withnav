@@ -131,6 +131,12 @@ The searchable picker fills `/skill <name> ` without sending anything. Sending a
 bounded loader before accepting anything. The inbox appends a synthetic assistant `skill` call
 and its tool result after the user message, before the first provider request. Unknown, omitted,
 disabled or unreadable selections refuse the whole message; clients cannot supply loaded content.
+The turn's pinned agent policy is checked again after admission: an intervening agent switch can
+drop the preload, emitting a durable `command.result` refusal while still delivering driver text.
+`message.received.selected_skill` records `{name,origin:"driver"}` for live and replayed clients.
+Synthetic tool-call arguments carry `origin:"driver_selected"` and the command id through storage
+and summaries. Tool ids use provider-portable `call_skill_<ULID>` spelling. A drained driver batch
+stays contiguous before its preload exchanges so compaction protects every unseen instruction.
 This does not change the event catalog or execute a skill's scripts.
 
 **Permission prompts (terminal client).** `permission.requested` adds a `BlockKind::Permission` to the

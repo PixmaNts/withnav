@@ -8,6 +8,10 @@ requests land in `develop`.
 
 - **Terminal client**: `/skills` opens a searchable list of this conversation's skills. Choose one to fill `/skill <name>`, add your request, and send to load its instructions before the agent starts thinking.
 
+### Fixed
+
+- **Selected skills**: preloads use provider-compatible tool ids, stay marked as driver-selected on replay and in summaries, respect an agent switch during loading, and preserve all queued driver instructions during compaction.
+
 ## [0.4.1] - 2026-10-04
 
 Fixes from daily use of 0.4.0, mostly in the terminal client.

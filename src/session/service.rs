@@ -294,6 +294,8 @@ fn is_promptable(value: &bool) -> bool {
 #[derive(Clone, Debug)]
 pub struct Service {
     #[cfg(debug_assertions)]
+    skill_loading_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
     delivery_failure_countdown: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(debug_assertions)]
     pub(crate) shutdown_snapshot_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
@@ -585,6 +587,8 @@ impl Service {
             catalog,
             #[cfg(debug_assertions)]
             child_preparation_barrier: Arc::default(),
+            #[cfg(debug_assertions)]
+            skill_loading_barrier: Arc::default(),
             #[cfg(debug_assertions)]
             child_publication_barrier: Arc::default(),
             #[cfg(debug_assertions)]
@@ -1144,6 +1148,18 @@ impl Service {
                     "this agent cannot use the skill tool".into(),
                 ));
             }
+            #[cfg(debug_assertions)]
+            {
+                let barrier = self
+                    .skill_loading_barrier
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take();
+                if let Some(barrier) = barrier {
+                    barrier.reached.notify_one();
+                    barrier.release.notified().await;
+                }
+            }
             let result = handle.skills.load_listed(name).await;
             if result.status != crate::tools::ToolStatus::Ok {
                 return Err(ServerError::MalformedBody(
@@ -1163,6 +1179,16 @@ impl Service {
             }
         }
         accept(&handle, command).await
+    }
+
+    /// Debug-build seam to hold loading across an agent switch in deterministic tests.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_skill_loading(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .skill_loading_barrier
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(barrier);
     }
 
     /// Lists only the session snapshot's catalog-visible skills and current tool policy.

@@ -887,6 +887,7 @@ async fn runtime_loop(
         let Some(inbound) = inbound else {
             break;
         };
+        let preload_start = actor.transcript.len();
 
         // A decision resumes the held call; a batch of commands starts a
         // turn the usual way.
@@ -953,6 +954,12 @@ async fn runtime_loop(
             .budget_parked
             .store(false, std::sync::atomic::Ordering::Release);
         actor.role = role;
+        for name in crate::bus::inbox::revalidate_preloads(&mut actor, preload_start) {
+            let _ = sequencer.publish(crate::bus::sequencer::Candidate::new(EventKind::CommandResult, serde_json::json!({
+                "operation_id":Ulid::new(), "name":"skill", "ok":false,
+                "error":format!("skill {name:?} was not loaded: this turn's agent cannot use the skill tool; your message was delivered")
+            })));
+        }
         actor.variant = variant.map(|(_, variant)| variant);
         // A request that would not fit this budget is compacted first.
         actor.input_budget = status.context_snapshot().map(|s| s.input_budget);

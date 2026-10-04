@@ -590,18 +590,22 @@ impl TurnPublisher {
                 self.publish(EventKind::LlmResponse, payload);
             }
             AgentEvent::PreCall {
+                permission_gate,
                 tool_call_id,
                 name,
                 args,
             } => {
                 self.pending_tool = Some((tool_call_id.to_string(), Instant::now()));
-                let payload = to_value(&ToolPreCall {
+                let mut payload = to_value(&ToolPreCall {
                     tool_call_id: tool_call_id.to_string(),
                     name: name.to_string(),
                     source: ToolSource::Native,
                     args: args.clone(),
                     actor_id: ROOT_ACTOR_ID.to_string(),
                 });
+                if let Some(evidence) = permission_gate {
+                    payload["permission_gate"] = evidence.clone();
+                }
                 self.publish(EventKind::ToolPreCall, payload);
             }
             AgentEvent::PostCall {
@@ -1439,7 +1443,7 @@ fn snapshot_transcript(
 fn permission_requested(
     request: &crate::agent::permissions::PermissionRequest,
 ) -> serde_json::Value {
-    to_value(&crate::bus::event::PermissionRequested {
+    let mut payload = to_value(&crate::bus::event::PermissionRequested {
         child_session_id: None,
         request_id: request.id,
         tool_call_id: request.tool_call_id.clone(),
@@ -1448,7 +1452,12 @@ fn permission_requested(
         scope: request.scope.clone(),
         agent: request.agent.clone(),
         reason: request.reason.clone(),
-    })
+    });
+    if matches!(request.tool.as_str(), "bash" | "write" | "edit") {
+        payload["permission_gate"] =
+            serde_json::json!({"policy_version":1,"source":"driver","reason":request.reason});
+    }
+    payload
 }
 
 fn emit_turn_end(

@@ -63,6 +63,7 @@ pub enum AgentEvent<'a> {
     /// changed: a response was appended, or a step's tool results were.
     ContextEstimated(Breakdown),
     PreCall {
+        permission_gate: Option<&'a serde_json::Value>,
         tool_call_id: &'a str,
         name: &'a str,
         args: &'a serde_json::Value,
@@ -606,6 +607,7 @@ fn reject_call(
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) {
     observe(AgentEvent::PreCall {
+        permission_gate: None,
         tool_call_id: &call.id,
         name: &call.name,
         args: &call.args,
@@ -638,6 +640,9 @@ async fn execute_call(
         return None;
     }
     observe(AgentEvent::PreCall {
+        permission_gate: guard_note
+            .as_ref()
+            .and_then(|note| note.get("permission_gate")),
         tool_call_id: &call.id,
         name: &call.name,
         args: &call.args,

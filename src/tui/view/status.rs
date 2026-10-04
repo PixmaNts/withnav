@@ -68,7 +68,9 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
             }
         }
         Activity::AwaitingUser if state.open_permission().is_some() => "permission needed",
+        Activity::AwaitingUser if state.watchdog_paused => "watchdog paused · alt+c continue",
         Activity::AwaitingUser => "awaiting answer",
+        Activity::OutOfSteps if state.read_only() => "out of steps · alt+c continue",
         Activity::OutOfSteps => "out of steps · send a message to continue",
         Activity::Stopped => "stopped",
         Activity::Idle => "ready",

@@ -339,7 +339,7 @@ pub fn switch_blocked(tab: &Tab) -> Option<&'static str> {
         Some("this subagent is read-only; its parent chooses its model")
     } else if tab.open_permission().is_some() {
         Some("a tool call is waiting for approval: answer it first, then switch model")
-    } else if tab.activity == Activity::AwaitingUser {
+    } else if tab.activity == Activity::AwaitingUser && !tab.watchdog_paused {
         Some("the agent is waiting for your answer: reply first, then switch model")
     } else {
         None

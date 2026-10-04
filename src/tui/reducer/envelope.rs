@@ -327,6 +327,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 .and_then(|token| serde_json::from_value(token.clone()).ok());
             let q = v["question"].as_str().ok_or_else(bad)?;
             let budget = v["kind"].as_str() == Some("budget");
+            let child = s.read_only();
             s.activity = if budget {
                 Activity::OutOfSteps
             } else {
@@ -335,7 +336,14 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
             s.conversation.blocks.push(block(
                 e.seq.to_string(),
                 if budget {
-                    BlockKind::Notice("Out of steps · send a message to continue".into())
+                    BlockKind::Notice(
+                        if child {
+                            "Out of steps · alt+c continue"
+                        } else {
+                            "Out of steps · send a message to continue"
+                        }
+                        .into(),
+                    )
                 } else if v["kind"] == "watchdog" {
                     BlockKind::Notice(format!("Watchdog pause · {}", strip_controls(q)))
                 } else {

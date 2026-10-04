@@ -64,6 +64,33 @@ fn root_watchdog_notice_and_pause_render_and_continue_is_not_an_ask_answer() {
 }
 
 #[test]
+fn budget_notices_name_the_root_or_child_continue_path() {
+    for child in [false, true] {
+        let mut s = subagent_parent();
+        if child {
+            s.parent_session_id = Some(Ulid(2).to_string());
+        }
+        let mut script = Script::new();
+        script.raw(
+            "agent.yield",
+            json!({"kind":"budget","question":"step budget exhausted"}),
+        );
+        let generation = s.generation.clone();
+        update(
+            &mut s,
+            ClientEvent::Envelope {
+                generation,
+                envelope: script.out.remove(0),
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(s.conversation.blocks.last().map(|b| &b.kind),Some(BlockKind::Notice(text)) if text.contains(if child {"alt+c"} else {"send a message"}))
+        );
+    }
+}
+
+#[test]
 fn pause_lifecycle_replay_expiry_reset_and_late_continue_are_not_actionable() {
     let first = PauseToken {
         incarnation: Ulid(10),

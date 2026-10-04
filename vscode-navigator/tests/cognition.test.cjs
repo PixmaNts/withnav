@@ -174,7 +174,7 @@ test("child replay correlates repeated call ids at the matching permission reque
   assert.equal(calls[0].url, "http://127.0.0.1:1234/v1/sessions/child/events");
   assert.equal(calls[0].headers.authorization, "Bearer secret");
   assert.equal(calls[0].method, undefined);
-  assert.deepEqual(backend.history().at(-1), { type: "permissionCall", requestId: "R", call: command });
+  assert.deepEqual(backend.history().at(-1), { type: "permissionCall", requestId: "R", call: command, generation: 0 });
   apply("permission.resolved", { request_id: "R", resolution: "deny" });
   assert.equal(backend.hasOpenPermissions(), false);
 });
@@ -303,4 +303,113 @@ test("child request mismatch or ambiguous latest response keeps the request's ow
     assert.equal(backend.history().some(m => m.type === "permissionCall"), false);
     assert.match(card.card.call, /shortened by the server/);
   }
+});
+
+test("host rejects an old generation even when session and pause ids collide", async t => {
+  const { backend, calls, apply } = setup(t);
+  backend.streamGeneration = 2;
+  const pause = apply("agent.yield", { kind: "watchdog", details: { pause_token: { incarnation: "B", hold_id: "H" } } }, 10);
+  await assert.rejects(backend.controlPause("parent", pause.id, "continue", 1), /conversation changed/);
+  await assert.rejects(backend.controlPause("parent", pause.id, "stop", 1), /conversation changed/);
+  assert.equal(calls.length, 0);
+});
+
+test("delayed A creation after opening B cannot install A or send its message", async t => {
+  const { backend, permission } = setup(t);
+  backend.session = undefined;
+  backend.connect = async () => {};
+  backend.listConversations = async () => [];
+  let finishA;
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    requests.push({ url, ...init });
+    if (url.endsWith("/v1/sessions") && JSON.parse(init.body).resume !== "B") return new Promise(resolve => { finishA = resolve; });
+    if (url.endsWith("/v1/sessions")) return new Response(JSON.stringify({ session_id: "B" }));
+    return new Response(JSON.stringify({ session_id: "B", current_seq: 0, actor_state: "idle", model: "model" }));
+  });
+  const pending = backend.send("A draft");
+  await new Promise(resolve => setImmediate(resolve));
+  await backend.openConversation("B");
+  permission({ request_id: "B-request" });
+  const generation = backend.currentGeneration();
+  finishA(new Response(JSON.stringify({ session_id: "A" })));
+  await assert.rejects(pending, /Send cancelled.*draft was kept/);
+  assert.equal(backend.currentConversationId(), "B");
+  assert.equal(backend.currentGeneration(), generation);
+  assert.equal(backend.controls.permissions.has("B-request"), true);
+  assert.equal(requests.some(r => r.url.endsWith("/messages")), false);
+  assert.equal(backend.history().some(m => m.type === "conversationOpened" && m.id === "A"), false);
+  backend.dispose();
+});
+
+test("resumed server replay omitting historical session.end leaves old budget resolved", async t => {
+  const { backend, apply } = setup(t);
+  backend.connect = async () => {};
+  backend.listConversations = async () => [];
+  let summaries = 0;
+  t.mock.method(globalThis, "fetch", async (url) => {
+    if (url.endsWith("/v1/sessions")) return new Response(JSON.stringify({ session_id: "parent" }));
+    return new Response(JSON.stringify({ current_seq: summaries++ === 0 ? 12 : 13, actor_state: summaries === 1 ? "stopped" : "idle" }));
+  });
+  await backend.openConversation("parent");
+  const messages = [];
+  backend.subscribe(message => messages.push(message));
+  apply("agent.yield", { kind: "budget" }, 10);
+  apply("turn.end", { outcome: "yielded" }, 11);
+  // Actual resumed subscriptions omit the old session.end at seq 12.
+  assert.equal(backend.controls.pauses.size, 0);
+  assert.equal(messages.find(m => m.type === "pauseState").message, "Ended with the previous run");
+  apply("agent.yield", { kind: "budget" }, 14);
+  assert.equal(backend.controls.pauses.size, 1);
+  backend.dispose();
+});
+
+test("summary 503 retries then reconciles and releases child enrichment", async t => {
+  const { backend, permission } = setup(t);
+  backend.replayThrough = Infinity;
+  backend.delivered.add(4);
+  permission({ child_session_id: "child" });
+  backend.scheduleChildRead("child");
+  let summaries = 0;
+  let childReads = 0;
+  t.mock.method(globalThis, "fetch", async url => {
+    if (url.endsWith("/events")) { childReads++; return new Response(""); }
+    summaries++;
+    return new Response(JSON.stringify(summaries === 1 ? { error: "Unavailable" } : { current_seq: 4, model: "model" }), { status: summaries === 1 ? 503 : 200 });
+  });
+  await backend.loadSessionModel("parent");
+  assert.equal(summaries, 2);
+  assert.equal(childReads, 1);
+  assert.ok(backend.history().some(m => m.type === "status" && /reconcile conversation history/.test(m.message ?? "")));
+  backend.dispose();
+});
+
+test("recreated view requeues interrupted child enrichment and retains completed previews", async t => {
+  const { backend, permission } = setup(t);
+  const args = JSON.stringify({ command: "pwd" });
+  permission({ child_session_id: "child", tool_call_id: "C", arguments: args });
+  let reads = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    reads++;
+    if (reads === 1) return new Response(new ReadableStream({}));
+    return new Response([
+      { kind: "llm.response", payload: { message: { tool_calls: [{ id: "C", name: "bash", args: { command: "pwd" } }] } } },
+      { kind: "permission.requested", payload: { request_id: "R", tool_call_id: "C", tool: "bash", arguments: args } },
+    ].map(e => `data: ${JSON.stringify(e)}\n\n`).join(""));
+  });
+  backend.resumePermissionReads();
+  backend.drainChildReads();
+  await Promise.resolve();
+  backend.cancelPermissionReads();
+  await new Promise(resolve => setImmediate(resolve));
+  backend.resumePermissionReads();
+  backend.drainChildReads();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reads, 2);
+  assert.ok(backend.history().some(m => m.type === "permissionCall" && m.call === "pwd"));
+  backend.cancelPermissionReads();
+  backend.resumePermissionReads();
+  backend.drainChildReads();
+  assert.equal(reads, 2);
+  backend.dispose();
 });

@@ -1,12 +1,18 @@
 /// <reference lib="dom" />
 import type { HostToWebview, WebviewToHost, PermissionEvidence, PermissionDecision } from "../chatProtocol";
 import { evidenceLabel, permissionOutcome } from "../eventView";
+import { ConversationIdentity } from "./conversationIdentity";
 import { mountConversations } from "./conversations";
 import { diffKind, parseWake } from "./wake";
 
 type ViewState = { includeContext?: boolean };
 declare function acquireVsCodeApi(): { postMessage(message: WebviewToHost): void; getState(): ViewState | undefined; setState(state: ViewState): void };
 const vscode = acquireVsCodeApi();
+const rawPost = vscode.postMessage.bind(vscode);
+const identity = new ConversationIdentity(() => {
+  for (const button of document.querySelectorAll<HTMLButtonElement>(".control-card button, .control-card textarea")) button.disabled = true;
+});
+vscode.postMessage = message => rawPost({ ...message, generation: identity.generation });
 const transcript = document.querySelector<HTMLElement>("#transcript")!;
 const empty = document.querySelector<HTMLElement>("#empty")!;
 const status = document.querySelector<HTMLElement>("#status")!;
@@ -296,6 +302,7 @@ function actionButton(label: string, action: () => void, primary = false): HTMLB
 }
 
 function renderPermission(event: Extract<HostToWebview, { type: "permission" }>): void {
+  const post = identity.bind(rawPost);
   const card = event.card;
   const existing = permissionCards.get(card.requestId);
   if (existing) {
@@ -324,7 +331,7 @@ function renderPermission(event: Extract<HostToWebview, { type: "permission" }>)
     for (const button of buttons.querySelectorAll("button")) button.disabled = true;
     denyMessage.disabled = true;
     outcome.textContent = "Sending answer…";
-    vscode.postMessage({ type: "answerPermission", sessionId, requestId: card.requestId, decision,
+    post({ type: "answerPermission", sessionId, requestId: card.requestId, decision,
       ...(decision === "deny" && denyMessage.value.trim() ? { message: denyMessage.value.trim() } : {}) });
   };
   buttons.append(actionButton("Allow once", () => answer("allow_once"), true));
@@ -339,6 +346,7 @@ function renderPermission(event: Extract<HostToWebview, { type: "permission" }>)
 }
 
 function renderPause(event: Extract<HostToWebview, { type: "pause" }>): void {
+  const post = identity.bind(rawPost);
   if (pauseCards.has(event.id)) return;
   const root = el("article", "control-card pause-card");
   root.append(el("div", "control-kicker", event.kind === "budget" ? "Step limit reached" : "Watchdog pause"),
@@ -350,7 +358,7 @@ function renderPause(event: Extract<HostToWebview, { type: "pause" }>): void {
     if (!sessionId) return;
     for (const button of controls.querySelectorAll("button")) button.disabled = true;
     outcome.textContent = action === "continue" ? "Continuing…" : "Stopping…";
-    vscode.postMessage({ type: "controlPause", sessionId, id: event.id, action });
+    post({ type: "controlPause", sessionId, id: event.id, action });
   };
   const resume = actionButton("Continue", () => control("continue"), true);
   if (event.kind === "watchdog" && !event.token) {
@@ -366,6 +374,7 @@ function renderPause(event: Extract<HostToWebview, { type: "pause" }>): void {
 }
 
 function receive(event: HostToWebview): void {
+  if (!identity.receive(event)) return;
   if (event.type === "conversationOpened") {
     sessionId = event.id ?? "";
     sending = false;
@@ -407,7 +416,7 @@ function receive(event: HostToWebview): void {
       card.outcome.textContent = permissionOutcome(event.resolution, event.message);
       card.root.dataset.resolution = event.resolution;
       const review = card.root.querySelector(".approval-evidence summary");
-      if (review?.textContent === "Driver review required" && ["allow_once", "allow_folder"].includes(event.resolution)) review.textContent = "approved · driver";
+    if (review?.textContent === "Driver review required" && ["allow_once", "allow_folder"].includes(event.resolution)) review.textContent = "approved · driver";
       card.controls.hidden = !["pending", "error"].includes(event.resolution);
       for (const control of card.controls.querySelectorAll<HTMLButtonElement | HTMLTextAreaElement>("button, textarea")) control.disabled = event.resolution === "pending";
       follow();

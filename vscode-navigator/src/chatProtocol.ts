@@ -35,7 +35,7 @@ export interface PermissionEvidence {
 export interface PauseToken { incarnation: string; hold_id: string }
 
 /** Host -> webview messages. */
-export type HostToWebview =
+export type HostToWebview = { generation?: number } & (
   | { type: "status"; state: "connecting" | "ready" | "busy" | "error"; message?: string }
   /** A message already complete when shown (the driver's own, or a navigator wake).
    *  `context` is the chip label of the editor context attached to a driver message;
@@ -72,7 +72,7 @@ export type HostToWebview =
    *  `locked`: the conversation exists, its model can no longer change. */
   | { type: "models"; items: ModelInfo[]; current?: string; locked: boolean }
   /** Context of the last model call: `used` tokens out of `window` (absent when unknown). */
-  | { type: "usage"; used: number; window?: number };
+  | { type: "usage"; used: number; window?: number });
 
 /** One saved conversation, as listed in the panel. `updatedAt` is an RFC 3339 timestamp. */
 export interface ConversationSummary {
@@ -90,7 +90,7 @@ export interface ModelInfo {
 }
 
 /** Webview -> host messages. */
-export type WebviewToHost =
+export type WebviewToHost = { generation?: number } & (
   /** The webview finished loading and wants the history. */
   | { type: "ready" }
   /** The driver sends a message to the cognition; the host appends the editor context when asked. */
@@ -110,10 +110,12 @@ export type WebviewToHost =
   /** The driver deletes a saved conversation. */
   | { type: "deleteConversation"; id: string }
   /** The driver picks the model for the next new conversation. */
-  | { type: "selectModel"; alias: string };
+  | { type: "selectModel"; alias: string });
 
 /** What the chat view needs from the host side; implemented by the cognition bridge. */
 export interface ChatBackend {
+  currentGeneration(): number;
+  resumePermissionReads(): void;
   cancelPermissionReads(): void;
   /** Current transcript, replayed into a freshly opened view. */
   history(): HostToWebview[];
@@ -123,8 +125,8 @@ export interface ChatBackend {
   send(text: string, context?: string): Promise<void>;
   stop(): Promise<void>;
   hasOpenPermissions(): boolean;
-  answerPermission(sessionId: string, requestId: string, decision: PermissionDecision, message?: string): Promise<void>;
-  controlPause(sessionId: string, id: string, action: "continue" | "stop"): Promise<void>;
+  answerPermission(sessionId: string, requestId: string, decision: PermissionDecision, message?: string, generation?: number): Promise<void>;
+  controlPause(sessionId: string, id: string, action: "continue" | "stop", generation?: number): Promise<void>;
   /** Saved conversations of the workspace, newest first. */
   listConversations(): Promise<ConversationSummary[]>;
   /** Resumes a saved conversation and replays it into the transcript. */

@@ -18,6 +18,10 @@ requests land in `develop`.
   controls work when opening or reopening the view after the conversation has started.
   Pending driver review no longer claims approval, edit previews show replacement options,
   stopped pauses lose their controls on replay, and submitted permission answers cannot be sent twice.
+- **VS Code conversation switching**: old approval and pause controls cannot act on a new
+  conversation, and a superseded session creation cancels its send without clearing your draft.
+  Reopened pauses from an ended run stay historical. Failed history reconciliation retries,
+  and reopening the chat view resumes interrupted child-call previews.
 
 ### Added
 

@@ -26,6 +26,8 @@ Module._load = originalLoad;
 test("late-created and recreated views receive current session identity before replay", () => {
   let cancelled = 0;
   const backend = {
+    currentGeneration: () => 1,
+    resumePermissionReads: () => {},
     currentConversationId: () => "already-open",
     history: () => [{ type: "pause", id: "P", kind: "budget", text: "Out of steps" }],
     subscribe: () => () => {},
@@ -45,7 +47,7 @@ test("late-created and recreated views receive current session identity before r
       onDidDispose(listener) { dispose = listener; },
     });
     receive({ type: "ready" });
-    assert.deepEqual(messages[0], { type: "conversationOpened", id: "already-open", title: "Conversation" });
+    assert.deepEqual(messages[0], { type: "conversationOpened", id: "already-open", title: "Conversation", generation: 1 });
     assert.equal(messages[1].type, "history");
     dispose();
   }

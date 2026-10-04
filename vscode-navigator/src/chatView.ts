@@ -55,6 +55,8 @@ export function registerChatView(
       let lastModels: HostToWebview | undefined;
       let lastUsage: HostToWebview | undefined;
       const post = (message: HostToWebview): void => {
+        if (message.generation !== undefined && message.generation !== backend.currentGeneration()) return;
+        message = { ...message, generation: backend.currentGeneration() };
         if (message.type === "conversationOpened") {
           lastConversationOpened = message;
           lastUsage = undefined; // a new or reopened conversation re-reports its own
@@ -79,6 +81,7 @@ export function registerChatView(
         vscode.window.tabGroups.onDidChangeTabs(scheduleContext),
       ];
       const messageSubscription = webview.onDidReceiveMessage((message: WebviewToHost) => {
+        if (message?.type !== "ready" && message?.generation !== backend.currentGeneration()) return;
         switch (message?.type) {
           case "ready":
             if (lastConversations) post(lastConversations);
@@ -88,36 +91,38 @@ export function registerChatView(
             if (lastModels) post(lastModels);
             if (lastUsage) post(lastUsage);
             pushContext();
+            backend.resumePermissionReads();
             break;
           case "send":
             if (typeof message.text === "string" && message.text.trim()) {
               void (async () => {
                 const session = backend.currentConversationId();
+                const generation = backend.currentGeneration();
                 if (backend.hasOpenPermissions()) {
                   const answer = await vscode.window.showWarningMessage(
                     "Sending cancels the pending permission request", { modal: true }, "Send anyway",
                   );
                   if (answer !== "Send anyway") return false;
                 }
-                if (session !== backend.currentConversationId()) throw new Error("The open conversation changed. Send again in the current conversation.");
+                if (generation !== backend.currentGeneration() || session !== backend.currentConversationId()) throw new Error("The open conversation changed. Send again in the current conversation.");
                 const context = message.includeContext === false ? undefined : buildEditorContext().block;
                 await backend.send(message.text, context);
                 return true;
-              })().then(accepted => post({ type: "sendResult", text: message.text, accepted }))
-                .catch(error => { post({ type: "sendResult", text: message.text, accepted: false }); showError(error); });
+              })().then(accepted => post({ type: "sendResult", text: message.text, accepted, generation: accepted ? backend.currentGeneration() : message.generation }))
+                .catch(error => { post({ type: "sendResult", text: message.text, accepted: false, generation: message.generation }); showError(error); });
             }
             break;
           case "answerPermission":
             if (typeof message.sessionId === "string" && typeof message.requestId === "string" &&
                 ["allow_once", "allow_folder", "deny"].includes(message.decision) &&
                 (message.message === undefined || typeof message.message === "string")) {
-              void backend.answerPermission(message.sessionId, message.requestId, message.decision, message.message).catch(showError);
+              void backend.answerPermission(message.sessionId, message.requestId, message.decision, message.message, message.generation).catch(showError);
             }
             break;
           case "controlPause":
             if (typeof message.sessionId === "string" && typeof message.id === "string" &&
                 ["continue", "stop"].includes(message.action)) {
-              void backend.controlPause(message.sessionId, message.id, message.action).catch(showError);
+              void backend.controlPause(message.sessionId, message.id, message.action, message.generation).catch(showError);
             }
             break;
           case "stop":

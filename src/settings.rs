@@ -55,6 +55,21 @@ impl Settings {
                 "agent.watchdog_interval_secs must be an integer from 0 to 31536000".into()
             })
     }
+    /// Automatic advisory review; disabling it asks for every mutating call.
+    pub fn permissions_automatic_review(&self) -> Result<bool, String> {
+        let Some(permissions) = self.root.get("permissions") else {
+            return Ok(true);
+        };
+        if !permissions.is_object() {
+            return Err("permissions must be an object".into());
+        }
+        let Some(value) = permissions.get("automatic_review") else {
+            return Ok(true);
+        };
+        value
+            .as_bool()
+            .ok_or_else(|| "permissions.automatic_review must be a boolean".into())
+    }
     /// Progress-check interval; zero disables child supervision.
     pub fn subagents_watchdog_interval_secs(&self) -> Result<u64, String> {
         let Some(value) = self

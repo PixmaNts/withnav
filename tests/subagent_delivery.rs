@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use navai::bus::command::Command;
 use navai::provider::openai::ChatMessage;
 use navai::server::AppState;
 use serde_json::{json, Value};
@@ -158,7 +157,10 @@ async fn queued_driver_correction_precedes_completion_only_wake() {
         .await
         .unwrap();
     state
-        .send(Command::child_prompt(parent, "original instruction".into()))
+        .send(common::server::driver_command(
+            parent,
+            "original instruction".into(),
+        ))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -185,7 +187,10 @@ async fn queued_driver_correction_precedes_completion_only_wake() {
         .bounded(file!(), line!())
         .await;
     state
-        .send(Command::child_prompt(parent, "driver correction".into()))
+        .send(common::server::driver_command(
+            parent,
+            "driver correction".into(),
+        ))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -629,7 +634,10 @@ async fn busy_parent_consumes_several_notices_in_order_at_next_boundary() {
         .await
         .unwrap();
     state
-        .send(Command::child_prompt(parent, "parent working".into()))
+        .send(common::server::driver_command(
+            parent,
+            "parent working".into(),
+        ))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -674,7 +682,7 @@ async fn busy_parent_consumes_several_notices_in_order_at_next_boundary() {
         .bounded(file!(), line!())
         .await;
     for text in ["older navigator wake", "latest navigator wake"] {
-        let mut command = Command::child_prompt(parent, text.into());
+        let mut command = common::server::driver_command(parent, text.into());
         command.source_actor_id = "navigator:conversation".into();
         state.send(command).bounded(file!(), line!()).await.unwrap();
     }
@@ -1068,7 +1076,7 @@ async fn child_permission_and_result_do_not_answer_parent_ask() {
         .await
         .unwrap();
     state
-        .send(Command::child_prompt(parent, "ask me".into()))
+        .send(common::server::driver_command(parent, "ask me".into()))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1184,7 +1192,7 @@ async fn child_permission_and_result_do_not_answer_parent_ask() {
         |m| matches!(m, ChatMessage::Tool { tool_call_id, .. } if tool_call_id == "parent-ask")
     ));
     state
-        .send(Command::child_prompt(parent, "my answer".into()))
+        .send(common::server::driver_command(parent, "my answer".into()))
         .bounded(file!(), line!())
         .await
         .unwrap();

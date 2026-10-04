@@ -149,6 +149,18 @@ pub const KEYS: &[(&str, &str)] = &[
     ("shift+tab", "switch focus"),
     ("page up / page down", "scroll"),
     ("up / down", "select transcript block"),
+    (
+        "drag / double-click",
+        "select text / word; release copies via OSC 52",
+    ),
+    (
+        "y / ctrl+shift+c",
+        "y copies selection/block; ctrl+shift+c best-effort",
+    ),
+    (
+        "shift+drag",
+        "native selection; OSC 52: tmux set-clipboard on",
+    ),
     ("space / enter", "expand selected block"),
     ("ctrl+end", "follow newest"),
     ("esc / ctrl+c", "stop / close"),

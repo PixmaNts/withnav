@@ -4,6 +4,7 @@ mod markdown;
 pub mod panel;
 mod permission;
 mod pickers;
+pub(crate) mod selection;
 pub mod sidebar;
 pub(crate) mod status;
 pub mod text;
@@ -20,11 +21,13 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
+pub(crate) use transcript::copy_block;
 
 /// Parsed markdown, one cache per tab conversation: block ids are only unique within a session, so
 /// two tabs never share an entry.
 #[derive(Debug, Default)]
 pub struct RenderCache {
+    pub transcript: selection::TranscriptMap,
     markdown: std::collections::HashMap<u64, markdown::MarkdownCache>,
     /// The open permission request whose keys line was on screen at the last draw.
     pub prompt_shown: Option<String>,
@@ -83,6 +86,21 @@ fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
             required: 1,
         }];
     }
+    if !state.read_only()
+        && ui.focus == crate::tui::state::Focus::Transcript
+        && state.open_permission().is_none()
+    {
+        return &[Hints {
+            hints: &[
+                "y copy block",
+                "drag copy text",
+                "shift+drag native",
+                "shift+tab write",
+                "f1 help",
+            ],
+            required: 1,
+        }];
+    }
     if state.read_only() {
         if matches!(
             state.active_child_status(),
@@ -101,6 +119,8 @@ fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
         return &[Hints {
             hints: &[
                 "alt+w parent",
+                "drag copy text",
+                "y copy block",
                 "alt+s subagents",
                 "page↑/↓ scroll",
                 "esc stop",
@@ -114,6 +134,7 @@ fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
             hints: &[
                 "alt+s subagents",
                 "tab build/plan",
+                "drag copy text",
                 "ctrl+p palette",
                 "alt+1…9 tabs",
                 "esc stop",
@@ -211,6 +232,7 @@ pub fn draw(
     cache: &mut RenderCache,
 ) {
     let theme = ui.theme.palette();
+    cache.transcript = selection::TranscriptMap::default();
     // A tab closed or moved to another conversation drops its cache.
     cache
         .markdown
@@ -280,7 +302,15 @@ pub fn draw(
     } else {
         transcript
     };
-    cache.prompt_shown = transcript::draw(frame, transcript, state, ui, &theme, markdown);
+    cache.prompt_shown = transcript::draw(
+        frame,
+        transcript,
+        state,
+        ui,
+        &theme,
+        markdown,
+        &mut cache.transcript,
+    );
     frame.render_widget(
         Paragraph::new("─".repeat(usize::from(area.width))).style(theme.border()),
         separator,

@@ -123,7 +123,7 @@ fn a_narrow_terminal_reaches_children_and_keeps_the_transcript_read_only() {
             .to_string()
     };
     insta::assert_snapshot!(line(0), @" ◆ subagent of Fix parser  ▌explore · —");
-    insta::assert_snapshot!(line(15), @" alt+w parent · alt+s subagents · page↑/↓ scroll · esc stop");
+    insta::assert_snapshot!(line(15), @" alt+w parent · drag copy text · y copy block");
     assert!((0..16).any(|y| line(y).contains("can't be written to")));
     assert!(!(0..16).any(|y| line(y).contains("Conversations")));
     let action = route_key(
@@ -1981,7 +1981,7 @@ fn a_write_prompt_shows_the_path_the_first_lines_and_the_keys() {
         "+ line 1",
         "+ line 6",
         "… 3 more lines",
-        "y allow once   a always for this folder   n deny",
+        "y allow once",
     ] {
         assert!(shown.contains(want), "{want}: {shown}");
     }
@@ -2170,7 +2170,7 @@ fn a_prompt_shows_why_it_asks_and_a_plan_exception_offers_only_once_or_deny() {
         &Editor::new(),
     );
     assert!(shown.contains("it changes files"), "{shown}");
-    assert!(shown.contains("a always for this folder"), "{shown}");
+    assert!(!shown.contains("a always for this folder"), "{shown}");
 
     let plan = plan_exception();
     let shown = render(
@@ -2262,7 +2262,9 @@ fn n_asks_for_a_message_then_enter_denies_with_it() {
     );
     assert_eq!(
         keys("a", &s, &mut ui, &mut editor),
-        [answer("allow_folder", None)]
+        [Action::ShowNotice(
+            "this request can be allowed once or denied, not always".into()
+        )]
     );
     assert!(keys("n", &s, &mut ui, &mut editor).is_empty());
     assert_eq!(ui.deny_draft("R1"), Some(""));
@@ -2401,13 +2403,9 @@ fn a_key_on_a_prompt_scrolled_out_of_view_first_brings_it_back() {
     assert_eq!(ui.prompt_shown.as_deref(), Some("R1"), "now in view");
     assert_eq!(
         keys("a", &s, &mut ui, &mut editor),
-        [Action::AnswerPermission {
-            request_id: "R1".into(),
-            answer: navai::tui::protocol::PermissionAnswer {
-                decision: "allow_folder".into(),
-                message: None,
-            },
-        }]
+        [Action::ShowNotice(
+            "this request can be allowed once or denied, not always".into()
+        )]
     );
     // in view from the start: the first key answers
     let mut ui = UiState {
@@ -2782,7 +2780,7 @@ fn the_key_bar_follows_what_the_keys_do_now() {
     let s = asking(prompt("bash", json!({"command": "ls"}), ("folder", "/ws")));
     let bar = bottom_row(&s, &ui, &Editor::new(), (200, 30));
     assert!(
-        bar.contains("y allow once · a always · n deny · esc stop · ctrl+p palette"),
+        bar.contains("y allow once · n deny · esc stop · ctrl+p palette"),
         "{bar}"
     );
     let theme = Theme::ayu_dark();
@@ -3000,21 +2998,21 @@ fn the_three_permission_choices_stay_on_a_narrow_key_bar() {
     let bar = |width: u16| bottom_row(&s, &ui, &Editor::new(), (width, 30));
     let wide = bar(100);
     assert!(
-        wide.contains("y allow once · a always · n deny · esc stop · ctrl+p palette"),
+        wide.contains("y allow once · n deny · esc stop · ctrl+p palette"),
         "{wide}"
     );
-    // `y allow once · a always · n deny` needs 34 columns; below that the short labels
+    // `y allow once · n deny` needs 34 columns; below that the short labels
     let full = bar(34);
-    assert!(full.contains("y allow once · a always · n deny"), "{full}");
+    assert!(full.contains("y allow once · n deny"), "{full}");
     let mid = bar(30);
-    assert!(mid.contains("y once · a always · n deny"), "{mid}");
+    assert!(mid.contains("y allow once · n deny"), "{mid}");
     let narrow = bar(24);
-    assert!(narrow.contains("y · a · n"), "{narrow}");
+    assert!(narrow.contains("y allow once · n deny"), "{narrow}");
     for width in [24u16, 30, 40, 50, 60, 80] {
         let row = bar(width);
         // At 80 columns and more the sidebar takes the left of the row.
         let row = row.rsplit('│').next().unwrap_or(&row).to_string();
-        for key in ["y", "a", "n"] {
+        for key in ["y", "n"] {
             assert!(
                 row.split(" · ")
                     .any(|h| h.trim() == key || h.trim().starts_with(&format!("{key} "))),
@@ -3155,4 +3153,49 @@ fn the_header_keeps_the_committed_model_when_the_catalog_says_otherwise() {
         header.contains("luna · gpt-5.6-luna · 1k / 872k"),
         "{header}"
     );
+}
+
+#[test]
+fn permission_layout_is_fresh_with_one_render_cache() {
+    let mut s = asking(prompt("bash", json!({"command":"ls"}), ("folder", "/ws")));
+    let mut ui = UiState {
+        follow_bottom: true,
+        ..Default::default()
+    };
+    let editor = Editor::new();
+    let mut cache = RenderCache::default();
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    for stage in 0..4 {
+        if stage == 1 {
+            ui.deny_message = Some(navai::tui::state::DenyDraft {
+                request_id: "R1".into(),
+                text: "first".into(),
+            });
+        }
+        if stage == 2 {
+            ui.deny_message.as_mut().unwrap().text = "edited".into();
+        }
+        if stage == 3 {
+            s.answered_permission = Some("R1".into());
+        }
+        terminal
+            .draw(|f| navai::tui::view::draw(f, &s, &ui, &editor, &mut cache))
+            .unwrap();
+        let shown = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(
+            shown.contains(match stage {
+                0 => "allow once",
+                1 => "first",
+                2 => "edited",
+                _ => "sent, waiting for the server",
+            }),
+            "{shown}"
+        );
+    }
 }

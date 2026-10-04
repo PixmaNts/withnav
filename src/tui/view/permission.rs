@@ -153,7 +153,7 @@ fn build(
 /// Whether the request can be allowed "always" for its folder or site. The `plan` agent's
 /// exceptions cannot: each one is allowed once or denied.
 pub(crate) fn offers_always(p: &PermissionPrompt) -> bool {
-    p.agent != "plan"
+    p.agent != "plan" && !matches!(p.tool.as_str(), "bash" | "write" | "edit")
 }
 
 /// `in /path` for a folder, `to https://host` for an origin.

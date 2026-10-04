@@ -73,6 +73,7 @@ pub enum AgentEvent<'a> {
     /// changed: a response was appended, or a step's tool results were.
     ContextEstimated(Breakdown),
     PreCall {
+        permission_gate: Option<&'a serde_json::Value>,
         tool_call_id: &'a str,
         name: &'a str,
         args: &'a serde_json::Value,
@@ -330,7 +331,7 @@ pub async fn resolve_permission(
                 // An exception of a guarded agent: the driver's approval is
                 // for this one call and never becomes a grant, whatever the
                 // decision said.
-                Gated::Guarded(needed)
+                Gated::Guarded(needed) | Gated::Reviewed(needed)
                     if needed.destination == destination && needed.scope == request.scope =>
                 {
                     run_reviewed(actor, &call, destination.as_deref(), observe).await
@@ -442,9 +443,21 @@ enum Gated {
     /// An exception of a guarded agent: the role guard is asked before the
     /// driver is. See [`guard_step`].
     Guarded(Needed),
+    Reviewed(Needed),
 }
 
 fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
+    if !call.args_valid || !call.args.is_object() {
+        return Gated::Rejected("invalid tool arguments".into());
+    }
+    if call.name == "bash"
+        && !call
+            .args
+            .get("command")
+            .is_some_and(serde_json::Value::is_string)
+    {
+        return Gated::Rejected("missing string argument: command".into());
+    }
     if actor.registry.get(&call.name).is_none() {
         return Gated::Rejected(format!(
             "tool '{}' is disabled by this session's policy",
@@ -460,6 +473,9 @@ fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
         Gate::Needs(needed) => needed,
     };
     let agent = role.id.as_str();
+    if matches!(call.name.as_str(), "bash" | "write" | "edit") {
+        return Gated::Reviewed(needed);
+    }
     // A guarded agent writes its markdown without asking; everything else it
     // does is an exception, and no folder grant covers an exception.
     if is_guarded(role) {
@@ -510,6 +526,25 @@ async fn run_gated(
                 return One::Settled;
             }
             Gated::Run(destination) => (destination, None),
+            Gated::Reviewed(needed) => {
+                match super::permission_gate::consult(actor, call, &needed).await {
+                    super::permission_gate::Judged::Run(note) => (needed.destination, Some(note)),
+                    super::permission_gate::Judged::Interrupted => return One::Interrupted,
+                    super::permission_gate::Judged::Ask(reason) => {
+                        let mut request = PermissionRequest::new(
+                            call,
+                            needed.scope,
+                            actor
+                                .role
+                                .as_ref()
+                                .map(|r| r.id.as_str())
+                                .unwrap_or("build"),
+                        );
+                        request.reason = reason;
+                        return One::Ask(request, needed.destination);
+                    }
+                }
+            }
             Gated::Ask(request, destination) => return One::Ask(request, destination),
             Gated::Guarded(needed) => match guard_step(actor, call, needed).await {
                 GuardStep::Run(note, destination) => (destination, Some(note)),
@@ -598,6 +633,7 @@ fn reject_call(
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) {
     observe(AgentEvent::PreCall {
+        permission_gate: None,
         tool_call_id: &call.id,
         name: &call.name,
         args: &call.args,
@@ -629,7 +665,13 @@ async fn execute_call(
     if !still_resolves(&call.args, destination, &actor.tool_context) {
         return None;
     }
+    if actor.cancel.is_cancelled() {
+        return Some(ToolResult::interrupted());
+    }
     observe(AgentEvent::PreCall {
+        permission_gate: guard_note
+            .as_ref()
+            .and_then(|note| note.get("permission_gate")),
         tool_call_id: &call.id,
         name: &call.name,
         args: &call.args,
@@ -681,11 +723,22 @@ async fn execute_call(
     };
     // The role guard let this call run: the durable `tool.post_call` says so.
     if let Some(note) = guard_note {
+        if let Some(guard) = note.get("guard") {
+            if !result.metadata.is_object() {
+                result.metadata = serde_json::json!({});
+            }
+            result.metadata["guard"] = guard.clone();
+        }
+        let (key, note) = if let Some(evidence) = note.get("permission_gate") {
+            ("permission_gate", evidence.clone())
+        } else {
+            ("guard", note)
+        };
         match &mut result.metadata {
             serde_json::Value::Object(map) => {
-                map.insert("guard".into(), note);
+                map.insert(key.into(), note);
             }
-            other => *other = serde_json::json!({ "guard": note }),
+            other => *other = serde_json::json!({ key: note }),
         }
     }
     observe(AgentEvent::PostCall {
@@ -1273,7 +1326,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_granted_folder_lets_a_second_write_through_without_yielding() {
+    async fn a_saved_folder_grant_never_bypasses_review() {
         let mut actor = make_actor(
             "http://127.0.0.1:1/v1".into(),
             registry_gated(),
@@ -1300,9 +1353,9 @@ mod tests {
         actor.push_user("go");
         let mut noop = |_e: AgentEvent| {};
         let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
-        assert!(matches!(outcome, RunOutcome::Done(_)));
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
-        assert!(!actor.has_pending());
+        assert!(matches!(outcome, RunOutcome::PermissionRequired(_)));
+        assert!(!target.exists());
+        assert!(actor.has_pending());
     }
 
     /// A build actor with a scripted provider, yielded on a pending `write`
@@ -1383,7 +1436,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn allow_folder_lets_the_sibling_through_and_the_turn_continues() {
+    async fn old_allow_folder_answer_runs_once_then_reviews_the_sibling() {
         let done = http_sse(&sse_body(&[&text_chunk("all written")]));
         let (mut actor, a, b, server) = yielded_on_two_writes(vec![done]).await;
         let id = pending_id(&actor);
@@ -1392,15 +1445,12 @@ mod tests {
             resolve_permission(&mut actor, id, PermissionDecision::AllowFolder, &mut noop)
                 .await
                 .unwrap();
-        // `a.txt` sits in the workspace, `sub/b.txt` below it: one grant.
-        assert!(matches!(outcome, RunOutcome::Done(m) if m.text == "all written"));
+        assert!(matches!(outcome, RunOutcome::PermissionRequired(_)));
         assert_eq!(std::fs::read_to_string(&a).unwrap(), "A");
-        assert_eq!(std::fs::read_to_string(&b).unwrap(), "B");
-        assert!(!actor.has_pending());
+        assert!(!b.exists());
+        assert!(actor.has_pending());
         let requests = server.requests.lock().await;
-        assert_eq!(requests.len(), 2);
-        assert!(requests[1].contains("\"tool_call_id\":\"w1\""));
-        assert!(requests[1].contains("\"tool_call_id\":\"w2\""));
+        assert_eq!(requests.len(), 1);
     }
 
     #[tokio::test]
@@ -1868,6 +1918,337 @@ mod tests {
         }
     }
 
+    fn safety_answers(
+        input: &super::super::permission_gate::PermissionReviewInput,
+        verdict: Verdict,
+    ) -> crate::provider::systemone::Answers {
+        input
+            .questions
+            .keys()
+            .map(|name| {
+                let choice = match name.as_str() {
+                    "call_effect" => "read_write",
+                    "call_scope" => "inside",
+                    "call_risk" => "low",
+                    _ => verdict.as_str(),
+                };
+                (
+                    name.clone(),
+                    crate::provider::systemone::Answer::Choice {
+                        choice: choice.into(),
+                        probabilities: Default::default(),
+                        confidence: 1.0,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    struct Meta {
+        decision: Option<super::super::permission_gate::ReviewDecision>,
+        captured: std::sync::Mutex<Option<CancellationToken>>,
+        hangs: bool,
+    }
+
+    struct WaitingJudge(std::sync::Mutex<Option<CancellationToken>>);
+    impl super::super::permission_gate::PermissionJudge for WaitingJudge {
+        fn judge<'a>(
+            &'a self,
+            _input: &'a super::super::permission_gate::PermissionReviewInput,
+            cancel: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<'a, Result<crate::provider::systemone::Answers, String>>
+        {
+            *self.0.lock().unwrap() = Some(cancel.clone());
+            Box::pin(futures::future::pending())
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn jev_deadline_cancels_review_token_and_never_dispatches() {
+        let mut actor = plan_actor(None, "http://unused");
+        let judge = Arc::new(WaitingJudge(Default::default()));
+        actor.permission_judge = Some(judge.clone());
+        let target = actor.tool_context.workspace.join("a.rs");
+        let call = ToolCall {
+            id: "c".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path":target,"content":"x"}),
+            args_valid: true,
+        };
+        let mut count = 0;
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut |event| {
+                if matches!(event, AgentEvent::PreCall { .. }) {
+                    count += 1;
+                }
+            })
+            .await,
+            One::Ask(..)
+        ));
+        assert_eq!(count, 0);
+        assert!(!target.exists());
+        assert!(judge.0.lock().unwrap().as_ref().unwrap().is_cancelled());
+        assert!(!actor.cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_reviewer_entry_never_dispatches_or_prompts() {
+        for during_meta in [false, true] {
+            let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+            let judge = Arc::new(WaitingJudge(Default::default()));
+            let meta = Arc::new(Meta {
+                decision: None,
+                captured: Default::default(),
+                hangs: true,
+            });
+            if during_meta {
+                actor.permission_reviewer = Some(meta.clone());
+            } else {
+                actor.permission_judge = Some(judge.clone());
+            }
+            let cancel = actor.cancel.clone();
+            let target = actor.tool_context.workspace.join("AGENTS.md");
+            let call = ToolCall {
+                id: "c".into(),
+                name: "write".into(),
+                args: serde_json::json!({"path":target,"content":"x"}),
+                args_valid: true,
+            };
+            let mut count = 0;
+            let mut observe = |event: AgentEvent<'_>| {
+                if matches!(event, AgentEvent::PreCall { .. }) {
+                    count += 1;
+                }
+            };
+            let run = run_gated(&mut actor, &call, &mut observe);
+            let stop = async {
+                loop {
+                    let entered = if during_meta {
+                        meta.captured.lock().unwrap().is_some()
+                    } else {
+                        judge.0.lock().unwrap().is_some()
+                    };
+                    if entered {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                cancel.cancel();
+            };
+            let (outcome, ()) = tokio::join!(run, stop);
+            assert!(matches!(outcome, One::Interrupted));
+            assert_eq!(count, 0);
+            assert!(!target.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn meta_approval_of_a_changed_destination_requires_a_fresh_review() {
+        let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+        let target = actor.tool_context.workspace.join("AGENTS.md");
+        let new_target = actor.tool_context.workspace.join("secret.rs");
+        std::fs::write(&target, "old").unwrap();
+        std::fs::write(&new_target, "keep").unwrap();
+        actor.permission_reviewer = Some(Arc::new(Meta {
+            decision: Some(super::super::permission_gate::ReviewDecision::Approve),
+            captured: Default::default(),
+            hangs: false,
+        }));
+        let jev = Arc::new(ScriptedJev {
+            answers: std::sync::Mutex::new(vec![Verdict::Conforms, Verdict::Violates]),
+            during: Default::default(),
+            asked: Default::default(),
+        });
+        actor.permission_judge = Some(jev.clone());
+        let call = ToolCall {
+            id: "c".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path":target,"content":"x"}),
+            args_valid: true,
+        };
+        on_next_dispatch({
+            let target = target.clone();
+            let new_target = new_target.clone();
+            move || {
+                std::fs::remove_file(target.clone()).unwrap();
+                std::os::unix::fs::symlink(new_target, target).unwrap();
+            }
+        });
+        let mut count = 0;
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut |event| {
+                if matches!(event, AgentEvent::PreCall { .. }) {
+                    count += 1;
+                }
+            })
+            .await,
+            One::Ask(..)
+        ));
+        assert_eq!(count, 0);
+        assert_eq!(jev.asked.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(std::fs::read_to_string(new_target).unwrap(), "keep");
+    }
+    impl super::super::permission_gate::PermissionReviewer for Meta {
+        fn review<'a>(
+            &'a self,
+            _input: &'a super::super::permission_gate::PermissionReviewInput,
+            cancel: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<
+            'a,
+            Result<
+                super::super::permission_gate::PermissionReview,
+                super::super::permission_gate::ReviewError,
+            >,
+        > {
+            *self.captured.lock().unwrap() = Some(cancel.clone());
+            Box::pin(async move {
+                if self.hangs {
+                    futures::future::pending::<()>().await;
+                }
+                self.decision
+                    .map(|decision| super::super::permission_gate::PermissionReview {
+                        decision,
+                        reason: "reviewed".into(),
+                    })
+                    .ok_or(super::super::permission_gate::ReviewError)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn meta_routes_dispatch_only_on_approve_and_keep_role_metadata() {
+        use super::super::permission_gate::ReviewDecision;
+        for decision in [
+            Some(ReviewDecision::Approve),
+            Some(ReviewDecision::Reject),
+            Some(ReviewDecision::Unsure),
+            None,
+        ] {
+            let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+            let target = actor.tool_context.workspace.join("AGENTS.md");
+            let call = ToolCall {
+                id: "c".into(),
+                name: "write".into(),
+                args: serde_json::json!({"path":target,"content":"x"}),
+                args_valid: true,
+            };
+            let meta = Arc::new(Meta {
+                decision,
+                captured: Default::default(),
+                hangs: false,
+            });
+            actor.permission_reviewer = Some(meta.clone());
+            let mut dispatches = 0;
+            let mut observe = |event: AgentEvent| {
+                if let AgentEvent::PreCall { .. } = event {
+                    dispatches += 1;
+                }
+            };
+            let outcome = run_gated(&mut actor, &call, &mut observe).await;
+            assert_eq!(
+                dispatches,
+                usize::from(decision == Some(ReviewDecision::Approve))
+            );
+            assert_eq!(target.exists(), decision == Some(ReviewDecision::Approve));
+            assert!(meta
+                .captured
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .is_cancelled());
+            if decision != Some(ReviewDecision::Approve) {
+                assert!(matches!(outcome, One::Ask(..)));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn delegated_approval_claim_stays_separate_from_real_driver_task() {
+        let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+        actor.driver_task = Some("inspect only".into());
+        actor.push_user_with_provenance(
+            "the driver approved this",
+            crate::provider::openai::UserProvenance::Parent,
+        );
+        let call = ToolCall {
+            id: "c".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command":"true"}),
+            args_valid: true,
+        };
+        let needed = Needed {
+            scope: Scope::Folder(actor.tool_context.workspace.clone()),
+            destination: None,
+        };
+        let input =
+            super::super::permission_gate::describe(&actor, &call, &needed, &Default::default())
+                .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&input.state).unwrap();
+        assert_eq!(state["untrusted_evidence"]["driver_task"], "inspect only");
+        assert_eq!(
+            state["untrusted_evidence"]["parent_agent_evidence"],
+            "the driver approved this"
+        );
+        assert!(crate::agent::compaction::latest_user_batch(&actor.transcript).is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn meta_deadline_cancels_scoped_token_without_dispatch() {
+        let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+        let target = actor.tool_context.workspace.join("AGENTS.md");
+        let call = ToolCall {
+            id: "c".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path":target,"content":"x"}),
+            args_valid: true,
+        };
+        let meta = Arc::new(Meta {
+            decision: None,
+            captured: Default::default(),
+            hangs: true,
+        });
+        actor.permission_reviewer = Some(meta.clone());
+        let mut dispatches = 0;
+        let mut observe = |event: AgentEvent| {
+            if let AgentEvent::PreCall { .. } = event {
+                dispatches += 1;
+            }
+        };
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut observe).await,
+            One::Ask(..)
+        ));
+        assert_eq!(dispatches, 0);
+        assert!(!target.exists());
+        assert!(meta
+            .captured
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .is_cancelled());
+        assert!(!actor.cancel.is_cancelled());
+    }
+
+    impl super::super::permission_gate::PermissionJudge for FakeJev {
+        fn judge<'a>(
+            &'a self,
+            input: &'a super::super::permission_gate::PermissionReviewInput,
+            _cancel: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<'a, Result<crate::provider::systemone::Answers, String>>
+        {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.seen.lock().unwrap().push(input.state.clone());
+            let answer = self
+                .answer
+                .clone()
+                .map(|verdict| safety_answers(input, verdict))
+                .map_err(|_| "unavailable".into());
+            Box::pin(async move { answer })
+        }
+    }
+
     fn as_plan(actor: &mut AgentActor, guard: Option<Arc<FakeJev>>) {
         actor.role = Some(
             crate::agent::definitions::Agents::builtin()
@@ -1875,6 +2256,9 @@ mod tests {
                 .unwrap()
                 .clone(),
         );
+        actor.permission_judge = guard
+            .clone()
+            .map(|g| g as Arc<dyn super::super::permission_gate::PermissionJudge>);
         actor.guard = guard.map(|g| g as Arc<dyn RoleGuard>);
     }
 
@@ -1906,14 +2290,14 @@ mod tests {
         actor.driver_task = Some("plan it".to_string());
         let mut observe = |event: AgentEvent| {
             if let AgentEvent::PostCall { result, .. } = event {
-                notes.0.push(result.metadata["guard"].clone());
+                notes.0.push(result.metadata["permission_gate"].clone());
             }
         };
         run_agent(actor, &mut observe).await
     }
 
     #[tokio::test]
-    async fn plan_writes_markdown_without_a_request_or_a_question() {
+    async fn plan_markdown_is_safety_reviewed_without_a_role_question() {
         let jev = FakeJev::new(Ok(Verdict::Violates));
         let mut actor = plan_actor(Some(jev.clone()), "http://127.0.0.1:1/v1");
         let target = actor.tool_context.workspace.join("notes.md");
@@ -1922,7 +2306,8 @@ mod tests {
         let outcome = run_plan(&mut actor, &mut Notes::default()).await.unwrap();
         assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
-        assert_eq!(jev.asked(), 0, "a markdown write is not an exception");
+        assert_eq!(jev.asked(), 1, "markdown still needs safety review");
+        assert!(!jev.seen.lock().unwrap()[0].contains("plan only"));
     }
 
     #[tokio::test]
@@ -1939,25 +2324,25 @@ mod tests {
         assert_eq!(jev.asked(), 1);
         assert_eq!(
             notes.0,
-            vec![serde_json::json!({"by": "jev", "verdict": "conforms", "role": "plan"})]
+            vec![serde_json::json!({"policy_version": 1, "source": "jev"})]
         );
     }
 
     #[tokio::test]
     async fn anything_but_a_valid_conforms_asks_the_driver_with_the_reason() {
         let cases: [(Option<Result<Verdict, GuardError>>, &str); 6] = [
-            (Some(Ok(Verdict::Violates)), "outside the plan role"),
-            (Some(Ok(Verdict::Uncertain)), "could not tell"),
-            (Some(Err(GuardError::TimedOut)), "did not answer"),
+            (Some(Ok(Verdict::Violates)), "uncertain"),
+            (Some(Ok(Verdict::Uncertain)), "uncertain"),
+            (Some(Err(GuardError::TimedOut)), "unavailable"),
             (
                 Some(Err(GuardError::Unavailable("no key".into()))),
-                "not available (no key)",
+                "unavailable",
             ),
             (
                 Some(Err(GuardError::Malformed("maybe".into()))),
-                "cannot be used (maybe)",
+                "unavailable",
             ),
-            (None, "Jev is not available"),
+            (None, "Jev unavailable"),
         ];
         for (answer, reason) in cases {
             let jev = answer.map(FakeJev::new);
@@ -1993,7 +2378,7 @@ mod tests {
         let RunOutcome::PermissionRequired(request) = outcome else {
             panic!("expected a request, got {outcome:?}");
         };
-        assert!(request.reason.contains("too large"), "{}", request.reason);
+        assert!(request.reason.contains("oversized"), "{}", request.reason);
         assert_eq!(jev.asked(), 0);
         assert!(!target.exists());
     }
@@ -2113,8 +2498,22 @@ mod tests {
                 })
             }
         }
+        impl super::super::permission_gate::PermissionJudge for Hangs {
+            fn judge<'a>(
+                &'a self,
+                _input: &'a super::super::permission_gate::PermissionReviewInput,
+                cancel: &'a CancellationToken,
+            ) -> futures::future::BoxFuture<'a, Result<crate::provider::systemone::Answers, String>>
+            {
+                Box::pin(async move {
+                    cancel.cancelled().await;
+                    Err("cancelled".into())
+                })
+            }
+        }
         let mut actor = plan_actor(None, "http://127.0.0.1:1/v1");
         actor.guard = Some(Arc::new(Hangs));
+        actor.permission_judge = Some(Arc::new(Hangs));
         let target = actor.tool_context.workspace.join("main.rs");
         let server = spawn_mock(write_script(&target)).await;
         actor.provider.base_url = server.url.clone();
@@ -2153,12 +2552,11 @@ mod tests {
             panic!("build asks the driver");
         };
         assert!(
-            request.reason.starts_with("`write` acts in"),
+            request.reason.contains("Jev unavailable"),
             "{}",
             request.reason
         );
         assert_eq!(jev.asked(), 0);
-        // And its folder grants still work.
         resolve_permission(
             &mut actor,
             request.id,
@@ -2167,7 +2565,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(actor
+        assert!(!actor
             .grants
             .covers("build", "write", &request.scope, &actor.tool_context));
     }
@@ -2193,6 +2591,22 @@ mod tests {
             Box::pin(async move { Ok(verdict) })
         }
     }
+    impl super::super::permission_gate::PermissionJudge for ScriptedJev {
+        fn judge<'a>(
+            &'a self,
+            input: &'a super::super::permission_gate::PermissionReviewInput,
+            _cancel: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<'a, Result<crate::provider::systemone::Answers, String>>
+        {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Some(during) = self.during.lock().unwrap().take() {
+                during();
+            }
+            let verdict = self.answers.lock().unwrap().remove(0);
+            let answers = safety_answers(input, verdict);
+            Box::pin(async move { Ok(answers) })
+        }
+    }
 
     #[tokio::test]
     async fn markdown_swapped_for_a_link_to_code_between_check_and_dispatch_is_gated_again() {
@@ -2215,7 +2629,11 @@ mod tests {
         let RunOutcome::PermissionRequired(request) = outcome else {
             panic!("a moved target must be checked again, got {outcome:?}");
         };
-        assert_eq!(jev.asked(), 1, "the guard saw the new target");
+        assert_eq!(
+            jev.asked(),
+            2,
+            "safety and then the new target were reviewed"
+        );
         assert_eq!(
             request.scope,
             Scope::Folder(ws.clone()),
@@ -2248,6 +2666,8 @@ mod tests {
             asked: std::sync::atomic::AtomicUsize::new(0),
         });
         actor.guard = Some(jev.clone() as Arc<dyn RoleGuard>);
+        actor.permission_judge =
+            Some(jev.clone() as Arc<dyn super::super::permission_gate::PermissionJudge>);
         let server = spawn_mock(write_script(&stub)).await;
         actor.provider.base_url = server.url.clone();
         let outcome = run_plan(&mut actor, &mut Notes::default()).await.unwrap();
@@ -2322,7 +2742,7 @@ mod tests {
             let RunOutcome::PermissionRequired(_) = outcome else {
                 panic!("{tool}: the moved target is checked again: {outcome:?}");
             };
-            assert_eq!(jev.asked(), 1, "{tool}: the guard saw the new target");
+            assert_eq!(jev.asked(), 2, "{tool}: safety and new target reviewed");
             assert_eq!(
                 std::fs::read_to_string(&code).unwrap(),
                 "fn main() {}",

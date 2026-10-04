@@ -179,28 +179,27 @@ _Avoid_: tool, action (an action is what a pipeline branch decides)
 
 ## Permissions
 
+**Permission review**:
+An advisory per-call classification by the instinct, followed for risky or outside-project
+mutations by synchronous metacognition review. Only explicit approval runs those calls;
+uncertainty, malformed answers and deadlines escalate to the driver. Not a sandbox.
+
 **Permission request**:
-A tool call (`write`, `edit`, `bash`, `fetch`) that has not run and waits for the driver's decision:
-allow once, allow the folder, or deny with a message. Only a typed answer to that request resolves it;
-chat text never does. It does not survive a restart.
+A held tool call awaiting a typed driver decision. Bash, write and edit offer allow once or deny;
+fetch may also offer an origin grant. Chat text never approves a call. A pending request expires
+on restart. Reviewer rejection escalates to the driver rather than finally denying execution.
 _Avoid_: confirmation, approval prompt
 
 **Folder grant**:
-An "allow folder" answer: it lets the same agent run the same kind of call (file changes, `bash`,
-or `fetch` for an origin) in that folder and below without asking again. A root session saves it per
-workspace in `<data dir>/grants.json` (0600), so later sessions in that workspace start with it; a
-subagent keeps its grants in memory.
-A grant on the workspace never covers the config directory. For `bash` the folder is the scope the
-driver approved, not a confinement.
+Historical bash/file folder approvals remain readable on disk but never authorize execution.
+Only fetch origin grants bypass later requests. Root sessions save those per workspace; children
+keep them in memory. Approval never expands writable roots.
 _Avoid_: whitelist, permission rule
 
 **Role guard**:
-The check the `plan` agent's exceptions go through before the driver: a `write` or `edit` of a file
-that is not a regular `.md` file, and every `bash` and `fetch`. Jev (the instinct model) is asked one
-typed question, "does this call conform to the role?", with the exact call; only a valid "conforms"
-runs it, recorded on the call's result. "Violates", "uncertain", a bad answer, no answer or a call too
-large to send become a permission request that says why, answerable once or by denial only. Advisory,
-never a sandbox.
+Plan exceptions require instinct role conformance in the same batched request as safety review.
+Plain Markdown exempts only the role question, never permission review. Conformance is recorded
+in result metadata independently of safety approval. Advisory, not a sandbox.
 _Avoid_: filter, sandbox, policy
 
 **Pending interaction**:

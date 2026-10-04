@@ -122,7 +122,9 @@ pub fn output(kind: &BlockKind, theme: &Theme) -> Vec<Line<'static>> {
     if lines.len() > 20 {
         preview.push(Line::styled(
             format!("  … {} more lines", lines.len() - 20),
-            theme.muted().add_modifier(Modifier::ITALIC),
+            theme
+                .muted()
+                .add_modifier(Modifier::ITALIC | Modifier::HIDDEN),
         ));
     }
     preview

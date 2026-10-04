@@ -24,10 +24,7 @@ async fn completion_after_negative_eligibility_cannot_overtake_queued_driver() {
         .await
         .unwrap();
     state
-        .send(navai::bus::command::Command::child_prompt(
-            parent,
-            "original".into(),
-        ))
+        .send(common::server::driver_command(parent, "original".into()))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -49,7 +46,7 @@ async fn completion_after_negative_eligibility_cannot_overtake_queued_driver() {
         .await
         .unwrap();
     state
-        .send(navai::bus::command::Command::child_prompt(
+        .send(common::server::driver_command(
             parent,
             "driver correction".into(),
         ))
@@ -217,10 +214,7 @@ async fn result_interrupt_replacement_uses_accepted_deferred_model() {
         .await
         .unwrap();
     state
-        .send(navai::bus::command::Command::child_prompt(
-            parent,
-            "driver".into(),
-        ))
+        .send(common::server::driver_command(parent, "driver".into()))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -354,10 +348,7 @@ async fn queued_driver_without_result_preserves_running_turn_and_budget() {
         .await
         .unwrap();
     state
-        .send(navai::bus::command::Command::child_prompt(
-            parent,
-            "original".into(),
-        ))
+        .send(common::server::driver_command(parent, "original".into()))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -368,7 +359,7 @@ async fn queued_driver_without_result_preserves_running_turn_and_budget() {
         .await
         .unwrap();
     state
-        .send(navai::bus::command::Command::child_prompt(
+        .send(common::server::driver_command(
             parent,
             "next turn driver".into(),
         ))
@@ -424,10 +415,7 @@ async fn queued_driver_precedes_mid_turn_result_steer() {
         .await
         .unwrap();
     state
-        .send(navai::bus::command::Command::child_prompt(
-            parent,
-            "original".into(),
-        ))
+        .send(common::server::driver_command(parent, "original".into()))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -449,7 +437,7 @@ async fn queued_driver_precedes_mid_turn_result_steer() {
         .await
         .unwrap();
     state
-        .send(navai::bus::command::Command::child_prompt(
+        .send(common::server::driver_command(
             parent,
             "driver correction".into(),
         ))
@@ -859,7 +847,7 @@ async fn result_delivery_steer_is_mid_turn_and_interrupt_restarts_parent() {
             .await
             .unwrap();
         state
-            .send(navai::bus::command::Command::child_prompt(
+            .send(common::server::driver_command(
                 parent,
                 "driver instruction".into(),
             ))
@@ -948,7 +936,7 @@ async fn interrupt_result_waits_for_parent_permission_and_queued_driver_goes_fir
         .await
         .unwrap();
     state
-        .send(navai::bus::command::Command::child_prompt(
+        .send(common::server::driver_command(
             parent,
             "driver instruction".into(),
         ))
@@ -1023,7 +1011,7 @@ async fn interrupt_result_waits_for_parent_permission_and_queued_driver_goes_fir
         .iter()
         .any(|e| e.kind == "permission.resolved"));
     state
-        .send(navai::bus::command::Command::child_prompt(
+        .send(common::server::driver_command(
             parent,
             "driver correction".into(),
         ))

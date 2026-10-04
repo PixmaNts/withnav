@@ -4,9 +4,15 @@ requests land in `develop`.
 
 ## [Unreleased]
 
-## [0.4.1] - 2026-10-04
-
-Fixes from daily use of 0.4.0, mostly in the terminal client.
+### Added
+- Select and copy conversation text with a mouse drag, or double-click a word; wrapping,
+  sidebar and tool labels stay out of the clipboard. The wheel scrolls the conversation and
+  dragging beyond its edge scrolls the selection. In transcript focus, `y` copies the whole
+  message or tool output; `ctrl+shift+c` copies selected text. Clipboard writes use OSC 52
+  (including over SSH); `shift+drag` keeps native terminal selection reachable.
+- Clipboard copying requires terminal OSC 52 support; under tmux use
+  `set -g set-clipboard on`. In transcript focus, `y` portably copies the selection
+  or focused block; `ctrl+shift+c` is best-effort and plain `ctrl+c` remains stop/quit.
 
 ### Changed
 
@@ -22,6 +28,16 @@ Fixes from daily use of 0.4.0, mostly in the terminal client.
   expiry and supersession are replayable, and a fresh driver message replaces a paused turn.
   Subagents retain their 50-step budget
   and their existing watchdog and owner Continue behaviour.
+- Per-call permission review replaces “allow folder” for bash, write and edit. Saved bash/file
+  grants from 0.4.1 are ignored for execution; fetch keeps origin grants.
+- `permissions.automatic_review` defaults to true. Set it to false to ask for every bash, write
+  and edit call; invalid values disable automatic approval with a diagnostic.
+
+## [0.4.1] - 2026-10-04
+
+Fixes from daily use of 0.4.0, mostly in the terminal client.
+
+### Changed
 
 - **Folder grants persist**: an "allow folder" answer is saved per workspace in
   `<data dir>/grants.json` and applies to later sessions in that workspace. Subagents keep theirs in

@@ -32,6 +32,10 @@ pub enum ProviderError {
     Auth(String),
     #[error("unknown model alias: {0}")]
     UnknownModelAlias(String),
+    #[error("unknown catalog model: {0}")]
+    UnknownModel(String),
+    #[error("ambiguous catalog model '{model}': {}", keys.join(", "))]
+    AmbiguousModel { model: String, keys: Vec<String> },
     #[error("unexpected content-type (expected text/event-stream): {0}")]
     WrongContentType(String),
     #[error("provider request canceled")]

@@ -6,17 +6,25 @@ Status: Accepted
 
 ## Decision
 
-Review every enabled bash, write and edit call before dispatch, and native read/grep/glob calls
-outside readable roots or targeting credentials. Ordinary inside-root reads remain ungated.
+Review every enabled bash, write and edit call before dispatch, and native single-file read calls
+outside readable roots or targeting credentials. Only single-file `read` gets outside-root review;
+outside `grep`/`glob` stay refused. Ordinary inside-root reads remain ungated, with canonical
+no-follow dispatch even without review. Searches skip sensitive entries before opening and report
+a count; directory grep falls back to the builtin walker instead of unreliable rg exclusions.
 Approvals bind a canonical target, re-resolved before no-follow dispatch; no root is added.
 The instinct answers effects, scope and risk together. Non-risky read-only calls and low-risk project changes may run; risky or
 outside-project changes require synchronous metacognition approval. Any uncertainty or reviewer
 failure asks the driver. Cancellation interrupts rather than creating a prompt.
 
-Sensitive credentials and keys deterministically force risky review, followed by a typed driver
+Sensitive native reads deterministically force risky review, followed by a typed driver
 decision even if metacognition approves. Risky read-only bash calls never auto-run on the instinct's
 word. Reading ordinary Navai config follows read review; `auth.json` is sensitive. Config mutations
 remain driver-only.
+Bash is not confined. Sensitive-file detection for bash is best effort: supported literal paths
+are canonicalized and recognized ambiguous sensitive expansions tighten risk, but arbitrary
+scripts or indirect shell operands can evade classification. Only native file tools enforce the
+deterministic sensitive-path rule. In-root search walks reopening descendants by path remain a
+follow-up requiring descriptor-relative traversal.
 
 The plan role question shares the instinct request when needed. Markdown exempts only that
 role question, never safety review. Fetch retains its origin grants.

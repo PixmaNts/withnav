@@ -12,8 +12,12 @@ requests land in `develop`.
 
 ### Changed
 
-- `read`, `grep` and `glob` outside the readable roots are reviewed like bash instead of refused.
+- Single-file `read` outside the readable roots is reviewed like bash instead of refused.
   Approval covers one canonical target, never a new readable root.
+- Outside-root `grep`/`glob` remain refused with guidance to use a specific read or reviewed bash.
+  Inside searches skip sensitive entries. Native read targets are bound out of band and opened
+  without following replacement links; forged host-binding arguments are rejected.
+- Reusable permission approval is offered only for `fetch`, in both clients.
 
 ## [0.4.6] - 2026-10-04
 

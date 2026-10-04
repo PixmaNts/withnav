@@ -456,6 +456,9 @@ enum Gated {
 }
 
 fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
+    if let Err(error) = crate::tools::reject_reserved_args(&call.args) {
+        return Gated::Rejected(error.to_string());
+    }
     if !call.args_valid || !call.args.is_object() {
         return Gated::Rejected("invalid tool arguments".into());
     }
@@ -478,6 +481,7 @@ fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
     };
     let needed = match needs_permission(Some(role), &call.name, &call.args, &actor.tool_context) {
         Gate::Ungated => return Gated::Run(None),
+        Gate::Bound(path) => return Gated::Run(Some(path)),
         Gate::Rejected(message) => return Gated::Rejected(message),
         Gate::Needs(needed) => needed,
     };
@@ -709,45 +713,19 @@ async fn execute_call(
         name: &call.name,
         args: &call.args,
     });
-    let mut args = call.args.clone();
-    if let Some(object) = args.as_object_mut() {
-        // Only the loop binds a call to a destination, never the model.
-        object.remove(crate::tools::BOUND_ARG);
-        object.remove("navai_scratch_binding");
-        if let Some(destination) = destination {
-            if let Some(identity) = actor
-                .scratch_roots
-                .iter()
-                .find(|root| destination.starts_with(&root.path))
-            {
-                object.insert("navai_scratch_binding".into(), serde_json::json!(identity));
-            }
-        }
-        if let Some(binding) = guard_note
-            .as_ref()
-            .and_then(|note| note.get("scratch_binding"))
-        {
-            object.insert("navai_scratch_binding".into(), binding.clone());
-        }
-        if let Some(destination) = destination {
-            object.insert(
-                "path".into(),
-                serde_json::Value::String(destination.to_string_lossy().into_owned()),
-            );
-            object.insert(
-                crate::tools::BOUND_ARG.into(),
-                serde_json::Value::Bool(true),
-            );
-        }
-    }
+    let args = call.args.clone();
+    let mut cx = actor.tool_context.clone();
+    cx.binding = destination.map(|destination| crate::tools::DispatchBinding {
+        destination: destination.to_path_buf(),
+        scratch: actor
+            .scratch_roots
+            .iter()
+            .find(|root| destination.starts_with(&root.path))
+            .cloned(),
+    });
     let dispatched = actor
         .registry
-        .dispatch(
-            &call.name,
-            args,
-            actor.cancel.child_token(),
-            &actor.tool_context,
-        )
+        .dispatch(&call.name, args, actor.cancel.child_token(), &cx)
         .await;
     let mut result = match dispatched {
         // The tool opened the reviewed file without following links and found
@@ -934,6 +912,7 @@ mod tests {
         AgentActor::new(
             registry,
             ToolContext {
+                binding: None,
                 workspace: ws.clone(),
                 writable_roots: vec![ws],
                 readable_roots: Vec::new(),
@@ -2038,6 +2017,169 @@ mod tests {
 
     struct OptimisticReadOnlyJudge;
     struct ReadJudge;
+    #[tokio::test]
+    async fn forged_read_and_grep_bindings_are_rejected_at_agent_ingress() {
+        let mut actor = plan_actor(None, "http://unused");
+        as_build(&mut actor);
+        actor
+            .registry
+            .register(Box::new(crate::tools::native::GrepTool));
+        for tool in ["read", "grep"] {
+            let call = ToolCall {
+                id: tool.into(),
+                name: tool.into(),
+                args: serde_json::json!({"path":"/etc/hostname","pattern":".","navai_bound_destination":true}),
+                args_valid: true,
+            };
+            assert!(
+                matches!(gate(&actor, &call), Gated::Rejected(message) if message.contains("reserved"))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn outside_directory_searches_are_refused_without_review() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut actor = plan_actor(None, "http://unused");
+        as_build(&mut actor);
+        actor
+            .registry
+            .register(Box::new(crate::tools::native::GrepTool));
+        actor
+            .registry
+            .register(Box::new(crate::tools::glob::GlobTool));
+        for tool in ["grep", "glob"] {
+            let call = ToolCall {
+                id: tool.into(),
+                name: tool.into(),
+                args: serde_json::json!({"path":tmp.path(),"pattern":"credentials"}),
+                args_valid: true,
+            };
+            assert!(
+                matches!(gate(&actor, &call), Gated::Rejected(message) if message == crate::tools::OUTSIDE_SEARCH)
+            );
+        }
+        let call = ToolCall {
+            id: "grep".into(),
+            name: "grep".into(),
+            args: serde_json::json!({"pattern":"credentials"}),
+            args_valid: true,
+        };
+        assert!(
+            matches!(gate(&actor, &call), Gated::Run(Some(_))),
+            "content regex is not a sensitive path"
+        );
+    }
+
+    #[tokio::test]
+    async fn relative_native_paths_bind_to_workspace_and_inside_read_swaps_regate() {
+        let mut actor = plan_actor(None, "http://unused");
+        as_build(&mut actor);
+        actor.permission_judge = Some(Arc::new(ReadJudge));
+        let target = actor.tool_context.workspace.join("relative.txt");
+        std::fs::write(&target, "workspace content").unwrap();
+        assert_ne!(
+            std::env::current_dir().unwrap(),
+            actor.tool_context.workspace
+        );
+        let call = ToolCall {
+            id: "read".into(),
+            name: "read".into(),
+            args: serde_json::json!({"path":"relative.txt"}),
+            args_valid: true,
+        };
+        let Gated::Run(Some(bound)) = gate(&actor, &call) else {
+            panic!("bound inside read");
+        };
+        assert_eq!(bound, target);
+        let mut output = String::new();
+        assert!(matches!(
+            run_gated(
+                &mut actor,
+                &call,
+                &mut |event| if let AgentEvent::PostCall { result, .. } = event {
+                    output = result.output.clone();
+                }
+            )
+            .await,
+            One::Settled
+        ));
+        assert_eq!(output, "workspace content");
+        actor
+            .registry
+            .register(Box::new(crate::tools::native::EditTool));
+        for tool in ["write", "edit"] {
+            let call = ToolCall {
+                name: tool.into(),
+                args: serde_json::json!({"path":"relative.txt","content":"new","old_string":"workspace","new_string":"new"}),
+                ..call.clone()
+            };
+            let Gated::Reviewed(needed) = gate(&actor, &call) else {
+                panic!("reviewed write");
+            };
+            assert_eq!(needed.destination.as_deref(), Some(target.as_path()));
+            assert!(still_resolves(
+                &call.args,
+                needed.destination.as_deref(),
+                &actor.tool_context
+            ));
+        }
+        let secret = actor.tool_context.workspace.join("auth.json");
+        std::fs::write(&secret, "never expose").unwrap();
+        let link = actor.tool_context.workspace.join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let call = ToolCall {
+            args: serde_json::json!({"path":"link"}),
+            ..call
+        };
+        on_next_dispatch(move || {
+            std::fs::remove_file(&link).unwrap();
+            std::os::unix::fs::symlink(secret, link).unwrap();
+        });
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut |_| panic!(
+                "no dispatch of swapped secret"
+            ))
+            .await,
+            One::Ask(..)
+        ));
+    }
+
+    #[tokio::test]
+    async fn protected_config_mutations_ask_driver_despite_optimistic_reviewers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut actor = plan_actor(None, "http://unused");
+        as_build(&mut actor);
+        actor.protected_config_root = Some(tmp.path().canonicalize().unwrap());
+        actor.protected_config_spelling = actor.protected_config_root.clone();
+        actor.permission_judge = Some(Arc::new(ReadJudge));
+        actor.permission_reviewer = Some(Arc::new(Meta {
+            decision: Some(super::super::permission_gate::ReviewDecision::Approve),
+            captured: Default::default(),
+            hangs: false,
+        }));
+        for command in [
+            format!("curl -o {}/config.json URL", tmp.path().display()),
+            format!("sort -o {}/config.json x", tmp.path().display()),
+            format!("rsync x {}/", tmp.path().display()),
+            format!("tee {}/config.json", tmp.path().display()),
+            format!("cp x {}/config.json", tmp.path().display()),
+        ] {
+            let call = ToolCall {
+                id: "bash".into(),
+                name: "bash".into(),
+                args: serde_json::json!({"command":command}),
+                args_valid: true,
+            };
+            assert!(matches!(
+                run_gated(&mut actor, &call, &mut |_| panic!(
+                    "config mutation must not run"
+                ))
+                .await,
+                One::Ask(..)
+            ));
+        }
+    }
     impl super::super::permission_gate::PermissionJudge for ReadJudge {
         fn judge<'a>(
             &'a self,
@@ -2070,7 +2212,7 @@ mod tests {
             .registry
             .register(Box::new(crate::tools::glob::GlobTool));
         actor.permission_judge = Some(Arc::new(ReadJudge));
-        for tool in ["read", "grep", "glob"] {
+        for tool in ["read"] {
             let target = if tool == "read" {
                 outside.join("README.md")
             } else {
@@ -2104,8 +2246,10 @@ mod tests {
             assert_eq!(evidence.len(), 1);
             assert_eq!(evidence[0]["source"], "jev");
             let mut inside = call;
-            inside.args["path"] = serde_json::json!(actor.tool_context.workspace);
-            assert!(matches!(gate(&actor, &inside), Gated::Run(None)));
+            let inside_path = actor.tool_context.workspace.join("ordinary.txt");
+            std::fs::write(&inside_path, "ordinary").unwrap();
+            inside.args["path"] = serde_json::json!(inside_path);
+            assert!(matches!(gate(&actor, &inside), Gated::Run(Some(_))));
         }
     }
 
@@ -2125,7 +2269,10 @@ mod tests {
             hangs: false,
         });
         actor.permission_reviewer = Some(meta.clone());
+        let inside_secret = actor.tool_context.workspace.join("auth.json");
+        std::fs::write(&inside_secret, "secret").unwrap();
         for (tool, args) in [
+            ("read", serde_json::json!({"path":inside_secret})),
             (
                 "read",
                 serde_json::json!({"path":tmp.path().join(".ssh/id_ed25519")}),
@@ -2208,7 +2355,7 @@ mod tests {
         actor
             .registry
             .register(Box::new(crate::tools::glob::GlobTool));
-        for tool in ["read", "grep", "glob"] {
+        for tool in ["read"] {
             let call = ToolCall {
                 id: tool.into(),
                 name: tool.into(),
@@ -3767,7 +3914,7 @@ mod tests {
         let result = execute_call(&actor, &call, None, None, &mut noop)
             .await
             .unwrap();
-        assert_eq!(result.status, ToolStatus::Ok);
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
+        assert_eq!(result.status, ToolStatus::Error);
+        assert!(!target.exists());
     }
 }

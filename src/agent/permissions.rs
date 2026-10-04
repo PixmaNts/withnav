@@ -347,10 +347,7 @@ fn is_link(path: &Path) -> bool {
 }
 
 fn review_destination(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolError> {
-    if !path.is_absolute() {
-        return validate_path(&cx.writable_roots, path);
-    }
-    let resolved = validate_path(&[PathBuf::from("/")], path)?;
+    let resolved = resolve_read_target(path, cx)?;
     if resolved.is_dir() {
         return Err(ToolError::Denied {
             code: "invalid_path".into(),
@@ -381,7 +378,14 @@ pub fn still_resolves(args: &Value, destination: Option<&Path>, cx: &ToolContext
 }
 
 pub fn resolve_read_target(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolError> {
-    let path = if path.is_absolute() {
+    let path = if path.starts_with("~") {
+        let home =
+            std::env::var_os("HOME").ok_or_else(|| ToolError::PathTraversal(path.to_path_buf()))?;
+        PathBuf::from(home).join(
+            path.strip_prefix("~")
+                .map_err(|_| ToolError::PathTraversal(path.to_path_buf()))?,
+        )
+    } else if path.is_absolute() {
         path.to_path_buf()
     } else {
         cx.workspace.join(path)
@@ -397,6 +401,7 @@ pub fn resolve_read_target(path: &Path, cx: &ToolContext) -> Result<PathBuf, Too
 pub enum Gate {
     /// The call runs without approval.
     Ungated,
+    Bound(PathBuf),
     /// The call is refused before it runs; the string is the tool error the
     /// model reads back.
     Rejected(String),
@@ -436,17 +441,22 @@ pub fn needs_permission(
                 Ok(path) => path,
                 Err(error) => return Gate::Rejected(error.to_string()),
             };
-            if validate_path(&cx.read_roots(), &resolved).is_ok()
+            let inside = validate_path(&cx.read_roots(), &resolved).is_ok();
+            if tool == "read" && resolved.is_dir() {
+                return Gate::Rejected("read requires a specific file, not a directory".into());
+            }
+            if tool != "read" {
+                return if inside {
+                    Gate::Bound(resolved)
+                } else {
+                    Gate::Rejected(crate::tools::OUTSIDE_SEARCH.into())
+                };
+            }
+            if inside
                 && !super::permission_gate::sensitive_read(&resolved)
                 && !super::permission_gate::sensitive_read(&path)
-                && !args
-                    .get("pattern")
-                    .and_then(Value::as_str)
-                    .is_some_and(|pattern| {
-                        super::permission_gate::sensitive_read(Path::new(pattern))
-                    })
             {
-                return Gate::Ungated;
+                return Gate::Bound(resolved);
             }
             Gate::Needs(Needed {
                 scope: Scope::Folder(resolved.parent().unwrap_or(&resolved).to_path_buf()),
@@ -521,6 +531,7 @@ mod tests {
         std::fs::create_dir_all(ws.join("src")).unwrap();
         std::fs::create_dir_all(&config).unwrap();
         let cx = ToolContext {
+            binding: None,
             workspace: ws.clone(),
             writable_roots: vec![ws.clone(), config.clone()],
             readable_roots: Vec::new(),
@@ -757,6 +768,7 @@ mod tests {
         let inner = f.ws.join("cfg");
         std::fs::create_dir_all(&inner).unwrap();
         let cx = ToolContext {
+            binding: None,
             workspace: f.ws.clone(),
             writable_roots: vec![f.ws.clone(), inner.clone()],
             readable_roots: Vec::new(),

@@ -905,8 +905,8 @@ async fn forbidden_child_calls_are_denied_before_permissions() {
     let fx = fixture_at(&provider.url);
     install_agents(&fx.root, &fx.ws);
     std::fs::write(
-        fx.ws.join(".navai/agents/build.md"),
-        "---\nmode: primary\ntools:\n  write: false\n---\nBuild.",
+        fx.ws.join(".navai/agents/writer.md"),
+        "---\nmode: subagent\ntools:\n  write: false\n---\nResearch without writes.",
     )
     .unwrap();
     let parent = fx
@@ -1477,6 +1477,7 @@ async fn task_ack_returns_before_child_turn_finishes() {
         .unwrap();
     let task = navai::tools::task::TaskTool::new(fx.state.service(), parent);
     let cx = navai::tools::ToolContext {
+        binding: None,
         workspace: fx.ws.clone(),
         writable_roots: vec![fx.ws.clone()],
         readable_roots: vec![],

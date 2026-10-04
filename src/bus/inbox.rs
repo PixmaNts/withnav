@@ -492,6 +492,7 @@ mod tests {
         AgentActor::new(
             registry,
             crate::tools::ToolContext {
+                binding: None,
                 workspace: std::env::temp_dir(),
                 writable_roots: vec![std::env::temp_dir()],
                 readable_roots: Vec::new(),

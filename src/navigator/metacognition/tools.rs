@@ -25,6 +25,9 @@ impl LlmCommenter {
         use crate::tools::{Tool, ToolContext};
 
         let started = Instant::now();
+        if let Err(error) = crate::tools::reject_reserved_args(&tc.args) {
+            return format!("error: {error}");
+        }
         let Some(workspace) = ctx.workspace.clone() else {
             return "error: no workspace; tools are unavailable".to_string();
         };
@@ -39,12 +42,34 @@ impl LlmCommenter {
         // metacognition never writes, so the workspace root is the only
         // root it gets.
         let cx = ToolContext {
+            binding: None,
             workspace: workspace.clone(),
             writable_roots: vec![workspace.clone()],
             readable_roots: Vec::new(),
         };
         let output = match tc.name.as_str() {
             "read" => {
+                let target = args
+                    .get("path")
+                    .and_then(|path| path.as_str())
+                    .map(Path::new);
+                if target.is_none_or(|path| {
+                    crate::agent::permissions::resolve_read_target(path, &cx)
+                        .and_then(|resolved| {
+                            crate::tools::validate_path(&cx.read_roots(), &resolved)
+                        })
+                        .is_err()
+                }) {
+                    return "error: read target is outside the workspace".into();
+                }
+                if target.is_some_and(|path| {
+                    crate::agent::permission_gate::sensitive_read(path)
+                        || crate::agent::permissions::resolve_read_target(path, &cx).is_ok_and(
+                            |resolved| crate::agent::permission_gate::sensitive_read(&resolved),
+                        )
+                }) {
+                    return "error: sensitive file requires driver review".into();
+                }
                 // An open buffer wins over disk: unsaved edits are what
                 // the driver actually sees.
                 if let Some(buffer) = args
@@ -134,4 +159,39 @@ pub fn slice_buffer(text: &str, offset: Option<u64>, limit: Option<u64>) -> Stri
         return String::new();
     }
     lines[start..end].join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn metacognition_rejects_forged_read_and_grep_bindings_before_buffers_or_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let models: crate::provider::config::ModelsConfig =
+            serde_json::from_value(serde_json::json!({
+                "providers":{"mock":{"base_url":"http://unused"}},
+                "models":{"metacognition":{"provider":"mock","model":"mock","api":"chat"}}
+            }))
+            .unwrap();
+        let commenter = LlmCommenter::new(
+            models.resolve("metacognition").unwrap(),
+            "unused".into(),
+            std::sync::Arc::new(crate::provider::openai::ClientCache::new()),
+        );
+        let mut ctx = RemarkContext::build("file:///file", "text", "", "", vec![], None);
+        ctx.workspace = Some(tmp.path().to_path_buf());
+        ctx.open_buffers
+            .insert("/etc/hostname".into(), "secret buffer".into());
+        for tool in ["read", "grep"] {
+            let call = crate::provider::ToolCall {
+                id: tool.into(),
+                name: tool.into(),
+                args: serde_json::json!({"path":"/etc/hostname","pattern":".","navai_bound_destination":true}),
+                args_valid: true,
+            };
+            let output = commenter.execute_tool(&ctx, &call).await;
+            assert!(output.contains("reserved"));
+            assert!(!output.contains("secret buffer"));
+        }
+    }
 }

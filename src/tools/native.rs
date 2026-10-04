@@ -8,13 +8,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::ToolError;
 use crate::tools::{
-    bound_destination, bound_output, nofollow, validate_path, Tool, ToolContext, ToolResult,
-    DEFAULT_MAX_OUTPUT_BYTES,
+    bound_output, nofollow, validate_path, Tool, ToolContext, ToolResult, DEFAULT_MAX_OUTPUT_BYTES,
 };
 
 const GREP_MAX_MATCHES: usize = 1000;
 
 fn arg_str(args: &Value, key: &str) -> Result<String, ToolError> {
+    crate::tools::reject_reserved_args(args)?;
     args.get(key)
         .and_then(|v| v.as_str())
         .map(String::from)
@@ -59,21 +59,33 @@ impl Tool for ReadTool {
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + 'a>> {
         boxed(async move {
             let path = arg_str(&args, "path")?;
-            let bound = bound_destination(&args, &[PathBuf::from("/")])?;
+            let bound = cx
+                .binding
+                .as_ref()
+                .map(|binding| binding.destination.clone());
             let resolved = match &bound {
                 Some(path) => path.clone(),
-                None => validate_path(&cx.read_roots(), Path::new(&path))?,
+                None => {
+                    let target =
+                        crate::agent::permissions::resolve_read_target(Path::new(&path), cx)?;
+                    let target = validate_path(&cx.read_roots(), &target)?;
+                    if crate::agent::permission_gate::sensitive_read(&target) {
+                        return Err(ToolError::Denied {
+                            code: "permission_required".into(),
+                            message: "sensitive file: read requires driver review".into(),
+                        });
+                    }
+                    target
+                }
             };
             if !resolved.is_file() {
                 return Err(ToolError::NotFound(resolved));
             }
-            let bytes = if bound.is_some() {
+            let bytes = {
                 use std::io::Read;
                 let mut bytes = Vec::new();
                 nofollow::open_read(&resolved)?.read_to_end(&mut bytes)?;
                 bytes
-            } else {
-                tokio::fs::read(&resolved).await?
             };
             let original_bytes = bytes.len();
             let text = String::from_utf8_lossy(&bytes).into_owned();
@@ -138,20 +150,22 @@ impl Tool for WriteTool {
             let content = arg_str(&args, "content")?;
 
             // A reviewed destination is opened without following any link.
-            if let Some(destination) = bound_destination(&args, &[PathBuf::from("/")])? {
-                if let Some(binding) = args.get("navai_scratch_binding") {
-                    let identity = serde_json::from_value(binding.clone())
-                        .map_err(|_| ToolError::DestinationChanged(destination.clone()))?;
-                    nofollow::write_scratch(&destination, content.as_bytes(), &identity)?;
+            if let Some(binding) = &cx.binding {
+                let destination = &binding.destination;
+                if let Some(identity) = &binding.scratch {
+                    nofollow::write_scratch(destination, content.as_bytes(), identity)?;
                     return Ok(ToolResult::ok(format!("wrote {} bytes", content.len())));
                 }
-                nofollow::write_atomic(&destination, content.as_bytes())?;
+                nofollow::write_atomic(destination, content.as_bytes())?;
                 return Ok(ToolResult::ok(format!("wrote {} bytes", content.len())));
             }
 
             // Validate first: a refused path must leave nothing on disk, not
             // even the folders leading to it.
-            let resolved = validate_path(&cx.writable_roots, Path::new(&path))?;
+            let resolved = validate_path(
+                &cx.writable_roots,
+                &crate::agent::permissions::resolve_read_target(Path::new(&path), cx)?,
+            )?;
             if let Some(parent) = resolved.parent() {
                 tokio::fs::create_dir_all(parent).await?;
             }
@@ -230,18 +244,20 @@ impl Tool for EditTool {
             };
             // A reviewed destination is read and written back without
             // following any link.
-            if let Some(destination) = bound_destination(&args, &[PathBuf::from("/")])? {
-                let report = if let Some(binding) = args.get("navai_scratch_binding") {
-                    let identity = serde_json::from_value(binding.clone())
-                        .map_err(|_| ToolError::DestinationChanged(destination.clone()))?;
-                    nofollow::edit_scratch(&destination, &identity, change)?
+            if let Some(binding) = &cx.binding {
+                let destination = &binding.destination;
+                let report = if let Some(identity) = &binding.scratch {
+                    nofollow::edit_scratch(destination, identity, change)?
                 } else {
-                    nofollow::edit_atomic(&destination, change)?
+                    nofollow::edit_atomic(destination, change)?
                 };
                 return Ok(ToolResult::ok(report));
             }
 
-            let resolved = validate_path(&cx.writable_roots, Path::new(&path))?;
+            let resolved = validate_path(
+                &cx.writable_roots,
+                &crate::agent::permissions::resolve_read_target(Path::new(&path), cx)?,
+            )?;
             if !resolved.is_file() {
                 return Err(ToolError::NotFound(resolved));
             }
@@ -285,27 +301,30 @@ impl Tool for GrepTool {
                 .and_then(|v| v.as_str())
                 .map(String::from)
                 .unwrap_or_else(|| cx.workspace.to_string_lossy().into_owned());
-            let bound = bound_destination(&args, &[PathBuf::from("/")])?;
-            let held = bound.as_deref().map(nofollow::open_read).transpose()?;
-            use std::os::fd::AsRawFd;
-            let search_root = match &held {
-                Some(file) => PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd())),
-                None => validate_path(&cx.read_roots(), Path::new(&path))?,
-            };
+            let search_root = cx
+                .binding
+                .as_ref()
+                .map(|binding| Ok(binding.destination.clone()))
+                .unwrap_or_else(|| {
+                    crate::agent::permissions::resolve_read_target(Path::new(&path), cx)
+                })?;
+            let search_root =
+                validate_path(&cx.read_roots(), &search_root).map_err(|_| ToolError::Denied {
+                    code: "outside_project".into(),
+                    message: crate::tools::OUTSIDE_SEARCH.into(),
+                })?;
 
-            if held.is_none() && rg_available() {
+            if search_root.is_file()
+                && !crate::agent::permission_gate::sensitive_read(&search_root)
+                && rg_available()
+            {
                 if let Some(result) = grep_rg(&pattern, &search_root).await {
                     return Ok(result);
                 }
             }
-            let mut result = grep_builtin(&pattern, &search_root)?;
-            if let Some(bound) = bound {
-                result.output = result.output.replace(
-                    search_root.to_string_lossy().as_ref(),
-                    bound.to_string_lossy().as_ref(),
-                );
-            }
-            Ok(result)
+            // Directory exclusions cannot reliably express every sensitive path component;
+            // use the checked walker rather than let rg read then post-filter secrets.
+            grep_builtin(&pattern, &search_root)
         })
     }
 }
@@ -361,6 +380,10 @@ fn grep_builtin(pattern: &str, root: &Path) -> Result<ToolResult, ToolError> {
     })?;
     let mut out = String::new();
     let mut matches = 0usize;
+    let mut skipped = 0usize;
+    if crate::agent::permission_gate::sensitive_read(root) {
+        return Ok(search_result(String::new(), "builtin", 1));
+    }
     if root.is_file() {
         let content = std::fs::read_to_string(root)?;
         for (lineno, line) in content.lines().enumerate() {
@@ -386,6 +409,10 @@ fn grep_builtin(pattern: &str, root: &Path) -> Result<ToolResult, ToolError> {
                 continue;
             };
             let p = entry.path();
+            if crate::agent::permission_gate::sensitive_read(&p) {
+                skipped += 1;
+                continue;
+            }
             if kind.is_dir() {
                 stack.push(p);
                 continue;
@@ -407,7 +434,16 @@ fn grep_builtin(pattern: &str, root: &Path) -> Result<ToolResult, ToolError> {
             }
         }
     }
-    Ok(bound_matches(&out).with_metadata(json!({"engine": "builtin"})))
+    Ok(search_result(out, "builtin", skipped))
+}
+
+fn search_result(mut output: String, engine: &str, skipped: usize) -> ToolResult {
+    if skipped > 0 {
+        output.push_str(&format!(
+            "\n{skipped} sensitive files skipped; read them individually (reviewed)"
+        ));
+    }
+    bound_matches(&output).with_metadata(json!({"engine": engine, "sensitive_skipped": skipped}))
 }
 
 fn bound_matches(s: &str) -> ToolResult {
@@ -421,6 +457,58 @@ fn bound_matches(s: &str) -> ToolResult {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn grep_skips_sensitive_files_before_opening_with_rg_available_or_builtin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("config.json"), "ordinary credentials word").unwrap();
+        for name in [
+            "auth.json",
+            "credentials.json",
+            "token.key",
+            ".env",
+            ".env.example",
+        ] {
+            std::fs::write(root.join(name), "TOPSECRET").unwrap();
+        }
+        std::fs::create_dir(root.join(".ssh")).unwrap();
+        std::fs::write(root.join(".ssh/id_ed25519"), "TOPSECRET").unwrap();
+        let cx = ctx(root);
+        let result = GrepTool
+            .call(
+                json!({"path":root,"pattern":"."}),
+                CancellationToken::new(),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(result.output.contains("ordinary credentials word"));
+        assert!(!result.output.contains("TOPSECRET"));
+        assert!(result.output.contains("6 sensitive files skipped"));
+        let builtin = grep_builtin(".", root).unwrap();
+        assert_eq!(result.output, builtin.output);
+        assert_eq!(
+            result.metadata["engine"], "builtin",
+            "directory searches deliberately fall back even when rg exists"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_native_ingress_rejects_forged_read_and_grep_bindings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cx = ctx(tmp.path());
+        for tool in [&ReadTool as &dyn Tool, &GrepTool as &dyn Tool] {
+            let error = tool
+                .call(
+                    json!({"path":"/etc/hostname","pattern":".","navai_bound_destination":true}),
+                    CancellationToken::new(),
+                    &cx,
+                )
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("reserved"));
+        }
+    }
     #[test]
     fn rg_option_looking_patterns_are_data_and_config_is_disabled() {
         for pattern in ["--pre=/some/program", "--glob=../*", "-e", "normal"] {
@@ -450,6 +538,7 @@ mod tests {
 
     fn ctx(root: &Path) -> ToolContext {
         ToolContext {
+            binding: None,
             workspace: root.to_path_buf(),
             writable_roots: vec![root.to_path_buf()],
             readable_roots: Vec::new(),
@@ -692,6 +781,7 @@ mod tests {
         std::os::unix::fs::symlink(&outside, root.join("out")).unwrap();
         std::os::unix::fs::symlink(&root, root.join("loop")).unwrap();
         let cx = ToolContext {
+            binding: None,
             workspace: root.clone(),
             writable_roots: Vec::new(),
             readable_roots: vec![root.clone()],

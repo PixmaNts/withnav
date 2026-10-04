@@ -204,12 +204,19 @@ status line shows the active tab's.
 
 **Permission request to answer.** Before each tool call of an assistant message, `run_loop` asks
 `needs_permission`, which validates the call and its paths. Every `bash`, `write` and `edit` then goes
-through review, as do native `read`/`grep`/`glob` outside readable roots or targeting credentials.
-Inside-root ordinary reads remain ungated. Approved reads bind one canonical target, re-resolve
+through review, as do native single-file `read` calls outside readable roots or targeting credentials.
+`grep`/`glob` outside readable roots are refused; inside walks skip sensitive entries before opening
+them and report a count. Directory grep uses the builtin walker because rg exclusions cannot fully
+express the sensitive-component rule; ordinary single-file grep may still use rg.
+Inside-root ordinary reads remain ungated but bound. Native reads bind one canonical target, re-resolve
 before dispatch and hold a no-follow descriptor; they never expand readable roots. Deterministic
-credential/key flags require metacognition and then the driver even after model approval. Reading
-ordinary Navai config follows this policy; config mutation stays driver-only. Every gated call goes
-to `permission_gate`: conservative deterministic checks (redirections, mutating and risky command
+credential/key flags on native reads require metacognition and then the driver even after model approval. Reading
+ordinary Navai config follows this policy; config mutation stays driver-only.
+Bash is not confined and sensitive-file detection there is best effort, not a guarantee against
+arbitrary commands. Literal supported file operands are canonicalized; ambiguous sensitive
+expansions tighten risk. Native sensitivity is deterministic. In-root search descendant reopen
+races remain a documented follow-up, not grounds to permit outside walks.
+Every gated call goes to `permission_gate`: conservative deterministic checks (redirections, mutating and risky command
 families, canonical destinations) only tighten, then Jev answers `call_effect`, `call_scope` and
 `call_risk` in one bounded request (plus `role_conformance` for `plan`). A read-only call, or a
 low-risk change inside the project, runs only if it is not risky. A risky call or outside-project change goes to a synchronous,

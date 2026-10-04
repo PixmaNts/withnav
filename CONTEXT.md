@@ -214,12 +214,17 @@ An advisory per-call classification by the instinct, followed for risky or outsi
 mutations by synchronous metacognition review. Only explicit approval runs those calls;
 uncertainty, malformed answers and deadlines escalate to the driver. Not a sandbox.
 
-Native `read`, `grep` and `glob` within readable roots remain ungated, except sensitive targets.
-Outside reads use the same per-call classification as bash. Approval binds one canonical target,
+Native `read` within readable roots remains ungated, except sensitive targets. Native `grep` and
+`glob` stay confined to readable roots and skip sensitive entries before opening them, with a count.
+Outside single-file reads use the same per-call classification as bash. Approval binds one canonical target,
 re-resolved before dispatch and opened without following replacement links. No root is added.
 Credential/key targets deterministically force risky review and then a typed driver decision even
 if both models approve. A risky read-only bash call also needs review. Reading ordinary Navai
 configuration follows normal read review; `auth.json` is sensitive.
+Bash is not confined: its sensitive-file detection is best effort (literal canonical operands and
+recognized expansions), not enforcement against arbitrary shell programs. Only native file tools
+enforce the deterministic sensitive-path policy. In-root directory walks still reopen descendants
+by path; replacement links mid-walk need a future descriptor-relative traversal fix.
 
 **Permission request**:
 A held tool call awaiting a typed driver decision. Bash, write and edit offer allow once or deny;

@@ -103,6 +103,7 @@ fn build_actor(base_url: String, workspace: PathBuf, cancel: CancellationToken) 
     registry.register(Box::new(AskTool));
 
     let tool_context = ToolContext {
+        binding: None,
         workspace: workspace.clone(),
         writable_roots: vec![workspace.clone()],
         readable_roots: Vec::new(),
@@ -223,6 +224,7 @@ async fn live_omniroute_edit_and_test() {
     let mut actor = AgentActor::new(
         registry,
         ToolContext {
+            binding: None,
             workspace: ws.clone(),
             writable_roots: vec![ws.clone()],
             readable_roots: Vec::new(),

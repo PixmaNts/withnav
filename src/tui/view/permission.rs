@@ -247,7 +247,31 @@ fn build(
 /// Whether the request can be allowed "always" for its folder or site. The `plan` agent's
 /// exceptions cannot: each one is allowed once or denied.
 pub(crate) fn offers_always(p: &PermissionPrompt) -> bool {
-    p.agent != "plan" && !matches!(p.tool.as_str(), "bash" | "write" | "edit")
+    p.agent != "plan" && p.tool == "fetch"
+}
+
+#[cfg(test)]
+#[test]
+fn only_fetch_offers_reusable_approval() {
+    let mut prompt = PermissionPrompt {
+        child_session_id: None,
+        request_id: String::new(),
+        tool_call_id: String::new(),
+        tool: String::new(),
+        arguments: String::new(),
+        scope_kind: "folder".into(),
+        scope: "/workspace".into(),
+        agent: "build".into(),
+        reason: String::new(),
+        resolution: None,
+        message: None,
+        stale: false,
+    };
+    for tool in ["read", "grep", "glob", "write", "edit", "bash", "fetch"] {
+        prompt.tool = tool.into();
+        prompt.agent = "build".into();
+        assert_eq!(offers_always(&prompt), tool == "fetch");
+    }
 }
 
 /// `in /path` for a folder, `to https://host` for an origin.

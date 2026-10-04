@@ -122,7 +122,7 @@ export function eventView(envelope: WireEnvelope, currentTurn?: string, calls?: 
         reason: String(p.reason ?? ""), call: permissionCall(tool,
           (!p.child_session_id ? calls?.argumentsFor(p) : undefined) ?? String(p.arguments ?? "")),
         arguments: String(p.arguments ?? ""),
-        allowFolder: agent !== "plan" && !["bash", "write", "edit"].includes(tool),
+        allowFolder: agent !== "plan" && tool === "fetch",
         evidence: permissionEvidence(p.permission_gate),
       } };
     }

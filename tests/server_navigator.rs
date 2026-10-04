@@ -27,6 +27,64 @@ fn test_state(tmp: &Path, base_url: &str) -> AppState {
     test_state_with_feed(tmp, base_url, None)
 }
 
+#[tokio::test]
+async fn navigator_child_delivers_normally_without_joining_the_conversation_feed() {
+    let server = MockServer::start().await;
+    let done =
+        r#"{"choices":[{"index":0,"delta":{"content":"child result"},"finish_reason":"stop"}]}"#;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(sse_response(&[done]))
+        .mount(&server)
+        .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let feed = navai::navigator::ConversationFeed::new();
+    let state = test_state_with_feed(tmp.path(), &server.uri(), Some(feed.clone()));
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let parent = state
+        .create_session(&ws, None, Some("navigator"))
+        .await
+        .unwrap();
+    let subscription = state.subscribe(parent, None).await.unwrap();
+    send_text(&state, parent, "inspect with a child").await;
+    collect_until(subscription, |event| event.kind == "turn.end").await;
+    let subscription = state.subscribe(parent, None).await.unwrap();
+    let child = state
+        .service()
+        .create_child_session(parent, "explore", "inspect child")
+        .await
+        .unwrap();
+    let events = collect_until(subscription, |event| {
+        event.kind == "message.received" && event.payload["source"] == "subagent"
+    })
+    .await;
+    assert!(events.iter().any(|event| event.kind == "subagent.done"));
+    assert_eq!(feed.active_session(), Some(parent));
+    let requests = server.received_requests().await.unwrap();
+    let child_body: Value = requests
+        .iter()
+        .map(|request| serde_json::from_slice::<Value>(&request.body).unwrap())
+        .find(|body| {
+            body["messages"].as_array().unwrap().iter().any(|message| {
+                message["content"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("inspect child"))
+            })
+        })
+        .unwrap();
+    let tools: Vec<_> = child_body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str())
+        .collect();
+    for tool in ["task", "steer_subagent", "decide_subagent", "intent"] {
+        assert!(!tools.contains(&tool), "child {child} cannot use {tool}");
+    }
+    state.close_all().await;
+}
+
 fn test_state_with_feed(
     tmp: &Path,
     base_url: &str,
@@ -121,6 +179,9 @@ async fn navigator_profile_sends_the_cognition_prompt_as_second_system_message()
         .filter_map(|t| t["function"]["name"].as_str())
         .collect();
     assert!(tools.contains(&"intent"), "intent tool offered: {tools:?}");
+    for tool in ["task", "steer_subagent", "decide_subagent"] {
+        assert!(tools.contains(&tool), "root tool {tool}: {tools:?}");
+    }
 }
 
 // Given a navigator session created over an AppState sharing a

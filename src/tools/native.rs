@@ -8,13 +8,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::ToolError;
 use crate::tools::{
-    bound_destination, bound_output, nofollow, validate_path, Tool, ToolContext, ToolResult,
-    DEFAULT_MAX_OUTPUT_BYTES,
+    bound_output, nofollow, validate_path, Tool, ToolContext, ToolResult, DEFAULT_MAX_OUTPUT_BYTES,
 };
 
-const GREP_MAX_MATCHES: usize = 1000;
-
 fn arg_str(args: &Value, key: &str) -> Result<String, ToolError> {
+    crate::tools::reject_reserved_args(args)?;
     args.get(key)
         .and_then(|v| v.as_str())
         .map(String::from)
@@ -59,11 +57,38 @@ impl Tool for ReadTool {
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + 'a>> {
         boxed(async move {
             let path = arg_str(&args, "path")?;
-            let resolved = validate_path(&cx.read_roots(), Path::new(&path))?;
+            let bound = cx
+                .binding
+                .as_ref()
+                .map(|binding| binding.destination.clone());
+            let resolved = match &bound {
+                Some(path) => path.clone(),
+                None => {
+                    let target =
+                        crate::agent::permissions::resolve_read_target(Path::new(&path), cx)?;
+                    let target = validate_path(&cx.read_roots(), &target)?;
+                    if crate::agent::permission_gate::sensitive_read(&target)
+                        || crate::agent::permission_gate::sensitive_read(
+                            &crate::agent::permissions::requested_path(Path::new(&path), cx)?,
+                        )
+                    {
+                        return Err(ToolError::Denied {
+                            code: "permission_required".into(),
+                            message: "sensitive file: read requires driver review".into(),
+                        });
+                    }
+                    target
+                }
+            };
             if !resolved.is_file() {
                 return Err(ToolError::NotFound(resolved));
             }
-            let bytes = tokio::fs::read(&resolved).await?;
+            let bytes = {
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                nofollow::open_read(&resolved)?.read_to_end(&mut bytes)?;
+                bytes
+            };
             let original_bytes = bytes.len();
             let text = String::from_utf8_lossy(&bytes).into_owned();
 
@@ -127,20 +152,22 @@ impl Tool for WriteTool {
             let content = arg_str(&args, "content")?;
 
             // A reviewed destination is opened without following any link.
-            if let Some(destination) = bound_destination(&args, &[PathBuf::from("/")])? {
-                if let Some(binding) = args.get("navai_scratch_binding") {
-                    let identity = serde_json::from_value(binding.clone())
-                        .map_err(|_| ToolError::DestinationChanged(destination.clone()))?;
-                    nofollow::write_scratch(&destination, content.as_bytes(), &identity)?;
+            if let Some(binding) = &cx.binding {
+                let destination = &binding.destination;
+                if let Some(identity) = &binding.scratch {
+                    nofollow::write_scratch(destination, content.as_bytes(), identity)?;
                     return Ok(ToolResult::ok(format!("wrote {} bytes", content.len())));
                 }
-                nofollow::write_atomic(&destination, content.as_bytes())?;
+                nofollow::write_atomic(destination, content.as_bytes())?;
                 return Ok(ToolResult::ok(format!("wrote {} bytes", content.len())));
             }
 
             // Validate first: a refused path must leave nothing on disk, not
             // even the folders leading to it.
-            let resolved = validate_path(&cx.writable_roots, Path::new(&path))?;
+            let resolved = validate_path(
+                &cx.writable_roots,
+                &crate::agent::permissions::resolve_read_target(Path::new(&path), cx)?,
+            )?;
             if let Some(parent) = resolved.parent() {
                 tokio::fs::create_dir_all(parent).await?;
             }
@@ -219,18 +246,20 @@ impl Tool for EditTool {
             };
             // A reviewed destination is read and written back without
             // following any link.
-            if let Some(destination) = bound_destination(&args, &[PathBuf::from("/")])? {
-                let report = if let Some(binding) = args.get("navai_scratch_binding") {
-                    let identity = serde_json::from_value(binding.clone())
-                        .map_err(|_| ToolError::DestinationChanged(destination.clone()))?;
-                    nofollow::edit_scratch(&destination, &identity, change)?
+            if let Some(binding) = &cx.binding {
+                let destination = &binding.destination;
+                let report = if let Some(identity) = &binding.scratch {
+                    nofollow::edit_scratch(destination, identity, change)?
                 } else {
-                    nofollow::edit_atomic(&destination, change)?
+                    nofollow::edit_atomic(destination, change)?
                 };
                 return Ok(ToolResult::ok(report));
             }
 
-            let resolved = validate_path(&cx.writable_roots, Path::new(&path))?;
+            let resolved = validate_path(
+                &cx.writable_roots,
+                &crate::agent::permissions::resolve_read_target(Path::new(&path), cx)?,
+            )?;
             if !resolved.is_file() {
                 return Err(ToolError::NotFound(resolved));
             }
@@ -274,119 +303,146 @@ impl Tool for GrepTool {
                 .and_then(|v| v.as_str())
                 .map(String::from)
                 .unwrap_or_else(|| cx.workspace.to_string_lossy().into_owned());
-            let search_root = validate_path(&cx.read_roots(), Path::new(&path))?;
-
-            if rg_available() {
-                if let Some(result) = grep_rg(&pattern, &search_root).await {
-                    return Ok(result);
-                }
+            let search_root = cx
+                .binding
+                .as_ref()
+                .map(|binding| Ok(binding.destination.clone()))
+                .unwrap_or_else(|| {
+                    crate::agent::permissions::resolve_read_target(Path::new(&path), cx)
+                })?;
+            let search_root =
+                validate_path(&cx.read_roots(), &search_root).map_err(|_| ToolError::Denied {
+                    code: "outside_project".into(),
+                    message: crate::tools::OUTSIDE_SEARCH.into(),
+                })?;
+            if crate::agent::permission_gate::sensitive_read(
+                &crate::agent::permissions::requested_path(Path::new(&path), cx)?,
+            ) || crate::agent::permission_gate::sensitive_read(&search_root)
+            {
+                return Err(ToolError::Denied {
+                    code: "sensitive_path".into(),
+                    message:
+                        "sensitive search root: use read on individual files; each read is reviewed"
+                            .into(),
+                });
             }
-            grep_builtin(&pattern, &search_root)
+            super::grep::search(pattern, search_root, _cancel).await
         })
     }
 }
 
-fn rg_available() -> bool {
-    if std::env::var("NAVAI_FORCE_BUILTIN_GREP").is_ok() {
-        return false;
-    }
-    which_rg().is_some()
-}
-
-fn which_rg() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join("rg");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-async fn grep_rg(pattern: &str, root: &Path) -> Option<ToolResult> {
-    let output = rg_command(pattern, root).output().await.ok()?;
-    let code = output.status.code().unwrap_or(-1);
-    if code >= 2 {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let bounded = bound_matches(&stdout);
-    Some(bounded.with_metadata(json!({"engine": "rg"})))
-}
-
-fn rg_command(pattern: &str, root: &Path) -> tokio::process::Command {
-    let mut command = tokio::process::Command::new("rg");
-    command
-        .kill_on_drop(true)
-        .arg("--no-config")
-        .arg("--line-number")
-        .arg("--no-heading")
-        .arg("--color=never")
-        .arg("--regexp")
-        .arg(pattern)
-        .arg("--")
-        .arg(root);
-    command
-}
-
+#[cfg(test)]
+use super::grep::rg_command;
+#[cfg(test)]
 fn grep_builtin(pattern: &str, root: &Path) -> Result<ToolResult, ToolError> {
-    let re = regex::Regex::new(pattern).map_err(|e| ToolError::Denied {
-        code: "invalid_regex".into(),
-        message: e.to_string(),
-    })?;
-    let mut out = String::new();
-    let mut matches = 0usize;
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            // The kind of the entry itself: a link is neither searched nor
-            // followed, so a link out of a readable root or back to an
-            // ancestor cannot widen or loop the search (as `rg` does by
-            // default). Only the root, already validated, may be a link.
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
-            let p = entry.path();
-            if kind.is_dir() {
-                stack.push(p);
-                continue;
-            }
-            if !kind.is_file() {
-                continue;
-            }
-            let Ok(content) = std::fs::read_to_string(&p) else {
-                continue;
-            };
-            for (lineno, line) in content.lines().enumerate() {
-                if matches >= GREP_MAX_MATCHES {
-                    break;
-                }
-                if re.is_match(line) {
-                    out.push_str(&format!("{}:{}:{}\n", p.display(), lineno + 1, line));
-                    matches += 1;
-                }
-            }
-        }
-    }
-    Ok(bound_matches(&out).with_metadata(json!({"engine": "builtin"})))
-}
-
-fn bound_matches(s: &str) -> ToolResult {
-    let (out, truncated) = bound_output(s, DEFAULT_MAX_OUTPUT_BYTES);
-    let mut result = ToolResult::ok(out);
-    if let Some(orig) = truncated {
-        result = result.with_truncation(orig);
-    }
-    result
+    super::grep::builtin_sync(pattern, root)
 }
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn unbound_relative_reads_preserve_sensitive_workspace_spelling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ordinary = tmp.path().join("ordinary");
+        std::fs::create_dir(&ordinary).unwrap();
+        std::fs::write(ordinary.join("config"), "secret").unwrap();
+        let workspace = tmp.path().join(".ssh");
+        std::os::unix::fs::symlink(ordinary, &workspace).unwrap();
+        let cx = ctx(&workspace);
+        for (tool, path) in [
+            (&ReadTool as &dyn Tool, "config"),
+            (&GrepTool as &dyn Tool, "."),
+        ] {
+            let error = tool
+                .call(
+                    json!({"path":path,"pattern":"."}),
+                    CancellationToken::new(),
+                    &cx,
+                )
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("sensitive"));
+        }
+    }
+    #[tokio::test]
+    async fn unbound_native_read_and_search_reject_sensitive_alias_spellings() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("ordinary.txt"), "secret").unwrap();
+        std::fs::create_dir(tmp.path().join("ordinary-dir")).unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("ordinary.txt"), tmp.path().join(".env"))
+            .unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("ordinary-dir"), tmp.path().join(".ssh"))
+            .unwrap();
+        let cx = ctx(tmp.path());
+        for (tool, path) in [
+            (&ReadTool as &dyn Tool, ".env"),
+            (&GrepTool as &dyn Tool, ".env"),
+            (&GrepTool as &dyn Tool, ".ssh"),
+            (&crate::tools::glob::GlobTool as &dyn Tool, ".ssh"),
+        ] {
+            let error = tool
+                .call(
+                    json!({"path":path,"pattern":"."}),
+                    CancellationToken::new(),
+                    &cx,
+                )
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("sensitive"));
+        }
+    }
+    #[tokio::test]
+    async fn grep_skips_sensitive_files_before_opening_with_rg_available_or_builtin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("config.json"), "ordinary credentials word").unwrap();
+        for name in [
+            "auth.json",
+            "credentials.json",
+            "token.key",
+            ".env",
+            ".env.example",
+        ] {
+            std::fs::write(root.join(name), "TOPSECRET").unwrap();
+        }
+        std::fs::create_dir(root.join(".ssh")).unwrap();
+        std::fs::write(root.join(".ssh/id_ed25519"), "TOPSECRET").unwrap();
+        let cx = ctx(root);
+        let result = GrepTool
+            .call(
+                json!({"path":root,"pattern":"."}),
+                CancellationToken::new(),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(result.output.contains("ordinary credentials word"));
+        assert!(!result.output.contains("TOPSECRET"));
+        assert!(
+            result.output.contains("sensitive files skipped"),
+            "{result:?}"
+        );
+        let builtin = grep_builtin(".", root).unwrap();
+        assert!(!builtin.output.contains("TOPSECRET"));
+        assert_eq!(result.metadata["engine"], "rg");
+    }
+
+    #[tokio::test]
+    async fn direct_native_ingress_rejects_forged_read_and_grep_bindings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cx = ctx(tmp.path());
+        for tool in [&ReadTool as &dyn Tool, &GrepTool as &dyn Tool] {
+            let error = tool
+                .call(
+                    json!({"path":"/etc/hostname","pattern":".","navai_bound_destination":true}),
+                    CancellationToken::new(),
+                    &cx,
+                )
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("reserved"));
+        }
+    }
     #[test]
     fn rg_option_looking_patterns_are_data_and_config_is_disabled() {
         for pattern in ["--pre=/some/program", "--glob=../*", "-e", "normal"] {
@@ -397,17 +453,17 @@ mod tests {
                 .map(|arg| arg.to_str().unwrap())
                 .collect();
             assert_eq!(
-                args,
-                [
+                &args[..4],
+                &[
                     "--no-config",
                     "--line-number",
                     "--no-heading",
-                    "--color=never",
-                    "--regexp",
-                    pattern,
-                    "--",
-                    "/validated/root"
+                    "--color=never"
                 ]
+            );
+            assert_eq!(
+                &args[args.len() - 4..],
+                &["--regexp", pattern, "--", "/validated/root"]
             );
         }
     }
@@ -416,6 +472,7 @@ mod tests {
 
     fn ctx(root: &Path) -> ToolContext {
         ToolContext {
+            binding: None,
             workspace: root.to_path_buf(),
             writable_roots: vec![root.to_path_buf()],
             readable_roots: Vec::new(),
@@ -601,18 +658,15 @@ mod tests {
     #[tokio::test]
     async fn grep_builtin_fallback_same_shape() {
         let tmp = tempfile::tempdir().unwrap();
-        let cx = ctx(tmp.path());
         std::fs::write(tmp.path().join("a.txt"), "needle here\nother\n").unwrap();
-        std::env::set_var("NAVAI_FORCE_BUILTIN_GREP", "1");
-        let res = GrepTool
-            .call(
-                json!({"pattern": "needle", "path": tmp.path().to_str().unwrap()}),
-                CancellationToken::new(),
-                &cx,
-            )
-            .await
-            .unwrap();
-        std::env::remove_var("NAVAI_FORCE_BUILTIN_GREP");
+        let res = super::super::grep::search_with(
+            super::super::grep::Engine::Builtin,
+            "needle".into(),
+            tmp.path().into(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         assert!(res.output.contains("needle"));
         assert_eq!(res.metadata["engine"], "builtin");
     }
@@ -657,21 +711,14 @@ mod tests {
         std::fs::write(outside.join("b.txt"), "needle outside\n").unwrap();
         std::os::unix::fs::symlink(&outside, root.join("out")).unwrap();
         std::os::unix::fs::symlink(&root, root.join("loop")).unwrap();
-        let cx = ToolContext {
-            workspace: root.clone(),
-            writable_roots: Vec::new(),
-            readable_roots: vec![root.clone()],
-        };
-        std::env::set_var("NAVAI_FORCE_BUILTIN_GREP", "1");
-        let res = GrepTool
-            .call(
-                json!({"pattern": "needle", "path": root.to_str().unwrap()}),
-                CancellationToken::new(),
-                &cx,
-            )
-            .await
-            .unwrap();
-        std::env::remove_var("NAVAI_FORCE_BUILTIN_GREP");
+        let res = super::super::grep::search_with(
+            super::super::grep::Engine::Builtin,
+            "needle".into(),
+            root,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         assert!(res.output.contains("needle inside"), "{}", res.output);
         assert!(!res.output.contains("outside"), "{}", res.output);
     }

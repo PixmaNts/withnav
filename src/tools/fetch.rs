@@ -954,6 +954,7 @@ mod tests {
 
     fn cx() -> ToolContext {
         ToolContext {
+            binding: None,
             workspace: PathBuf::from("."),
             writable_roots: Vec::new(),
             readable_roots: Vec::new(),

@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 /// <reference lib="dom.iterable" />
 import type { ConversationSummary, HostToWebview, WebviewToHost } from "../chatProtocol";
+import { ranked, PICKER_LIMIT } from "./pickerSearch";
 
 // Header (current title, conversation switcher, "New conversation") and the saved
 // conversation list. The chat view's static markup belongs to the host, so these
@@ -87,8 +88,13 @@ export function mountConversations(post: (message: WebviewToHost) => void, focus
   const heading = node("div", "conv-heading");
   heading.append(node("span", "", "Conversations"), node("span", "conv-keys", "↑↓ Enter · Del · Esc"));
   const list = node("ul", "conv-list");
+  list.id = "conversation-options"; list.setAttribute("role", "listbox"); list.setAttribute("aria-label", "Conversations");
+  const search = node("input", "picker-search"); search.type = "search"; search.placeholder = "Search conversations…";
+  search.setAttribute("aria-label", "Search conversations"); search.setAttribute("role", "combobox"); search.setAttribute("aria-autocomplete", "list"); search.setAttribute("aria-controls", list.id);
+  const count = node("div", "picker-count"); count.setAttribute("role", "status"); count.setAttribute("aria-live", "polite");
+  let selected = 0;
   const note = node("p", "conv-note");
-  panel.append(heading, list, note);
+  panel.append(heading, search, count, list, note);
   topbar.append(panel);
 
   const scrim = node("div", "conv-scrim");
@@ -117,6 +123,7 @@ export function mountConversations(post: (message: WebviewToHost) => void, focus
     scrim.hidden = false;
     setInert(true);
     trigger.setAttribute("aria-expanded", "true");
+    search.value = ""; search.setAttribute("aria-expanded", "true"); selected = 0;
     render();
     post({ type: "listConversations" });
     focusInitial();
@@ -129,12 +136,12 @@ export function mountConversations(post: (message: WebviewToHost) => void, focus
     scrim.hidden = true;
     setInert(false);
     trigger.setAttribute("aria-expanded", "false");
+    search.setAttribute("aria-expanded", "false");
     if (returnFocus) focusComposer();
   }
 
   function focusInitial(): void {
-    const all = rows();
-    (all.find(row => row.dataset.id === currentId) ?? all[0] ?? panel).focus();
+    search.focus();
   }
 
   function disarm(): void {
@@ -181,8 +188,14 @@ export function mountConversations(post: (message: WebviewToHost) => void, focus
 
     const now = new Date();
     list.replaceChildren();
-    for (const item of items) {
+    const matches = ranked(items, search.value, item => item.title, item => item.id);
+    const shown = matches.slice(0, PICKER_LIMIT);
+    selected = Math.max(0, Math.min(selected, shown.length - 1));
+    count.textContent = `${matches.length} of ${items.length}${matches.length > PICKER_LIMIT ? " · Type to narrow (first 50 shown)" : ""}`;
+    if (shown.length) search.setAttribute("aria-activedescendant", `conversation-option-${selected}`); else search.removeAttribute("aria-activedescendant");
+    for (const [index, item] of shown.entries()) {
       const row = node("li", "conv-row");
+      row.id = `conversation-option-${index}`; row.setAttribute("role", "option"); row.setAttribute("aria-selected", String(index === selected));
       row.dataset.id = item.id;
       const current = item.id === currentId;
       row.classList.toggle("current", current);
@@ -223,10 +236,11 @@ export function mountConversations(post: (message: WebviewToHost) => void, focus
       row.append(openButton, deleteButton);
       list.append(row);
     }
+    list.children[selected]?.scrollIntoView?.({ block: "nearest" });
 
-    list.hidden = items.length === 0;
-    note.hidden = items.length > 0;
-    note.textContent = loaded ? "No saved conversations yet." : "Loading…";
+    list.hidden = !shown.length;
+    note.hidden = !!shown.length;
+    note.textContent = search.value ? "No matching conversations." : loaded ? "No saved conversations yet." : "Loading…";
 
     if (!isOpen() || !focusId) return;
     const target = list.querySelector<HTMLElement>(`.conv-row[data-id="${CSS.escape(focusId)}"] ${focusDelete ? ".conv-delete" : ".conv-open"}`);
@@ -234,6 +248,14 @@ export function mountConversations(post: (message: WebviewToHost) => void, focus
   }
 
   trigger.addEventListener("click", () => (isOpen() ? close() : open()));
+  search.addEventListener("input", () => { selected = 0; render(); });
+  search.addEventListener("keydown", event => {
+    if (event.isComposing) { event.stopPropagation(); return; }
+    if (["ArrowUp", "ArrowDown"].includes(event.key)) { event.preventDefault(); event.stopPropagation(); const all = rows(); if (all.length) { selected = (selected + (event.key === "ArrowDown" ? 1 : -1) + all.length) % all.length; render(); } }
+    else if (event.key === "Enter") { event.preventDefault(); event.stopPropagation(); rows()[selected]?.click(); }
+    else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); if (search.value) { search.value = ""; selected = 0; render(); } else close(); }
+    else event.stopPropagation(); // Home/End and editing keys belong to the search field.
+  });
   create.addEventListener("click", () => {
     close(false);
     post({ type: "newConversation" });
@@ -242,6 +264,7 @@ export function mountConversations(post: (message: WebviewToHost) => void, focus
   scrim.addEventListener("click", () => close());
 
   panel.addEventListener("keydown", event => {
+    if (event.isComposing) return;
     const all = rows();
     const active = document.activeElement as HTMLElement | null;
     const row = active?.closest<HTMLElement>(".conv-row");

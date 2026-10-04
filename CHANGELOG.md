@@ -4,6 +4,43 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-10-04
+
+Fixes from trying 0.4.6 in VS Code: subagents work there, reading a file outside the project is
+reviewed instead of refused, lists are searchable and compaction shows its progress.
+
+### Fixed
+
+- **VS Code conversations can start subagents.** The agent of a VS Code conversation now has the
+  `task` tool (and `steer_subagent`, `decide_subagent`), like the terminal client. Subagents'
+  results reach the conversation as before; they never become the navigator's conversation.
+- **Reading secrets is never approved on Jev's word.** A read-only call that is risky, such as
+  reading a key or a credentials file, now goes to metacognition and then to you. Reading
+  `~/.ssh`, `~/.gnupg`, `.env` files, `*.pem` / `*.key`, cloud credentials or Navai's
+  `auth.json` with the `read` tool always asks you. `grep` and `glob` skip these files (without
+  opening them) and say how many they skipped. For `bash`, this detection is best effort.
+- **VS Code lists are searchable.** The model, skill, variant, command and conversation lists open
+  with a search field that matches names, model ids and descriptions, shows the number of matches
+  ("12 of 300") and is chosen with the arrow keys and Enter. The `/` list filters from the composer
+  as you type. Choosing a model never touches your draft.
+- **VS Code compaction no longer looks frozen.** `/compact` shows "Compacting the conversation…"
+  until it ends or fails. You can keep writing and sending: your messages wait for the end of the
+  compaction.
+
+### Changed
+
+- **`read` outside the project is reviewed like `bash`** instead of being refused: if Jev,
+  metacognition or you approve it, it reads that one file once. `grep` and `glob` outside the
+  project are still refused, with a message pointing to `read` or `bash`.
+- A `bash` command that writes into Navai's config directory (`~/.config/navai`) always asks you,
+  even with options hidden in quotes, escapes or braces; only plain reads such as `cat`, `ls` or
+  `wc` there can be approved automatically.
+- "Allow folder" is only offered for `fetch`; read, write, edit and bash requests offer allow once
+  or deny.
+- Directory `grep` uses ripgrep as before (fast, respects `.gitignore`); without ripgrep, its
+  fallback is limited in size and time and can be cancelled. More than 1000 matches is reported
+  as a partial result.
+
 ## [0.4.6] - 2026-10-04
 
 The VS Code chat gets the terminal client's controls: slash commands, subagents and the context

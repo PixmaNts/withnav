@@ -2012,8 +2012,7 @@ impl Service {
             resolved: resolved.clone(),
             api_key: api_key.clone(),
         });
-        let root_tools_enabled =
-            child_policy.is_none() && profile.is_none() && role.mode.is_primary();
+        let root_tools_enabled = child_policy.is_none() && role.mode.is_primary();
         let mut actor = match &child_policy {
             Some((allowed, read_only, _, _, _)) => build_child_actor(
                 &workspace,

@@ -151,6 +151,85 @@ test('S2.3 hanging terminal metadata GET times out and releases reconciliation',
   event('session.end',{child_session_id:'C'});
   await new Promise(r=>setTimeout(r,2100));await tick();assert.equal(signal.aborted,true);assert.equal(b.childReconciliations.size,0);
 });
+test('compaction real host/page starts immediately, survives deferred acceptance, completes and rejects stale ownership',async t=>{
+  const {b,event,dom,tick,send}=fullChat(t);b.state.session='P';b.commands.push({name:'compact',description:'Compact',args_hint:''});
+  let finish;t.mock.method(globalThis,'fetch',()=>new Promise(r=>finish=r));
+  send('/compact focus');assert.match(dom.window.document.querySelector('.compaction-progress').textContent,/Compacting/);assert.equal(dom.window.document.querySelector('#prompt').disabled,false);assert.equal(dom.window.document.querySelector('#stop').hidden,false);assert.equal(dom.window.document.querySelector('#usage').getAttribute('aria-busy'),'true');
+  event('command.result',{name:'compact',operation_id:'C',ok:true,data:{accepted:true,applies:'after_turn'}});
+  finish(new Response(JSON.stringify({operation_id:'C',ok:true})));await tick();assert.equal(b.state.compaction.pending,true);
+  event('context.compacted',{estimate_before:200,estimate_after:100});assert.equal(dom.window.document.querySelector('.compaction-progress').dataset.pending,'true');
+  event('command.result',{name:'compact',operation_id:'C',ok:true,data:{estimate_before:200,estimate_after:100}});assert.equal(dom.window.document.querySelector('.compaction-progress').dataset.pending,'false');assert.equal(dom.window.document.querySelector('#prompt').disabled,false);
+  send('/compact');await tick();await b.newConversation();finish(new Response(JSON.stringify({operation_id:'OLD',ok:true})));await tick();assert.equal(dom.window.document.querySelector('.compaction-progress'),null);assert.equal(b.state.compaction,undefined);
+});
+test('compaction correlated failure replaces progress and frees composer',async t=>{
+  const {b,event,dom,tick,send}=fullChat(t);b.state.session='P';b.commands.push({name:'compact',description:'Compact',args_hint:''});
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({operation_id:'C',ok:true})));
+  send('/compact');await tick();event('command.result',{name:'compact',operation_id:'C',ok:false,error:'Summary unavailable'});
+  assert.match(dom.window.document.querySelector('.compaction-progress').textContent,/Summary unavailable/);assert.equal(dom.window.document.querySelector('#prompt').disabled,false);
+});
+test('compaction pending progress survives recreated host view',async t=>{
+  const {b,send,tick}=fullChat(t);b.state.session='P';b.commands.push({name:'compact',description:'Compact',args_hint:''});
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({operation_id:'C',ok:true})));
+  send('/compact');await tick();
+  const messages=[];let receive;
+  provider.resolveWebviewView({webview:{cspSource:'test',asWebviewUri:v=>v,postMessage:m=>messages.push(m),onDidReceiveMessage:fn=>{receive=fn;return noopDisposable();}},onDidDispose(){}});
+  receive({type:'ready'});assert.equal(messages.find(m=>m.type==='compaction').pending,true);assert.equal(messages.find(m=>m.type==='compaction').operationId,'C');
+});
+test('R1.1 compaction queues ordinary send and allows help while preventing second compact',async t=>{
+  const {b,event,send,tick,dom}=fullChat(t);b.state.session='P';b.commands.push({name:'compact',description:'Compact',args_hint:''});
+  b.refreshCommands=async()=>{};
+  const calls=[];t.mock.method(globalThis,'fetch',async(url,init)=>{calls.push(url);return new Response(JSON.stringify(url.endsWith('/messages')?{accepted:true}:{operation_id:'C'}));});
+  send('/compact');await tick();send('queued input');await tick();assert(calls.some(url=>url.endsWith('/messages')));assert.equal(dom.window.document.querySelector('#prompt').disabled,false);
+  b.commands.push({name:'compact',description:'Compact',args_hint:''});await b.runComposerCommand('/help');await assert.rejects(b.runComposerCommand('/compact'),/already pending/);event('command.result',{name:'compact',operation_id:'C',ok:true});
+});
+test('R1.4 manual compact binds HTTP id before cached results and ignores automatic notices and older completions',async t=>{
+  const {b,event,send,tick}=fullChat(t);b.state.session='P';b.commands.push({name:'compact',description:'Compact',args_hint:''});let finish;
+  b.fetchContext=async()=>{};b.refreshCommands=async()=>{};
+  t.mock.method(globalThis,'fetch',()=>new Promise(r=>finish=r));send('/compact');
+  event('command.result',{name:'compact',operation_id:'OTHER',ok:false,error:'unrelated'});assert.equal(b.state.compaction.pending,true);
+  event('command.result',{name:'compact',operation_id:'C',ok:true,data:{accepted:true,applies:'after_turn'}});finish(new Response(JSON.stringify({operation_id:'C'})));await tick();assert.equal(b.state.compaction.pending,true);
+  event('context.compacted',{estimate_before:50,estimate_after:25});assert.equal(b.state.compaction.pending,true);event('command.result',{name:'compact',operation_id:'C',ok:false,error:'Own failure'});assert.match(b.state.compaction.text,/Own failure/);
+  b.commands.push({name:'compact',description:'Compact',args_hint:''});send('/compact again');event('command.result',{name:'compact',operation_id:'C',ok:true});assert.equal(b.state.compaction.pending,true);finish(new Response(JSON.stringify({operation_id:'NEW'})));await tick();assert.equal(b.state.compaction.operationId,'NEW');
+});
+for(const deferred of [true,false])test(`R1.5 resync republishes ${deferred?'deferred':'executing'} compaction progress`,async t=>{
+  const {b,event,send,tick,dom}=fullChat(t);b.state.session='P';b.commands.push({name:'compact',description:'Compact',args_hint:''});t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({operation_id:'C'})));send('/compact');await tick();
+  if(deferred)event('command.result',{name:'compact',operation_id:'C',ok:true,data:{accepted:true,applies:'after_turn'}});
+  b.handleFrame({id:'',event:'resync'});assert.match(dom.window.document.querySelector('.compaction-progress').textContent,/Compacting/);assert.equal(dom.window.document.querySelector('.compaction-progress').dataset.pending,'true');
+});
+function focusedKeys(dom) {
+  const key = key => {
+    const target = dom.window.document.activeElement;
+    const event = new dom.window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+    target.dispatchEvent(event);
+    if (!event.defaultPrevented && key.length === 1) { target.value += key; target.dispatchEvent(new dom.window.Event('input', { bubbles: true })); }
+    if (!event.defaultPrevented && key === 'Backspace') { target.value = target.value.slice(0,-1); target.dispatchEvent(new dom.window.Event('input',{bubbles:true})); }
+  };
+  return { key, type: text => { for (const character of text) key(character); } };
+}
+test('R2.1 registered host posts queued message while idle compact HTTP remains pending and preserves its submission lock', async t=>{
+  const {b,dom,tick,prompt}=fullChat(t);b.state.session='P';b.refreshCommands=async()=>{};b.commands.push({name:'compact',description:'Compact',args_hint:''});
+  const {key,type}=focusedKeys(dom);let compactResponse;let messageResponse;const calls=[];
+  t.mock.method(globalThis,'fetch',(url,init)=>{calls.push({url,...init});return new Promise(resolve=>{if(url.endsWith('/commands'))compactResponse=resolve;else messageResponse=resolve;});});
+  prompt.focus();type('/compact focus');key('Enter');await tick();assert.equal(calls.length,1);assert.equal(prompt.value,'/compact focus');
+  while(prompt.value)key('Backspace');type('queued message');key('Enter');await tick();assert.match(calls[1].url,/\/messages$/);
+  compactResponse(new Response(JSON.stringify({operation_id:'C',ok:true})));await tick();assert.equal(dom.window.document.querySelector('#send').disabled,true);
+  b.handleFrame({id:'1',event:'',envelope:{seq:1,kind:'command.result',payload:{name:'compact',operation_id:'C',ok:false,error:'Summary refused'}}});await tick();assert.equal(dom.window.document.querySelector('#send').disabled,true);
+  messageResponse(new Response(JSON.stringify({accepted:true})));await tick();assert.equal(prompt.value,'');
+});
+test('R2.2 cancelled selector cannot route slash completion as model selection, including after conversation switch',async t=>{
+  const {b,dom,tick,prompt}=fullChat(t);b.state.session='P';b.refreshCommands=async()=>{};
+  b.commands.push({name:'compact',description:'Compact',args_hint:''});b.emit({type:'commands',items:b.commands});b.emit({type:'models',items:[{alias:'a',model:'provider/a'}],locked:false});
+  await tick();b.emit({type:'commands',items:[{name:'compact',description:'Compact',args_hint:''}]});
+  const {key,type}=focusedKeys(dom);let posts=0;
+  t.mock.method(globalThis,'fetch',()=>{posts++;return new Promise(()=>{});});
+  const selector=dom.window.document.querySelector('#model');selector.focus();key('Enter');key('Escape');prompt.focus();type('/com');key('Tab');assert.equal(prompt.value,'/compact ');assert.equal(posts,0);
+  selector.focus();key('Enter');await b.newConversation();await tick();prompt.focus();while(prompt.value)key('Backspace');type('/com');key('Tab');assert.equal(prompt.value,'/compact ');assert.equal(posts,0);
+});
+test('R2.3 unknown bare slash reaches registered host validation and retains focused draft',async t=>{
+  const {b,dom,tick,prompt}=fullChat(t);b.state.session='P';b.refreshCommands=async()=>{};b.emit({type:'commands',items:b.commands});
+  let calls=0;t.mock.method(globalThis,'fetch',()=>{calls++;return new Promise(()=>{});});const {key,type}=focusedKeys(dom);
+  prompt.focus();type('/nonexistent');key('ArrowDown');key('Enter');await tick();assert.match(dom.window.document.querySelector('.command-error').textContent,/Unknown command/);assert.equal(prompt.value,'/nonexistent');assert.equal(calls,0);
+});
 function fullChat(t) {
   const { JSDOM } = require('jsdom');
   const { chatHtml } = require('../out/tests/chatHtml.js');
@@ -364,6 +443,7 @@ test("late-created and recreated views receive current session identity before r
   const backend = {
     currentContext: () => ({ incarnation: "I", revision: 3, estimate_total: 42 }),
     publishSubagents() {},
+    publishCompaction() {},
     currentGeneration: () => 1,
     refreshCommands: async () => {},
     resumePermissionReads: () => {},

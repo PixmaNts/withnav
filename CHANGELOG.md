@@ -4,45 +4,43 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-04
+
+Every file change and shell command is now reviewed one by one, conversations no longer stop after
+50 steps, skills can be picked from a list, and the conversation can be selected and copied.
+
 ### Added
-- **Terminal client**: `/skills` opens a searchable list of the conversation's skills. Choosing
-  one fills `/skill <name>`; add your request and send: the skill's instructions are loaded into
-  your message before the agent's first model request, and the selection shows next to your
-  message, also on replay. If the agent cannot use skills, the whole message is refused.
-- Copying a selection across conversation blocks includes plain-text sender headers
-  (`You:`, the agent's name, `Navigator:`…), one per run of consecutive messages from the same
-  sender. A selection inside one block and whole-block `y` copies stay header-free.
-- Select and copy conversation text with a mouse drag, or double-click a word; wrapping,
-  sidebar and tool labels stay out of the clipboard. The wheel scrolls the conversation and
-  dragging beyond its edge scrolls the selection. In transcript focus, `y` copies the whole
-  message or tool output; `ctrl+shift+c` copies selected text. Clipboard writes use OSC 52
-  (including over SSH); `shift+drag` keeps native terminal selection reachable.
-- Clipboard copying requires terminal OSC 52 support; under tmux use
-  `set -g set-clipboard on`. In transcript focus, `y` portably copies the selection
-  or focused block; `ctrl+shift+c` is best-effort and plain `ctrl+c` remains stop/quit.
+
+- **`/skills`**: opens a searchable list of the conversation's skills. Choosing one fills
+  `/skill <name>`; add your request and send: the skill's instructions are loaded into your message
+  before the agent's first model request, and the selection shows next to your message, also on
+  replay. If the agent cannot use skills, the whole message is refused.
+- **Select and copy the conversation**: drag with the mouse to select conversation text, or
+  double-click a word; releasing copies it. Wrapping, the sidebar, borders and tool labels stay out
+  of the clipboard. A selection across several messages names each sender (`You:`, the agent's name,
+  `Navigator:`…), once per run of consecutive messages; a selection inside one message copies only
+  its text. With the conversation focused, `y` copies the selection, or the whole selected message
+  or tool output; `ctrl+shift+c` works where the terminal sends it, and `ctrl+c` still stops. The
+  wheel scrolls the conversation, and the lists of `/model`, `/sessions` and other pickers.
+  Copying uses OSC 52, so it works over SSH when the terminal supports it; under tmux set
+  `set -g set-clipboard on`. `shift+drag` keeps the terminal's own selection.
 
 ### Changed
 
 - **Per-call permission review**: every `bash`, `write` and `edit` call is reviewed before it runs,
-  instead of an "allow folder" answer letting every later call through. Jev classifies it; a
-  read-only call or a low-risk change inside the project runs; a risky or outside-project change
+  instead of an "allow folder" answer letting every later call through. Jev classifies the call: a
+  read-only call, or a low-risk change inside the project, runs; a risky or outside-project change
   needs metacognition's approval; anything else asks you, with the reason. "Allow folder" is gone
   for these tools and the bash/file grants saved by 0.4.1 are ignored; `fetch` keeps its origin
   grants. `permissions.automatic_review: false` in `config.json` asks for every such call; an
-  invalid value fails closed. Advisory, not a sandbox.
-
-- **Root turns no longer have a 50-step limit**: progress supervision checks the instinct every
-  300 seconds (`agent.watchdog_interval_secs` in `config.json`; 0 disables supervision and enables
-  the 500-step safety cap unless `NAVAI_MAX_STEPS` is explicit). Stuck turns stop after
-  the complete tool batch; uncertain progress receives a bounded metacognition review, then pauses
-  for the driver if still uncertain (`alt+c` to continue, Stop to stop). Partial work is kept.
-  `NAVAI_MAX_STEPS` remains an explicit cap. Without an available `instinct` alias, a visible notice
-  announces a renewable 500-step fallback cap for the session. Only driver input or owner Continue
-  renews a parked budget; autonomous messages and child results wait. Pauses checkpoint settled
-  work and emit a typed yield and turn end. Continue consumes a session-incarnation/hold token;
-  expiry and supersession are replayable, and a fresh driver message replaces a paused turn.
-  Subagents retain their 50-step budget
-  and their existing watchdog and owner Continue behaviour.
+  invalid value fails closed. The review is advisory, not a sandbox.
+- **No more 50-step limit**: a conversation's turn runs until it ends, is stopped, or the watchdog
+  stops it. Every 5 minutes (`agent.watchdog_interval_secs`) Jev checks it is making progress. Stuck:
+  the turn stops after its current tools finish, keeping the work done. In doubt: metacognition
+  decides; if it hesitates too, the turn pauses and asks you (`alt+c` continues, a new message
+  replaces the paused turn). With the watchdog off (`0`) or Jev unavailable, a 500-step cap applies,
+  renewed only by you. `NAVAI_MAX_STEPS` still sets an explicit cap. Subagents keep their 50-step
+  budget.
 
 ### Fixed
 

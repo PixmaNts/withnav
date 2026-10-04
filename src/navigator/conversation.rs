@@ -643,6 +643,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn paused_turn_supersession_keeps_replacement_driver_causality() {
+        let feed = ConversationFeed::new();
+        let id = Ulid::new();
+        feed.register_session(id, recording_poster(Arc::new(Mutex::new(Vec::new()))));
+        let mut events = feed.subscribe();
+        feed.observe(&message_envelope(id, "user:http", "original"))
+            .await;
+        feed.observe(&yield_envelope(id)).await;
+        feed.observe(&turn_end_envelope(id)).await;
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            ConversationEvent::TurnEnded {
+                caused_by_driver: true,
+                ..
+            }
+        ));
+        feed.observe(&message_envelope(id, "user:subagent", "not driver"))
+            .await;
+        feed.observe(&message_envelope(id, "user:cli", "replacement"))
+            .await;
+        let mut resolution = yield_envelope(id);
+        resolution.kind = "command.result".into();
+        resolution.payload =
+            json!({"name":"watchdog","data":{"resolution":"superseded","turn_id":Ulid::new()}});
+        feed.observe(&resolution).await;
+        assert!(
+            events.try_recv().is_err(),
+            "resolution never ends the old turn again"
+        );
+        feed.observe(&turn_end_envelope(id)).await;
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            ConversationEvent::TurnEnded {
+                caused_by_driver: true,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
     async fn a_wake_without_wait_or_session_posts_or_reports_none() {
         let feed = ConversationFeed::new();
         assert_eq!(

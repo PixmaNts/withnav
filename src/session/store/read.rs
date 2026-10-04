@@ -19,7 +19,7 @@ impl HistoryStore {
     pub async fn watchdog_events(&self, id: Ulid) -> Result<Vec<EventEnvelope>, String> {
         let path = Arc::clone(&self.path);
         blocking(move || with_read_tx(&path, |tx| {
-            let mut query = tx.prepare("SELECT envelope FROM events WHERE session_id=?1 AND (kind='agent.yield' OR (kind='command.result' AND json_valid(envelope) AND json_extract(envelope,'$.payload.name')='watchdog')) ORDER BY seq") .map_err(|e| e.to_string())?;
+            let mut query = tx.prepare("SELECT envelope FROM events WHERE session_id=?1 AND (kind IN ('agent.yield','message.received') OR (kind='command.result' AND json_valid(envelope) AND json_extract(envelope,'$.payload.name')='watchdog')) ORDER BY seq") .map_err(|e| e.to_string())?;
             let rows = query.query_map(params![id.to_string()], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
             rows.map(|row| serde_json::from_str(&row.map_err(|e| e.to_string())?).map_err(|e| e.to_string())).collect()
         })).await

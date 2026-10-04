@@ -1157,6 +1157,13 @@ impl Service {
         if handle.status.pending_permission().is_some() || handle.status.selection.ask_pending() {
             return Err(ServerError::ChildNotParked);
         }
+        if handle
+            .status
+            .awaiting_fresh_driver
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(ServerError::ChildNotParked);
+        }
         if parent == child && handle.status.watchdog.root_hold().is_some() {
             let token = token.ok_or(ServerError::ChildNotParked)?;
             if !handle.status.watchdog.resolve_root(token, || {
@@ -2085,6 +2092,7 @@ impl Service {
             None
         };
         let sequencer = Sequencer::spawn(session_id, emitter, next_seq);
+        let mut awaiting_fresh_driver = false;
         if is_resume && child_parent.is_none() {
             let events = self
                 .history
@@ -2104,9 +2112,18 @@ impl Service {
                     && event.payload["data"]["resolution"].is_string()
                 {
                     pending = None;
+                    awaiting_fresh_driver = event.payload["data"]["resolution"] == "expired";
+                }
+                if event.kind == "message.received"
+                    && event.payload["source"]
+                        .as_str()
+                        .is_some_and(crate::bus::command::is_driver_source)
+                {
+                    awaiting_fresh_driver = false;
                 }
             }
             if let Some(token) = pending {
+                awaiting_fresh_driver = true;
                 runtime::publish_pause_resolution(&sequencer, token, "expired");
             }
         }
@@ -2184,6 +2201,9 @@ impl Service {
             agents, role,
         )));
         status.init_variant(selected.clone());
+        status
+            .awaiting_fresh_driver
+            .store(awaiting_fresh_driver, std::sync::atomic::Ordering::Release);
         status.watchdog_fallback_notice.store(
             root_watchdog
                 .as_ref()

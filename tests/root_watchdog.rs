@@ -101,6 +101,22 @@ async fn pause_lifecycle(mode: u8) {
     assert!(loaded.transcript.iter().any(|m| matches!(m, navai::provider::openai::ChatMessage::Tool { tool_call_id, .. } if tool_call_id == "glob")));
     assert!(provider.requests.try_recv().is_err());
     if mode == 2 {
+        let child = service
+            .create_child_session(id, "explore", "finish child now")
+            .await
+            .unwrap();
+        let (_, child_stream) = provider
+            .requests
+            .recv()
+            .bounded(file!(), line!())
+            .await
+            .unwrap();
+        child_stream.send(text_chunk("child finished")).unwrap();
+        drop(child_stream);
+        collect_until(service.subscribe(child, None).await.unwrap(), |e| {
+            e.kind == "turn.end"
+        })
+        .await;
         service.close_session(id).await.unwrap();
         // Simulate a crash after the settled checkpoint but before a resolution was stored.
         let db = rusqlite::Connection::open(tmp.path().join("history.db")).unwrap();
@@ -110,11 +126,34 @@ async fn pause_lifecycle(mode: u8) {
             .create_or_resume_session(&ws, None, None, Some(id))
             .await
             .unwrap();
+        assert!(
+            !service
+                .history()
+                .unconsumed_completions(id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "completion remains outstanding across recovery"
+        );
+        for source in ["navigator", "user:subagent", "parent:agent"] {
+            service
+                .send(input_command(id, source, "not driver input"))
+                .await
+                .unwrap();
+        }
+        service.history().flush().await.unwrap();
+        assert!(
+            provider.requests.try_recv().is_err(),
+            "recovery must await a real driver"
+        );
         assert!(service
             .continue_child_with_token(id, id, Some(token))
             .await
             .is_err());
-        send_text(&service, id, "replacement instruction").await;
+        service
+            .send(input_command(id, "user:cli", "replacement instruction"))
+            .await
+            .unwrap();
     } else if mode == 1 {
         let command = navai::bus::command::Command {
             command_id: ulid::Ulid::new(),
@@ -128,6 +167,12 @@ async fn pause_lifecycle(mode: u8) {
             created_at: std::time::SystemTime::now(),
         };
         service.send(command).await.unwrap();
+        for source in ["user:subagent", "parent:agent"] {
+            service
+                .send(input_command(id, source, "not driver input"))
+                .await
+                .unwrap();
+        }
         assert!(provider.requests.try_recv().is_err());
         send_text(&service, id, "replacement instruction").await;
     } else {
@@ -159,6 +204,11 @@ async fn pause_lifecycle(mode: u8) {
     })
     .await;
     assert_eq!(events.iter().filter(|e| e.kind == "turn.start").count(), 2);
+    assert_eq!(
+        events.iter().filter(|e| e.kind == "turn.end").count(),
+        2,
+        "each turn ends once"
+    );
     assert!(events
         .iter()
         .any(|e| e.payload["data"]["resolution"].is_string()));
@@ -167,6 +217,22 @@ async fn pause_lifecycle(mode: u8) {
         _next_tick.is_closed(),
         "supervisor sleep is cancelled and joined on runtime exit"
     );
+}
+
+fn input_command(
+    id: navai::session::SessionId,
+    source: &str,
+    text: &str,
+) -> navai::bus::command::Command {
+    navai::bus::command::Command {
+        command_id: ulid::Ulid::new(),
+        session_id: id,
+        source_actor_id: source.into(),
+        target_actor_id: "agent:main".into(),
+        mode: navai::bus::command::DeliveryMode::NextTurn,
+        content: vec![navai::bus::command::ContentBlock::Text { text: text.into() }],
+        created_at: std::time::SystemTime::now(),
+    }
 }
 
 #[tokio::test]
@@ -230,6 +296,12 @@ async fn watchdog_off_uses_fallback_and_autonomous_results_cannot_renew_it() {
         created_at: std::time::SystemTime::now(),
     };
     service.send(command.clone()).await.unwrap();
+    for source in ["user:subagent", "parent:agent"] {
+        service
+            .send(input_command(id, source, "do not renew"))
+            .await
+            .unwrap();
+    }
     service.history().flush().await.unwrap();
     assert_eq!(provider.bodies().len(), 501);
     command.command_id = ulid::Ulid::new();

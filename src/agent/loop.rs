@@ -43,6 +43,7 @@ pub enum RunOutcome {
     /// pending interaction.
     PermissionRequired(PermissionRequest),
     Interrupted,
+    WatchdogBoundary,
     StepBudgetExhausted,
     /// The next request would not fit the model's input budget. Internal, like
     /// `StepBudgetExhausted`: it never reaches the wire. The run stopped at a
@@ -133,22 +134,27 @@ async fn run_steps(
                         if let Some(committed) = error.committed {
                             actor.transcript = committed;
                         }
-                        if error.message == "watchdog_boundary" {
-                            actor.watchdog_steps_left = Some(budget - step);
-                            actor.state = AgentState::Idle;
-                            return Ok(RunOutcome::Interrupted);
-                        }
                         return Err(AgentError::Tool(crate::error::ToolError::Denied {
                             code: "safe_boundary".into(),
                             message: error.message,
                         }));
                     }
                 };
-                let Some(updated) = updated else {
-                    actor.state = AgentState::Idle;
-                    return Ok(RunOutcome::Interrupted);
-                };
-                actor.transcript = updated;
+                match updated {
+                    crate::agent::boundary::BoundaryResult::Continue(updated) => {
+                        actor.transcript = updated
+                    }
+                    crate::agent::boundary::BoundaryResult::Interrupted => {
+                        actor.state = AgentState::Idle;
+                        return Ok(RunOutcome::Interrupted);
+                    }
+                    crate::agent::boundary::BoundaryResult::Watchdog(updated) => {
+                        actor.transcript = updated;
+                        actor.watchdog_steps_left = Some(budget - step);
+                        actor.state = AgentState::Idle;
+                        return Ok(RunOutcome::WatchdogBoundary);
+                    }
+                }
             }
         }
 
@@ -771,6 +777,41 @@ mod tests {
     use crate::agent::permissions::Scope;
     use crate::provider::config::{ProviderConfig, ReasoningHistory};
     use crate::provider::test_support::{http_sse, sse_body};
+
+    #[tokio::test]
+    async fn typed_watchdog_boundary_preserves_transcript_and_steps_at_every_position() {
+        for before_first in [true, false] {
+            let call = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"g","function":{"name":"glob","arguments":"{\"pattern\":\"*\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+            let server = spawn_mock(vec![http_sse(&sse_body(&[call]))]).await;
+            let mut actor = make_actor(server.url, registry_all(), CancellationToken::new());
+            actor.max_steps = 7;
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            actor.safe_boundary = Some(Arc::new(move |mut transcript, _| {
+                let step = calls.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                Box::pin(async move {
+                    if !before_first && step == 0 {
+                        return Ok(crate::agent::boundary::BoundaryResult::Continue(transcript));
+                    }
+                    transcript.push(ChatMessage::User {
+                        provenance: crate::provider::openai::UserProvenance::Parent,
+                        content: "committed steering".into(),
+                    });
+                    Ok(crate::agent::boundary::BoundaryResult::Watchdog(transcript))
+                })
+            }));
+            assert_eq!(
+                run_agent(&mut actor, &mut |_| {}).await.unwrap(),
+                RunOutcome::WatchdogBoundary
+            );
+            assert_eq!(
+                actor.watchdog_steps_left,
+                Some(if before_first { 7 } else { 6 })
+            );
+            assert!(
+                matches!(actor.transcript.last(),Some(ChatMessage::User {content,..}) if content == "committed steering")
+            );
+        }
+    }
     use crate::tools::bash::BashTool;
     use crate::tools::control::AskTool;
     use crate::tools::native::{GrepTool, ReadTool, WriteTool};

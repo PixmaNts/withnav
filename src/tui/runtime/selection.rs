@@ -41,7 +41,12 @@ impl Runtime {
                     .selected_block
                     .as_ref()
                     .and_then(|id| self.state.conversation.blocks.iter().find(|b| &b.id == id))
-                    .and_then(view::copy_block)
+                    .and_then(|b| match &b.kind {
+                        crate::tui::state::BlockKind::Permission(p) => {
+                            Some(view::permission_sections(p, &self.state).join("\n"))
+                        }
+                        _ => view::copy_block(b),
+                    })
             });
         if let Some(text) = text {
             self.copy_text(&text);

@@ -4,14 +4,21 @@ requests land in `develop`.
 
 ## [Unreleased]
 
-### Changed
+### Fixed
 
-- Permission metacognition reserves output for reasoning plus final JSON; reviewer failures are categorized.
-- Outside-project write/edit calls receive per-call review. Approval binds one canonical destination
-  without expanding writable roots. Tool errors display a non-empty message.
-- Private temporary storage defaults to `<temp_dir>/navai` (0700), shared by sessions and children.
+- Metacognition permission review no longer fails when the model reasons at length.
+- Write/edit outside the project are reviewed like bash; approvals bind one destination.
+- Tool errors always carry a non-empty message.
+- **Terminal client**: permission requests can be selected and copied like other messages, in full
+  (whole reason and command, no borders or truncation; a write's content up to 4096 bytes). While a
+  request is open, `y` still allows it: drag with the mouse to copy it; `y` copies an answered one.
+
+### Added
+
+- Private scratch storage at `<temp_dir>/navai` (0700), shared by sessions and children.
   `permissions.scratch_dir` accepts an absolute path; false/null disables it. Symlinks and foreign-owned
   directories are refused. Scratch mutations count as project-local.
+
 
 ## [0.4.2] - 2026-10-04
 

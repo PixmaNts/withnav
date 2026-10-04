@@ -148,11 +148,18 @@ pub struct SelectedModel {
 #[derive(Clone)]
 pub(crate) struct EffectiveExecution {
     pub(crate) automatic_permission_review: bool,
+    pub(crate) scratch_choice: Vec<PathBuf>,
     pub(crate) resolved: crate::provider::config::ResolvedModel,
     pub(crate) api_key: String,
 }
 
-type ChildPolicy = (BTreeMap<String, bool>, bool, bool, Option<String>);
+type ChildPolicy = (
+    BTreeMap<String, bool>,
+    bool,
+    bool,
+    Option<String>,
+    Vec<PathBuf>,
+);
 impl std::fmt::Debug for EffectiveExecution {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("EffectiveExecution { .. }")
@@ -792,6 +799,12 @@ impl Service {
                         .latest_driver_message(parent)
                         .await
                         .map_err(ServerError::History)?,
+                    parent_handle
+                        .selected()
+                        .execution
+                        .as_ref()
+                        .map(|execution| execution.scratch_choice.clone())
+                        .unwrap_or_default(),
                 )),
                 Some(parent),
                 definition.model.is_none().then_some(inherited),
@@ -1970,8 +1983,21 @@ impl Service {
         })?;
         let session_cancel = CancellationToken::new();
         let execution = Arc::new(EffectiveExecution {
+            scratch_choice: match &child_policy {
+                Some((_, _, _, _, choice)) => choice.clone(),
+                None => match crate::settings::load(&self.config.config_dir)
+                    .map_err(|e| e.to_string())
+                    .and_then(|settings| settings.permissions_scratch_dirs())
+                {
+                    Ok(paths) => paths,
+                    Err(error) => {
+                        crate::agent::scratch::warn_once(&error);
+                        Vec::new()
+                    }
+                },
+            },
             automatic_permission_review: match &child_policy {
-                Some((_, _, enabled, _)) => *enabled,
+                Some((_, _, enabled, _, _)) => *enabled,
                 None => match crate::settings::load(&self.config.config_dir)
                     .map_err(|e| e.to_string())
                     .and_then(|settings| settings.permissions_automatic_review())
@@ -1989,7 +2015,7 @@ impl Service {
         let root_tools_enabled =
             child_policy.is_none() && profile.is_none() && role.mode.is_primary();
         let mut actor = match &child_policy {
-            Some((allowed, read_only, _, _)) => build_child_actor(
+            Some((allowed, read_only, _, _, _)) => build_child_actor(
                 &workspace,
                 &self.config.config_dir,
                 resolved,
@@ -2064,7 +2090,36 @@ impl Service {
             &self.config.config_dir,
         );
         actor.automatic_permission_review = execution.automatic_permission_review;
-        if let Some((_, _, _, driver_task)) = &child_policy {
+        actor.protected_config_spelling = Some(self.config.config_dir.clone());
+        actor.protected_config_root =
+            crate::agent::permissions::resolve_protected_root(&self.config.config_dir).ok();
+        actor.protected_config_unresolved = actor.protected_config_root.is_none();
+        if actor.protected_config_unresolved {
+            crate::agent::scratch::warn_once(
+                "config root unresolved; native writes require driver approval",
+            );
+        }
+        for path in &execution.scratch_choice {
+            if actor
+                .protected_config_root
+                .as_ref()
+                .is_some_and(|root| root.starts_with(path) || path.starts_with(root))
+            {
+                crate::agent::scratch::warn_once("scratch overlaps protected config directory");
+                continue;
+            }
+            match crate::agent::scratch::Identity::capture(path) {
+                Ok(identity) => {
+                    actor
+                        .tool_context
+                        .writable_roots
+                        .push(identity.path.clone());
+                    actor.scratch_roots.push(identity);
+                }
+                Err(error) => crate::agent::scratch::warn_once(&error),
+            }
+        }
+        if let Some((_, _, _, driver_task, _)) = &child_policy {
             actor.driver_task = driver_task.clone();
         }
         if let Ok((models, _)) = crate::provider::config::load_models(
@@ -2072,6 +2127,11 @@ impl Service {
             &workspace,
             &self.config.config_dir,
         ) {
+            actor.permission_reviewer_unavailable = if models.resolve("metacognition").is_ok() {
+                "no key"
+            } else {
+                "no alias"
+            };
             actor.permission_reviewer = crate::navigator::bootstrap::LazyCommenter::new(
                 &models,
                 "metacognition",
@@ -2089,7 +2149,7 @@ impl Service {
         if child_policy.is_some() {
             actor.max_steps = crate::agent::run_loop::max_steps();
         }
-        if let Some((allowed, _, _, _)) = &child_policy {
+        if let Some((allowed, _, _, _, _)) = &child_policy {
             actor
                 .registry
                 .retain(|name| allowed.get(name).copied().unwrap_or(false));

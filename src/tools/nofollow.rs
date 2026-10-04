@@ -50,6 +50,49 @@ fn changed(path: &Path) -> ToolError {
     ToolError::DestinationChanged(path.to_path_buf())
 }
 
+#[cfg(test)]
+#[test]
+fn replaced_or_missing_scratch_root_is_not_recreated_at_native_open() {
+    for remove in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("scratch");
+        let identity = crate::agent::scratch::Identity::capture(&root).unwrap();
+        on_next_open({
+            let root = root.clone();
+            let old = temp.path().join("old");
+            move || {
+                std::fs::rename(&root, old).unwrap();
+                if !remove {
+                    std::fs::create_dir(root).unwrap();
+                }
+            }
+        });
+        assert!(matches!(
+            write_scratch(&root.join("x"), b"new", &identity),
+            Err(ToolError::DestinationChanged(_))
+        ));
+        assert!(!root.join("x").exists());
+        assert_eq!(root.exists(), !remove);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn missing_scratch_edit_never_creates_parent_directories() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("scratch");
+    let identity = crate::agent::scratch::Identity::capture(&root).unwrap();
+    for target in [root.join("missing/deeper/file"), root.join("absent")] {
+        assert!(matches!(
+            edit_scratch(&target, &identity, |_| panic!(
+                "missing edit must not call change"
+            )),
+            Err(ToolError::NotFound(_))
+        ));
+    }
+    assert!(!root.join("missing").exists());
+}
+
 /// What an errno during a no-follow walk means: a link (or something that is
 /// not a directory) where the reviewed path had a directory or file, or a
 /// path that is gone: all of them "the destination changed". The one
@@ -132,6 +175,89 @@ fn split(destination: &Path) -> Result<(&Path, &std::ffi::OsStr), ToolError> {
 /// without following a link anywhere in it.
 pub fn write_atomic(destination: &Path, content: &[u8]) -> Result<(), ToolError> {
     write_atomic_with(destination, content, true)
+}
+
+fn scratch_parent(
+    destination: &Path,
+    identity: &crate::agent::scratch::Identity,
+    create: bool,
+) -> Result<(OwnedFd, std::ffi::OsString), ToolError> {
+    before_open();
+    let root = identity.open().map_err(|_| changed(destination))?;
+    let relative = destination
+        .strip_prefix(&identity.path)
+        .map_err(|_| changed(destination))?;
+    let (parent, name) = (
+        relative.parent().ok_or_else(|| changed(destination))?,
+        relative.file_name().ok_or_else(|| changed(destination))?,
+    );
+    let mut dir: OwnedFd = root.into();
+    for component in parent.components() {
+        let Component::Normal(name) = component else {
+            return Err(changed(destination));
+        };
+        dir = match openat(
+            dir.as_fd(),
+            name,
+            DIR_FLAGS | OFlag::O_NOFOLLOW,
+            Mode::empty(),
+        ) {
+            Ok(fd) => fd,
+            Err(Errno::ENOENT) if create => {
+                mkdirat(dir.as_fd(), name, Mode::from_bits_truncate(0o700))
+                    .map_err(|e| walk_error(e, destination))?;
+                openat(
+                    dir.as_fd(),
+                    name,
+                    DIR_FLAGS | OFlag::O_NOFOLLOW,
+                    Mode::empty(),
+                )
+                .map_err(|e| walk_error(e, destination))?
+            }
+            Err(Errno::ENOENT) => return Err(ToolError::NotFound(destination.to_path_buf())),
+            Err(error) => return Err(walk_error(error, destination)),
+        };
+    }
+    Ok((dir, name.to_os_string()))
+}
+
+pub fn write_scratch(
+    destination: &Path,
+    content: &[u8],
+    identity: &crate::agent::scratch::Identity,
+) -> Result<(), ToolError> {
+    let (dir, name) = scratch_parent(destination, identity, true)?;
+    replace_in(&dir, &name, content, destination)
+}
+
+pub fn edit_scratch(
+    destination: &Path,
+    identity: &crate::agent::scratch::Identity,
+    change: impl FnOnce(String) -> Result<(String, String), ToolError>,
+) -> Result<String, ToolError> {
+    let (dir, name) = scratch_parent(destination, identity, false)?;
+    let fd = openat(
+        dir.as_fd(),
+        name.as_os_str(),
+        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|e| {
+        if e == Errno::ENOENT {
+            ToolError::NotFound(destination.to_path_buf())
+        } else {
+            walk_error(e, destination)
+        }
+    })?;
+    let mut file = std::fs::File::from(fd);
+    if !file.metadata()?.is_file() {
+        return Err(changed(destination));
+    }
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
+    let (updated, report) = change(text)?;
+    replace_in(&dir, &name, updated.as_bytes(), destination)?;
+    Ok(report)
 }
 
 fn write_atomic_with(

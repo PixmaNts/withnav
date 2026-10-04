@@ -327,7 +327,7 @@ pub async fn resolve_permission(
                 Gated::Ask(fresh, fresh_destination)
                     if fresh_destination == destination && fresh.scope == request.scope =>
                 {
-                    if decision == PermissionDecision::AllowFolder {
+                    if decision == PermissionDecision::AllowFolder && call.name == "fetch" {
                         actor
                             .grants
                             .grant(&request.agent, &request.tool, request.scope.clone());
@@ -479,6 +479,12 @@ fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
         Gate::Needs(needed) => needed,
     };
     let agent = role.id.as_str();
+    if super::permission_gate::protected_call(actor, call, &needed) {
+        let mut request = PermissionRequest::new(call, needed.scope, agent);
+        request.reason =
+            "Navai configuration is driver-only; approve this call once or deny".into();
+        return Gated::Ask(request, needed.destination);
+    }
     if matches!(call.name.as_str(), "bash" | "write" | "edit") {
         return Gated::Reviewed(needed);
     }
@@ -686,6 +692,22 @@ async fn execute_call(
     if let Some(object) = args.as_object_mut() {
         // Only the loop binds a call to a destination, never the model.
         object.remove(crate::tools::BOUND_ARG);
+        object.remove("navai_scratch_binding");
+        if let Some(destination) = destination {
+            if let Some(identity) = actor
+                .scratch_roots
+                .iter()
+                .find(|root| destination.starts_with(&root.path))
+            {
+                object.insert("navai_scratch_binding".into(), serde_json::json!(identity));
+            }
+        }
+        if let Some(binding) = guard_note
+            .as_ref()
+            .and_then(|note| note.get("scratch_binding"))
+        {
+            object.insert("navai_scratch_binding".into(), binding.clone());
+        }
         if let Some(destination) = destination {
             object.insert(
                 "path".into(),
@@ -1646,12 +1668,10 @@ mod tests {
         actor.push_user("go");
         let mut noop = |_e: AgentEvent| {};
         let outcome = run_agent(&mut actor, &mut noop).await.unwrap();
-        assert!(matches!(outcome, RunOutcome::Done(_)));
-        assert!(!actor.has_pending());
+        assert!(matches!(outcome, RunOutcome::PermissionRequired(_)));
+        assert!(actor.has_pending());
         assert!(!outside.path().join("new").exists(), "nothing was created");
-        let result: serde_json::Value =
-            serde_json::from_str(&tool_result_of(&actor, "w1").unwrap()).unwrap();
-        assert_eq!(result["status"], "error");
+        assert!(tool_result_of(&actor, "w1").is_none());
     }
 
     #[tokio::test]
@@ -1991,6 +2011,404 @@ mod tests {
         hangs: bool,
     }
 
+    #[test]
+    fn stale_scratch_is_not_advertised_in_prompts_or_review_evidence() {
+        let mut actor = plan_actor(None, "http://unused");
+        let root = actor.tool_context.workspace.join("scratch");
+        actor
+            .scratch_roots
+            .push(crate::agent::scratch::Identity::capture(&root).unwrap());
+        actor.tool_context.writable_roots.push(root.clone());
+        assert!(actor
+            .role_message()
+            .unwrap()
+            .contains(root.to_str().unwrap()));
+        std::fs::remove_dir(&root).unwrap();
+        assert!(!actor
+            .role_message()
+            .unwrap()
+            .contains(root.to_str().unwrap()));
+        let call = ToolCall {
+            id: "c".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command":"echo harmless"}),
+            args_valid: true,
+        };
+        let needed = Needed {
+            scope: Scope::Folder(actor.tool_context.workspace.clone()),
+            destination: None,
+        };
+        let input =
+            super::super::permission_gate::describe(&actor, &call, &needed, &Default::default())
+                .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&input.state).unwrap();
+        assert_eq!(state["host_facts"]["scratch_roots"], serde_json::json!([]));
+        assert!(!state["host_facts"]["writable_roots"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(root)));
+    }
+
+    #[tokio::test]
+    async fn protected_config_typed_answers_execute_once_without_grants() {
+        for tool in ["write", "edit"] {
+            for allow in [false, true] {
+                let mut actor =
+                    plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+                actor
+                    .registry
+                    .register(Box::new(crate::tools::native::EditTool));
+                let config = actor.tool_context.workspace.join("config");
+                std::fs::create_dir(&config).unwrap();
+                actor.protected_config_root = Some(config.clone());
+                actor.permission_reviewer = Some(Arc::new(Meta {
+                    decision: Some(super::super::permission_gate::ReviewDecision::Approve),
+                    captured: Default::default(),
+                    hangs: false,
+                }));
+                let target = config.join("models.json");
+                std::fs::write(&target, "old").unwrap();
+                let args = if tool == "write" {
+                    serde_json::json!({"path":target,"content":"new"})
+                } else {
+                    serde_json::json!({"path":target,"old_string":"old","new_string":"new"})
+                };
+                let call = ToolCall {
+                    id: "first".into(),
+                    name: tool.into(),
+                    args,
+                    args_valid: true,
+                };
+                let One::Ask(request, destination) =
+                    run_gated(&mut actor, &call, &mut |_| {}).await
+                else {
+                    panic!("protected target must ask");
+                };
+                let id = request.id;
+                let scope = request.scope.clone();
+                let mut second = call.clone();
+                second.id = "second".into();
+                let roots = actor.tool_context.writable_roots.clone();
+                actor.pending = Some(PendingInteraction::Permission {
+                    request: Box::new(request),
+                    call,
+                    remaining_calls: vec![second],
+                    destination,
+                    steps_left: 1,
+                });
+                actor.state = AgentState::Yielded;
+                let decision = if allow {
+                    PermissionDecision::AllowOnce
+                } else {
+                    PermissionDecision::Deny {
+                        message: "keep configuration".into(),
+                    }
+                };
+                let mut executions = 0;
+                let mut observe = |event: AgentEvent<'_>| {
+                    if matches!(event, AgentEvent::PreCall { .. }) {
+                        executions += 1;
+                    }
+                };
+                let outcome = resolve_permission(&mut actor, id, decision, &mut observe)
+                    .await
+                    .unwrap();
+                let RunOutcome::PermissionRequired(request) = outcome else {
+                    panic!("identical sibling must ask again");
+                };
+                assert_eq!(request.tool_call_id, "second");
+                assert_eq!(executions, usize::from(allow));
+                assert_eq!(
+                    std::fs::read_to_string(&target).unwrap(),
+                    if allow { "new" } else { "old" }
+                );
+                assert!(!actor
+                    .grants
+                    .covers("plan", tool, &scope, &actor.tool_context));
+                assert_eq!(actor.tool_context.writable_roots, roots);
+            }
+        }
+    }
+
+    struct BarrierReviewer {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        outside: std::sync::Mutex<Vec<bool>>,
+    }
+    impl super::super::permission_gate::PermissionReviewer for BarrierReviewer {
+        fn review<'a>(
+            &'a self,
+            input: &'a super::super::permission_gate::PermissionReviewInput,
+            _cancel: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<
+            'a,
+            Result<
+                super::super::permission_gate::PermissionReview,
+                super::super::permission_gate::ReviewError,
+            >,
+        > {
+            Box::pin(async move {
+                let state: serde_json::Value = serde_json::from_str(&input.state).unwrap();
+                let first = {
+                    let mut seen = self.outside.lock().unwrap();
+                    seen.push(state["host_facts"]["outside"].as_bool().unwrap());
+                    seen.len() == 1
+                };
+                if first {
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                }
+                Ok(super::super::permission_gate::PermissionReview {
+                    decision: if first {
+                        super::super::permission_gate::ReviewDecision::Approve
+                    } else {
+                        super::super::permission_gate::ReviewDecision::Unsure
+                    },
+                    reason: "reviewed exact call".into(),
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn scratch_replaced_or_removed_during_reviewer_wait_regates_as_outside() {
+        for remove in [false, true] {
+            let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+            let root = actor.tool_context.workspace.join("scratch");
+            let identity = crate::agent::scratch::Identity::capture(&root).unwrap();
+            actor.tool_context.writable_roots.push(root.clone());
+            actor.scratch_roots.push(identity);
+            // Agent instructions require the reflective stage even inside scratch.
+            let target = root.join("AGENTS.md");
+            let call = ToolCall {
+                id: "c".into(),
+                name: "write".into(),
+                args: serde_json::json!({"path":target,"content":"new"}),
+                args_valid: true,
+            };
+            let reviewer = Arc::new(BarrierReviewer {
+                entered: Default::default(),
+                release: Default::default(),
+                outside: Default::default(),
+            });
+            actor.permission_reviewer = Some(reviewer.clone());
+            let roots = actor.tool_context.writable_roots.clone();
+            let mutate = async {
+                reviewer.entered.notified().await;
+                std::fs::rename(&root, root.with_file_name("old-scratch")).unwrap();
+                if !remove {
+                    std::fs::create_dir(&root).unwrap();
+                }
+                reviewer.release.notify_one();
+            };
+            let mut observe = |_event: AgentEvent<'_>| {};
+            let (outcome, ()) = tokio::join!(run_gated(&mut actor, &call, &mut observe), mutate);
+            assert!(matches!(outcome, One::Ask(..)));
+            assert_eq!(*reviewer.outside.lock().unwrap(), vec![false, true]);
+            assert!(!target.exists());
+            assert_eq!(
+                root.exists(),
+                !remove,
+                "removed scratch must never be recreated"
+            );
+            assert_eq!(actor.tool_context.writable_roots, roots);
+        }
+    }
+
+    #[tokio::test]
+    async fn external_native_retarget_through_typed_resolution_or_native_open_regates() {
+        for tool in ["write", "edit"] {
+            for at_open in [false, true] {
+                let mut actor = plan_actor(None, "http://unused");
+                actor
+                    .registry
+                    .register(Box::new(crate::tools::native::EditTool));
+                let external = tempfile::tempdir().unwrap();
+                let target = external.path().join("target");
+                let secret = external.path().join("secret");
+                std::fs::write(&target, "old").unwrap();
+                std::fs::write(&secret, "keep").unwrap();
+                let roots = actor.tool_context.writable_roots.clone();
+                let args = if tool == "write" {
+                    serde_json::json!({"path":target,"content":"new"})
+                } else {
+                    serde_json::json!({"path":target,"old_string":"old","new_string":"new"})
+                };
+                let call = ToolCall {
+                    id: "c".into(),
+                    name: tool.into(),
+                    args,
+                    args_valid: true,
+                };
+                let One::Ask(request, destination) =
+                    run_gated(&mut actor, &call, &mut |_| {}).await
+                else {
+                    panic!("expected held call");
+                };
+                let id = request.id;
+                actor.pending = Some(PendingInteraction::Permission {
+                    request: Box::new(request),
+                    call,
+                    remaining_calls: vec![],
+                    destination,
+                    steps_left: 1,
+                });
+                actor.state = AgentState::Yielded;
+                let swap = {
+                    let target = target.clone();
+                    let secret = secret.clone();
+                    move || {
+                        std::fs::remove_file(&target).unwrap();
+                        std::os::unix::fs::symlink(secret, target).unwrap();
+                    }
+                };
+                if at_open {
+                    crate::tools::nofollow::on_next_open(swap);
+                } else {
+                    swap();
+                }
+                assert!(matches!(
+                    resolve_permission(&mut actor, id, PermissionDecision::AllowOnce, &mut |_| {})
+                        .await
+                        .unwrap(),
+                    RunOutcome::PermissionRequired(_)
+                ));
+                assert_eq!(std::fs::read_to_string(secret).unwrap(), "keep");
+                assert_eq!(actor.tool_context.writable_roots, roots);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn external_native_write_and_edit_approval_matrix_preserves_roots() {
+        for tool in ["write", "edit"] {
+            for route in ["meta", "driver", "deny"] {
+                let mut actor =
+                    plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+                actor
+                    .registry
+                    .register(Box::new(crate::tools::native::EditTool));
+                let external = tempfile::tempdir().unwrap();
+                let target = external.path().join("file.txt");
+                std::fs::write(&target, "old").unwrap();
+                let roots = actor.tool_context.writable_roots.clone();
+                let args = if tool == "write" {
+                    serde_json::json!({"path":target,"content":"new"})
+                } else {
+                    serde_json::json!({"path":target,"old_string":"old","new_string":"new"})
+                };
+                let call = ToolCall {
+                    id: "c".into(),
+                    name: tool.into(),
+                    args,
+                    args_valid: true,
+                };
+                if route == "meta" {
+                    actor.permission_reviewer = Some(Arc::new(Meta {
+                        decision: Some(super::super::permission_gate::ReviewDecision::Approve),
+                        captured: Default::default(),
+                        hangs: false,
+                    }));
+                }
+                let outcome = run_gated(&mut actor, &call, &mut |_| {}).await;
+                match outcome {
+                    One::Ask(_, destination) if route == "driver" => {
+                        assert!(matches!(
+                            run_reviewed(&mut actor, &call, destination.as_deref(), &mut |_| {})
+                                .await,
+                            One::Settled
+                        ));
+                    }
+                    One::Ask(..) if route == "deny" => {}
+                    One::Settled if route == "meta" => {}
+                    _ => panic!("unexpected approval route"),
+                }
+                assert_eq!(
+                    std::fs::read_to_string(target).unwrap(),
+                    if route == "deny" { "old" } else { "new" }
+                );
+                assert_eq!(actor.tool_context.writable_roots, roots);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn protected_config_always_asks_even_with_approving_models_and_scratch() {
+        for workspace_is_config in [false, true] {
+            let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+            let config = if workspace_is_config {
+                actor.tool_context.workspace.clone()
+            } else {
+                actor.tool_context.workspace.join("config")
+            };
+            std::fs::create_dir_all(config.join("agents")).unwrap();
+            actor.protected_config_root = Some(config.clone());
+
+            actor.permission_reviewer = Some(Arc::new(Meta {
+                decision: Some(super::super::permission_gate::ReviewDecision::Approve),
+                captured: Default::default(),
+                hangs: false,
+            }));
+            let alias = actor.tool_context.workspace.join("config-alias");
+            std::os::unix::fs::symlink(&config, &alias).unwrap();
+            for name in ["models.json", "auth.json", "agents/x.md", "config.json"] {
+                for root in [&config, &alias] {
+                    let target = root.join(name);
+                    let call = ToolCall {
+                        id: "c".into(),
+                        name: "write".into(),
+                        args: serde_json::json!({"path":target,"content":"x"}),
+                        args_valid: true,
+                    };
+                    let mut count = 0;
+                    assert!(matches!(
+                        run_gated(&mut actor, &call, &mut |event| {
+                            if matches!(event, AgentEvent::PreCall { .. }) {
+                                count += 1;
+                            }
+                        })
+                        .await,
+                        One::Ask(..)
+                    ));
+                    assert_eq!(count, 0);
+                    assert!(!target.exists());
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_config_under_symlinked_parent_and_literal_bash_are_protected() {
+        let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+        let actual = actor.tool_context.workspace.join("actual");
+        std::fs::create_dir(&actual).unwrap();
+        let alias = actor.tool_context.workspace.join("alias");
+        std::os::unix::fs::symlink(&actual, &alias).unwrap();
+        actor.protected_config_root =
+            Some(super::super::permissions::resolve_protected_root(&alias.join("navai")).unwrap());
+        actor.protected_config_spelling = Some(alias.join("navai"));
+        for tool in ["write", "edit", "bash"] {
+            let args = if tool == "bash" {
+                serde_json::json!({"command":format!("echo x > {}/navai/models.json", alias.display())})
+            } else {
+                serde_json::json!({"path":alias.join("navai/models.json"),"content":"new","old_string":"old","new_string":"new"})
+            };
+            let call = ToolCall {
+                id: "c".into(),
+                name: tool.into(),
+                args,
+                args_valid: true,
+            };
+            actor
+                .registry
+                .register(Box::new(crate::tools::native::EditTool));
+            assert!(matches!(
+                run_gated(&mut actor, &call, &mut |_| {}).await,
+                One::Ask(..)
+            ));
+        }
+    }
+
     struct WaitingJudge(std::sync::Mutex<Option<CancellationToken>>);
     impl super::super::permission_gate::PermissionJudge for WaitingJudge {
         fn judge<'a>(
@@ -2151,7 +2569,9 @@ mod tests {
                         decision,
                         reason: "reviewed".into(),
                     })
-                    .ok_or(super::super::permission_gate::ReviewError)
+                    .ok_or(super::super::permission_gate::ReviewError(
+                        "answer malformed (invalid response)",
+                    ))
             })
         }
     }

@@ -5,9 +5,27 @@ requests land in `develop`.
 ## [Unreleased]
 
 ### Fixed
+
+- Writes and edits into Navai's config directory (`~/.config/navai`) always ask you;
+  metacognition can no longer approve them. Literal bash references to the config root also ask.
+- Scratch storage is checked through no-follow directory descriptors and inode identity;
+  unsafe ancestors, replacements and overlaps with config cannot obtain its exemption.
+
+- Metacognition permission review no longer fails when the model reasons at length.
+- Write/edit outside the project are reviewed like bash; approvals bind one destination.
+- Tool errors always carry a non-empty message.
 - **Terminal client**: permission requests can be selected and copied like other messages, in full
   (whole reason and command, no borders or truncation; a write's content up to 4096 bytes). While a
   request is open, `y` still allows it: drag with the mouse to copy it; `y` copies an answered one.
+
+### Added
+
+- Two independent scratch folders: private `$XDG_RUNTIME_DIR/navai` (fallback
+  `~/.cache/navai/scratch`) and shared `<temp_dir>/navai`. `permissions.scratch_dirs` is an
+  ordered list of absolute paths; `[]` disables it. Private storage is recommended first.
+
+
+
 
 ## [0.4.2] - 2026-10-04
 

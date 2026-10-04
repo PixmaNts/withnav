@@ -187,6 +187,19 @@ _Avoid_: tool, action (an action is what a pipeline branch decides)
 
 ## Permissions
 
+Navai's explicitly configured config directory is a protected root: native writes/edits ask the
+driver before any model review, including symlink aliases. Scratch never overlaps this root.
+Bash calls literally naming it ask too, but indirect bash effects cannot be fully confined.
+
+**Scratch directory**:
+Two independently checked roots default to private `$XDG_RUNTIME_DIR/navai` (fallback
+`~/.cache/navai/scratch`) then shared `<temp_dir>/navai`. `permissions.scratch_dirs` is an ordered
+absolute-path list; `[]` disables both. Native scratch approval binds the root inode through dispatch.
+These private owned roots are available across projects and children.
+Scratch changes count as project-local during review. The ordered absolute-path list is snapshotted
+and inherited by children; `[]` disables it. It must be a real directory owned by the current user, mode 0700.
+Outside-project file changes receive review like bash effects; approval never extends writable roots.
+
 **Permission review**:
 An advisory per-call classification by the instinct, followed for risky or outside-project
 mutations by synchronous metacognition review. Only explicit approval runs those calls;

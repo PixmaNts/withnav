@@ -114,14 +114,20 @@ impl ToolResult {
     }
 
     pub fn error(code: impl Into<String>, message: impl Into<String>) -> Self {
+        let message = message.into();
+        let message = if message.trim().is_empty() {
+            "tool failed without an explanation".to_string()
+        } else {
+            message
+        };
         Self {
             status: ToolStatus::Error,
-            output: String::new(),
+            output: message.clone(),
             truncated: None,
             error: Some(ToolErrorObj {
                 code: code.into(),
                 plugin_id: None,
-                message: message.into(),
+                message,
             }),
             metadata: Value::Null,
         }

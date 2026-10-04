@@ -121,6 +121,13 @@ pub struct EffectiveAgentSelection {
     pub reasoning_floor: usize,
 }
 
+/// Staged compaction installed only if its selection transaction succeeds.
+#[derive(Debug, Clone)]
+pub struct SelectionCheckpoint {
+    pub transcript: Vec<ChatMessage>,
+    pub checkpoint: Compaction,
+}
+
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -199,6 +206,7 @@ enum Write {
         agent: String,
         value: Option<AgentOverride>,
         selection: Option<EffectiveAgentSelection>,
+        staged: Option<SelectionCheckpoint>,
         envelopes: Vec<EventEnvelope>,
     },
     RecordSession {
@@ -319,6 +327,7 @@ impl HistoryStore {
             agent: agent.into(),
             value: Some(value),
             selection: None,
+            staged: None,
             envelopes: vec![],
         })
         .await
@@ -330,6 +339,7 @@ impl HistoryStore {
             agent: agent.into(),
             value: None,
             selection: None,
+            staged: None,
             envelopes: vec![],
         })
         .await
@@ -345,6 +355,21 @@ impl HistoryStore {
         agent: &str,
         value: Option<AgentOverride>,
         selection: EffectiveAgentSelection,
+        envelopes: Vec<EventEnvelope>,
+    ) -> Result<(), String> {
+        self.commit_agent_selection_with_checkpoint(id, agent, value, selection, None, envelopes)
+            .await
+    }
+
+    /// Atomically commits selection, optional staged transcript/checkpoint, and events.
+    /// With `None`, the existing transcript and checkpoint are preserved.
+    pub async fn commit_agent_selection_with_checkpoint(
+        &self,
+        id: Ulid,
+        agent: &str,
+        value: Option<AgentOverride>,
+        selection: EffectiveAgentSelection,
+        staged: Option<SelectionCheckpoint>,
         envelopes: Vec<EventEnvelope>,
     ) -> Result<(), String> {
         if agent != selection.primary_agent {
@@ -369,6 +394,7 @@ impl HistoryStore {
             agent: agent.into(),
             value,
             selection: Some(selection),
+            staged,
             envelopes,
         })
         .await
@@ -1138,6 +1164,7 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             agent,
             value,
             selection,
+            staged,
             envelopes,
         } => {
             let raw: Option<String> = tx
@@ -1166,6 +1193,20 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                 let floor = i64::try_from(selection.reasoning_floor)
                     .map_err(|e| WriteError::InvalidSelection(e.to_string()))?;
                 tx.execute("UPDATE sessions SET model=?2, model_resolution=?3, variant=?4, variant_override=?5, primary_agent=?6, reasoning_floor=?7 WHERE id=?1", params![id.to_string(), selection.model, serde_json::to_string(&selection.resolution)?, variant, variant_override, selection.primary_agent, floor])?;
+            }
+            if let Some(staged) = staged {
+                crate::agent::compaction::validate(&staged.checkpoint, &staged.transcript)
+                    .map_err(|e| WriteError::InvalidSelection(e.to_string()))?;
+                tx.execute(
+                    "UPDATE sessions SET transcript = ?2, checkpoint = ?3, updated_at = ?4
+                     WHERE id = ?1",
+                    params![
+                        id.to_string(),
+                        serde_json::to_string(&staged.transcript)?,
+                        staged.checkpoint.to_json(),
+                        now_rfc3339()
+                    ],
+                )?;
             }
             for event in envelopes {
                 insert_committed_event(&tx, &event).map_err(WriteError::InvalidSelection)?;
@@ -1812,12 +1853,17 @@ mod tests {
             EventEnvelope::new(id, 0, EventKind::ModelChanged, serde_json::json!({})),
             EventEnvelope::new(id, 1, EventKind::SessionAgentChanged, serde_json::json!({})),
         ];
+        let staged = SelectionCheckpoint {
+            transcript: (0..4).flat_map(exchange).collect(),
+            checkpoint: compaction(3, vec![6]),
+        };
         store
-            .commit_agent_selection(
+            .commit_agent_selection_with_checkpoint(
                 id,
                 "plan",
                 Some(value.clone()),
                 selection.clone(),
+                Some(staged.clone()),
                 events.clone(),
             )
             .await
@@ -1829,6 +1875,70 @@ mod tests {
         assert_eq!(before.meta.reasoning_floor, Some(4));
         assert_eq!(before.meta.agent_overrides["plan"], value);
         assert_eq!(before.envelopes.len(), 2);
+        assert_eq!(before.compaction, Some(staged.checkpoint.clone()));
+        assert_eq!(
+            serde_json::to_value(&before.transcript).unwrap(),
+            serde_json::to_value(&staged.transcript).unwrap()
+        );
+        let replacement = SelectionCheckpoint {
+            transcript: (0..5).flat_map(exchange).collect(),
+            checkpoint: compaction(7, vec![10]),
+        };
+        let invalid = SelectionCheckpoint {
+            transcript: vec![],
+            checkpoint: compaction(99, vec![]),
+        };
+        let mut invalid_selection = selection.clone();
+        invalid_selection.model = "p/invalid".into();
+        invalid_selection.resolution.model = "invalid".into();
+        invalid_selection.variant = None;
+        invalid_selection.reasoning_floor = 99;
+        assert!(store
+            .commit_agent_selection_with_checkpoint(
+                id,
+                "plan",
+                None,
+                invalid_selection,
+                Some(invalid),
+                vec![EventEnvelope::new(
+                    id,
+                    2,
+                    EventKind::ModelChanged,
+                    serde_json::json!({})
+                )],
+            )
+            .await
+            .is_err());
+        let invalid_after = store.load(id).await.unwrap().unwrap();
+        assert_eq!(
+            invalid_after.meta.agent_overrides,
+            before.meta.agent_overrides
+        );
+        assert_eq!(invalid_after.meta.last_seq, before.meta.last_seq);
+        assert_eq!(invalid_after.meta.model, before.meta.model);
+        assert_eq!(
+            invalid_after.meta.model_resolution,
+            before.meta.model_resolution
+        );
+        assert_eq!(invalid_after.meta.variant, before.meta.variant);
+        assert_eq!(
+            invalid_after.meta.variant_override,
+            before.meta.variant_override
+        );
+        assert_eq!(invalid_after.meta.primary_agent, before.meta.primary_agent);
+        assert_eq!(
+            invalid_after.meta.reasoning_floor,
+            before.meta.reasoning_floor
+        );
+        assert_eq!(
+            serde_json::to_value(&invalid_after.envelopes).unwrap(),
+            serde_json::to_value(&before.envelopes).unwrap()
+        );
+        assert_eq!(invalid_after.compaction, before.compaction);
+        assert_eq!(
+            serde_json::to_value(&invalid_after.transcript).unwrap(),
+            serde_json::to_value(&before.transcript).unwrap()
+        );
         let mut mismatched = selection.clone();
         mismatched.model = "p/mismatched".into();
         mismatched.resolution.model = "mismatched".into();
@@ -1836,11 +1946,12 @@ mod tests {
         mismatched.variant = None;
         mismatched.reasoning_floor = 99;
         let error = store
-            .commit_agent_selection(
+            .commit_agent_selection_with_checkpoint(
                 id,
                 "plan",
                 None,
                 mismatched,
+                Some(replacement.clone()),
                 vec![
                     EventEnvelope::new(id, 2, EventKind::ModelChanged, serde_json::json!({})),
                     EventEnvelope::new(
@@ -1869,6 +1980,11 @@ mod tests {
         assert_eq!(unchanged.meta.primary_agent, before.meta.primary_agent);
         assert_eq!(unchanged.meta.reasoning_floor, before.meta.reasoning_floor);
         assert_eq!(unchanged.meta.last_seq, before.meta.last_seq);
+        assert_eq!(unchanged.compaction, before.compaction);
+        assert_eq!(
+            serde_json::to_value(&unchanged.transcript).unwrap(),
+            serde_json::to_value(&before.transcript).unwrap()
+        );
         assert_eq!(
             serde_json::to_value(&unchanged.envelopes).unwrap(),
             serde_json::to_value(&before.envelopes).unwrap()
@@ -1882,7 +1998,14 @@ mod tests {
             events[1].clone(),
         ];
         assert!(store
-            .commit_agent_selection(id, "plan", None, failed, failing_events)
+            .commit_agent_selection_with_checkpoint(
+                id,
+                "plan",
+                None,
+                failed,
+                Some(replacement),
+                failing_events
+            )
             .await
             .is_err());
         let after = store.load(id).await.unwrap().unwrap();
@@ -1895,6 +2018,11 @@ mod tests {
         assert_eq!(after.meta.last_seq, before.meta.last_seq);
         assert_eq!(after.meta.agent_overrides, before.meta.agent_overrides);
         assert_eq!(after.envelopes.len(), 2);
+        assert_eq!(after.compaction, before.compaction);
+        assert_eq!(
+            serde_json::to_value(&after.transcript).unwrap(),
+            serde_json::to_value(&before.transcript).unwrap()
+        );
         store
             .commit_agent_selection(
                 id,
@@ -1931,6 +2059,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(store.meta(id).await.unwrap().unwrap().last_seq, 10);
+        let preserved = store.load(id).await.unwrap().unwrap();
+        assert_eq!(preserved.compaction, before.compaction);
+        assert_eq!(
+            serde_json::to_value(&preserved.transcript).unwrap(),
+            serde_json::to_value(&before.transcript).unwrap()
+        );
     }
 
     #[tokio::test]

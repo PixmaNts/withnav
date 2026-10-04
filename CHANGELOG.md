@@ -4,6 +4,16 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+- Select and copy conversation text with a mouse drag, or double-click a word; wrapping,
+  sidebar and tool labels stay out of the clipboard. The wheel scrolls the conversation and
+  dragging beyond its edge scrolls the selection. In transcript focus, `y` copies the whole
+  message or tool output; `ctrl+shift+c` copies selected text. Clipboard writes use OSC 52
+  (including over SSH); `shift+drag` keeps native terminal selection reachable.
+- Clipboard copying requires terminal OSC 52 support; under tmux use
+  `set -g set-clipboard on`. In transcript focus, `y` portably copies the selection
+  or focused block; `ctrl+shift+c` is best-effort and plain `ctrl+c` remains stop/quit.
+
 ## [0.4.1] - 2026-10-04
 
 Fixes from daily use of 0.4.0, mostly in the terminal client.

@@ -123,7 +123,7 @@ fn a_narrow_terminal_reaches_children_and_keeps_the_transcript_read_only() {
             .to_string()
     };
     insta::assert_snapshot!(line(0), @" ◆ subagent of Fix parser  ▌explore · —");
-    insta::assert_snapshot!(line(15), @" alt+w parent · alt+s subagents · page↑/↓ scroll · esc stop");
+    insta::assert_snapshot!(line(15), @" alt+w parent · drag copy text · y copy block");
     assert!((0..16).any(|y| line(y).contains("can't be written to")));
     assert!(!(0..16).any(|y| line(y).contains("Conversations")));
     let action = route_key(
@@ -3131,4 +3131,49 @@ fn the_header_keeps_the_committed_model_when_the_catalog_says_otherwise() {
         header.contains("luna · gpt-5.6-luna · 1k / 872k"),
         "{header}"
     );
+}
+
+#[test]
+fn permission_layout_is_fresh_with_one_render_cache() {
+    let mut s = asking(prompt("bash", json!({"command":"ls"}), ("folder", "/ws")));
+    let mut ui = UiState {
+        follow_bottom: true,
+        ..Default::default()
+    };
+    let editor = Editor::new();
+    let mut cache = RenderCache::default();
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    for stage in 0..4 {
+        if stage == 1 {
+            ui.deny_message = Some(navai::tui::state::DenyDraft {
+                request_id: "R1".into(),
+                text: "first".into(),
+            });
+        }
+        if stage == 2 {
+            ui.deny_message.as_mut().unwrap().text = "edited".into();
+        }
+        if stage == 3 {
+            s.answered_permission = Some("R1".into());
+        }
+        terminal
+            .draw(|f| navai::tui::view::draw(f, &s, &ui, &editor, &mut cache))
+            .unwrap();
+        let shown = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(
+            shown.contains(match stage {
+                0 => "allow once",
+                1 => "first",
+                2 => "edited",
+                _ => "sent, waiting for the server",
+            }),
+            "{shown}"
+        );
+    }
 }

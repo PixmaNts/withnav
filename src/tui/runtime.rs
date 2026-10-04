@@ -2,6 +2,7 @@
 //! view. The runtime is the only owner of `State`, `UiState`, the editor, the
 //! render cache, the client and the event streams (one per open tab).
 mod effects;
+mod selection;
 
 use std::time::Duration;
 
@@ -34,6 +35,7 @@ pub const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 /// Everything the loop owns, with no terminal attached: tests drive it
 /// directly.
 pub struct Runtime {
+    selection: selection::Selection,
     pub state: State,
     pub ui: UiState,
     pub editor: Editor,
@@ -70,6 +72,7 @@ impl Runtime {
             ..UiState::default()
         };
         Self {
+            selection: Default::default(),
             state,
             ui,
             editor: Editor::new(),
@@ -114,6 +117,30 @@ impl Runtime {
     /// Counts ticks since the start; a view that animates reads it through
     /// here. Marks the screen dirty while something on it moves.
     pub fn on_tick(&mut self) -> u64 {
+        if let Some((_, y)) = self.selection.pointer {
+            let area = self.cache.transcript.area;
+            if y < area.y || y >= area.bottom() {
+                self.ui.selected_block = None;
+                self.ui.follow_bottom = false;
+                self.dispatch(Action::Scroll(if y < area.y { 1 } else { -1 }));
+            }
+        }
+        if self
+            .selection
+            .notice_until
+            .is_some_and(|until| std::time::Instant::now() >= until)
+        {
+            self.selection.notice_until = None;
+            if self
+                .state
+                .notice
+                .as_deref()
+                .is_some_and(|s| s.starts_with("Copied ") || s.starts_with("Copy failed:"))
+            {
+                self.state.notice = None;
+                self.dirty = true;
+            }
+        }
         self.tick = self.tick.wrapping_add(1);
         // A background tab changes only its sidebar row; that row animates too.
         let animating = self
@@ -165,10 +192,16 @@ impl Runtime {
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 self.dirty = true;
+                if self.selection_key(key) {
+                    return;
+                }
+                self.selection.range = None;
+                self.selection.pointer = None;
                 if let Some(action) = route_key(key, &self.state, &mut self.ui, &mut self.editor) {
                     self.dispatch(action);
                 }
             }
+            Event::Mouse(event) => self.selection_mouse(event),
             Event::Paste(text) => {
                 self.dirty = true;
                 if let Some(action) = route_paste(text, &self.state, &mut self.ui, &mut self.editor)
@@ -177,6 +210,8 @@ impl Runtime {
                 }
             }
             Event::Resize(..) => {
+                self.selection.range = None;
+                self.selection.pointer = None;
                 self.dirty = true;
                 self.needs_clear = true;
             }
@@ -199,6 +234,7 @@ impl Runtime {
         // Another tab came forward: its `SetEditor` fills a fresh editor, then its parked one
         // takes over if it still holds that draft (a send accepted meanwhile cleared it).
         let left = std::mem::take(&mut self.editor);
+        self.selection = Default::default();
         self.run_effects(effects);
         if self.state.tabs.iter().any(|t| t.id == before) {
             self.parked.insert(before, left);
@@ -250,7 +286,19 @@ impl Runtime {
     }
 
     pub fn render(&mut self, frame: &mut ratatui::Frame<'_>) {
+        let previous_text = std::mem::take(&mut self.cache.transcript.text);
         view::draw(frame, &self.state, &self.ui, &self.editor, &mut self.cache);
+        if previous_text != self.cache.transcript.text {
+            self.selection = Default::default();
+        }
+        self.extend_selection();
+        if let Some((a, b)) = self.selection.range {
+            for &(x, y, c, d) in &self.cache.transcript.cells {
+                if c < a.max(b) && d > a.min(b) {
+                    frame.buffer_mut()[(x, y)].set_style(self.ui.theme.palette().selected());
+                }
+            }
+        }
         self.ui.prompt_shown = self.cache.prompt_shown.clone();
         self.ui.panel_drawn = self.cache.panel_drawn;
     }

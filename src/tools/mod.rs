@@ -223,8 +223,14 @@ impl Registry {
     }
 
     pub fn schemas(&self) -> Vec<ToolDef> {
+        self.schemas_filtered(|_| true)
+    }
+
+    /// Projects schemas without changing the session's frozen registry.
+    pub fn schemas_filtered(&self, mut allowed: impl FnMut(&str) -> bool) -> Vec<ToolDef> {
         self.tools
             .values()
+            .filter(|tool| allowed(tool.name()))
             .map(|t| {
                 let schema = t.schema();
                 let description = schema

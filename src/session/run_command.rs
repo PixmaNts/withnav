@@ -205,23 +205,13 @@ impl Service {
                 .and_then(|snapshot| serde_json::to_value(snapshot).ok())
                 .map(Done::data)
                 .ok_or_else(|| CommandFailure::Refused("no context snapshot yet".to_string())),
-            "variant"
-                if !arguments.is_empty()
-                    && self
-                        .assignments_configured()
-                        .map_err(CommandFailure::Server)? =>
-            {
+            "variant" if !arguments.is_empty() => {
                 self.selection_command(handle, "variant", arguments, operation_id, gate)
                     .await
             }
             "variant" => self.variant_command(session_id, handle, arguments).await,
             "new" => self.new_conversation(session_id, handle, arguments).await,
-            "agent"
-                if !arguments.is_empty()
-                    && self
-                        .assignments_configured()
-                        .map_err(CommandFailure::Server)? =>
-            {
+            "agent" if !arguments.is_empty() => {
                 self.selection_command(handle, "agent", arguments, operation_id, gate)
                     .await
             }
@@ -524,8 +514,7 @@ impl Service {
         })))
     }
 
-    /// `/new [alias]`: a fresh session in the same workspace, with the
-    /// alias given or this session's own. This one is left as it is.
+    /// `/new [agent]`: a fresh assigned selection, never inherited overrides.
     async fn new_conversation(
         &self,
         session_id: SessionId,
@@ -533,23 +522,10 @@ impl Service {
         arguments: &str,
     ) -> Result<Done, CommandFailure> {
         let mut words = arguments.split_whitespace();
-        let alias = words.next();
+        let agent = words.next();
         if words.next().is_some() {
-            return Err(CommandFailure::Refused("usage: /new [alias]".to_string()));
+            return Err(CommandFailure::Refused("usage: /new [agent]".to_string()));
         }
-        let selected = handle.selected();
-        let current = selected.alias.clone();
-        let alias = alias.unwrap_or(&current).to_string();
-        // The same alias keeps this session's variant; another alias starts
-        // on its own default.
-        let variant = if alias == current {
-            match selected.variant_name() {
-                Some(name) => VariantChoice::Exact(name),
-                None => VariantChoice::Clear,
-            }
-        } else {
-            VariantChoice::Default
-        };
         let editor = self
             .history()
             .meta(session_id)
@@ -557,11 +533,11 @@ impl Service {
             .map_err(|e| CommandFailure::Server(ServerError::History(e)))?
             .is_some_and(|meta| meta.editor);
         match self
-            .create_session_with_variant(&handle.workspace, Some(&alias), editor, variant)
+            .create_session_as(&handle.workspace, None, editor, agent)
             .await
         {
             Ok(id) => Ok(Done {
-                data: json!({ "session_id": id.to_string(), "model": alias }),
+                data: json!({ "session_id": id.to_string() }),
                 created: Some(id),
                 published: false,
             }),
@@ -665,6 +641,9 @@ impl Service {
         if arguments.split_whitespace().count() != 1 {
             return Err(CommandFailure::Refused(format!("usage: /{command} <name>")));
         }
+        if handle.status.selection.compacting() {
+            return Err(CommandFailure::Refused(COMPACTING_ERROR.into()));
+        }
         if handle.status.selection.is_running() {
             return Err(CommandFailure::Refused(
                 "the agent is working or held: wait for the turn to end".into(),
@@ -758,11 +737,16 @@ mod tests {
             format!(
                 r#"{{"providers":{{"mock":{{"base_url":"{url}","api_key_env":"K",
             "headers":{{}},"connect_timeout_ms":2000,"request_timeout_ms":20000}}}},
-            "models":{{"default":{{"provider":"mock","model":"m","supports_tools":true,
+             "models":{{"mock/m":{{"provider":"mock","model":"m","supports_tools":true,
             "reasoning_history":"preserve","context_window":{window}}}}}}}"#
             ),
         )
         .expect("models");
+        std::fs::write(
+            dir.join("cfg/config.json"),
+            r#"{"agents":{"build":{"model":"mock/m"},"plan":{"model":"mock/m"}}}"#,
+        )
+        .unwrap();
         Service::new(SessionConfig {
             models_path: Some(dir.join("models.json")),
             config_dir: dir.join("cfg"),
@@ -1014,9 +998,9 @@ mod tests {
             r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1","api_key_env":"K",
             "headers":{},"connect_timeout_ms":200,"request_timeout_ms":200}},
             "models":{
-              "default":{"provider":"mock","model":"m","supports_tools":true,
+              "mock/m":{"provider":"mock","model":"m","supports_tools":true,
                 "reasoning_history":"preserve","context_window":128000},
-              "other":{"provider":"mock","model":"m2","supports_tools":true,
+              "mock/m2":{"provider":"mock","model":"m2","supports_tools":true,
                 "reasoning_history":"preserve","context_window":128000,
                 "variants":{"high":{"reasoning_effort":"high"},"low":{"reasoning_effort":"low"}},
                 "default_variant":"high"}}}"#,
@@ -1047,8 +1031,8 @@ mod tests {
         let child = service.session_summary(new_id).await.unwrap();
         assert_eq!(
             (child.model.clone(), child.variant.clone()),
-            (summary.model.clone(), summary.variant.clone()),
-            "/new inherits the one selection the summary shows"
+            ("mock/m".to_string(), None),
+            "/new starts from the default agent assignment without session overrides"
         );
         service.close_session(new_id).await.unwrap();
         let _ = dir;
@@ -1078,7 +1062,7 @@ mod tests {
         let installed = service.handle(id).unwrap().status.arm_switch_barrier();
         let switch = tokio::spawn({
             let service = service.clone();
-            async move { service.run_command(id, "model", "other").await }
+            async move { service.run_command(id, "model", "mock/m2").await }
         });
 
         // The row is written, nothing is installed yet: the old pair. The
@@ -1089,7 +1073,7 @@ mod tests {
         let during = handle.selected();
         assert_eq!(
             (during.alias.as_str(), during.variant_name()),
-            ("default", None)
+            ("mock/m", None)
         );
         let gauge = service.context(id).await.unwrap();
         assert_eq!((gauge.model.as_str(), gauge.variant), ("mock/m", None));

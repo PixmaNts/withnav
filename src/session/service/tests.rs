@@ -10,7 +10,7 @@ async fn switching_uses_one_captured_endpoint_variant_and_source_generation() {
     )
     .unwrap();
     crate::provider::auth::set_key(&service.config.config_dir, "mock", "test").unwrap();
-    std::fs::write(dir.path().join("models.json"),r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"key":{"provider":"mock","model":"old","context_window":128000,"variants":{"low":{"reasoning_effort":"low"}}}}}"#).unwrap();
+    std::fs::write(dir.path().join("models.json"),r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/old":{"provider":"mock","model":"old","context_window":128000,"variants":{"low":{"reasoning_effort":"low"}}}}}"#).unwrap();
     let id = service
         .create_session(dir.path(), None, false)
         .await
@@ -23,7 +23,7 @@ async fn switching_uses_one_captured_endpoint_variant_and_source_generation() {
     });
     barrier.reached.notified().await;
     std::fs::write(dir.path().join("cfg/config.json"), "{}").unwrap();
-    std::fs::write(dir.path().join("models.json"),r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:2/v1"}},"models":{"key":{"provider":"mock","model":"new","context_window":128000}}}"#).unwrap();
+    std::fs::write(dir.path().join("models.json"),r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:2/v1"}},"models":{"mock/new":{"provider":"mock","model":"new","context_window":128000}}}"#).unwrap();
     barrier.release.notify_one();
     assert!(task.await.unwrap().unwrap().ok);
     let meta = service.history.meta(id).await.unwrap().unwrap();
@@ -60,7 +60,7 @@ async fn preparation_uses_captured_assignment_catalog_and_variant_generation() {
         std::fs::Permissions::from_mode(0o600),
     )
     .unwrap();
-    std::fs::write(dir.path().join("models.json"), r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"key":{"provider":"mock","model":"old","context_window":128000}}}"#).unwrap();
+    std::fs::write(dir.path().join("models.json"), r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/old":{"provider":"mock","model":"old","context_window":128000}}}"#).unwrap();
     let barrier = Arc::new(crate::session::run_command::Barrier::default());
     *service.preparation_barrier.lock().unwrap() = Some(barrier.clone());
     let task = tokio::spawn({
@@ -74,7 +74,7 @@ async fn preparation_uses_captured_assignment_catalog_and_variant_generation() {
         r#"{"default_agent":"plan","agents":{"plan":{"model":"mock/new"}}}"#,
     )
     .unwrap();
-    std::fs::write(dir.path().join("models.json"), r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:2/v1"}},"models":{"key":{"provider":"mock","model":"new","context_window":128000}}}"#).unwrap();
+    std::fs::write(dir.path().join("models.json"), r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:2/v1"}},"models":{"mock/new":{"provider":"mock","model":"new","context_window":128000}}}"#).unwrap();
     barrier.release.notify_one();
     let id = task.await.unwrap().unwrap();
     let meta = service.history.meta(id).await.unwrap().unwrap();

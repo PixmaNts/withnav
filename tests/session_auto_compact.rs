@@ -345,8 +345,8 @@ fn two_models_both(
         json!({
             "providers": {"a": provider(&a.url), "b": provider(&b.url)},
             "models": {
-                "default": entry("a", "model-a", window_a),
-                "small": entry("b", "model-b", window_b),
+                "a/model-a": entry("a", "model-a", window_a),
+                "b/model-b": entry("b", "model-b", window_b),
             }
         })
         .to_string(),
@@ -357,6 +357,7 @@ fn two_models_both(
         json!({"a": {"api_key": "key-a"}, "b": {"api_key": "key-b"}}).to_string(),
     )
     .expect("auth.json");
+    std::fs::write(config.config_dir.join("config.json"),json!({"agents":{"build":{"model":"a/model-a"},"plan":{"model":"a/model-a"}},"permissions":{"scratch_dirs":[]}}).to_string()).unwrap();
     AppState::new(config).expect("state")
 }
 
@@ -376,7 +377,7 @@ async fn a_switch_to_a_smaller_window_compacts_with_the_old_model_then_switches(
     let id = seeded(&state, &env.ws, 8).await;
     let sub = state.subscribe(id, None).await.unwrap();
 
-    let out = state.run_command(id, "model", "small").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(out.ok, "{out:?}");
     let data = out.data.unwrap();
     assert_eq!(data["changed"], true);
@@ -434,7 +435,7 @@ async fn a_switch_that_cannot_be_made_to_fit_is_refused_without_compacting() {
     let state = two_models(&env, &a, &b, 8_000);
     let id = seeded(&state, &env.ws, 8).await;
 
-    let out = state.run_command(id, "model", "small").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(!out.ok, "{out:?}");
     let error = out.error.unwrap();
     assert!(error.contains("cannot be compacted to fit it"), "{error}");
@@ -460,7 +461,7 @@ async fn a_switch_whose_summary_fails_changes_nothing() {
     let state = two_models(&env, &a, &b, 20_000);
     let id = seeded(&state, &env.ws, 8).await;
 
-    let out = state.run_command(id, "model", "small").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(!out.ok, "{out:?}");
     assert!(out
         .error
@@ -536,7 +537,7 @@ async fn a_switched_session_with_large_old_reasoning_compacts_and_continues() {
         .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
-    let out = state.run_command(id, "model", "small").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(out.ok, "{out:?}");
     assert!(
         out.data.as_ref().unwrap()["compacted"].is_null(),
@@ -702,7 +703,7 @@ async fn a_failed_switch_rolls_back_the_staged_checkpoint_and_selection() {
         .unwrap();
     }
 
-    let out = state.run_command(id, "model", "small").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(!out.ok, "{out:?}");
     assert!(out.error.unwrap().contains("could not be saved"));
     assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
@@ -711,7 +712,7 @@ async fn a_failed_switch_rolls_back_the_staged_checkpoint_and_selection() {
     let notices = stored(&state, id, "context.compacted").await;
     assert!(notices.is_empty());
     let meta = state.history().meta(id).await.unwrap().unwrap();
-    assert_eq!(meta.model, "default");
+    assert_eq!(meta.model, "a/model-a");
     assert!(!meta.model_resolution.unwrap().contains("model-b"));
     let (_, _, checkpoint) = state.history().load_for_resume(id).await.unwrap().unwrap();
     assert!(checkpoint.is_none());
@@ -756,8 +757,8 @@ async fn a_stop_after_selection_commit_completes_the_new_identity_before_teardow
     let state = two_models(&env, &a, &b, 20_000);
     let path = env.root.join("models.json");
     let mut models: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    models["models"]["small"]["variants"] = json!({"high":{"reasoning_effort":"high"}});
-    models["models"]["small"]["default_variant"] = json!("high");
+    models["models"]["b/model-b"]["variants"] = json!({"high":{"reasoning_effort":"high"}});
+    models["models"]["b/model-b"]["default_variant"] = json!("high");
     std::fs::write(path, models.to_string()).unwrap();
     std::fs::write(
         env.root.join("cfg/config.json"),
@@ -938,7 +939,7 @@ async fn a_failed_switch_preserves_an_existing_checkpoint_and_the_same_live_runt
         rusqlite::params![id.to_string(), (head + 1) as i64],
     )
     .unwrap();
-    let out = state.run_command(id, "model", "small").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(!out.ok, "{out:?}");
     assert!(out.error.unwrap().contains("could not be saved"));
     assert_eq!(

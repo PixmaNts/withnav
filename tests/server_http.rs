@@ -496,7 +496,7 @@ async fn create_session_without_a_known_window_is_422_no_context_window() {
     assert_eq!(
         body["error"],
         format!(
-            "Chat alias 'default' (provider 'mock', model 'mock-model') has no known context window: the provider's model list did not report one. Set \"context_window\" for it in {}, or make the provider reachable and try again.",
+            "Chat alias 'mock/mock-model' (provider 'mock', model 'mock-model') has no known context window: the provider's model list did not report one. Set \"context_window\" for it in {}, or make the provider reachable and try again.",
             cfg.models_path().display()
         )
     );

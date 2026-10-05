@@ -333,12 +333,12 @@ async fn abandoned_mirrored_permission_is_expired_on_resume() {
     let child = ulid::Ulid::new();
     let request = ulid::Ulid::new();
     store
-        .record_session(parent, &ws.display().to_string(), "default", false)
+        .record_session(parent, &ws.display().to_string(), "mock/mock-model", false)
         .bounded(file!(), line!())
         .await
         .unwrap();
     store
-        .record_session(child, &ws.display().to_string(), "default", false)
+        .record_session(child, &ws.display().to_string(), "mock/mock-model", false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -858,12 +858,12 @@ async fn recovery_terminalizes_unfinished_child_without_tool_replay() {
     let parent = ulid::Ulid::new();
     let child = ulid::Ulid::new();
     history
-        .record_session(parent, &ws.display().to_string(), "default", false)
+        .record_session(parent, &ws.display().to_string(), "mock/mock-model", false)
         .bounded(file!(), line!())
         .await
         .unwrap();
     history
-        .record_session(child, &ws.display().to_string(), "default", false)
+        .record_session(child, &ws.display().to_string(), "mock/mock-model", false)
         .bounded(file!(), line!())
         .await
         .unwrap();

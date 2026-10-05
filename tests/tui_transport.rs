@@ -600,7 +600,7 @@ async fn create_without_a_known_window_shows_the_refusal() {
     assert_eq!(
         error,
         format!(
-            "HTTP 422 Unprocessable Entity: Chat alias 'default' (provider 'mock', model 'mock-model') has no known context window: the provider's model list did not report one. Set \"context_window\" for it in {}, or make the provider reachable and try again.",
+            "HTTP 422 Unprocessable Entity: Chat alias 'mock/mock-model' (provider 'mock', model 'mock-model') has no known context window: the provider's model list did not report one. Set \"context_window\" for it in {}, or make the provider reachable and try again.",
             cfg.models_path().display()
         )
     );

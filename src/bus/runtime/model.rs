@@ -226,8 +226,9 @@ pub(super) async fn run(
     let target = (switcher.resolve)(request.clone()).await?;
     if target.previous == target.new
         || (request.command == "model"
-            && !alias.contains('/')
-            && target.alias == (switcher.current_alias)())
+            && target.previous.model == target.new.model
+            && target.previous.agent == target.new.agent
+            && target.previous.variant == target.new.variant)
     {
         return Ok(Switched {
             data: json!({"changed": false, "agent": target.previous.agent, "model": target.previous.model, "variant": target.previous.variant, "selection": target.previous}),
@@ -402,6 +403,7 @@ pub(super) async fn run(
             "previous": if request.command == "agent" { json!(target.previous.agent) } else { identity_json(&target.previous) },
             "new": identity_json(&target.new),
             "variant": variant_name,
+            "offered": target.offer.keys().collect::<Vec<_>>(),
             "window": window,
             "input_budget": budget,
             "from_message": from_message,

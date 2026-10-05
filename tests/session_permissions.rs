@@ -490,6 +490,12 @@ async fn a_restart_expires_the_pending_request_without_replaying_it() {
 }
 
 fn run_navai(env: &Env, models: &Path, extra: &[&str]) -> std::process::Output {
+    std::fs::create_dir_all(env.root.join("config/navai")).unwrap();
+    std::fs::write(
+        env.root.join("config/navai/config.json"),
+        r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#,
+    )
+    .unwrap();
     std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
         .args(["run", "--workspace"])
         .arg(&env.ws)

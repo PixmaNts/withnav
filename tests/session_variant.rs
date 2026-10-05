@@ -49,7 +49,7 @@ async fn child_inherits_parent_variant_and_saved_resolution() {
     let parent = state
         .create_session_with_variant(
             &ws,
-            Some("default"),
+            Some("mock/mock-model"),
             false,
             VariantChoice::Exact("low".into()),
         )
@@ -58,8 +58,8 @@ async fn child_inherits_parent_variant_and_saved_resolution() {
     let before = state.history().meta(parent).await.unwrap().unwrap();
     let path = tmp.path().join("models.json");
     let mut models: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    models["models"]["default"]["context_window"] = json!(256_000);
-    models["models"]["default"]["variants"]["low"] = json!({"reasoning_effort":"high"});
+    models["models"]["mock/mock-model"]["context_window"] = json!(256_000);
+    models["models"]["mock/mock-model"]["variants"]["low"] = json!({"reasoning_effort":"high"});
     std::fs::write(path, models.to_string()).unwrap();
     let child = state
         .create_child_session(parent, "explore", "inspect")
@@ -113,7 +113,9 @@ async fn creation_picks_default_named_none_or_fails() {
         .unwrap_err();
     assert!(matches!(err, ServerError::UnknownVariant { .. }), "{err:?}");
     let text = err.to_string();
-    assert!(text.contains("'default'") && text.contains("'max'") && text.contains("high, low"));
+    assert!(
+        text.contains("'mock/mock-model'") && text.contains("'max'") && text.contains("high, low")
+    );
     assert_eq!(
         state.session_count(),
         before,
@@ -171,7 +173,7 @@ async fn resume_keeps_the_variant_and_a_missing_one_is_an_error() {
         "{err:?}"
     );
     let text = err.to_string();
-    for part in ["'default'", "'low'", "models.json", &id.to_string()] {
+    for part in ["'mock/mock-model'", "'low'", "models.json", &id.to_string()] {
         assert!(text.contains(part), "{part} in {text}");
     }
     assert_eq!(saved(&state, id).await.as_deref(), Some("low"), "kept");
@@ -361,7 +363,7 @@ async fn http_create_and_get_carry_the_variant() {
 // Then it is saved and reported, the running request is unchanged, and the
 //      next request carries the new value
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_switch_during_a_turn_applies_at_the_next_turn() {
+async fn variant_changes_are_refused_during_a_turn_and_apply_when_idle() {
     let release = Arc::new(tokio::sync::Notify::new());
     let provider = spawn_gated_provider(vec![done_body(), done_body()], Arc::clone(&release)).await;
     let (tmp, ws) = tmp_ws();
@@ -373,12 +375,11 @@ async fn a_switch_during_a_turn_applies_at_the_next_turn() {
     wait_for("the first request", || provider.requests().len() == 1).await;
 
     let out = state.run_command(id, "variant", "low").await.unwrap();
-    assert!(out.ok, "{out:?}");
-    assert_eq!(out.data.unwrap()["applies"], "next_turn");
-    assert_eq!(saved(&state, id).await.as_deref(), Some("low"));
+    assert!(!out.ok, "{out:?}");
+    assert_eq!(saved(&state, id).await.as_deref(), Some("high"));
     assert_eq!(
         state.session_summary(id).await.unwrap().variant.as_deref(),
-        Some("low")
+        Some("high")
     );
 
     release.notify_one();
@@ -387,6 +388,7 @@ async fn a_switch_during_a_turn_applies_at_the_next_turn() {
     })
     .await;
 
+    assert!(state.run_command(id, "variant", "low").await.unwrap().ok);
     let sub = state.subscribe(id, None).await.unwrap();
     send_text(&state, id, "second").await;
     collect_until(sub, |e| {
@@ -438,6 +440,12 @@ async fn navai_run_variant_reaches_the_wire() {
     let (tmp, ws) = tmp_ws();
     let cfg = config(tmp.path(), &provider.url, None);
     cfg.config();
+    std::fs::create_dir_all(tmp.path().join("config/navai")).unwrap();
+    std::fs::write(
+        tmp.path().join("config/navai/config.json"),
+        r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#,
+    )
+    .unwrap();
     let (root, models) = (tmp.path().to_path_buf(), cfg.models_path());
     let run = move |variant: &'static str, ws: std::path::PathBuf| {
         let (root, models) = (root.clone(), models.clone());
@@ -700,7 +708,7 @@ async fn a_real_none_tier_is_selected_by_name_and_off_clears() {
 // Then it is refused: the inherited name is looked up exactly, and does not
 //      become "no variant"
 #[tokio::test]
-async fn new_inherits_an_exact_none_variant_and_never_clears_it() {
+async fn new_starts_from_assignment_without_inheriting_variant_override() {
     let (tmp, ws) = tmp_ws();
     let cfg = TestServerConfig::unreachable(tmp.path()).variants(with_none_tier(), None);
     let state = cfg.state();
@@ -716,16 +724,19 @@ async fn new_inherits_an_exact_none_variant_and_never_clears_it() {
         .unwrap()
         .parse()
         .unwrap();
-    assert_eq!(saved(&state, fresh).await.as_deref(), Some("none"));
+    assert_eq!(saved(&state, fresh).await, None);
 
     TestServerConfig::unreachable(tmp.path())
         .variants(json!({"high": {"reasoning_effort": "high"}}), None)
         .config();
     let before = state.session_count();
     let out = state.run_command(id, "new", "").await.unwrap();
-    assert!(!out.ok, "{out:?}");
-    assert!(out.error.unwrap().contains("'none'"));
-    assert_eq!(state.session_count(), before, "no unvaried session made");
+    assert!(out.ok, "{out:?}");
+    assert_eq!(
+        state.session_count(),
+        before + 1,
+        "new uses the current assignment rather than the saved override"
+    );
 }
 
 // Given a models.json found in the workspace (no explicit path)
@@ -935,15 +946,20 @@ async fn a_reread_offer_of_a_retargeted_alias_is_refused() {
 
     let path = cfg.models_path();
     let mut models: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    models["models"]["default"]["model"] = json!("other-model");
-    models["models"]["default"]["variants"] = json!({"high": {"reasoning_effort": "high"}});
+    let mut entry = models["models"]
+        .as_object_mut()
+        .unwrap()
+        .remove("mock/mock-model")
+        .unwrap();
+    entry["model"] = json!("other-model");
+    entry["variants"] = json!({"high": {"reasoning_effort": "high"}});
+    models["models"]["mock/other-model"] = entry;
     std::fs::write(&path, models.to_string()).unwrap();
 
     let out = state.run_command(id, "variant", "high").await.unwrap();
     assert!(!out.ok, "{out:?}");
     let error = out.error.unwrap();
     assert!(error.contains("mock-model"), "{error}");
-    assert!(error.contains("other-model"), "{error}");
     let meta = state.history().meta(id).await.unwrap().unwrap();
     assert_eq!(meta.variant, None);
     assert_eq!(meta.variant_override, None);

@@ -93,9 +93,9 @@ mod tests {
 
     fn catalog() -> ModelsConfig {
         ModelsConfig::parse(&json!({"providers":{"gateway":{"base_url":"http://127.0.0.1:1/v1"}},"models":{
-            "arbitrary-fim-key":{"provider":"gateway","model":"edit","api":"fim"},
-            "arbitrary-judge-key":{"provider":"gateway","model":"typesafe/jev","api":"systemone"},
-            "arbitrary-chat-key":{"provider":"gateway","model":"combo/chat","context_window":128000,"default_variant":"high","variants":{"low":{"reasoning_effort":"low"},"high":{"reasoning_effort":"high"}}}
+            "gateway/edit":{"provider":"gateway","model":"edit","api":"fim"},
+            "gateway/typesafe/jev":{"provider":"gateway","model":"typesafe/jev","api":"systemone"},
+            "gateway/combo/chat":{"provider":"gateway","model":"combo/chat","context_window":128000,"default_variant":"high","variants":{"low":{"reasoning_effort":"low"},"high":{"reasoning_effort":"high"}}}
         }}).to_string()).unwrap()
     }
 
@@ -138,7 +138,7 @@ mod tests {
         let mut models = catalog();
         models
             .models
-            .get_mut("arbitrary-chat-key")
+            .get_mut("gateway/combo/chat")
             .unwrap()
             .default_variant = Some("obsolete".into());
         let dir = tempfile::tempdir().unwrap();
@@ -201,7 +201,7 @@ mod tests {
     #[tokio::test]
     async fn discovered_low_is_selected_only_for_default_assignment() {
         let mut models = catalog();
-        let model = models.models.get_mut("arbitrary-chat-key").unwrap();
+        let model = models.models.get_mut("gateway/combo/chat").unwrap();
         model.variants = None;
         models.providers.get_mut("gateway").unwrap().catalog_format =
             Some(crate::provider::config::CatalogFormat::Omniroute);

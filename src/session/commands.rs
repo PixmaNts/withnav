@@ -28,12 +28,12 @@ pub const COMMANDS: [CommandSpec; 8] = [
         name: "model",
         description:
             "Show the session's model alias, its context window and where the window comes from, or switch to another alias",
-        args_hint: "[alias]",
+        args_hint: "[model]",
     },
     CommandSpec {
         name: "new",
         description: "Start a fresh conversation; this one is kept",
-        args_hint: "[alias]",
+        args_hint: "[agent]",
     },
     CommandSpec {
         name: "stop",

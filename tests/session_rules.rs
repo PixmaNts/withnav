@@ -228,6 +228,12 @@ async fn navai_run_sends_the_rules_too() {
     let provider = provider(&["done"]).await;
     let config = TestServerConfig::mock(&env.root, &provider.url);
     config.config();
+    std::fs::create_dir_all(env.root.join("config/navai")).unwrap();
+    std::fs::write(
+        env.root.join("config/navai/config.json"),
+        r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#,
+    )
+    .unwrap();
     let models = env.root.join("models.json");
     let (ws, root) = (env.ws.clone(), env.root.clone());
     let out = tokio::task::spawn_blocking(move || {

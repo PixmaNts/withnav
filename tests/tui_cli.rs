@@ -19,6 +19,14 @@ fn tui_with(args: &[&str], env: &[(&str, &str)]) -> Run {
     let config = dirs.path().join("config");
     std::fs::create_dir_all(&data).unwrap();
     std::fs::create_dir_all(&config).unwrap();
+    std::fs::create_dir_all(config.join("navai")).unwrap();
+    std::fs::write(
+        config.join("navai/config.json"),
+        r#"{"agents":{"build":{"model":"mock/model"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(config.join("navai/models.json"),r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/model":{"provider":"mock","model":"model","context_window":128000,"supports_tools":true}}}"#).unwrap();
+    navai::provider::auth::set_key(&config.join("navai"), "mock", "test-key").unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_navai"));
     command
         .arg("tui")

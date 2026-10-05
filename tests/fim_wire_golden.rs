@@ -205,7 +205,7 @@ async fn cancelled_call_stops_waiting() {
 #[test]
 fn repo_models_json_resolves_the_reflex_alias() {
     let cfg = ModelsConfig::parse(include_str!("../models.example.json")).unwrap();
-    let r = cfg.resolve("reflex").unwrap();
+    let r = cfg.resolve("inception/mercury-edit-2").unwrap();
     assert_eq!(r.provider_name, "inception");
     assert_eq!(r.model.model, "mercury-edit-2");
     assert_eq!(r.model.api, ApiKind::Fim);

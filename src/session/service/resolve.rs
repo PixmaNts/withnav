@@ -137,7 +137,6 @@ pub(crate) struct Offer {
 
 pub(super) struct PreparationConfig {
     pub settings: crate::settings::Settings,
-    pub configured: bool,
     pub catalog: crate::provider::config::ModelsConfig,
     pub path: PathBuf,
 }
@@ -156,7 +155,6 @@ impl Service {
     ) -> Result<PreparationConfig, ServerError> {
         let settings = crate::settings::load(&self.config.config_dir)
             .map_err(|e| ServerError::History(e.to_string()))?;
-        let configured = settings.has_assignment_configuration();
         let (catalog, path) = load_models(
             self.config.models_path.as_deref(),
             workspace,
@@ -164,15 +162,9 @@ impl Service {
         )?;
         Ok(PreparationConfig {
             settings,
-            configured,
             catalog,
             path,
         })
-    }
-    pub(crate) fn assignments_configured(&self) -> Result<bool, ServerError> {
-        let settings = crate::settings::load(&self.config.config_dir)
-            .map_err(|e| ServerError::History(e.to_string()))?;
-        Ok(settings.has_assignment_configuration())
     }
 
     pub(super) fn assigned_from_snapshot(
@@ -185,6 +177,16 @@ impl Service {
         use crate::provider::assignments::{AgentModel, AssignmentResolver};
         use crate::settings::AssignmentVariant;
         let resolver = AssignmentResolver::new(&captured.catalog, &captured.settings);
+        if child
+            && captured
+                .settings
+                .agent_assignment(agent)
+                .map_err(ServerError::History)?
+                .is_none()
+            && agents.get(agent).and_then(|a| a.model.as_deref()).is_none()
+        {
+            return Ok(None);
+        }
         let records: Vec<_> = agents
             .all()
             .map(|a| (a.id.as_str(), a.model.as_deref(), a.mode.is_primary()))
@@ -268,14 +270,9 @@ impl Service {
             workspace,
             &self.config.config_dir,
         )?;
-        let resolved = if self.assignments_configured()? {
-            let name = crate::provider::model_name::ModelName::parse(alias, &config)
-                .map_err(|e| ServerError::History(e.to_string()))?;
-            config.resolve_name(&name)?
-        } else {
-            // Internal transition for unconfigured installations; remove at catalog contract cutover.
-            config.resolve(alias)?
-        };
+        let name = crate::provider::model_name::ModelName::parse(alias, &config)
+            .map_err(|e| ServerError::History(e.to_string()))?;
+        let resolved = config.resolve_name(&name)?;
         Ok((resolved, path))
     }
 
@@ -601,14 +598,9 @@ impl Service {
                     let captured = service
                         .capture_preparation(&workspace)
                         .map_err(|e| e.to_string())?;
-                    let configured = captured.configured;
-                    let assignment = if configured {
-                        service
-                            .assigned_from_snapshot(&captured, &agents, agent_name, false)
-                            .map_err(|e| e.to_string())?
-                    } else {
-                        None
-                    };
+                    let assignment = service
+                        .assigned_from_snapshot(&captured, &agents, agent_name, false)
+                        .map_err(|e| e.to_string())?;
                     let mut provenance = assignment
                         .as_ref()
                         .map(|a| a.4.clone())
@@ -618,11 +610,7 @@ impl Service {
                             variant: VariantSource::ModelDefault,
                         });
                     let (alias, choice, override_value) = if request.command == "agent" {
-                        let assigned = if configured {
-                            assignment.as_ref().map(|a| (a.0.clone(), a.1.clone()))
-                        } else {
-                            None
-                        };
+                        let assigned = assignment.as_ref().map(|a| (a.0.clone(), a.1.clone()));
                         let (base, variant) =
                             assigned.unwrap_or((current.alias.clone(), VariantChoice::Default));
                         let choice = match saved.as_ref().map(|s| &s.variant) {
@@ -650,7 +638,7 @@ impl Service {
                             model: saved.as_ref().and_then(|s| s.model.clone()),
                             variant: choice.clone().into(),
                         };
-                        let (alias, inherited_choice) = if value.model.is_none() && configured {
+                        let (alias, inherited_choice) = if value.model.is_none() {
                             assignment
                                 .as_ref()
                                 .map(|a| (a.0.clone(), a.1.clone()))
@@ -671,7 +659,7 @@ impl Service {
                         };
                         (request.alias.clone(), VariantChoice::Default, Some(value))
                     };
-                    let resolved = if configured {
+                    let resolved = {
                         let name = crate::provider::model_name::ModelName::parse(
                             &alias,
                             &captured.catalog,
@@ -680,11 +668,6 @@ impl Service {
                         captured
                             .catalog
                             .resolve_name(&name)
-                            .map_err(|e| e.to_string())?
-                    } else {
-                        captured
-                            .catalog
-                            .resolve(&alias)
                             .map_err(|e| e.to_string())?
                     };
                     #[cfg(test)]

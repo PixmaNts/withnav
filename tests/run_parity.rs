@@ -238,6 +238,12 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
     std::fs::create_dir_all(root.join("ws")).unwrap();
     let data_home = root.join("data");
     let config_home = root.join("config");
+    std::fs::create_dir_all(config_home.join("navai")).unwrap();
+    std::fs::write(
+        config_home.join("navai/config.json"),
+        r#"{"agents":{"build":{"model":"mock/m"}}}"#,
+    )
+    .unwrap();
     let models = root.join("models.json");
     std::fs::write(
         &models,
@@ -247,7 +253,7 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
                 "api_key_env": "NAVAI_RUN_PARITY_KEY",
                 "headers": {}, "connect_timeout_ms": 2000, "request_timeout_ms": 30000
             }},
-            "models": { "default": {
+            "models": { "mock/m": {
                 "provider": "mock", "model": "m", "reasoning_history": "preserve",
                 "context_window": 128000
             }}
@@ -378,6 +384,12 @@ async fn run_binary_refuses_an_alias_without_a_known_window() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     std::fs::create_dir_all(root.join("ws")).unwrap();
+    std::fs::create_dir_all(root.join("config/navai")).unwrap();
+    std::fs::write(
+        root.join("config/navai/config.json"),
+        r#"{"agents":{"build":{"model":"mock/m"}}}"#,
+    )
+    .unwrap();
     let models = root.join("models.json");
     std::fs::write(
         &models,
@@ -387,7 +399,7 @@ async fn run_binary_refuses_an_alias_without_a_known_window() {
                 "api_key_env": "NAVAI_RUN_PARITY_KEY",
                 "headers": {}, "connect_timeout_ms": 2000, "request_timeout_ms": 30000
             }},
-            "models": { "default": {
+            "models": { "mock/m": {
                 "provider": "mock", "model": "m", "reasoning_history": "preserve"
             }}
         })
@@ -423,7 +435,7 @@ async fn run_binary_refuses_an_alias_without_a_known_window() {
 
     let stderr = String::from_utf8_lossy(&out.stderr);
     let expected = format!(
-        "error: Chat alias 'default' (provider 'mock', model 'm') has no known context window: the provider's model list did not report one. Set \"context_window\" for it in {}, or make the provider reachable and try again.",
+        "default_agent 'build' has no usable model: model 'mock/m' has no known context window; set context_window in {}",
         models.display()
     );
     assert!(

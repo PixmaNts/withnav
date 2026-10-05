@@ -47,7 +47,7 @@ async fn invalid_settings_and_capabilities_do_not_echo_supplied_values() {
             let path = tmp.path().join("models.json");
             let mut catalog: Value =
                 serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-            catalog["models"]["default"][field] = json!(SECRET_SENTINEL);
+            catalog["models"]["mock/mock-model"][field] = json!(SECRET_SENTINEL);
             std::fs::write(path, catalog.to_string()).unwrap();
         }
         let (status, _) = catalog_response(state, tmp.path()).await;
@@ -138,11 +138,11 @@ async fn lists_all_api_kinds_with_canonical_identity_and_configured_default_agen
                 }
             },
             "models": {
-                "cognition": { "provider": PROVIDER, "model": "combo/mock-opus",
+                "mock/combo/mock-opus": { "provider": PROVIDER, "model": "combo/mock-opus",
                                "supports_tools": true, "context_window": 200000 },
-                "plain": { "provider": PROVIDER, "model": "mock-plain", "supports_tools": false },
-                "fill": { "provider": PROVIDER, "model": "mock-fim", "api": "fim", "supports_tools": true },
-                "instinct": { "provider": PROVIDER, "model": "typesafe/jev", "api": "systemone" }
+                "mock/mock-plain": { "provider": PROVIDER, "model": "mock-plain", "supports_tools": false },
+                "mock/mock-fim": { "provider": PROVIDER, "model": "mock-fim", "api": "fim", "supports_tools": true },
+                "mock/typesafe/jev": { "provider": PROVIDER, "model": "typesafe/jev", "api": "systemone" }
             }
         })
         .to_string(),
@@ -203,8 +203,8 @@ fn write_models(root: &std::path::Path, base_url: &str) {
         json!({
             "providers": { PROVIDER: { "base_url": base_url, "api_key_env": "NAVAI_TEST_KEY", "headers": {} } },
             "models": {
-                "found": { "provider": PROVIDER, "model": "m-found", "supports_tools": true },
-                "pinned": { "provider": PROVIDER, "model": "m-pinned", "supports_tools": true,
+                "mock/m-found": { "provider": PROVIDER, "model": "m-found", "supports_tools": true },
+                "mock/m-pinned": { "provider": PROVIDER, "model": "m-pinned", "supports_tools": true,
                             "context_window": 200000 }
             }
         })
@@ -353,9 +353,9 @@ fn write_variant_models(root: &std::path::Path, base_url: &str) {
             "providers": { PROVIDER: { "base_url": base_url, "api_key_env": "NAVAI_TEST_KEY",
                                        "headers": {}, "catalog_format": "omniroute" } },
             "models": {
-                "pinned": { "provider": PROVIDER, "model": "m-tiers", "supports_tools": true,
+                "mock/m-tiers": { "provider": PROVIDER, "model": "m-tiers", "supports_tools": true,
                             "context_window": 200000, "default_variant": "high" },
-                "plain": { "provider": PROVIDER, "model": "m-plain", "supports_tools": true }
+                "mock/m-plain": { "provider": PROVIDER, "model": "m-plain", "supports_tools": true }
             }
         })
         .to_string(),
@@ -458,7 +458,10 @@ async fn duplicate_gateway_upstream_identity_is_rejected() {
         .unwrap();
     assert_eq!(response.status(), 400);
     let body = response.text().await.unwrap();
-    assert!(body.contains("ambiguous catalog identity"), "{body}");
+    assert!(
+        body.contains("model catalog configuration unavailable"),
+        "{body}"
+    );
     assert!(!body.contains("127.0.0.1"));
     task.abort();
 }
@@ -475,8 +478,8 @@ async fn identical_upstream_ids_on_distinct_gateways_are_distinct_models() {
                 "second": {"base_url": "http://127.0.0.1:2/v1"}
             },
             "models": {
-                "legacy-first": {"provider":"first","model":"vendor/same","api":"fim"},
-                "legacy-second": {"provider":"second","model":"vendor/same","api":"fim"}
+                "first/vendor/same": {"provider":"first","model":"vendor/same","api":"fim"},
+                "second/vendor/same": {"provider":"second","model":"vendor/same","api":"fim"}
             }
         })
         .to_string(),

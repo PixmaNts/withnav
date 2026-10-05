@@ -984,7 +984,7 @@ async fn running_tool_keeps_capacity_and_completion_until_it_has_ended() {
     .unwrap();
     std::fs::write(
         tmp.path().join("cfg/config.json"),
-        r#"{"subagents":{"max_concurrent":1}}"#,
+        r#"{"agents":{"build":{"model":"mock/mock-model"}},"subagents":{"max_concurrent":1}}"#,
     )
     .unwrap();
     let (tx, mut sleeps) = mpsc::unbounded_channel();
@@ -1467,7 +1467,7 @@ async fn interval_zero_starts_no_supervisor_and_children_have_no_decision_tool()
         .state();
     std::fs::write(
         tmp.path().join("cfg/config.json"),
-        r#"{"subagents":{"watchdog_interval_secs":0}}"#,
+        r#"{"agents":{"build":{"model":"mock/mock-model"}},"subagents":{"watchdog_interval_secs":0}}"#,
     )
     .unwrap();
     let (tx, mut sleeps) = mpsc::unbounded_channel();
@@ -1661,7 +1661,7 @@ async fn jev_wire_uses_a_separate_choice_question_and_rejects_invalid_answers() 
     let judge = JevJudge(
         SystemOneClient::from_alias(
             &models,
-            "default",
+            "mock/mock-model",
             &config.config_dir,
             Arc::new(ClientCache::new()),
         )

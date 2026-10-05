@@ -209,7 +209,8 @@ impl TestServerConfig {
         }
         let mut models = serde_json::Map::new();
         let mut layers = serde_json::Map::new();
-        models.insert(self.alias.clone(), alias_entry.clone());
+        let primary = format!("{PROVIDER}/{}", self.model);
+        models.insert(primary.clone(), alias_entry.clone());
         for (alias, model) in &self.extra_aliases {
             let mut entry = alias_entry.clone();
             entry["model"] = json!(model);
@@ -224,7 +225,7 @@ impl TestServerConfig {
                 layers.insert(alias.clone(), json!(name));
                 continue;
             }
-            models.insert(alias.clone(), entry);
+            models.insert(format!("{PROVIDER}/{model}"), entry);
         }
         let mut provider = json!({
             "base_url": self.base_url,
@@ -249,7 +250,7 @@ impl TestServerConfig {
         std::fs::create_dir_all(&config_dir).expect("config dir");
         std::fs::write(
             config_dir.join("config.json"),
-            json!({"permissions":{"scratch_dirs":[]}, "layers":layers}).to_string(),
+            json!({"permissions":{"scratch_dirs":[]}, "layers":layers, "agents":{"build":{"model":primary},"plan":{"model":primary}}}).to_string(),
         )
         .expect("isolated scratch settings");
         write_auth_file(&config_dir, PROVIDER, "test-key");

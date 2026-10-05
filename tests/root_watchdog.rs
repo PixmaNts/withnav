@@ -349,7 +349,7 @@ async fn watchdog_off_uses_fallback_and_autonomous_results_cannot_renew_it() {
         .state();
     std::fs::write(
         tmp.path().join("cfg/config.json"),
-        r#"{"agent":{"watchdog_interval_secs":0}}"#,
+        r#"{"agents":{"build":{"model":"mock/mock-model"}},"agent":{"watchdog_interval_secs":0}}"#,
     )
     .unwrap();
     let (tx, mut sleeps) = mpsc::unbounded_channel();

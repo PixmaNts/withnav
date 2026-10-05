@@ -270,8 +270,8 @@ async fn result_interrupt_replacement_uses_accepted_deferred_model() {
         .config();
     let path = config.models_path.as_ref().unwrap();
     let mut models: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-    models["models"]["replacement"] = models["models"]["default"].clone();
-    models["models"]["replacement"]["model"] = json!("replacement-model");
+    models["models"]["mock/replacement-model"] = models["models"]["mock/mock-model"].clone();
+    models["models"]["mock/replacement-model"]["model"] = json!("replacement-model");
     std::fs::write(path, models.to_string()).unwrap();
     let state = AppState::new(config).unwrap();
     let parent = state
@@ -302,7 +302,7 @@ async fn result_interrupt_replacement_uses_accepted_deferred_model() {
         .await
         .unwrap();
     let command = state
-        .run_command(parent, "model", "replacement")
+        .run_command(parent, "model", "mock/replacement-model")
         .bounded(file!(), line!())
         .await
         .unwrap();

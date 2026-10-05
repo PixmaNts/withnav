@@ -119,7 +119,7 @@ async fn new_creates_a_fresh_session_and_keeps_the_old_one() {
         "mock/mock-model"
     );
 
-    let out = state.run_command(id, "new", "other").await.expect("run");
+    let out = state.run_command(id, "new", "plan").await.expect("run");
     let other: ulid::Ulid = out.data.unwrap()["session_id"]
         .as_str()
         .unwrap()
@@ -127,7 +127,7 @@ async fn new_creates_a_fresh_session_and_keeps_the_old_one() {
         .unwrap();
     assert_eq!(
         state.session_summary(other).await.unwrap().model,
-        "mock/other-model"
+        "mock/mock-model"
     );
 
     assert_eq!(state.session_summary(id).await.unwrap().actor_state, "idle");
@@ -288,7 +288,7 @@ async fn http_endpoints_list_and_run_commands() {
     let (status, body) = request_json(&router, "GET", "/v1/commands", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["commands"][0]["name"], "help");
-    assert_eq!(body["commands"][2]["args_hint"], "[alias]");
+    assert_eq!(body["commands"][2]["args_hint"], "[agent]");
 
     let path = format!("/v1/sessions/{id}/commands");
     let (status, body) =
@@ -499,6 +499,12 @@ fn run_navai(
     ws: &std::path::Path,
     prompt: &str,
 ) -> std::process::Output {
+    std::fs::create_dir_all(root.join("config/navai")).unwrap();
+    std::fs::write(
+        root.join("config/navai/config.json"),
+        r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#,
+    )
+    .unwrap();
     std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
         .args(["run", "--workspace"])
         .arg(ws)
@@ -533,7 +539,7 @@ async fn navai_run_executes_a_command() {
     assert_eq!(ok.status.code(), Some(0), "{ok:?}");
     let stdout = String::from_utf8_lossy(&ok.stdout);
     assert!(
-        stdout.contains("/help") && stdout.contains("/new [alias]"),
+        stdout.contains("/help") && stdout.contains("/new [agent]"),
         "{stdout}"
     );
     assert_eq!(bad.status.code(), Some(1), "{bad:?}");

@@ -880,7 +880,7 @@ impl Service {
                         .unwrap_or_default(),
                 )),
                 Some(parent),
-                (self.assignments_configured()? || definition.model.is_none()).then_some(inherited),
+                Some(inherited),
             )
             .await;
         let prepared = prepared?;
@@ -2078,7 +2078,7 @@ impl Service {
                 loaded.meta.editor,
             ),
             None => {
-                let alias = model.unwrap_or("default");
+                let alias = model.unwrap_or("");
                 (workspace.to_path_buf(), alias.to_string(), editor)
             }
         };
@@ -2089,10 +2089,8 @@ impl Service {
             .load_agents(&workspace, session_id, resumed.is_some())
             .await;
         let captured = self.capture_preparation(&workspace)?;
-        let configured = captured.configured;
         let settings = &captured.settings;
-        let wanted = if configured && agent.is_none() && resumed.is_none() && child_parent.is_none()
-        {
+        let wanted = if agent.is_none() && resumed.is_none() && child_parent.is_none() {
             Some(settings.default_agent().map_err(ServerError::History)?)
         } else {
             agent
@@ -2120,7 +2118,7 @@ impl Service {
         let mut captured_model = None;
         let mut assignment_warning = None;
         let mut provenance = resumed.as_ref().and_then(|r| r.meta.provenance.clone());
-        let initial_override = if configured {
+        let initial_override = {
             if let Some(loaded) = &resumed {
                 if let Some(saved) = loaded.meta.agent_overrides.get(role.id.as_str()) {
                     if saved
@@ -2173,11 +2171,8 @@ impl Service {
                     model: model.map(str::to_owned),
                     variant: variant.clone().into(),
                 })
-        } else {
-            // Internal legacy creation path until the final catalog contract cutover.
-            None
         };
-        if resumed.is_none() && configured {
+        if resumed.is_none() {
             if inherited.is_some() {
                 provenance = Some(super::store::SelectionProvenance {
                     model: super::store::ModelSource::Parent,
@@ -2191,12 +2186,10 @@ impl Service {
             }
         }
         if captured_model.is_none() && inherited.is_none() {
-            captured_model = Some(if configured {
+            captured_model = Some({
                 let name = crate::provider::model_name::ModelName::parse(&alias, &captured.catalog)
                     .map_err(|e| ServerError::History(e.to_string()))?;
                 captured.catalog.resolve_name(&name)?
-            } else {
-                captured.catalog.resolve(&alias)?
             });
         }
         #[cfg(test)]
@@ -2230,11 +2223,7 @@ impl Service {
             } else {
                 self.resolve_for_spawn(
                     session_id,
-                    if configured {
-                        &workspace
-                    } else {
-                        resume_workspace
-                    },
+                    &workspace,
                     &alias,
                     resumed.as_ref(),
                     captured_model.map(|model| (model, captured.path.clone())),

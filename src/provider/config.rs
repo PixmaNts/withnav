@@ -133,7 +133,7 @@ pub struct ResolvedModel {
 }
 
 impl ModelsConfig {
-    /// Resolves the gateway and upstream id, independently of legacy map keys.
+    /// Resolves a canonical gateway/upstream catalog identity.
     pub fn resolve_name(
         &self,
         name: &super::model_name::ModelName,
@@ -161,6 +161,18 @@ impl ModelsConfig {
 
     pub fn parse(s: &str) -> Result<Self, ConfigError> {
         let cfg: ModelsConfig = serde_json::from_str(s)?;
+        for (key, model) in &cfg.models {
+            let name = super::model_name::ModelName::parse(key, &cfg).map_err(|_| {
+                ConfigError::Invalid(
+                    "catalog keys must be declared gateway/upstream identities".into(),
+                )
+            })?;
+            if name.gateway() != model.provider || name.id() != model.model {
+                return Err(ConfigError::Invalid(
+                    "catalog key disagrees with gateway/upstream identity".into(),
+                ));
+            }
+        }
         cfg.validate_variants()?;
         cfg.warn_deprecated();
         Ok(cfg)
@@ -172,6 +184,8 @@ impl ModelsConfig {
     }
 
     pub fn resolve(&self, alias: &str) -> Result<ResolvedModel, ProviderError> {
+        super::model_name::ModelName::parse(alias, self)
+            .map_err(|_| ProviderError::UnknownModel(alias.into()))?;
         let model = self
             .models
             .get(alias)
@@ -349,9 +363,22 @@ mod tests {
     const FIXTURE: &str = include_str!("../../tests/fixtures/models.json");
 
     #[test]
+    fn catalog_rejects_legacy_keys_and_mismatched_canonical_identity() {
+        for key in ["default", "p/other", "unknown/m"] {
+            let raw = serde_json::json!({"providers":{"p":{"base_url":"http://unused"}},"models":{key:{"provider":"p","model":"m"}}});
+            assert!(ModelsConfig::parse(&raw.to_string()).is_err());
+        }
+        let config = ModelsConfig::parse(&serde_json::json!({"providers":{"p":{"base_url":"http://unused"}},"models":{"p/m":{"provider":"p","model":"m"}}}).to_string()).unwrap();
+        assert!(config.resolve("default").is_err());
+        assert_eq!(config.resolve("p/m").unwrap().model.model, "m");
+    }
+
+    #[test]
     fn resolves_fast_alias_to_model() {
         let cfg = ModelsConfig::parse(FIXTURE).unwrap();
-        let r = cfg.resolve("fast").unwrap();
+        let r = cfg
+            .resolve("omniroute/opencode-go/deepseek-v4-flash")
+            .unwrap();
         assert_eq!(r.model.model, "opencode-go/deepseek-v4-flash");
         assert_eq!(r.provider_name, "omniroute");
         assert_eq!(r.provider.base_url, "http://localhost:20128/v1");
@@ -360,7 +387,9 @@ mod tests {
     #[test]
     fn resolves_default_alias() {
         let cfg = ModelsConfig::parse(FIXTURE).unwrap();
-        let r = cfg.resolve("default").unwrap();
+        let r = cfg
+            .resolve("omniroute/opencode-go/deepseek-v4-flash")
+            .unwrap();
         assert_eq!(r.model.model, "opencode-go/deepseek-v4-flash");
     }
 
@@ -368,13 +397,15 @@ mod tests {
     fn unknown_alias_errors_before_any_request() {
         let cfg = ModelsConfig::parse(FIXTURE).unwrap();
         let e = cfg.resolve("nonexistent").unwrap_err();
-        assert!(matches!(e, ProviderError::UnknownModelAlias(a) if a == "nonexistent"));
+        assert!(matches!(e, ProviderError::UnknownModel(a) if a == "nonexistent"));
     }
 
     #[test]
     fn reasoning_history_defaults_to_preserve() {
         let cfg = ModelsConfig::parse(FIXTURE).unwrap();
-        let r = cfg.resolve("fast").unwrap();
+        let r = cfg
+            .resolve("omniroute/opencode-go/deepseek-v4-flash")
+            .unwrap();
         assert_eq!(r.model.reasoning_history, ReasoningHistory::Preserve);
     }
 
@@ -407,7 +438,9 @@ mod tests {
     #[test]
     fn api_kind_defaults_to_chat() {
         let cfg = ModelsConfig::parse(FIXTURE).unwrap();
-        let r = cfg.resolve("fast").unwrap();
+        let r = cfg
+            .resolve("omniroute/opencode-go/deepseek-v4-flash")
+            .unwrap();
         assert_eq!(r.model.api, ApiKind::Chat);
     }
 
@@ -416,14 +449,17 @@ mod tests {
         let raw = serde_json::json!({
             "providers": { "p": { "base_url": "http://x/v1" } },
             "models": {
-                "r": { "provider": "p", "model": "m", "api": "fim" },
-                "i": { "provider": "p", "model": "m", "api": "systemone" }
+                "p/fill": { "provider": "p", "model": "fill", "api": "fim" },
+                "p/decision": { "provider": "p", "model": "decision", "api": "systemone" }
             }
         })
         .to_string();
         let cfg = ModelsConfig::parse(&raw).unwrap();
-        assert_eq!(cfg.resolve("r").unwrap().model.api, ApiKind::Fim);
-        assert_eq!(cfg.resolve("i").unwrap().model.api, ApiKind::SystemOne);
+        assert_eq!(cfg.resolve("p/fill").unwrap().model.api, ApiKind::Fim);
+        assert_eq!(
+            cfg.resolve("p/decision").unwrap().model.api,
+            ApiKind::SystemOne
+        );
     }
 
     #[test]
@@ -440,9 +476,9 @@ mod tests {
     fn repo_models_json_is_strict_and_resolves_both_aliases() {
         let repo_models = include_str!("../../models.example.json");
         let cfg = ModelsConfig::parse(repo_models).expect("repo models.json must be strict JSON");
-        let fast = cfg.resolve("fast").unwrap();
-        let default = cfg.resolve("default").unwrap();
-        assert_eq!(fast.model.model, "opencode-go/deepseek-v4-flash");
+        let fast = cfg.resolve("omniroute/combo/deepseek-v4-flash").unwrap();
+        let default = cfg.resolve("omniroute/cc/claude-opus-5-5").unwrap();
+        assert_eq!(fast.model.model, "combo/deepseek-v4-flash");
         assert!(!default.model.model.is_empty());
         assert_eq!(fast.model.reasoning_history, ReasoningHistory::Preserve);
         assert!(!repo_models.contains("\"api_key\""));
@@ -487,7 +523,9 @@ mod tests {
         assert_eq!(path, explicit);
         let (config, path) = load_models(None, ws.path(), cfg.path()).unwrap();
         assert_eq!(path, ws.path().join("models.json"));
-        assert!(config.resolve("fast").is_ok());
+        assert!(config
+            .resolve("omniroute/opencode-go/deepseek-v4-flash")
+            .is_ok());
         std::fs::remove_file(ws.path().join("models.json")).unwrap();
         let (_, path) = load_models(None, ws.path(), cfg.path()).unwrap();
         assert_eq!(path, cfg.path().join("models.json"));
@@ -506,7 +544,7 @@ mod tests {
     fn config_with(provider_extra: &str, model_extra: &str) -> String {
         format!(
             r#"{{"providers": {{"p": {{"base_url": "http://x/v1"{provider_extra}}}}},
-               "models": {{"m": {{"provider": "p", "model": "mm"{model_extra}}}}}}}"#
+               "models": {{"p/mm": {{"provider": "p", "model": "mm"{model_extra}}}}}}}"#
         )
     }
 
@@ -523,7 +561,7 @@ mod tests {
                               "think": {"thinking": {"type": "enabled", "budget_tokens": 8000}}}"#,
         );
         let cfg = ModelsConfig::parse(&raw).unwrap();
-        let m = &cfg.models["m"];
+        let m = &cfg.models["p/mm"];
         assert_eq!(m.default_variant.as_deref(), Some("high"));
         let variants = m.variants.as_ref().unwrap();
         assert_eq!(variants["high"]["reasoning_effort"], "high");
@@ -536,7 +574,7 @@ mod tests {
             let raw = config_with("", &format!(r#", "variants": {{"v": {{"{key}": 1}}}}"#));
             let err = ModelsConfig::parse(&raw).unwrap_err().to_string();
             assert!(
-                err.contains("'m'") && err.contains("'v'") && err.contains(&format!("'{key}'")),
+                err.contains("'p/mm'") && err.contains("'v'") && err.contains(&format!("'{key}'")),
                 "{key}: {err}"
             );
         }
@@ -549,7 +587,7 @@ mod tests {
             r#", "default_variant": "max", "variants": {"high": {"reasoning_effort": "high"}}"#,
         );
         let err = ModelsConfig::parse(&raw).unwrap_err().to_string();
-        assert!(err.contains("'m'") && err.contains("'max'"), "{err}");
+        assert!(err.contains("'p/mm'") && err.contains("'max'"), "{err}");
         // `{}` offers nothing to default to; with no catalog_format nothing is generated.
         let raw = config_with("", r#", "default_variant": "high", "variants": {}"#);
         assert!(ModelsConfig::parse(&raw).is_err());
@@ -582,7 +620,7 @@ mod tests {
     fn resolve_in(provider_extra: &str, model_extra: &str) -> ResolvedModel {
         ModelsConfig::parse(&config_with(provider_extra, model_extra))
             .unwrap()
-            .resolve("m")
+            .resolve("p/mm")
             .unwrap()
     }
 
@@ -638,7 +676,7 @@ mod tests {
     #[test]
     fn thinking_is_inert_and_names_the_variant_to_write() {
         let cfg = ModelsConfig::parse(&config_with("", r#", "thinking": "high""#)).unwrap();
-        let m = &cfg.models["m"];
+        let m = &cfg.models["p/mm"];
         assert_eq!(m.default_variant, None);
         assert_eq!(m.variants, None);
         let notes = cfg.deprecations();
@@ -646,7 +684,7 @@ mod tests {
         assert!(
             notes[0].contains("deprecated")
                 && notes[0].contains(r#""default_variant": "high""#)
-                && notes[0].contains("'m'"),
+                && notes[0].contains("'p/mm'"),
             "{}",
             notes[0]
         );

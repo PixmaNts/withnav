@@ -749,7 +749,7 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .retain(|_, model| model["model"] != "combo/chat");
-        catalog["models"]["replacement"] =
+        catalog["models"]["mock/replacement"] =
             json!({"provider":"mock","model":"replacement","context_window":128000});
         std::fs::write(path, catalog.to_string()).unwrap();
         std::fs::write(
@@ -886,9 +886,9 @@ mod tests {
         std::fs::create_dir_all(config_dir.join("agents")).unwrap();
         std::fs::write(config_dir.join("config.json"), settings.to_string()).unwrap();
         let models = json!({"providers":{"mock":{"base_url":"https://url-secret.invalid/v1", "api_key_env":"AUTH_SECRET", "headers":{"Authorization":"header-secret"}}},"models":{
-            "legacy-chat":{"provider":"mock","model":"combo/chat","api":"chat","context_window":128000,"supports_tools":true,"variants":{"low":{"reasoning_effort":"low"},"high":{"reasoning_effort":"high"}},"default_variant":"high"},
-            "legacy-fim":{"provider":"mock","model":"fim","api":"fim"},
-            "legacy-instinct":{"provider":"mock","model":"jev","api":"systemone"}
+            "mock/combo/chat":{"provider":"mock","model":"combo/chat","api":"chat","context_window":128000,"supports_tools":true,"variants":{"low":{"reasoning_effort":"low"},"high":{"reasoning_effort":"high"}},"default_variant":"high"},
+            "mock/fim":{"provider":"mock","model":"fim","api":"fim"},
+            "mock/jev":{"provider":"mock","model":"jev","api":"systemone"}
         }});
         std::fs::write(config_dir.join("models.json"), models.to_string()).unwrap();
         for (name, header) in [
@@ -1048,7 +1048,7 @@ mod tests {
         // A config refresh cannot change the provenance of the durable selection.
         changed_catalog
             .models
-            .get_mut("legacy-chat")
+            .get_mut("mock/combo/chat")
             .unwrap()
             .default_variant = Some("low".into());
         let selection = saved_selection(&row, Some(&pinned), &changed_catalog).unwrap();
@@ -1174,14 +1174,14 @@ mod tests {
         let path = state.config.models_path.as_ref().unwrap();
         let mut catalog: Value =
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-        for key in ["legacy-fim", "legacy-instinct"] {
+        for key in ["mock/fim", "mock/jev"] {
             catalog["models"][key]["variants"] = json!({"low":{"reasoning_effort":"low"}});
         }
-        catalog["models"]["legacy-chat"]
+        catalog["models"]["mock/combo/chat"]
             .as_object_mut()
             .unwrap()
             .remove("variants");
-        catalog["models"]["legacy-chat"]
+        catalog["models"]["mock/combo/chat"]
             .as_object_mut()
             .unwrap()
             .remove("default_variant");
@@ -1213,12 +1213,17 @@ mod tests {
         let mut catalog: Value =
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         catalog["models"]["https://raw-key-secret.invalid"] =
-            catalog["models"]["legacy-chat"].clone();
+            catalog["models"]["mock/combo/chat"].clone();
         std::fs::write(path, catalog.to_string()).unwrap();
         for route in ["layers", "agents"] {
             let (_, body) = get(&state, root.path(), route, "").await;
             assert!(!body.to_string().contains("raw-key-secret"));
         }
+        catalog["models"]
+            .as_object_mut()
+            .unwrap()
+            .remove("https://raw-key-secret.invalid");
+        std::fs::write(path, catalog.to_string()).unwrap();
         let snapshot = state.assignment_snapshot(root.path()).await.unwrap();
         let over = AgentOverride {
             model: Some("mock/https://auth-secret.invalid".into()),

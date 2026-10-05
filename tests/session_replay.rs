@@ -85,7 +85,7 @@ async fn seed_conversation(fx: &Fixture) -> Ulid {
     let id = Ulid::new();
     let store = HistoryStore::open(&fx.db).expect("open store");
     store
-        .record_session(id, &fx.ws.display().to_string(), "default", false)
+        .record_session(id, &fx.ws.display().to_string(), "mock/mock-model", false)
         .await
         .expect("record session");
     for seq in 0..SEEDED {

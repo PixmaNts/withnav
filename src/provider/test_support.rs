@@ -35,7 +35,7 @@ pub(crate) async fn layer_chat_fixture(
         model["variants"] =
             json!({"low":{"reasoning_effort":"low"},"high":{"reasoning_effort":"high"}});
     }
-    let models = super::config::ModelsConfig::parse(&json!({"providers":{"gateway":{"base_url":format!("{}/v1",server.uri()),"catalog_format":"omniroute","request_timeout_ms":2000}},"models":{"unrelated-key":model}}).to_string()).unwrap();
+    let models = super::config::ModelsConfig::parse(&json!({"providers":{"gateway":{"base_url":format!("{}/v1",server.uri()),"catalog_format":"omniroute","request_timeout_ms":2000}},"models":{"gateway/combo/chat":model}}).to_string()).unwrap();
     let mut assignment = json!({"model":"gateway/combo/chat"});
     if let Some(variant) = variant {
         assignment["variant"] = variant;

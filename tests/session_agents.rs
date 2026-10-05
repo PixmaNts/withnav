@@ -637,7 +637,7 @@ async fn a_legacy_row_resumes_as_build() {
     let id = ulid::Ulid::new();
     state
         .history()
-        .record_session(id, &env.ws.display().to_string(), "default", false)
+        .record_session(id, &env.ws.display().to_string(), "mock/mock-model", false)
         .await
         .unwrap();
     let (resumed, _) = state
@@ -691,7 +691,7 @@ async fn switching_changes_the_next_request_and_nothing_in_the_transcript() {
 
     let out = state.run_command(id, "agent", "build").await.unwrap();
     assert!(out.ok);
-    assert_eq!(stored_agent(&state, id).await, None, "build is NULL");
+    assert_eq!(stored_agent(&state, id).await.as_deref(), Some("build"));
     converse(&state, id, "third").await;
     let roles: Vec<String> = sent(&provider, 2).into_iter().map(|(r, _)| r).collect();
     assert_eq!(roles[1], "user", "build sends no role again: {roles:?}");
@@ -726,15 +726,9 @@ async fn agent_lists_and_refuses_bad_choices() {
     );
 
     for (args, expected) in [
-        (
-            "nope",
-            "unknown agent nope; the primary agents are build, plan",
-        ),
-        (
-            "explore",
-            "unknown agent explore; the primary agents are build, plan",
-        ),
-        ("plan extra", "usage: /agent [id]"),
+        ("nope", "unknown primary agent 'nope'"),
+        ("explore", "unknown primary agent 'explore'"),
+        ("plan extra", "usage: /agent <name>"),
     ] {
         let out = state.run_command(id, "agent", args).await.unwrap();
         assert!(!out.ok, "{args}");
@@ -858,6 +852,12 @@ async fn http_creates_with_an_agent_and_shows_it() {
 }
 
 fn run_navai(root: &Path, models: &Path, ws: &Path, extra: &[&str]) -> std::process::Output {
+    std::fs::create_dir_all(root.join("config/navai")).unwrap();
+    std::fs::write(
+        root.join("config/navai/config.json"),
+        r#"{"agents":{"build":{"model":"mock/mock-model"},"plan":{"model":"mock/mock-model"}}}"#,
+    )
+    .unwrap();
     std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
         .args(["run", "--workspace"])
         .arg(ws)
@@ -941,7 +941,7 @@ async fn switching_agents_moves_the_gauge_without_a_turn() {
     assert!(state.run_command(id, "agent", "plan").await.unwrap().ok);
     let as_plan = state.context(id).await.unwrap();
     assert!(as_plan.breakdown.system > before.breakdown.system);
-    assert!(as_plan.revision > before.revision);
+    assert_ne!(as_plan.incarnation, before.incarnation);
 
     assert!(state.run_command(id, "agent", "build").await.unwrap().ok);
     let back = state.context(id).await.unwrap();

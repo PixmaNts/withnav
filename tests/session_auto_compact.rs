@@ -689,10 +689,9 @@ async fn a_failed_switch_rolls_back_the_staged_checkpoint_and_selection() {
     let state = two_models(&env, &a, &b, 20_000);
     let id = seeded(&state, &env.ws, 8).await;
     state.history().flush().await.unwrap();
-    // The checkpoint's own events take the next seqs (`context.compacted`,
-    // stored with insert-or-ignore, and a live `context.updated`); the switch's
-    // `model.changed` is written with a strict insert right after. Occupy the
-    // seqs after the notice: only that strict insert can trip over them.
+    let before = state.history().load_for_resume(id).await.unwrap().unwrap();
+    let before_gauge = serde_json::to_value(state.context(id).await.unwrap()).unwrap();
+    // Fail the second strict event insert, after context.compacted was inserted.
     let head = state.session_summary(id).await.unwrap().current_seq + 1;
     let conn = rusqlite::Connection::open(env.root.join("history.db")).unwrap();
     for seq in head + 1..=head + 1 {
@@ -716,14 +715,18 @@ async fn a_failed_switch_rolls_back_the_staged_checkpoint_and_selection() {
     assert!(!meta.model_resolution.unwrap().contains("model-b"));
     let (_, _, checkpoint) = state.history().load_for_resume(id).await.unwrap().unwrap();
     assert!(checkpoint.is_none());
+    let after = state.history().load_for_resume(id).await.unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(&after.1).unwrap(),
+        serde_json::to_value(&before.1).unwrap()
+    );
+    assert_eq!(after.2, before.2);
+    assert_eq!(
+        serde_json::to_value(state.context(id).await.unwrap()).unwrap(),
+        before_gauge
+    );
 
-    // A stop and a resume: still the old model, still the checkpoint.
-    state.close_session(id).await.unwrap();
-    state.history().flush().await.unwrap();
-    state
-        .create_or_resume_session(&env.ws, None, None, Some(id))
-        .await
-        .unwrap();
+    // The same actor must still send the original history after the refusal.
     assert_eq!(state.session_summary(id).await.unwrap().model, "default");
     let sub = state.subscribe(id, None).await.unwrap();
     send_text(&state, id, "go on").await;

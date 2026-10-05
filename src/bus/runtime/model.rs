@@ -38,6 +38,7 @@ pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 /// What it takes to move the conversation to another alias.
 #[derive(Debug, Clone)]
 pub struct ModelTarget {
+    pub warning: Option<String>,
     pub provenance: Option<crate::session::store::SelectionProvenance>,
     pub source: String,
     pub variant_source: String,
@@ -290,6 +291,9 @@ pub(super) async fn run(
         changed["source"] = json!(target.source);
         changed["variant_source"] = json!(target.variant_source);
     }
+    if let Some(warning) = &target.warning {
+        changed["warning"] = json!(warning);
+    }
     // The new gauge is built before the write, against the destination
     // projection, and installed with the selection.
     let limits = target
@@ -366,6 +370,7 @@ pub(super) async fn run(
     }
     Ok(Switched {
         data: json!({
+            "warning": target.warning,
             "alias": target.new.alias,
             "changed": true,
             "previous": identity_json(&target.previous),

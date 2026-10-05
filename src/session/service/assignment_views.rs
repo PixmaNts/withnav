@@ -378,8 +378,10 @@ impl Service {
             let mut selection_override = None;
             if let Some(row) = &saved {
                 if let Some(over) = row.agent_overrides.get(definition.id.as_str()) {
-                    effective =
-                        Some(self.override_assignment(&snapshot, assignment.as_ref(), over)?);
+                    if definition.id.as_str() != row.primary_agent.as_deref().unwrap_or("build") {
+                        effective =
+                            Some(self.override_assignment(&snapshot, assignment.as_ref(), over)?);
+                    }
                     selection_override = Some(override_view(over));
                 }
                 if definition.id.as_str() == row.primary_agent.as_deref().unwrap_or("build") {
@@ -695,6 +697,54 @@ mod tests {
     use http_body_util::BodyExt;
     use serde_json::{json, Value};
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn current_pinned_override_survives_catalog_model_and_variant_removal_live_and_stopped() {
+        let (root, state) = fixture(json!({"agents":{"build":{"model":"mock/combo/chat"}}}));
+        crate::provider::auth::set_key(&state.config.config_dir, "mock", "test").unwrap();
+        let id = state
+            .create_session_with(
+                root.path(),
+                Some("mock/combo/chat"),
+                None,
+                crate::session::VariantChoice::Exact("low".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        let path = state.config.models_path.as_ref().unwrap();
+        let mut catalog: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        catalog["models"]
+            .as_object_mut()
+            .unwrap()
+            .retain(|_, model| model["model"] != "combo/chat");
+        catalog["models"]["replacement"] =
+            json!({"provider":"mock","model":"replacement","context_window":128000});
+        std::fs::write(path, catalog.to_string()).unwrap();
+        std::fs::write(
+            state.config.config_dir.join("config.json"),
+            json!({"agents":{"build":{"model":"mock/replacement"}}}).to_string(),
+        )
+        .unwrap();
+        for stopped in [false, true] {
+            if stopped {
+                state.close_session(id).await.unwrap();
+            }
+            let (status, body) =
+                get(&state, root.path(), "agents", &format!("&session_id={id}")).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let build = body["agents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["id"] == "build")
+                .unwrap();
+            assert_eq!(build["effective"]["model"], "mock/combo/chat");
+            assert_eq!(build["effective"]["variant"], "low");
+            assert_eq!(build["effective"]["source"], "override");
+        }
+    }
 
     fn fixture(settings: Value) -> (tempfile::TempDir, crate::server::AppState) {
         let root = tempfile::tempdir().unwrap();

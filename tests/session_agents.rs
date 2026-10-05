@@ -13,6 +13,36 @@ use navai::server::{app, AppState};
 mod common;
 
 #[tokio::test]
+async fn successful_switch_fallback_warning_is_durable_and_replayed() {
+    let env = env();
+    let config = TestServerConfig::unreachable(&env.root).config();
+    std::fs::write(
+        env.root.join("cfg/config.json"),
+        json!({"agents":{"build":{"model":"mock/mock-model"},"plan":{"model":"mock/missing"}}})
+            .to_string(),
+    )
+    .unwrap();
+    let state = AppState::new(config).unwrap();
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let result = state.run_command(id, "agent", "plan").await.unwrap();
+    assert!(result.ok);
+    assert!(result.data.unwrap()["warning"]
+        .as_str()
+        .unwrap()
+        .contains("mock/missing"));
+    state.history().flush().await.unwrap();
+    let loaded = state.history().load(id).await.unwrap().unwrap();
+    let event = loaded
+        .envelopes
+        .iter()
+        .find(|e| e.kind == "model.changed")
+        .unwrap();
+    assert_eq!(event.payload["source"], "default_agent");
+    assert!(event.payload["warning"].as_str().unwrap().contains("plan"));
+    assert_eq!(event.payload["agent"], "plan");
+}
+
+#[tokio::test]
 async fn creation_assignment_off_named_overrides_and_fallback_notice_are_durable() {
     let env = env();
     let config = TestServerConfig::unreachable(&env.root)

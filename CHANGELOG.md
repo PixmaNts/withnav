@@ -4,6 +4,8 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-05
+
 Models now have explicit gateway-qualified names, while layers and agents keep their own choices.
 This is a **breaking configuration and API change**: migrate existing configuration by hand before
 starting this version. It does not convert your configuration automatically or create agent definitions.

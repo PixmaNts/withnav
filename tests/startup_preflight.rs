@@ -189,10 +189,234 @@ async fn overrides_cannot_hide_default_failure_before_run_bind_terminal_or_lsp_r
         assert!(!dir.path().join("data/navai/history.sqlite3").exists());
     }
     let dir = fixture(json!({}));
-    let output = command(dir.path(), true).output().await.unwrap();
+    use tokio::io::AsyncWriteExt as _;
+    let body = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}})
+        .to_string();
+    let mut child = command(dir.path(), true)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(format!("Content-Length: {}\r\n\r\n{body}", body.len()).as_bytes())
+        .await
+        .unwrap();
+    let output = child.wait_with_output().await.unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("default_agent"));
+}
+
+async fn lsp_message(input: &mut (impl tokio::io::AsyncBufRead + Unpin)) -> Value {
+    use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _};
+    let mut length = None;
+    loop {
+        let mut line = String::new();
+        assert!(
+            input.read_line(&mut line).await.unwrap() > 0,
+            "EOF before LSP readiness"
+        );
+        if line == "\r\n" {
+            break;
+        }
+        if let Some(value) = line.strip_prefix("Content-Length:") {
+            length = Some(value.trim().parse::<usize>().unwrap());
+        }
+    }
+    let mut body = vec![0; length.unwrap()];
+    input.read_exact(&mut body).await.unwrap();
+    serde_json::from_slice(&body).unwrap()
+}
+
+#[tokio::test]
+async fn lsp_workspace_catalog_and_project_primary_override_are_authoritative() {
+    use tokio::io::{AsyncWriteExt as _, BufReader};
+    for global_header in [
+        None,
+        Some("mode: subagent\nmodel: mock/missing"),
+        Some("mode: primary\nmodel: mock/fim"),
+    ] {
+        let dir = fixture(if global_header.is_some() {
+            json!({"default_agent":"oracle"})
+        } else {
+            json!({"agents":{"build":{"model":"mock/chat"}},"layers":{"reflex":"mock/fim"}})
+        });
+        let workspace = dir.path().join("project");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::rename(
+            dir.path().join("config/navai/models.json"),
+            workspace.join("models.json"),
+        )
+        .unwrap();
+        if let Some(header) = global_header {
+            let global = dir.path().join("home/.config/opencode/agents");
+            std::fs::create_dir_all(&global).unwrap();
+            std::fs::write(
+                global.join("oracle.md"),
+                format!("---\n{header}\n---\nGlobal role"),
+            )
+            .unwrap();
+            let project = workspace.join(".navai/agents");
+            std::fs::create_dir_all(&project).unwrap();
+            std::fs::write(
+                project.join("oracle.md"),
+                "---\nmode: primary\nmodel: mock/chat\n---\nProject role",
+            )
+            .unwrap();
+        }
+        let mut child = command(dir.path(), true)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let body = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"rootUri":format!("file://{}",workspace.display())}}).to_string();
+        let initialized = json!({"jsonrpc":"2.0","method":"initialized","params":{}}).to_string();
+        // Both frames in one write prove the original reader and trailing bytes survive.
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(
+                format!(
+                    "Content-Length: {}\r\n\r\n{body}Content-Length: {}\r\n\r\n{initialized}",
+                    body.len(),
+                    initialized.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        let info = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut ready = false;
+            loop {
+                let message = lsp_message(&mut stdout).await;
+                if message["id"] == 1 {
+                    assert!(message["result"]["capabilities"].is_object(), "{message}");
+                    ready = true;
+                }
+                if message["method"] == "navigator/serverInfo" {
+                    assert!(ready);
+                    break message["params"].clone();
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let client = reqwest::Client::new();
+        let base = format!("http://127.0.0.1:{}", info["port"].as_u64().unwrap());
+        let token = info["token"].as_str().unwrap();
+        let created: Value = client
+            .post(format!("{base}/v1/sessions"))
+            .bearer_auth(token)
+            .json(&json!({"workspace":workspace,"editor":true}))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let session: Value = client
+            .get(format!(
+                "{base}/v1/sessions/{}",
+                created["session_id"].as_str().unwrap()
+            ))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(session["model"], "mock/chat", "{session}");
+        if global_header.is_some() {
+            assert_eq!(session["agent"], "oracle", "{session}");
+        } else {
+            let layers: Value = client
+                .get(format!("{base}/v1/layers"))
+                .query(&[("workspace", workspace.to_str().unwrap())])
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert!(
+                layers["layers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|row| row["layer"] == "reflex" && row["model"] == "mock/fim"),
+                "{layers}"
+            );
+        }
+        child.start_kill().unwrap();
+        child.wait().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn lsp_actual_invalid_catalog_and_malformed_frame_fail_before_readiness() {
+    use tokio::io::AsyncWriteExt as _;
+    for malformed in [false, true] {
+        let dir = fixture(json!({"agents":{"build":{"model":"mock/chat"}}}));
+        let workspace = dir.path().join("project");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut models: Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join("config/navai/models.json")).unwrap(),
+        )
+        .unwrap();
+        models["models"]["mock/chat"]["api"] = json!("fim");
+        std::fs::write(workspace.join("models.json"), models.to_string()).unwrap();
+        let mut child = command(dir.path(), true)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let frame = if malformed {
+            "Content-Length: 1048577\r\n\r\n".to_string()
+        } else {
+            let body = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"rootUri":format!("file://{}",workspace.display())}}).to_string();
+            format!("Content-Length: {}\r\n\r\n{body}", body.len())
+        };
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(frame.as_bytes())
+            .await
+            .unwrap();
+        let output = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains(if malformed {
+                "body exceeds 1 MiB"
+            } else {
+                "required API 'chat'"
+            }),
+            "{error}"
+        );
+        assert!(!error.contains("synthetic-secret"));
+        assert!(!dir.path().join("data/navai/history.sqlite3").exists());
+    }
 }
 
 #[tokio::test]

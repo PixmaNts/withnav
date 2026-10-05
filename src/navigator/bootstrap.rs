@@ -42,42 +42,7 @@ struct Layers {
     disabled: Vec<String>,
 }
 
-/// Builds every layer from its alias. A missing alias or key disables that
-/// layer with a note; the others keep working.
-fn build_layers(models_path: Option<&Path>, clients: Arc<ClientCache>) -> Layers {
-    let models = match load_models(models_path) {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::error!("models.json unavailable, every model layer disabled: {e}");
-            return Layers::all_disabled(format!("all: models.json ({e})"));
-        }
-    };
-    let config_dir = auth::default_config_dir().unwrap_or_else(|| PathBuf::from("."));
-    let log_path = crate::paths::decision_log().unwrap_or_else(|| PathBuf::from("/dev/null"));
-    build_layers_from(
-        &models,
-        &config_dir,
-        &ModelCatalog::system(),
-        log_path,
-        clients,
-    )
-}
-
-impl Layers {
-    fn all_disabled(note: String) -> Self {
-        Self {
-            fim: None,
-            decision: None,
-            reflex_model: None,
-            instinct_model: None,
-            metacognition_model: None,
-            metacognition: None,
-            disabled: vec![note],
-        }
-    }
-}
-
-/// [`build_layers`] over an already loaded config and explicit directories.
+/// Builds optional layers from the admitted workspace catalog and explicit directories.
 fn build_layers_from(
     models: &ModelsConfig,
     config_dir: &Path,
@@ -325,36 +290,36 @@ impl Layers {
 pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
     use tokio::io::AsyncReadExt as _;
     let cwd = std::env::current_dir()?;
+    let mut stdin = tokio::io::stdin();
+    let Some((frame, initialized_workspace)) = initial_workspace(&mut stdin, &cwd).await? else {
+        return Ok(());
+    };
     let config_dir =
         auth::default_config_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve config dir"))?;
     let preflight = crate::session::preflight::Preflight::capture(
         &config_dir,
         models_path,
-        &cwd,
+        &initialized_workspace,
         &crate::agent::instructions::RulesRoots::from_user_home(),
     )
     .await?;
-    let provisional = preflight.check_provisional(&cwd).await?;
-    let mut stdin = tokio::io::stdin();
-    let Some((frame, initialized_workspace)) = initial_workspace(&mut stdin, &cwd).await? else {
-        anyhow::ensure!(
-            provisional.is_some(),
-            "default_agent is unresolved at process cwd; an initialize workspace is required"
-        );
-        return Ok(());
-    };
     preflight.check(&initialized_workspace).await?;
     let clients = Arc::new(ClientCache::new());
-    let mut layers = build_layers(models_path, clients);
 
     let log_path = crate::paths::decision_log()
         .ok_or_else(|| anyhow::anyhow!("cannot resolve user data dir"))?;
+    let mut layers = build_layers_from(
+        preflight.models(),
+        &config_dir,
+        &ModelCatalog::system(),
+        log_path.clone(),
+        clients,
+    );
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    // The workspace root starts at the process cwd; initialize upgrades it
-    // from rootUri when the client sends one.
+    // Admission, layers and cognition all use the initialize workspace catalog.
     let workspace = Some(initialized_workspace);
     let user_dir = navigator::default_user_dir();
 
@@ -367,7 +332,7 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
     // register themselves there) and to the navigator deps (wakes post
     // through it): one process, two channels, one conversation.
     let conversation = ConversationFeed::new();
-    let http = match spawn_cognition_server(models_path, conversation.clone()).await {
+    let http = match spawn_cognition_server(preflight.models_path(), conversation.clone()).await {
         Ok(http) => Some(http),
         Err(e) => {
             // A failed bind or an unopenable history database must not take
@@ -505,13 +470,11 @@ struct CognitionHttp {
 ///
 /// [`AppState`]: crate::server::session::AppState
 async fn spawn_cognition_server(
-    models_path: Option<&Path>,
+    models_path: &Path,
     conversation: ConversationFeed,
 ) -> anyhow::Result<CognitionHttp> {
     use crate::server::session::{AppState, ServerConfig};
 
-    let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let models_path = navigator::resolve_models(models_path, &workspace);
     let config_dir =
         auth::default_config_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve config dir"))?;
     let token = bearer_token();
@@ -520,7 +483,7 @@ async fn spawn_cognition_server(
         .ok_or_else(|| anyhow::anyhow!("cannot resolve the Navai data dir"))?;
     let config = ServerConfig {
         bind: "127.0.0.1:0".parse().expect("loopback bind"),
-        models_path,
+        models_path: Some(models_path.to_path_buf()),
         config_dir,
         allow_non_loopback: false,
         bearer_token: Some(token.clone()),

@@ -12,7 +12,7 @@ use crate::provider::config::{load_models, ModelsConfig};
 use crate::provider::openai::ClientCache;
 use crate::settings::Settings;
 
-/// One settings/catalog snapshot, also reusable when the editor supplies its workspace.
+/// One settings/catalog snapshot captured after the owning workspace is known.
 pub struct Preflight {
     settings: Settings,
     models: ModelsConfig,
@@ -24,6 +24,15 @@ pub struct Preflight {
 }
 
 impl Preflight {
+    /// The catalog admitted for startup, reused by the editor's model layers.
+    pub(crate) fn models(&self) -> &ModelsConfig {
+        &self.models
+    }
+
+    /// The selected catalog file, pinned for the editor's cognition server.
+    pub(crate) fn models_path(&self) -> &Path {
+        &self.models_path
+    }
     /// Captures assignments and catalog once, without provider requests.
     pub async fn capture(
         config_dir: &Path,
@@ -68,8 +77,8 @@ impl Preflight {
         })
     }
 
-    /// An editor's cwd is provisional. Only an unknown agent can await initialize;
-    /// ineligible agents and unusable models are already conclusive failures.
+    /// Checks a tentative scope without rejecting an agent unknown in that scope.
+    /// Editor startup must instead capture and check its actual initialize workspace.
     pub async fn check_provisional(&self, workspace: &Path) -> anyhow::Result<Option<String>> {
         self.check_scope(workspace, true).await
     }

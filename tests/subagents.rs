@@ -1112,7 +1112,14 @@ async fn filtered_agent_declared_false_tool_is_removed() {
 
 #[tokio::test]
 async fn capacity_error_has_clear_machine_and_model_message() {
-    let fx = fixture();
+    let reached = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let provider = spawn_holding_provider(1, 0, reached.clone(), release.clone(), |_, _| {
+        http_sse(&sse_body(&[&text_chunk("child result")]))
+    })
+    .bounded(file!(), line!())
+    .await;
+    let fx = fixture_at(&provider.url);
     install_agents(&fx.root, &fx.ws);
     std::fs::write(
         fx.root.join("cfg/config.json"),
@@ -1125,21 +1132,54 @@ async fn capacity_error_has_clear_machine_and_model_message() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let _child = fx
+    let child = fx
         .state
         .create_child_session(parent, "explore", "first")
         .bounded(file!(), line!())
         .await
         .unwrap();
+    // Hold the first turn at the provider, rather than letting a dead endpoint
+    // fail it and release its slot before the second admission is attempted.
+    reached.notified().bounded(file!(), line!()).await;
+    let bodies = provider.bodies();
+    assert_eq!(bodies.len(), 1);
+    let request: Value = serde_json::from_str(&bodies[0]).unwrap();
+    assert_eq!(request["model"], "mock-model");
+    assert!(request["messages"].to_string().contains("first"));
+    assert_eq!(
+        fx.state
+            .child_metadata(child)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "running"
+    );
+    assert_eq!(fx.state.reserved_child_count(parent), 1);
     let err = fx
         .state
         .create_child_session(parent, "explore", "second")
         .bounded(file!(), line!())
         .await
         .unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("subagent capacity reached: 1 children are running"));
+    assert!(matches!(
+        err,
+        navai::error::ServerError::SubagentCapacity { capacity: 1 }
+    ));
+    assert_eq!(
+        err.to_string(),
+        "subagent capacity reached: 1 children are running; wait for one to finish"
+    );
+    assert_eq!(provider.requests().len(), 1);
+    fx.state
+        .close_session(child)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    release.notify_one();
+    fx.state.close_all().bounded(file!(), line!()).await;
+    assert_eq!(fx.state.reserved_child_count(parent), 0);
 }
 
 #[tokio::test]

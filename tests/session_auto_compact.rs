@@ -407,7 +407,7 @@ async fn a_switch_to_a_smaller_window_compacts_with_the_old_model_then_switches(
         .unwrap();
     assert_eq!(notice.payload["reason"], "switch");
     assert_eq!(stored(&state, id, "context.compacted").await.len(), 1);
-    assert_eq!(state.session_summary(id).await.unwrap().model, "small");
+    assert_eq!(state.session_summary(id).await.unwrap().model, "b/model-b");
 
     let sub = state.subscribe(id, None).await.unwrap();
     send_text(&state, id, "go on").await;
@@ -440,7 +440,7 @@ async fn a_switch_that_cannot_be_made_to_fit_is_refused_without_compacting() {
     assert!(error.contains("cannot be compacted to fit it"), "{error}");
     assert!(error.contains("larger context window"), "{error}");
     assert!(a.bodies().is_empty() && b.bodies().is_empty());
-    assert_eq!(state.session_summary(id).await.unwrap().model, "default");
+    assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
     assert!(stored(&state, id, "context.compacted").await.is_empty());
     assert!(stored(&state, id, "model.changed").await.is_empty());
     let (_, _, checkpoint) = state.history().load_for_resume(id).await.unwrap().unwrap();
@@ -466,7 +466,7 @@ async fn a_switch_whose_summary_fails_changes_nothing() {
         .error
         .unwrap()
         .contains("compaction before the switch failed"));
-    assert_eq!(state.session_summary(id).await.unwrap().model, "default");
+    assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
     assert!(stored(&state, id, "model.changed").await.is_empty());
     assert!(stored(&state, id, "context.compacted").await.is_empty());
 }
@@ -706,7 +706,7 @@ async fn a_failed_switch_rolls_back_the_staged_checkpoint_and_selection() {
     let out = state.run_command(id, "model", "small").await.unwrap();
     assert!(!out.ok, "{out:?}");
     assert!(out.error.unwrap().contains("could not be saved"));
-    assert_eq!(state.session_summary(id).await.unwrap().model, "default");
+    assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
     assert!(stored(&state, id, "model.changed").await.is_empty());
     // Neither the staged checkpoint nor its notice survives the failed transaction.
     let notices = stored(&state, id, "context.compacted").await;
@@ -724,7 +724,7 @@ async fn a_failed_switch_rolls_back_the_staged_checkpoint_and_selection() {
         .create_or_resume_session(&env.ws, None, None, Some(id))
         .await
         .unwrap();
-    assert_eq!(state.session_summary(id).await.unwrap().model, "default");
+    assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
     let sub = state.subscribe(id, None).await.unwrap();
     send_text(&state, id, "go on").await;
     collect_until(sub, |e| e.kind == "turn.end").await;

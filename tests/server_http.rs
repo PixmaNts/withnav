@@ -96,7 +96,7 @@ async fn get_session_reports_current_seq_zero_right_after_create() {
     assert_eq!(value["session_id"], id);
     assert_eq!(value["actor_state"], "idle");
     assert_eq!(value["workspace"], ws.to_str().expect("utf8 ws"));
-    assert_eq!(value["model"], "default");
+    assert_eq!(value["model"], "mock/mock-model");
     assert_eq!(value["current_seq"], 0);
 }
 

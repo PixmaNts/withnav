@@ -127,8 +127,8 @@ async fn navigator_profile_sends_the_cognition_prompt_as_second_system_message()
         .expect("create navigator session");
     assert_eq!(
         state.session_summary(id).await.expect("summary").model,
-        "cognition",
-        "the navigator profile resolves the cognition alias"
+        "mock/mock-opus",
+        "the navigator profile reports the resolved catalog identity"
     );
     let sub = state.subscribe(id, None).await.expect("subscribe");
 

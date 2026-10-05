@@ -708,6 +708,11 @@ impl Service {
                         .unwrap()
                         .into();
                     target.provenance = Some(provenance);
+                    target.previous = current.identity();
+                    target.new.agent = target.agent.as_ref().map(|a| a.id.to_string());
+                    target.new.variant = target.variant.as_ref().map(|(name, _)| name.clone());
+                    target.new.source = Some(target.source.clone());
+                    target.new.variant_source = Some(target.variant_source.clone());
                     target.override_value = override_value.map(|value| {
                         (
                             value.model,

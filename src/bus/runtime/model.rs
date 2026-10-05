@@ -194,12 +194,6 @@ pub(super) async fn run(
         .controls
         .switcher()
         .ok_or_else(|| "this session cannot switch model".to_string())?;
-    let current = (switcher.current_alias)();
-    if current == *alias && request.command == "model" && !alias.contains('/') {
-        return Ok(Switched {
-            data: json!({ "alias": alias, "changed": false }),
-        });
-    }
     // From here until the choice is installed or given up, no agent, variant
     // or compaction request lands.
     let _switching = status.selection.begin_switch().await;
@@ -209,6 +203,15 @@ pub(super) async fn run(
         return Err("the requesting agent changed before the selection could apply".into());
     }
     let target = (switcher.resolve)(request.clone()).await?;
+    if target.previous == target.new
+        || (request.command == "model"
+            && !alias.contains('/')
+            && target.alias == (switcher.current_alias)())
+    {
+        return Ok(Switched {
+            data: json!({"changed": false, "agent": target.previous.agent, "model": target.previous.model, "variant": target.previous.variant, "selection": target.previous}),
+        });
+    }
     // Reasoning is only replayed to the identity that produced it: against
     // another one (or a model that omits it) the whole history so far is
     // projected without it. The check measures exactly that projection.
@@ -267,10 +270,14 @@ pub(super) async fn run(
         return Err(super::compact::CANCELLED.to_string());
     }
     let window = target.resolution.bounds.context_window;
-    let mut changed = serde_json::to_value(ModelChanged {
+    let changed = serde_json::to_value(ModelChanged {
         operation_id: Some(operation_id),
         revision: (switcher.next_revision)(),
-        reason: ModelChangeReason::Switch,
+        reason: match request.command.as_str() {
+            "agent" => ModelChangeReason::Agent,
+            "variant" => ModelChangeReason::Variant,
+            _ => ModelChangeReason::Switch,
+        },
         previous: Some(target.previous.clone()),
         new: target.new.clone(),
         variant: target.variant.as_ref().map(|(name, _)| name.clone()),
@@ -279,12 +286,6 @@ pub(super) async fn run(
         from_message: from_message as u64,
     })
     .unwrap_or(Value::Null);
-    if let Some(agent) = &target.agent {
-        changed["agent"] = json!(agent.id);
-        changed["previous_agent"] = json!(old_role.as_ref().map(|role| role.id.as_str()));
-        changed["source"] = json!(target.source);
-        changed["variant_source"] = json!(target.variant_source);
-    }
     // The new gauge is built before the write, against the destination
     // projection, and installed with the selection.
     let limits = target
@@ -361,9 +362,12 @@ pub(super) async fn run(
     }
     Ok(Switched {
         data: json!({
-            "alias": target.alias,
+            "model": target.new.model,
+            "agent": target.new.agent,
+            "previous_agent": target.previous.agent,
+            "selection": target.new,
             "changed": true,
-            "previous": identity_json(&target.previous),
+            "previous": if request.command == "agent" { json!(target.previous.agent) } else { identity_json(&target.previous) },
             "new": identity_json(&target.new),
             "variant": variant_name,
             "window": window,
@@ -546,7 +550,7 @@ pub(super) async fn accept_deferred(sequencer: &Sequencer, request: ModelRequest
         name: request.selection.command.clone(),
         ok: true,
         data: Some(CommandResult::bound_data(
-            json!({ "accepted": true, "applies": "after_turn" }),
+            json!({ "accepted": true, "applies": "after_turn", "agent": request.selection.requesting_agent, "model": request.alias }),
         )),
         error: None,
     })

@@ -170,10 +170,45 @@ impl std::fmt::Debug for EffectiveExecution {
 }
 
 impl SelectedModel {
+    /// One wire identity from the same committed selection snapshot.
+    pub(crate) fn identity(&self) -> crate::bus::event::ModelIdentity {
+        selection_identity(
+            &self.agent,
+            &self.alias,
+            self.resolution.as_deref(),
+            self.variant_name(),
+            self.provenance.as_ref(),
+        )
+    }
     /// The name of the selected variant.
     pub fn variant_name(&self) -> Option<String> {
         self.variant.as_ref().map(|(name, _)| name.clone())
     }
+}
+
+fn selection_identity(
+    agent: &str,
+    model: &str,
+    resolution: Option<&crate::provider::catalog::ModelResolution>,
+    variant: Option<String>,
+    provenance: Option<&super::store::SelectionProvenance>,
+) -> crate::bus::event::ModelIdentity {
+    let mut identity = match resolution {
+        Some(r) => crate::bus::event::ModelIdentity::from_upstream(&r.provider, &r.model),
+        None => crate::bus::event::ModelIdentity {
+            model: model.into(),
+            ..crate::bus::event::ModelIdentity::from_upstream("", "")
+        },
+    };
+    identity.agent = Some(agent.into());
+    identity.variant = variant;
+    identity.source = provenance
+        .and_then(|p| serde_json::to_value(p.model).ok())
+        .and_then(|v| v.as_str().map(str::to_string));
+    identity.variant_source = provenance
+        .and_then(|p| serde_json::to_value(p.variant).ok())
+        .and_then(|v| v.as_str().map(str::to_string));
+    identity
 }
 
 impl SessionHandle {
@@ -292,6 +327,10 @@ pub struct SessionSummary {
     pub agent: String,
     /// The model variant in use; `null` for none.
     pub variant: Option<String>,
+    pub source: Option<String>,
+    pub variant_source: Option<String>,
+    pub gateway: String,
+    pub upstream_id: String,
     pub current_seq: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
@@ -1642,13 +1681,18 @@ impl Service {
             .map(|next| next.saturating_sub(1))
             .unwrap_or(0);
         let selected = handle.selected();
+        let identity = selected.identity();
         Ok(SessionSummary {
             session_id: id.to_string(),
             actor_state: handle.actor_state.clone(),
             workspace: handle.workspace.display().to_string(),
             variant: selected.variant_name(),
-            model: selected.alias,
+            model: identity.model,
             agent: selected.agent,
+            gateway: identity.gateway,
+            upstream_id: identity.upstream_id,
+            source: identity.source,
+            variant_source: identity.variant_source,
             current_seq,
             parent_session_id: handle.parent_session_id.map(|id| id.to_string()),
             child_status: if handle.parent_session_id.is_some() {
@@ -1673,11 +1717,32 @@ impl Service {
             .await
             .map_err(ServerError::History)?
             .ok_or_else(|| ServerError::SessionNotFound(id.to_string()))?;
+        let agent = meta
+            .primary_agent
+            .as_deref()
+            .unwrap_or(crate::agent::definitions::BUILD);
+        let resolution = meta
+            .model_resolution
+            .as_deref()
+            .map(crate::provider::catalog::ModelResolution::from_saved)
+            .transpose()
+            .map_err(|_| ServerError::MalformedBody("saved selection unavailable".into()))?;
+        let identity = selection_identity(
+            agent,
+            &meta.model,
+            resolution.as_ref(),
+            meta.variant.clone(),
+            meta.provenance.as_ref(),
+        );
         Ok(SessionSummary {
             session_id: id.to_string(),
             actor_state: "stopped".to_string(),
             workspace: meta.workspace,
-            model: meta.model,
+            model: identity.model,
+            gateway: identity.gateway,
+            upstream_id: identity.upstream_id,
+            source: identity.source,
+            variant_source: identity.variant_source,
             agent: meta
                 .primary_agent
                 .unwrap_or_else(|| AgentId::build().to_string()),

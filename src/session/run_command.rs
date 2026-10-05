@@ -308,7 +308,7 @@ impl Service {
         {
             Some(ModelReply::Done(done)) => Ok(Done::published(done.wire("now"))),
             Some(ModelReply::Deferred) => Ok(Done::published(
-                json!({ "accepted": true, "applies": "after_turn" }),
+                json!({ "accepted": true, "applies": "after_turn", "agent": handle.selected().agent, "model": alias }),
             )),
             Some(ModelReply::Refused(why)) => Err(CommandFailure::Published(why)),
             None => Err(CommandFailure::Server(ServerError::SessionStopping)),
@@ -327,7 +327,8 @@ impl Service {
         arguments: &str,
     ) -> Result<Done, CommandFailure> {
         let selection = &handle.status.selection;
-        let current = selection.current();
+        let selected = handle.selected();
+        let current = selected.role.clone();
         let mut words = arguments.split_whitespace();
         let Some(wanted) = words.next() else {
             let agents: Vec<Value> = selection
@@ -335,7 +336,9 @@ impl Service {
                 .primary()
                 .map(|a| json!({ "id": a.id, "description": a.description, "mode": a.mode.as_str() }))
                 .collect();
-            return Ok(Done::data(json!({ "agent": current.id, "agents": agents })));
+            return Ok(Done::data(
+                json!({ "agent": selected.agent, "selection": selected.identity(), "agents": agents }),
+            ));
         };
         if words.next().is_some() {
             return Err(CommandFailure::Refused("usage: /agent [id]".to_string()));
@@ -350,7 +353,9 @@ impl Service {
             }
         };
         if target.id == current.id {
-            return Ok(Done::data(json!({ "agent": current.id, "changed": false })));
+            return Ok(Done::data(
+                json!({ "agent": selected.agent, "selection": selected.identity(), "changed": false }),
+            ));
         }
         let stored = (!target.id.is_build()).then(|| target.id.as_str().to_string());
         let history = self.history().clone();
@@ -397,6 +402,7 @@ impl Service {
             "agent": target.id,
             "previous": previous.id,
             "changed": true,
+            "selection": handle.selected().identity(),
         })))
     }
 
@@ -420,6 +426,9 @@ impl Service {
         let Some(word) = words.next() else {
             let offered: Vec<&String> = offer.variants.keys().collect();
             return Ok(Done::data(json!({
+                "agent": selected.agent,
+                "model": selected.identity().model,
+                "variant_source": selected.identity().variant_source,
                 "variant": selected.variant_name(),
                 "offered": offered,
             })));
@@ -666,10 +675,11 @@ impl Service {
                 "the agent is working or held: wait for the turn to end".into(),
             ));
         }
+        let selected = handle.selected();
         let request = crate::bus::runtime::model::SelectionRequest {
-            alias: handle.selected().alias,
+            alias: selected.alias,
             target_agent: (command == "agent").then(|| arguments.into()),
-            requesting_agent: handle.status.selection.current().id.to_string(),
+            requesting_agent: selected.agent,
             command: command.into(),
             variant: (command == "variant").then(|| VariantChoice::from_word(Some(arguments))),
         };
@@ -692,27 +702,26 @@ impl Service {
     /// bounded view of the chat aliases a new session could use.
     fn model_data(&self, handle: &SessionHandle) -> Value {
         let selected = handle.selected();
-        let alias = selected.alias;
-        let mut data = match &selected.resolution {
-            Some(r) => json!({
-                "alias": alias,
-                "model": r.model,
-                "provider": r.provider,
-                "window": r.bounds.context_window,
-                "window_source": r.provenance.context_window,
-                "max_input_tokens": r.bounds.max_input_tokens,
-            }),
-            None => json!({ "alias": alias }),
-        };
+        let identity = selected.identity();
+        let mut data = json!({"agent": identity.agent, "model": identity.model, "variant": identity.variant, "source": identity.source, "variant_source": identity.variant_source, "selection": identity});
+        if let Some(resolution) = &selected.resolution {
+            data["window"] = json!(resolution.bounds.context_window);
+            data["window_source"] = json!(resolution.provenance.context_window);
+            data["max_input_tokens"] = json!(resolution.bounds.max_input_tokens);
+        }
         if let Ok(models) = self.list_models(&handle.workspace) {
-            let mut names: Vec<String> = models.into_iter().map(|(alias, _)| alias).collect();
+            let mut names: Vec<String> = models
+                .into_iter()
+                .map(|(_, model)| format!("{}/{}", model.provider, model.model))
+                .collect();
             names.sort();
+            names.dedup();
             let count = names.len();
             names.truncate(MODEL_CATALOG_CAP);
             data["catalog"] = json!({
                 "count": count,
-                "aliases": names,
-                "more": "GET /v1/models lists every alias",
+                "models": names,
+                "more": "GET /v1/models lists every model",
             });
         }
         data
@@ -1066,7 +1075,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             view(&service, id, tmp.path()).await,
-            ("default".to_string(), None)
+            ("mock/m".to_string(), None)
         );
 
         let stored = Arc::new(Barrier::default());
@@ -1100,7 +1109,7 @@ mod tests {
         installed.reached.notified().await;
         assert_eq!(
             view(&service, id, tmp.path()).await,
-            ("other".to_string(), Some("high".to_string()))
+            ("mock/m2".to_string(), Some("high".to_string()))
         );
         installed.release.notify_one();
 
@@ -1118,12 +1127,12 @@ mod tests {
         let child = service.session_summary(early_id).await.unwrap();
         let pair = (child.model.as_str(), child.variant.as_deref());
         assert!(
-            pair == ("default", None) || pair == ("other", Some("high")),
+            pair == ("mock/m", None) || pair == ("mock/m2", Some("high")),
             "{pair:?}"
         );
         assert_eq!(
             view(&service, id, tmp.path()).await,
-            ("other".to_string(), Some("high".to_string()))
+            ("mock/m2".to_string(), Some("high".to_string()))
         );
     }
 }

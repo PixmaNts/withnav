@@ -402,6 +402,13 @@ pub struct SessionListEntry {
     pub message_count: u64,
     /// The primary agent the session runs as.
     pub agent: String,
+    pub model: String,
+    pub variant: Option<String>,
+    pub source: Option<String>,
+    pub variant_source: Option<String>,
+    pub gateway: String,
+    pub upstream_id: String,
+    pub current_seq: u64,
     /// True when a live, active session with this id exists in this process.
     pub live: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -434,21 +441,32 @@ async fn list_sessions(
     };
     match state.list(workspace).await {
         Ok(rows) => {
-            let sessions = rows
-                .into_iter()
-                .map(|row| SessionListEntry {
+            let mut sessions = Vec::with_capacity(rows.len());
+            for row in rows {
+                let summary = match state.session_summary(row.id).await {
+                    Ok(summary) => summary,
+                    Err(error) => return error_response(error),
+                };
+                sessions.push(SessionListEntry {
                     id: row.id.to_string(),
                     title: row.title,
                     created_at: row.created_at,
                     updated_at: row.updated_at,
                     message_count: row.message_count,
-                    agent: row.agent,
+                    agent: summary.agent,
+                    model: summary.model,
+                    variant: summary.variant,
+                    source: summary.source,
+                    variant_source: summary.variant_source,
+                    gateway: summary.gateway,
+                    upstream_id: summary.upstream_id,
+                    current_seq: summary.current_seq,
                     live: row.live,
                     parent_session_id: row.parent_session_id,
                     child_status: row.child_status,
                     promptable: row.promptable,
-                })
-                .collect();
+                });
+            }
             (StatusCode::OK, Json(SessionListBody { sessions })).into_response()
         }
         Err(err) => error_response(err),

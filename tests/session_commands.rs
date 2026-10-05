@@ -82,8 +82,8 @@ async fn model_reports_alias_window_and_source() {
     let out = state.run_command(id, "/model", "").await.expect("run");
     assert!(out.ok, "{out:?}");
     let data = out.data.unwrap();
-    assert_eq!(data["alias"], "default");
-    assert_eq!(data["model"], "mock-model");
+    assert_eq!(data["model"], "mock/mock-model");
+    assert!(data.get("alias").is_none());
     assert_eq!(data["window"], 128000);
     assert_eq!(data["window_source"], "models.json");
 }
@@ -105,7 +105,10 @@ async fn new_creates_a_fresh_session_and_keeps_the_old_one() {
         .parse()
         .unwrap();
     assert_ne!(fresh, id);
-    assert_eq!(state.session_summary(fresh).await.unwrap().model, "default");
+    assert_eq!(
+        state.session_summary(fresh).await.unwrap().model,
+        "mock/mock-model"
+    );
 
     let out = state.run_command(id, "new", "other").await.expect("run");
     let other: ulid::Ulid = out.data.unwrap()["session_id"]
@@ -113,7 +116,10 @@ async fn new_creates_a_fresh_session_and_keeps_the_old_one() {
         .unwrap()
         .parse()
         .unwrap();
-    assert_eq!(state.session_summary(other).await.unwrap().model, "other");
+    assert_eq!(
+        state.session_summary(other).await.unwrap().model,
+        "mock/other-model"
+    );
 
     assert_eq!(state.session_summary(id).await.unwrap().actor_state, "idle");
     assert_eq!(state.session_count(), 3);
@@ -265,7 +271,7 @@ async fn http_endpoints_list_and_run_commands() {
         request_json(&router, "POST", &path, Some(&json!({"name": "model"}))).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["ok"], true);
-    assert_eq!(body["data"]["alias"], "default");
+    assert_eq!(body["data"]["model"], "mock/mock-model");
     assert!(body["operation_id"]
         .as_str()
         .unwrap()
@@ -388,7 +394,10 @@ async fn model_lists_a_bounded_alias_catalog() {
     let out = state.run_command(id, "model", "").await.expect("run");
     let catalog = &out.data.unwrap()["catalog"];
     assert_eq!(catalog["count"], 2);
-    assert_eq!(catalog["aliases"], json!(["default", "other"]));
+    assert_eq!(
+        catalog["models"],
+        json!(["mock/mock-model", "mock/other-model"])
+    );
     assert!(catalog["more"].as_str().unwrap().contains("/v1/models"));
 }
 

@@ -401,6 +401,7 @@ async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> R
 /// registry's liveness.
 #[derive(Debug, Serialize)]
 pub struct SessionListEntry {
+    pub editor: bool,
     pub read_only: bool,
     pub resume_disabled_reason: Option<String>,
     pub id: String,
@@ -457,6 +458,7 @@ async fn list_sessions(
                     Err(error) => return error_response(error),
                 };
                 sessions.push(SessionListEntry {
+                    editor: summary.editor,
                     read_only: row.read_only,
                     resume_disabled_reason: row.resume_disabled_reason,
                     id: row.id.to_string(),

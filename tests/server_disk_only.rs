@@ -178,6 +178,7 @@ async fn restarted_server_answers_get_for_a_stored_conversation() {
             "actor_state",
             "agent",
             "current_seq",
+            "editor",
             "gateway",
             "model",
             "read_only",

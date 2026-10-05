@@ -319,6 +319,7 @@ struct PreparedSession {
 /// Frozen `GET /v1/sessions/:id` body.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionSummary {
+    pub editor: bool,
     pub read_only: bool,
     pub resume_disabled_reason: Option<String>,
     pub session_id: String,
@@ -1760,13 +1761,11 @@ impl Service {
             .unwrap_or(0);
         let selected = handle.selected();
         let identity = selected.identity();
-        let resume_disabled_reason = self
-            .history
-            .meta(id)
-            .await
-            .map_err(ServerError::History)?
-            .and_then(|meta| meta.resume_disabled_reason);
+        let metadata = self.history.meta(id).await.map_err(ServerError::History)?;
+        let editor = metadata.as_ref().is_some_and(|meta| meta.editor);
+        let resume_disabled_reason = metadata.and_then(|meta| meta.resume_disabled_reason);
         Ok(SessionSummary {
+            editor,
             read_only: resume_disabled_reason.is_some(),
             session_id: id.to_string(),
             actor_state: handle.actor_state.clone(),
@@ -1821,6 +1820,7 @@ impl Service {
             meta.provenance.as_ref(),
         );
         Ok(SessionSummary {
+            editor: meta.editor,
             read_only: meta.resume_disabled_reason.is_some(),
             session_id: id.to_string(),
             actor_state: "stopped".to_string(),

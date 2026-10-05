@@ -99,6 +99,7 @@ async fn http_selection_catalog_events_and_assignments_share_canonical_identity(
         .await
         .unwrap();
     identity(&summary, "plan", "mock/combo/base", "config");
+    assert_eq!(summary["editor"], true);
     assert!(
         state
             .history()
@@ -189,6 +190,7 @@ async fn http_selection_catalog_events_and_assignments_share_canonical_identity(
         .await
         .unwrap();
     identity(&list["sessions"][0], "plan", "mock/direct", "override");
+    assert_eq!(list["sessions"][0]["editor"], true);
     let agent = command(&client, &base, id, "agent", "build").await;
     identity(
         &agent["data"]["selection"],
@@ -213,6 +215,7 @@ async fn http_selection_catalog_events_and_assignments_share_canonical_identity(
         .await
         .unwrap();
     identity(&stopped, "plan", "mock/direct", "override");
+    assert_eq!(stopped["editor"], true);
     // Both editor resume entry points send only workspace and resume.
     for _ in 0..2 {
         let resumed = client

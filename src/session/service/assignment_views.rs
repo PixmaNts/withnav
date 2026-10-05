@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use super::{Service, SessionId};
-use crate::agent::definitions::{AgentDefinition, AgentMode, AgentRoots, Agents};
+use crate::agent::definitions::{AgentDefinition, AgentId, AgentMode, AgentRoots, Agents};
 use crate::error::ServerError;
 use crate::provider::assignments::{
     AgentModel, AssignedModel, AssignmentResolver, DefaultAgentError, Layer, LayerAssignment,
@@ -248,7 +248,11 @@ impl Service {
                     .history()
                     .meta(id)
                     .await
-                    .map_err(ServerError::History)?
+                    .map_err(|_| {
+                        diagnostic(
+                            "saved session assignment unavailable: history could not be read",
+                        )
+                    })?
                     .ok_or_else(|| ServerError::SessionNotFound(id.to_string()))?;
                 if Path::new(&row.workspace).canonicalize().ok().as_ref()
                     != Some(&snapshot.workspace)
@@ -302,12 +306,16 @@ impl Service {
             .ok_or_else(|| diagnostic("default_agent has no usable model"))?;
         if let Some(row) = &saved {
             let current = row.primary_agent.as_deref().unwrap_or("build");
+            AgentId::parse(current)
+                .map_err(|_| diagnostic("saved session agent is not a valid agent id"))?;
             if snapshot.agents.get(current).is_none() {
                 return Err(diagnostic(format!(
                     "saved session agent '{current}' is unavailable"
                 )));
             }
             for agent in row.agent_overrides.keys() {
+                AgentId::parse(agent)
+                    .map_err(|_| diagnostic("saved override agent is not a valid agent id"))?;
                 if snapshot.agents.get(agent).is_none() {
                     return Err(diagnostic(format!(
                         "saved override agent '{agent}' is unavailable"
@@ -1006,6 +1014,80 @@ mod tests {
             .override_assignment(&snapshot, None, &over)
             .unwrap_err();
         assert!(!error.to_string().contains("auth-secret"));
+
+        let (root, state) = fixture(json!({"agents":{"build":{"model":"mock/combo/chat"}}}));
+        let secret = "https://user:synthetic-secret@host";
+        for name in [secret, "missing-agent"] {
+            let id = ulid::Ulid::new();
+            state
+                .history()
+                .record_session(id, root.path().to_str().unwrap(), "legacy-chat", None)
+                .await
+                .unwrap();
+            state
+                .history()
+                .set_primary_agent(id, Some(name))
+                .await
+                .unwrap();
+            let (status, body) =
+                get(&state, root.path(), "agents", &format!("&session_id={id}")).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(!body.to_string().contains(secret));
+            assert!(!body.to_string().contains("synthetic-secret"));
+            assert_eq!(
+                body["error"],
+                if name == secret {
+                    "malformed request body: saved session agent is not a valid agent id"
+                        .to_string()
+                } else {
+                    format!("malformed request body: saved session agent '{name}' is unavailable")
+                }
+            );
+
+            state
+                .history()
+                .set_primary_agent(id, Some("build"))
+                .await
+                .unwrap();
+            state
+                .history()
+                .update_agent_override(id, name, AgentOverride::default())
+                .await
+                .unwrap();
+            let (status, body) =
+                get(&state, root.path(), "agents", &format!("&session_id={id}")).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(!body.to_string().contains(secret));
+            assert!(!body.to_string().contains("synthetic-secret"));
+            assert_eq!(
+                body["error"],
+                if name == secret {
+                    "malformed request body: saved override agent is not a valid agent id"
+                        .to_string()
+                } else {
+                    format!("malformed request body: saved override agent '{name}' is unavailable")
+                }
+            );
+
+            // Unknown saved fields can be quoted verbatim by serde's history error.
+            let connection = rusqlite::Connection::open(&state.config.history_db).unwrap();
+            connection
+                .execute(
+                    "UPDATE sessions SET agent_overrides=?1 WHERE id=?2",
+                    rusqlite::params![json!({"build": {secret: null}}).to_string(), id.to_string()],
+                )
+                .unwrap();
+            assert!(state.history().meta(id).await.unwrap_err().contains(secret));
+            let (status, body) =
+                get(&state, root.path(), "agents", &format!("&session_id={id}")).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(
+                body["error"],
+                "malformed request body: saved session assignment unavailable: history could not be read"
+            );
+            assert!(!body.to_string().contains(secret));
+            assert!(!body.to_string().contains("synthetic-secret"));
+        }
     }
 
     #[tokio::test]

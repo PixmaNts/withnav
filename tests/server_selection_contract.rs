@@ -82,7 +82,7 @@ async fn http_selection_catalog_events_and_assignments_share_canonical_identity(
     );
     let created: Value = client
         .post(format!("{base}/v1/sessions"))
-        .json(&json!({"workspace":tmp.path(),"agent":"plan"}))
+        .json(&json!({"workspace":tmp.path(),"editor":true,"agent":"plan"}))
         .send()
         .await
         .unwrap()
@@ -99,6 +99,15 @@ async fn http_selection_catalog_events_and_assignments_share_canonical_identity(
         .await
         .unwrap();
     identity(&summary, "plan", "mock/combo/base", "config");
+    assert!(
+        state
+            .history()
+            .meta(id.parse().unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+            .editor
+    );
     let switched = command(&client, &base, id, "model", "mock/direct").await;
     identity(
         &switched["data"]["selection"],
@@ -204,5 +213,43 @@ async fn http_selection_catalog_events_and_assignments_share_canonical_identity(
         .await
         .unwrap();
     identity(&stopped, "plan", "mock/direct", "override");
+    // Both editor resume entry points send only workspace and resume.
+    for _ in 0..2 {
+        let resumed = client
+            .post(format!("{base}/v1/sessions"))
+            .json(&json!({"workspace":tmp.path(),"resume":id}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resumed.status(), 200);
+        let resumed: Value = resumed.json().await.unwrap();
+        assert_eq!(resumed["session_id"], id);
+        let summary: Value = client
+            .get(format!("{base}/v1/sessions/{id}"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(
+            state
+                .history()
+                .meta(id.parse().unwrap())
+                .await
+                .unwrap()
+                .unwrap()
+                .editor
+        );
+        identity(&summary, "plan", "mock/direct", "override");
+        state.close_session(id.parse().unwrap()).await.unwrap();
+    }
+    let obsolete = client
+        .post(format!("{base}/v1/sessions"))
+        .json(&json!({"workspace":tmp.path(),"profile":"navigator"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(obsolete.status(), 400);
     task.abort();
 }

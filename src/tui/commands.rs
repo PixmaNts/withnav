@@ -201,9 +201,7 @@ pub fn variant_choices(state: &State, pick: &VariantPick) -> (Vec<String>, usize
     rows.retain(|row| row != NO_VARIANT && row != "inherit");
     rows.push(NO_VARIANT.to_string());
     let fallback = rows.len() - 1;
-    if matches!(pick, VariantPick::Current) {
-        rows.push("inherit".into());
-    }
+    rows.push("inherit".into());
     let start = wanted
         .and_then(|w| rows.iter().position(|r| *r == w))
         .unwrap_or(fallback);

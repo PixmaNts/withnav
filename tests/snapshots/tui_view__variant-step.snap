@@ -1,5 +1,6 @@
 ---
 source: tests/tui_view.rs
+assertion_line: 321
 expression: snapshot
 ---
  Conversations       │ ◆ navai                              ▌build  cognition · assigned · — / 200k 
@@ -18,10 +19,10 @@ expression: snapshot
             │▌  high                default                                            │            
             │   max                                                                    │            
             │   off                 no variant                                         │            
+            │   inherit                                                                │            
             │                                                                          │            
             │ ↑↓ move  enter choose  esc close                                         │            
             └──────────────────────────────────────────────────────────────────────────┘            
-                     │                                                                              
                      │                                                                              
                      │                                                                              
                      │                                                                              

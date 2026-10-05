@@ -213,13 +213,16 @@ pub(super) fn apply_selection(
     }
     let agent = strip_controls(&selection.agent);
     let model = strip_controls(&selection.selection.model);
+    let committed_window = (s.selected_model_id.as_deref() == Some(model.as_str()))
+        .then_some(s.context_window)
+        .flatten();
     s.agent = Some(agent);
     s.selected_model_id = Some(model.clone());
     s.selected_model_name = Some(model.clone());
     s.variant = selection.selection.variant.as_deref().map(strip_controls);
     s.model_source = strip_controls(&selection.selection.source);
     s.variant_source = strip_controls(&selection.selection.variant_source);
-    s.context_window = window.or_else(|| {
+    s.context_window = window.or(committed_window).or_else(|| {
         s.catalog
             .iter()
             .find(|entry| entry.name == model)
@@ -241,6 +244,38 @@ fn refresh_tab_model(catalog: &[super::protocol::ModelEntry], tab: &mut super::s
     let found = catalog.iter().find(|m| m.name == model_id);
     tab.selected_model_name = found.map(|m| m.name.clone());
     tab.context_window = found.and_then(|m| m.context_window);
+    refresh_start_variant(tab, catalog);
+}
+
+pub(super) fn refresh_start_variant(
+    tab: &mut super::state::Tab,
+    catalog: &[super::protocol::ModelEntry],
+) {
+    if occupied(tab) {
+        return;
+    }
+    let (base, source) = if let Some(model) = &tab.start_model {
+        (
+            catalog
+                .iter()
+                .find(|m| &m.name == model)
+                .and_then(|m| m.default_variant.clone()),
+            "model_default".to_string(),
+        )
+    } else {
+        tab.agents
+            .iter()
+            .find(|a| a.id == tab.agent_name())
+            .and_then(|a| a.effective.as_ref())
+            .map(|selection| (selection.variant.clone(), selection.variant_source.clone()))
+            .unwrap_or((None, "model_default".into()))
+    };
+    tab.variant = tab.start_variant.clone().unwrap_or(base);
+    tab.variant_source = if tab.start_variant.is_some() {
+        "override".into()
+    } else {
+        source
+    };
 }
 
 pub(crate) fn send_effect(text: String, revision: u64) -> Effect {

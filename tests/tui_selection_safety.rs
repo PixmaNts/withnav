@@ -260,6 +260,149 @@ fn variant_only_named_off_and_inherit_keep_creation_tri_state() {
 }
 
 #[test]
+fn same_model_summary_keeps_committed_window_but_new_model_resolves_its_own() {
+    for catalog_window in [None, Some(100000)] {
+        let mut s = State {
+            catalog: vec![
+                ModelEntry {
+                    name: "gateway/current".into(),
+                    context_window: catalog_window,
+                    ..Default::default()
+                },
+                ModelEntry {
+                    name: "gateway/new".into(),
+                    context_window: Some(200000),
+                    ..Default::default()
+                },
+            ],
+            ..State::default()
+        };
+        event(
+            &mut s,
+            1,
+            "model.changed",
+            change("build", "gateway/current"),
+        );
+        metadata(&mut s, summary(10, "build", "gateway/current", None));
+        assert_eq!(s.context_window, Some(1000000));
+        metadata(&mut s, summary(11, "build", "gateway/new", None));
+        assert_eq!(s.context_window, Some(200000));
+        assert_eq!(s.selected_model_name.as_deref(), Some("gateway/new"));
+    }
+}
+
+#[test]
+fn real_variant_key_paths_restore_agent_or_model_base_and_omit_inherited_create_variant() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use navai::tui::input::{route_key, Editor};
+    for explicit in [false, true] {
+        let mut s = State::default();
+        agents(&mut s, 1, None, "build");
+        s.catalog = vec![ModelEntry {
+            name: "gateway/build".into(),
+            variants: vec!["low".into(), "high".into()],
+            default_variant: Some("high".into()),
+            ..Default::default()
+        }];
+        if explicit {
+            reducer::handle_action(
+                &mut s,
+                &mut UiState::default(),
+                Action::PickModel("gateway/build".into()),
+            );
+        }
+        let base = if explicit { "high" } else { "low" };
+        let mut ui = UiState::default();
+        let mut editor = Editor::new();
+        for choice in ["off", "inherit", "high", "inherit"] {
+            reducer::handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Variants));
+            for ch in choice.chars() {
+                route_key(
+                    KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                    &s,
+                    &mut ui,
+                    &mut editor,
+                );
+            }
+            let action = route_key(
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                &s,
+                &mut ui,
+                &mut editor,
+            )
+            .unwrap();
+            reducer::handle_action(&mut s, &mut ui, action);
+            if choice == "inherit" {
+                assert_eq!(s.variant.as_deref(), Some(base));
+                assert_ne!(s.variant_source, "override");
+            }
+        }
+        let fx = reducer::handle_action(&mut s, &mut ui, Action::Submit("hi".into()));
+        assert!(matches!(&fx[0],Effect::Create(r) if r.variant.is_none()));
+    }
+}
+
+#[test]
+fn model_picker_inherit_key_choice_creates_with_omitted_variant() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use navai::tui::input::{route_key, Editor};
+    let mut s = State {
+        catalog: vec![ModelEntry {
+            name: "gateway/model".into(),
+            gateway: "gateway".into(),
+            provider_group: "gateway".into(),
+            upstream_id: "model".into(),
+            variants: vec!["high".into()],
+            default_variant: Some("high".into()),
+            ..Default::default()
+        }],
+        ..State::default()
+    };
+    let mut ui = UiState::default();
+    let mut editor = Editor::new();
+    reducer::handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Models));
+    route_key(
+        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    );
+    assert!(route_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor
+    )
+    .is_none());
+    assert_eq!(ui.overlay, Some(Overlay::Variants));
+    for ch in "inherit".chars() {
+        route_key(
+            KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+            &s,
+            &mut ui,
+            &mut editor,
+        );
+    }
+    let action = route_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &s,
+        &mut ui,
+        &mut editor,
+    )
+    .unwrap();
+    reducer::handle_action(&mut s, &mut ui, action);
+    assert_eq!(s.variant.as_deref(), Some("high"));
+    let fx = reducer::handle_action(&mut s, &mut ui, Action::Submit("hi".into()));
+    let Effect::Create(request) = &fx[0] else {
+        panic!("{fx:?}")
+    };
+    assert!(serde_json::to_value(request)
+        .unwrap()
+        .get("variant")
+        .is_none());
+}
+
+#[test]
 fn archive_header_and_variant_override_view_do_not_claim_child_or_assigned() {
     use ratatui::{backend::TestBackend, Terminal};
     let mut s = State::default();

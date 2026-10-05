@@ -106,6 +106,7 @@ pub(crate) fn copy_sections(p: &PermissionPrompt, call: Option<&Value>, sent: bo
 /// What the keys do on an open prompt.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Keys<'a> {
+    Historical,
     /// `y`, `a` and `n` answer it.
     Ready,
     /// `n` was pressed: this deny message is being typed.
@@ -239,6 +240,10 @@ fn build(
         (None, Keys::Inactive) => {
             lines.push(Line::styled(" waiting for your answer", theme.warning()))
         }
+        (None, Keys::Historical) => lines.push(Line::styled(
+            " historical request · archive is read-only",
+            theme.muted(),
+        )),
         (Some(resolution), _) => lines.push(outcome(p, resolution, theme)),
     }
     lines

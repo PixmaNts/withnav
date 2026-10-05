@@ -334,6 +334,8 @@ fn pick_model(
         .and_then(|m| m.default_variant.clone());
     s.variant = variant.clone().unwrap_or(default);
     s.start_variant = variant;
+    let catalog = s.catalog.clone();
+    super::refresh_start_variant(s, &catalog);
     Some(effects)
 }
 
@@ -573,10 +575,12 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
         Action::PickVariant(name) => {
             let pick = ui.variant_pick.take();
             ui.overlay = None;
+            let inherit = name == "inherit";
             let chosen = (name != NO_VARIANT).then_some(name);
             match pick {
                 Some(VariantPick::NewConversation(model_id)) => {
-                    pick_model(s, ui, model_id, Some(chosen)).unwrap_or_default()
+                    pick_model(s, ui, model_id, if inherit { None } else { Some(chosen) })
+                        .unwrap_or_default()
                 }
                 Some(VariantPick::Current) if !occupied(s) => {
                     s.start_variant = if chosen.as_deref() == Some("inherit") {
@@ -591,6 +595,8 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                         "model_default"
                     }
                     .into();
+                    let catalog = s.catalog.clone();
+                    super::refresh_start_variant(s, &catalog);
                     vec![]
                 }
                 Some(VariantPick::Current) => run_command(

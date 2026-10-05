@@ -894,3 +894,116 @@ async fn builtin_a_call_for_help_bypasses_the_small_change_filter_and_remarks() 
     assert!(snap.triggers()[0].prefilters.bypass_on_help_call);
     assert!(!snap.triggers()[1].prefilters.bypass_on_help_call);
 }
+
+#[tokio::test]
+async fn builtin_save_and_idle_batch_six_questions_but_conversation_batches_one() {
+    let pipeline = Pipeline::new(PipelineSnapshot::builtin().unwrap());
+    let model = ScriptedDecision::routing_to_metacognition();
+    for kind in [
+        TriggerKind::Save,
+        TriggerKind::Idle,
+        TriggerKind::Conversation,
+    ] {
+        let mut i = inputs(1);
+        i.has_intent = false;
+        i.has_conversation = true;
+        pipeline
+            .evaluate(kind, i, &tvars(), &model, &CancellationToken::new())
+            .await
+            .unwrap();
+    }
+    assert_eq!(model.calls(), 3);
+    let asked = model.questions();
+    assert_eq!(asked[0], asked[1]);
+    assert_eq!(
+        asked[0].keys().map(String::as_str).collect::<Vec<_>>(),
+        [
+            "contradicts_conversation",
+            "drift",
+            "route",
+            "stuck",
+            "unfinished",
+            "worth_attention"
+        ]
+    );
+    assert_eq!(
+        asked[2].keys().map(String::as_str).collect::<Vec<_>>(),
+        ["code_contradicts_conversation"]
+    );
+}
+
+#[tokio::test]
+async fn builtin_diagnostics_has_no_trigger_and_pays_for_no_decision() {
+    let pipeline = Pipeline::new(PipelineSnapshot::builtin().unwrap());
+    let model = ScriptedDecision::routing_to_metacognition();
+    let eval = pipeline
+        .evaluate(
+            TriggerKind::Diagnostics,
+            inputs(5),
+            &tvars(),
+            &model,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(eval.prefilter.skip_reason(), Some("no_trigger"));
+    assert_eq!(eval.requested_action.as_str(), "silent");
+    assert_eq!(eval.branch_index, None);
+    assert!(eval.answers.is_none());
+    assert_eq!(model.calls(), 0);
+}
+
+#[tokio::test]
+async fn builtin_branch_priority_is_help_then_stuck_then_drift_then_remark_then_silence() {
+    let pipeline = Pipeline::new(PipelineSnapshot::builtin().unwrap());
+    let all = with_noul(builtin_answers(0.95, "cognition", 0.95), "stuck", 0.95);
+    for kind in [TriggerKind::Save, TriggerKind::Idle] {
+        for (help, stuck, drift, worth, branch, action) in [
+            (true, 0.95, 0.95, 0.95, 0, "remark"),
+            (false, 0.95, 0.95, 0.95, 1, "wake_cognition"),
+            (false, 0.1, 0.95, 0.95, 2, "wake_cognition"),
+            (false, 0.1, 0.1, 0.95, 3, "remark"),
+            (false, 0.1, 0.1, 0.1, 4, "silent"),
+        ] {
+            let mut i = inputs(1);
+            i.called_for_help = help;
+            let answers = with_noul(
+                with_noul(with_noul(all.clone(), "stuck", stuck), "drift", drift),
+                "worth_attention",
+                worth,
+            );
+            let eval = pipeline
+                .evaluate(
+                    kind,
+                    i,
+                    &tvars(),
+                    &ScriptedDecision::fixed(answers),
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(eval.branch_index, Some(branch), "{kind:?}");
+            assert_eq!(eval.requested_action.as_str(), action, "{kind:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn builtin_help_with_zero_changed_lines_bypasses_prefilter_without_skipping_instinct() {
+    let pipeline = Pipeline::new(PipelineSnapshot::builtin().unwrap());
+    let model = ScriptedDecision::fixed(builtin_answers(0.1, "silent", 0.1));
+    for kind in [TriggerKind::Save, TriggerKind::Idle] {
+        let mut i = inputs(0);
+        i.called_for_help = true;
+        i.since_last_remark_ms = 0;
+        i.since_last_wake_ms = 0;
+        let eval = pipeline
+            .evaluate(kind, i, &tvars(), &model, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(eval.prefilter.skip_reason(), None);
+        assert_eq!(eval.branch_index, Some(0));
+        assert_eq!(eval.requested_action.as_str(), "remark");
+    }
+    assert_eq!(model.calls(), 2);
+}

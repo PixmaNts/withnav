@@ -9,6 +9,8 @@ use crate::error::ServerError;
 /// active session with this id exists in this process.
 #[derive(Debug, Clone)]
 pub struct SessionListing {
+    pub read_only: bool,
+    pub resume_disabled_reason: Option<String>,
     pub id: SessionId,
     pub title: Option<String>,
     pub created_at: String,
@@ -48,13 +50,15 @@ impl Service {
                 continue;
             }
             listings.push(SessionListing {
+                read_only: row.meta.resume_disabled_reason.is_some(),
                 live: matches!(
                     self.handle(row.meta.id),
                     Some(handle) if handle.lifecycle == Lifecycle::Active
                 ),
                 parent_session_id: link.as_ref().map(|child| child.parent_id.to_string()),
                 child_status: link.as_ref().map(|child| child.status.clone()),
-                promptable: link.is_none(),
+                promptable: link.is_none() && row.meta.resume_disabled_reason.is_none(),
+                resume_disabled_reason: row.meta.resume_disabled_reason,
                 id: row.meta.id,
                 title: row.meta.title,
                 created_at: row.meta.created_at,

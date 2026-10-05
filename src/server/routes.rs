@@ -394,6 +394,8 @@ async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> R
 /// registry's liveness.
 #[derive(Debug, Serialize)]
 pub struct SessionListEntry {
+    pub read_only: bool,
+    pub resume_disabled_reason: Option<String>,
     pub id: String,
     pub title: Option<String>,
     pub created_at: String,
@@ -437,6 +439,8 @@ async fn list_sessions(
             let sessions = rows
                 .into_iter()
                 .map(|row| SessionListEntry {
+                    read_only: row.read_only,
+                    resume_disabled_reason: row.resume_disabled_reason,
                     id: row.id.to_string(),
                     title: row.title,
                     created_at: row.created_at,
@@ -784,6 +788,16 @@ async fn stop_session(State(state): State<AppState>, Path(id): Path<String>) -> 
         Ok(parsed) => parsed,
         Err(_) => return error_response(ServerError::SessionNotFound(id)),
     };
+    match state.history().meta(parsed).await {
+        Ok(Some(meta)) if meta.resume_disabled_reason.is_some() => {
+            return error_response(ServerError::SessionArchived {
+                session: id,
+                reason: meta.resume_disabled_reason.unwrap(),
+            });
+        }
+        Err(err) => return error_response(ServerError::History(err)),
+        _ => {}
+    }
     match state.close_session(parsed).await {
         Ok(()) => Json(StopAccepted {
             accepted: true,
@@ -826,6 +840,7 @@ async fn continue_child(
 /// body; every other failure shares `{"error": ...}`.
 pub(crate) fn error_response(err: ServerError) -> Response {
     let status = match &err {
+        ServerError::SessionArchived { .. } => StatusCode::FORBIDDEN,
         ServerError::ChildReadOnly => StatusCode::FORBIDDEN,
         ServerError::SubagentCapacity { .. } => StatusCode::TOO_MANY_REQUESTS,
         ServerError::SubagentSettings(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -858,6 +873,12 @@ pub(crate) fn error_response(err: ServerError) -> Response {
             Json(json!({ "accepted": false, "reason": "inbox_full" })),
         )
             .into_response();
+    }
+    if let ServerError::SessionArchived { reason, .. } = &err {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "session_archived", "resume_disabled_reason": reason })),
+        ).into_response();
     }
     if matches!(err, ServerError::ResumeRequired) {
         return (

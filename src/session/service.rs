@@ -284,6 +284,8 @@ struct PreparedSession {
 /// Frozen `GET /v1/sessions/:id` body.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionSummary {
+    pub read_only: bool,
+    pub resume_disabled_reason: Option<String>,
     pub session_id: String,
     pub actor_state: String,
     pub workspace: String,
@@ -1557,6 +1559,19 @@ impl Service {
             // A resume waits for any stop or delete of this id to finish,
             // and holds the gate until the new runtime is registered.
             let _gate = self.lifecycle_gate().await;
+            self.history.flush().await.map_err(ServerError::History)?;
+            if let Some(reason) = self
+                .history
+                .meta(id)
+                .await
+                .map_err(ServerError::History)?
+                .and_then(|meta| meta.resume_disabled_reason)
+            {
+                return Err(ServerError::SessionArchived {
+                    session: id.to_string(),
+                    reason,
+                });
+            }
             // Live + active: the conversation never left.
             if let Some(handle) = self.lock_sessions().get(&id) {
                 if handle.lifecycle == Lifecycle::Active {
@@ -1642,7 +1657,14 @@ impl Service {
             .map(|next| next.saturating_sub(1))
             .unwrap_or(0);
         let selected = handle.selected();
+        let resume_disabled_reason = self
+            .history
+            .meta(id)
+            .await
+            .map_err(ServerError::History)?
+            .and_then(|meta| meta.resume_disabled_reason);
         Ok(SessionSummary {
+            read_only: resume_disabled_reason.is_some(),
             session_id: id.to_string(),
             actor_state: handle.actor_state.clone(),
             workspace: handle.workspace.display().to_string(),
@@ -1660,7 +1682,8 @@ impl Service {
             } else {
                 None
             },
-            promptable: handle.parent_session_id.is_none(),
+            promptable: handle.parent_session_id.is_none() && resume_disabled_reason.is_none(),
+            resume_disabled_reason,
         })
     }
 
@@ -1674,6 +1697,7 @@ impl Service {
             .map_err(ServerError::History)?
             .ok_or_else(|| ServerError::SessionNotFound(id.to_string()))?;
         Ok(SessionSummary {
+            read_only: meta.resume_disabled_reason.is_some(),
             session_id: id.to_string(),
             actor_state: "stopped".to_string(),
             workspace: meta.workspace,
@@ -1685,7 +1709,8 @@ impl Service {
             current_seq: meta.last_seq,
             parent_session_id: None,
             child_status: None,
-            promptable: true,
+            promptable: meta.resume_disabled_reason.is_none(),
+            resume_disabled_reason: meta.resume_disabled_reason,
         })
     }
 

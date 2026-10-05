@@ -30,7 +30,8 @@
 //! Schema:
 //! - `sessions(id TEXT PRIMARY KEY, workspace TEXT, model TEXT, profile TEXT,
 //!   title TEXT, created_at TEXT, updated_at TEXT, last_seq INTEGER, transcript TEXT,
-//!   model_resolution TEXT, variant TEXT, variant_override TEXT, primary_agent TEXT, reasoning_floor INTEGER)`
+//!   model_resolution TEXT, variant TEXT, variant_override TEXT, primary_agent TEXT, reasoning_floor INTEGER,
+//!   resume_disabled_reason TEXT)`
 //! - `events(session_id TEXT, seq INTEGER, kind TEXT, envelope TEXT,
 //!   PRIMARY KEY(session_id, seq))`
 //!
@@ -47,6 +48,10 @@
 //! identity and bounds the conversation runs on. It is written once (at
 //! creation, or at the first activation of a row that has none) and never
 //! overwritten: a catalog refresh does not move a conversation.
+//!
+//! `resume_disabled_reason` is NULL for ordinary conversations, or safe text
+//! explicitly marking a read-only archive. Missing model resolution alone never
+//! marks an archive. The marker leaves metadata, transcript and events intact.
 //!
 //! `variant` is NULL or the name of the model variant the conversation
 //! runs with: NULL means none (a row from before the column has none). It
@@ -174,6 +179,8 @@ use crate::provider::openai::ChatMessage;
 /// minus `live` which only the registry knows).
 #[derive(Debug, Clone)]
 pub struct StoredSession {
+    /// A non-null reason makes this an explicitly marked read-only archive.
+    pub resume_disabled_reason: Option<String>,
     pub provenance: Option<SelectionProvenance>,
     pub agent_overrides: AgentOverrides,
     pub id: Ulid,
@@ -199,6 +206,13 @@ pub struct StoredSession {
     /// conversation no longer talks to: the request projection leaves their
     /// reasoning out. `None` (a row never switched) is zero.
     pub reasoning_floor: Option<u64>,
+}
+
+impl StoredSession {
+    /// Read-only is derived only from the explicit archive marker, not missing resolution.
+    pub fn read_only(&self) -> bool {
+        self.resume_disabled_reason.is_some()
+    }
 }
 
 /// A full session load: the row's metadata, its stored envelopes (in seq
@@ -232,6 +246,10 @@ type Ack = oneshot::Sender<Result<(), String>>;
 
 /// What the writer thread accepts.
 enum Write {
+    MarkArchive {
+        id: Ulid,
+        reason: String,
+    },
     AgentSelection {
         cancel: Option<tokio_util::sync::CancellationToken>,
         id: Ulid,
@@ -1096,6 +1114,22 @@ impl HistoryStore {
     pub async fn delete(&self, id: Ulid) -> Result<(), String> {
         self.acked(Write::Delete { id }).await
     }
+
+    /// Mark an existing historical session read-only without changing its history.
+    /// Reasons are single-line safe text, at most 512 UTF-8 bytes.
+    pub async fn mark_archive(&self, id: Ulid, reason: &str) -> Result<(), String> {
+        if reason.trim().is_empty()
+            || reason.len() > 512
+            || reason.chars().any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+        {
+            return Err("archive reason must be nonempty safe single-line text of at most 512 bytes".into());
+        }
+        self.acked(Write::MarkArchive {
+            id,
+            reason: reason.to_string(),
+        })
+        .await
+    }
 }
 
 /// The two columns a selected variant is saved in: its name and its override
@@ -1557,6 +1591,15 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                 params![id.to_string()],
             )?;
         }
+        Write::MarkArchive { id, reason } => {
+            if tx.execute(
+                "UPDATE sessions SET resume_disabled_reason = ?2 WHERE id = ?1",
+                params![id.to_string(), reason],
+            )? == 0
+            {
+                return Err(WriteError::UnknownSession(id));
+            }
+        }
     }
     if cancellation.as_ref().is_some_and(|c| c.is_cancelled()) {
         return Err(WriteError::InvalidSelection(
@@ -1587,7 +1630,8 @@ fn migrate(path: &Path) -> Result<(), String> {
             variant_override TEXT,
             checkpoint TEXT,
             primary_agent TEXT,
-            reasoning_floor INTEGER
+            reasoning_floor INTEGER,
+            resume_disabled_reason TEXT
         );
         CREATE TABLE IF NOT EXISTS events (
             session_id TEXT NOT NULL,
@@ -1740,6 +1784,17 @@ fn migrate(path: &Path) -> Result<(), String> {
             [],
         )
         .map_err(|e| e.to_string())?;
+    }
+    let has_archive_reason = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name='resume_disabled_reason'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| format!("migrate: {e}"))?;
+    if !has_archive_reason {
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN resume_disabled_reason TEXT",
+            [],
+        )
+        .map_err(|e| format!("migrate: {e}"))?;
     }
     Ok(())
 }

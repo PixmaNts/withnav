@@ -43,7 +43,7 @@ impl HistoryStore {
                 tx.query_row(
                     "SELECT id, workspace, model, profile, title, created_at, updated_at, last_seq,
                             model_resolution, variant, variant_override, primary_agent,
-                            reasoning_floor, agent_overrides, selection_provenance
+                            reasoning_floor, agent_overrides, selection_provenance, resume_disabled_reason
                      FROM sessions WHERE id = ?1",
                     params![id.to_string()],
                     row_to_session,
@@ -255,6 +255,7 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSession> {
     let id: String = row.get(0)?;
     let profile: Option<String> = row.get(3)?;
     Ok(StoredSession {
+        resume_disabled_reason: row.get(15)?,
         provenance: row
             .get::<_, Option<String>>(14)?
             .map(|raw| serde_json::from_str(&raw))
@@ -301,7 +302,7 @@ fn list_sync(path: &Path, workspace: &str) -> Result<Vec<ListedSession>, String>
                 "SELECT s.id, s.workspace, s.model, s.profile, s.title,
                         s.created_at, s.updated_at, s.last_seq,
                         s.model_resolution, s.variant, s.variant_override, s.primary_agent,
-                        s.reasoning_floor, s.agent_overrides, s.selection_provenance,
+                        s.reasoning_floor, s.agent_overrides, s.selection_provenance, s.resume_disabled_reason,
                         (SELECT COUNT(*) FROM events e
                          WHERE e.session_id = s.id AND e.kind = 'message.received')
                  FROM sessions s WHERE s.workspace = ?1
@@ -312,7 +313,7 @@ fn list_sync(path: &Path, workspace: &str) -> Result<Vec<ListedSession>, String>
             .query_map(params![workspace], |row| {
                 Ok(ListedSession {
                     meta: row_to_session(row)?,
-                    message_count: row.get::<_, i64>(15)?.max(0) as u64,
+                    message_count: row.get::<_, i64>(16)?.max(0) as u64,
                 })
             })
             .map_err(|e| format!("query: {e}"))?;
@@ -338,13 +339,13 @@ fn resume_tx(tx: &Transaction<'_>, id: Ulid) -> Result<Option<Resumed>, String> 
         .query_row(
             "SELECT id, workspace, model, profile, title, created_at, updated_at, last_seq,
                     model_resolution, variant, variant_override, primary_agent, reasoning_floor,
-                    agent_overrides, selection_provenance, transcript, checkpoint
+                     agent_overrides, selection_provenance, resume_disabled_reason, transcript, checkpoint
              FROM sessions WHERE id = ?1",
             params![id.to_string()],
             |row| {
                 let meta = row_to_session(row)?;
-                let transcript: Option<String> = row.get(15)?;
-                let checkpoint: Option<String> = row.get(16)?;
+                let transcript: Option<String> = row.get(16)?;
+                let checkpoint: Option<String> = row.get(17)?;
                 Ok((meta, transcript, checkpoint))
             },
         )

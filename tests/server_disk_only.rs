@@ -179,6 +179,8 @@ async fn restarted_server_answers_get_for_a_stored_conversation() {
             "agent",
             "current_seq",
             "model",
+            "read_only",
+            "resume_disabled_reason",
             "session_id",
             "variant",
             "workspace"

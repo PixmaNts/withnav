@@ -184,7 +184,9 @@ fn block_text(
         BlockKind::Permission(prompt) => {
             let open = state.open_permission().map(|p| p.request_id.as_str())
                 == Some(prompt.request_id.as_str());
-            let keys = if !open {
+            let keys = if state.archive() {
+                Keys::Historical
+            } else if !open {
                 Keys::Inactive
             } else if state.answered_permission.as_deref() == Some(prompt.request_id.as_str()) {
                 Keys::Sent

@@ -1,6 +1,7 @@
 //! Reducer tests over JSONL fixtures built from the crate's real event types.
 //! Regenerate the fixtures with
 //! `cargo test --test tui_reducer -- --ignored regenerate_fixtures`.
+use navai::tui::protocol::{ContextSnapshot, ModelIdentity};
 use navai::{
     bus::event::*,
     provider::{AssistantMessage, StreamDelta, ToolCall, Usage},
@@ -472,7 +473,7 @@ fn session_list_and_metadata_strip_terminal_controls_before_display() {
     )
     .unwrap();
     assert_eq!(s.agent_name(), "review");
-    assert_eq!(s.selected_model_alias.as_deref(), Some("fast"));
+    assert_eq!(s.selected_model_id.as_deref(), Some("fast"));
 }
 
 #[test]
@@ -692,6 +693,10 @@ async fn child_controls_and_permission_answers_use_the_owner_routes() {
 fn subagent_parent() -> State {
     let tab = Tab {
         session: Some(SessionMetadata {
+            source: "config".into(),
+            variant_source: "model_default".into(),
+            read_only: false,
+            resume_disabled_reason: None,
             session_id: Ulid(1).to_string(),
             actor_state: "idle".into(),
             workspace: "/ws".into(),
@@ -859,6 +864,10 @@ fn subagent_controls_confirm_effects_and_show_server_refusals() {
             ClientEvent::Metadata {
                 generation: generation.clone(),
                 result: Ok(SessionMetadata {
+                    source: "config".into(),
+                    variant_source: "model_default".into(),
+                    read_only: false,
+                    resume_disabled_reason: None,
                     session_id: Ulid(2).to_string(),
                     actor_state: "active".into(),
                     workspace: "/ws".into(),
@@ -1576,6 +1585,10 @@ fn steps(s: &State) -> Vec<(String, String)> {
 }
 fn with_session(s: &mut State, id: &str) {
     s.session = Some(SessionMetadata {
+        source: "config".into(),
+        variant_source: "model_default".into(),
+        read_only: false,
+        resume_disabled_reason: None,
         session_id: id.into(),
         actor_state: "idle".into(),
         workspace: "/ws".into(),
@@ -1611,14 +1624,18 @@ fn resumed_ev(s: &State, id: &str) -> ClientEvent {
 fn catalog() -> Vec<ModelEntry> {
     vec![
         ModelEntry {
-            alias: "a".into(),
-            model: "vendor/a".into(),
+            gateway: "gateway".into(),
+            provider_group: "gateway".into(),
+            name: "a".into(),
+            upstream_id: "vendor/a".into(),
             context_window: Some(1000),
             ..Default::default()
         },
         ModelEntry {
-            alias: "b".into(),
-            model: "vendor/b".into(),
+            gateway: "gateway".into(),
+            provider_group: "gateway".into(),
+            name: "b".into(),
+            upstream_id: "vendor/b".into(),
             context_window: None,
             ..Default::default()
         },
@@ -1633,15 +1650,46 @@ fn created_now(s: &mut State, id: &str) -> Result<Vec<Effect>, ProtocolError> {
     update(s, ev)
 }
 fn models_now(s: &mut State, default: Option<String>) -> Result<Vec<Effect>, ProtocolError> {
-    let ev = ClientEvent::Models {
-        generation: s.generation.clone(),
-        result: Ok(ModelsBody {
-            models: catalog(),
-            default,
-        }),
-    };
-    update(s, ev)
+    update(
+        s,
+        ClientEvent::Models {
+            workspace: "/ws".into(),
+            request: 0,
+            generation: s.generation.clone(),
+            result: Ok(ModelsBody {
+                models: catalog(),
+                default_agent: Some("build".into()),
+            }),
+        },
+    )?;
+    if !navai::tui::reducer::occupied(s) {
+        let chosen = default.unwrap_or_else(|| "a".into());
+        update(
+            s,
+            ClientEvent::Agents {
+                workspace: s.workspace.clone(),
+                request: 0,
+                generation: s.generation.clone(),
+                session_id: None,
+                result: Ok(AgentsBody {
+                    default_agent: "build".into(),
+                    agents: vec![AgentEntry {
+                        id: "build".into(),
+                        mode: "primary".into(),
+                        effective: Some(Selection {
+                            model: chosen,
+                            source: "config".into(),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }],
+                }),
+            },
+        )?;
+    }
+    Ok(vec![])
 }
+
 fn submitted_now(
     s: &mut State,
     revision: u64,
@@ -1854,7 +1902,7 @@ fn missing_usage_and_context_window_stay_unknown() {
     assert!(s.conversation.missing_usage);
     let mut s = st();
     models_now(&mut s, Some("b".into())).unwrap();
-    assert_eq!(s.selected_model_alias.as_deref(), Some("b"));
+    assert_eq!(s.selected_model_id.as_deref(), Some("b"));
     assert_eq!(s.context_window, None);
 }
 
@@ -1903,13 +1951,13 @@ fn stop_then_resume() {
     assert_eq!(fx, vec![Effect::Resume("S1".into())]);
     let fx = resumed_now(&mut s, "S1").unwrap();
     assert_eq!(
-        fx[1],
+        fx[2],
         Effect::Subscribe {
             session_id: "S1".into(),
             cursor: Some(5)
         }
     );
-    assert!(matches!(&fx[2], Effect::SendAt { revision: 4, .. }));
+    assert!(matches!(&fx[3], Effect::SendAt { revision: 4, .. }));
     feed(&mut s, &load("resumed"));
     assert_eq!(s.activity, Activity::Idle);
     assert_eq!(steps(&s).len(), 2);
@@ -1934,10 +1982,13 @@ fn new_conversation_opens_a_tab_with_its_own_cursor_and_generation() {
     let fx = handle_action(&mut s, &mut ui(), Action::NewConversation);
     assert_eq!(
         fx,
-        vec![Effect::SetEditor {
-            text: String::new(),
-            revision: 0
-        }]
+        vec![
+            Effect::SetEditor {
+                text: String::new(),
+                revision: 0
+            },
+            Effect::FetchAgents(None)
+        ]
     );
     assert_eq!((s.tabs.len(), s.active), (2, 1));
     assert_eq!(
@@ -1975,8 +2026,8 @@ fn pick_model_with_a_session_opens_a_tab_without_one_it_does_not() {
     assert_ne!(s.generation, gen);
     assert_eq!(s.last_applied_seq, None);
     assert!(s.conversation.blocks.is_empty());
-    assert_eq!(s.selected_model_alias.as_deref(), Some("a"));
-    assert_eq!(s.tabs[0].selected_model_alias.as_deref(), Some("b"));
+    assert_eq!(s.selected_model_id.as_deref(), Some("a"));
+    assert_eq!(s.tabs[0].selected_model_id.as_deref(), Some("b"));
 }
 
 #[test]
@@ -2019,8 +2070,10 @@ fn bug2_resync_keeps_catalog_model_sessions_pending_submit_and_notice() {
     let mut s = run("turn_replay");
     with_session(&mut s, "S1");
     s.catalog = catalog();
-    s.selected_model_alias = Some("a".into());
+    s.selected_model_id = Some("a".into());
     s.sessions = vec![SessionListEntry {
+        read_only: false,
+        resume_disabled_reason: None,
         id: "S0".into(),
         title: None,
         created_at: "t".into(),
@@ -2052,7 +2105,7 @@ fn bug2_resync_keeps_catalog_model_sessions_pending_submit_and_notice() {
     );
     assert_eq!(s.generation, gen); // same stream replays: no bump
     assert_eq!(s.catalog.len(), 2);
-    assert_eq!(s.selected_model_alias.as_deref(), Some("a"));
+    assert_eq!(s.selected_model_id.as_deref(), Some("a"));
     assert_eq!(s.sessions.len(), 1);
     assert_eq!(s.pending_submit_text.as_deref(), Some("draft"));
     assert_eq!(s.notice.as_deref(), Some("note"));
@@ -2260,7 +2313,7 @@ fn bug9_metadata_refreshes_display_and_stale_metadata_cannot_clobber_a_pick() {
     models_now(&mut s, Some("a".into())).unwrap();
     assert_eq!(
         (s.selected_model_name.as_deref(), s.context_window),
-        (Some("vendor/a"), Some(1000))
+        (Some("a"), Some(1000))
     );
     with_session(&mut s, "S1");
     let old = s.generation.clone();
@@ -2268,6 +2321,10 @@ fn bug9_metadata_refreshes_display_and_stale_metadata_cannot_clobber_a_pick() {
     let meta = |g: &Generation, model: &str| ClientEvent::Metadata {
         generation: g.clone(),
         result: Ok(SessionMetadata {
+            source: "config".into(),
+            variant_source: "model_default".into(),
+            read_only: false,
+            resume_disabled_reason: None,
             session_id: "S1".into(),
             actor_state: "idle".into(),
             workspace: "/ws".into(),
@@ -2283,11 +2340,11 @@ fn bug9_metadata_refreshes_display_and_stale_metadata_cannot_clobber_a_pick() {
     update(&mut s, meta(&old, "a")).unwrap(); // stale: the old conversation's metadata
     assert_eq!(
         (
-            s.selected_model_alias.as_deref(),
+            s.selected_model_id.as_deref(),
             s.selected_model_name.as_deref(),
             s.context_window
         ),
-        (Some("b"), Some("vendor/b"), None)
+        (Some("b"), Some("b"), None)
     );
     assert!(s.session.is_none());
     // current metadata refreshes name and window from the catalog
@@ -2295,11 +2352,11 @@ fn bug9_metadata_refreshes_display_and_stale_metadata_cannot_clobber_a_pick() {
     update(&mut s, meta(&g, "a")).unwrap();
     assert_eq!(
         (
-            s.selected_model_alias.as_deref(),
+            s.selected_model_id.as_deref(),
             s.selected_model_name.as_deref(),
             s.context_window
         ),
-        (Some("a"), Some("vendor/a"), Some(1000))
+        (Some("a"), Some("a"), Some(1000))
     );
 }
 
@@ -2572,10 +2629,13 @@ fn drafts_and_positions_are_kept_per_tab() {
     let fx = handle_action(&mut s, &mut ui, Action::NewConversation);
     assert_eq!(
         fx,
-        vec![Effect::SetEditor {
-            text: String::new(),
-            revision: 0
-        }]
+        vec![
+            Effect::SetEditor {
+                text: String::new(),
+                revision: 0
+            },
+            Effect::FetchAgents(None)
+        ]
     );
     assert!(ui.follow_bottom);
     assert_eq!(ui.scroll, 0);
@@ -2645,13 +2705,13 @@ fn of_incarnation(n: u128, mut snapshot: ContextSnapshot) -> ContextSnapshot {
 
 fn snapshot(revision: u64, estimate_total: u64) -> ContextSnapshot {
     ContextSnapshot {
-        model: "mock/default".into(),
-        gateway: "mock".into(),
-        upstream_id: "default".into(),
+        gateway: "gateway".into(),
+        upstream_id: "upstream".into(),
+        model: "default".into(),
         variant: None,
         window: 1_000_000,
         window_source: "models.json".into(),
-        estimated: true,
+
         estimate_total,
         breakdown: Default::default(),
         output_reserve: 8192,
@@ -3156,25 +3216,28 @@ fn a_failed_resume_frees_the_tab() {
 fn a_catalog_answer_reaches_every_tab() {
     let (mut s, mut ui) = (st(), ui());
     // tab 1 chose `a` before any catalog (no name, no window yet); tab 2 chose nothing
-    s.selected_model_alias = Some("a".into());
+    s.selected_model_id = Some("a".into());
     created_now(&mut s, "S1").unwrap();
     handle_action(&mut s, &mut ui, Action::NewConversation);
-    s.selected_model_alias = None;
+    s.selected_model_id = None;
     s.selected_model_name = None;
     handle_action(&mut s, &mut ui, Action::SwitchTab(0));
     assert_eq!(s.selected_model_name, None);
     models_now(&mut s, Some("b".into())).unwrap();
     let background = &s.tabs[1];
-    assert_eq!(background.selected_model_alias.as_deref(), Some("b"));
-    assert_eq!(background.selected_model_name.as_deref(), Some("vendor/b"));
     assert_eq!(
-        s.selected_model_alias.as_deref(),
+        background.selected_model_id, None,
+        "catalog alone does not invent an agent assignment"
+    );
+    assert_eq!(background.selected_model_name, None);
+    assert_eq!(
+        s.selected_model_id.as_deref(),
         Some("a"),
         "a choice is kept"
     );
     assert_eq!(
         (s.selected_model_name.as_deref(), s.context_window),
-        (Some("vendor/a"), Some(1000))
+        (Some("a"), Some(1000))
     );
     // a later catalog refreshes the background tab's window too
     let mut models = catalog();
@@ -3183,15 +3246,17 @@ fn a_catalog_answer_reaches_every_tab() {
     update(
         &mut s,
         ClientEvent::Models {
+            workspace: "/ws".into(),
+            request: 0,
             generation,
             result: Ok(ModelsBody {
                 models,
-                default: None,
+                default_agent: None,
             }),
         },
     )
     .unwrap();
-    assert_eq!(s.tabs[1].context_window, Some(2000));
+    assert_eq!(s.tabs[1].context_window, None);
 }
 
 // Given a tab whose conversation is still being resumed, holding a message the driver sent
@@ -3321,7 +3386,7 @@ fn typed_lines_route_like_the_server_with_client_commands_kept_local() {
     assert_eq!(route("/new", mode), Routed::Local(Action::NewConversation));
     assert_eq!(
         route("/new fast", mode),
-        Routed::Local(Action::PickModel("fast".into()))
+        Routed::Local(Action::PickAgent("fast".into()))
     );
 }
 
@@ -3483,7 +3548,10 @@ fn the_server_command_list_is_kept() {
 fn toggling_the_agent_before_a_conversation_sets_the_one_it_starts_as() {
     let (mut s, mut ui) = (st(), ui());
     assert_eq!(s.agent_name(), "build");
-    assert!(handle_action(&mut s, &mut ui, Action::ToggleAgent).is_empty());
+    assert_eq!(
+        handle_action(&mut s, &mut ui, Action::ToggleAgent),
+        vec![Effect::FetchAgents(None)]
+    );
     assert_eq!(s.agent_name(), "plan");
     let fx = handle_action(&mut s, &mut ui, Action::Submit("hi".into()));
     assert!(
@@ -3493,7 +3561,11 @@ fn toggling_the_agent_before_a_conversation_sets_the_one_it_starts_as() {
     let mut back = st();
     handle_action(&mut back, &mut ui, Action::ToggleAgent);
     handle_action(&mut back, &mut ui, Action::ToggleAgent);
-    assert_eq!(back.agent, None, "build is the server's default: not sent");
+    assert_eq!(
+        back.agent.as_deref(),
+        Some("build"),
+        "explicit build is not the server default"
+    );
 }
 
 #[test]
@@ -3520,8 +3592,8 @@ fn toggling_the_agent_of_a_conversation_goes_through_the_server() {
     );
     let mut script = Script::new();
     script.raw(
-        "session.agent_changed",
-        json!({"agent": "plan", "previous": "build"}),
+        "model.changed",
+        json!({"new":{"agent":"plan","model":"a","variant":"high","source":"config","variant_source":"override"},"previous":null,"window":1000,"reason":"agent"}),
     );
     feed(&mut s, &script.out);
     assert_eq!(s.agent_name(), "plan");
@@ -3553,6 +3625,10 @@ fn the_session_summary_and_a_background_change_set_each_tabs_agent() {
     let meta = ClientEvent::Metadata {
         generation: first.clone(),
         result: Ok(SessionMetadata {
+            source: "config".into(),
+            variant_source: "model_default".into(),
+            read_only: false,
+            resume_disabled_reason: None,
             session_id: "S1".into(),
             actor_state: "idle".into(),
             workspace: "/ws".into(),
@@ -3571,8 +3647,8 @@ fn the_session_summary_and_a_background_change_set_each_tabs_agent() {
     assert_eq!(s.agent_name(), "build", "a new tab starts as build");
     let mut script = Script::new();
     script.raw(
-        "session.agent_changed",
-        json!({"agent": "build", "previous": "plan"}),
+        "model.changed",
+        json!({"new":{"agent":"build","model":"a","variant":null,"source":"config","variant_source":"model_default"},"previous":null,"window":1000,"reason":"agent"}),
     );
     update(
         &mut s,
@@ -3590,16 +3666,20 @@ fn the_session_summary_and_a_background_change_set_each_tabs_agent() {
 fn variant_catalog() -> Vec<ModelEntry> {
     vec![
         ModelEntry {
-            alias: "opus".into(),
-            model: "vendor/opus".into(),
+            gateway: "gateway".into(),
+            provider_group: "gateway".into(),
+            name: "opus".into(),
+            upstream_id: "vendor/opus".into(),
             context_window: Some(1_000_000),
             variants: vec!["low".into(), "high".into()],
             default_variant: Some("high".into()),
             ..Default::default()
         },
         ModelEntry {
-            alias: "flash".into(),
-            model: "vendor/flash".into(),
+            gateway: "gateway".into(),
+            provider_group: "gateway".into(),
+            name: "flash".into(),
+            upstream_id: "vendor/flash".into(),
             context_window: Some(100_000),
             ..Default::default()
         },
@@ -3618,7 +3698,7 @@ fn the_variant_picked_with_a_model_is_sent_when_the_conversation_starts() {
     ui.variant_pick = Some(VariantPick::NewConversation("opus".into()));
     handle_action(&mut s, &mut ui, Action::PickVariant("low".into()));
     assert_eq!(ui.variant_pick, None);
-    assert_eq!(s.selected_model_alias.as_deref(), Some("opus"));
+    assert_eq!(s.selected_model_id.as_deref(), Some("opus"));
     assert_eq!(
         s.variant.as_deref(),
         Some("low"),
@@ -3661,13 +3741,13 @@ fn the_variant_picked_with_a_model_is_sent_when_the_conversation_starts() {
 #[test]
 fn picking_a_model_in_a_conversation_still_opens_a_new_tab() {
     let (mut s, mut ui) = (with_variants(), ui());
-    s.selected_model_alias = Some("flash".into());
+    s.selected_model_id = Some("flash".into());
     created_now(&mut s, "S1").unwrap();
     ui.variant_pick = Some(VariantPick::NewConversation("opus".into()));
     handle_action(&mut s, &mut ui, Action::PickVariant("high".into()));
     assert_eq!((s.tabs.len(), s.active), (2, 1));
-    assert_eq!(s.selected_model_alias.as_deref(), Some("opus"));
-    assert_eq!(s.tabs[0].selected_model_alias.as_deref(), Some("flash"));
+    assert_eq!(s.selected_model_id.as_deref(), Some("opus"));
+    assert_eq!(s.tabs[0].selected_model_id.as_deref(), Some("flash"));
 }
 
 #[test]
@@ -3675,12 +3755,16 @@ fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use navai::tui::input::{route_key, Editor};
     let (mut s, mut ui) = (with_variants(), ui());
-    s.selected_model_alias = Some("opus".into());
+    s.selected_model_id = Some("opus".into());
     created_now(&mut s, "S1").unwrap();
     // the tab last heard the conversation runs on `high`
     let summary = ClientEvent::Metadata {
         generation: s.generation.clone(),
         result: Ok(SessionMetadata {
+            source: "config".into(),
+            variant_source: "model_default".into(),
+            read_only: false,
+            resume_disabled_reason: None,
             session_id: "S1".into(),
             actor_state: "idle".into(),
             workspace: "/ws".into(),
@@ -3750,7 +3834,7 @@ fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server
     assert_eq!(ui.overlay, Some(Overlay::Variants));
     assert_eq!(ui.variant_pick, Some(VariantPick::Current));
     let (rows, _) = navai::tui::commands::variant_choices(&s, &VariantPick::Current);
-    assert_eq!(rows, ["low", "max", "off"]);
+    assert_eq!(rows, ["low", "max", "off", "inherit"]);
     assert_eq!(
         rows[ui.selection["Variants"]], "max",
         "starts on the variant the answer names, not the tab's older `high`"
@@ -3776,12 +3860,12 @@ fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server
     script.raw(
         "command.result",
         json!({"operation_id": Ulid(4).to_string(), "name": "variant", "ok": true,
-               "data": {"variant": null, "offered": ["low", "high"]}}),
+               "data": {"agent":"build","model":"opus","variant_source":"override","variant": null, "offered": ["low", "high"]}}),
     );
     script.raw(
         "command.result",
         json!({"operation_id": Ulid(5).to_string(), "name": "variant", "ok": true,
-               "data": {"variant": "low", "offered": ["low", "high"], "applies": "next_turn"}}),
+               "data": {"agent":"build","model":"opus","variant_source":"override","variant": "low", "offered": ["low", "high"], "applies": "next_turn"}}),
     );
     let ev = envelope(&s, &script.out[0]);
     update(&mut s, ev).unwrap();
@@ -3800,11 +3884,7 @@ fn slash_variant_without_a_conversation_asks_the_server_nothing() {
     let (mut s, mut ui) = (with_variants(), ui());
     let fx = handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Variants));
     assert!(fx.is_empty());
-    assert_eq!(ui.overlay, None);
-    assert!(matches!(
-        &s.conversation.blocks.last().unwrap().kind,
-        BlockKind::Command { ok: false, text, .. } if text.contains("send a message first")
-    ));
+    assert_eq!(ui.overlay, Some(Overlay::Variants));
 }
 
 #[test]
@@ -3814,6 +3894,10 @@ fn a_summary_read_before_a_confirmed_change_does_not_undo_it() {
     let summary = |s: &State, seq: u64, agent: &str, variant: Option<&str>| ClientEvent::Metadata {
         generation: s.generation.clone(),
         result: Ok(SessionMetadata {
+            source: "config".into(),
+            variant_source: "model_default".into(),
+            read_only: false,
+            resume_disabled_reason: None,
             session_id: "S1".into(),
             actor_state: "idle".into(),
             workspace: "/ws".into(),
@@ -3829,13 +3913,13 @@ fn a_summary_read_before_a_confirmed_change_does_not_undo_it() {
     let mut script = Script::new();
     script.seq = 10;
     script.raw(
-        "session.agent_changed",
-        json!({"agent": "plan", "previous": "build"}),
+        "model.changed",
+        json!({"new":{"agent":"plan","model":"a","variant":"high","source":"config","variant_source":"override"},"previous":null,"window":1000,"reason":"agent"}),
     );
     script.raw(
         "command.result",
         json!({"operation_id": Ulid(1).to_string(), "name": "variant", "ok": true,
-               "data": {"variant": "high", "offered": ["low", "high"]}}),
+               "data": {"agent":"plan","model":"a","variant_source":"override","variant": "high", "offered": ["low", "high"]}}),
     );
     feed(&mut s, &script.out);
     let (agent_seq, variant_seq) = (script.out[0].seq, script.out[1].seq);
@@ -3903,11 +3987,11 @@ fn local_routing_follows_the_server_prefix_rule_and_checks_arguments() {
     );
     assert_eq!(
         route("/new opus", mode),
-        Routed::Local(Action::PickModel("opus".into()))
+        Routed::Local(Action::PickAgent("opus".into()))
     );
     assert_eq!(
         route("/model opus high", mode),
-        Routed::Refused("usage: /model [alias]".into())
+        Routed::Refused("usage: /model [agent or model]".into())
     );
 }
 
@@ -3936,7 +4020,7 @@ fn slash_variant_always_offers_off_even_with_an_empty_catalog() {
     // before any answer, and with an offer of nothing: `off` is still there
     assert_eq!(
         navai::tui::commands::variant_choices(&s, &VariantPick::Current),
-        (vec!["off".to_string()], 0)
+        (vec!["off".to_string(), "inherit".to_string()], 0)
     );
     let answer = ClientEvent::CommandRan {
         generation: s.generation.clone(),
@@ -3953,7 +4037,10 @@ fn slash_variant_always_offers_off_even_with_an_empty_catalog() {
     handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Variants));
     update(&mut s, answer).unwrap();
     let (rows, start) = navai::tui::commands::variant_choices(&s, &VariantPick::Current);
-    assert_eq!((rows, start), (vec!["high".into(), "off".into()], 0));
+    assert_eq!(
+        (rows, start),
+        (vec!["high".into(), "off".into(), "inherit".into()], 0)
+    );
     // a failed answer opens nothing
     handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Variants));
     let failed = ClientEvent::CommandRan {
@@ -3977,8 +4064,8 @@ fn picking_a_model_while_a_conversation_is_being_created_opens_another_tab() {
     // before the server answers, another model is picked
     handle_action(&mut s, &mut ui, Action::PickModel("opus".into()));
     assert_eq!((s.tabs.len(), s.active), (2, 1));
-    assert_eq!(s.selected_model_alias.as_deref(), Some("opus"));
-    assert_eq!(s.tabs[0].selected_model_alias.as_deref(), Some("flash"));
+    assert_eq!(s.selected_model_id.as_deref(), Some("opus"));
+    assert_eq!(s.tabs[0].selected_model_id.as_deref(), Some("flash"));
     // the creation lands on its own tab, with its own model
     update(
         &mut s,
@@ -4492,9 +4579,12 @@ fn switching_a_live_conversation_sends_model_and_opens_no_tab() {
     let fx = handle_action(&mut s, &mut ui, Action::SwitchModel("b".into()));
     assert_eq!(fx, vec![model_command("b")]);
     assert_eq!(s.tabs.len(), 1, "no new tab");
-    assert_eq!(s.model_switch.as_ref().map(|m| m.alias.as_str()), Some("b"));
     assert_eq!(
-        s.selected_model_alias.as_deref(),
+        s.model_switch.as_ref().map(|m| m.model_id.as_str()),
+        Some("b")
+    );
+    assert_eq!(
+        s.selected_model_id.as_deref(),
         Some("a"),
         "the committed model stays until the server says otherwise"
     );
@@ -4502,7 +4592,7 @@ fn switching_a_live_conversation_sends_model_and_opens_no_tab() {
     let mut fresh = st();
     models_now(&mut fresh, None).unwrap();
     assert!(handle_action(&mut fresh, &mut ui, Action::SwitchModel("b".into())).is_empty());
-    assert_eq!(fresh.selected_model_alias.as_deref(), Some("b"));
+    assert_eq!(fresh.selected_model_id.as_deref(), Some("b"));
     // `/new <alias>` (PickModel) still opens a tab
     handle_action(&mut s, &mut ui, Action::PickModel("b".into()));
     assert_eq!((s.tabs.len(), s.active), (2, 1));
@@ -4538,25 +4628,19 @@ fn model_changed_op(
     variant: Option<&str>,
     window: u64,
 ) {
-    let identity = |alias: &str| ModelIdentity::from_upstream("p", &format!("vendor/{alias}"));
-    s.push(
-        EventKind::ModelChanged,
-        &ModelChanged {
-            operation_id: op.map(Ulid),
-            revision: 2,
-            reason: if from.is_some() {
-                ModelChangeReason::Switch
-            } else {
-                ModelChangeReason::Initial
-            },
-            previous: from.map(identity),
-            new: identity(to),
+    let identity = |model: &str| ModelIdentity {
+        agent: "build".into(),
+        selection: Selection {
+            model: model.into(),
             variant: variant.map(str::to_string),
-            window,
-            input_budget: window / 2,
-            from_message: 0,
+            source: "override".into(),
+            variant_source: "override".into(),
         },
-    );
+    };
+    s.push(EventKind::ModelChanged, &serde_json::json!({
+        "operation_id": op.map(Ulid), "reason": if from.is_some() { "model" } else { "initial" },
+        "previous": from.map(identity), "new": identity(to), "window": window
+    }));
 }
 
 fn model_result(s: &mut Script, op: u128, ok: bool, data: Option<Value>, error: Option<&str>) {
@@ -4639,13 +4723,13 @@ fn model_changed_moves_the_tab_to_the_new_model_live_and_on_replay() {
         &mut script,
         77,
         true,
-        Some(json!({"alias": "luna", "changed": true, "applies": "now"})),
+        Some(json!({"model": "luna", "changed": true, "applies": "now"})),
         None,
     );
     let mut s = st();
     feed(&mut s, &script.out);
-    assert_eq!(s.selected_model_alias.as_deref(), Some("luna"));
-    assert_eq!(s.selected_model_name.as_deref(), Some("vendor/luna"));
+    assert_eq!(s.selected_model_id.as_deref(), Some("luna"));
+    assert_eq!(s.selected_model_name.as_deref(), Some("luna"));
     assert_eq!(s.variant.as_deref(), Some("high"));
     assert_eq!(s.context_window, Some(872_000));
     let notices: Vec<String> = s
@@ -4666,11 +4750,15 @@ fn model_changed_moves_the_tab_to_the_new_model_live_and_on_replay() {
     let mut again = st();
     feed(&mut again, &script.out);
     assert_eq!(again.conversation.blocks, s.conversation.blocks);
-    assert_eq!(again.selected_model_alias, s.selected_model_alias);
+    assert_eq!(again.selected_model_id, s.selected_model_id);
     // a session summary read before the switch does not undo it
     let old = ClientEvent::Metadata {
         generation: s.generation.clone(),
         result: Ok(SessionMetadata {
+            source: "config".into(),
+            variant_source: "model_default".into(),
+            read_only: false,
+            resume_disabled_reason: None,
             session_id: "S1".into(),
             actor_state: "idle".into(),
             workspace: "/ws".into(),
@@ -4684,7 +4772,7 @@ fn model_changed_moves_the_tab_to_the_new_model_live_and_on_replay() {
         }),
     };
     update(&mut s, old).unwrap();
-    assert_eq!(s.selected_model_alias.as_deref(), Some("luna"));
+    assert_eq!(s.selected_model_id.as_deref(), Some("luna"));
     assert_eq!(s.variant.as_deref(), Some("high"));
 }
 
@@ -4702,7 +4790,7 @@ fn an_accepted_switch_waits_until_the_selection_of_its_own_operation() {
     feed(&mut s, &script.out);
     assert_eq!(s.pending_model(), Some("b"));
     assert_eq!(
-        s.selected_model_alias.as_deref(),
+        s.selected_model_id.as_deref(),
         Some("a"),
         "still the one in use"
     );
@@ -4722,7 +4810,7 @@ fn an_accepted_switch_waits_until_the_selection_of_its_own_operation() {
     after(&mut own, 60);
     feed(&mut s, &own.out);
     assert_eq!(s.pending_model(), None);
-    assert_eq!(s.selected_model_alias.as_deref(), Some("b"));
+    assert_eq!(s.selected_model_id.as_deref(), Some("b"));
 }
 
 #[test]
@@ -4751,7 +4839,7 @@ fn the_result_of_its_operation_settles_the_switch_whatever_the_order() {
     feed(&mut s, &script.out);
     model_answered(&mut s, 77, Ok(deferred()));
     assert_eq!(s.pending_model(), None);
-    assert_eq!(s.selected_model_alias.as_deref(), Some("b"));
+    assert_eq!(s.selected_model_id.as_deref(), Some("b"));
     // a switch made at once is settled by its answer
     let (mut s, _) = switching();
     model_answered(
@@ -4834,7 +4922,10 @@ fn only_the_answer_to_the_latest_request_binds_the_waiting_switch() {
 fn an_older_request_failing_leaves_the_newer_switch() {
     let (mut s, _) = switching_twice();
     model_answered_to(&mut s, 1, 0, Err("connection reset"));
-    assert_eq!(s.model_switch.as_ref().map(|m| m.alias.as_str()), Some("c"));
+    assert_eq!(
+        s.model_switch.as_ref().map(|m| m.model_id.as_str()),
+        Some("c")
+    );
     model_answered_to(&mut s, 2, 88, Ok(deferred()));
     assert_eq!(s.pending_model(), Some("c"));
     // and the newer one failing does end it
@@ -4920,7 +5011,7 @@ fn a_refused_switch_shows_the_servers_reason_and_changes_nothing() {
     );
     feed(&mut s, &script.out);
     model_answered(&mut s, 77, Ok(None));
-    assert_eq!(s.selected_model_alias.as_deref(), Some("a"));
+    assert_eq!(s.selected_model_id.as_deref(), Some("a"));
     assert_eq!(s.model_switch, None);
     assert!(matches!(
         &s.conversation.blocks.last().unwrap().kind,
@@ -4939,7 +5030,14 @@ fn events_replays_and_a_resync_never_send_a_command() {
     // each event, then the same events again (a duplicate delivery), send nothing
     for e in script.out.iter().chain(script.out.iter()) {
         let ev = envelope(&s, e);
-        assert_eq!(update(&mut s, ev).unwrap(), vec![], "{}", e.kind);
+        assert!(
+            update(&mut s, ev)
+                .unwrap()
+                .iter()
+                .all(|fx| matches!(fx, Effect::FetchAgents(_))),
+            "{}",
+            e.kind
+        );
     }
     // a resync while a switch is pending re-subscribes, and asks the server for nothing else
     let (mut s, _) = switching();
@@ -4954,7 +5052,10 @@ fn events_replays_and_a_resync_never_send_a_command() {
     );
     for e in &script.out {
         let ev = envelope(&s, e);
-        assert_eq!(update(&mut s, ev).unwrap(), vec![]);
+        assert!(update(&mut s, ev)
+            .unwrap()
+            .iter()
+            .all(|fx| matches!(fx, Effect::FetchAgents(_))));
     }
 }
 
@@ -4988,27 +5089,31 @@ fn a_catalog_refresh_leaves_the_committed_model_and_window_alone() {
     feed(&mut s, &script.out);
     assert_eq!(
         (s.selected_model_name.as_deref(), s.context_window),
-        (Some("vendor/luna"), Some(872_000))
+        (Some("luna"), Some(872_000))
     );
     // the catalog (F2) now says luna maps to another model with another window
     let ev = ClientEvent::Models {
+        workspace: "/ws".into(),
+        request: 0,
         generation: s.generation.clone(),
         result: Ok(ModelsBody {
             models: vec![ModelEntry {
-                alias: "luna".into(),
-                model: "elsewhere/other-model".into(),
+                gateway: "gateway".into(),
+                provider_group: "gateway".into(),
+                name: "luna".into(),
+                upstream_id: "elsewhere/other-model".into(),
                 context_window: Some(32_000),
                 ..Default::default()
             }],
-            default: Some("luna".into()),
+            default_agent: Some("luna".into()),
         }),
     };
     update(&mut s, ev).unwrap();
     assert_eq!(s.catalog.len(), 1, "the picker gets the new list");
-    assert_eq!(s.selected_model_alias.as_deref(), Some("luna"));
+    assert_eq!(s.selected_model_id.as_deref(), Some("luna"));
     assert_eq!(
         (s.selected_model_name.as_deref(), s.context_window),
-        (Some("vendor/luna"), Some(872_000)),
+        (Some("luna"), Some(872_000)),
         "the header keeps what the server committed"
     );
 }
@@ -5050,7 +5155,7 @@ fn an_acceptance_of_an_unknown_operation_is_not_labelled_with_this_tabs_alias() 
         &mut script,
         99,
         true,
-        Some(json!({"accepted": true, "applies": "after_turn", "alias": "luna"})),
+        Some(json!({"accepted": true, "applies": "after_turn", "model": "luna"})),
         None,
     );
     feed(&mut s, &script.out);

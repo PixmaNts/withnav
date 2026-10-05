@@ -11,6 +11,121 @@ use crate::tui::protocol::{CreateSessionRequest, Generation, SubmitRequest};
 const DEAD_URL: &str = "http://127.0.0.1:1";
 
 #[tokio::test]
+async fn archive_replay_fullscreen_permission_is_passive_and_y_copies() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::{backend::TestBackend, Terminal};
+    use serde_json::json;
+    for (read_only, promptable) in [(true, true), (false, false)] {
+        let mut runtime = Runtime::new(&options(None));
+        crate::tui::reducer::handle_action(
+            &mut runtime.state,
+            &mut runtime.ui,
+            Action::ResumeSession("archive".into()),
+        );
+        let generation = runtime.state.generation.clone();
+        let metadata=serde_json::from_value(json!({"session_id":"archive","actor_state":"stopped","workspace":"/ws","model":"gateway/archive","agent":"build","variant":null,"source":"config","variant_source":"model_default","current_seq":0,"read_only":read_only,"promptable":promptable,"resume_disabled_reason":"unproven identity"})).unwrap();
+        let effects = crate::tui::reducer::update(
+            &mut runtime.state,
+            ClientEvent::Metadata {
+                generation: generation.clone(),
+                result: Ok(metadata),
+            },
+        )
+        .unwrap();
+        assert!(!effects.iter().any(|e| matches!(e, Effect::Resume(_))));
+        for (seq, kind, payload) in [
+            (
+                1,
+                crate::bus::event::EventKind::AgentYield,
+                json!({"kind":"watchdog","question":"Historical pause","details":{}}),
+            ),
+            (
+                2,
+                crate::bus::event::EventKind::PermissionRequested,
+                json!({"request_id":"R","tool_call_id":"C","tool":"bash","agent":"build","arguments":"{\"command\":\"echo history\"}","scope":{"kind":"folder","value":"/ws"},"reason":"Historical review"}),
+            ),
+        ] {
+            let envelope =
+                crate::bus::event::EventEnvelope::new(ulid::Ulid::new(), seq, kind, payload);
+            crate::tui::reducer::update(
+                &mut runtime.state,
+                ClientEvent::Envelope {
+                    generation: generation.clone(),
+                    envelope,
+                },
+            )
+            .unwrap();
+        }
+        assert!(runtime.state.open_permission().is_some());
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| runtime.render(frame)).unwrap();
+        let text = (0..40)
+            .map(|y| {
+                (0..120)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for forbidden in [
+            "alt+c continue",
+            "esc stop",
+            "allow once",
+            "always folder",
+            " deny",
+            "its parent",
+            "waiting for your answer",
+        ] {
+            assert!(!text.contains(forbidden), "{forbidden}: {text}");
+        }
+        assert!(text.contains("historical request"), "{text}");
+        runtime.ui.selected_block = Some("permission:R".into());
+        assert!(runtime.selection_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)));
+        assert!(runtime
+            .state
+            .notice
+            .as_deref()
+            .unwrap()
+            .starts_with("Copied "));
+        for key in [KeyCode::Char('a'), KeyCode::Char('n'), KeyCode::Esc] {
+            if let Some(action) = crate::tui::input::route_key(
+                KeyEvent::new(key, KeyModifiers::NONE),
+                &runtime.state,
+                &mut runtime.ui,
+                &mut runtime.editor,
+            ) {
+                assert!(crate::tui::reducer::handle_action(
+                    &mut runtime.state,
+                    &mut runtime.ui,
+                    action
+                )
+                .is_empty());
+            }
+        }
+        assert!(runtime.ui.child_confirm.is_none());
+    }
+}
+
+#[tokio::test]
+async fn initial_model_catalog_preview_uses_default_variant_without_sending_an_override() {
+    let mut runtime = Runtime::new(&options(Some("gateway/model")));
+    let body=serde_json::from_value(serde_json::json!({"models":[{"name":"gateway/model","gateway":"gateway","upstream_id":"model","provider_group":"gateway","variants":["low","high"],"default_variant":"high","context_window":1000000}],"default_agent":"build"})).unwrap();
+    crate::tui::reducer::update(
+        &mut runtime.state,
+        ClientEvent::Models {
+            generation: Generation(0),
+            workspace: "/ws".into(),
+            request: 1,
+            result: Ok(body),
+        },
+    )
+    .unwrap();
+    assert_eq!(runtime.state.variant.as_deref(), Some("high"));
+    assert_eq!(runtime.state.variant_source, "model_default");
+    assert!(runtime.state.start_variant.is_none());
+}
+
+#[tokio::test]
 async fn permission_y_copies_answered_but_never_intercepts_open_allow() {
     use crate::tui::state::{Block, BlockKind, Focus};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -219,7 +334,9 @@ async fn http_effects_report_back_tagged_with_the_context_generation() {
     let mut seen = Vec::new();
     for _ in 0..6 {
         let (generation, name) = match next(&mut rx).await {
-            ClientEvent::Models { generation, result } => {
+            ClientEvent::Models {
+                generation, result, ..
+            } => {
                 assert!(result.is_err());
                 (generation, "models")
             }
@@ -393,10 +510,12 @@ fn options(model: Option<&str>) -> TuiOptions {
 #[tokio::test]
 async fn startup_presets_the_model_and_asks_for_catalog_and_sessions() {
     let mut runtime = Runtime::new(&options(Some("fast")));
-    assert_eq!(runtime.state.selected_model_alias.as_deref(), Some("fast"));
+    assert_eq!(runtime.state.selected_model_id.as_deref(), Some("fast"));
+    assert_eq!(runtime.state.model_source, "override");
+    assert_eq!(runtime.state.variant_source, "model_default");
     runtime.start(None);
     let mut kinds = Vec::new();
-    for _ in 0..2 {
+    for _ in 0..4 {
         let event = tokio::time::timeout(Duration::from_secs(10), runtime.recv())
             .await
             .expect("in time")
@@ -404,11 +523,53 @@ async fn startup_presets_the_model_and_asks_for_catalog_and_sessions() {
         kinds.push(match event {
             ClientEvent::Models { .. } => "models",
             ClientEvent::Sessions { .. } => "sessions",
+            ClientEvent::Agents { .. } => "agents",
+            ClientEvent::Layers { .. } => "layers",
             other => panic!("unexpected event {other:?}"),
         });
     }
     kinds.sort_unstable();
-    assert_eq!(kinds, ["models", "sessions"]);
+    assert_eq!(kinds, ["agents", "layers", "models", "sessions"]);
+}
+
+#[tokio::test]
+async fn startup_resume_fetches_workspace_layers_under_the_resumed_generation() {
+    let mut runtime = Runtime::new(&options(None));
+    runtime.start(Some("saved".into()));
+    let generation = runtime.state.generation.clone();
+    let mut got_layers = false;
+    let mut got_models = false;
+    for _ in 0..6 {
+        let event = tokio::time::timeout(Duration::from_secs(10), runtime.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match event {
+            ClientEvent::Layers {
+                generation: owner,
+                workspace,
+                ..
+            } => {
+                assert_eq!(owner, generation);
+                assert_eq!(workspace, "/ws");
+                got_layers = true;
+            }
+            ClientEvent::Models {
+                generation: owner,
+                workspace,
+                ..
+            } => {
+                assert_eq!(owner, generation);
+                assert_eq!(workspace, "/ws");
+                got_models = true;
+            }
+            _ => {}
+        }
+        if got_layers && got_models {
+            break;
+        }
+    }
+    assert!(got_layers && got_models);
 }
 
 #[tokio::test]
@@ -564,6 +725,7 @@ async fn a_tabs_editor_keeps_its_cursor_and_history_across_a_switch() {
     runtime.handle_terminal_event(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
     assert_eq!(runtime.state.active, 1);
     assert_eq!(runtime.editor.text(), "");
+    runtime.handle_terminal_event(key(KeyCode::Esc, KeyModifiers::NONE));
     runtime.handle_terminal_event(key(KeyCode::Char('x'), KeyModifiers::NONE));
     runtime.handle_terminal_event(key(KeyCode::Char('1'), KeyModifiers::ALT));
     assert_eq!(runtime.state.active, 0);

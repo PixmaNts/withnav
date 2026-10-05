@@ -128,8 +128,8 @@ async fn models_lists_the_catalog() {
         .expect("models");
     task.abort();
     assert_eq!(body.models.len(), 1);
-    assert_eq!(body.models[0].alias, "default");
-    assert_eq!(body.models[0].model, "mock-model");
+    assert_eq!(body.models[0].name, "default");
+    assert_eq!(body.models[0].upstream_id, "mock-model");
     assert_eq!(body.models[0].context_window, Some(128_000));
 }
 

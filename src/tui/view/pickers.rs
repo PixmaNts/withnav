@@ -16,6 +16,7 @@ use ratatui::{
 pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, theme: &Theme) {
     let Some(overlay) = ui.overlay else { return };
     let title = match overlay {
+        Overlay::Agents => " Choose an agent · assigned model ",
         Overlay::Skills => " Choose a skill ",
         Overlay::Models if crate::tui::reducer::occupied(state) => " Switch this conversation to… ",
         Overlay::Models => " Choose a model ",
@@ -33,6 +34,29 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
     // The popup's inner width, less its margins: what a row can take.
     let row_width = usize::from(width.saturating_sub(6));
     let rows: Vec<Line<'static>> = match overlay {
+        Overlay::Agents => state
+            .agents
+            .iter()
+            .filter(|a| {
+                matches!(a.mode.as_str(), "primary" | "all")
+                    && a.id.to_lowercase().contains(&ui.filter.to_lowercase())
+            })
+            .map(|a| {
+                Line::from(format!(
+                    "{}{} · {}",
+                    if a.id == state.default_agent {
+                        "● "
+                    } else {
+                        "  "
+                    },
+                    a.id,
+                    a.effective
+                        .as_ref()
+                        .map(|s| s.model.as_str())
+                        .unwrap_or("unassigned")
+                ))
+            })
+            .collect(),
         Overlay::Skills => commands::skill_rows(state, &ui.filter)
             .into_iter()
             .map(|skill| {
@@ -64,20 +88,17 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
                 ])
             })
             .collect(),
-        Overlay::Models => state
-            .catalog
-            .iter()
-            .filter(|entry| {
-                entry
-                    .alias
-                    .to_lowercase()
-                    .contains(&ui.filter.to_lowercase())
-                    || entry
-                        .model
-                        .to_lowercase()
-                        .contains(&ui.filter.to_lowercase())
+        Overlay::Models => crate::tui::catalog::rows(&state.catalog, ui)
+            .into_iter()
+            .map(|row| match row {
+                crate::tui::catalog::Row::Group {
+                    label, collapsed, ..
+                } => Line::from(Span::styled(
+                    format!("{} {label}", if collapsed { "▸" } else { "▾" }),
+                    theme.accent(),
+                )),
+                crate::tui::catalog::Row::Model(entry) => model_row(entry, row_width, theme),
             })
-            .map(|entry| model_row(entry, row_width, theme))
             .collect(),
         Overlay::Sessions => state
             .sessions
@@ -133,11 +154,11 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
             let pick = ui.variant_pick.clone().unwrap_or(VariantPick::Current);
             let (names, _) = commands::variant_choices(state, &pick);
             let (default, current) = match &pick {
-                VariantPick::NewConversation(alias) => (
+                VariantPick::NewConversation(model_id) => (
                     state
                         .catalog
                         .iter()
-                        .find(|m| &m.alias == alias)
+                        .find(|m| &m.name == model_id)
                         .and_then(|m| m.default_variant.clone()),
                     None,
                 ),
@@ -273,10 +294,12 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
 /// The keys a popup takes, at its foot.
 fn keys_line(overlay: Overlay) -> &'static str {
     match overlay {
+        Overlay::Agents => "↑↓ choose · enter assigned model · F2 override · esc close",
         Overlay::Skills => "↑↓ move  enter fill draft  esc close",
         Overlay::Help => "esc close",
         Overlay::Themes => "↑↓ preview  enter keep  esc put back",
         Overlay::Commands => "↑↓ move  enter run  esc close",
+        Overlay::Models => "↑↓ move  ←→ fold  enter choose/fold  esc close",
         _ => "↑↓ move  enter choose  esc close",
     }
 }
@@ -369,7 +392,7 @@ fn note<'a>(overlay: Overlay, state: &'a State, ui: &UiState, empty: bool) -> Op
     }
 }
 
-/// One model in the picker: alias, model, context window and variant names, cut to `width`.
+/// One model in the picker: model_id, model, context window and variant names, cut to `width`.
 fn model_row(entry: &ModelEntry, width: usize, theme: &Theme) -> Line<'static> {
     let window = entry
         .context_window
@@ -380,14 +403,14 @@ fn model_row(entry: &ModelEntry, width: usize, theme: &Theme) -> Line<'static> {
     } else {
         format!("  {}", entry.variants.join(" "))
     };
-    // alias (18) + model + "  " + window + variants; the model gives way first, then variants.
-    let alias = format!("{} ", pad(&entry.alias, 17));
-    let fixed = columns(&alias) + 2 + columns(&window);
+    // model_id (18) + model + "  " + window + variants; the model gives way first, then variants.
+    let model_id = format!("{} ", pad(&entry.name, 17));
+    let fixed = columns(&model_id) + 2 + columns(&window);
     let variants = fit(&variants, width.saturating_sub(fixed + 12));
     let model_room = width.saturating_sub(fixed + columns(&variants));
-    let model = pad(&entry.model, model_room);
+    let model = pad(&entry.upstream_id, model_room);
     let mut spans = vec![
-        Span::styled(alias, theme.accent()),
+        Span::styled(model_id, theme.accent()),
         Span::styled(model, theme.text()),
         Span::raw("  "),
         Span::styled(window, theme.number()),

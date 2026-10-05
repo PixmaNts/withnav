@@ -38,6 +38,8 @@ pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 /// What it takes to move the conversation to another alias.
 #[derive(Debug, Clone)]
 pub struct ModelTarget {
+    pub source: String,
+    pub variant_source: String,
     pub agent: Option<Arc<crate::agent::definitions::AgentDefinition>>,
     pub override_value: Option<(Option<String>, crate::session::VariantChoice)>,
     pub alias: String,
@@ -71,6 +73,7 @@ pub type CommitFn = dyn Fn(
         Option<StagedCheckpoint>,
         Vec<EventEnvelope>,
         Install,
+        CancellationToken,
     ) -> BoxFuture<Result<(), String>>
     + Send
     + Sync;
@@ -233,8 +236,16 @@ pub(super) async fn run(
     let mut compacted = None;
     let mut staged = None;
     if breakdown.total() > budget {
-        let summarized =
-            compact_for_target(actor, status, cancel, &target.alias, floor, budget).await?;
+        let summarized = compact_for_target(
+            actor,
+            status,
+            cancel,
+            &target.alias,
+            floor,
+            budget,
+            destination_role.as_ref(),
+        )
+        .await?;
         if destination_breakdown(
             actor,
             destination_role.as_ref(),
@@ -275,11 +286,8 @@ pub(super) async fn run(
     if let Some(agent) = &target.agent {
         changed["agent"] = json!(agent.id);
         changed["previous_agent"] = json!(old_role.as_ref().map(|role| role.id.as_str()));
-        changed["source"] = json!(if request.command == "agent" {
-            "assignment"
-        } else {
-            "override"
-        });
+        changed["source"] = json!(target.source);
+        changed["variant_source"] = json!(target.variant_source);
     }
     // The new gauge is built before the write, against the destination
     // projection, and installed with the selection.
@@ -315,9 +323,14 @@ pub(super) async fn run(
     // written in one transaction; the event reaches the stream only once it
     // is durable, and nothing below runs when it is not.
     let commit = {
-        let (switcher, target, checkpoint) = (switcher.clone(), target.clone(), staged.clone());
+        let (switcher, target, checkpoint, token) = (
+            switcher.clone(),
+            target.clone(),
+            staged.clone(),
+            cancel.clone(),
+        );
         Box::new(move |envelopes: Vec<EventEnvelope>| {
-            (switcher.commit)(target, floor, checkpoint, envelopes, install)
+            (switcher.commit)(target, floor, checkpoint, envelopes, install, token)
         })
     };
     let mut candidates = Vec::new();
@@ -379,8 +392,9 @@ async fn compact_for_target(
     alias: &str,
     floor: usize,
     budget: u64,
+    role: Option<&Arc<crate::agent::definitions::AgentDefinition>>,
 ) -> Result<super::compact::Summarized, String> {
-    use super::compact::{summarize, Failure, Goal};
+    use super::compact::{summarize_with_components, Failure, Goal};
     use crate::agent::compaction::{Aim, CompactionError};
 
     let source_budget = status
@@ -401,19 +415,26 @@ async fn compact_for_target(
              {why}"
         )
     };
-    let summarized = summarize(actor, status, cancel, &seen_by_target, goal)
-        .await
-        .map_err(|e| match e {
-            Failure::Compaction(CompactionError::Cancelled) => {
-                super::compact::CANCELLED.to_string()
-            }
-            Failure::Compaction(
-                e @ (CompactionError::Capacity { .. }
-                | CompactionError::NothingToCompact
-                | CompactionError::SummaryInputTooLarge { .. }),
-            ) => refused(e.to_string()),
-            other => format!("the compaction before the switch failed: {other}"),
-        })?;
+    let message = destination_message(actor, role);
+    let tools = actor.registry.schemas();
+    let summarized = summarize_with_components(
+        actor,
+        status,
+        cancel,
+        &seen_by_target,
+        goal,
+        actor.components(message.as_deref(), &tools),
+    )
+    .await
+    .map_err(|e| match e {
+        Failure::Compaction(CompactionError::Cancelled) => super::compact::CANCELLED.to_string(),
+        Failure::Compaction(
+            e @ (CompactionError::Capacity { .. }
+            | CompactionError::NothingToCompact
+            | CompactionError::SummaryInputTooLarge { .. }),
+        ) => refused(e.to_string()),
+        other => format!("the compaction before the switch failed: {other}"),
+    })?;
     Ok(summarized)
 }
 
@@ -423,17 +444,7 @@ fn destination_breakdown(
     floor: usize,
     compaction: Option<&crate::agent::compaction::Compaction>,
 ) -> crate::agent::context::Breakdown {
-    let old_message = actor.role_message();
-    let old_prompt = actor.role.as_ref().map(|r| r.prompt.as_str()).unwrap_or("");
-    let message = match (old_message, role) {
-        (Some(message), Some(role)) if !old_prompt.is_empty() => {
-            Some(message.replacen(old_prompt, &role.prompt, 1))
-        }
-        (message, Some(role)) => {
-            crate::agent::actor::compose_role_message(Some(&role.prompt), message.as_deref())
-        }
-        (message, None) => message,
-    };
+    let message = destination_message(actor, role);
     let transcript = actor.planning_transcript(floor);
     let history = crate::agent::compaction::effective_history(&transcript, compaction);
     crate::agent::context::estimate(
@@ -443,6 +454,31 @@ fn destination_breakdown(
         &history,
         &actor.registry.schemas(),
     )
+}
+
+fn destination_message(
+    actor: &AgentActor,
+    role: Option<&Arc<crate::agent::definitions::AgentDefinition>>,
+) -> Option<String> {
+    let message = crate::agent::actor::compose_role_message(
+        role.map(|r| r.prompt.as_str()),
+        actor.system_prompt.as_deref(),
+    );
+    let roots: Vec<_> = actor
+        .scratch_roots
+        .iter()
+        .filter(|root| root.valid())
+        .map(|root| root.path.display().to_string())
+        .collect();
+    if roots.is_empty() {
+        message
+    } else {
+        Some(format!(
+            "{}\nTemporary scratch roots (private first, recommended): {}",
+            message.as_deref().unwrap_or(""),
+            roots.join(", ")
+        ))
+    }
 }
 
 fn result(

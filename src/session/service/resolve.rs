@@ -77,6 +77,7 @@ impl VariantChoice {
     pub fn from_word(word: Option<&str>) -> Self {
         match word {
             None => Self::Default,
+            Some("inherit") => Self::Default,
             Some(CLEAR_WORD) => Self::Clear,
             Some(name) => Self::Exact(name.to_string()),
         }
@@ -634,10 +635,23 @@ impl Service {
                     } else if request.command == "variant" {
                         let choice = request.variant.clone().unwrap_or(VariantChoice::Default);
                         let value = super::super::store::AgentOverride {
-                            model: Some(current.alias.clone()),
+                            model: saved.as_ref().and_then(|s| s.model.clone()),
                             variant: choice.clone().into(),
                         };
-                        (current.alias.clone(), choice, Some(value))
+                        let (alias, inherited_choice) = if value.model.is_none() && configured {
+                            service
+                                .assigned_agent_model(&workspace, &agents, agent_name, false)
+                                .map_err(|e| e.to_string())?
+                                .unwrap_or((current.alias.clone(), VariantChoice::Default))
+                        } else {
+                            (current.alias.clone(), VariantChoice::Default)
+                        };
+                        let effective_choice = if choice == VariantChoice::Default {
+                            inherited_choice
+                        } else {
+                            choice
+                        };
+                        (alias, effective_choice, Some(value))
                     } else {
                         let value = super::super::store::AgentOverride {
                             model: Some(request.alias.clone()),
@@ -656,6 +670,42 @@ impl Service {
                         .await
                         .map_err(|e| e.to_string())?;
                     target.agent = Some(agent);
+                    target.source = if override_value
+                        .as_ref()
+                        .and_then(|o| o.model.as_ref())
+                        .is_some()
+                    {
+                        "override"
+                    } else if configured {
+                        let settings = crate::settings::load(&service.config.config_dir)
+                            .map_err(|e| e.to_string())?;
+                        if settings
+                            .agent_assignment(agent_name)
+                            .map_err(|e| e.to_string())?
+                            .is_some()
+                        {
+                            "config"
+                        } else if agents
+                            .get(agent_name)
+                            .and_then(|a| a.model.as_ref())
+                            .is_some()
+                        {
+                            "header"
+                        } else {
+                            "fallback"
+                        }
+                    } else {
+                        "inherited"
+                    }
+                    .into();
+                    target.variant_source = if override_value.as_ref().is_some_and(|o| {
+                        o.variant != super::super::store::AgentVariantOverride::Inherit
+                    }) {
+                        "override"
+                    } else {
+                        "default"
+                    }
+                    .into();
                     target.override_value = override_value.map(|value| {
                         (
                             value.model,
@@ -686,9 +736,13 @@ impl Service {
                   floor: usize,
                   staged: Option<crate::bus::runtime::model::StagedCheckpoint>,
                   envelopes: Vec<crate::bus::event::EventEnvelope>,
-                  install: crate::bus::runtime::Install| {
+                  install: crate::bus::runtime::Install,
+                  cancel: tokio_util::sync::CancellationToken| {
                 let (service, selected) = (service.clone(), selected.clone());
                 Box::pin(async move {
+                    if cancel.is_cancelled() {
+                        return Err("selection cancelled before callback".into());
+                    }
                     let revision = envelopes
                         .iter()
                         .find(|e| e.kind == "model.changed")
@@ -696,7 +750,7 @@ impl Service {
                         .unwrap_or(0);
                     service
                         .history
-                        .commit_agent_selection_with_checkpoint(
+                        .commit_agent_selection_cancellable(
                             id,
                             target.agent.as_ref().expect("resolved agent").id.as_str(),
                             target.override_value.clone().map(|(model, variant)| {
@@ -722,6 +776,7 @@ impl Service {
                                 checkpoint: staged.checkpoint,
                             }),
                             envelopes,
+                            Some(cancel),
                         )
                         .await?;
                     service.before_switch_install().await;
@@ -736,6 +791,7 @@ impl Service {
                         .expect("resolved agent")
                         .id
                         .to_string();
+                    guard.role = target.agent.as_ref().expect("resolved agent").clone();
                     guard.alias = target.alias.clone();
                     if let Some(execution) = &guard.execution {
                         let mut resolved = execution.resolved.clone();
@@ -839,6 +895,8 @@ impl Service {
                 model: String::new(),
             });
         Ok(ModelTarget {
+            source: String::new(),
+            variant_source: String::new(),
             agent: None,
             override_value: None,
             alias: alias.to_string(),

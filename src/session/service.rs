@@ -130,6 +130,7 @@ pub use crate::bus::event::{SkillEntry, SkillsBody};
 /// variant of another. A model switch installs all of it under one lock.
 #[derive(Debug, Clone)]
 pub struct SelectedModel {
+    pub role: Arc<AgentDefinition>,
     pub agent: String,
     pub(crate) execution: Option<Arc<EffectiveExecution>>,
     pub alias: String,
@@ -716,13 +717,6 @@ impl Service {
         if parent_handle.parent_session_id.is_some() {
             return Err(ServerError::ChildReadOnly);
         }
-        let parent_role = parent_handle
-            .status
-            .selection
-            .agents()
-            .get(&parent_handle.selected().agent)
-            .cloned()
-            .ok_or_else(|| ServerError::History("selected parent agent missing".into()))?;
         let agents = self
             .load_agents(&parent_handle.workspace, parent, false)
             .await;
@@ -763,6 +757,7 @@ impl Service {
         // Concurrent calls in this process reserve capacity atomically; the
         // persistent active count includes children from other processes.
         let inherited = parent_handle.selected();
+        let parent_role = inherited.role.clone();
         let parent_alias = inherited.alias.clone();
         let alias = definition.model.as_deref().unwrap_or(&parent_alias);
         let mut policy = BTreeMap::new();
@@ -803,8 +798,7 @@ impl Service {
                     allowed,
                     definition.access == crate::agent::definitions::AgentAccess::ReadOnly
                         || parent_role.access == crate::agent::definitions::AgentAccess::ReadOnly,
-                    parent_handle
-                        .selected()
+                    inherited
                         .execution
                         .as_ref()
                         .is_some_and(|execution| execution.automatic_permission_review),
@@ -812,8 +806,7 @@ impl Service {
                         .latest_driver_message(parent)
                         .await
                         .map_err(ServerError::History)?,
-                    parent_handle
-                        .selected()
+                    inherited
                         .execution
                         .as_ref()
                         .map(|execution| execution.scratch_choice.clone())
@@ -2635,6 +2628,7 @@ impl Service {
             1
         };
         let selected_model = Arc::new(Mutex::new(SelectedModel {
+            role: status.selection.current(),
             agent: status.selection.current().id.to_string(),
             execution: Some(execution),
             alias: alias.clone(),

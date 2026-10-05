@@ -375,6 +375,7 @@ impl Service {
             })?;
         // The gauge counts the new role at once, not at the next turn.
         handle.lock_selected().agent = target.id.to_string();
+        handle.lock_selected().role = target.clone();
         if let Some(snapshot) = handle.status.set_context_role(&target) {
             if let Ok(payload) = serde_json::to_value(&snapshot) {
                 let _ = handle

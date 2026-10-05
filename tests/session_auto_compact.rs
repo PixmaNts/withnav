@@ -695,7 +695,7 @@ async fn a_failed_switch_rolls_back_the_staged_checkpoint_and_selection() {
     // seqs after the notice: only that strict insert can trip over them.
     let head = state.session_summary(id).await.unwrap().current_seq + 1;
     let conn = rusqlite::Connection::open(env.root.join("history.db")).unwrap();
-    for seq in head..=head {
+    for seq in head + 1..=head + 1 {
         conn.execute(
             "INSERT INTO events (session_id, seq, kind, envelope) VALUES (?1, ?2, 'x', '{}')",
             rusqlite::params![id.to_string(), seq as i64],

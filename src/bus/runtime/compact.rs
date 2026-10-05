@@ -287,9 +287,28 @@ pub(super) async fn summarize(
     transcript: &[ChatMessage],
     goal: Goal<'_>,
 ) -> Result<Summarized, Failure> {
-    let variant = status.active_variant().map(|(_, variant)| variant);
     let role = actor.role_message();
     let tools = actor.registry.schemas();
+    summarize_with_components(
+        actor,
+        status,
+        cancel,
+        transcript,
+        goal,
+        actor.components(role.as_deref(), &tools),
+    )
+    .await
+}
+
+pub(super) async fn summarize_with_components(
+    actor: &AgentActor,
+    status: &RuntimeStatus,
+    cancel: &CancellationToken,
+    transcript: &[ChatMessage],
+    goal: Goal<'_>,
+    components: crate::agent::compaction::Components<'_>,
+) -> Result<Summarized, Failure> {
+    let variant = status.active_variant().map(|(_, variant)| variant);
     let prepared = compaction::prepare(
         PrepareInput {
             provider: &actor.provider,
@@ -299,7 +318,7 @@ pub(super) async fn summarize(
             max_tokens: actor.max_tokens,
             transcript,
             current: actor.compaction.as_ref(),
-            components: actor.components(role.as_deref(), &tools),
+            components,
             destination_budget: goal.destination_budget,
             aim: goal.aim,
             source_budget: goal.source_budget,

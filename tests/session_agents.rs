@@ -134,6 +134,22 @@ async fn live_agent_switch_restores_model_and_off_override_after_restart() {
     assert_eq!(restored.agent, "build");
     assert_eq!(restored.model, "mock/plan-model");
     assert_eq!(restored.variant, None);
+    assert!(
+        reopened
+            .run_command(id, "variant", "inherit")
+            .await
+            .unwrap()
+            .ok
+    );
+    assert_eq!(
+        reopened
+            .session_summary(id)
+            .await
+            .unwrap()
+            .variant
+            .as_deref(),
+        Some("low")
+    );
 }
 
 #[tokio::test]

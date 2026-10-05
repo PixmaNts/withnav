@@ -202,10 +202,11 @@ type Ack = oneshot::Sender<Result<(), String>>;
 /// What the writer thread accepts.
 enum Write {
     AgentSelection {
+        cancel: Option<tokio_util::sync::CancellationToken>,
         id: Ulid,
         agent: String,
         value: Option<AgentOverride>,
-        selection: Option<EffectiveAgentSelection>,
+        selection: Option<Box<EffectiveAgentSelection>>,
         staged: Option<SelectionCheckpoint>,
         envelopes: Vec<EventEnvelope>,
     },
@@ -324,6 +325,7 @@ impl HistoryStore {
         value: AgentOverride,
     ) -> Result<(), String> {
         self.acked(Write::AgentSelection {
+            cancel: None,
             id,
             agent: agent.into(),
             value: Some(value),
@@ -336,6 +338,7 @@ impl HistoryStore {
 
     pub async fn clear_agent_override(&self, id: Ulid, agent: &str) -> Result<(), String> {
         self.acked(Write::AgentSelection {
+            cancel: None,
             id,
             agent: agent.into(),
             value: None,
@@ -373,6 +376,26 @@ impl HistoryStore {
         staged: Option<SelectionCheckpoint>,
         envelopes: Vec<EventEnvelope>,
     ) -> Result<(), String> {
+        self.commit_agent_selection_cancellable(
+            id, agent, value, selection, staged, envelopes, None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn commit_agent_selection_cancellable(
+        &self,
+        id: Ulid,
+        agent: &str,
+        value: Option<AgentOverride>,
+        selection: EffectiveAgentSelection,
+        staged: Option<SelectionCheckpoint>,
+        envelopes: Vec<EventEnvelope>,
+        cancel: Option<tokio_util::sync::CancellationToken>,
+    ) -> Result<(), String> {
+        if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+            return Err("selection cancelled before admission".into());
+        }
         if agent != selection.primary_agent {
             return Err(format!(
                 "override agent '{agent}' does not match selection primary_agent '{}'",
@@ -394,10 +417,11 @@ impl HistoryStore {
             );
         }
         self.acked(Write::AgentSelection {
+            cancel,
             id,
             agent: agent.into(),
             value,
-            selection: Some(selection),
+            selection: Some(Box::new(selection)),
             staged,
             envelopes,
         })
@@ -1187,11 +1211,19 @@ fn queue_permission_resolution(
 }
 
 fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
+    let cancellation = match &write {
+        Write::AgentSelection { cancel, .. } => cancel.clone(),
+        _ => None,
+    };
+    if cancellation.as_ref().is_some_and(|c| c.is_cancelled()) {
+        return Err(WriteError::InvalidSelection("selection cancelled".into()));
+    }
     // Acquire write ownership before reads: a deferred WAL snapshot cannot
     // upgrade after an outbox connection commits, even with a busy timeout.
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     match write {
         Write::AgentSelection {
+            cancel: _,
             id,
             agent,
             value,
@@ -1460,6 +1492,11 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                 params![id.to_string()],
             )?;
         }
+    }
+    if cancellation.as_ref().is_some_and(|c| c.is_cancelled()) {
+        return Err(WriteError::InvalidSelection(
+            "selection cancelled before commit".into(),
+        ));
     }
     tx.commit()?;
     Ok(())
@@ -1790,6 +1827,41 @@ fn strip_editor_context(content: &str) -> String {
 mod tests {
     use super::*;
     use crate::bus::event::EventKind;
+
+    #[tokio::test]
+    async fn cancelled_selection_writer_leaves_identity_override_and_events_unchanged() {
+        let (_dir, store) = temp_store();
+        let id = Ulid::new();
+        store.record_session(id, "/w", "old", None).await.unwrap();
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel();
+        // Exercise writer cancellation independently of the public admission check.
+        let error = store
+            .acked(Write::AgentSelection {
+                id,
+                agent: "build".into(),
+                value: Some(AgentOverride {
+                    model: Some("p/new".into()),
+                    variant: AgentVariantOverride::Off,
+                }),
+                selection: None,
+                staged: None,
+                envelopes: vec![EventEnvelope::new(
+                    id,
+                    0,
+                    EventKind::ModelChanged,
+                    serde_json::json!({}),
+                )],
+                cancel: Some(token),
+            })
+            .await
+            .unwrap_err();
+        assert!(error.contains("cancelled"));
+        let loaded = store.load(id).await.unwrap().unwrap();
+        assert_eq!(loaded.meta.model, "old");
+        assert!(loaded.meta.agent_overrides.is_empty());
+        assert!(loaded.envelopes.is_empty());
+    }
 
     #[tokio::test]
     async fn initial_overrides_and_identity_insert_atomically_or_leave_no_row() {

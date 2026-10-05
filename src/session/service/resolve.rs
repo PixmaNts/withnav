@@ -154,26 +154,9 @@ impl Service {
         &self,
         workspace: &Path,
     ) -> Result<PreparationConfig, ServerError> {
-        let path = crate::settings::path(&self.config.config_dir);
-        let read = || match std::fs::read_to_string(&path) {
-            Ok(raw) => Ok(Some(raw)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(ServerError::History(e.to_string())),
-        };
-        let before = read()?;
         let settings = crate::settings::load(&self.config.config_dir)
             .map_err(|e| ServerError::History(e.to_string()))?;
-        if before != read()? {
-            return Err(ServerError::History(
-                "settings changed during preparation; retry".into(),
-            ));
-        }
-        let raw: serde_json::Value = before
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(|e| ServerError::History(e.to_string()))?
-            .unwrap_or_default();
+        let configured = settings.has_assignment_configuration();
         let (catalog, path) = load_models(
             self.config.models_path.as_deref(),
             workspace,
@@ -181,21 +164,15 @@ impl Service {
         )?;
         Ok(PreparationConfig {
             settings,
-            configured: raw.get("agents").is_some() || raw.get("default_agent").is_some(),
+            configured,
             catalog,
             path,
         })
     }
     pub(crate) fn assignments_configured(&self) -> Result<bool, ServerError> {
-        let path = crate::settings::path(&self.config.config_dir);
-        let raw = match std::fs::read_to_string(path) {
-            Ok(raw) => raw,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => return Err(ServerError::History(error.to_string())),
-        };
-        let value: serde_json::Value =
-            serde_json::from_str(&raw).map_err(|e| ServerError::History(e.to_string()))?;
-        Ok(value.get("agents").is_some() || value.get("default_agent").is_some())
+        let settings = crate::settings::load(&self.config.config_dir)
+            .map_err(|e| ServerError::History(e.to_string()))?;
+        Ok(settings.has_assignment_configuration())
     }
 
     pub(super) fn assigned_from_snapshot(

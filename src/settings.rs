@@ -42,6 +42,10 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// Assignment-mode detection from the same parsed object as its typed getters.
+    pub fn has_assignment_configuration(&self) -> bool {
+        self.root.contains_key("agents") || self.root.contains_key("default_agent")
+    }
     pub fn permissions_scratch_dirs(&self) -> Result<Vec<PathBuf>, String> {
         match self
             .root
@@ -241,6 +245,24 @@ pub fn save_tui_theme(config_dir: &Path, id: &str) -> Result<(), SettingsError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn assignment_mode_uses_captured_settings_not_replaced_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            path(dir.path()),
+            r#"{"default_agent":"plan","agents":{"plan":{"model":"p/model","variant":"named"}}}"#,
+        )
+        .unwrap();
+        let captured = load(dir.path()).unwrap();
+        std::fs::write(path(dir.path()), "{}").unwrap();
+        assert!(captured.has_assignment_configuration());
+        assert_eq!(captured.default_agent().unwrap(), "plan");
+        assert_eq!(
+            captured.agent_assignment("plan").unwrap().unwrap().variant,
+            AssignmentVariant::Named("named".into())
+        );
+        assert!(!load(dir.path()).unwrap().has_assignment_configuration());
+    }
     #[test]
     fn private_scratch_uses_only_owned_private_runtime_directory() {
         use std::os::unix::fs::PermissionsExt;

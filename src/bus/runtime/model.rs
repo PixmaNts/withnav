@@ -417,14 +417,19 @@ async fn compact_for_target(
         )
     };
     let message = destination_message(actor, role);
-    let tools = actor.registry.schemas();
+    let tools = actor.effective_tool_schemas_for_role(role.map(Arc::as_ref));
     let summarized = summarize_with_components(
         actor,
         status,
         cancel,
         &seen_by_target,
         goal,
-        actor.components(message.as_deref(), &tools),
+        crate::agent::compaction::Components {
+            system_prompt: message.as_deref(),
+            rules: actor.rules.message(),
+            skills: actor.effective_skills_catalog_for_role(role.map(Arc::as_ref)),
+            tools: &tools,
+        },
     )
     .await
     .map_err(|e| match e {
@@ -451,9 +456,9 @@ fn destination_breakdown(
     crate::agent::context::estimate(
         message.as_deref(),
         actor.rules.message(),
-        actor.skills.catalog(),
+        actor.effective_skills_catalog_for_role(role.map(Arc::as_ref)),
         &history,
-        &actor.registry.schemas(),
+        &actor.effective_tool_schemas_for_role(role.map(Arc::as_ref)),
     )
 }
 

@@ -20,6 +20,7 @@ use crate::settings::{AssignmentVariant, Settings};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AssignmentSource {
+    LayerPreference,
     Config,
     Header,
     DefaultAgent,
@@ -109,6 +110,33 @@ struct Snapshot {
 
 fn diagnostic(reason: impl Into<String>) -> ServerError {
     ServerError::MalformedBody(reason.into())
+}
+
+fn pinned_provenance(row: &StoredSession) -> Option<PinnedSelectionProvenance> {
+    use crate::session::store::{ModelSource, VariantSource};
+    let provenance = row.provenance.as_ref()?;
+    let source = match provenance.model {
+        ModelSource::Config => AssignmentSource::Config,
+        ModelSource::Header => AssignmentSource::Header,
+        ModelSource::DefaultAgent => AssignmentSource::DefaultAgent,
+        ModelSource::Parent => AssignmentSource::Parent,
+        ModelSource::Override => AssignmentSource::Override,
+    };
+    let variant_source = match provenance.variant {
+        VariantSource::Config => AssignmentSource::Config,
+        VariantSource::Header => AssignmentSource::Header,
+        VariantSource::DefaultAgent => AssignmentSource::DefaultAgent,
+        VariantSource::Parent => AssignmentSource::Parent,
+        VariantSource::Override => AssignmentSource::Override,
+        VariantSource::ModelDefault => AssignmentSource::ModelDefault,
+        VariantSource::LayerPreference => AssignmentSource::LayerPreference,
+    };
+    Some(PinnedSelectionProvenance {
+        model: row.model.clone(),
+        variant: row.variant.clone(),
+        source,
+        variant_source,
+    })
 }
 
 impl Service {
@@ -355,9 +383,11 @@ impl Service {
                     selection_override = Some(override_view(over));
                 }
                 if definition.id.as_str() == row.primary_agent.as_deref().unwrap_or("build") {
-                    effective = Some(saved_selection(row, None, &snapshot.catalog)?);
+                    let pinned = pinned_provenance(row);
+                    effective = Some(saved_selection(row, pinned.as_ref(), &snapshot.catalog)?);
                 } else if inherits_parent && selection_override.is_none() {
-                    let mut parent = saved_selection(row, None, &snapshot.catalog)?;
+                    let pinned = pinned_provenance(row);
+                    let mut parent = saved_selection(row, pinned.as_ref(), &snapshot.catalog)?;
                     parent.source = AssignmentSource::Parent;
                     parent.variant_source = AssignmentSource::Parent;
                     effective = Some(parent);
@@ -1096,7 +1126,7 @@ mod tests {
         crate::provider::auth::set_key(&state.config.config_dir, "mock", "test-only-secret")
             .unwrap();
         let id = state
-            .create_session_as(root.path(), Some("legacy-chat"), None, Some("oracle"))
+            .create_session_as(root.path(), Some("mock/combo/chat"), None, Some("oracle"))
             .await
             .unwrap();
         let before = state
@@ -1110,15 +1140,14 @@ mod tests {
             .unwrap();
         std::fs::remove_file(state.config.config_dir.join("agents/oracle.md")).unwrap();
         let (status, body) = get(&state, root.path(), "agents", &format!("&session_id={id}")).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body["error"]
-            .as_str()
+        assert_eq!(status, StatusCode::OK);
+        let oracle = body["agents"]
+            .as_array()
             .unwrap()
-            .contains("provenance unavailable"));
-        assert!(!body["error"]
-            .as_str()
-            .unwrap()
-            .contains("agent 'oracle' is unavailable"));
+            .iter()
+            .find(|agent| agent["id"] == "oracle")
+            .unwrap();
+        assert_eq!(oracle["effective"]["source"], "override");
         assert_eq!(
             state
                 .handle(id)

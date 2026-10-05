@@ -288,7 +288,7 @@ pub(super) async fn summarize(
     goal: Goal<'_>,
 ) -> Result<Summarized, Failure> {
     let role = actor.role_message();
-    let tools = actor.registry.schemas();
+    let tools = actor.effective_tool_schemas();
     summarize_with_components(
         actor,
         status,

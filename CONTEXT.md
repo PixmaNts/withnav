@@ -17,12 +17,14 @@ _Avoid_: copilot, assistant, agent (for the whole system)
 
 ## Layers
 
-The layer, model and agent vocabulary below records the accepted **v0.5.0 target**, not a
-claim that it has shipped; see [ADR 0011](docs/adr/0011-layers-models-and-agent-overrides.md).
+The layer, model and agent vocabulary below describes the implementation prepared for **v0.5.0**;
+see [ADR 0011](docs/adr/0011-layers-models-and-agent-overrides.md). It does not describe which
+version is installed on the driver's machine.
 
 **Layer**:
 One of four cognitive roles: reflex, instinct, metacognition and cognition. The first three each
-have one configured model at a time; cognition runs agents in parallel sessions and flows.
+have one configured model at a time; cognition runs agents in parallel sessions. Configurable
+flows are planned for 0.6.
 _Avoid_: model tier, model alias
 
 **Reflex**:
@@ -69,7 +71,7 @@ _Avoid_: feedback, vote
 
 The ownership and delivery decisions are in
 [ADR 0009](docs/adr/0009-background-subagents-and-durable-delivery.md).
-Model selection and editor context are the v0.5.0 target in
+Model selection and editor context follow
 [ADR 0011](docs/adr/0011-layers-models-and-agent-overrides.md).
 An invalid nondefault model assignment falls back to the default agent's model with a visible
 warning; an invalid default agent or unusable default model prevents startup.
@@ -194,7 +196,7 @@ _Avoid_: role guard (that checks role conformance, not progress), permission req
 
 ## Models and commands
 
-These selection terms describe the v0.5.0 target in
+These selection terms follow the decision in
 [ADR 0011](docs/adr/0011-layers-models-and-agent-overrides.md).
 
 **Model**:
@@ -220,9 +222,10 @@ A `/name` the server runs on a conversation: `/help`, `/model`, `/new`, `/stop`,
 `/variant`, `/compact`, `/agent`. A command has a result, shown in the conversation. While a permission request is pending, `/stop`
 runs (and cancels the request) and every other command is refused. While an `ask` is pending, every
 command is refused, `/stop` included; the stop endpoint (`POST /v1/sessions/{id}/stop`) still works. `//text` sends the literal text `/text`. The
-terminal client also has its own commands (`/sessions`, `/theme`, `/quit`), and it opens a new tab
-for `/model <model>` instead of running it on the open conversation; the v0.5.0 target
-`/new [agent]` starts an agent-first conversation.
+terminal client also has its own commands (`/sessions`, `/theme`, `/quit`). `/model <gateway/id>`
+switches the current agent's model in the open conversation, after the turn if busy; on an empty
+tab it sets the starting override. `/new [agent]` starts fresh on that agent's assignment, without
+the previous session's overrides.
 _Avoid_: tool, action (an action is what a pipeline branch decides)
 
 ## Permissions

@@ -4,6 +4,63 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+Models now have explicit gateway-qualified names, while layers and agents keep their own choices.
+This is a **breaking configuration and API change**: migrate existing configuration by hand before
+starting this version. It does not convert your configuration automatically or create agent definitions.
+
+### Changed
+
+- **A catalogue, not aliases.** `models.json` describes gateways, models, APIs, capabilities, limits
+  and variants. Use names such as `omniroute/combo/gpt-6-astra`: `omniroute` is the gateway and
+  `combo/gpt-6-astra` is the exact upstream id. Bare ids and the old `default`, `fast` and `cognition`
+  aliases are no longer supported. API selections and context/usage metadata use `model`, `gateway`
+  and `upstream_id`, not `alias`.
+- **Assignments live in `config.json`.** `layers` selects one reflex (`fim`), instinct (`systemone`)
+  and metacognition (`chat`) model; cognition runs agents rather than one singleton model.
+  `agents` assigns their models and variants, taking precedence over Markdown `model:` headers.
+  `default_agent` is `build` when absent. An invalid default agent or unusable default chat model
+  stops server/LSP startup with a clear error; an invalid nondefault assignment warns and falls back.
+  Missing or incompatible lower layers are disabled with reasons and retain the existing fallbacks.
+- **Editor context is not an agent role.** Editor sessions add the pair-programmer prompt, intent
+  tool and navigator conversation feed to the chosen agent. They start on the same default agent
+  as terminal sessions; children do not inherit the editor attachment.
+- **Model choices stay with each agent in each conversation.** `/model <gateway/id>` changes the
+  current agent's model in place; `/agent <id>` restores that agent's saved choice. Model and variant
+  overrides survive reopening and never edit global assignments. `/new [agent]` starts fresh without
+  the old session's overrides. Unassigned children inherit their parent's effective model and variant;
+  children with their own model assignment use it instead.
+- **Variants have three choices:** a name, `off` (explicitly no variant), or `inherit` (remove the
+  local variant choice). Changing model takes the destination model's default variant. Metacognition
+  prefers `low` when offered. The importer gives OmniRoute combo models `low`, `medium` and `high`
+  request-body variants, not model-name suffixes, and preserves manually declared variants.
+- **Model pickers in the terminal and VS Code group by gateway, then upstream provider.** Groups
+  collapse, but search includes models inside collapsed groups. New conversations choose an agent
+  first, with an optional model override. The terminal's right panel and VS Code's header tooltip
+  show lower-layer assignments and the current agent's choice, including override markers.
+  The old `navai.modelAlias` setting is removed.
+
+### Added
+
+- **Readable archives for history whose model identity cannot be proved.** These conversations
+  remain available to read, with a reason why resume is disabled; they are never silently attached
+  to a different model. Existing session ids are preserved. This is history handling, not automatic
+  configuration migration.
+- **Assignment metadata for clients:** `GET /v1/agents` reports configured/effective choices and,
+  with a session id, local overrides; `GET /v1/layers` reports the three lower layers and disabled
+  reasons. Alongside `GET /v1/models`, these expose canonical identities and choice sources, not
+  endpoint URLs, headers or credentials.
+- **Example `oracle` and `librarian` agents**, with matching catalogue entries and assignments.
+  Install their Markdown definitions separately; an assignment alone does not create an agent.
+
+### Fixed
+
+- **Agent changes apply the destination policy consistently:** its prompt, tools, skill availability
+  and context budget are measured together. Deferred selections cannot land on a different agent,
+  and a refused change leaves the current choice intact.
+- **Compaction needed for a selection change is saved atomically with that change**, including the
+  agent, model, variant, per-agent overrides and ordered events. A failed save or cancellation before
+  commit leaves the previous selection and checkpoint intact; resume restores the committed state.
+
 ## [0.4.7] - 2026-10-04
 
 Fixes from trying 0.4.6 in VS Code: subagents work there, reading a file outside the project is

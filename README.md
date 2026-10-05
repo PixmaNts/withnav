@@ -4,14 +4,14 @@ A pair-programming system in Rust. The human keeps the keyboard and stays the au
 Several models of different speeds watch, complete, judge and discuss. Under them runs a small,
 owned coding-agent core with a terminal client and a local server.
 
-> **Status:** v0.2.0 is released. `develop` holds more: a terminal client, build and plan agents,
-> permissions, skills, rules, model variants, a context budget and manual compaction. See
+> **Status:** this checkout includes the changes prepared for v0.5.0: a terminal client, agents,
+> permissions, skills, rules, model assignments, a context budget and compaction. See
 > [`CHANGELOG.md`](CHANGELOG.md). [`ARCHITECTURE.md`](ARCHITECTURE.md) maps the code and
 > [`CONTEXT.md`](CONTEXT.md) defines the vocabulary.
 
-> **0.5 contract (not yet shipped):** the model catalogue and assignments described below
-> target v0.5.0 ([ADR 0011](docs/adr/0011-layers-models-and-agent-overrides.md)). Runtime and
-> client integration is still in progress; this is not a claim about your installed binaries.
+> **Breaking change for 0.5:** model names are gateway-qualified and assignments are separate
+> from the catalogue ([ADR 0011](docs/adr/0011-layers-models-and-agent-overrides.md)). The guide
+> describes this checkout, not your installed binaries. Existing configuration needs manual migration.
 
 ## What exists today
 
@@ -37,18 +37,18 @@ owned coding-agent core with a terminal client and a local server.
 - **Rules and skills.** `AGENTS.md`, `CLAUDE.md` and `rules.md` files, and `SKILL.md` skills, are
   read when a session starts.
 - **Models.** Model access, provider-reported context windows and request variants (for example
-  reasoning effort). The 0.5 catalogue and assignment contract is described below.
+  reasoning effort). The catalogue and assignment rules are described below.
 - **Context.** An estimate of the next request and how full the window is. `/compact` summarizes
   the older part of a long conversation.
 - **Session commands.** `/help`, `/stop`, `/context`, `/compact`, and selection commands.
-  The 0.5 meanings of `/model`, `/variant`, `/agent` and `/new` are specified below.
+  `/model`, `/variant`, `/agent` and `/new [agent]` are explained below.
 
 **The navigator** (`navai-lsp` and the VS Code extension in `vscode-navigator/`): a Language
 Server that watches your edits. A reflex layer offers ghost-text suggestions, an instinct layer
 decides when to speak, a metacognition layer writes short remarks beside your code, and a
 cognition chat discusses the work with you. See [`vscode-navigator/README.md`](vscode-navigator/README.md).
 
-### Command line (0.5 selection target)
+### Command line
 
 | Command | Main flags |
 |---|---|
@@ -66,10 +66,10 @@ approval (`permission_required`), `130` interrupted.
 cargo build --release --bins
 install -m755 target/release/navai target/release/navai-lsp ~/.local/bin/
 (cd vscode-navigator && npm ci && npm run package)
-code --install-extension vscode-navigator/navai-0.2.0.vsix
+code --install-extension vscode-navigator/navai-0.5.0.vsix
 ```
 
-## Configuration and data — 0.5 contract
+## Configuration and data
 
 `models.json` is a **catalogue**, not a list of choices. Each model name is
 `<gateway>/<upstream_id>`: in `omniroute/combo/gpt-6-astra`, `omniroute` names the configured
@@ -133,7 +133,7 @@ does not select a model. Children do not inherit the editor attachment.
   `config.json`. A child with its own model uses that assignment; an unassigned child inherits the
   parent's **effective** model and variant, including local overrides.
 
-The 0.5 clients choose an agent first, with an optional local model override. Model pickers group
+The clients choose an agent first, with an optional local model override. Model pickers group
 by gateway, then provider within it (`omniroute` → `cc`, `combo`, …); groups collapse but search
 includes hidden groups. The TUI right panel and VS Code header tooltip show lower-layer choices
 and the current agent's model, marked when overridden. The old `navai.modelAlias` setting is removed.
@@ -148,15 +148,16 @@ falls back to the default agent's model with a warning naming the agent and requ
 An unknown/nonprimary `default_agent`, or a default agent with no usable chat model, is fatal to
 server and LSP startup: the error names the field/model and valid agents where applicable.
 
-The sole development user's 0.5 configuration migration is **manual**; no automatic old-config
-conversion is promised. Historical sessions whose model identity cannot be proved stay readable,
-read-only archives with resume disabled, never silently rebound to a new model.
+Configuration migration for 0.5 is **manual**; Navai does not automatically convert old configuration
+or create missing agent definitions. Historical sessions whose model identity cannot be proved stay
+readable, read-only archives with resume disabled, never silently rebound to a new model. Existing
+session ids are preserved.
 
-### Catalogue import (0.5 target)
+### Catalogue import
 
 To build `models.json` and `auth.json` from an OpenCode config, the importer entry point is
 `scripts/import-opencode-models [--dry-run] [--config-dir DIR] [--opencode FILE] [--with-windows]`
-(`--self-test` runs its built-in tests). The 0.5 target imports OpenAI-compatible providers only,
+(`--self-test` runs its built-in tests). It imports OpenAI-compatible providers only,
 writes qualified catalogue names and `"catalog_format": "omniroute"` on the omniroute provider,
 and never writes layer/agent choices to `config.json`. Gateway qualification keeps otherwise equal
 upstream ids distinct. Combo entries receive `low`/`medium`/`high` body variants; manually declared
@@ -180,9 +181,9 @@ The first design ([`docs/SPEC.md`](docs/SPEC.md)) aimed higher: one event bus an
 everything, with external-process plugins over JSON-RPC, MCP tools, non-blocking subagents, a
 meta-loop co-agent, hot reload and a memory integration. That document is not a deployment
 checklist. The bus, server and clients exist; background children and automatic compaction are
-mapped in [`ARCHITECTURE.md`](ARCHITECTURE.md). The 0.5 selection contract above is still being
-integrated. Configuration editors that write `config.json` and flow configuration are deferred
-to 0.6; neither is promised by this contract.
+mapped in [`ARCHITECTURE.md`](ARCHITECTURE.md), along with the selection rules above.
+Configuration editors that write `config.json` and flow configuration are planned for 0.6;
+they are not part of 0.5.
 
 ## Contributing
 

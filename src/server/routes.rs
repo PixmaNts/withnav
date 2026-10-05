@@ -401,6 +401,8 @@ async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> R
 /// registry's liveness.
 #[derive(Debug, Serialize)]
 pub struct SessionListEntry {
+    pub read_only: bool,
+    pub resume_disabled_reason: Option<String>,
     pub id: String,
     pub title: Option<String>,
     pub created_at: String,
@@ -455,6 +457,8 @@ async fn list_sessions(
                     Err(error) => return error_response(error),
                 };
                 sessions.push(SessionListEntry {
+                    read_only: row.read_only,
+                    resume_disabled_reason: row.resume_disabled_reason,
                     id: row.id.to_string(),
                     title: row.title,
                     created_at: row.created_at,
@@ -927,6 +931,7 @@ async fn continue_child(
 /// body; every other failure shares `{"error": ...}`.
 pub(crate) fn error_response(err: ServerError) -> Response {
     let status = match &err {
+        ServerError::SessionArchived { .. } => StatusCode::FORBIDDEN,
         ServerError::ChildReadOnly => StatusCode::FORBIDDEN,
         ServerError::SubagentCapacity { .. } => StatusCode::TOO_MANY_REQUESTS,
         ServerError::SubagentSettings(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -959,6 +964,12 @@ pub(crate) fn error_response(err: ServerError) -> Response {
             Json(json!({ "accepted": false, "reason": "inbox_full" })),
         )
             .into_response();
+    }
+    if let ServerError::SessionArchived { reason, .. } = &err {
+        return (
+            status,
+            Json(json!({ "error": err.to_string(), "reason": "session_archived", "resume_disabled_reason": reason })),
+        ).into_response();
     }
     if matches!(err, ServerError::ResumeRequired) {
         return (

@@ -180,6 +180,8 @@ async fn restarted_server_answers_get_for_a_stored_conversation() {
             "current_seq",
             "gateway",
             "model",
+            "read_only",
+            "resume_disabled_reason",
             "session_id",
             "source",
             "upstream_id",

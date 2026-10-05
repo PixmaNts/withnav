@@ -2842,6 +2842,7 @@ pub(super) fn primary_list(agents: &Agents) -> String {
         .join(", ")
 }
 
+pub(crate) mod assignment_views;
 mod resolve;
 pub(crate) use resolve::exact_variant;
 pub use resolve::VariantChoice;

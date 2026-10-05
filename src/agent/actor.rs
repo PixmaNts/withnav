@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::compaction::{
     effective_history, project_reasoning, validate as validate_compaction, Compaction, Components,
 };
-use crate::agent::definitions::AgentDefinition;
+use crate::agent::definitions::{AgentAccess, AgentDefinition};
 use crate::agent::guard::RoleGuard;
 use crate::agent::instructions::Instructions;
 use crate::agent::permissions::{Grants, PermissionRequest};
@@ -122,6 +122,60 @@ pub struct AgentActor {
 }
 
 impl AgentActor {
+    /// The registry is the frozen session/child ceiling. A role only narrows it;
+    /// switching roles never removes entries or restores unavailable tools.
+    pub fn tool_allowed(&self, name: &str) -> bool {
+        self.tool_allowed_for_role(name, self.role.as_deref())
+    }
+
+    /// Destination-role projection for switch preparation, without mutation.
+    pub fn tool_allowed_for_role(&self, name: &str, role: Option<&AgentDefinition>) -> bool {
+        self.registry.get(name).is_some()
+            && role.is_none_or(|role| {
+                role.tools.get(name).copied().unwrap_or(true)
+                    && (role.access != AgentAccess::ReadOnly
+                        || !matches!(
+                            name,
+                            "write"
+                                | "edit"
+                                | "bash"
+                                | "ask"
+                                | "task"
+                                | "steer_subagent"
+                                | "decide_subagent"
+                                | "intent"
+                        ))
+            })
+    }
+
+    /// Read-only follows the known child access exclusions, including session
+    /// control and the navigator's intent writer. Unknown installed tools keep
+    /// their declared policy; they are not guessed to be mutations by name.
+    pub fn effective_tool_schemas(&self) -> Vec<crate::provider::openai::ToolDef> {
+        self.effective_tool_schemas_for_role(self.role.as_deref())
+    }
+
+    pub fn effective_tool_schemas_for_role(
+        &self,
+        role: Option<&AgentDefinition>,
+    ) -> Vec<crate::provider::openai::ToolDef> {
+        self.registry
+            .schemas_filtered(|name| self.tool_allowed_for_role(name, role))
+    }
+
+    pub fn effective_skills_catalog(&self) -> Option<&str> {
+        self.effective_skills_catalog_for_role(self.role.as_deref())
+    }
+
+    pub fn effective_skills_catalog_for_role(
+        &self,
+        role: Option<&AgentDefinition>,
+    ) -> Option<&str> {
+        self.tool_allowed_for_role("skill", role)
+            .then(|| self.skills.catalog())
+            .flatten()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         registry: Registry,
@@ -229,7 +283,7 @@ impl AgentActor {
         Components {
             system_prompt: role,
             rules: self.rules.message(),
-            skills: self.skills.catalog(),
+            skills: self.effective_skills_catalog(),
             tools,
         }
     }
@@ -275,9 +329,9 @@ impl AgentActor {
         crate::agent::context::estimate(
             role.as_deref(),
             self.rules.message(),
-            self.skills.catalog(),
+            self.effective_skills_catalog(),
             &self.effective_history_at(floor),
-            &self.registry.schemas(),
+            &self.effective_tool_schemas(),
         )
     }
 

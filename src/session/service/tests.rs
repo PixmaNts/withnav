@@ -26,7 +26,7 @@ async fn preparation_uses_captured_assignment_catalog_and_variant_generation() {
     let task = tokio::spawn({
         let service = service.clone();
         let workspace = dir.path().to_path_buf();
-        async move { service.create_session(&workspace, None, None).await }
+        async move { service.create_session(&workspace, None, false).await }
     });
     barrier.reached.notified().await;
     std::fs::write(
@@ -83,7 +83,7 @@ async fn concurrent_terminal_winners_release_exactly_their_reservations() {
     let parent = Ulid::new();
     service
         .history()
-        .record_session(parent, "/w", "default", None)
+        .record_session(parent, "/w", "default", false)
         .await
         .unwrap();
     service.subagent_slots.lock().unwrap().insert(parent, 4);
@@ -91,7 +91,7 @@ async fn concurrent_terminal_winners_release_exactly_their_reservations() {
     for child in children {
         service
             .history()
-            .record_session(child, "/w", "default", None)
+            .record_session(child, "/w", "default", false)
             .await
             .unwrap();
         service
@@ -147,13 +147,13 @@ async fn listing_hides_child_until_relationship_commits() {
     let child = Ulid::new();
     service
         .history()
-        .record_session(parent, "/workspace", "default", None)
+        .record_session(parent, "/workspace", "default", false)
         .await
         .unwrap();
     service.unpublished_children.lock().unwrap().insert(child);
     service
         .history()
-        .record_session(child, "/workspace", "default", None)
+        .record_session(child, "/workspace", "default", false)
         .await
         .unwrap();
     let during = service.list("/workspace").await.unwrap();

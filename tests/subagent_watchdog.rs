@@ -76,7 +76,7 @@ async fn verdict_for_a_turn_that_parked_on_permission_is_discarded() {
     });
     service.install_watchdog_test(clock.clone(), judge.clone());
     let parent = service
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -771,10 +771,7 @@ impl navai::tools::Tool for HeldToolAdapter {
 #[derive(Debug)]
 struct HeldToolHooks(Arc<HeldTool>);
 impl navai::session::SessionHooks for HeldToolHooks {
-    fn default_model(&self, _: Option<&str>) -> Option<&str> {
-        None
-    }
-    fn configure_actor(&self, _: Option<&str>, actor: &mut navai::agent::actor::AgentActor) {
+    fn configure_actor(&self, _: bool, actor: &mut navai::agent::actor::AgentActor) {
         actor
             .registry
             .register(Box::new(HeldToolAdapter(self.0.clone())));
@@ -796,7 +793,7 @@ async fn parent_stop_joins_its_preclaimed_child_before_releasing_capacity() {
     )
     .unwrap();
     let parent = service
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1004,7 +1001,7 @@ async fn running_tool_keeps_capacity_and_completion_until_it_has_ended() {
         }),
     );
     let parent = service
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1104,7 +1101,7 @@ impl Fixture {
             }),
         );
         let parent = service
-            .create_session(&ws, None, None)
+            .create_session(&ws, None, false)
             .bounded(file!(), line!())
             .await
             .unwrap();
@@ -1380,7 +1377,7 @@ async fn ownership_wrong_state_and_root_only_schema_are_enforced() {
     assert!(!f.initial_request.contains("decide_subagent"));
     let foreign = f
         .service
-        .create_session(&f._tmp.path().join("ws"), None, None)
+        .create_session(&f._tmp.path().join("ws"), None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1486,7 +1483,7 @@ async fn interval_zero_starts_no_supervisor_and_children_have_no_decision_tool()
         }),
     );
     let parent = service
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1592,7 +1589,7 @@ async fn permission_parked_child_is_skipped_and_decision_cannot_approve_it() {
         }),
     );
     let parent = service
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();

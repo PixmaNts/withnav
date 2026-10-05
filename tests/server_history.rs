@@ -28,7 +28,7 @@ fn make_state(tmp: &Path, base_url: &str, history_db: PathBuf) -> AppState {
     TestServerConfig::mock(tmp, base_url)
         .model_alias("cognition", "mock-opus")
         .history_db(history_db)
-        .navigator_state()
+        .assigned_navigator_state()
 }
 
 /// A scripted provider that answers EVERY connection with the given SSE
@@ -156,7 +156,7 @@ async fn converse_persists_events_title_and_transcript() {
     let (server, db, _keep) = spawn_history_server().await;
     let created = post_create_session(
         &server.base,
-        &json!({ "workspace": server.ws, "profile": "navigator" }),
+        &json!({ "workspace": server.ws, "editor": true }),
     )
     .await;
     assert_eq!(created.status(), 200);
@@ -222,7 +222,7 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
     let (server, db, _keep) = spawn_history_server().await;
     let created = post_create_session(
         &server.base,
-        &json!({ "workspace": server.ws, "profile": "navigator" }),
+        &json!({ "workspace": server.ws, "editor": true }),
     )
     .await;
     let created: Value = created.json().await.expect("json");
@@ -256,10 +256,10 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
     // refuses another endpoint: the stored row is moved to the second one so
     // this test stays about what a resume replays.
     common::server::move_saved_endpoint(&db, &id, &mock2.url);
-    // The resume keys on the STORED row (workspace/model/profile are the
+    // The resume keys on the STORED row (workspace/model/editor are the
     // stored ones); the request's workspace only guides models.json lookup.
     let (resumed_id, resumed) = state2
-        .create_or_resume_session(&ws2, None, None, Some(id.parse().unwrap()))
+        .create_or_resume_session(&ws2, None, false, Some(id.parse().unwrap()))
         .await
         .expect("resume");
     assert_eq!(resumed_id.to_string(), id, "same id returned");
@@ -356,7 +356,7 @@ async fn a_resumed_session_continues_after_the_stored_session_end() {
     let (server, _db, _keep) = spawn_history_server().await;
     let created: Value = post_create_session(
         &server.base,
-        &json!({ "workspace": server.ws, "profile": "navigator" }),
+        &json!({ "workspace": server.ws, "editor": true }),
     )
     .await
     .json()
@@ -381,7 +381,7 @@ async fn a_resumed_session_continues_after_the_stored_session_end() {
 
     let (_, resumed) = server
         .state
-        .create_or_resume_session(&server.ws, None, None, Some(ulid))
+        .create_or_resume_session(&server.ws, None, false, Some(ulid))
         .await
         .expect("resume");
     assert!(resumed);
@@ -450,12 +450,7 @@ async fn resuming_an_old_navigator_transcript_sends_the_role_prompt_once() {
     let id = ulid::Ulid::new();
     let store = navai::session::store::HistoryStore::open(&db).expect("open");
     store
-        .record_session(
-            id,
-            &ws.display().to_string(),
-            "cognition",
-            Some("navigator"),
-        )
+        .record_session(id, &ws.display().to_string(), "mock/mock-opus", true)
         .await
         .expect("record");
     store.append_event(
@@ -484,7 +479,7 @@ async fn resuming_an_old_navigator_transcript_sends_the_role_prompt_once() {
     let mock = spawn_mock_provider(done_response("fine")).await;
     let state = make_state(&root, &mock.url, db.clone());
     let (resumed_id, resumed) = state
-        .create_or_resume_session(&ws, None, None, Some(id))
+        .create_or_resume_session(&ws, None, false, Some(id))
         .await
         .expect("resume");
     assert_eq!(resumed_id, id);
@@ -522,7 +517,7 @@ async fn delete_removes_from_memory_and_store() {
     let (server, _db, _keep) = spawn_history_server().await;
     let created: Value = post_create_session(
         &server.base,
-        &json!({ "workspace": server.ws, "profile": "navigator" }),
+        &json!({ "workspace": server.ws, "editor": true }),
     )
     .await
     .json()
@@ -576,7 +571,7 @@ async fn delete_removes_from_memory_and_store() {
     // Resuming the deleted id 404s too.
     let resp = post_create_session(
         &server.base,
-        &json!({ "workspace": server.ws, "profile": "navigator", "resume": id }),
+        &json!({ "workspace": server.ws, "resume": id }),
     )
     .await;
     assert_eq!(resp.status(), 404);
@@ -595,14 +590,12 @@ async fn list_is_per_workspace() {
         (&server.ws, "in the first workspace"),
         (&other, "in the second"),
     ] {
-        let created: Value = post_create_session(
-            &server.base,
-            &json!({ "workspace": ws, "profile": "navigator" }),
-        )
-        .await
-        .json()
-        .await
-        .expect("json");
+        let created: Value =
+            post_create_session(&server.base, &json!({ "workspace": ws, "editor": true }))
+                .await
+                .json()
+                .await
+                .expect("json");
         let id = created["session_id"].as_str().expect("id").to_string();
         let sub = server
             .state

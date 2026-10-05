@@ -175,7 +175,7 @@ async fn allow_once_runs_the_call_and_the_model_sees_its_result() {
     let provider = provider(vec![one_write("w1", &target), done("written")]).await;
     let state = config(&env, &provider).state();
     let router = app(state.clone());
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
 
     say(&state, id, "write a.txt").await;
     let requested = wait_events(&state, id, "permission.requested", 1).await;
@@ -226,7 +226,7 @@ async fn allow_once_runs_the_call_and_the_model_sees_its_result() {
     let live = {
         let provider = self::provider(vec![one_write("w9", &target), done("x")]).await;
         let state = config(&env, &provider).state();
-        let id = state.create_session(&env.ws, None, None).await.unwrap();
+        let id = state.create_session(&env.ws, None, false).await.unwrap();
         say(&state, id, "again").await;
         let requested = wait_events(&state, id, "permission.requested", 1).await;
         (app(state), id, request_id(&requested[0]))
@@ -278,7 +278,7 @@ async fn allow_folder_covers_descendants_and_deny_reaches_the_model() {
     .await;
     let state = config(&env, &provider).state();
     let router = app(state.clone());
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
 
     say(&state, id, "write three files").await;
     let first_request = wait_events(&state, id, "permission.requested", 1).await;
@@ -345,7 +345,7 @@ async fn siblings_after_a_denial_are_processed() {
     .await;
     let state = config(&env, &provider).state();
     let router = app(state.clone());
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
 
     say(&state, id, "go").await;
     let first = wait_events(&state, id, "permission.requested", 1).await;
@@ -383,7 +383,7 @@ async fn chat_text_never_approves() {
     let target = env.ws.join("a.txt");
     let provider = provider(vec![one_write("w1", &target), done("fine")]).await;
     let state = config(&env, &provider).state();
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
 
     say(&state, id, "write it").await;
     wait_events(&state, id, "permission.requested", 1).await;
@@ -406,7 +406,7 @@ async fn stop_while_a_request_is_pending_cancels_it() {
     let provider = provider(vec![one_write("w1", &target)]).await;
     let state = config(&env, &provider).state();
     let router = app(state.clone());
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
 
     say(&state, id, "write it").await;
     let requested = wait_events(&state, id, "permission.requested", 1).await;
@@ -445,7 +445,7 @@ async fn a_restart_expires_the_pending_request_without_replaying_it() {
     let target = env.ws.join("a.txt");
     let provider = provider(vec![one_write("w1", &target), done("after restart")]).await;
     let first = config(&env, &provider).state();
-    let id = first.create_session(&env.ws, None, None).await.unwrap();
+    let id = first.create_session(&env.ws, None, false).await.unwrap();
     say(&first, id, "write it").await;
     let requested = wait_events(&first, id, "permission.requested", 1).await;
     wait_events(&first, id, "turn.end", 1).await;
@@ -460,7 +460,7 @@ async fn a_restart_expires_the_pending_request_without_replaying_it() {
     // The process "dies": no stop, no resolution.
     let second = config(&env, &provider).state();
     let (resumed, _) = second
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
     assert_eq!(resumed, id);
@@ -568,7 +568,7 @@ async fn a_second_answer_is_refused_at_once_while_the_resumed_turn_runs() {
         .rules_home(&env.root.join("home"))
         .state();
     let router = app(state.clone());
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
 
     say(&state, id, "write it").await;
     let (_, first) = provider.requests.recv().await.expect("first request");
@@ -613,7 +613,7 @@ async fn the_stop_command_is_accepted_while_a_request_is_pending() {
     let provider = provider(vec![one_write("w1", &target)]).await;
     let state = config(&env, &provider).state();
     let router = app(state.clone());
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
 
     say(&state, id, "write it").await;
     let requested = wait_events(&state, id, "permission.requested", 1).await;
@@ -648,7 +648,7 @@ async fn compact_while_a_permission_request_is_open_is_refused() {
     let target = env.ws.join("a.txt");
     let provider = provider(vec![one_write("w1", &target), done("written")]).await;
     let state = config(&env, &provider).chat_tools(20_000).state();
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
 
     say(&state, id, "write a.txt").await;
     wait_events(&state, id, "permission.requested", 1).await;
@@ -680,7 +680,7 @@ async fn a_deferred_compact_is_refused_when_the_turn_ends_on_a_permission_reques
     )
     .await;
     let state = config(&env, &provider).chat_tools(20_000).state();
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
 
     say(&state, id, "write a.txt").await;
     common::server::wait_for("the turn's request", || provider.bodies().len() == 1).await;
@@ -742,7 +742,7 @@ async fn a_wake_held_behind_a_request_does_not_cancel_the_next_request() {
     ])
     .await;
     let state = config(&env, &provider).state();
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
 
     say(&state, id, "write both").await;
     let first = nth_request(&state, id, 1).await;
@@ -803,7 +803,7 @@ async fn a_wake_held_behind_a_request_does_not_cancel_a_revalidated_request() {
     ])
     .await;
     let state = config(&env, &provider).state();
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
 
     say(&state, id, "write through the link").await;
     let first = nth_request(&state, id, 1).await;

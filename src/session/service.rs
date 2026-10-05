@@ -266,7 +266,7 @@ struct PreparedSession {
     session_id: SessionId,
     workspace: PathBuf,
     alias: String,
-    profile: Option<String>,
+    editor: bool,
     resumed: Option<ResumedSession>,
     actor: AgentActor,
     agents: Arc<Agents>,
@@ -336,7 +336,7 @@ pub struct Service {
     pub(super) config: Arc<SessionConfig>,
     /// The conversation-history store: every conversation is persisted.
     history: Arc<super::store::HistoryStore>,
-    /// Actor-profile policy injected by the host binary.
+    /// Editor context injected by the host binary.
     hooks: Arc<dyn SessionHooks>,
     /// The lifecycle gate: resume, close and delete run one at a time, so a
     /// session id never has two runtimes and is never resumed while it is
@@ -548,13 +548,13 @@ impl Service {
             .unwrap_or(0)
     }
 
-    /// A service without any profile behaviour ([`NoHooks`]). Fails when
+    /// A service without any editor behaviour ([`NoHooks`]). Fails when
     /// the history database cannot be opened.
     pub fn new(config: SessionConfig) -> Result<Self, ServerError> {
         Self::with_hooks(config, Arc::new(NoHooks))
     }
 
-    /// [`Service::new`] with the host's profile policy and lifecycle
+    /// [`Service::new`] with the host's editor policy and lifecycle
     /// callbacks.
     pub fn with_hooks(
         config: SessionConfig,
@@ -791,7 +791,7 @@ impl Service {
             .prepare_session_kind(
                 &parent_handle.workspace,
                 Some(alias),
-                None,
+                false,
                 Some(agent),
                 None,
                 &parent_handle.workspace,
@@ -1464,10 +1464,9 @@ impl Service {
         &self,
         workspace: &Path,
         model: Option<&str>,
-        profile: Option<&str>,
+        editor: bool,
     ) -> Result<SessionId, ServerError> {
-        self.create_session_as(workspace, model, profile, None)
-            .await
+        self.create_session_as(workspace, model, editor, None).await
     }
 
     /// [`create_session`](Self::create_session) running as the primary agent
@@ -1476,10 +1475,10 @@ impl Service {
         &self,
         workspace: &Path,
         model: Option<&str>,
-        profile: Option<&str>,
+        editor: bool,
         agent: Option<&str>,
     ) -> Result<SessionId, ServerError> {
-        self.create_session_with(workspace, model, profile, VariantChoice::Default, agent)
+        self.create_session_with(workspace, model, editor, VariantChoice::Default, agent)
             .await
     }
 
@@ -1490,10 +1489,10 @@ impl Service {
         &self,
         workspace: &Path,
         model: Option<&str>,
-        profile: Option<&str>,
+        editor: bool,
         variant: VariantChoice,
     ) -> Result<SessionId, ServerError> {
-        self.create_session_with(workspace, model, profile, variant, None)
+        self.create_session_with(workspace, model, editor, variant, None)
             .await
     }
 
@@ -1503,11 +1502,11 @@ impl Service {
         &self,
         workspace: &Path,
         model: Option<&str>,
-        profile: Option<&str>,
+        editor: bool,
         variant: VariantChoice,
         agent: Option<&str>,
     ) -> Result<SessionId, ServerError> {
-        self.spawn_session(workspace, model, profile, agent, None, workspace, &variant)
+        self.spawn_session(workspace, model, editor, agent, None, workspace, &variant)
             .await
     }
 
@@ -1515,7 +1514,7 @@ impl Service {
     /// `/v1/sessions` `{"resume": "<id>"}` path):
     /// - live + active → the SAME id, no rebuild;
     /// - stopped, or only stored → rebuilt from the store under the SAME id
-    ///   with its stored model and profile: the sequencer continues at
+    ///   with its stored model and editor context: the sequencer continues at
     ///   `last_seq + 1`, NO new `session.start`, the actor's transcript
     ///   restored from the snapshot (a subscriber replays the past
     ///   conversation from the store);
@@ -1526,10 +1525,10 @@ impl Service {
         &self,
         workspace: &Path,
         model: Option<&str>,
-        profile: Option<&str>,
+        editor: bool,
         resume: Option<SessionId>,
     ) -> Result<(SessionId, bool), ServerError> {
-        self.create_or_resume_session_as(workspace, model, profile, None, resume)
+        self.create_or_resume_session_as(workspace, model, editor, None, resume)
             .await
     }
 
@@ -1540,7 +1539,7 @@ impl Service {
         &self,
         workspace: &Path,
         model: Option<&str>,
-        profile: Option<&str>,
+        editor: bool,
         agent: Option<&str>,
         resume: Option<SessionId>,
     ) -> Result<(SessionId, bool), ServerError> {
@@ -1585,7 +1584,7 @@ impl Service {
             self.spawn_session(
                 workspace,
                 None,
-                None,
+                false,
                 None,
                 Some(loaded),
                 workspace,
@@ -1595,7 +1594,7 @@ impl Service {
             return Ok((id, true));
         }
         let id = self
-            .create_session_with(workspace, model, profile, VariantChoice::Default, agent)
+            .create_session_with(workspace, model, editor, VariantChoice::Default, agent)
             .await?;
         Ok((id, false))
     }
@@ -1713,8 +1712,10 @@ impl Service {
             .collect())
     }
 
-    pub fn default_model(&self, profile: Option<&str>) -> Option<&str> {
-        self.hooks.default_model(profile)
+    // The legacy catalog response still asks for a host default. Editor hooks
+    // no longer choose models (October 2026); agent assignments are authoritative.
+    pub fn default_model(&self, _unused: Option<&str>) -> Option<&str> {
+        None
     }
 
     /// Reads the session's local instructions once and logs what became of
@@ -1806,7 +1807,7 @@ impl Service {
         &self,
         workspace: &Path,
         model: Option<&str>,
-        profile: Option<&str>,
+        editor: bool,
         agent: Option<&str>,
         resumed: Option<ResumedSession>,
         resume_workspace: &Path,
@@ -1815,7 +1816,7 @@ impl Service {
         self.spawn_session_kind(
             workspace,
             model,
-            profile,
+            editor,
             agent,
             resumed,
             resume_workspace,
@@ -1832,7 +1833,7 @@ impl Service {
         &self,
         workspace: &Path,
         model: Option<&str>,
-        profile: Option<&str>,
+        editor: bool,
         agent: Option<&str>,
         resumed: Option<ResumedSession>,
         resume_workspace: &Path,
@@ -1845,7 +1846,7 @@ impl Service {
             .prepare_session_kind(
                 workspace,
                 model,
-                profile,
+                editor,
                 agent,
                 resumed,
                 resume_workspace,
@@ -1864,7 +1865,7 @@ impl Service {
         &self,
         workspace: &Path,
         model: Option<&str>,
-        profile: Option<&str>,
+        editor: bool,
         agent: Option<&str>,
         resumed: Option<ResumedSession>,
         resume_workspace: &Path,
@@ -1873,7 +1874,7 @@ impl Service {
         child_parent: Option<SessionId>,
         inherited: Option<SelectedModel>,
     ) -> Result<PreparedSession, ServerError> {
-        // Resume keeps the stored model/profile/workspace (the stored row is
+        // Resume keeps the stored model/editor/workspace (the stored row is
         // the authority); a fresh session honors the request's.
         let session_id = match &resumed {
             Some(loaded) => loaded.meta.id,
@@ -1881,17 +1882,15 @@ impl Service {
             // session must mint its own id.
             None => Ulid::new(),
         };
-        let (workspace, mut alias, profile) = match &resumed {
+        let (workspace, mut alias, editor) = match &resumed {
             Some(loaded) => (
                 PathBuf::from(&loaded.meta.workspace),
                 loaded.meta.model.clone(),
-                loaded.meta.profile.as_deref(),
+                loaded.meta.editor,
             ),
             None => {
-                let alias = model
-                    .or_else(|| self.hooks.default_model(profile))
-                    .unwrap_or("default");
-                (workspace.to_path_buf(), alias.to_string(), profile)
+                let alias = model.unwrap_or("default");
+                (workspace.to_path_buf(), alias.to_string(), editor)
             }
         };
         // The agent is chosen before anything is built or written: an unknown
@@ -2264,7 +2263,7 @@ impl Service {
                 Arc::new(reviewer) as Arc<dyn crate::agent::permission_gate::PermissionReviewer>
             });
         }
-        self.hooks.configure_actor(profile, &mut actor);
+        self.hooks.configure_actor(editor, &mut actor);
         if child_policy.is_some() {
             actor.max_steps = crate::agent::run_loop::max_steps();
         }
@@ -2292,7 +2291,7 @@ impl Service {
             session_id,
             workspace,
             alias,
-            profile: profile.map(str::to_string),
+            editor,
             resumed,
             actor,
             agents,
@@ -2318,7 +2317,7 @@ impl Service {
                 prepared.session_id,
                 &prepared.workspace.display().to_string(),
                 &prepared.alias,
-                prepared.profile.as_deref(),
+                prepared.editor,
                 Some(&prepared.snapshot),
                 prepared.selected.as_ref(),
                 (prepared.resumed.is_none() && !prepared.role.id.is_build())
@@ -2344,7 +2343,7 @@ impl Service {
             session_id,
             workspace,
             alias,
-            profile,
+            editor,
             resumed,
             mut actor,
             agents,
@@ -2358,7 +2357,6 @@ impl Service {
             save_late: _,
             child_parent,
         } = prepared;
-        let profile = profile.as_deref();
         let next_seq = resumed
             .as_ref()
             .map(|loaded| loaded.meta.last_seq + 1)
@@ -2752,7 +2750,7 @@ impl Service {
                 self.hooks.started(
                     StartedSession {
                         id: session_id,
-                        profile: profile.map(str::to_string),
+                        editor,
                         workspace,
                         resumed: is_resume,
                     },

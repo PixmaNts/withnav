@@ -18,7 +18,7 @@ async fn budget_parked_child_claims_interrupt_once_after_owner_continue() {
     let state = TestServerConfig::mock(tmp.path(), &provider.url)
         .chat_tools(128000)
         .state();
-    let parent = state.create_session(&ws, None, None).await.unwrap();
+    let parent = state.create_session(&ws, None, false).await.unwrap();
     let child = state
         .create_child_session(parent, "explore", "original delegated task")
         .await
@@ -85,7 +85,7 @@ async fn completion_after_negative_eligibility_cannot_overtake_queued_driver() {
         .chat_tools(128000)
         .state();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -191,7 +191,7 @@ async fn two_interrupts_deliver_both_inputs_in_admission_order() {
         .chat_tools(128000)
         .state();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -275,7 +275,7 @@ async fn result_interrupt_replacement_uses_accepted_deferred_model() {
     std::fs::write(path, models.to_string()).unwrap();
     let state = AppState::new(config).unwrap();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -353,7 +353,7 @@ async fn interrupt_held_automatic_summary_restores_valid_checkpoint_and_input_on
         .chat_tools(20000)
         .state();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -409,7 +409,7 @@ async fn queued_driver_without_result_preserves_running_turn_and_budget() {
         .chat_tools(128000)
         .state();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -476,7 +476,7 @@ async fn queued_driver_precedes_mid_turn_result_steer() {
         .chat_tools(128000)
         .state();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -570,7 +570,7 @@ async fn accepted_guidance_prevents_obsolete_final_response_terminalization() {
         .chat_tools(128000)
         .state();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -648,7 +648,7 @@ async fn steer_during_provider_request_lands_after_the_complete_tool_batch() {
         .chat_tools(128000)
         .state();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -708,7 +708,7 @@ async fn interrupt_provider_request_keeps_child_session_and_starts_a_fresh_turn(
         .chat_tools(128000)
         .state();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -788,12 +788,12 @@ async fn parked_permission_queues_steer_and_interrupt_cancels_without_running_ca
         .chat_tools(128000)
         .state();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
     let other = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -908,7 +908,7 @@ async fn result_delivery_steer_is_mid_turn_and_interrupt_restarts_parent() {
             .chat_tools(128000)
             .state();
         let parent = state
-            .create_session(&ws, None, None)
+            .create_session(&ws, None, false)
             .bounded(file!(), line!())
             .await
             .unwrap();
@@ -997,7 +997,7 @@ async fn interrupt_result_waits_for_parent_permission_and_queued_driver_goes_fir
         .chat_tools(128000)
         .state();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1125,7 +1125,7 @@ async fn interrupt_during_running_tool_preserves_result_pairing_and_capability_c
         .chat_tools(128000)
         .state();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();

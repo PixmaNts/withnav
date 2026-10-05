@@ -79,13 +79,13 @@ fn history(turns: usize) -> Vec<ChatMessage> {
 }
 
 async fn seeded(state: &AppState, ws: &Path, turns: usize) -> ulid::Ulid {
-    let id = state.create_session(ws, None, None).await.expect("create");
+    let id = state.create_session(ws, None, false).await.expect("create");
     state.close_session(id).await.expect("close");
     state.history().flush().await.expect("flush");
     state.history().save_transcript(id, history(turns));
     state.history().flush().await.expect("flush");
     state
-        .create_or_resume_session(ws, None, None, Some(id))
+        .create_or_resume_session(ws, None, false, Some(id))
         .await
         .expect("resume");
     id
@@ -146,7 +146,7 @@ async fn a_tool_heavy_turn_that_crosses_the_budget_is_compacted_and_goes_on() {
     })
     .await;
     let state = state(&env, &provider, WINDOW);
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     let sub = state.subscribe(id, None).await.unwrap();
 
     send_text(&state, id, "look at big.txt a few times").await;
@@ -224,7 +224,7 @@ async fn a_tail_that_cannot_fit_ends_the_turn_with_a_clear_error() {
     // The user message alone is bigger than the whole budget.
     let provider = spawn_capturing_provider(vec![]).await;
     let state = state(&env, &provider, 10_000);
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     let sub = state.subscribe(id, None).await.unwrap();
 
     send_text(&state, id, &"huge ".repeat(8_000)).await;
@@ -527,13 +527,13 @@ async fn a_switched_session_with_large_old_reasoning_compacts_and_continues() {
             ]
         })
         .collect();
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     state.close_session(id).await.unwrap();
     state.history().flush().await.unwrap();
     state.history().save_transcript(id, heavy);
     state.history().flush().await.unwrap();
     state
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
     let out = state.run_command(id, "model", "small").await.unwrap();
@@ -721,7 +721,7 @@ async fn a_failed_switch_rolls_back_the_staged_checkpoint_and_selection() {
     state.close_session(id).await.unwrap();
     state.history().flush().await.unwrap();
     state
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
     assert_eq!(state.session_summary(id).await.unwrap().model, "default");

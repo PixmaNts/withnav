@@ -82,7 +82,7 @@ fn base(server: &MockServer) -> String {
 
 async fn create_then_stop(service: &Service, fx: &Fixture) -> Ulid {
     let id = service
-        .create_session(&fx.ws, None, None)
+        .create_session(&fx.ws, None, false)
         .await
         .expect("create");
     service.close_session(id).await.expect("close");
@@ -139,7 +139,7 @@ async fn resume_with_discovery_down_uses_the_saved_bound() {
 
     // A new service with its own empty cache, nothing listening.
     let cold = fx.service(&url, "mock-model", "cold-data");
-    cold.create_or_resume_session(&fx.ws, None, None, Some(id))
+    cold.create_or_resume_session(&fx.ws, None, false, Some(id))
         .await
         .expect("resume on the saved bound");
     assert_eq!(fx.saved(id), before, "the saved bound is not rewritten");
@@ -159,7 +159,7 @@ async fn a_retargeted_alias_is_an_identity_error() {
 
     let moved = fx.service(&url, "other-model", "data");
     let err = moved
-        .create_or_resume_session(&fx.ws, None, None, Some(id))
+        .create_or_resume_session(&fx.ws, None, false, Some(id))
         .await
         .expect_err("a retargeted alias never migrates a conversation");
     assert!(
@@ -192,7 +192,7 @@ async fn a_moved_endpoint_is_an_identity_error() {
 
     let moved = fx.service(&base(&second), "mock-model", "data");
     let err = moved
-        .create_or_resume_session(&fx.ws, None, None, Some(id))
+        .create_or_resume_session(&fx.ws, None, false, Some(id))
         .await
         .expect_err("another endpoint never inherits a conversation");
     assert!(
@@ -230,7 +230,7 @@ async fn a_resolution_without_an_endpoint_is_filled_on_resume() {
         .expect("legacy");
 
     service
-        .create_or_resume_session(&fx.ws, None, None, Some(id))
+        .create_or_resume_session(&fx.ws, None, false, Some(id))
         .await
         .expect("a legacy resolution resumes");
     service.close_session(id).await.expect("close");
@@ -258,12 +258,12 @@ async fn a_legacy_row_gets_its_snapshot_at_activation() {
     let service = fx.service(&down_url, "mock-model", "cold-data");
     service
         .history()
-        .record_session(legacy, &fx.ws.display().to_string(), "default", None)
+        .record_session(legacy, &fx.ws.display().to_string(), "default", false)
         .await
         .expect("legacy row");
     assert_eq!(fx.saved(legacy), None);
     let err = service
-        .create_or_resume_session(&fx.ws, None, None, Some(legacy))
+        .create_or_resume_session(&fx.ws, None, false, Some(legacy))
         .await
         .expect_err("no window from any source");
     assert!(
@@ -275,7 +275,7 @@ async fn a_legacy_row_gets_its_snapshot_at_activation() {
     // Then resolved with the provider up.
     let service = fx.service(&url, "mock-model", "data");
     service
-        .create_or_resume_session(&fx.ws, None, None, Some(legacy))
+        .create_or_resume_session(&fx.ws, None, false, Some(legacy))
         .await
         .expect("resume");
     service.close_session(legacy).await.expect("close");
@@ -287,7 +287,7 @@ async fn a_legacy_row_gets_its_snapshot_at_activation() {
     mount_models(&server, 500_000).await;
     let fresh = fx.service(&url, "mock-model", "other-cache");
     fresh
-        .create_or_resume_session(&fx.ws, None, None, Some(legacy))
+        .create_or_resume_session(&fx.ws, None, false, Some(legacy))
         .await
         .expect("resume again");
     fresh.close_session(legacy).await.expect("close");
@@ -306,7 +306,7 @@ async fn a_catalog_refresh_does_not_change_a_live_session() {
     let url = base(&server);
     let service = fx.service(&url, "mock-model", "data");
     let id = service
-        .create_session(&fx.ws, None, None)
+        .create_session(&fx.ws, None, false)
         .await
         .expect("create");
     service.history().flush().await.expect("flush");
@@ -323,7 +323,7 @@ async fn a_catalog_refresh_does_not_change_a_live_session() {
 
     service.close_session(id).await.expect("close");
     service
-        .create_or_resume_session(&fx.ws, None, None, Some(id))
+        .create_or_resume_session(&fx.ws, None, false, Some(id))
         .await
         .expect("resume");
     service.close_session(id).await.expect("close");
@@ -359,7 +359,7 @@ async fn a_corrupt_column_fails_the_resume() {
             )
             .expect("corrupt");
         let err = service
-            .create_or_resume_session(&fx.ws, None, None, Some(id))
+            .create_or_resume_session(&fx.ws, None, false, Some(id))
             .await
             .expect_err("a corrupt column is not ignored");
         assert!(
@@ -431,7 +431,7 @@ async fn a_zero_configured_input_limit_never_makes_a_session_unresumable() {
     let saved: Value = serde_json::from_str(&fx.saved(id).unwrap()).unwrap();
     assert_ne!(saved["bounds"]["max_input_tokens"], json!(0), "{saved}");
     service
-        .create_or_resume_session(&fx.ws, None, None, Some(id))
+        .create_or_resume_session(&fx.ws, None, false, Some(id))
         .await
         .expect("a session created with a zero setting resumes");
     service.close_session(id).await.expect("close");

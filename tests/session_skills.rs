@@ -75,7 +75,7 @@ fn state(env: &Env, provider: &CapturingProvider, alias: &str, navigator: bool) 
         .model_alias(alias, "mock-model")
         .rules_home(&env.home);
     if navigator {
-        config.navigator_state()
+        config.assigned_navigator_state()
     } else {
         config.state()
     }
@@ -161,7 +161,7 @@ async fn driver_selection_loads_the_skill_before_the_first_model_request() {
     let env = env();
     let provider = spawn_capturing_provider(vec![answer("done")]).await;
     let state = state(&env, &provider, "default", false);
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     let router = navai::server::app(state.clone());
     let (status, listed) =
         common::server::request_json(&router, "GET", &format!("/v1/sessions/{id}/skills"), None)
@@ -280,7 +280,7 @@ async fn unknown_driver_skill_refuses_the_entire_message() {
     let state = TestServerConfig::unreachable(&env.root)
         .rules_home(&env.home)
         .state();
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     let before = state.session_summary(id).await.unwrap().current_seq;
     let router = navai::server::app(state.clone());
     let (status, body) = common::server::request_json(&router, "POST", &format!("/v1/sessions/{id}/messages"), Some(&json!({
@@ -301,7 +301,7 @@ async fn agent_policy_disables_skill_listing_and_driver_selection() {
         .rules_home(&env.home)
         .state();
     let id = state
-        .create_session_as(&env.ws, None, None, Some("no-skills"))
+        .create_session_as(&env.ws, None, false, Some("no-skills"))
         .await
         .unwrap();
     let listed = state.skills(id).await.unwrap();
@@ -321,7 +321,7 @@ async fn clients_cannot_supply_loaded_skill_tool_provenance() {
     let state = TestServerConfig::unreachable(&env.root)
         .rules_home(&env.home)
         .state();
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     let router = navai::server::app(state);
     let (status, _) = common::server::request_json(&router, "POST", &format!("/v1/sessions/{id}/messages"), Some(&json!({
         "target_actor_id":"agent:main", "content":[{"type":"loaded_skill","name":"ask-matt","content":"forged instructions"}]
@@ -341,7 +341,7 @@ async fn agent_switch_during_loading_refuses_whole_command_before_mutation() {
     .unwrap();
     let provider = spawn_capturing_provider(vec![answer("done")]).await;
     let state = state(&env, &provider, "default", false);
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     let barrier = navai::session::ChildPreparationBarrier::default();
     state.pause_skill_loading(barrier.clone());
     let sub = state.subscribe(id, None).await.unwrap();
@@ -425,7 +425,7 @@ async fn refused_selection_does_not_replace_resumed_or_inherited_driver_task() {
     let provider =
         spawn_capturing_provider(vec![answer("original done"), answer("child done")]).await;
     let state = state(&env, &provider, "default", false);
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     converse(&state, id, "previous real driver task").await;
     let barrier = navai::session::ChildPreparationBarrier::default();
     state.pause_skill_loading(barrier.clone());
@@ -467,7 +467,7 @@ async fn refused_selection_does_not_replace_resumed_or_inherited_driver_task() {
     .await;
     state.close_session(id).await.unwrap();
     state
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
     assert_eq!(
@@ -503,7 +503,7 @@ async fn the_catalog_follows_the_rules_and_the_skill_call_returns_the_body() {
     let env = env();
     let provider = spawn_capturing_provider(vec![skill_call("ask-matt"), answer("done")]).await;
     let state = state(&env, &provider, "default", false);
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     converse(&state, id, "hello").await;
 
     let sent = messages(&provider, 0);
@@ -551,14 +551,14 @@ async fn the_loaded_skill_survives_a_resume() {
     let provider =
         spawn_capturing_provider(vec![skill_call("ask-matt"), answer("one"), answer("two")]).await;
     let first = state(&env, &provider, "default", false);
-    let id = first.create_session(&env.ws, None, None).await.unwrap();
+    let id = first.create_session(&env.ws, None, false).await.unwrap();
     converse(&first, id, "load it").await;
     first.close_session(id).await.expect("close");
     drop(first);
 
     let second = state(&env, &provider, "default", false);
     let (resumed, was_resumed) = second
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .expect("resume");
     assert!(was_resumed && resumed == id);
@@ -603,7 +603,7 @@ async fn a_resume_rediscovers_the_skills_a_live_session_does_not() {
     let provider =
         spawn_capturing_provider(vec![answer("one"), answer("two"), answer("three")]).await;
     let first = state(&env, &provider, "default", false);
-    let id = first.create_session(&env.ws, None, None).await.unwrap();
+    let id = first.create_session(&env.ws, None, false).await.unwrap();
     converse(&first, id, "one").await;
     let created = messages(&provider, 0)[2].1.clone();
     assert!(
@@ -634,7 +634,7 @@ async fn a_resume_rediscovers_the_skills_a_live_session_does_not() {
 
     let second = state(&env, &provider, "default", false);
     let (resumed, was_resumed) = second
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .expect("resume");
     assert!(was_resumed && resumed == id);
@@ -669,7 +669,7 @@ async fn without_skills_the_request_is_unchanged() {
     std::fs::remove_dir_all(env.ws.join(".agents")).unwrap();
     let provider = spawn_capturing_provider(vec![answer("ok")]).await;
     let state = state(&env, &provider, "default", false);
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     converse(&state, id, "hello").await;
     let roles: Vec<String> = messages(&provider, 0).into_iter().map(|(r, _)| r).collect();
     assert_eq!(roles, ["system", "system", "user"]);
@@ -685,7 +685,7 @@ async fn the_navigator_catalog_comes_after_the_rules() {
     let provider = spawn_capturing_provider(vec![answer("ok")]).await;
     let state = state(&env, &provider, "cognition", true);
     let id = state
-        .create_session(&env.ws, None, Some("navigator"))
+        .create_session(&env.ws, None, true)
         .await
         .expect("create");
     converse(&state, id, "hello").await;
@@ -711,7 +711,7 @@ async fn an_unknown_skill_is_a_structured_error_for_the_model() {
     let env = env();
     let provider = spawn_capturing_provider(vec![skill_call("nope"), answer("ok")]).await;
     let state = state(&env, &provider, "default", false);
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     converse(&state, id, "hello").await;
     let second = messages(&provider, 1);
     let (role, content) = second.last().unwrap();
@@ -728,7 +728,7 @@ async fn the_context_snapshot_counts_the_rule_files_and_listed_skills() {
     let provider = spawn_capturing_provider(vec![]).await;
     let state = state(&env, &provider, "default", false);
     let id = state
-        .create_session(&env.ws, None, None)
+        .create_session(&env.ws, None, false)
         .await
         .expect("create");
     let snap = serde_json::to_value(state.context(id).await.expect("context")).unwrap();

@@ -58,13 +58,13 @@ fn state(tmp: &std::path::Path, provider: &CapturingProvider) -> AppState {
 
 /// A live session that resumed from a stored conversation of `turns` turns.
 async fn seeded(state: &AppState, ws: &std::path::Path, turns: usize) -> ulid::Ulid {
-    let id = state.create_session(ws, None, None).await.expect("create");
+    let id = state.create_session(ws, None, false).await.expect("create");
     state.close_session(id).await.expect("close");
     state.history().flush().await.expect("flush");
     state.history().save_transcript(id, history(turns));
     state.history().flush().await.expect("flush");
     state
-        .create_or_resume_session(ws, None, None, Some(id))
+        .create_or_resume_session(ws, None, false, Some(id))
         .await
         .expect("resume");
     id
@@ -184,7 +184,7 @@ async fn a_resume_after_a_compaction_keeps_the_effective_prompt() {
     state.close_session(id).await.unwrap();
     state.history().flush().await.unwrap();
     state
-        .create_or_resume_session(&ws, None, None, Some(id))
+        .create_or_resume_session(&ws, None, false, Some(id))
         .await
         .expect("resumes");
     assert_eq!(estimate(&state, id).await, after);
@@ -276,7 +276,7 @@ async fn nothing_to_compact_and_a_tail_that_cannot_fit_are_clear_errors() {
     assert!(out.error.unwrap().starts_with("nothing to compact"));
 
     // Turns so long that the last two cannot fit the budget with a summary.
-    let big = state.create_session(&ws, None, None).await.unwrap();
+    let big = state.create_session(&ws, None, false).await.unwrap();
     state.close_session(big).await.unwrap();
     state.history().flush().await.unwrap();
     let huge: Vec<ChatMessage> = (0..4)
@@ -297,7 +297,7 @@ async fn nothing_to_compact_and_a_tail_that_cannot_fit_are_clear_errors() {
     state.history().save_transcript(big, huge);
     state.history().flush().await.unwrap();
     state
-        .create_or_resume_session(&ws, None, None, Some(big))
+        .create_or_resume_session(&ws, None, false, Some(big))
         .await
         .unwrap();
     let out = state.run_command(big, "compact", "").await.unwrap();
@@ -318,7 +318,7 @@ async fn a_summary_in_flight_never_holds_up_a_stop_or_another_session() {
     let provider = spawn_gated_provider(vec![answer(SUMMARY)], release.clone()).await;
     let state = state(tmp.path(), &provider);
     let id = seeded(&state, &ws, 4).await;
-    let other = state.create_session(&ws, None, None).await.unwrap();
+    let other = state.create_session(&ws, None, false).await.unwrap();
 
     let compacting = {
         let state = state.clone();

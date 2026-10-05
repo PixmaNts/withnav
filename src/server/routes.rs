@@ -71,12 +71,13 @@ where
 
 /// Frozen create-session request.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateSessionRequest {
     pub workspace: String,
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
-    pub profile: Option<String>,
+    pub editor: Option<bool>,
     /// The primary agent a new session runs as (`build` when absent). A
     /// resumed session keeps the agent it was stored with.
     #[serde(default)]
@@ -334,9 +335,15 @@ async fn create_session(
             return error_response(ServerError::SessionNotFound(request.resume.unwrap()));
         }
     };
-    if resume.is_some() && request.variant.is_some() {
+    if resume.is_some()
+        && (request.editor.is_some()
+            || request.model.is_some()
+            || request.agent.is_some()
+            || request.variant.is_some())
+    {
         return error_response(ServerError::MalformedBody(
-            "a resumed session keeps its saved variant: change it with /variant".to_string(),
+            "resume accepts only workspace and resume; saved editor and selection are retained"
+                .to_string(),
         ));
     }
     let session_id = match resume {
@@ -345,7 +352,7 @@ async fn create_session(
                 .create_or_resume_session(
                     std::path::Path::new(&request.workspace),
                     request.model.as_deref(),
-                    request.profile.as_deref(),
+                    false,
                     resume,
                 )
                 .await
@@ -354,7 +361,7 @@ async fn create_session(
             .create_session_with(
                 std::path::Path::new(&request.workspace),
                 request.model.as_deref(),
-                request.profile.as_deref(),
+                request.editor.unwrap_or(false),
                 match request.variant {
                     None => crate::session::VariantChoice::Default,
                     Some(None) => crate::session::VariantChoice::Clear,

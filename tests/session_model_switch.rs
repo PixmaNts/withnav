@@ -134,13 +134,13 @@ async fn seeded(state: &AppState, ws: &Path, turns: usize, reasoning: bool) -> u
 
 /// A live session that resumed from the stored `transcript`.
 async fn seeded_with(state: &AppState, ws: &Path, transcript: Vec<ChatMessage>) -> ulid::Ulid {
-    let id = state.create_session(ws, None, None).await.expect("create");
+    let id = state.create_session(ws, None, false).await.expect("create");
     state.close_session(id).await.expect("close");
     state.history().flush().await.expect("flush");
     state.history().save_transcript(id, transcript);
     state.history().flush().await.expect("flush");
     state
-        .create_or_resume_session(ws, None, None, Some(id))
+        .create_or_resume_session(ws, None, false, Some(id))
         .await
         .expect("resume");
     id
@@ -357,7 +357,7 @@ async fn a_switch_is_refused_while_a_permission_request_waits() {
     let a = spawn_capturing_provider(vec![http_sse(&sse_body(&[&write]))]).await;
     let b = spawn_capturing_provider(vec![]).await;
     let state = state(&env, &a, &b, 128_000, 128_000);
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     let sub = state.subscribe(id, None).await.unwrap();
     send_text(&state, id, "write it").await;
     collect_until(sub, |e| e.kind == "permission.requested").await;
@@ -441,7 +441,7 @@ async fn a_resume_after_a_switch_uses_the_new_model() {
     state.history().flush().await.unwrap();
 
     let (resumed, was_resumed) = state
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
     assert!(was_resumed);
@@ -555,7 +555,7 @@ async fn a_resume_keeps_the_reasoning_boundary_of_the_switch() {
     state.close_session(id).await.unwrap();
     state.history().flush().await.unwrap();
     state
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
     turn_done(&state, id, "after the stop").await;
@@ -788,7 +788,7 @@ async fn a_variant_read_against_the_old_model_is_not_installed_after_a_switch() 
         128_000,
         true,
     );
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
 
     // The provider comes back: the model list is slow, and so is the turn,
     // but less. A failed lookup is not repeated for a few seconds.

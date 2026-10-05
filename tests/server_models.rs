@@ -41,7 +41,7 @@ async fn lists_chat_models_with_tools_only() {
     let base = format!("http://{addr}");
     let client = reqwest::Client::new();
 
-    // With a workspace: only the chat+tools alias, and the navigator default.
+    // Editor hooks do not supply a model default; catalog selection is separate.
     let ok = client
         .get(format!("{base}/v1/models"))
         .query(&[("workspace", tmp.path())])
@@ -55,7 +55,7 @@ async fn lists_chat_models_with_tools_only() {
         json!([{ "alias": "cognition", "model": "mock-opus", "context_window": 200000,
                  "enabled": true, "window_source": "models.json", "stale": false }])
     );
-    assert_eq!(body["default"], "cognition");
+    assert_eq!(body["default"], Value::Null);
 
     // Without a workspace: 400.
     let missing = client

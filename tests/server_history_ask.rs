@@ -44,7 +44,7 @@ fn state(tmp: &Path, url: &str, db: &Path) -> navai::server::AppState {
     TestServerConfig::mock(tmp, url)
         .model_alias("cognition", "mock-opus")
         .history_db(db.to_path_buf())
-        .navigator_state()
+        .assigned_navigator_state()
 }
 
 async fn collect_until(
@@ -92,12 +92,11 @@ async fn resumed_ask_is_answered_as_a_tool_result() {
     let state1 = state(root, &url1, &db);
     let (addr1, task1) = spawn_server(state1.clone()).await;
     let base1 = format!("http://{addr1}");
-    let created: Value =
-        post_create_session(&base1, &json!({ "workspace": ws, "profile": "navigator" }))
-            .await
-            .json()
-            .await
-            .expect("json");
+    let created: Value = post_create_session(&base1, &json!({ "workspace": ws, "editor": true }))
+        .await
+        .json()
+        .await
+        .expect("json");
     let id = created["session_id"].as_str().expect("id").to_string();
     let sub = state1
         .subscribe(id.parse().unwrap(), None)
@@ -132,7 +131,7 @@ async fn resumed_ask_is_answered_as_a_tool_result() {
     // A resume refuses another endpoint; this test is about the pending ask.
     common::server::move_saved_endpoint(&db, &id, &url2);
     let (resumed_id, resumed) = state2
-        .create_or_resume_session(&ws, None, None, Some(id.parse().unwrap()))
+        .create_or_resume_session(&ws, None, false, Some(id.parse().unwrap()))
         .await
         .expect("resume");
     assert!(resumed);

@@ -35,6 +35,9 @@ use super::{
 /// The generation an event is tagged with: the tab it belongs to.
 pub fn generation(e: &ClientEvent) -> &Generation {
     match e {
+        ClientEvent::Agents { generation, .. } | ClientEvent::Layers { generation, .. } => {
+            generation
+        }
         ClientEvent::ChildEnvelope { generation, .. } => generation,
         ClientEvent::Envelope { generation, .. }
         | ClientEvent::Resync { generation }
@@ -186,7 +189,7 @@ pub(crate) fn set_variant_offer(s: &mut State, data: &serde_json::Value) {
     }
 }
 
-/// Refreshes the display name and context window from the catalog for the selected alias, for a
+/// Refreshes the display name and context window from the catalog for the selected model_id, for a
 /// tab whose conversation has not reported its selection yet. Once a `model.changed` committed it,
 /// the server's identity and window stay: the catalog only fills the picker.
 pub(crate) fn refresh_model(s: &mut State) {
@@ -199,16 +202,80 @@ pub(crate) fn refresh_model(s: &mut State) {
     refresh_tab_model(catalog, &mut tabs[*active]);
 }
 
+pub(super) fn apply_selection(
+    s: &mut State,
+    selection: super::protocol::ModelIdentity,
+    seq: u64,
+    window: Option<u64>,
+) {
+    if s.model_seq.is_some_and(|held| seq < held) {
+        return;
+    }
+    let agent = strip_controls(&selection.agent);
+    let model = strip_controls(&selection.selection.model);
+    let committed_window = (s.selected_model_id.as_deref() == Some(model.as_str()))
+        .then_some(s.context_window)
+        .flatten();
+    s.agent = Some(agent);
+    s.selected_model_id = Some(model.clone());
+    s.selected_model_name = Some(model.clone());
+    s.variant = selection.selection.variant.as_deref().map(strip_controls);
+    s.model_source = strip_controls(&selection.selection.source);
+    s.variant_source = strip_controls(&selection.selection.variant_source);
+    s.context_window = window.or(committed_window).or_else(|| {
+        s.catalog
+            .iter()
+            .find(|entry| entry.name == model)
+            .and_then(|entry| entry.context_window)
+    });
+    s.model_seq = Some(seq);
+    s.agent_seq = Some(seq);
+    s.variant_seq = Some(seq);
+    s.effective = Some(selection);
+}
+
 fn refresh_tab_model(catalog: &[super::protocol::ModelEntry], tab: &mut super::state::Tab) {
     if tab.model_seq.is_some() {
         return;
     }
-    let Some(alias) = tab.selected_model_alias.clone() else {
+    let Some(model_id) = tab.selected_model_id.clone() else {
         return;
     };
-    let found = catalog.iter().find(|m| m.alias == alias);
-    tab.selected_model_name = found.map(|m| m.model.clone());
+    let found = catalog.iter().find(|m| m.name == model_id);
+    tab.selected_model_name = found.map(|m| m.name.clone());
     tab.context_window = found.and_then(|m| m.context_window);
+    refresh_start_variant(tab, catalog);
+}
+
+pub(super) fn refresh_start_variant(
+    tab: &mut super::state::Tab,
+    catalog: &[super::protocol::ModelEntry],
+) {
+    if occupied(tab) {
+        return;
+    }
+    let (base, source) = if let Some(model) = &tab.start_model {
+        (
+            catalog
+                .iter()
+                .find(|m| &m.name == model)
+                .and_then(|m| m.default_variant.clone()),
+            "model_default".to_string(),
+        )
+    } else {
+        tab.agents
+            .iter()
+            .find(|a| a.id == tab.agent_name())
+            .and_then(|a| a.effective.as_ref())
+            .map(|selection| (selection.variant.clone(), selection.variant_source.clone()))
+            .unwrap_or((None, "model_default".into()))
+    };
+    tab.variant = tab.start_variant.clone().unwrap_or(base);
+    tab.variant_source = if tab.start_variant.is_some() {
+        "override".into()
+    } else {
+        source
+    };
 }
 
 pub(crate) fn send_effect(text: String, revision: u64) -> Effect {
@@ -255,6 +322,7 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
     let shared = matches!(
         e,
         ClientEvent::Models { .. }
+            | ClientEvent::Layers { .. }
             | ClientEvent::Sessions { .. }
             | ClientEvent::Commands { .. }
             | ClientEvent::SettingsNotSaved { .. }
@@ -292,6 +360,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             project_child(s, &child_session_id, &envelope);
         }
         ClientEvent::Envelope { envelope, .. } => {
+            let selection_changed = envelope.kind == "model.changed";
             let spawned = (envelope.kind == "subagent.spawned"
                 && envelope.payload["parent_session_id"].as_str()
                     == s.session
@@ -326,6 +395,16 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 }
             }
             envelope::apply_envelope(s, envelope)?;
+            if selection_changed {
+                if let Some(id) = s
+                    .session
+                    .as_ref()
+                    .map(|m| m.session_id.clone())
+                    .or(s.resuming.clone())
+                {
+                    effects.push(Effect::FetchAgents(Some(id)));
+                }
+            }
             let terminal = s
                 .children
                 .iter()
@@ -412,27 +491,86 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 },
             };
         }
-        ClientEvent::Models { result, .. } => {
+        ClientEvent::Models {
+            workspace,
+            request,
+            result,
+            ..
+        } => {
+            if workspace != s.workspace || request < s.models_request {
+                return Ok(vec![]);
+            }
+            s.models_request = request;
             if let Ok(body) = result {
                 s.catalog = body.models;
-                let default = body
-                    .default
-                    .filter(|a| s.catalog.iter().any(|m| &m.alias == a))
-                    .or_else(|| {
-                        s.catalog
-                            .iter()
-                            .find(|m| m.alias == "default")
-                            .map(|m| m.alias.clone())
-                    });
+                if let Some(agent) = body.default_agent {
+                    s.default_agent = agent;
+                }
                 // Every tab, on screen or not: a default where none is chosen, and the display
                 // name and window refreshed from the new catalog.
                 let State { tabs, catalog, .. } = s;
                 for tab in tabs {
-                    if tab.selected_model_alias.is_none() {
-                        tab.selected_model_alias = default.clone();
-                    }
                     refresh_tab_model(catalog, tab);
                 }
+            }
+        }
+        ClientEvent::Agents {
+            session_id,
+            workspace,
+            request,
+            result,
+            ..
+        } => {
+            let current = s
+                .session
+                .as_ref()
+                .map(|m| m.session_id.as_str())
+                .or(s.resuming.as_deref());
+            if workspace != s.workspace
+                || request < s.agents_request
+                || session_id.as_deref() != current
+            {
+                return Ok(vec![]);
+            }
+            s.agents_request = request;
+            if let Ok(body) = result {
+                s.default_agent = body.default_agent;
+                s.tabs[s.active].default_agent = Some(s.default_agent.clone());
+                s.agents = body.agents;
+                if !occupied(s) && s.start_model.is_none() {
+                    let agent = s.agent.clone().unwrap_or_else(|| s.default_agent.clone());
+                    if let Some(choice) = s
+                        .agents
+                        .iter()
+                        .find(|a| a.id == agent)
+                        .and_then(|a| a.effective.clone())
+                    {
+                        s.selected_model_id = Some(choice.model.clone());
+                        s.selected_model_name = Some(choice.model);
+                        s.variant = s.start_variant.clone().unwrap_or(choice.variant);
+                        s.model_source = choice.source;
+                        s.variant_source = if s.start_variant.is_some() {
+                            "override".into()
+                        } else {
+                            choice.variant_source
+                        };
+                        refresh_model(s);
+                    }
+                }
+            }
+        }
+        ClientEvent::Layers {
+            workspace,
+            request,
+            result,
+            ..
+        } => {
+            if workspace != s.workspace || request < s.layers_request {
+                return Ok(vec![]);
+            }
+            s.layers_request = request;
+            if let Ok(body) = result {
+                s.layers = body.layers;
             }
         }
         ClientEvent::PermissionAnswered {
@@ -566,18 +704,23 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     session_id: r.session_id.clone(),
                     actor_state: r.actor_state,
                     workspace: s.workspace.clone(),
-                    model: s.selected_model_alias.clone().unwrap_or_default(),
+                    model: s.selected_model_id.clone().unwrap_or_default(),
                     agent: s.agent.clone(),
                     variant: None,
                     parent_session_id: None,
                     promptable: true,
                     child_status: None,
+                    source: String::new(),
+                    variant_source: String::new(),
+                    read_only: false,
+                    resume_disabled_reason: None,
                     current_seq: s.last_applied_seq.unwrap_or(0),
                 });
                 if s.activity == Activity::Stopped {
                     s.activity = Activity::Idle;
                 }
                 effects.push(Effect::FetchMetadata(r.session_id.clone()));
+                effects.push(Effect::FetchAgents(Some(r.session_id.clone())));
                 effects.extend(read_git(s));
                 // `None` for a fresh conversation; the kept cursor when resuming the same one.
                 effects.push(Effect::Subscribe {
@@ -607,7 +750,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 m.parent_session_id = m.parent_session_id.as_deref().map(strip_controls);
                 m.child_status = m.child_status.as_deref().map(strip_controls);
                 if std::mem::take(&mut s.inspecting) {
-                    if m.parent_session_id.is_some() || !m.promptable {
+                    if m.parent_session_id.is_some() || !m.promptable || m.read_only {
                         s.parent_session_id = m.parent_session_id.clone();
                         s.child_status = super::state::ChildStatus::from_wire(
                             m.child_status.as_deref().unwrap_or(""),
@@ -643,17 +786,20 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 }
                 // Only reached for the current generation, so `m` describes this conversation.
                 // A summary read before a change the stream already confirmed is older than it.
-                let newer = |seq: Option<u64>| seq.is_none_or(|seq| m.current_seq >= seq);
-                if m.agent.is_some() && newer(s.agent_seq) {
-                    s.agent = m.agent.clone();
-                }
-                if newer(s.variant_seq) {
-                    s.variant = m.variant.clone();
-                }
-                if newer(s.model_seq) {
-                    s.selected_model_alias = Some(m.model.clone());
-                    refresh_model(s);
-                }
+                apply_selection(
+                    s,
+                    super::protocol::ModelIdentity {
+                        agent: m.agent.clone().unwrap_or_else(|| s.default_agent.clone()),
+                        selection: super::protocol::Selection {
+                            model: m.model.clone(),
+                            variant: m.variant.clone(),
+                            source: m.source.clone(),
+                            variant_source: m.variant_source.clone(),
+                        },
+                    },
+                    m.current_seq,
+                    None,
+                );
                 s.session = Some(m);
                 seed_children(s);
                 effects.extend(child_watches(s));

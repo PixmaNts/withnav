@@ -109,11 +109,6 @@
           "minimum": 0,
           "description": "Minimum delay between two remarks on the same file."
         },
-        "navai.modelAlias": {
-          "type": "string",
-          "default": "metacognition",
-          "description": "Model alias (from Navai models.json) used for remarks."
-        },
         "navai.reflex.enabled": {
           "type": "boolean",
           "default": true,

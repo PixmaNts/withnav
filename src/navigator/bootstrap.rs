@@ -42,42 +42,7 @@ struct Layers {
     disabled: Vec<String>,
 }
 
-/// Builds every layer from its alias. A missing alias or key disables that
-/// layer with a note; the others keep working.
-fn build_layers(models_path: Option<&Path>, clients: Arc<ClientCache>) -> Layers {
-    let models = match load_models(models_path) {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::error!("models.json unavailable, every model layer disabled: {e}");
-            return Layers::all_disabled(format!("all: models.json ({e})"));
-        }
-    };
-    let config_dir = auth::default_config_dir().unwrap_or_else(|| PathBuf::from("."));
-    let log_path = crate::paths::decision_log().unwrap_or_else(|| PathBuf::from("/dev/null"));
-    build_layers_from(
-        &models,
-        &config_dir,
-        &ModelCatalog::system(),
-        log_path,
-        clients,
-    )
-}
-
-impl Layers {
-    fn all_disabled(note: String) -> Self {
-        Self {
-            fim: None,
-            decision: None,
-            reflex_model: None,
-            instinct_model: None,
-            metacognition_model: None,
-            metacognition: None,
-            disabled: vec![note],
-        }
-    }
-}
-
-/// [`build_layers`] over an already loaded config and explicit directories.
+/// Builds optional layers from the admitted workspace catalog and explicit directories.
 fn build_layers_from(
     models: &ModelsConfig,
     config_dir: &Path,
@@ -323,18 +288,39 @@ impl Layers {
 /// Builds the layers, starts the cognition chat server and serves the
 /// navigator over stdio until the client exits.
 pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
+    use tokio::io::AsyncReadExt as _;
+    let cwd = std::env::current_dir()?;
+    let mut stdin = tokio::io::stdin();
+    let Some((frame, initialized_workspace)) = initial_workspace(&mut stdin, &cwd).await? else {
+        return Ok(());
+    };
+    let config_dir =
+        auth::default_config_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve config dir"))?;
+    let preflight = crate::session::preflight::Preflight::capture(
+        &config_dir,
+        models_path,
+        &initialized_workspace,
+        &crate::agent::instructions::RulesRoots::from_user_home(),
+    )
+    .await?;
+    preflight.check(&initialized_workspace).await?;
     let clients = Arc::new(ClientCache::new());
-    let mut layers = build_layers(models_path, clients);
 
     let log_path = crate::paths::decision_log()
         .ok_or_else(|| anyhow::anyhow!("cannot resolve user data dir"))?;
+    let mut layers = build_layers_from(
+        preflight.models(),
+        &config_dir,
+        &ModelCatalog::system(),
+        log_path.clone(),
+        clients,
+    );
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    // The workspace root starts at the process cwd; initialize upgrades it
-    // from rootUri when the client sends one.
-    let workspace = std::env::current_dir().ok();
+    // Admission, layers and cognition all use the initialize workspace catalog.
+    let workspace = Some(initialized_workspace);
     let user_dir = navigator::default_user_dir();
 
     // The cognition chat rides on an in-process Phase-2 server bound to a
@@ -346,7 +332,7 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
     // register themselves there) and to the navigator deps (wakes post
     // through it): one process, two channels, one conversation.
     let conversation = ConversationFeed::new();
-    let http = match spawn_cognition_server(models_path, conversation.clone()).await {
+    let http = match spawn_cognition_server(preflight.models_path(), conversation.clone()).await {
         Ok(http) => Some(http),
         Err(e) => {
             // A failed bind or an unopenable history database must not take
@@ -380,7 +366,12 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
         deps = deps.with_reflex_context(llm);
     }
 
-    navigator::serve(tokio::io::stdin(), tokio::io::stdout(), deps).await;
+    navigator::serve(
+        std::io::Cursor::new(frame).chain(stdin),
+        tokio::io::stdout(),
+        deps,
+    )
+    .await;
 
     // LSP exit/EOF: close every chat session and let the server drain, so
     // the process exits instead of leaking the HTTP task.
@@ -389,6 +380,80 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(10), http.task).await;
     }
     Ok(())
+}
+
+/// Reads and replays the first initialize frame: an editor's cwd is not its project.
+/// Bounded framing keeps untrusted stdio input from allocating without a limit.
+async fn initial_workspace<R: tokio::io::AsyncRead + Unpin>(
+    input: &mut R,
+    cwd: &Path,
+) -> anyhow::Result<Option<(Vec<u8>, PathBuf)>> {
+    use tokio::io::AsyncReadExt as _;
+    let mut frame = Vec::new();
+    loop {
+        let mut byte = [0];
+        if input.read(&mut byte).await? == 0 {
+            anyhow::ensure!(frame.is_empty(), "incomplete LSP initialize header");
+            return Ok(None);
+        }
+        frame.push(byte[0]);
+        anyhow::ensure!(
+            frame.len() <= 8192,
+            "LSP initialize header exceeds 8192 bytes"
+        );
+        if frame.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+    let header = std::str::from_utf8(&frame)?;
+    let lengths: Vec<_> = header
+        .split("\r\n")
+        .filter_map(|line| line.split_once(':'))
+        .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .map(|(_, value)| value.trim().parse::<usize>())
+        .collect::<Result<_, _>>()?;
+    anyhow::ensure!(
+        lengths.len() == 1,
+        "LSP initialize requires one Content-Length"
+    );
+    let length = lengths[0];
+    anyhow::ensure!(length <= 1024 * 1024, "LSP initialize body exceeds 1 MiB");
+    let start = frame.len();
+    frame.resize(start + length, 0);
+    input.read_exact(&mut frame[start..]).await?;
+    let message: serde_json::Value = serde_json::from_slice(&frame[start..])?;
+    anyhow::ensure!(
+        message["method"] == "initialize",
+        "first LSP request must be initialize"
+    );
+    let params: tower_lsp_server::ls_types::InitializeParams =
+        serde_json::from_value(message["params"].clone()).map_err(|error| {
+            anyhow::anyhow!("invalid LSP initialize workspace or parameters: {error}")
+        })?;
+    #[allow(deprecated)]
+    let supplied_workspace = params.root_uri.is_some()
+        || params
+            .workspace_folders
+            .as_ref()
+            .is_some_and(|folders| !folders.is_empty());
+    #[allow(deprecated)]
+    let root = params
+        .root_uri
+        .as_ref()
+        .and_then(super::lsp::uri::uri_to_path);
+    let folder = params.workspace_folders.as_ref().and_then(|folders| {
+        folders
+            .iter()
+            .find_map(|f| super::lsp::uri::uri_to_path(&f.uri))
+    });
+    let workspace = match root.or(folder) {
+        Some(workspace) => workspace,
+        None if !supplied_workspace => cwd.to_path_buf(),
+        None => anyhow::bail!(
+            "LSP initialize supplied a workspace but no supported local file path; provide a valid file:// rootUri or workspace folder"
+        ),
+    };
+    Ok(Some((frame, workspace)))
 }
 
 /// The running cognition chat server: the spawned HTTP task plus the
@@ -405,13 +470,11 @@ struct CognitionHttp {
 ///
 /// [`AppState`]: crate::server::session::AppState
 async fn spawn_cognition_server(
-    models_path: Option<&Path>,
+    models_path: &Path,
     conversation: ConversationFeed,
 ) -> anyhow::Result<CognitionHttp> {
     use crate::server::session::{AppState, ServerConfig};
 
-    let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let models_path = navigator::resolve_models(models_path, &workspace);
     let config_dir =
         auth::default_config_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve config dir"))?;
     let token = bearer_token();
@@ -420,7 +483,7 @@ async fn spawn_cognition_server(
         .ok_or_else(|| anyhow::anyhow!("cannot resolve the Navai data dir"))?;
     let config = ServerConfig {
         bind: "127.0.0.1:0".parse().expect("loopback bind"),
-        models_path,
+        models_path: Some(models_path.to_path_buf()),
         config_dir,
         allow_non_loopback: false,
         bearer_token: Some(token.clone()),

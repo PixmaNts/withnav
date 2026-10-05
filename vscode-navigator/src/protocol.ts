@@ -5,7 +5,6 @@ export interface NavigatorConfig {
   idleMs: number;
   minChangedLines: number;
   cooldownMs: number;
-  modelAlias: string;
 }
 
 export interface RemarkParams {

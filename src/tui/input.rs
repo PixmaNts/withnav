@@ -98,14 +98,20 @@ pub fn route_key(
         let names = overlay_names(overlay, state, ui);
         let selected = ui.selection.entry(format!("{overlay:?}")).or_default();
         match key.code {
+            KeyCode::F(2) if overlay == Overlay::Agents => {
+                let name = names.get(*selected)?.clone();
+                ui.overlay = Some(Overlay::Models);
+                ui.filter.clear();
+                return Some(Action::PickAgent(name));
+            }
             KeyCode::Esc => {
                 ui.filter.clear();
                 // esc in the second step of the model picker goes back to the models.
-                if let Some(VariantPick::NewConversation(alias)) = ui.variant_pick.take() {
+                if let Some(VariantPick::NewConversation(model_id)) = ui.variant_pick.take() {
                     ui.overlay = Some(Overlay::Models);
                     let back = overlay_names(Overlay::Models, state, ui)
                         .iter()
-                        .position(|a| *a == alias)
+                        .position(|a| *a == model_id)
                         .unwrap_or(0);
                     ui.selection.insert(format!("{:?}", Overlay::Models), back);
                     return None;
@@ -125,7 +131,7 @@ pub fn route_key(
                 let pick = ui.variant_pick.take();
                 ui.overlay = None;
                 return Some(match pick {
-                    Some(VariantPick::NewConversation(alias)) => Action::PickModel(alias),
+                    Some(VariantPick::NewConversation(model_id)) => Action::PickModel(model_id),
                     _ => Action::CloseOverlay,
                 });
             }
@@ -134,12 +140,34 @@ pub fn route_key(
                 if overlay == Overlay::Models && key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
                 let name = names.get(*selected)?.clone();
+                if name.starts_with("group:") {
+                    return None;
+                }
                 variant_step(state, ui, VariantPick::NewConversation(name));
+                return None;
+            }
+            KeyCode::Enter | KeyCode::Left | KeyCode::Right
+                if overlay == Overlay::Models
+                    && names
+                        .get(*selected)
+                        .is_some_and(|n| n.starts_with("group:")) =>
+            {
+                let group = names[*selected].trim_start_matches("group:").to_string();
+                if ui.filter.is_empty() {
+                    if key.code == KeyCode::Left {
+                        ui.collapsed_models.insert(group.clone());
+                    } else if key.code == KeyCode::Right {
+                        ui.collapsed_models.remove(&group);
+                    } else if !ui.collapsed_models.remove(&group) {
+                        ui.collapsed_models.insert(group);
+                    }
+                }
                 return None;
             }
             KeyCode::Enter => {
                 let name = names.get(*selected)?;
                 let action = match overlay {
+                    Overlay::Agents => Action::PickAgent(name.clone()),
                     Overlay::Skills => {
                         editor.set_text(&format!("/skill {name} "));
                         editor
@@ -569,18 +597,22 @@ fn close_palette(ui: &mut UiState) {
 /// The keys of the rows an overlay lists under the current filter, in display order.
 fn overlay_names(overlay: Overlay, state: &State, ui: &UiState) -> Vec<String> {
     match overlay {
+        Overlay::Agents => state
+            .agents
+            .iter()
+            .filter(|a| {
+                matches!(a.mode.as_str(), "primary" | "all")
+                    && a.id.to_lowercase().contains(&ui.filter.to_lowercase())
+            })
+            .map(|a| a.id.clone())
+            .collect(),
         Overlay::Skills => commands::skill_rows(state, &ui.filter)
             .into_iter()
             .map(|skill| skill.name.clone())
             .collect(),
-        Overlay::Models => state
-            .catalog
+        Overlay::Models => super::catalog::rows(&state.catalog, ui)
             .iter()
-            .filter(|x| {
-                x.alias.to_lowercase().contains(&ui.filter.to_lowercase())
-                    || x.model.to_lowercase().contains(&ui.filter.to_lowercase())
-            })
-            .map(|x| x.alias.clone())
+            .map(|row| row.key())
             .collect(),
         Overlay::Sessions => state
             .sessions

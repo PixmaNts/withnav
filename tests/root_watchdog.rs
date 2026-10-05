@@ -80,7 +80,7 @@ async fn pause_lifecycle(mode: u8) {
         sleeps: tx,
     });
     service.install_root_watchdog_test(clock.clone(), Arc::new(FakeJudge(Verdict::Doubt)), None);
-    let id = service.create_session(&ws, None, None).await.unwrap();
+    let id = service.create_session(&ws, None, false).await.unwrap();
     send_text(&service, id, "find files").await;
     let (_, stream) = provider
         .requests
@@ -137,7 +137,7 @@ async fn pause_lifecycle(mode: u8) {
         db.execute("DELETE FROM events WHERE session_id=?1 AND kind='command.result' AND json_extract(envelope,'$.payload.data.resolution')='expired'", [id.to_string()]).unwrap();
         drop(db);
         service
-            .create_or_resume_session(&ws, None, None, Some(id))
+            .create_or_resume_session(&ws, None, false, Some(id))
             .await
             .unwrap();
         // Admission is durable, but the crash precedes consumption into the transcript.
@@ -159,7 +159,7 @@ async fn pause_lifecycle(mode: u8) {
         service.history().append_event(id, admitted);
         service.history().flush().await.unwrap();
         service
-            .create_or_resume_session(&ws, None, None, Some(id))
+            .create_or_resume_session(&ws, None, false, Some(id))
             .await
             .unwrap();
         assert!(
@@ -278,7 +278,7 @@ async fn pause_lifecycle(mode: u8) {
             .any(|event| event.payload["data"]["driver_committed"] == true));
         service.close_session(id).await.unwrap();
         service
-            .create_or_resume_session(&ws, None, None, Some(id))
+            .create_or_resume_session(&ws, None, false, Some(id))
             .await
             .unwrap();
         service
@@ -349,7 +349,7 @@ async fn watchdog_off_uses_fallback_and_autonomous_results_cannot_renew_it() {
         .state();
     std::fs::write(
         tmp.path().join("cfg/config.json"),
-        r#"{"agent":{"watchdog_interval_secs":0}}"#,
+        r#"{"agents":{"build":{"model":"mock/mock-model"}},"agent":{"watchdog_interval_secs":0}}"#,
     )
     .unwrap();
     let (tx, mut sleeps) = mpsc::unbounded_channel();
@@ -361,7 +361,7 @@ async fn watchdog_off_uses_fallback_and_autonomous_results_cannot_renew_it() {
         Arc::new(FakeJudge(Verdict::Active)),
         None,
     );
-    let id = service.create_session(&ws, None, None).await.unwrap();
+    let id = service.create_session(&ws, None, false).await.unwrap();
     send_text(&service, id, "keep looking").await;
     let sub = service.subscribe(id, None).await.unwrap();
     let first = collect_until(sub, |e| e.kind == "turn.end").await;
@@ -431,7 +431,7 @@ async fn absent_instinct_caps_at_five_hundred_and_announces_once() {
     let service = TestServerConfig::mock(tmp.path(), &provider.url)
         .chat_tools(1_000_000)
         .state();
-    let id = service.create_session(&ws, None, None).await.unwrap();
+    let id = service.create_session(&ws, None, false).await.unwrap();
     let sub = service.subscribe(id, None).await.unwrap();
     send_text(&service, id, "keep looking").await;
     let events = collect_until(sub, |e| e.kind == "turn.end").await;
@@ -466,7 +466,7 @@ async fn stuck_root_settles_tool_results_without_requesting_another_step() {
         sleeps: tx,
     });
     service.install_root_watchdog_test(clock.clone(), Arc::new(FakeJudge(Verdict::Stuck)), None);
-    let id = service.create_session(&ws, None, None).await.unwrap();
+    let id = service.create_session(&ws, None, false).await.unwrap();
     send_text(&service, id, "find files").await;
     let (_, stream) = provider
         .requests

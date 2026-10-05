@@ -210,6 +210,9 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
         None => std::env::current_dir()?,
     };
     let cfg_dir = config_dir()?;
+    let rules_roots = RulesRoots::from_user_home();
+    crate::session::preflight::check(&cfg_dir, args.models.as_deref(), &workspace, &rules_roots)
+        .await?;
     let prompt = read_prompt(args.prompt)?;
 
     let state = crate::server::session::AppState::new(ServerConfig {
@@ -221,7 +224,7 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
         history_db: history_db_path()?,
         data_dir: crate::paths::data_dir()
             .ok_or_else(|| anyhow::anyhow!("cannot resolve data dir"))?,
-        rules_roots: RulesRoots::from_user_home(),
+        rules_roots,
     })?;
     // A session that cannot start (no window, unknown alias, no key) ends the
     // run the way a failed turn does: the `error:` line, exit 1.
@@ -229,7 +232,7 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
         .create_session_with(
             &workspace,
             args.model.as_deref(),
-            None,
+            false,
             crate::session::VariantChoice::from_word(args.variant.as_deref()),
             args.agent.as_deref(),
         )
@@ -440,6 +443,14 @@ async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
         .parse()
         .map_err(|e| anyhow::anyhow!("invalid --bind address {:?}: {e}", args.bind))?;
     let cfg_dir = config_dir()?;
+    let rules_roots = RulesRoots::from_user_home();
+    crate::session::preflight::check(
+        &cfg_dir,
+        args.models.as_deref(),
+        &std::env::current_dir()?,
+        &rules_roots,
+    )
+    .await?;
     let config = ServerConfig {
         bind,
         models_path: args.models,
@@ -449,7 +460,7 @@ async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
         history_db: history_db_path()?,
         data_dir: crate::paths::data_dir()
             .ok_or_else(|| anyhow::anyhow!("cannot resolve data dir"))?,
-        rules_roots: RulesRoots::from_user_home(),
+        rules_roots,
     };
     crate::server::routes::serve(
         config,

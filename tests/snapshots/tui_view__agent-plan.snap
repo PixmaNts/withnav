@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ navai  …oject  ▌plan  cognition · cc/claude-opus-5-5 · high · 12.4k / 200k 
+ Conversations       │ ◆ navai  ~/dev/project     ▌plan  cognition · assigned · high · 12.4k / 200k 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
 ▌  plan · idle       │ │ YOU                                                                        
                      │ │  Explain the failure, then fix it.                                         

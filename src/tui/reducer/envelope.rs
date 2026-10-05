@@ -9,8 +9,9 @@
 //! (`interrupted`, `error`) and `session.end`. No new state: `Interrupted` is reused. Streamed tool-call fragments are never rendered ("preparing" is not shown): they
 //! are only buffered per index until the step's `llm.response` replaces them.
 use super::{block, text::strip_controls};
+use crate::tui::protocol::{ContextSnapshot, ModelChanged};
 use crate::{
-    bus::event::{ContextSnapshot, EventEnvelope, EventKind, ModelChangeReason, ModelChanged},
+    bus::event::{EventEnvelope, EventKind},
     provider::{StreamDelta, ToolCall, Usage},
     tools::ToolStatus,
     tui::{
@@ -554,23 +555,25 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         Some(EventKind::ModelChanged) => {
             let changed: ModelChanged = serde_json::from_value(e.payload).map_err(|_| bad())?;
             let new = &changed.new;
-            s.selected_model_alias = Some(strip_controls(&new.alias));
-            s.selected_model_name = Some(strip_controls(&new.model));
-            s.context_window = Some(changed.window);
-            s.variant = changed.variant.as_deref().map(strip_controls);
-            s.model_seq = Some(e.seq);
-            s.variant_seq = Some(e.seq);
+            let current = s.model_seq.is_none_or(|held| e.seq >= held);
+            if current {
+                super::apply_selection(s, new.clone(), e.seq, Some(changed.window));
+                s.model_switch = s
+                    .model_switch
+                    .take()
+                    .filter(|pending| pending.agent == new.agent);
+            }
             // Only the switch this selection came from stops waiting.
             if let Some(op) = changed.operation_id {
                 super::settle_model_op(s, &op.to_string());
             }
-            if changed.reason == ModelChangeReason::Switch {
+            if changed.reason != "initial" {
                 let from = changed
                     .previous
                     .as_ref()
-                    .map(|p| strip_controls(&p.alias))
+                    .map(|p| strip_controls(&p.selection.model))
                     .unwrap_or_else(|| "—".into());
-                let mut text = format!("model: {from} → {}", strip_controls(&new.alias));
+                let mut text = format!("model: {from} → {}", strip_controls(&new.selection.model));
                 if let Some(variant) = &s.variant {
                     text.push_str(&format!(" · {variant}"));
                 }
@@ -580,10 +583,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                     .push(block(format!("notice:{}", e.seq), BlockKind::Notice(text)));
             }
         }
-        Some(EventKind::SessionAgentChanged) => {
-            let agent = e.payload["agent"].as_str().ok_or_else(bad)?;
-            s.agent = Some(strip_controls(agent));
-            s.agent_seq = Some(e.seq);
+        Some(EventKind::SessionAgentChanged) => { /* Secondary notification: model.changed owns the complete selection. */
         }
         Some(EventKind::CommandResult) => {
             let v = e.payload;
@@ -632,19 +632,19 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                         }
                     }
                     // Named only when it is this tab's switch, known by its operation id, or
-                    // when the server names the alias; otherwise (another client's switch, or
+                    // when the server names the model_id; otherwise (another client's switch, or
                     // one whose answer has not arrived) the line stays generic.
                     let target = data
-                        .and_then(|d| d["alias"].as_str())
+                        .and_then(|d| d["model"].as_str())
                         .map(str::to_string)
                         .or_else(|| {
                             s.model_switch
                                 .as_ref()
                                 .filter(|m| op.is_some() && m.operation_id == op)
-                                .map(|m| m.alias.clone())
+                                .map(|m| m.model_id.clone())
                         });
                     let text = match target {
-                        Some(alias) => format!("switches to {alias} after this turn"),
+                        Some(model_id) => format!("switches to {model_id} after this turn"),
                         None => "model switch accepted, applies after this turn".into(),
                     };
                     s.conversation.blocks.push(block(
@@ -659,11 +659,27 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 }
             }
             // `/variant` answers with the variant in use, after a change or not.
-            if name == "variant" && ok {
+            if name == "variant"
+                && ok
+                && s.model_seq.is_none_or(|held| e.seq >= held)
+                && v["data"]["agent"].as_str() == Some(s.agent_name())
+                && v["data"]["model"].as_str() == s.selected_model_id.as_deref()
+            {
                 if let Some(data) = v.get("data") {
                     if let Some(variant) = data.get("variant") {
                         s.variant = variant.as_str().map(strip_controls);
                         s.variant_seq = Some(e.seq);
+                        s.model_seq = Some(e.seq);
+                        s.variant_source = v["data"]["variant_source"]
+                            .as_str()
+                            .map(strip_controls)
+                            .unwrap_or_default();
+                        let variant = s.variant.clone();
+                        let source = s.variant_source.clone();
+                        if let Some(effective) = s.effective.as_mut() {
+                            effective.selection.variant = variant;
+                            effective.selection.variant_source = source;
+                        }
                     }
                     super::set_variant_offer(s, data);
                 }

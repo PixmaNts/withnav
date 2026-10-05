@@ -129,7 +129,6 @@ function readConfig(): NavigatorConfig {
     idleMs: readSetting<number>("idleMs", 3000),
     minChangedLines: readSetting<number>("minChangedLines", 3),
     cooldownMs: readSetting<number>("cooldownMs", 20000),
-    modelAlias: readSetting<string>("modelAlias", "metacognition"),
   };
 }
 

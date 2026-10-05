@@ -30,6 +30,81 @@ fn test_state(tmp: &Path) -> AppState {
     TestServerConfig::unreachable(tmp).state()
 }
 
+#[tokio::test]
+async fn editor_is_explicit_saved_context_and_resume_rejects_selection_fields() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = test_state(tmp.path());
+    let router = app(state.clone());
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    for body in [
+        json!({"workspace": ws, "profile": "navigator"}),
+        json!({"workspace": ws, "editor": "true"}),
+        json!({"workspace": ws, "unexpected": true}),
+    ] {
+        let (status, _) = request_json(&router, "POST", "/v1/sessions", Some(&body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    for editor in [false, true] {
+        let body = if editor {
+            json!({"workspace": ws, "editor": true})
+        } else {
+            json!({"workspace": ws})
+        };
+        let (status, body) = request_json(&router, "POST", "/v1/sessions", Some(&body)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let id: ulid::Ulid = body["session_id"].as_str().unwrap().parse().unwrap();
+        assert_eq!(
+            state.history().meta(id).await.unwrap().unwrap().editor,
+            editor
+        );
+        let fresh = state.run_command(id, "new", "").await.unwrap();
+        assert!(fresh.ok, "{fresh:?}");
+        let fresh_id: ulid::Ulid = fresh.data.unwrap()["session_id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            state
+                .history()
+                .meta(fresh_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .editor,
+            editor
+        );
+        for conflicting in [
+            json!({"editor": false}),
+            json!({"editor": true}),
+            json!({"agent": "build"}),
+            json!({"model": "default"}),
+            json!({"variant": null}),
+        ] {
+            let mut body = conflicting;
+            body["workspace"] = json!(ws);
+            body["resume"] = json!(id.to_string());
+            let (status, _) = request_json(&router, "POST", "/v1/sessions", Some(&body)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+        }
+        state.close_session(id).await.unwrap();
+        let (status, body) = request_json(
+            &router,
+            "POST",
+            "/v1/sessions",
+            Some(&json!({"workspace": ws, "resume": id.to_string()})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            state.history().meta(id).await.unwrap().unwrap().editor,
+            editor
+        );
+    }
+    state.close_all().await;
+}
+
 async fn create_session(state: &AppState, workspace: &str, model: Option<&str>) -> Value {
     let (status, body) = request_json(
         &app(state.clone()),
@@ -96,7 +171,7 @@ async fn get_session_reports_current_seq_zero_right_after_create() {
     assert_eq!(value["session_id"], id);
     assert_eq!(value["actor_state"], "idle");
     assert_eq!(value["workspace"], ws.to_str().expect("utf8 ws"));
-    assert_eq!(value["model"], "default");
+    assert_eq!(value["model"], "mock/mock-model");
     assert_eq!(value["current_seq"], 0);
 }
 
@@ -303,11 +378,11 @@ async fn sigterm_drives_graceful_shutdown_sessions_end_and_clean_exit() {
     std::fs::create_dir_all(&ws).expect("workspace dir");
 
     let id_a = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .await
         .expect("create a");
     let id_b = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .await
         .expect("create b");
 
@@ -421,7 +496,7 @@ async fn create_session_without_a_known_window_is_422_no_context_window() {
     assert_eq!(
         body["error"],
         format!(
-            "Chat alias 'default' (provider 'mock', model 'mock-model') has no known context window: the provider's model list did not report one. Set \"context_window\" for it in {}, or make the provider reachable and try again.",
+            "Chat alias 'mock/mock-model' (provider 'mock', model 'mock-model') has no known context window: the provider's model list did not report one. Set \"context_window\" for it in {}, or make the provider reachable and try again.",
             cfg.models_path().display()
         )
     );

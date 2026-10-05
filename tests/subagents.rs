@@ -38,7 +38,7 @@ async fn child_lifecycle_during_publication(delete: bool, cleanup: bool) {
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -193,7 +193,7 @@ async fn stop_cancels_parent_before_waiting_for_child_publication() {
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -250,7 +250,7 @@ async fn committed_child_is_terminalized_when_publication_or_start_fails() {
         install_agents(&fx.root, &fx.ws);
         let parent = fx
             .state
-            .create_session(&fx.ws, Some("default"), None)
+            .create_session(&fx.ws, Some("mock/mock-model"), false)
             .bounded(file!(), line!())
             .await
             .unwrap();
@@ -315,11 +315,11 @@ async fn inherited_child_keeps_parent_headers_and_output_limit_after_alias_edit(
     let path = fx.root.join("models.json");
     let mut config: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     config["providers"]["mock"]["headers"] = json!({"x-inherited":"parent"});
-    config["models"]["default"]["max_output_tokens"] = json!(4321);
+    config["models"]["mock/mock-model"]["max_output_tokens"] = json!(4321);
     std::fs::write(&path, config.to_string()).unwrap();
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -339,7 +339,7 @@ async fn inherited_child_keeps_parent_headers_and_output_limit_after_alias_edit(
         .unwrap();
     config["providers"]["mock"]["headers"] = json!({"x-inherited":"changed"});
     config["providers"]["mock"]["base_url"] = json!(common::server::UNREACHABLE_PROVIDER_URL);
-    config["models"]["default"]["max_output_tokens"] = json!(8765);
+    config["models"]["mock/mock-model"]["max_output_tokens"] = json!(8765);
     std::fs::write(&path, config.to_string()).unwrap();
     let child = fx
         .state
@@ -377,7 +377,7 @@ async fn cascaded_child_stop_is_pending_until_parent_resume() {
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -429,7 +429,7 @@ async fn cascaded_child_stop_is_pending_until_parent_resume() {
         1
     );
     fx.state
-        .create_or_resume_session(&fx.ws, None, None, Some(parent))
+        .create_or_resume_session(&fx.ws, None, false, Some(parent))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -456,7 +456,7 @@ async fn cascaded_child_stop_is_pending_until_parent_resume() {
         .await
         .unwrap();
     fx.state
-        .create_or_resume_session(&fx.ws, None, None, Some(parent))
+        .create_or_resume_session(&fx.ws, None, false, Some(parent))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -481,7 +481,7 @@ async fn pending_completion_at_resume_snapshot_has_no_sequence_collision() {
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -517,7 +517,7 @@ async fn pending_completion_at_resume_snapshot_has_no_sequence_collision() {
     let ws = fx.ws.clone();
     let resume = tokio::spawn(async move {
         service
-            .create_or_resume_session(&ws, None, None, Some(parent))
+            .create_or_resume_session(&ws, None, false, Some(parent))
             .bounded(file!(), line!())
             .await
     });
@@ -598,7 +598,7 @@ async fn paused_child_admission(resume: bool) {
     add_cognition_model(&fx.root);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("cognition"), None)
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -630,7 +630,7 @@ async fn paused_child_admission(resume: bool) {
     .unwrap();
     if resume {
         fx.state
-            .create_or_resume_session(&fx.ws, None, None, Some(parent))
+            .create_or_resume_session(&fx.ws, None, false, Some(parent))
             .bounded(file!(), line!())
             .await
             .unwrap();
@@ -720,8 +720,8 @@ fn install_agents(root: &Path, ws: &Path) {
 
 fn add_cognition_model(root: &Path) {
     let path = root.join("models.json");
-    let mut models: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    models["models"]["cognition"] = models["models"]["default"].clone();
+    let models: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(models["models"]["mock/mock-model"].is_object());
     std::fs::write(path, models.to_string()).unwrap();
 }
 
@@ -739,12 +739,12 @@ async fn writable_child_inherits_disabled_or_invalid_review_despite_settings_rem
         let settings = fx.root.join("cfg/config.json");
         std::fs::write(
             &settings,
-            json!({"permissions":{"automatic_review":value}}).to_string(),
+            json!({"agents":{"build":{"model":"mock/mock-model"}},"permissions":{"automatic_review":value}}).to_string(),
         )
         .unwrap();
         let parent = fx
             .state
-            .create_session(&fx.ws, Some("default"), None)
+            .create_session(&fx.ws, Some("mock/mock-model"), false)
             .await
             .unwrap();
         std::fs::remove_file(settings).unwrap();
@@ -813,12 +813,13 @@ async fn permission_parked_child_keeps_capacity_until_stopped() {
     install_agents(&fx.root, &fx.ws);
     std::fs::write(
         fx.root.join("cfg/config.json"),
-        json!({"subagents":{"max_concurrent":1}}).to_string(),
+        json!({"agents":{"build":{"model":"mock/mock-model"}},"subagents":{"max_concurrent":1}})
+            .to_string(),
     )
     .unwrap();
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -911,7 +912,7 @@ async fn forbidden_child_calls_are_denied_before_permissions() {
     .unwrap();
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -976,7 +977,7 @@ async fn child_policy_depth_metadata_and_terminal_notices() {
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1084,7 +1085,7 @@ async fn filtered_agent_declared_false_tool_is_removed() {
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1123,12 +1124,13 @@ async fn capacity_error_has_clear_machine_and_model_message() {
     install_agents(&fx.root, &fx.ws);
     std::fs::write(
         fx.root.join("cfg/config.json"),
-        json!({"subagents":{"max_concurrent":1}}).to_string(),
+        json!({"agents":{"build":{"model":"mock/mock-model"}},"subagents":{"max_concurrent":1}})
+            .to_string(),
     )
     .unwrap();
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1188,7 +1190,7 @@ async fn child_depth_has_no_task_registry_entry() {
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1228,7 +1230,7 @@ async fn parent_sse_replay_contains_spawned_and_done_after_completion() {
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1282,12 +1284,13 @@ async fn child_slot_is_released_after_terminal_result() {
     install_agents(&fx.root, &fx.ws);
     std::fs::write(
         fx.root.join("cfg/config.json"),
-        json!({"subagents":{"max_concurrent":1}}).to_string(),
+        json!({"agents":{"build":{"model":"mock/mock-model"}},"subagents":{"max_concurrent":1}})
+            .to_string(),
     )
     .unwrap();
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1342,12 +1345,13 @@ async fn concurrent_children_reuse_exactly_two_completed_capacity_slots() {
     install_agents(&fx.root, &fx.ws);
     std::fs::write(
         fx.root.join("cfg/config.json"),
-        json!({"subagents":{"max_concurrent":4}}).to_string(),
+        json!({"agents":{"build":{"model":"mock/mock-model"}},"subagents":{"max_concurrent":4}})
+            .to_string(),
     )
     .unwrap();
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1440,7 +1444,7 @@ async fn child_prompt_is_not_attributed_as_driver_task_or_transcript_inherited()
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1511,7 +1515,7 @@ async fn task_ack_returns_before_child_turn_finishes() {
     add_cognition_model(&fx.root);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("cognition"), None)
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1609,7 +1613,7 @@ async fn full_access_child_of_plan_parent_has_no_write_dispatch() {
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session_as(&fx.ws, Some("default"), None, Some("plan"))
+        .create_session_as(&fx.ws, Some("mock/mock-model"), false, Some("plan"))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1647,7 +1651,7 @@ async fn declared_read_only_child_tool_denial_is_reflected_in_saved_policy() {
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1682,7 +1686,7 @@ async fn child_stop_http_is_allowed_but_chat_command_and_resume_are_forbidden() 
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();

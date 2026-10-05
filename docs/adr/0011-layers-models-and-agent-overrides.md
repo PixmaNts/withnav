@@ -2,7 +2,7 @@
 
 Date: 2026-10-05
 
-Status: Accepted — target v0.5.0, not yet shipped
+Status: Accepted — implemented for v0.5.0
 
 Model aliases mixed catalog identities with the driver's choices and made a role look like a
 model. We separate those concepts so catalog refreshes cannot change assignments, and a driver
@@ -23,7 +23,8 @@ The vocabulary is in [CONTEXT.md](../../CONTEXT.md).
   second naming system.
 - **Layers are roles, not catalog entries.** Reflex, instinct and metacognition each have one
   configured model at a time, with FIM, System One and chat APIs respectively. Cognition runs
-  agents in parallel sessions and flows rather than having a singleton layer model. Reflex is
+  agents in parallel sessions rather than having a singleton layer model. Configurable flows
+  remain planned for v0.6. Reflex is
   editor-only. Treating all four layers as interchangeable model aliases was rejected: it hides
   the lower layers' contracts and cognition's independent agent work.
 - **Agent assignment and session choice have different scopes.** An assignment in `config.json`
@@ -65,4 +66,5 @@ does not change the driver's assignments. Persisting overrides adds durable stat
 reopening or agent switching from silently losing a choice.
 
 This decision does not claim v0.5.0 is deployed and does not perform a live configuration
-migration. Configuration editors and flow design for v0.6 are outside this decision.
+migration. Runtime and client selection are implemented; manual visual acceptance remains a
+release check. Configuration editors and flow design for v0.6 are outside this decision.

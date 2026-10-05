@@ -5,7 +5,7 @@
 //! failure has two meanings, so it returns a [`SendError`]: the request was
 //! refused, or it may have reached the server. Nothing here retries.
 use super::protocol::*;
-use crate::bus::event::ContextSnapshot;
+use crate::tui::protocol::ContextSnapshot;
 use serde::de::DeserializeOwned;
 use std::error::Error as _;
 use std::time::Duration;
@@ -71,6 +71,21 @@ impl Client {
     pub async fn models(&self, workspace: &str) -> Result<ModelsBody, String> {
         let request = self.get("/v1/models").query(&[("workspace", workspace)]);
         self.json(request).await
+    }
+    pub async fn agents(
+        &self,
+        workspace: &str,
+        session: Option<&str>,
+    ) -> Result<AgentsBody, String> {
+        let mut query = vec![("workspace", workspace)];
+        if let Some(id) = session {
+            query.push(("session_id", id));
+        }
+        self.json(self.get("/v1/agents").query(&query)).await
+    }
+    pub async fn layers(&self, workspace: &str) -> Result<LayersBody, String> {
+        self.json(self.get("/v1/layers").query(&[("workspace", workspace)]))
+            .await
     }
 
     pub async fn skills(&self, session_id: &str) -> Result<crate::bus::event::SkillsBody, String> {

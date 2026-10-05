@@ -186,7 +186,7 @@ pub struct StoredSession {
     pub id: Ulid,
     pub workspace: String,
     pub model: String,
-    pub profile: Option<String>,
+    pub editor: bool,
     pub title: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -270,7 +270,7 @@ enum Write {
         id: Ulid,
         workspace: String,
         model: String,
-        profile: Option<String>,
+        editor: bool,
         resolution: Option<String>,
         variant: Option<String>,
         variant_override: Option<String>,
@@ -940,9 +940,9 @@ impl HistoryStore {
         id: Ulid,
         workspace: &str,
         model: &str,
-        profile: Option<&str>,
+        editor: bool,
     ) -> Result<(), String> {
-        self.record_session_resolved(id, workspace, model, profile, None, None, None)
+        self.record_session_resolved(id, workspace, model, editor, None, None, None)
             .await
     }
 
@@ -955,7 +955,7 @@ impl HistoryStore {
         id: Ulid,
         workspace: &str,
         model: &str,
-        profile: Option<&str>,
+        editor: bool,
         resolution: Option<&crate::provider::catalog::ModelResolution>,
         variant: Option<&(String, crate::provider::config::Variant)>,
         primary_agent: Option<&str>,
@@ -964,7 +964,7 @@ impl HistoryStore {
             id,
             workspace,
             model,
-            profile,
+            editor,
             resolution,
             variant,
             primary_agent,
@@ -980,7 +980,7 @@ impl HistoryStore {
         id: Ulid,
         workspace: &str,
         model: &str,
-        profile: Option<&str>,
+        editor: bool,
         resolution: Option<&crate::provider::catalog::ModelResolution>,
         variant: Option<&(String, crate::provider::config::Variant)>,
         primary_agent: Option<&str>,
@@ -990,7 +990,7 @@ impl HistoryStore {
             id,
             workspace,
             model,
-            profile,
+            editor,
             resolution,
             variant,
             primary_agent,
@@ -1006,7 +1006,7 @@ impl HistoryStore {
         id: Ulid,
         workspace: &str,
         model: &str,
-        profile: Option<&str>,
+        editor: bool,
         resolution: Option<&crate::provider::catalog::ModelResolution>,
         variant: Option<&(String, crate::provider::config::Variant)>,
         primary_agent: Option<&str>,
@@ -1028,7 +1028,7 @@ impl HistoryStore {
             id,
             workspace: workspace.to_string(),
             model: model.to_string(),
-            profile: profile.map(str::to_string),
+            editor,
             resolution,
             variant,
             variant_override,
@@ -1440,7 +1440,7 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             id,
             workspace,
             model,
-            profile,
+            editor,
             resolution,
             variant,
             variant_override,
@@ -1449,14 +1449,14 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             let now = now_rfc3339();
             tx.execute(
                 "INSERT OR IGNORE INTO sessions
-                 (id, workspace, model, profile, title, created_at, updated_at, last_seq, transcript,
+                 (id, workspace, model, editor, title, created_at, updated_at, last_seq, transcript,
                    model_resolution, variant, variant_override, primary_agent, agent_overrides, selection_provenance)
                   VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5, -1, NULL, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     id.to_string(),
                     workspace,
                     model,
-                    profile,
+                    editor,
                     now,
                     resolution,
                     variant,
@@ -1686,6 +1686,7 @@ fn migrate(path: &Path) -> Result<(), String> {
             workspace TEXT NOT NULL,
             model TEXT NOT NULL,
             profile TEXT,
+            editor INTEGER NOT NULL DEFAULT 0,
             title TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -1738,6 +1739,19 @@ fn migrate(path: &Path) -> Result<(), String> {
         );",
     )
     .map_err(|e| format!("migrate: {e}"))?;
+    // Editor context is explicit since October 2026. Legacy profile values are
+    // left untouched for manual migration, never interpreted on normal startup.
+    let has_editor = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name='editor'")
+        .and_then(|mut stmt| stmt.exists([]))
+        .map_err(|e| format!("migrate: {e}"))?;
+    if !has_editor {
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN editor INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| format!("migrate: {e}"))?;
+    }
     let has_owner = conn
         .prepare("SELECT 1 FROM pragma_table_info('child_links') WHERE name='owner_instance'")
         .and_then(|mut stmt| stmt.exists([]))
@@ -2029,7 +2043,7 @@ mod tests {
     async fn cancellation_at_writer_precommit_rolls_back_override_and_inserted_event() {
         let (_dir, store) = temp_store();
         let id = Ulid::new();
-        store.record_session(id, "/w", "old", None).await.unwrap();
+        store.record_session(id, "/w", "old", false).await.unwrap();
         let token = tokio_util::sync::CancellationToken::new();
         let reached = Arc::new(std::sync::Barrier::new(2));
         let release = Arc::new(std::sync::Barrier::new(2));
@@ -2083,7 +2097,7 @@ mod tests {
     async fn cancelled_selection_writer_leaves_identity_override_and_events_unchanged() {
         let (_dir, store) = temp_store();
         let id = Ulid::new();
-        store.record_session(id, "/w", "old", None).await.unwrap();
+        store.record_session(id, "/w", "old", false).await.unwrap();
         let token = tokio_util::sync::CancellationToken::new();
         token.cancel();
         // Exercise writer cancellation independently of the public admission check.
@@ -2128,7 +2142,7 @@ mod tests {
         );
         let id = Ulid::new();
         store
-            .record_session_with_overrides(id, "/w", "p/model", None, None, None, None, &overrides)
+            .record_session_with_overrides(id, "/w", "p/model", false, None, None, None, &overrides)
             .await
             .unwrap();
         assert_eq!(
@@ -2139,7 +2153,7 @@ mod tests {
         let failed = Ulid::new();
         assert!(store
             .record_session_with_overrides(
-                failed, "/w", "p/model", None, None, None, None, &overrides
+                failed, "/w", "p/model", false, None, None, None, &overrides
             )
             .await
             .unwrap_err()
@@ -2156,7 +2170,7 @@ mod tests {
     async fn agent_overrides_are_independent_durable_clearable_and_deleted() {
         let (dir, store) = temp_store();
         let id = Ulid::new();
-        store.record_session(id, "/w", "old", None).await.unwrap();
+        store.record_session(id, "/w", "old", false).await.unwrap();
         assert!(store
             .meta(id)
             .await
@@ -2215,7 +2229,7 @@ mod tests {
         use crate::provider::catalog::{Bounds, ModelResolution, Provenance, RESOLUTION_VERSION};
         let (_dir, store) = temp_store();
         let id = Ulid::new();
-        store.record_session(id, "/w", "old", None).await.unwrap();
+        store.record_session(id, "/w", "old", false).await.unwrap();
         let selection = EffectiveAgentSelection {
             provenance: None,
             model: "p/new".into(),
@@ -2484,7 +2498,7 @@ mod tests {
         let (dir, first) = temp_store();
         let second = HistoryStore::open(dir.path().join("sessions.db")).unwrap();
         let id = Ulid::new();
-        first.record_session(id, "/w", "old", None).await.unwrap();
+        first.record_session(id, "/w", "old", false).await.unwrap();
         let build = AgentOverride {
             model: Some("p/build".into()),
             variant: AgentVariantOverride::Off,
@@ -2509,7 +2523,7 @@ mod tests {
     async fn malformed_agent_overrides_fail_reads_and_updates_explicitly() {
         let (dir, store) = temp_store();
         let id = Ulid::new();
-        store.record_session(id, "/w", "old", None).await.unwrap();
+        store.record_session(id, "/w", "old", false).await.unwrap();
         for raw in [
             "{bad",
             "null",
@@ -2535,7 +2549,7 @@ mod tests {
         let (dir, store) = temp_store();
         let id = Ulid::new();
         store
-            .record_session(id, "/ws", "model", None)
+            .record_session(id, "/ws", "model", false)
             .await
             .unwrap();
         let mut other = side_connection(&dir);
@@ -2618,11 +2632,11 @@ mod tests {
         let id = Ulid::new();
         let id2 = Ulid::new();
         store
-            .record_session(id, "/w", "cognition", Some("navigator"))
+            .record_session(id, "/w", "cognition", true)
             .await
             .expect("record");
         store
-            .record_session(id2, "/w", "default", None)
+            .record_session(id2, "/w", "default", false)
             .await
             .expect("record");
         store.append_event(id, envelope(0, EventKind::SessionStart));
@@ -2658,7 +2672,7 @@ mod tests {
 
         let loaded = store.load(id).await.expect("load").expect("present");
         assert_eq!(loaded.meta.model, "cognition");
-        assert_eq!(loaded.meta.profile.as_deref(), Some("navigator"));
+        assert!(loaded.meta.editor);
         assert_eq!(loaded.envelopes.len(), 2);
         assert_eq!(loaded.envelopes[0].seq, 0);
         assert_eq!(loaded.envelopes[1].seq, 1);
@@ -2675,7 +2689,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let id = Ulid::new();
         store
-            .record_session(id, "/w", "m", None)
+            .record_session(id, "/w", "m", false)
             .await
             .expect("record");
         store.set_title(id, "first".into());
@@ -2693,7 +2707,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let id = Ulid::new();
         store
-            .record_session(id, "/w", "m", None)
+            .record_session(id, "/w", "m", false)
             .await
             .expect("record");
         store.append_event(id, envelope(0, EventKind::SessionStart));
@@ -2726,7 +2740,7 @@ mod tests {
         let path = dir.path().join("sessions.db");
         let _a = HistoryStore::open(&path).expect("first open");
         let b = HistoryStore::open(&path).expect("second open");
-        b.record_session(Ulid::new(), "/w", "m", None)
+        b.record_session(Ulid::new(), "/w", "m", false)
             .await
             .expect("record");
         let listed = poll_list(&b, "/w", 1).await;
@@ -2748,7 +2762,7 @@ mod tests {
         let (dir, store) = temp_store();
         let id = Ulid::new();
         store
-            .record_session(id, "/w", "m", None)
+            .record_session(id, "/w", "m", false)
             .await
             .expect("record");
         store.append_event(id, envelope(0, EventKind::SessionStart));
@@ -2797,7 +2811,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let id = Ulid::new();
         store
-            .record_session(id, "/w", "m", Some("p"))
+            .record_session(id, "/w", "m", true)
             .await
             .expect("record");
         store.append_event(id, envelope(0, EventKind::SessionStart));
@@ -2811,7 +2825,7 @@ mod tests {
         store.flush().await.expect("flush");
 
         let meta = store.meta(id).await.expect("meta").expect("present");
-        assert_eq!(meta.profile.as_deref(), Some("p"));
+        assert!(meta.editor);
         assert_eq!(meta.last_seq, 0);
         let (resumed, transcript, compaction) = store
             .load_for_resume(id)
@@ -2834,8 +2848,11 @@ mod tests {
         let (_dir, store) = temp_store();
         let parent = Ulid::new();
         let child = Ulid::new();
-        store.record_session(parent, "/w", "m", None).await.unwrap();
-        store.record_session(child, "/w", "m", None).await.unwrap();
+        store
+            .record_session(parent, "/w", "m", false)
+            .await
+            .unwrap();
+        store.record_session(child, "/w", "m", false).await.unwrap();
         store
             .create_child_link(
                 child,
@@ -2877,8 +2894,11 @@ mod tests {
         let (_dir, store) = temp_store();
         let parent = Ulid::new();
         let child = Ulid::new();
-        store.record_session(parent, "/w", "m", None).await.unwrap();
-        store.record_session(child, "/w", "m", None).await.unwrap();
+        store
+            .record_session(parent, "/w", "m", false)
+            .await
+            .unwrap();
+        store.record_session(child, "/w", "m", false).await.unwrap();
         store
             .create_child_link(
                 child,
@@ -2933,7 +2953,7 @@ mod tests {
         let (dir, store) = temp_store();
         let id = Ulid::new();
         store
-            .record_session(id, "/w", "m", None)
+            .record_session(id, "/w", "m", false)
             .await
             .expect("record");
         side_connection(&dir)
@@ -2959,7 +2979,7 @@ mod tests {
             .execute_batch("DROP TABLE sessions")
             .expect("drop sessions");
 
-        let result = store.record_session(Ulid::new(), "/w", "m", None).await;
+        let result = store.record_session(Ulid::new(), "/w", "m", false).await;
         assert!(result.is_err(), "the ack must carry the failure");
     }
 
@@ -2973,7 +2993,7 @@ mod tests {
         let unknown_a = Ulid::new();
         let unknown_b = Ulid::new();
         store
-            .record_session(known, "/w", "m", None)
+            .record_session(known, "/w", "m", false)
             .await
             .expect("record");
         store.save_transcript(unknown_a, vec![]);
@@ -3051,13 +3071,17 @@ mod tests {
             )
             .expect("old schema");
             conn.execute(
-                "INSERT INTO sessions VALUES (?1, '/w', 'm', NULL, NULL, 't', 't', -1, NULL)",
+                "INSERT INTO sessions VALUES (?1, '/w', 'm', 'navigator', NULL, 't', 't', -1, NULL)",
                 params![id.to_string()],
             )
             .expect("old row");
         }
         let store = HistoryStore::open(&path).expect("migrates");
         let meta = store.meta(id).await.expect("meta").expect("present");
+        assert!(
+            !meta.editor,
+            "legacy profiles require explicit manual migration"
+        );
         assert_eq!(meta.model_resolution, None);
         assert!(meta.agent_overrides.is_empty());
         assert_eq!(meta.variant, None, "an old row has no variant");
@@ -3079,7 +3103,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let id = Ulid::new();
         store
-            .record_session_resolved(id, "/w", "m", None, None, Some(&pick("high")), None)
+            .record_session_resolved(id, "/w", "m", false, None, Some(&pick("high")), None)
             .await
             .expect("record");
         let read = |store: &HistoryStore| {
@@ -3135,7 +3159,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let id = Ulid::new();
         store
-            .record_session(id, "/w", "m", None)
+            .record_session(id, "/w", "m", false)
             .await
             .expect("record");
         store
@@ -3147,7 +3171,7 @@ mod tests {
             .await
             .expect("ignored");
         store
-            .record_session_resolved(id, "/w", "m", None, Some(&make(300)), None, None)
+            .record_session_resolved(id, "/w", "m", false, Some(&make(300)), None, None)
             .await
             .expect("existing row keeps its own");
         let meta = store.meta(id).await.expect("meta").expect("present");
@@ -3208,7 +3232,7 @@ mod tests {
     async fn a_checkpoint_is_saved_with_the_transcript_and_read_back() {
         let (dir, store) = temp_store();
         let id = Ulid::new();
-        store.record_session(id, "/w", "m", None).await.unwrap();
+        store.record_session(id, "/w", "m", false).await.unwrap();
         let transcript: Vec<ChatMessage> = (0..4).flat_map(exchange).collect();
         let k = compaction(3, vec![6]);
         store
@@ -3249,7 +3273,7 @@ mod tests {
     async fn an_invalid_checkpoint_fails_the_resume() {
         let (dir, store) = temp_store();
         let id = Ulid::new();
-        store.record_session(id, "/w", "m", None).await.unwrap();
+        store.record_session(id, "/w", "m", false).await.unwrap();
         store.save_transcript(id, exchange(0));
         store.flush().await.unwrap();
         assert!(store

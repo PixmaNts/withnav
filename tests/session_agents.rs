@@ -23,7 +23,7 @@ async fn successful_switch_fallback_warning_is_durable_and_replayed() {
     )
     .unwrap();
     let state = AppState::new(config).unwrap();
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     let result = state.run_command(id, "agent", "plan").await.unwrap();
     assert!(result.ok);
     assert!(result.data.unwrap()["warning"]
@@ -37,9 +37,9 @@ async fn successful_switch_fallback_warning_is_durable_and_replayed() {
         .iter()
         .find(|e| e.kind == "model.changed")
         .unwrap();
-    assert_eq!(event.payload["source"], "default_agent");
+    assert_eq!(event.payload["new"]["source"], "default_agent");
     assert!(event.payload["warning"].as_str().unwrap().contains("plan"));
-    assert_eq!(event.payload["agent"], "plan");
+    assert_eq!(event.payload["new"]["agent"], "plan");
 }
 
 #[tokio::test]
@@ -55,7 +55,7 @@ async fn creation_assignment_off_named_overrides_and_fallback_notice_are_durable
             json!({"agents":{"build":{"model":"mock/mock-model","variant":off}}}).to_string(),
         )
         .unwrap();
-        let id = state.create_session(&env.ws, None, None).await.unwrap();
+        let id = state.create_session(&env.ws, None, false).await.unwrap();
         assert_eq!(
             state.history().meta(id).await.unwrap().unwrap().variant,
             None
@@ -64,7 +64,7 @@ async fn creation_assignment_off_named_overrides_and_fallback_notice_are_durable
             .create_session_with(
                 &env.ws,
                 None,
-                None,
+                false,
                 navai::session::VariantChoice::Exact("low".into()),
                 None,
             )
@@ -87,7 +87,7 @@ async fn creation_assignment_off_named_overrides_and_fallback_notice_are_durable
         .create_session_with(
             &env.ws,
             None,
-            None,
+            false,
             navai::session::VariantChoice::Default,
             Some("plan"),
         )
@@ -110,7 +110,7 @@ async fn creation_assignment_off_named_overrides_and_fallback_notice_are_durable
         json!({"agents":{"build":{"model":"mock/absent"}}}).to_string(),
     )
     .unwrap();
-    assert!(state.create_session(&env.ws, None, None).await.is_err());
+    assert!(state.create_session(&env.ws, None, false).await.is_err());
     assert_eq!(
         state
             .history()
@@ -136,7 +136,7 @@ async fn live_agent_switch_restores_model_and_off_override_after_restart() {
     )
     .unwrap();
     let state = AppState::new(config.clone()).unwrap();
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     assert!(
         state
             .run_command(id, "model", "mock/plan-model")
@@ -157,7 +157,7 @@ async fn live_agent_switch_restores_model_and_off_override_after_restart() {
     state.close_session(id).await.unwrap();
     let reopened = AppState::new(config).unwrap();
     reopened
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
     let restored = reopened.session_summary(id).await.unwrap();
@@ -217,7 +217,7 @@ async fn configured_agent_fallback_header_precedence_and_invalid_defaults() {
             .create_session_with(
                 &env.ws,
                 None,
-                None,
+                false,
                 navai::session::VariantChoice::Default,
                 Some(agent),
             )
@@ -237,7 +237,7 @@ async fn configured_agent_fallback_header_precedence_and_invalid_defaults() {
         .create_session_with(
             &env.ws,
             None,
-            None,
+            false,
             navai::session::VariantChoice::Default,
             Some("custom"),
         )
@@ -251,7 +251,7 @@ async fn configured_agent_fallback_header_precedence_and_invalid_defaults() {
         .create_session_with(
             &env.ws,
             None,
-            None,
+            false,
             navai::session::VariantChoice::Default,
             Some("plan"),
         )
@@ -266,7 +266,7 @@ async fn configured_agent_fallback_header_precedence_and_invalid_defaults() {
         json!({"agents":{"build":{"model":"mock/missing"}}}),
     ] {
         std::fs::write(&settings, value.to_string()).unwrap();
-        assert!(state.create_session(&env.ws, None, None).await.is_err());
+        assert!(state.create_session(&env.ws, None, false).await.is_err());
     }
     std::fs::write(
         &settings,
@@ -278,7 +278,7 @@ async fn configured_agent_fallback_header_precedence_and_invalid_defaults() {
             .unwrap();
     models["models"]["default"]["api"] = json!("fim");
     std::fs::write(env.root.join("models.json"), models.to_string()).unwrap();
-    assert!(state.create_session(&env.ws, None, None).await.is_err());
+    assert!(state.create_session(&env.ws, None, false).await.is_err());
 }
 
 #[tokio::test]
@@ -299,13 +299,13 @@ async fn configured_agents_choose_models_and_persist_explicit_off_on_resume() {
     )
     .unwrap();
     let service = AppState::new(config.clone()).unwrap();
-    let build = service.create_session(&env.ws, None, None).await.unwrap();
+    let build = service.create_session(&env.ws, None, false).await.unwrap();
     assert_eq!(
         service.session_summary(build).await.unwrap().model,
         "mock/mock-model"
     );
     let plan = service
-        .create_session_with(&env.ws, None, None, VariantChoice::Default, Some("plan"))
+        .create_session_with(&env.ws, None, false, VariantChoice::Default, Some("plan"))
         .await
         .unwrap();
     assert_eq!(
@@ -313,7 +313,7 @@ async fn configured_agents_choose_models_and_persist_explicit_off_on_resume() {
         "mock/plan-model"
     );
     std::fs::write(env.root.join("cfg/config.json"),json!({"default_agent":"plan","agents":{"build":{"model":"mock/mock-model"},"plan":{"model":"mock/plan-model"}}}).to_string()).unwrap();
-    let default_plan = service.create_session(&env.ws, None, None).await.unwrap();
+    let default_plan = service.create_session(&env.ws, None, false).await.unwrap();
     assert_eq!(
         service.session_summary(default_plan).await.unwrap().model,
         "mock/plan-model"
@@ -328,7 +328,7 @@ async fn configured_agents_choose_models_and_persist_explicit_off_on_resume() {
         .create_session_with(
             &env.ws,
             Some("mock/plan-model"),
-            None,
+            false,
             VariantChoice::Clear,
             None,
         )
@@ -348,7 +348,7 @@ async fn configured_agents_choose_models_and_persist_explicit_off_on_resume() {
     service.close_session(overridden).await.unwrap();
     let reopened = AppState::new(config).unwrap();
     reopened
-        .create_or_resume_session(&env.ws, None, None, Some(overridden))
+        .create_or_resume_session(&env.ws, None, false, Some(overridden))
         .await
         .unwrap();
     assert_eq!(
@@ -380,7 +380,7 @@ async fn configured_agents_choose_models_and_persist_explicit_off_on_resume() {
     models["providers"]["mock"]["base_url"] = json!("http://127.0.0.1:2/v1");
     std::fs::write(env.root.join("models.json"), models.to_string()).unwrap();
     assert!(reopened
-        .create_or_resume_session(&env.ws, None, None, Some(overridden))
+        .create_or_resume_session(&env.ws, None, false, Some(overridden))
         .await
         .is_err());
 }
@@ -502,7 +502,7 @@ async fn a_session_runs_as_build_by_default() {
     let env = env();
     let provider = provider(1).await;
     let state = state(&env, &provider);
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     converse(&state, id, "hello").await;
 
     let roles: Vec<String> = sent(&provider, 0).into_iter().map(|(r, _)| r).collect();
@@ -522,7 +522,7 @@ async fn a_plan_session_sends_its_role_and_keeps_it_across_a_resume() {
     let provider = provider(2).await;
     let first = state(&env, &provider);
     let id = first
-        .create_session_as(&env.ws, None, None, Some("plan"))
+        .create_session_as(&env.ws, None, false, Some("plan"))
         .await
         .unwrap();
     converse(&first, id, "one").await;
@@ -537,7 +537,7 @@ async fn a_plan_session_sends_its_role_and_keeps_it_across_a_resume() {
 
     let second = state(&env, &provider);
     let (resumed, _) = second
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
     assert_eq!(second.session_summary(resumed).await.unwrap().agent, "plan");
@@ -560,7 +560,7 @@ async fn only_primary_agents_can_start_a_session() {
     let state = state(&env, &provider);
     for bad in ["nope", "explore", "Plan"] {
         let err = state
-            .create_session_as(&env.ws, None, None, Some(bad))
+            .create_session_as(&env.ws, None, false, Some(bad))
             .await
             .unwrap_err();
         assert!(
@@ -577,7 +577,7 @@ async fn only_primary_agents_can_start_a_session() {
         .is_empty());
 
     let id = state
-        .create_session_as(&env.ws, None, None, Some("scribe"))
+        .create_session_as(&env.ws, None, false, Some("scribe"))
         .await
         .unwrap();
     converse(&state, id, "hi").await;
@@ -594,7 +594,7 @@ async fn a_saved_agent_that_vanished_is_an_error_not_build() {
     write_agent(&env, "scribe.md", "---\ndescription: d\n---\nRole.\n");
     let first = state(&env, &provider);
     let id = first
-        .create_session_as(&env.ws, None, None, Some("scribe"))
+        .create_session_as(&env.ws, None, false, Some("scribe"))
         .await
         .unwrap();
     first.close_session(id).await.unwrap();
@@ -603,7 +603,7 @@ async fn a_saved_agent_that_vanished_is_an_error_not_build() {
 
     let second = state(&env, &provider);
     let err = second
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap_err();
     assert!(
@@ -617,7 +617,7 @@ async fn a_saved_agent_that_vanished_is_an_error_not_build() {
     write_agent(&env, "scribe.md", "---\nmode: subagent\n---\nRole.\n");
     let third = state(&env, &provider);
     let err = third
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap_err();
     assert!(matches!(
@@ -637,11 +637,11 @@ async fn a_legacy_row_resumes_as_build() {
     let id = ulid::Ulid::new();
     state
         .history()
-        .record_session(id, &env.ws.display().to_string(), "default", None)
+        .record_session(id, &env.ws.display().to_string(), "mock/mock-model", false)
         .await
         .unwrap();
     let (resumed, _) = state
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
     assert_eq!(state.session_summary(resumed).await.unwrap().agent, "build");
@@ -657,7 +657,7 @@ async fn switching_changes_the_next_request_and_nothing_in_the_transcript() {
     let env = env();
     let provider = provider(3).await;
     let state = state(&env, &provider);
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     converse(&state, id, "first").await;
     let system_as_build = state.context(id).await.unwrap().breakdown.system;
 
@@ -691,7 +691,7 @@ async fn switching_changes_the_next_request_and_nothing_in_the_transcript() {
 
     let out = state.run_command(id, "agent", "build").await.unwrap();
     assert!(out.ok);
-    assert_eq!(stored_agent(&state, id).await, None, "build is NULL");
+    assert_eq!(stored_agent(&state, id).await.as_deref(), Some("build"));
     converse(&state, id, "third").await;
     let roles: Vec<String> = sent(&provider, 2).into_iter().map(|(r, _)| r).collect();
     assert_eq!(roles[1], "user", "build sends no role again: {roles:?}");
@@ -706,7 +706,7 @@ async fn agent_lists_and_refuses_bad_choices() {
     let env = env();
     let provider = provider(1).await;
     let state = state(&env, &provider);
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
 
     let out = state.run_command(id, "agent", "").await.unwrap();
     assert!(out.ok);
@@ -726,15 +726,9 @@ async fn agent_lists_and_refuses_bad_choices() {
     );
 
     for (args, expected) in [
-        (
-            "nope",
-            "unknown agent nope; the primary agents are build, plan",
-        ),
-        (
-            "explore",
-            "unknown agent explore; the primary agents are build, plan",
-        ),
-        ("plan extra", "usage: /agent [id]"),
+        ("nope", "unknown primary agent 'nope'"),
+        ("explore", "unknown primary agent 'explore'"),
+        ("plan extra", "usage: /agent <name>"),
     ] {
         let out = state.run_command(id, "agent", args).await.unwrap();
         assert!(!out.ok, "{args}");
@@ -756,7 +750,7 @@ async fn a_switch_during_a_pending_ask_is_refused() {
     let provider = spawn_capturing_provider(vec![http_sse(&sse_body(&[ask]))]).await;
     let env = env();
     let state = state(&env, &provider);
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     let sub = state.subscribe(id, None).await.unwrap();
     state
         .send(Command {
@@ -832,6 +826,14 @@ async fn http_creates_with_an_agent_and_shows_it() {
         Some(&json!({ "workspace": ws, "resume": id, "agent": "build" })),
     )
     .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = request_json(
+        &router,
+        "POST",
+        "/v1/sessions",
+        Some(&json!({ "workspace": ws, "resume": id })),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let (_, summary) = request_json(&router, "GET", &format!("/v1/sessions/{id}"), None).await;
     assert_eq!(summary["agent"], "plan", "a resume keeps the stored agent");
@@ -850,6 +852,12 @@ async fn http_creates_with_an_agent_and_shows_it() {
 }
 
 fn run_navai(root: &Path, models: &Path, ws: &Path, extra: &[&str]) -> std::process::Output {
+    std::fs::create_dir_all(root.join("config/navai")).unwrap();
+    std::fs::write(
+        root.join("config/navai/config.json"),
+        r#"{"agents":{"build":{"model":"mock/mock-model"},"plan":{"model":"mock/mock-model"}}}"#,
+    )
+    .unwrap();
     std::process::Command::new(env!("CARGO_BIN_EXE_navai"))
         .args(["run", "--workspace"])
         .arg(ws)
@@ -908,9 +916,9 @@ async fn a_fresh_plan_session_counts_its_role_before_any_turn() {
     let env = env();
     let provider = provider(1).await;
     let state = state(&env, &provider);
-    let as_build = state.create_session(&env.ws, None, None).await.unwrap();
+    let as_build = state.create_session(&env.ws, None, false).await.unwrap();
     let as_plan = state
-        .create_session_as(&env.ws, None, None, Some("plan"))
+        .create_session_as(&env.ws, None, false, Some("plan"))
         .await
         .unwrap();
     let build = state.context(as_build).await.unwrap().breakdown.system;
@@ -926,14 +934,14 @@ async fn switching_agents_moves_the_gauge_without_a_turn() {
     let env = env();
     let provider = provider(1).await;
     let state = state(&env, &provider);
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     let before = state.context(id).await.unwrap();
     let sub = state.subscribe(id, None).await.unwrap();
 
     assert!(state.run_command(id, "agent", "plan").await.unwrap().ok);
     let as_plan = state.context(id).await.unwrap();
     assert!(as_plan.breakdown.system > before.breakdown.system);
-    assert!(as_plan.revision > before.revision);
+    assert_ne!(as_plan.incarnation, before.incarnation);
 
     assert!(state.run_command(id, "agent", "build").await.unwrap().ok);
     let back = state.context(id).await.unwrap();
@@ -959,7 +967,7 @@ async fn the_row_holds_the_agent_as_soon_as_creation_returns() {
     let provider = provider(1).await;
     let state = state(&env, &provider);
     let id = state
-        .create_session_as(&env.ws, None, None, Some("plan"))
+        .create_session_as(&env.ws, None, false, Some("plan"))
         .await
         .unwrap();
     let row = state.history().meta(id).await.unwrap().expect("row");

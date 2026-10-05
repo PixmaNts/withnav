@@ -60,6 +60,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
         ConnectionStatus::Connected => "",
     };
     let activity = match state.activity {
+        _ if state.archive() => "archive · read-only history",
         Activity::Running => {
             if ui.tick.is_multiple_of(2) {
                 "◐ running"

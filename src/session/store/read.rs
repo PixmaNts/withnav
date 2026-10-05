@@ -41,7 +41,7 @@ impl HistoryStore {
         blocking(move || {
             with_read_tx(&path, |tx| {
                 tx.query_row(
-                    "SELECT id, workspace, model, profile, title, created_at, updated_at, last_seq,
+                    "SELECT id, workspace, model, editor, title, created_at, updated_at, last_seq,
                             model_resolution, variant, variant_override, primary_agent,
                             reasoning_floor, agent_overrides, selection_provenance, resume_disabled_reason
                      FROM sessions WHERE id = ?1",
@@ -253,7 +253,7 @@ fn with_read_tx<T>(
 
 fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSession> {
     let id: String = row.get(0)?;
-    let profile: Option<String> = row.get(3)?;
+    let editor: bool = row.get(3)?;
     Ok(StoredSession {
         resume_disabled_reason: row.get(15)?,
         provenance: row
@@ -282,7 +282,7 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSession> {
         })?,
         workspace: row.get(1)?,
         model: row.get(2)?,
-        profile,
+        editor,
         title: row.get(4)?,
         created_at: row.get(5)?,
         updated_at: row.get(6)?,
@@ -299,7 +299,7 @@ fn list_sync(path: &Path, workspace: &str) -> Result<Vec<ListedSession>, String>
     with_read_tx(path, |tx| {
         let mut stmt = tx
             .prepare(
-                "SELECT s.id, s.workspace, s.model, s.profile, s.title,
+                "SELECT s.id, s.workspace, s.model, s.editor, s.title,
                         s.created_at, s.updated_at, s.last_seq,
                         s.model_resolution, s.variant, s.variant_override, s.primary_agent,
                         s.reasoning_floor, s.agent_overrides, s.selection_provenance, s.resume_disabled_reason,
@@ -337,7 +337,7 @@ pub type Resumed = (StoredSession, Vec<ChatMessage>, Option<Compaction>);
 fn resume_tx(tx: &Transaction<'_>, id: Ulid) -> Result<Option<Resumed>, String> {
     let Some((meta, transcript, checkpoint)) = tx
         .query_row(
-            "SELECT id, workspace, model, profile, title, created_at, updated_at, last_seq,
+            "SELECT id, workspace, model, editor, title, created_at, updated_at, last_seq,
                     model_resolution, variant, variant_override, primary_agent, reasoning_floor,
                      agent_overrides, selection_provenance, resume_disabled_reason, transcript, checkpoint
              FROM sessions WHERE id = ?1",

@@ -170,11 +170,11 @@ mod tests {
         let models: crate::provider::config::ModelsConfig =
             serde_json::from_value(serde_json::json!({
                 "providers":{"mock":{"base_url":"http://unused"}},
-                "models":{"metacognition":{"provider":"mock","model":"mock","api":"chat"}}
+                "models":{"mock/mock":{"provider":"mock","model":"mock","api":"chat"}}
             }))
             .unwrap();
         let commenter = LlmCommenter::new(
-            models.resolve("metacognition").unwrap(),
+            models.resolve("mock/mock").unwrap(),
             "unused".into(),
             std::sync::Arc::new(crate::provider::openai::ClientCache::new()),
         );

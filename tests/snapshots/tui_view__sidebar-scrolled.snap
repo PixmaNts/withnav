@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ navai                                                ▌build  — · — · — / — 
+ Conversations       │ ◆ navai                                         ▌build  — · assigned · — / — 
  6 starting…         │──────────────────────────────────────────────────────────────────────────────
    build · idle      │                                                                              
  7 starting…         │                                                                              

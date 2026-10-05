@@ -7,12 +7,12 @@ fn catalog() -> ModelsConfig {
     ModelsConfig::parse(&json!({
         "providers": {"omniroute": {"base_url":"http://localhost/v1", "catalog_format":"omniroute"}, "inception":{"base_url":"http://localhost/v1"}},
         "models": {
-            "old-chat": {"provider":"omniroute", "model":"cc/chat", "default_variant":"high", "variants":{"low":{"reasoning_effort":"low"},"high":{"reasoning_effort":"high"}}},
-            "old-fim": {"provider":"inception", "model":"mercury", "api":"fim"},
-            "old-instinct": {"provider":"omniroute", "model":"typesafe/jev", "api":"systemone"},
-            "discovered": {"provider":"omniroute", "model":"cc/discovered", "default_variant":"high"},
-            "empty": {"provider":"omniroute", "model":"cc/empty", "variants":{}},
-            "no-low": {"provider":"omniroute", "model":"cc/no-low", "default_variant":"high", "variants":{"high":{}}}
+            "omniroute/cc/chat": {"provider":"omniroute", "model":"cc/chat", "default_variant":"high", "variants":{"low":{"reasoning_effort":"low"},"high":{"reasoning_effort":"high"}}},
+            "inception/mercury": {"provider":"inception", "model":"mercury", "api":"fim"},
+            "omniroute/typesafe/jev": {"provider":"omniroute", "model":"typesafe/jev", "api":"systemone"},
+            "omniroute/cc/discovered": {"provider":"omniroute", "model":"cc/discovered", "default_variant":"high"},
+            "omniroute/cc/empty": {"provider":"omniroute", "model":"cc/empty", "variants":{}},
+            "omniroute/cc/no-low": {"provider":"omniroute", "model":"cc/no-low", "default_variant":"high", "variants":{"high":{}}}
         }
     }).to_string()).unwrap()
 }
@@ -66,13 +66,13 @@ fn model_name_rejects_malformed_names_and_unknown_gateways() {
 }
 
 #[test]
-fn resolve_name_ignores_alias_keys_and_names_unknown_models() {
+fn resolve_name_uses_canonical_keys_and_rejects_unknown_models() {
     let catalog = catalog();
     let name = ModelName::parse("omniroute/cc/chat", &catalog).unwrap();
     let resolved = catalog.resolve_name(&name).unwrap();
-    assert_eq!(resolved.alias, "old-chat");
+    assert_eq!(resolved.alias, "omniroute/cc/chat");
     assert_eq!(resolved.model.model, "cc/chat");
-    assert_eq!(catalog.resolve("old-chat").unwrap().model.model, "cc/chat");
+    assert!(catalog.resolve("old-chat").is_err());
     let missing = ModelName::parse("omniroute/cc/missing", &catalog).unwrap();
     assert!(
         matches!(catalog.resolve_name(&missing), Err(ProviderError::UnknownModel(name)) if name == missing.to_string())
@@ -334,10 +334,10 @@ fn assignment_getters_preserve_unknown_settings_on_save() {
 }
 
 #[test]
-fn duplicate_identities_are_ambiguous_but_legacy_keys_remain_resolvable() {
+fn duplicate_identities_are_ambiguous_and_legacy_keys_are_not_resolvable() {
     for different_api in [false, true] {
         let mut catalog = catalog();
-        let mut duplicate = catalog.models["old-chat"].clone();
+        let mut duplicate = catalog.models["omniroute/cc/chat"].clone();
         if different_api {
             duplicate.api = ApiKind::Fim;
         }
@@ -345,22 +345,18 @@ fn duplicate_identities_are_ambiguous_but_legacy_keys_remain_resolvable() {
         let name = ModelName::parse("omniroute/cc/chat", &catalog).unwrap();
         assert!(
             matches!(catalog.resolve_name(&name), Err(ProviderError::AmbiguousModel { model, keys })
-            if model == "omniroute/cc/chat" && keys == ["a-renamed", "old-chat"])
+            if model == "omniroute/cc/chat" && keys == ["a-renamed", "omniroute/cc/chat"])
         );
-        assert!(catalog.resolve("old-chat").is_ok());
-        catalog.models.remove("old-chat");
-        assert_eq!(catalog.resolve_name(&name).unwrap().alias, "a-renamed");
+        assert!(catalog.resolve("omniroute/cc/chat").is_ok());
+        catalog.models.remove("omniroute/cc/chat");
+        assert!(catalog.resolve_name(&name).is_err());
         let mut other = catalog.models["a-renamed"].clone();
         other.provider = "inception".into();
         catalog.models.insert("other-provider".into(), other);
-        assert!(catalog.resolve_name(&name).is_ok());
-        assert_eq!(
-            catalog
-                .resolve_name(&ModelName::parse("inception/cc/chat", &catalog).unwrap())
-                .unwrap()
-                .alias,
-            "other-provider"
-        );
+        assert!(catalog.resolve_name(&name).is_err());
+        assert!(catalog
+            .resolve_name(&ModelName::parse("inception/cc/chat", &catalog).unwrap())
+            .is_err());
     }
 }
 

@@ -27,7 +27,7 @@ async fn pending_fresh_root_cannot_be_archived_before_publication() {
     let creating = {
         let state = state.clone();
         let ws = ws.clone();
-        tokio::spawn(async move { state.create_session(&ws, None, None).await })
+        tokio::spawn(async move { state.create_session(&ws, None, false).await })
     };
     tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -86,7 +86,7 @@ async fn failed_or_cancelled_fresh_root_publication_releases_pending_ownership()
         let creating = {
             let state = state.clone();
             let ws = ws.clone();
-            tokio::spawn(async move { state.create_session(&ws, None, None).await })
+            tokio::spawn(async move { state.create_session(&ws, None, false).await })
         };
         tokio::time::timeout(
             std::time::Duration::from_secs(10),
@@ -124,7 +124,7 @@ async fn service_marking_requires_offline_and_raw_live_marker_refuses_all_admiss
     let ws = tmp.path().join("ws");
     std::fs::create_dir(&ws).unwrap();
     let state = TestServerConfig::unreachable(tmp.path()).state();
-    let id = state.create_session(&ws, None, None).await.unwrap();
+    let id = state.create_session(&ws, None, false).await.unwrap();
     let store = state.history();
     store.flush().await.unwrap();
     let before = store.load(id).await.unwrap().unwrap();
@@ -176,7 +176,7 @@ async fn service_marking_requires_offline_and_raw_live_marker_refuses_all_admiss
     ));
     assert!(matches!(
         state
-            .create_or_resume_session(&ws, None, None, Some(id))
+            .create_or_resume_session(&ws, None, false, Some(id))
             .await,
         Err(ServerError::SessionArchived { .. })
     ));
@@ -229,7 +229,7 @@ async fn service_marking_requires_offline_and_raw_live_marker_refuses_all_admiss
     state.delete(id).await.unwrap();
     assert!(!store.exists(id).await.unwrap());
 
-    let stopped = state.create_session(&ws, None, None).await.unwrap();
+    let stopped = state.create_session(&ws, None, false).await.unwrap();
     state.close_session(stopped).await.unwrap();
     state.mark_archive(stopped, REASON).await.unwrap();
     assert!(store.meta(stopped).await.unwrap().unwrap().read_only());
@@ -284,7 +284,7 @@ async fn archive_marker_is_explicit_validated_and_preserves_store_history() {
     let normal = Ulid::new();
     for session in [id, normal] {
         store
-            .record_session(session, "/workspace", "old-original-key", None)
+            .record_session(session, "/workspace", "old-original-key", false)
             .await
             .unwrap();
     }
@@ -378,7 +378,7 @@ async fn archived_legacy_http_reads_work_and_resume_and_mutations_refuse() {
     let workspace = ws.display().to_string();
     for session in [id, normal] {
         store
-            .record_session(session, &workspace, "historic-original-key", None)
+            .record_session(session, &workspace, "historic-original-key", false)
             .await
             .unwrap();
     }

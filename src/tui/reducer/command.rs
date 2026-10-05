@@ -39,7 +39,7 @@ pub fn outcome_text(name: &str, ok: bool, data: Option<&Value>, error: Option<&s
             };
             format!(
                 "{} · {} · window {window}",
-                text("alias"),
+                text("model"),
                 data["model"].as_str().unwrap_or("unknown")
             )
         }

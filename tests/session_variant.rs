@@ -49,8 +49,8 @@ async fn child_inherits_parent_variant_and_saved_resolution() {
     let parent = state
         .create_session_with_variant(
             &ws,
-            Some("default"),
-            None,
+            Some("mock/mock-model"),
+            false,
             VariantChoice::Exact("low".into()),
         )
         .await
@@ -58,8 +58,8 @@ async fn child_inherits_parent_variant_and_saved_resolution() {
     let before = state.history().meta(parent).await.unwrap().unwrap();
     let path = tmp.path().join("models.json");
     let mut models: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    models["models"]["default"]["context_window"] = json!(256_000);
-    models["models"]["default"]["variants"]["low"] = json!({"reasoning_effort":"high"});
+    models["models"]["mock/mock-model"]["context_window"] = json!(256_000);
+    models["models"]["mock/mock-model"]["variants"]["low"] = json!({"reasoning_effort":"high"});
     std::fs::write(path, models.to_string()).unwrap();
     let child = state
         .create_child_session(parent, "explore", "inspect")
@@ -81,7 +81,7 @@ async fn creation_picks_default_named_none_or_fails() {
     let (tmp, ws) = tmp_ws();
     let state = config(tmp.path(), "http://127.0.0.1:1/v1", Some("high")).state();
 
-    let id = state.create_session(&ws, None, None).await.unwrap();
+    let id = state.create_session(&ws, None, false).await.unwrap();
     assert_eq!(saved(&state, id).await.as_deref(), Some("high"));
     assert_eq!(
         state.session_summary(id).await.unwrap().variant.as_deref(),
@@ -89,13 +89,13 @@ async fn creation_picks_default_named_none_or_fails() {
     );
 
     let id = state
-        .create_session_with_variant(&ws, None, None, VariantChoice::from_word(Some("low")))
+        .create_session_with_variant(&ws, None, false, VariantChoice::from_word(Some("low")))
         .await
         .unwrap();
     assert_eq!(saved(&state, id).await.as_deref(), Some("low"));
 
     let id = state
-        .create_session_with_variant(&ws, None, None, VariantChoice::from_word(Some("off")))
+        .create_session_with_variant(&ws, None, false, VariantChoice::from_word(Some("off")))
         .await
         .unwrap();
     assert_eq!(saved(&state, id).await, None);
@@ -103,17 +103,19 @@ async fn creation_picks_default_named_none_or_fails() {
 
     let before = state.session_count();
     let err = state
-        .create_session_with_variant(&ws, None, None, VariantChoice::from_word(Some("none")))
+        .create_session_with_variant(&ws, None, false, VariantChoice::from_word(Some("none")))
         .await
         .unwrap_err();
     assert!(matches!(err, ServerError::UnknownVariant { .. }), "{err:?}");
     let err = state
-        .create_session_with_variant(&ws, None, None, VariantChoice::from_word(Some("max")))
+        .create_session_with_variant(&ws, None, false, VariantChoice::from_word(Some("max")))
         .await
         .unwrap_err();
     assert!(matches!(err, ServerError::UnknownVariant { .. }), "{err:?}");
     let text = err.to_string();
-    assert!(text.contains("'default'") && text.contains("'max'") && text.contains("high, low"));
+    assert!(
+        text.contains("'mock/mock-model'") && text.contains("'max'") && text.contains("high, low")
+    );
     assert_eq!(
         state.session_count(),
         before,
@@ -128,7 +130,7 @@ async fn creation_picks_default_named_none_or_fails() {
 async fn an_alias_without_default_starts_unvaried() {
     let (tmp, ws) = tmp_ws();
     let state = config(tmp.path(), "http://127.0.0.1:1/v1", None).state();
-    let id = state.create_session(&ws, None, None).await.unwrap();
+    let id = state.create_session(&ws, None, false).await.unwrap();
     assert_eq!(saved(&state, id).await, None);
 }
 
@@ -141,14 +143,14 @@ async fn resume_keeps_the_variant_and_a_missing_one_is_an_error() {
     let cfg = config(tmp.path(), "http://127.0.0.1:1/v1", None);
     let state = cfg.state();
     let id = state
-        .create_session_with_variant(&ws, None, None, VariantChoice::from_word(Some("low")))
+        .create_session_with_variant(&ws, None, false, VariantChoice::from_word(Some("low")))
         .await
         .unwrap();
     state.close_session(id).await.unwrap();
     state.history().flush().await.unwrap();
 
     state
-        .create_or_resume_session(&ws, None, None, Some(id))
+        .create_or_resume_session(&ws, None, false, Some(id))
         .await
         .expect("resumes");
     assert_eq!(
@@ -163,7 +165,7 @@ async fn resume_keeps_the_variant_and_a_missing_one_is_an_error() {
         .variants(json!({"high": {"reasoning_effort": "high"}}), None)
         .config();
     let err = state
-        .create_or_resume_session(&ws, None, None, Some(id))
+        .create_or_resume_session(&ws, None, false, Some(id))
         .await
         .unwrap_err();
     assert!(
@@ -171,7 +173,7 @@ async fn resume_keeps_the_variant_and_a_missing_one_is_an_error() {
         "{err:?}"
     );
     let text = err.to_string();
-    for part in ["'default'", "'low'", "models.json", &id.to_string()] {
+    for part in ["'mock/mock-model'", "'low'", "models.json", &id.to_string()] {
         assert!(text.contains(part), "{part} in {text}");
     }
     assert_eq!(saved(&state, id).await.as_deref(), Some("low"), "kept");
@@ -184,7 +186,7 @@ async fn resume_keeps_the_variant_and_a_missing_one_is_an_error() {
 async fn variant_command_lists_sets_clears_and_refuses() {
     let (tmp, ws) = tmp_ws();
     let state = config(tmp.path(), "http://127.0.0.1:1/v1", Some("high")).state();
-    let id = state.create_session(&ws, None, None).await.unwrap();
+    let id = state.create_session(&ws, None, false).await.unwrap();
 
     let out = state.run_command(id, "variant", "").await.unwrap();
     assert!(out.ok, "{out:?}");
@@ -251,7 +253,7 @@ async fn variant_command_lists_sets_clears_and_refuses() {
 async fn context_shows_the_selected_variant() {
     let (tmp, ws) = tmp_ws();
     let state = config(tmp.path(), "http://127.0.0.1:1/v1", Some("low")).state();
-    let id = state.create_session(&ws, None, None).await.unwrap();
+    let id = state.create_session(&ws, None, false).await.unwrap();
     let context = |state: AppState| async move {
         state
             .run_command(id, "context", "")
@@ -361,24 +363,23 @@ async fn http_create_and_get_carry_the_variant() {
 // Then it is saved and reported, the running request is unchanged, and the
 //      next request carries the new value
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_switch_during_a_turn_applies_at_the_next_turn() {
+async fn variant_changes_are_refused_during_a_turn_and_apply_when_idle() {
     let release = Arc::new(tokio::sync::Notify::new());
     let provider = spawn_gated_provider(vec![done_body(), done_body()], Arc::clone(&release)).await;
     let (tmp, ws) = tmp_ws();
     let state = config(tmp.path(), &provider.url, Some("high")).state();
-    let id = state.create_session(&ws, None, None).await.unwrap();
+    let id = state.create_session(&ws, None, false).await.unwrap();
     let sub = state.subscribe(id, None).await.unwrap();
 
     send_text(&state, id, "first").await;
     wait_for("the first request", || provider.requests().len() == 1).await;
 
     let out = state.run_command(id, "variant", "low").await.unwrap();
-    assert!(out.ok, "{out:?}");
-    assert_eq!(out.data.unwrap()["applies"], "next_turn");
-    assert_eq!(saved(&state, id).await.as_deref(), Some("low"));
+    assert!(!out.ok, "{out:?}");
+    assert_eq!(saved(&state, id).await.as_deref(), Some("high"));
     assert_eq!(
         state.session_summary(id).await.unwrap().variant.as_deref(),
-        Some("low")
+        Some("high")
     );
 
     release.notify_one();
@@ -387,6 +388,7 @@ async fn a_switch_during_a_turn_applies_at_the_next_turn() {
     })
     .await;
 
+    assert!(state.run_command(id, "variant", "low").await.unwrap().ok);
     let sub = state.subscribe(id, None).await.unwrap();
     send_text(&state, id, "second").await;
     collect_until(sub, |e| {
@@ -418,7 +420,7 @@ async fn a_cleared_variant_sends_no_override() {
     let provider = spawn_capturing_provider(vec![done_body()]).await;
     let (tmp, ws) = tmp_ws();
     let state = config(tmp.path(), &provider.url, Some("high")).state();
-    let id = state.create_session(&ws, None, None).await.unwrap();
+    let id = state.create_session(&ws, None, false).await.unwrap();
     assert!(state.run_command(id, "variant", "off").await.unwrap().ok);
     let sub = state.subscribe(id, None).await.unwrap();
     send_text(&state, id, "go").await;
@@ -438,6 +440,12 @@ async fn navai_run_variant_reaches_the_wire() {
     let (tmp, ws) = tmp_ws();
     let cfg = config(tmp.path(), &provider.url, None);
     cfg.config();
+    std::fs::create_dir_all(tmp.path().join("config/navai")).unwrap();
+    std::fs::write(
+        tmp.path().join("config/navai/config.json"),
+        r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#,
+    )
+    .unwrap();
     let (root, models) = (tmp.path().to_path_buf(), cfg.models_path());
     let run = move |variant: &'static str, ws: std::path::PathBuf| {
         let (root, models) = (root.clone(), models.clone());
@@ -517,7 +525,7 @@ async fn stopped_generated(
         .omniroute()
         .state();
     let id = state
-        .create_session_with_variant(ws, None, None, VariantChoice::from_word(Some("high")))
+        .create_session_with_variant(ws, None, false, VariantChoice::from_word(Some("high")))
         .await
         .expect("create");
     state.close_session(id).await.unwrap();
@@ -538,7 +546,7 @@ async fn resume_with_a_cold_cache_and_the_provider_down_keeps_the_variant() {
     serve_down(&server).await;
 
     state
-        .create_or_resume_session(&ws, None, None, Some(id))
+        .create_or_resume_session(&ws, None, false, Some(id))
         .await
         .expect("resumes offline");
     assert_eq!(
@@ -559,7 +567,7 @@ async fn resume_with_a_stale_list_and_the_provider_down_keeps_the_variant() {
     age_cache(tmp.path(), 3);
     serve_down(&server).await;
     state
-        .create_or_resume_session(&ws, None, None, Some(id))
+        .create_or_resume_session(&ws, None, false, Some(id))
         .await
         .expect("stale list names it");
     state.close_session(id).await.unwrap();
@@ -573,14 +581,14 @@ async fn resume_with_a_stale_list_and_the_provider_down_keeps_the_variant() {
         .omniroute()
         .state();
     let other = seeded
-        .create_session_with_variant(&ws, None, None, VariantChoice::from_word(Some("low")))
+        .create_session_with_variant(&ws, None, false, VariantChoice::from_word(Some("low")))
         .await
         .unwrap();
     seeded.close_session(other).await.unwrap();
     age_cache(tmp.path(), 3);
     serve_down(&server).await;
     state
-        .create_or_resume_session(&ws, None, None, Some(id))
+        .create_or_resume_session(&ws, None, false, Some(id))
         .await
         .expect("an old list without it does not remove it");
     assert_eq!(
@@ -601,7 +609,7 @@ async fn resume_after_the_provider_removed_the_tier_is_an_error() {
     serve_tiers(&server, &["low"]).await;
 
     let err = state
-        .create_or_resume_session(&ws, None, None, Some(id))
+        .create_or_resume_session(&ws, None, false, Some(id))
         .await
         .unwrap_err();
     assert!(
@@ -624,7 +632,7 @@ async fn choosing_a_variant_while_the_offer_is_unknown_is_retryable() {
         .omniroute()
         .state();
     let err = state
-        .create_session_with_variant(&ws, None, None, VariantChoice::from_word(Some("high")))
+        .create_session_with_variant(&ws, None, false, VariantChoice::from_word(Some("high")))
         .await
         .unwrap_err();
     assert!(
@@ -661,7 +669,7 @@ async fn a_real_none_tier_is_selected_by_name_and_off_clears() {
     let state = TestServerConfig::mock(tmp.path(), &provider.url)
         .variants(with_none_tier(), Some("high"))
         .state();
-    let id = state.create_session(&ws, None, None).await.unwrap();
+    let id = state.create_session(&ws, None, false).await.unwrap();
 
     let out = state.run_command(id, "variant", "none").await.unwrap();
     assert!(out.ok, "{out:?}");
@@ -700,12 +708,12 @@ async fn a_real_none_tier_is_selected_by_name_and_off_clears() {
 // Then it is refused: the inherited name is looked up exactly, and does not
 //      become "no variant"
 #[tokio::test]
-async fn new_inherits_an_exact_none_variant_and_never_clears_it() {
+async fn new_starts_from_assignment_without_inheriting_variant_override() {
     let (tmp, ws) = tmp_ws();
     let cfg = TestServerConfig::unreachable(tmp.path()).variants(with_none_tier(), None);
     let state = cfg.state();
     let id = state
-        .create_session_with_variant(&ws, None, None, VariantChoice::from_word(Some("none")))
+        .create_session_with_variant(&ws, None, false, VariantChoice::from_word(Some("none")))
         .await
         .unwrap();
 
@@ -716,16 +724,19 @@ async fn new_inherits_an_exact_none_variant_and_never_clears_it() {
         .unwrap()
         .parse()
         .unwrap();
-    assert_eq!(saved(&state, fresh).await.as_deref(), Some("none"));
+    assert_eq!(saved(&state, fresh).await, None);
 
     TestServerConfig::unreachable(tmp.path())
         .variants(json!({"high": {"reasoning_effort": "high"}}), None)
         .config();
     let before = state.session_count();
     let out = state.run_command(id, "new", "").await.unwrap();
-    assert!(!out.ok, "{out:?}");
-    assert!(out.error.unwrap().contains("'none'"));
-    assert_eq!(state.session_count(), before, "no unvaried session made");
+    assert!(out.ok, "{out:?}");
+    assert_eq!(
+        state.session_count(),
+        before + 1,
+        "new uses the current assignment rather than the saved override"
+    );
 }
 
 // Given a models.json found in the workspace (no explicit path)
@@ -740,7 +751,7 @@ async fn variant_errors_name_the_models_file_that_was_loaded() {
     session.models_path = None;
     let service = navai::session::Service::new(session).expect("service");
     let id = service
-        .create_session_with_variant(&ws, None, None, VariantChoice::from_word(Some("low")))
+        .create_session_with_variant(&ws, None, false, VariantChoice::from_word(Some("low")))
         .await
         .unwrap();
     service.close_session(id).await.unwrap();
@@ -754,7 +765,7 @@ async fn variant_errors_name_the_models_file_that_was_loaded() {
     )
     .unwrap();
     let err = service
-        .create_or_resume_session(&ws, None, None, Some(id))
+        .create_or_resume_session(&ws, None, false, Some(id))
         .await
         .unwrap_err();
     let text = err.to_string();
@@ -798,7 +809,7 @@ async fn an_unknown_offer_resumes_with_the_saved_override() {
         .variants(explicit, None)
         .state();
     let id = state
-        .create_session_with_variant(&ws, None, None, VariantChoice::from_word(Some("deep")))
+        .create_session_with_variant(&ws, None, false, VariantChoice::from_word(Some("deep")))
         .await
         .unwrap();
     state.close_session(id).await.unwrap();
@@ -813,7 +824,7 @@ async fn an_unknown_offer_resumes_with_the_saved_override() {
         .mount(&server)
         .await;
     state
-        .create_or_resume_session(&ws, None, None, Some(id))
+        .create_or_resume_session(&ws, None, false, Some(id))
         .await
         .expect("resumes with the saved override");
     assert_eq!(
@@ -852,7 +863,7 @@ async fn a_legacy_row_without_an_override_waits_for_the_offer() {
     serve_down(&server).await;
 
     let err = state
-        .create_or_resume_session(&ws, None, None, Some(id))
+        .create_or_resume_session(&ws, None, false, Some(id))
         .await
         .unwrap_err();
     assert!(
@@ -877,7 +888,7 @@ async fn a_known_offer_refreshes_the_saved_override() {
         )
         .unwrap();
     state
-        .create_or_resume_session(&ws, None, None, Some(id))
+        .create_or_resume_session(&ws, None, false, Some(id))
         .await
         .expect("the offer is readable");
     let meta = state.history().meta(id).await.unwrap().unwrap();
@@ -898,7 +909,7 @@ async fn variant_works_after_the_provider_recovers() {
     let state = TestServerConfig::mock(tmp.path(), &format!("{}/v1", server.uri()))
         .omniroute()
         .state();
-    let id = state.create_session(&ws, None, None).await.unwrap();
+    let id = state.create_session(&ws, None, false).await.unwrap();
 
     let out = state.run_command(id, "variant", "high").await.unwrap();
     assert!(!out.ok, "{out:?}");
@@ -931,19 +942,24 @@ async fn a_reread_offer_of_a_retargeted_alias_is_refused() {
     serve_down(&server).await;
     let cfg = TestServerConfig::mock(tmp.path(), &format!("{}/v1", server.uri())).omniroute();
     let state = cfg.state();
-    let id = state.create_session(&ws, None, None).await.unwrap();
+    let id = state.create_session(&ws, None, false).await.unwrap();
 
     let path = cfg.models_path();
     let mut models: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    models["models"]["default"]["model"] = json!("other-model");
-    models["models"]["default"]["variants"] = json!({"high": {"reasoning_effort": "high"}});
+    let mut entry = models["models"]
+        .as_object_mut()
+        .unwrap()
+        .remove("mock/mock-model")
+        .unwrap();
+    entry["model"] = json!("other-model");
+    entry["variants"] = json!({"high": {"reasoning_effort": "high"}});
+    models["models"]["mock/other-model"] = entry;
     std::fs::write(&path, models.to_string()).unwrap();
 
     let out = state.run_command(id, "variant", "high").await.unwrap();
     assert!(!out.ok, "{out:?}");
     let error = out.error.unwrap();
     assert!(error.contains("mock-model"), "{error}");
-    assert!(error.contains("other-model"), "{error}");
     let meta = state.history().meta(id).await.unwrap().unwrap();
     assert_eq!(meta.variant, None);
     assert_eq!(meta.variant_override, None);

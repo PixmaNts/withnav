@@ -127,9 +127,9 @@ pub struct RuntimeStatus {
     /// The session's context gauge: written by the runtime at each boundary,
     /// read on demand by the service.
     context: Mutex<Option<ContextTracker>>,
-    /// The profile's instructions, which the role message carries after the
+    /// The editor's instructions, which the role message carries after the
     /// agent's prompt; needed to re-estimate the role when the agent changes.
-    profile_prompt: Mutex<Option<String>>,
+    editor_prompt: Mutex<Option<String>>,
     /// The id of the permission request the actor waits on, if any, so the
     /// service can refuse a stale decision without waiting for the runtime.
     pending_permission: Mutex<PermissionSlot>,
@@ -508,12 +508,12 @@ impl RuntimeStatus {
 
     /// Installs the session's context tracker before the runtime starts.
     /// Without one the runtime publishes no `context.updated`.
-    pub fn install_context(&self, tracker: ContextTracker, profile_prompt: Option<String>) {
+    pub fn install_context(&self, tracker: ContextTracker, editor_prompt: Option<String>) {
         *self.lock_context() = Some(tracker);
-        *match self.profile_prompt.lock() {
+        *match self.editor_prompt.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
-        } = profile_prompt;
+        } = editor_prompt;
     }
 
     /// Parks the runtime after its next compaction and before the result is
@@ -537,13 +537,13 @@ impl RuntimeStatus {
         &self,
         role: &crate::agent::definitions::AgentDefinition,
     ) -> Option<ContextSnapshot> {
-        let profile = match self.profile_prompt.lock() {
+        let editor = match self.editor_prompt.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         }
         .clone();
         let message =
-            crate::agent::actor::compose_role_message(Some(&role.prompt), profile.as_deref());
+            crate::agent::actor::compose_role_message(Some(&role.prompt), editor.as_deref());
         let mut tracker = self.lock_context();
         let tracker = tracker.as_mut()?;
         let mut breakdown = tracker.snapshot().breakdown;
@@ -1988,7 +1988,7 @@ mod tests {
         let store = Arc::new(crate::session::store::HistoryStore::open(&path).unwrap());
         let id = Ulid::new();
         store
-            .record_session(id, "/workspace", "test-model", None)
+            .record_session(id, "/workspace", "test-model", false)
             .await
             .unwrap();
         let agents = Arc::new(Agents::builtin());

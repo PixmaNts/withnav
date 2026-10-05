@@ -18,7 +18,7 @@ async fn failed_second_steer_commit_preserves_the_acknowledged_prefix_after_rest
         .chat_tools(128000)
         .state();
     let parent = service
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -142,7 +142,7 @@ async fn failed_second_steer_commit_preserves_the_acknowledged_prefix_after_rest
     assert_eq!(pending[0].0, b);
     service.fail_delivery_commit(0);
     service
-        .create_or_resume_session(&ws, None, None, Some(parent))
+        .create_or_resume_session(&ws, None, false, Some(parent))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -191,7 +191,7 @@ async fn delivered_result_is_live_and_replayed_once_before_the_woken_turn() {
         .chat_tools(128000)
         .state();
     let parent = service
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -276,7 +276,7 @@ async fn committed_transcript_message_replays_after_crash_before_live_publicatio
     let store = HistoryStore::open(&path).unwrap();
     for id in [parent, child] {
         store
-            .record_session(id, "/ws", "default", None)
+            .record_session(id, "/ws", "default", false)
             .bounded(file!(), line!())
             .await
             .unwrap();

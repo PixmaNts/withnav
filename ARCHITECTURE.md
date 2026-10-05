@@ -5,8 +5,8 @@ goes. Vocabulary is defined in [`CONTEXT.md`](CONTEXT.md); the decisions behind 
 [`docs/adr/`](docs/adr/). Read this before adding a module or a helper: most past duplication came
 from agents who did not know the piece already existed.
 
-The runtime map below includes existing mechanisms; selection-specific wording follows the
-**0.5 contract**, not a claim that the final integration is wired or installed. See
+The runtime map below describes the implementation prepared for **0.5**, not which binaries
+are installed on the driver's machine. See
 [ADR 0011](docs/adr/0011-layers-models-and-agent-overrides.md) and the contract section below.
 
 ## What runs
@@ -91,7 +91,7 @@ are read without depending on a newer server event enum. Missing data is not gue
 | `client.rs` | the HTTP client: models, sessions, create/resume, send, stop, the command list and a command run, a permission answer (409 `permission_stale` read as stale), open the event stream; send failures split into rejected and uncertain |
 | `stream.rs` | one SSE subscription: decoding, reconnect with backoff, resume after the last seq, cancellation |
 | `reducer/mod.rs` | `update`: `ClientEvent` to `State` changes and new `Effect`s; routes each event to the tab holding its generation, marks a background tab unread, drops events no tab holds |
-| `reducer/envelope.rs` | `EventEnvelope` to blocks: steps, tools (planned, running, settled), usage, errors, command results and permission prompts; authoritative selection from `model.changed`, with `session.agent_changed` secondary under the 0.5 contract; catalog refresh never overwrites selection. Pending `/model` is correlated to its operation id and ends only on its result/change, replacement, stop, end or tab close. Events and replay never send commands; a deferred target is named only from a matching pending operation or reported model identity. |
+| `reducer/envelope.rs` | `EventEnvelope` to blocks: steps, tools (planned, running, settled), usage, errors, command results and permission prompts; authoritative selection from `model.changed`, with `session.agent_changed` secondary; catalog refresh never overwrites selection. Pending `/model` is correlated to its operation id and ends only on its result/change, replacement, stop, end or tab close. Events and replay never send commands; a deferred target is named only from a matching pending operation or reported model identity. |
 | `reducer/command.rs` | `outcome_text`: a command result as the short text the transcript shows, in the client's own words; `tokens` for `42k` / `1M` |
 | `reducer/actions.rs` | `handle_action`: `Action` to `UiState`/`State` changes and `Effect`s; opening (at most nine), switching and closing tabs; server commands, agent/model/variant picks: live `/model <gateway/id>` changes the current agent's model (server applies target default variant), refused with a reason while an interaction waits; empty tabs choose an agent and optional overrides for creation |
 | `reducer/text.rs` | `strip_controls`, applied to every piece of model and tool text |
@@ -113,7 +113,7 @@ are read without depending on a newer server event enum. Missing data is not gue
 | `view/markdown.rs` | markdown to styled lines, cached per block revision |
 | `view/text.rs` | terminal-column measurement and grapheme-safe truncation and padding |
 | `view/status.rs` | the status line of the active tab: activity, connection, delivery warning, notice, session tokens; `context_gauge` and `shorten`, shared with the header |
-| `view/pickers.rs` | model, variant, agent, session, command, theme and help overlays; 0.5 models group by gateway/provider with search across collapsed groups and server-reported windows/variants. Live enter switches in place, `ctrl+n` opens a fresh tab; waiting/refused controls explain why. A long list scrolls to its selected row. |
+| `view/pickers.rs` | model, variant, agent, session, command, theme and help overlays; models group by gateway/provider with search across collapsed groups and server-reported windows/variants. Live enter switches in place, `ctrl+n` opens a fresh tab; waiting/refused controls explain why. A long list scrolls to its selected row. |
 
 ## Data flows
 
@@ -188,7 +188,7 @@ starting with `/` goes through `commands::route`: the client's own commands (`/s
 on the stream as `command.result` and becomes a `BlockKind::Command`. The build/plan switch (tab on an
 empty message) and `/variant` are `/agent` and `/variant` runs; the `/variant` list opens on the answer
 to a bare `/variant`, so it shows the conversation's own offer. The tab's agent and variant change only
-when the server says so (`session.agent_changed`, the `/variant` result, the session summary), so a
+when the server says so (`model.changed`, command results, the session summary), so a
 refusal leaves them as they were; each keeps the seq that last set it, and a summary read at an older
 seq does not overwrite it. Before a conversation exists, the agent and the variant picked with
 the model are sent in the create request instead.
@@ -397,13 +397,13 @@ and `~/.local/share/rust-agent/*` (`navigator.db` or `navigator/sessions.db`, wi
 start does nothing, and a database moves only when no other process holds it: otherwise it stays where
 it is and that run keeps using it.
 
-That existing path relocation is not automatic 0.5 configuration conversion. The development
-user's catalogue and assignments are migrated manually. History without provable saved model
-identity remains readable but read-only, with resume disabled; it must never be silently rebound.
+That existing path relocation is not automatic 0.5 configuration conversion. Catalogue and
+assignment migration is manual. History without provable saved model identity remains readable
+but read-only, with resume disabled; it is never silently rebound. Existing session ids are preserved.
 
-## 0.5 contract: selection and wire ownership
+## Selection and wire ownership
 
-This is the accepted target, still under integration. Catalogue names are
+Catalogue names are
 `<gateway>/<upstream_id>`; `ModelName` splits only the first slash and retains the rest verbatim.
 `models.json` contains capabilities/API/limits/variants, never assignments. `config.json` owns
 `layers`, `agents` and `default_agent` (`build` when absent), with assignments taking precedence
@@ -425,11 +425,11 @@ Switching agents or resuming restores that agent's durable override, never mutat
 and never applies a deferred selection to a different agent. `/new [agent]` starts without old
 session overrides. Editor context adds prompt/intent/feed independently of the chosen agent.
 
-| Route | 0.5 response/request contract |
+| Route | Response/request contract |
 |---|---|
 | `GET /v1/models?workspace=...` | `models` entries: `name`, `gateway`, `provider_group`, `upstream_id`, API, capabilities, variants/default and existing limit/diagnostic fields; top-level `default_agent` |
 | `GET /v1/agents?workspace=...&session_id=...` | `default_agent`, all definitions with `id`, description, mode, `assignment`, `effective`, optional `override`, warning; without session id omit override; an unassigned child without parent context has null choices and `inherits_parent: true` |
-| `GET /v1/layers?workspace=...` | exactly reflex/instinct/metacognition entries: `layer`, `status` (`usable` or `disabled`), `model`, `variant`, `gateway`, `upstream_id`, API and `reason`; usable validates assignment/API, not future network access |
+| `GET /v1/layers?workspace=...` | exactly reflex/instinct/metacognition entries: `layer`, `status` (`usable` or `disabled`), `model`, `variant`, `gateway`, `upstream_id`, `api`, `reason` and optional `variant_diagnostic`; usable validates assignment/API, not future network access |
 | `POST /v1/sessions` | `workspace`, optional `editor` (default false), `agent` (default agent), `model`/`variant` overrides; variant-only allowed; response `session_id`; resume uses workspace + resume only and rejects conflicting selection fields |
 
 Catalogue `name` and active `model` are canonical identities; internal provider `model` remains
@@ -450,16 +450,17 @@ agent/model/variant/source/models; bare `/variant` reports agent/model/variant/o
 `/model TARGET` returns changed/applies/selection or deferred accepted/applies after_turn/agent/model;
 `/agent ID` returns changed/previous/agent/selection. All retain operation_id/name/ok/data/error.
 
-Selection commits must save agent, model resolution, variant, reasoning floor and per-agent
+Selection commits save agent, model resolution, variant, reasoning floor and per-agent
 overrides together with the ordered durable selection events in one acknowledged transaction.
 `EffectiveAgentSelection` carries the applied identity; optional `SelectionCheckpoint` in
 `session/store.rs` stages transcript and compaction checkpoint for installation only if that
 selection transaction succeeds. Publish/install only after commit; a failed write leaves the
 previous coherent selection intact. The runtime safe-boundary queue is reused, not a second
-control path. The older independent compaction-before-switch commits described below must not
-be confused with this staged-checkpoint contract; final runtime wiring remains under integration.
+control path. Destination prompt, tools and skills are measured without installing the destination
+role on the live actor. Compaction for a selection change is staged, not independently saved;
+the checkpoint and selection succeed or fail together.
 
-Clients consume these server choices, group models by gateway/provider, and show layer and agent
+Clients consume these server choices, group models by gateway then upstream `provider_group`, and show layer and agent
 sources rather than deriving assignments themselves. Configuration editors and flows belong to
 the later 0.6 scope, not this contract.
 
@@ -516,27 +517,26 @@ the later 0.6 scope, not this contract.
   below ~0.7 B, then B, and only then `Aim::FitMidTurn`, which gives up the recent-turns protection
   and keeps just the latest exchange so a single long turn can summarize its own earlier steps. A
   plan that cannot fit costs no provider call; the turn then ends with a `compaction` error that
-  says `/compact` cannot help and to use a larger window. A model switch reuses `summarize` and
-  `install` (`bus/runtime/model.rs::compact_for_target`): the old model compacts, aiming at the
-  target's budget, in an acknowledged commit that precedes the switch's own. These are two
-   commits in the pre-0.5 path, not one transaction: if the switch then fails (or a stop cancels it) the conversation
-  stays on the old model WITH the new checkpoint, and a resume restores exactly that. The
-  checkpoint is sized for the target's budget, not the old model's.
+  says `/compact` cannot help and to use a larger window. A selection change uses
+  `bus/runtime/model.rs::compact_for_target`: the old model summarizes for the destination's
+  budget, role prompt, tools, skills and reasoning projection. The resulting checkpoint stays
+  staged until the selection transaction commits. Failure or cancellation before commit leaves
+  both the old selection and old checkpoint intact; resume restores the committed pair.
 - Model switching (`/model <gateway/id>` inside a conversation): `bus/runtime/model.rs`, run like
   `/compact` through the same control channel (`RuntimeStatus::request_model_switch`), between turns
   or after the running turn, from one ordered queue of deferred controls (`bus/runtime/deferred.rs`;
   adjacent compactions are one). The session service supplies the `ModelSwitch` callbacks
   (`session/service/resolve.rs`: the target resolved like a new session, its default variant;
-  `HistoryStore::switch_model`: durable selection write, expanded by the 0.5 `SelectionCheckpoint`
-  contract above to include agent/overrides and ordered selection events), so the bus never
-  imports the service or the store. The write goes through `Sequencer::commit_acked`: the event is
-  sequenced, written and acknowledged by the store, and only then emitted; a failed write emits
-  nothing and gives the seq back. `SelectedModel` (model identity, resolution, revision, variant, offer) is one
-  value behind one lock: the commit callback installs it, together with the runtime's variant and the
-  context gauge, before the event is emitted, so a reader sees the old selection or the new one. `AgentSelection::switching`
-  refuses `/agent`, `/variant`, `/compact` and another switch while one prepares. After the
-  commit callback installs the selection, runtime variant and context tracker; `commit_acked` then
-  emits `model.changed` before acknowledging the runtime. Only after that acknowledgement does the
+  `HistoryStore::commit_agent_selection_cancellable`: the selection, overrides, optional
+  `SelectionCheckpoint` and ordered events), so the bus never imports the service or the store.
+  `Sequencer::commit_batch_acked` sequences the batch, waits for the store's acknowledgement,
+  then emits it; a failed write emits nothing and returns the reserved sequence numbers.
+  `SelectedModel` (model identity, resolution, revision, variant, offer) is one value behind one
+  lock. The commit callback installs the coherent selection, runtime variant and context tracker
+  before emission. Selection switching refuses `/agent`, `/variant`, `/compact` and another
+  switch while one prepares. The event batch includes any `context.compacted` notice, then
+  `model.changed`, then the secondary `session.agent_changed` on an agent change.
+  Only after that acknowledgement does the
   runtime swap the actor's provider, model, variant and limits. `AgentActor::reasoning_floor`
   (restored on resume) keeps the earlier reasoning out of the request projection unless the resolved
   identity is the same; the fit check measures that destination projection (`context_breakdown_at`).

@@ -43,7 +43,7 @@ fn state(env: &Env, provider: &CapturingProvider, alias: &str, navigator: bool) 
         .model_alias(alias, "mock-model")
         .rules_home(&env.home);
     if navigator {
-        config.navigator_state()
+        config.assigned_navigator_state()
     } else {
         config.state()
     }
@@ -120,7 +120,7 @@ async fn the_rules_message_follows_the_contract_and_precedes_history() {
     let provider = provider(&["ok"]).await;
     let state = state(&env, &provider, "default", false);
     let id = state
-        .create_session(&env.ws, None, None)
+        .create_session(&env.ws, None, false)
         .await
         .expect("create");
     converse(&state, id, "hello").await;
@@ -151,7 +151,7 @@ async fn without_rules_the_request_has_no_extra_message() {
     std::fs::remove_file(env.ws.join("AGENTS.md")).unwrap();
     let provider = provider(&["ok"]).await;
     let state = state(&env, &provider, "default", false);
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     converse(&state, id, "hello").await;
     let roles: Vec<String> = messages(&provider, 0).into_iter().map(|(r, _)| r).collect();
     assert_eq!(roles, ["system", "user"]);
@@ -166,7 +166,7 @@ async fn the_navigator_role_stays_before_the_rules() {
     let provider = provider(&["ok"]).await;
     let state = state(&env, &provider, "cognition", true);
     let id = state
-        .create_session(&env.ws, None, Some("navigator"))
+        .create_session(&env.ws, None, true)
         .await
         .expect("create");
     converse(&state, id, "hello").await;
@@ -189,7 +189,7 @@ async fn resume_reloads_the_rules_once() {
     let env = env();
     let provider = provider(&["first", "second", "third"]).await;
     let first = state(&env, &provider, "default", false);
-    let id = first.create_session(&env.ws, None, None).await.unwrap();
+    let id = first.create_session(&env.ws, None, false).await.unwrap();
     converse(&first, id, "one").await;
 
     // The snapshot holds for the life of the session: no rediscovery.
@@ -201,7 +201,7 @@ async fn resume_reloads_the_rules_once() {
 
     let second = state(&env, &provider, "default", false);
     let (resumed, was_resumed) = second
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .expect("resume");
     assert!(was_resumed && resumed == id);
@@ -228,6 +228,12 @@ async fn navai_run_sends_the_rules_too() {
     let provider = provider(&["done"]).await;
     let config = TestServerConfig::mock(&env.root, &provider.url);
     config.config();
+    std::fs::create_dir_all(env.root.join("config/navai")).unwrap();
+    std::fs::write(
+        env.root.join("config/navai/config.json"),
+        r#"{"agents":{"build":{"model":"mock/mock-model"}}}"#,
+    )
+    .unwrap();
     let models = env.root.join("models.json");
     let (ws, root) = (env.ws.clone(), env.root.clone());
     let out = tokio::task::spawn_blocking(move || {

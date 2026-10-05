@@ -39,7 +39,7 @@ async fn several_automatic_compactions_do_not_renew_the_step_budget() {
     let state = TestServerConfig::mock(tmp.path(), &provider.url)
         .chat_tools(20_000)
         .state();
-    let id = state.create_session(&ws, None, None).await.unwrap();
+    let id = state.create_session(&ws, None, false).await.unwrap();
     let sub = state.subscribe(id, None).await.unwrap();
 
     send_text(&state, id, "read big.txt until told otherwise").await;

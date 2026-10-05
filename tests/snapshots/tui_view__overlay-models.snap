@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ navai  …dev/project  ▌build  cognition · cc/claude-opus-5-5 · 12.4k / 200k 
+ Conversations       │ ◆ navai  ~/dev/project           ▌build  cognition · assigned · 12.4k / 200k 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
 ▌  build · idle      │ │ YOU                                                                        
                      │ │  Explain the failure, then fix it.                                         
@@ -12,14 +12,14 @@ expression: snapshot
                      │ │  The parser treats an empty argument as a missing value.                   
                      │ │                                                                            
                      │ │ ▸ × bash cargo test parser  error  1.42 s  exit 101                        
-                     │ │                                                                            
             ┌────────────────────── Switch this conversation to… ──────────────────────┐            
             │ ❯ filter models…                                                         │            
             │ switches the model only; /variant after the switch · ctrl+n new tab      │            
-            │▌cognition         cc/claude-opus-5-5                              200k   │            
+            │▌▾ gateway                                                                │            
+            │ cognition         cc/claude-opus-5-5                              200k   │            
             │ fast              cc/flash                                           —   │            
             │                                                                          │            
-            │ ↑↓ move  enter choose  esc close                                         │            
+            │ ↑↓ move  ←→ fold  enter choose/fold  esc close                           │            
             └──────────────────────────────────────────────────────────────────────────┘            
                      │                                                                              
                      │                                                                              

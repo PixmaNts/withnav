@@ -38,6 +38,7 @@ pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 /// What it takes to move the conversation to another alias.
 #[derive(Debug, Clone)]
 pub struct ModelTarget {
+    pub provenance: Option<crate::session::store::SelectionProvenance>,
     pub source: String,
     pub variant_source: String,
     pub agent: Option<Arc<crate::agent::definitions::AgentDefinition>>,

@@ -134,6 +134,22 @@ async fn live_agent_switch_restores_model_and_off_override_after_restart() {
     assert_eq!(restored.agent, "build");
     assert_eq!(restored.model, "mock/plan-model");
     assert_eq!(restored.variant, None);
+    let provenance = reopened
+        .history()
+        .meta(id)
+        .await
+        .unwrap()
+        .unwrap()
+        .provenance
+        .unwrap();
+    assert_eq!(
+        provenance.model,
+        navai::session::store::ModelSource::Override
+    );
+    assert_eq!(
+        provenance.variant,
+        navai::session::store::VariantSource::Override
+    );
     assert!(
         reopened
             .run_command(id, "variant", "inherit")

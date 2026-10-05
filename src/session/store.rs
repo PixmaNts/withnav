@@ -114,11 +114,41 @@ pub type AgentOverrides = std::collections::BTreeMap<String, AgentOverride>;
 /// Fully applied selection, not an admitted or pending switch.
 #[derive(Debug, Clone)]
 pub struct EffectiveAgentSelection {
+    pub provenance: Option<SelectionProvenance>,
     pub model: String,
     pub resolution: crate::provider::catalog::ModelResolution,
     pub variant: Option<(String, crate::provider::config::Variant)>,
     pub primary_agent: String,
     pub reasoning_floor: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelSource {
+    Config,
+    Header,
+    DefaultAgent,
+    Parent,
+    Override,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VariantSource {
+    Config,
+    Header,
+    DefaultAgent,
+    Parent,
+    Override,
+    ModelDefault,
+    LayerPreference,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectionProvenance {
+    pub model: ModelSource,
+    pub variant: VariantSource,
 }
 
 /// Staged compaction installed only if its selection transaction succeeds.
@@ -144,6 +174,7 @@ use crate::provider::openai::ChatMessage;
 /// minus `live` which only the registry knows).
 #[derive(Debug, Clone)]
 pub struct StoredSession {
+    pub provenance: Option<SelectionProvenance>,
     pub agent_overrides: AgentOverrides,
     pub id: Ulid,
     pub workspace: String,
@@ -211,6 +242,7 @@ enum Write {
         envelopes: Vec<EventEnvelope>,
     },
     RecordSession {
+        provenance: Option<String>,
         overrides: String,
         id: Ulid,
         workspace: String,
@@ -884,6 +916,33 @@ impl HistoryStore {
         primary_agent: Option<&str>,
         overrides: &AgentOverrides,
     ) -> Result<(), String> {
+        self.record_session_with_provenance(
+            id,
+            workspace,
+            model,
+            profile,
+            resolution,
+            variant,
+            primary_agent,
+            overrides,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_session_with_provenance(
+        &self,
+        id: Ulid,
+        workspace: &str,
+        model: &str,
+        profile: Option<&str>,
+        resolution: Option<&crate::provider::catalog::ModelResolution>,
+        variant: Option<&(String, crate::provider::config::Variant)>,
+        primary_agent: Option<&str>,
+        overrides: &AgentOverrides,
+        provenance: Option<&SelectionProvenance>,
+    ) -> Result<(), String> {
         validate_agent_overrides(overrides)?;
         let (variant, variant_override) = split_variant(variant)?;
         let resolution = resolution
@@ -891,6 +950,10 @@ impl HistoryStore {
             .transpose()
             .map_err(|e| format!("serialize model resolution: {e}"))?;
         self.acked(Write::RecordSession {
+            provenance: provenance
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|e| e.to_string())?,
             overrides: serde_json::to_string(overrides).map_err(|e| e.to_string())?,
             id,
             workspace: workspace.to_string(),
@@ -1256,7 +1319,7 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                     .map_err(WriteError::InvalidSelection)?;
                 let floor = i64::try_from(selection.reasoning_floor)
                     .map_err(|e| WriteError::InvalidSelection(e.to_string()))?;
-                tx.execute("UPDATE sessions SET model=?2, model_resolution=?3, variant=?4, variant_override=?5, primary_agent=?6, reasoning_floor=?7 WHERE id=?1", params![id.to_string(), selection.model, serde_json::to_string(&selection.resolution)?, variant, variant_override, selection.primary_agent, floor])?;
+                tx.execute("UPDATE sessions SET model=?2, model_resolution=?3, variant=?4, variant_override=?5, primary_agent=?6, reasoning_floor=?7, selection_provenance=?8 WHERE id=?1", params![id.to_string(), selection.model, serde_json::to_string(&selection.resolution)?, variant, variant_override, selection.primary_agent, floor, selection.provenance.map(|p| serde_json::to_string(&p)).transpose()?])?;
             }
             if let Some(staged) = staged {
                 crate::agent::compaction::validate(&staged.checkpoint, &staged.transcript)
@@ -1277,6 +1340,7 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             }
         }
         Write::RecordSession {
+            provenance,
             overrides,
             id,
             workspace,
@@ -1291,8 +1355,8 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             tx.execute(
                 "INSERT OR IGNORE INTO sessions
                  (id, workspace, model, profile, title, created_at, updated_at, last_seq, transcript,
-                   model_resolution, variant, variant_override, primary_agent, agent_overrides)
-                  VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5, -1, NULL, ?6, ?7, ?8, ?9, ?10)",
+                   model_resolution, variant, variant_override, primary_agent, agent_overrides, selection_provenance)
+                  VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5, -1, NULL, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     id.to_string(),
                     workspace,
@@ -1303,7 +1367,8 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                     variant,
                     variant_override,
                     primary_agent,
-                    overrides
+                    overrides,
+                    provenance
                 ],
             )?;
         }
@@ -1665,6 +1730,17 @@ fn migrate(path: &Path) -> Result<(), String> {
         conn.execute("ALTER TABLE sessions ADD COLUMN agent_overrides TEXT", [])
             .map_err(|e| e.to_string())?;
     }
+    let has_provenance = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name='selection_provenance'")
+        .and_then(|mut s| s.exists([]))
+        .map_err(|e| e.to_string())?;
+    if !has_provenance {
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN selection_provenance TEXT",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -1965,6 +2041,7 @@ mod tests {
         let id = Ulid::new();
         store.record_session(id, "/w", "old", None).await.unwrap();
         let selection = EffectiveAgentSelection {
+            provenance: None,
             model: "p/new".into(),
             primary_agent: "plan".into(),
             variant: Some(("low".into(), Default::default())),

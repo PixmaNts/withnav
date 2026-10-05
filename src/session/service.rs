@@ -130,6 +130,7 @@ pub use crate::bus::event::{SkillEntry, SkillsBody};
 /// variant of another. A model switch installs all of it under one lock.
 #[derive(Debug, Clone)]
 pub struct SelectedModel {
+    pub provenance: Option<super::store::SelectionProvenance>,
     pub role: Arc<AgentDefinition>,
     pub agent: String,
     pub(crate) execution: Option<Arc<EffectiveExecution>>,
@@ -258,6 +259,7 @@ impl Drop for ChildReservation {
 }
 
 struct PreparedSession {
+    provenance: Option<super::store::SelectionProvenance>,
     assignment_warning: Option<String>,
     initial_override: Option<super::store::AgentOverride>,
     execution: Arc<EffectiveExecution>,
@@ -1929,6 +1931,7 @@ impl Service {
         let mut assignment_variant = variant.clone();
         let mut captured_model = None;
         let mut assignment_warning = None;
+        let mut provenance = resumed.as_ref().and_then(|r| r.meta.provenance.clone());
         let initial_override = if configured {
             if let Some(loaded) = &resumed {
                 if let Some(saved) = loaded.meta.agent_overrides.get(role.id.as_str()) {
@@ -1951,7 +1954,8 @@ impl Service {
             )?;
             if resumed.is_none() {
                 if child_parent.is_some() {
-                    if let Some((name, choice, resolved, warning)) = assignment {
+                    if let Some((name, choice, resolved, warning, source)) = assignment {
+                        provenance = Some(source);
                         captured_model = Some(resolved);
                         assignment_warning = warning;
                         alias = name;
@@ -1959,8 +1963,13 @@ impl Service {
                         inherited = None;
                     }
                 } else if let Some(explicit) = model {
+                    provenance = Some(super::store::SelectionProvenance {
+                        model: super::store::ModelSource::Override,
+                        variant: super::store::VariantSource::ModelDefault,
+                    });
                     alias = explicit.into();
-                } else if let Some((name, choice, resolved, warning)) = assignment {
+                } else if let Some((name, choice, resolved, warning, source)) = assignment {
+                    provenance = Some(source);
                     captured_model = Some(resolved);
                     assignment_warning = warning;
                     alias = name;
@@ -1980,6 +1989,19 @@ impl Service {
             // Internal legacy creation path until the final catalog contract cutover.
             None
         };
+        if resumed.is_none() && configured {
+            if inherited.is_some() {
+                provenance = Some(super::store::SelectionProvenance {
+                    model: super::store::ModelSource::Parent,
+                    variant: super::store::VariantSource::Parent,
+                });
+            }
+            if child_parent.is_none() && *variant != VariantChoice::Default {
+                if let Some(source) = &mut provenance {
+                    source.variant = super::store::VariantSource::Override;
+                }
+            }
+        }
         if captured_model.is_none() && inherited.is_none() {
             captured_model = Some(if configured {
                 let name = crate::provider::model_name::ModelName::parse(&alias, &captured.catalog)
@@ -2263,6 +2285,7 @@ impl Service {
         };
 
         Ok(PreparedSession {
+            provenance,
             assignment_warning,
             initial_override,
             execution,
@@ -2291,7 +2314,7 @@ impl Service {
             overrides.insert(prepared.role.id.to_string(), value.clone());
         }
         self.history
-            .record_session_with_overrides(
+            .record_session_with_provenance(
                 prepared.session_id,
                 &prepared.workspace.display().to_string(),
                 &prepared.alias,
@@ -2301,6 +2324,7 @@ impl Service {
                 (prepared.resumed.is_none() && !prepared.role.id.is_build())
                     .then(|| prepared.role.id.as_str()),
                 &overrides,
+                prepared.provenance.as_ref(),
             )
             .await
             .map_err(ServerError::History)?;
@@ -2313,6 +2337,7 @@ impl Service {
 
     async fn publish_session(&self, prepared: PreparedSession) -> Result<SessionId, ServerError> {
         let PreparedSession {
+            provenance,
             assignment_warning,
             initial_override: _,
             execution,
@@ -2628,6 +2653,7 @@ impl Service {
             1
         };
         let selected_model = Arc::new(Mutex::new(SelectedModel {
+            provenance,
             role: status.selection.current(),
             agent: status.selection.current().id.to_string(),
             execution: Some(execution),

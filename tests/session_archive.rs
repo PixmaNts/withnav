@@ -15,6 +15,109 @@ use common::server::{driver_command, request_json, TestServerConfig};
 
 const REASON: &str = "Historic model identity has no proven resolution";
 
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn pending_fresh_root_cannot_be_archived_before_publication() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let state = TestServerConfig::unreachable(tmp.path()).state();
+    let barrier = navai::session::ChildPreparationBarrier::default();
+    state.pause_root_publication(barrier.clone());
+    let creating = {
+        let state = state.clone();
+        let ws = ws.clone();
+        tokio::spawn(async move { state.create_session(&ws, None, None).await })
+    };
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        barrier.reached.notified(),
+    )
+    .await
+    .unwrap();
+    let rows = state
+        .history()
+        .list(&ws.display().to_string())
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let id = rows[0].meta.id;
+    assert!(!state.session_has_runtime(id));
+    let before = state.history().load(id).await.unwrap().unwrap();
+    assert!(
+        before.envelopes.is_empty(),
+        "paused before initial event publication"
+    );
+    assert!(state.mark_archive(id, REASON).await.is_err());
+    let after = state.history().load(id).await.unwrap().unwrap();
+    assert!(!after.meta.read_only());
+    assert_eq!(after.meta.last_seq, before.meta.last_seq);
+    assert!(after.envelopes.is_empty());
+    barrier.release.notify_one();
+    assert_eq!(creating.await.unwrap().unwrap(), id);
+    assert!(state.session_has_runtime(id));
+    state.history().flush().await.unwrap();
+    assert!(!state.history().meta(id).await.unwrap().unwrap().read_only());
+    assert!(!state
+        .history()
+        .load(id)
+        .await
+        .unwrap()
+        .unwrap()
+        .envelopes
+        .is_empty());
+    state.close_session(id).await.unwrap();
+    state.mark_archive(id, REASON).await.unwrap();
+}
+
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn failed_or_cancelled_fresh_root_publication_releases_pending_ownership() {
+    for cancel in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        std::fs::create_dir(&ws).unwrap();
+        let state = TestServerConfig::unreachable(tmp.path()).state();
+        let barrier = navai::session::ChildPreparationBarrier::default();
+        state.pause_root_publication(barrier.clone());
+        if !cancel {
+            state.fail_root_publication();
+        }
+        let creating = {
+            let state = state.clone();
+            let ws = ws.clone();
+            tokio::spawn(async move { state.create_session(&ws, None, None).await })
+        };
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            barrier.reached.notified(),
+        )
+        .await
+        .unwrap();
+        let id = state
+            .history()
+            .list(&ws.display().to_string())
+            .await
+            .unwrap()[0]
+            .meta
+            .id;
+        assert!(state.mark_archive(id, REASON).await.is_err());
+        if cancel {
+            creating.abort();
+            assert!(creating.await.unwrap_err().is_cancelled());
+        } else {
+            barrier.release.notify_one();
+            assert!(creating.await.unwrap().is_err());
+        }
+        assert!(!state.session_has_runtime(id));
+        // Success proves no pending operation remains after error/cancellation.
+        state.mark_archive(id, REASON).await.unwrap();
+        let archived = state.history().load(id).await.unwrap().unwrap();
+        assert!(archived.meta.read_only());
+        assert!(archived.envelopes.is_empty());
+    }
+}
+
 #[tokio::test]
 async fn service_marking_requires_offline_and_raw_live_marker_refuses_all_admissions() {
     let tmp = tempfile::tempdir().unwrap();

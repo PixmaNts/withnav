@@ -230,7 +230,7 @@ impl Drop for Publication {
         self.0.cancel();
     }
 }
-// Child ids become visible before runtime registration. Publication owns
+// Session ids become visible before runtime registration. Publication owns
 // teardown until this guard completes, so lifecycle callers cannot delete
 // durable ownership underneath registration or failed-start cleanup.
 pub(crate) struct ChildOperation {
@@ -361,6 +361,10 @@ pub struct Service {
     resume_registration_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
     child_start_failure: Arc<Mutex<Option<bool>>>,
+    #[cfg(debug_assertions)]
+    root_publication_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
+    root_publication_failure: Arc<std::sync::atomic::AtomicBool>,
     /// Test seam: parks a command run between its work and the publication
     /// of its result, to interleave lifecycle changes deterministically.
     /// Test seam: parks a model switch after its store write and before its
@@ -434,7 +438,7 @@ impl Service {
             .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
     }
 
-    /// Called under admission: teardown retains ownership until its final durable write.
+    /// Called under admission: publication/teardown retains ownership until completion.
     pub(crate) fn own_child_operation(&self, child: SessionId) -> ChildOperation {
         let done = CancellationToken::new();
         let previous = self
@@ -442,7 +446,7 @@ impl Service {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(child, done.clone());
-        debug_assert!(previous.is_none(), "child already has a lifecycle owner");
+        debug_assert!(previous.is_none(), "session already has a lifecycle owner");
         ChildOperation {
             child,
             operations: self.child_operations.clone(),
@@ -486,6 +490,22 @@ impl Service {
             .child_registration_barrier
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_root_publication(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .root_publication_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn fail_root_publication(&self) {
+        self.root_publication_failure
+            .store(true, std::sync::atomic::Ordering::Release);
     }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
@@ -620,6 +640,10 @@ impl Service {
             resume_registration_barrier: Arc::default(),
             #[cfg(debug_assertions)]
             child_start_failure: Arc::default(),
+            #[cfg(debug_assertions)]
+            root_publication_barrier: Arc::default(),
+            #[cfg(debug_assertions)]
+            root_publication_failure: Arc::default(),
             #[cfg(test)]
             install_barrier: Arc::default(),
             #[cfg(test)]
@@ -1920,8 +1944,43 @@ impl Service {
                 inherited,
             )
             .await?;
+        // Fresh root rows are visible before publication registers their runtime.
+        // Install ownership before persistence, without taking the lifecycle gate:
+        // callers such as /new may already hold it. The RAII token also releases
+        // ownership if persistence/publication fails or this future is cancelled.
+        let root_operation = if prepared.child_parent.is_none() && prepared.resumed.is_none() {
+            let _admission = self.admission_gate.lock().await;
+            Some(self.own_child_operation(prepared.session_id))
+        } else {
+            None
+        };
         self.store_prepared(&prepared).await?;
-        self.publish_session(prepared).await
+        #[cfg(debug_assertions)]
+        if root_operation.is_some() {
+            let barrier = self
+                .root_publication_barrier
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(barrier) = barrier {
+                barrier.reached.notify_one();
+                barrier.release.notified().await;
+            }
+            if self
+                .root_publication_failure
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                return Err(ServerError::History(
+                    "injected root publication failure".into(),
+                ));
+            }
+        }
+        let result = self.publish_session(prepared).await;
+        if root_operation.is_some() {
+            let _admission = self.admission_gate.lock().await;
+            drop(root_operation);
+        }
+        result
     }
 
     #[allow(clippy::too_many_arguments)]

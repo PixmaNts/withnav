@@ -162,11 +162,7 @@ pub struct SelectionRequest {
 }
 
 fn identity_json(identity: &ModelIdentity) -> Value {
-    json!({
-        "alias": identity.alias,
-        "provider": identity.provider,
-        "model": identity.model,
-    })
+    json!(identity)
 }
 
 /// Moves `actor` to the model `alias`. Nothing about the selection changes
@@ -212,8 +208,7 @@ pub(super) async fn run(
     {
         return Err("the requesting agent changed before the selection could apply".into());
     }
-    let mut target = (switcher.resolve)(request.clone()).await?;
-    target.previous.alias = current;
+    let target = (switcher.resolve)(request.clone()).await?;
     // Reasoning is only replayed to the identity that produced it: against
     // another one (or a model that omits it) the whole history so far is
     // projected without it. The check measures exactly that projection.
@@ -366,7 +361,7 @@ pub(super) async fn run(
     }
     Ok(Switched {
         data: json!({
-            "alias": target.new.alias,
+            "alias": target.alias,
             "changed": true,
             "previous": identity_json(&target.previous),
             "new": identity_json(&target.new),

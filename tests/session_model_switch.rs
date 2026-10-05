@@ -195,20 +195,23 @@ async fn an_idle_switch_sends_the_next_request_to_the_new_model_with_its_default
     assert!(out.ok, "{out:?}");
     let data = out.data.clone().unwrap();
     assert_eq!(data["changed"], true);
+    assert_eq!(data["alias"], "other");
     assert_eq!(data["applies"], "now");
     assert_eq!(data["variant"], "high");
-    assert_eq!(data["previous"]["alias"], "default");
-    assert_eq!(data["new"]["model"], "model-b");
+    assert_eq!(data["previous"]["model"], "a/model-a");
+    assert_eq!(data["new"]["model"], "b/model-b");
 
     let live = collect_until(sub, |e| e.kind == "model.changed").await;
     let changed = live.iter().find(|e| e.kind == "model.changed").unwrap();
-    assert_eq!(changed.payload["reason"], "switch");
+    assert_eq!(changed.payload["reason"], "model");
     assert_eq!(changed.payload["operation_id"], json!(out.operation_id));
-    assert_eq!(changed.payload["previous"]["alias"], "default");
-    assert_eq!(changed.payload["previous"]["provider"], "a");
-    assert_eq!(changed.payload["new"]["alias"], "other");
-    assert_eq!(changed.payload["new"]["provider"], "b");
-    assert_eq!(changed.payload["new"]["model"], "model-b");
+    assert_eq!(changed.payload["previous"]["model"], "a/model-a");
+    assert_eq!(changed.payload["previous"]["gateway"], "a");
+    assert_eq!(changed.payload["new"]["upstream_id"], "model-b");
+    assert_eq!(changed.payload["new"]["gateway"], "b");
+    assert_eq!(changed.payload["new"]["model"], "b/model-b");
+    assert!(changed.payload["new"].get("alias").is_none());
+    assert!(changed.payload["new"].get("provider").is_none());
     assert_eq!(changed.payload["variant"], "high");
     assert_eq!(changed.payload["window"], 128_000);
     assert_eq!(changed.payload["from_message"], 4);
@@ -225,6 +228,10 @@ async fn an_idle_switch_sends_the_next_request_to_the_new_model_with_its_default
     assert_eq!(summary.variant.as_deref(), Some("high"));
     let model = state.run_command(id, "model", "").await.unwrap();
     assert_eq!(model.data.unwrap()["alias"], "other");
+    let unchanged = state.run_command(id, "model", "other").await.unwrap();
+    let unchanged = unchanged.data.unwrap();
+    assert_eq!(unchanged["alias"], data["alias"]);
+    assert_eq!(unchanged["changed"], false);
     assert_eq!(stored(&state, id, "model.changed").await.len(), 1);
 
     turn_done(&state, id, "go on").await;
@@ -762,7 +769,7 @@ async fn the_fit_check_measures_the_projection_the_target_will_receive() {
         after["estimate_total"].as_u64().unwrap() <= budget_b,
         "{after}"
     );
-    assert_eq!(after["alias"], "other");
+    assert_eq!(after["model"], "b/model-b");
 }
 
 // Given a session whose variant offer was unknown, a turn in flight with a

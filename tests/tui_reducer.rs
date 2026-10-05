@@ -2645,7 +2645,9 @@ fn of_incarnation(n: u128, mut snapshot: ContextSnapshot) -> ContextSnapshot {
 
 fn snapshot(revision: u64, estimate_total: u64) -> ContextSnapshot {
     ContextSnapshot {
-        alias: "default".into(),
+        model: "mock/default".into(),
+        gateway: "mock".into(),
+        upstream_id: "default".into(),
         variant: None,
         window: 1_000_000,
         window_source: "models.json".into(),
@@ -4536,11 +4538,7 @@ fn model_changed_op(
     variant: Option<&str>,
     window: u64,
 ) {
-    let identity = |alias: &str| ModelIdentity {
-        alias: alias.into(),
-        provider: "p".into(),
-        model: format!("vendor/{alias}"),
-    };
+    let identity = |alias: &str| ModelIdentity::from_upstream("p", &format!("vendor/{alias}"));
     s.push(
         EventKind::ModelChanged,
         &ModelChanged {

@@ -639,7 +639,9 @@ fn the_status_gauge_shows_the_server_estimate_with_its_percent() {
     // Before any snapshot: the provider's last prompt count over the window.
     assert!(buffer_text(&s).contains("· 12.4k / 200k"));
     s.conversation.context = Some(navai::bus::event::ContextSnapshot {
-        alias: "cognition".into(),
+        model: "mock/cognition".into(),
+        gateway: "mock".into(),
+        upstream_id: "cognition".into(),
         variant: None,
         window: 1_000_000,
         window_source: "models.json".into(),
@@ -1148,7 +1150,9 @@ fn sidebar_shows_waiting_and_error_states() {
 #[test]
 fn the_gauge_follows_the_active_tab() {
     let gauge = |estimate_total: u64| navai::bus::event::ContextSnapshot {
-        alias: "cognition".into(),
+        model: "mock/cognition".into(),
+        gateway: "mock".into(),
+        upstream_id: "cognition".into(),
         variant: None,
         window: 1_000_000,
         window_source: "models.json".into(),
@@ -1609,7 +1613,9 @@ fn the_status_line_reads_model_variant_and_gauge() {
     let mut s = done();
     s.variant = Some("high".into());
     s.conversation.context = Some(navai::bus::event::ContextSnapshot {
-        alias: "cognition".into(),
+        model: "mock/cognition".into(),
+        gateway: "mock".into(),
+        upstream_id: "cognition".into(),
         variant: Some("high".into()),
         window: 1_000_000,
         window_source: "models.json".into(),
@@ -2621,7 +2627,9 @@ fn the_header_shows_the_branch_its_changes_and_the_agent_in_its_colour() {
 
 fn snapshot_with(breakdown: navai::bus::event::Breakdown) -> navai::bus::event::ContextSnapshot {
     navai::bus::event::ContextSnapshot {
-        alias: "cognition".into(),
+        model: "mock/cognition".into(),
+        gateway: "mock".into(),
+        upstream_id: "cognition".into(),
         variant: None,
         window: 200_000,
         window_source: "models.json".into(),

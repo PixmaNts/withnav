@@ -888,16 +888,8 @@ impl Service {
             reason: e.to_string(),
         })?;
         let previous = running
-            .map(|r| ModelIdentity {
-                alias: String::new(),
-                provider: r.provider.clone(),
-                model: r.model.clone(),
-            })
-            .unwrap_or(ModelIdentity {
-                alias: String::new(),
-                provider: String::new(),
-                model: String::new(),
-            });
+            .map(|r| ModelIdentity::from_upstream(&r.provider, &r.model))
+            .unwrap_or_else(|| ModelIdentity::from_upstream("", ""));
         Ok(ModelTarget {
             provenance: None,
             source: String::new(),
@@ -911,11 +903,7 @@ impl Service {
             reasoning_history: resolved.model.reasoning_history,
             max_tokens: resolved.model.max_output_tokens,
             variant,
-            new: ModelIdentity {
-                alias: alias.to_string(),
-                provider: snapshot.provider.clone(),
-                model: snapshot.model.clone(),
-            },
+            new: ModelIdentity::from_upstream(&snapshot.provider, &snapshot.model),
             same_identity: running.is_some_and(|r| r.same_identity(&snapshot)),
             resolution: snapshot,
             limits,

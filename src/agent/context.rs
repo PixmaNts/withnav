@@ -206,6 +206,8 @@ impl ContextLimits {
         let bounds = &resolution.bounds;
         Ok(Self {
             alias: alias.to_string(),
+            gateway: resolution.provider.clone(),
+            upstream_id: resolution.model.clone(),
             variant: variant.map(str::to_string),
             window_source: resolution.provenance.context_window.clone(),
             budget: Budget::compute(
@@ -245,7 +247,9 @@ impl ContextSnapshot {
     ) -> Self {
         let estimate_total = breakdown.total();
         Self {
-            alias: limits.alias.clone(),
+            model: format!("{}/{}", limits.gateway, limits.upstream_id),
+            gateway: limits.gateway.clone(),
+            upstream_id: limits.upstream_id.clone(),
             variant: limits.variant.clone(),
             window: limits.budget.window,
             window_source: limits.window_source.clone(),
@@ -270,6 +274,8 @@ impl ContextSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextLimits {
     pub alias: String,
+    pub gateway: String,
+    pub upstream_id: String,
     pub variant: Option<String>,
     /// Where the window came from: `models.json` or a `discovered.*` field.
     pub window_source: String,
@@ -322,7 +328,9 @@ impl ContextTracker {
     /// the next snapshot [`ContextTracker::update`] produces.
     pub fn record_usage(&mut self, step: ulid::Ulid, usage: crate::provider::Usage) {
         self.last_usage = Some(LastUsage {
-            alias: self.limits.alias.clone(),
+            model: format!("{}/{}", self.limits.gateway, self.limits.upstream_id),
+            gateway: self.limits.gateway.clone(),
+            upstream_id: self.limits.upstream_id.clone(),
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
             step,

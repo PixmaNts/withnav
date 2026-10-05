@@ -1026,7 +1026,12 @@ mod tests {
     async fn view(service: &Service, id: SessionId, dir: &Path) -> (String, Option<String>) {
         let summary = service.session_summary(id).await.unwrap();
         let gauge = service.context(id).await.unwrap();
-        assert_eq!(gauge.alias, summary.model, "gauge and summary agree");
+        let selected = service.handle(id).unwrap().selected();
+        let resolution = selected.resolution.unwrap();
+        assert_eq!(
+            gauge.model,
+            format!("{}/{}", resolution.provider, resolution.model)
+        );
         assert_eq!(gauge.variant, summary.variant, "gauge and summary agree");
         let created = service.run_command(id, "new", "").await.unwrap();
         assert!(created.ok, "{created:?}");
@@ -1083,7 +1088,7 @@ mod tests {
             ("default", None)
         );
         let gauge = service.context(id).await.unwrap();
-        assert_eq!((gauge.alias.as_str(), gauge.variant), ("default", None));
+        assert_eq!((gauge.model.as_str(), gauge.variant), ("mock/m", None));
         let early_new = tokio::spawn({
             let service = service.clone();
             async move { service.run_command(id, "new", "").await }

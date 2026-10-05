@@ -230,7 +230,7 @@ impl Drop for Publication {
         self.0.cancel();
     }
 }
-// Child ids become visible before runtime registration. Publication owns
+// Session ids become visible before runtime registration. Publication owns
 // teardown until this guard completes, so lifecycle callers cannot delete
 // durable ownership underneath registration or failed-start cleanup.
 pub(crate) struct ChildOperation {
@@ -284,6 +284,8 @@ struct PreparedSession {
 /// Frozen `GET /v1/sessions/:id` body.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionSummary {
+    pub read_only: bool,
+    pub resume_disabled_reason: Option<String>,
     pub session_id: String,
     pub actor_state: String,
     pub workspace: String,
@@ -359,6 +361,10 @@ pub struct Service {
     resume_registration_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
     child_start_failure: Arc<Mutex<Option<bool>>>,
+    #[cfg(debug_assertions)]
+    root_publication_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
+    root_publication_failure: Arc<std::sync::atomic::AtomicBool>,
     /// Test seam: parks a command run between its work and the publication
     /// of its result, to interleave lifecycle changes deterministically.
     /// Test seam: parks a model switch after its store write and before its
@@ -432,7 +438,7 @@ impl Service {
             .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
     }
 
-    /// Called under admission: teardown retains ownership until its final durable write.
+    /// Called under admission: publication/teardown retains ownership until completion.
     pub(crate) fn own_child_operation(&self, child: SessionId) -> ChildOperation {
         let done = CancellationToken::new();
         let previous = self
@@ -440,7 +446,7 @@ impl Service {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(child, done.clone());
-        debug_assert!(previous.is_none(), "child already has a lifecycle owner");
+        debug_assert!(previous.is_none(), "session already has a lifecycle owner");
         ChildOperation {
             child,
             operations: self.child_operations.clone(),
@@ -484,6 +490,22 @@ impl Service {
             .child_registration_barrier
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_root_publication(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .root_publication_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn fail_root_publication(&self) {
+        self.root_publication_failure
+            .store(true, std::sync::atomic::Ordering::Release);
     }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
@@ -618,6 +640,10 @@ impl Service {
             resume_registration_barrier: Arc::default(),
             #[cfg(debug_assertions)]
             child_start_failure: Arc::default(),
+            #[cfg(debug_assertions)]
+            root_publication_barrier: Arc::default(),
+            #[cfg(debug_assertions)]
+            root_publication_failure: Arc::default(),
             #[cfg(test)]
             install_barrier: Arc::default(),
             #[cfg(test)]
@@ -1141,6 +1167,7 @@ impl Service {
         &self,
         id: SessionId,
     ) -> Result<SessionHandle, ServerError> {
+        self.ensure_not_archived(id).await?;
         match self.lock_sessions().get(&id) {
             Some(handle) if handle.lifecycle == Lifecycle::Active => {
                 return Ok(handle.clone());
@@ -1158,6 +1185,45 @@ impl Service {
         } else {
             ServerError::SessionNotFound(id.to_string())
         })
+    }
+
+    pub(super) async fn ensure_not_archived(&self, id: SessionId) -> Result<(), ServerError> {
+        if let Some(reason) = self
+            .history
+            .meta(id)
+            .await
+            .map_err(ServerError::History)?
+            .and_then(|meta| meta.resume_disabled_reason)
+        {
+            return Err(ServerError::SessionArchived {
+                session: id.to_string(),
+                reason,
+            });
+        }
+        Ok(())
+    }
+
+    /// Explicitly archive an offline conversation. Any retained runtime (including
+    /// stopping) is refused; stop it completely before marking its history.
+    pub async fn mark_archive(&self, id: SessionId, reason: &str) -> Result<(), ServerError> {
+        let _lifecycle = self.lifecycle_gate().await;
+        let _admission = self.admission_gate.lock().await;
+        if self.handle(id).is_some()
+            || self
+                .child_operations
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(&id)
+        {
+            return Err(ServerError::MalformedBody(
+                "archive marking requires an offline session with no retained runtime".into(),
+            ));
+        }
+        self.history.flush().await.map_err(ServerError::History)?;
+        self.history
+            .mark_archive(id, reason)
+            .await
+            .map_err(ServerError::History)
     }
 
     /// Accepts one command into its session: the session must be live and
@@ -1557,6 +1623,19 @@ impl Service {
             // A resume waits for any stop or delete of this id to finish,
             // and holds the gate until the new runtime is registered.
             let _gate = self.lifecycle_gate().await;
+            self.history.flush().await.map_err(ServerError::History)?;
+            if let Some(reason) = self
+                .history
+                .meta(id)
+                .await
+                .map_err(ServerError::History)?
+                .and_then(|meta| meta.resume_disabled_reason)
+            {
+                return Err(ServerError::SessionArchived {
+                    session: id.to_string(),
+                    reason,
+                });
+            }
             // Live + active: the conversation never left.
             if let Some(handle) = self.lock_sessions().get(&id) {
                 if handle.lifecycle == Lifecycle::Active {
@@ -1642,7 +1721,14 @@ impl Service {
             .map(|next| next.saturating_sub(1))
             .unwrap_or(0);
         let selected = handle.selected();
+        let resume_disabled_reason = self
+            .history
+            .meta(id)
+            .await
+            .map_err(ServerError::History)?
+            .and_then(|meta| meta.resume_disabled_reason);
         Ok(SessionSummary {
+            read_only: resume_disabled_reason.is_some(),
             session_id: id.to_string(),
             actor_state: handle.actor_state.clone(),
             workspace: handle.workspace.display().to_string(),
@@ -1660,7 +1746,8 @@ impl Service {
             } else {
                 None
             },
-            promptable: handle.parent_session_id.is_none(),
+            promptable: handle.parent_session_id.is_none() && resume_disabled_reason.is_none(),
+            resume_disabled_reason,
         })
     }
 
@@ -1674,6 +1761,7 @@ impl Service {
             .map_err(ServerError::History)?
             .ok_or_else(|| ServerError::SessionNotFound(id.to_string()))?;
         Ok(SessionSummary {
+            read_only: meta.resume_disabled_reason.is_some(),
             session_id: id.to_string(),
             actor_state: "stopped".to_string(),
             workspace: meta.workspace,
@@ -1685,7 +1773,8 @@ impl Service {
             current_seq: meta.last_seq,
             parent_session_id: None,
             child_status: None,
-            promptable: true,
+            promptable: meta.resume_disabled_reason.is_none(),
+            resume_disabled_reason: meta.resume_disabled_reason,
         })
     }
 
@@ -1855,8 +1944,43 @@ impl Service {
                 inherited,
             )
             .await?;
+        // Fresh root rows are visible before publication registers their runtime.
+        // Install ownership before persistence, without taking the lifecycle gate:
+        // callers such as /new may already hold it. The RAII token also releases
+        // ownership if persistence/publication fails or this future is cancelled.
+        let root_operation = if prepared.child_parent.is_none() && prepared.resumed.is_none() {
+            let _admission = self.admission_gate.lock().await;
+            Some(self.own_child_operation(prepared.session_id))
+        } else {
+            None
+        };
         self.store_prepared(&prepared).await?;
-        self.publish_session(prepared).await
+        #[cfg(debug_assertions)]
+        if root_operation.is_some() {
+            let barrier = self
+                .root_publication_barrier
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(barrier) = barrier {
+                barrier.reached.notify_one();
+                barrier.release.notified().await;
+            }
+            if self
+                .root_publication_failure
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                return Err(ServerError::History(
+                    "injected root publication failure".into(),
+                ));
+            }
+        }
+        let result = self.publish_session(prepared).await;
+        if root_operation.is_some() {
+            let _admission = self.admission_gate.lock().await;
+            drop(root_operation);
+        }
+        result
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -121,6 +121,8 @@ pub enum BusError {
 
 #[derive(Debug, Error)]
 pub enum ServerError {
+    #[error("session {session} is a read-only archive: {reason}")]
+    SessionArchived { session: String, reason: String },
     #[error("child is not parked on its step budget")]
     ChildNotParked,
     #[error("child sessions are read-only to clients")]

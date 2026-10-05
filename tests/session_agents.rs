@@ -37,9 +37,9 @@ async fn successful_switch_fallback_warning_is_durable_and_replayed() {
         .iter()
         .find(|e| e.kind == "model.changed")
         .unwrap();
-    assert_eq!(event.payload["source"], "default_agent");
+    assert_eq!(event.payload["new"]["source"], "default_agent");
     assert!(event.payload["warning"].as_str().unwrap().contains("plan"));
-    assert_eq!(event.payload["agent"], "plan");
+    assert_eq!(event.payload["new"]["agent"], "plan");
 }
 
 #[tokio::test]

@@ -844,13 +844,13 @@ async fn a_stop_after_selection_commit_completes_the_new_identity_before_teardow
     stopping.await.unwrap().unwrap();
     let events = collect_until(sub, |e| e.kind == "session.end").await;
     let changed = events.iter().find(|e| e.kind == "model.changed").unwrap();
-    assert_eq!(changed.payload["agent"], "scribe");
-    assert_eq!(changed.payload["new"]["alias"], "b/model-b");
-    assert_eq!(changed.payload["new"]["provider"], "b");
-    assert_eq!(changed.payload["new"]["model"], "model-b");
+    assert_eq!(changed.payload["new"]["agent"], "scribe");
+    assert_eq!(changed.payload["new"]["model"], "b/model-b");
+    assert_eq!(changed.payload["new"]["gateway"], "b");
+    assert_eq!(changed.payload["new"]["upstream_id"], "model-b");
     assert_eq!(changed.payload["variant"], "high");
-    assert_eq!(changed.payload["source"], "override");
-    assert_eq!(changed.payload["variant_source"], "override");
+    assert_eq!(changed.payload["new"]["source"], "override");
+    assert_eq!(changed.payload["new"]["variant_source"], "override");
     let compacted = events
         .iter()
         .find(|e| e.kind == "context.compacted")
@@ -872,7 +872,7 @@ async fn a_stop_after_selection_commit_completes_the_new_identity_before_teardow
         .iter()
         .find(|e| e.kind == "context.updated" && e.seq > changed.seq)
         .unwrap();
-    assert_eq!(gauge.payload["alias"], "b/model-b");
+    assert_eq!(gauge.payload["model"], "b/model-b");
     let end = events.last().unwrap();
     assert!(changed.seq < gauge.seq && gauge.seq < result.seq && result.seq < end.seq);
     let after = state.history().load_for_resume(id).await.unwrap().unwrap();

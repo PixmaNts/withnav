@@ -360,7 +360,7 @@ A staged set of instinct questions where an earlier answer can choose which ques
 _Avoid_: workflow, automation, subagent (a subagent is a child session, not a flow)
 
 **Flow definition**:
-The validated, immutable text of a flow, with the inputs each step may read. Graph and text are two views of it.
+The definition of a flow with the inputs each step may read. Graph and text are two views of it. Once validated and activated, a version is immutable; an unsaved or saved draft is still being edited.
 _Avoid_: flow file (the file is where it is stored), script
 
 **Flow run**:
@@ -368,8 +368,8 @@ One evaluation of a flow definition for one event, within explicit call, input a
 _Avoid_: execution, job
 
 **Draft**:
-A saved flow definition that is not running. Editing or saving it never changes what is active.
-_Avoid_: pending, unsaved (a draft is saved)
+A flow definition being edited and not running, unsaved in the studio or saved to its file. Neither editing nor saving it changes what is active; only explicit activation does.
+_Avoid_: pending
 
 **Active version**:
 The flow definition currently producing actions for one workspace. Activation is explicit; the previous active version is kept for rollback.
@@ -380,7 +380,7 @@ Evaluating a flow on real events, possibly calling the instinct, without applyin
 _Avoid_: shadow mode, dry run
 
 **Replay** (flows):
-Re-running recorded answers through a flow definition without calling any model. It is comparable only when the recorded questions match the ones the definition would ask.
+Re-running recorded answers through a flow definition without calling any model. It is comparable only when the rendered requests, model and variant, and selected inputs match what the definition would send now.
 _Avoid_: re-evaluation (that calls the model again)
 
 **Workspace trust**:

@@ -27,8 +27,9 @@ keep every effect under Navai's authority. The vocabulary is in [CONTEXT.md](../
   generations and applies outcomes through existing remark and wake delivery. An outcome is never
   permission to run a tool, start a session, or answer a pending ask or permission request. Workspace
   trust does not change that.
-- **Extractable by proof, not by packaging.** The evaluator must run in a headless test with no LSP,
-  session or store code and a fake client. "No HTTP" means the evaluator opens no connections itself;
+- **Extractable by proof, not by packaging.** The evaluator must import no LSP, session or
+  store code and must run in a headless fixture that uses only its public surface and a fake client; a
+  single crate still links every module, so the evidence is the import check, not absent linking. "No HTTP" means the evaluator opens no connections itself;
   an injected client may be the real HTTP adapter. A separate binary, crate or interchange format is
   not decided.
 - **Observation has no effect.** Evaluating real events for comparison never publishes a remark,

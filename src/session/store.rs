@@ -114,11 +114,41 @@ pub type AgentOverrides = std::collections::BTreeMap<String, AgentOverride>;
 /// Fully applied selection, not an admitted or pending switch.
 #[derive(Debug, Clone)]
 pub struct EffectiveAgentSelection {
+    pub provenance: Option<SelectionProvenance>,
     pub model: String,
     pub resolution: crate::provider::catalog::ModelResolution,
     pub variant: Option<(String, crate::provider::config::Variant)>,
     pub primary_agent: String,
     pub reasoning_floor: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelSource {
+    Config,
+    Header,
+    DefaultAgent,
+    Parent,
+    Override,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VariantSource {
+    Config,
+    Header,
+    DefaultAgent,
+    Parent,
+    Override,
+    ModelDefault,
+    LayerPreference,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectionProvenance {
+    pub model: ModelSource,
+    pub variant: VariantSource,
 }
 
 /// Staged compaction installed only if its selection transaction succeeds.
@@ -144,6 +174,7 @@ use crate::provider::openai::ChatMessage;
 /// minus `live` which only the registry knows).
 #[derive(Debug, Clone)]
 pub struct StoredSession {
+    pub provenance: Option<SelectionProvenance>,
     pub agent_overrides: AgentOverrides,
     pub id: Ulid,
     pub workspace: String,
@@ -202,14 +233,22 @@ type Ack = oneshot::Sender<Result<(), String>>;
 /// What the writer thread accepts.
 enum Write {
     AgentSelection {
+        #[cfg(test)]
+        before_commit: Option<(
+            std::sync::Arc<std::sync::Barrier>,
+            std::sync::Arc<std::sync::Barrier>,
+        )>,
+        cancel: Option<tokio_util::sync::CancellationToken>,
         id: Ulid,
         agent: String,
         value: Option<AgentOverride>,
-        selection: Option<EffectiveAgentSelection>,
+        selection: Option<Box<EffectiveAgentSelection>>,
         staged: Option<SelectionCheckpoint>,
         envelopes: Vec<EventEnvelope>,
     },
     RecordSession {
+        provenance: Option<String>,
+        overrides: String,
         id: Ulid,
         workspace: String,
         model: String,
@@ -301,6 +340,26 @@ pub struct HistoryStore {
     owner: Option<Ulid>,
     tx: mpsc::Sender<Msg>,
     path: Arc<PathBuf>,
+    #[cfg(debug_assertions)]
+    selection_commit_barrier: Arc<std::sync::Mutex<Option<Arc<SelectionCommitBarrier>>>>,
+}
+
+/// Debug-only boundary: SQLite has committed, but the selection callback has
+/// not returned to install or publish anything. Scoped to this store instance.
+#[cfg(debug_assertions)]
+#[derive(Debug, Default)]
+pub struct SelectionCommitBarrier {
+    pub reached: tokio::sync::Notify,
+    pub release: tokio::sync::Notify,
+    cancel: std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
+}
+
+#[cfg(debug_assertions)]
+impl SelectionCommitBarrier {
+    pub async fn cancelled(&self) {
+        let cancel = self.cancel.lock().unwrap().clone().expect("commit reached");
+        cancel.cancelled().await;
+    }
 }
 
 impl std::fmt::Debug for HistoryStore {
@@ -314,6 +373,13 @@ impl std::fmt::Debug for HistoryStore {
 const WRITER_GONE: &str = "history writer stopped";
 
 impl HistoryStore {
+    #[cfg(debug_assertions)]
+    pub fn arm_selection_commit_barrier(&self) -> Arc<SelectionCommitBarrier> {
+        let barrier = Arc::new(SelectionCommitBarrier::default());
+        *self.selection_commit_barrier.lock().unwrap() = Some(barrier.clone());
+        barrier
+    }
+
     /// Updates only the saved override. Runtime applications should use
     /// `commit_agent_selection` inside the existing sequencer acknowledged callback.
     pub async fn update_agent_override(
@@ -323,6 +389,9 @@ impl HistoryStore {
         value: AgentOverride,
     ) -> Result<(), String> {
         self.acked(Write::AgentSelection {
+            #[cfg(test)]
+            before_commit: None,
+            cancel: None,
             id,
             agent: agent.into(),
             value: Some(value),
@@ -335,6 +404,9 @@ impl HistoryStore {
 
     pub async fn clear_agent_override(&self, id: Ulid, agent: &str) -> Result<(), String> {
         self.acked(Write::AgentSelection {
+            #[cfg(test)]
+            before_commit: None,
+            cancel: None,
             id,
             agent: agent.into(),
             value: None,
@@ -372,6 +444,26 @@ impl HistoryStore {
         staged: Option<SelectionCheckpoint>,
         envelopes: Vec<EventEnvelope>,
     ) -> Result<(), String> {
+        self.commit_agent_selection_cancellable(
+            id, agent, value, selection, staged, envelopes, None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn commit_agent_selection_cancellable(
+        &self,
+        id: Ulid,
+        agent: &str,
+        value: Option<AgentOverride>,
+        selection: EffectiveAgentSelection,
+        staged: Option<SelectionCheckpoint>,
+        envelopes: Vec<EventEnvelope>,
+        cancel: Option<tokio_util::sync::CancellationToken>,
+    ) -> Result<(), String> {
+        if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+            return Err("selection cancelled before admission".into());
+        }
         if agent != selection.primary_agent {
             return Err(format!(
                 "override agent '{agent}' does not match selection primary_agent '{}'",
@@ -381,7 +473,10 @@ impl HistoryStore {
         if envelopes.is_empty()
             || envelopes.iter().any(|e| {
                 e.session_id != id
-                    || !matches!(e.kind.as_str(), "model.changed" | "session.agent_changed")
+                    || !matches!(
+                        e.kind.as_str(),
+                        "model.changed" | "session.agent_changed" | "context.compacted"
+                    )
             })
         {
             return Err(
@@ -389,15 +484,30 @@ impl HistoryStore {
                     .into(),
             );
         }
+        #[cfg(debug_assertions)]
+        let token = cancel.clone();
         self.acked(Write::AgentSelection {
+            #[cfg(test)]
+            before_commit: None,
+            cancel,
             id,
             agent: agent.into(),
             value,
-            selection: Some(selection),
+            selection: Some(Box::new(selection)),
             staged,
             envelopes,
         })
-        .await
+        .await?;
+        #[cfg(debug_assertions)]
+        {
+            let barrier = self.selection_commit_barrier.lock().unwrap().take();
+            if let Some(barrier) = barrier {
+                *barrier.cancel.lock().unwrap() = token;
+                barrier.reached.notify_one();
+                barrier.release.notified().await;
+            }
+        }
+        Ok(())
     }
     /// Opens (creating parents) and migrates the database, opens the writer's
     /// connection, then spawns the single writer thread. Fails when the
@@ -423,6 +533,8 @@ impl HistoryStore {
             owner: None,
             tx,
             path: Arc::new(path),
+            #[cfg(debug_assertions)]
+            selection_commit_barrier: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 
@@ -830,12 +942,71 @@ impl HistoryStore {
         variant: Option<&(String, crate::provider::config::Variant)>,
         primary_agent: Option<&str>,
     ) -> Result<(), String> {
+        self.record_session_with_overrides(
+            id,
+            workspace,
+            model,
+            profile,
+            resolution,
+            variant,
+            primary_agent,
+            &AgentOverrides::new(),
+        )
+        .await
+    }
+
+    /// Initial identity and complete overrides are inserted in one writer transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_session_with_overrides(
+        &self,
+        id: Ulid,
+        workspace: &str,
+        model: &str,
+        profile: Option<&str>,
+        resolution: Option<&crate::provider::catalog::ModelResolution>,
+        variant: Option<&(String, crate::provider::config::Variant)>,
+        primary_agent: Option<&str>,
+        overrides: &AgentOverrides,
+    ) -> Result<(), String> {
+        self.record_session_with_provenance(
+            id,
+            workspace,
+            model,
+            profile,
+            resolution,
+            variant,
+            primary_agent,
+            overrides,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_session_with_provenance(
+        &self,
+        id: Ulid,
+        workspace: &str,
+        model: &str,
+        profile: Option<&str>,
+        resolution: Option<&crate::provider::catalog::ModelResolution>,
+        variant: Option<&(String, crate::provider::config::Variant)>,
+        primary_agent: Option<&str>,
+        overrides: &AgentOverrides,
+        provenance: Option<&SelectionProvenance>,
+    ) -> Result<(), String> {
+        validate_agent_overrides(overrides)?;
         let (variant, variant_override) = split_variant(variant)?;
         let resolution = resolution
             .map(serde_json::to_string)
             .transpose()
             .map_err(|e| format!("serialize model resolution: {e}"))?;
         self.acked(Write::RecordSession {
+            provenance: provenance
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|e| e.to_string())?,
+            overrides: serde_json::to_string(overrides).map_err(|e| e.to_string())?,
             id,
             workspace: workspace.to_string(),
             model: model.to_string(),
@@ -1155,11 +1326,26 @@ fn queue_permission_resolution(
 }
 
 fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
+    #[cfg(test)]
+    let before_commit = match &write {
+        Write::AgentSelection { before_commit, .. } => before_commit.clone(),
+        _ => None,
+    };
+    let cancellation = match &write {
+        Write::AgentSelection { cancel, .. } => cancel.clone(),
+        _ => None,
+    };
+    if cancellation.as_ref().is_some_and(|c| c.is_cancelled()) {
+        return Err(WriteError::InvalidSelection("selection cancelled".into()));
+    }
     // Acquire write ownership before reads: a deferred WAL snapshot cannot
     // upgrade after an outbox connection commits, even with a busy timeout.
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     match write {
         Write::AgentSelection {
+            #[cfg(test)]
+                before_commit: _,
+            cancel: _,
             id,
             agent,
             value,
@@ -1192,7 +1378,7 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                     .map_err(WriteError::InvalidSelection)?;
                 let floor = i64::try_from(selection.reasoning_floor)
                     .map_err(|e| WriteError::InvalidSelection(e.to_string()))?;
-                tx.execute("UPDATE sessions SET model=?2, model_resolution=?3, variant=?4, variant_override=?5, primary_agent=?6, reasoning_floor=?7 WHERE id=?1", params![id.to_string(), selection.model, serde_json::to_string(&selection.resolution)?, variant, variant_override, selection.primary_agent, floor])?;
+                tx.execute("UPDATE sessions SET model=?2, model_resolution=?3, variant=?4, variant_override=?5, primary_agent=?6, reasoning_floor=?7, selection_provenance=?8 WHERE id=?1", params![id.to_string(), selection.model, serde_json::to_string(&selection.resolution)?, variant, variant_override, selection.primary_agent, floor, selection.provenance.map(|p| serde_json::to_string(&p)).transpose()?])?;
             }
             if let Some(staged) = staged {
                 crate::agent::compaction::validate(&staged.checkpoint, &staged.transcript)
@@ -1213,6 +1399,8 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             }
         }
         Write::RecordSession {
+            provenance,
+            overrides,
             id,
             workspace,
             model,
@@ -1226,8 +1414,8 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             tx.execute(
                 "INSERT OR IGNORE INTO sessions
                  (id, workspace, model, profile, title, created_at, updated_at, last_seq, transcript,
-                  model_resolution, variant, variant_override, primary_agent)
-                 VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5, -1, NULL, ?6, ?7, ?8, ?9)",
+                   model_resolution, variant, variant_override, primary_agent, agent_overrides, selection_provenance)
+                  VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5, -1, NULL, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     id.to_string(),
                     workspace,
@@ -1237,7 +1425,9 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                     resolution,
                     variant,
                     variant_override,
-                    primary_agent
+                    primary_agent,
+                    overrides,
+                    provenance
                 ],
             )?;
         }
@@ -1427,6 +1617,16 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
             )?;
         }
     }
+    #[cfg(test)]
+    if let Some((reached, release)) = before_commit {
+        reached.wait();
+        release.wait();
+    }
+    if cancellation.as_ref().is_some_and(|c| c.is_cancelled()) {
+        return Err(WriteError::InvalidSelection(
+            "selection cancelled before commit".into(),
+        ));
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1594,6 +1794,17 @@ fn migrate(path: &Path) -> Result<(), String> {
         conn.execute("ALTER TABLE sessions ADD COLUMN agent_overrides TEXT", [])
             .map_err(|e| e.to_string())?;
     }
+    let has_provenance = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name='selection_provenance'")
+        .and_then(|mut s| s.exists([]))
+        .map_err(|e| e.to_string())?;
+    if !has_provenance {
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN selection_provenance TEXT",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -1757,6 +1968,133 @@ mod tests {
     use super::*;
     use crate::bus::event::EventKind;
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancellation_at_writer_precommit_rolls_back_override_and_inserted_event() {
+        let (_dir, store) = temp_store();
+        let id = Ulid::new();
+        store.record_session(id, "/w", "old", None).await.unwrap();
+        let token = tokio_util::sync::CancellationToken::new();
+        let reached = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let task = tokio::spawn({
+            let store = store.clone();
+            let token = token.clone();
+            let reached = reached.clone();
+            let release = release.clone();
+            async move {
+                store
+                    .acked(Write::AgentSelection {
+                        before_commit: Some((reached, release)),
+                        cancel: Some(token),
+                        id,
+                        agent: "build".into(),
+                        value: Some(AgentOverride {
+                            model: Some("p/new".into()),
+                            variant: AgentVariantOverride::Off,
+                        }),
+                        selection: None,
+                        staged: None,
+                        envelopes: vec![EventEnvelope::new(
+                            id,
+                            0,
+                            EventKind::ModelChanged,
+                            serde_json::json!({}),
+                        )],
+                    })
+                    .await
+            }
+        });
+        tokio::task::spawn_blocking(move || reached.wait())
+            .await
+            .unwrap();
+        token.cancel();
+        tokio::task::spawn_blocking(move || release.wait())
+            .await
+            .unwrap();
+        assert!(task
+            .await
+            .unwrap()
+            .unwrap_err()
+            .contains("cancelled before commit"));
+        let loaded = store.load(id).await.unwrap().unwrap();
+        assert!(loaded.meta.agent_overrides.is_empty());
+        assert!(loaded.envelopes.is_empty());
+        assert_eq!(loaded.meta.model, "old");
+    }
+
+    #[tokio::test]
+    async fn cancelled_selection_writer_leaves_identity_override_and_events_unchanged() {
+        let (_dir, store) = temp_store();
+        let id = Ulid::new();
+        store.record_session(id, "/w", "old", None).await.unwrap();
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel();
+        // Exercise writer cancellation independently of the public admission check.
+        let error = store
+            .acked(Write::AgentSelection {
+                before_commit: None,
+                id,
+                agent: "build".into(),
+                value: Some(AgentOverride {
+                    model: Some("p/new".into()),
+                    variant: AgentVariantOverride::Off,
+                }),
+                selection: None,
+                staged: None,
+                envelopes: vec![EventEnvelope::new(
+                    id,
+                    0,
+                    EventKind::ModelChanged,
+                    serde_json::json!({}),
+                )],
+                cancel: Some(token),
+            })
+            .await
+            .unwrap_err();
+        assert!(error.contains("cancelled"));
+        let loaded = store.load(id).await.unwrap().unwrap();
+        assert_eq!(loaded.meta.model, "old");
+        assert!(loaded.meta.agent_overrides.is_empty());
+        assert!(loaded.envelopes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn initial_overrides_and_identity_insert_atomically_or_leave_no_row() {
+        let (dir, store) = temp_store();
+        let mut overrides = AgentOverrides::new();
+        overrides.insert(
+            "build".into(),
+            AgentOverride {
+                model: Some("p/model".into()),
+                variant: AgentVariantOverride::Off,
+            },
+        );
+        let id = Ulid::new();
+        store
+            .record_session_with_overrides(id, "/w", "p/model", None, None, None, None, &overrides)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.meta(id).await.unwrap().unwrap().agent_overrides,
+            overrides
+        );
+        side_connection(&dir).execute_batch("CREATE TRIGGER fail_initial AFTER INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'insert fault'); END;").unwrap();
+        let failed = Ulid::new();
+        assert!(store
+            .record_session_with_overrides(
+                failed, "/w", "p/model", None, None, None, None, &overrides
+            )
+            .await
+            .unwrap_err()
+            .contains("insert fault"));
+        assert!(store.meta(failed).await.unwrap().is_none());
+        assert!(store
+            .replay(failed, None, u64::MAX)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
     #[tokio::test]
     async fn agent_overrides_are_independent_durable_clearable_and_deleted() {
         let (dir, store) = temp_store();
@@ -1822,6 +2160,7 @@ mod tests {
         let id = Ulid::new();
         store.record_session(id, "/w", "old", None).await.unwrap();
         let selection = EffectiveAgentSelection {
+            provenance: None,
             model: "p/new".into(),
             primary_agent: "plan".into(),
             variant: Some(("low".into(), Default::default())),

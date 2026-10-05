@@ -94,6 +94,10 @@ impl Default for AgentSelection {
 }
 
 impl AgentSelection {
+    /// Installed only inside the runtime selection commit, while the switch gate is marked.
+    pub fn install_selected(&self, role: Arc<AgentDefinition>) {
+        self.state().current = role;
+    }
     pub fn new(agents: Arc<Agents>, current: Arc<AgentDefinition>) -> Self {
         Self {
             agents,

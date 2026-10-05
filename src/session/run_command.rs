@@ -205,8 +205,26 @@ impl Service {
                 .and_then(|snapshot| serde_json::to_value(snapshot).ok())
                 .map(Done::data)
                 .ok_or_else(|| CommandFailure::Refused("no context snapshot yet".to_string())),
+            "variant"
+                if !arguments.is_empty()
+                    && self
+                        .assignments_configured()
+                        .map_err(CommandFailure::Server)? =>
+            {
+                self.selection_command(handle, "variant", arguments, operation_id, gate)
+                    .await
+            }
             "variant" => self.variant_command(session_id, handle, arguments).await,
             "new" => self.new_conversation(session_id, handle, arguments).await,
+            "agent"
+                if !arguments.is_empty()
+                    && self
+                        .assignments_configured()
+                        .map_err(CommandFailure::Server)? =>
+            {
+                self.selection_command(handle, "agent", arguments, operation_id, gate)
+                    .await
+            }
             "agent" => self.agent_command(session_id, handle, arguments).await,
             "compact" => {
                 self.compact_command(handle, arguments, operation_id, gate)
@@ -356,6 +374,8 @@ impl Service {
                 SwitchError::Persist(err) => CommandFailure::Server(ServerError::History(err)),
             })?;
         // The gauge counts the new role at once, not at the next turn.
+        handle.lock_selected().agent = target.id.to_string();
+        handle.lock_selected().role = target.clone();
         if let Some(snapshot) = handle.status.set_context_role(&target) {
             if let Ok(payload) = serde_json::to_value(&snapshot) {
                 let _ = handle
@@ -630,6 +650,44 @@ impl Done {
 }
 
 impl Service {
+    async fn selection_command(
+        &self,
+        handle: &SessionHandle,
+        command: &str,
+        arguments: &str,
+        operation_id: Ulid,
+        gate: &mut Option<tokio::sync::MutexGuard<'_, ()>>,
+    ) -> Result<Done, CommandFailure> {
+        if arguments.split_whitespace().count() != 1 {
+            return Err(CommandFailure::Refused(format!("usage: /{command} <name>")));
+        }
+        if handle.status.selection.is_running() {
+            return Err(CommandFailure::Refused(
+                "the agent is working or held: wait for the turn to end".into(),
+            ));
+        }
+        let request = crate::bus::runtime::model::SelectionRequest {
+            alias: handle.selected().alias,
+            target_agent: (command == "agent").then(|| arguments.into()),
+            requesting_agent: handle.status.selection.current().id.to_string(),
+            command: command.into(),
+            variant: (command == "variant").then(|| VariantChoice::from_word(Some(arguments))),
+        };
+        drop(gate.take());
+        match handle
+            .status
+            .request_selection_switch(request, operation_id)
+            .await
+        {
+            Some(ModelReply::Done(done)) => Ok(Done::published(done.wire("now"))),
+            Some(ModelReply::Refused(why)) => Err(CommandFailure::Published(why)),
+            Some(ModelReply::Deferred) => Ok(Done::published(
+                json!({"accepted":true,"applies":"after_turn"}),
+            )),
+            None => Err(CommandFailure::Server(ServerError::SessionStopping)),
+        }
+    }
+
     /// `/model`: the alias, what the saved resolution says about it, and a
     /// bounded view of the chat aliases a new session could use.
     fn model_data(&self, handle: &SessionHandle) -> Value {

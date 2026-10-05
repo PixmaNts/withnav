@@ -11,6 +11,379 @@ use navai::bus::event::EventEnvelope;
 use navai::server::{app, AppState};
 
 mod common;
+
+#[tokio::test]
+async fn successful_switch_fallback_warning_is_durable_and_replayed() {
+    let env = env();
+    let config = TestServerConfig::unreachable(&env.root).config();
+    std::fs::write(
+        env.root.join("cfg/config.json"),
+        json!({"agents":{"build":{"model":"mock/mock-model"},"plan":{"model":"mock/missing"}}})
+            .to_string(),
+    )
+    .unwrap();
+    let state = AppState::new(config).unwrap();
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let result = state.run_command(id, "agent", "plan").await.unwrap();
+    assert!(result.ok);
+    assert!(result.data.unwrap()["warning"]
+        .as_str()
+        .unwrap()
+        .contains("mock/missing"));
+    state.history().flush().await.unwrap();
+    let loaded = state.history().load(id).await.unwrap().unwrap();
+    let event = loaded
+        .envelopes
+        .iter()
+        .find(|e| e.kind == "model.changed")
+        .unwrap();
+    assert_eq!(event.payload["source"], "default_agent");
+    assert!(event.payload["warning"].as_str().unwrap().contains("plan"));
+    assert_eq!(event.payload["agent"], "plan");
+}
+
+#[tokio::test]
+async fn creation_assignment_off_named_overrides_and_fallback_notice_are_durable() {
+    let env = env();
+    let config = TestServerConfig::unreachable(&env.root)
+        .variants(json!({"low":{"reasoning_effort":"low"}}), Some("low"))
+        .config();
+    let state = AppState::new(config).unwrap();
+    for off in [json!(null), json!("off")] {
+        std::fs::write(
+            env.root.join("cfg/config.json"),
+            json!({"agents":{"build":{"model":"mock/mock-model","variant":off}}}).to_string(),
+        )
+        .unwrap();
+        let id = state.create_session(&env.ws, None, None).await.unwrap();
+        assert_eq!(
+            state.history().meta(id).await.unwrap().unwrap().variant,
+            None
+        );
+        let named = state
+            .create_session_with(
+                &env.ws,
+                None,
+                None,
+                navai::session::VariantChoice::Exact("low".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        let meta = state.history().meta(named).await.unwrap().unwrap();
+        assert_eq!(meta.agent_overrides["build"].model, None);
+        assert_eq!(
+            meta.agent_overrides["build"].variant,
+            navai::session::store::AgentVariantOverride::Named("low".into())
+        );
+    }
+    std::fs::write(
+        env.root.join("cfg/config.json"),
+        json!({"agents":{"build":{"model":"mock/mock-model"},"plan":{"model":"mock/absent"}}})
+            .to_string(),
+    )
+    .unwrap();
+    let id = state
+        .create_session_with(
+            &env.ws,
+            None,
+            None,
+            navai::session::VariantChoice::Default,
+            Some("plan"),
+        )
+        .await
+        .unwrap();
+    state.history().flush().await.unwrap();
+    let loaded = state.history().load(id).await.unwrap().unwrap();
+    assert!(loaded.envelopes.iter().any(|e| e.kind == "command.result"
+        && e.payload["data"]["warning"]
+            .as_str()
+            .is_some_and(|s| s.contains("plan") && s.contains("mock/absent"))));
+    let rows_before = state
+        .history()
+        .list(&env.ws.display().to_string())
+        .await
+        .unwrap()
+        .len();
+    std::fs::write(
+        env.root.join("cfg/config.json"),
+        json!({"agents":{"build":{"model":"mock/absent"}}}).to_string(),
+    )
+    .unwrap();
+    assert!(state.create_session(&env.ws, None, None).await.is_err());
+    assert_eq!(
+        state
+            .history()
+            .list(&env.ws.display().to_string())
+            .await
+            .unwrap()
+            .len(),
+        rows_before
+    );
+}
+
+#[tokio::test]
+async fn live_agent_switch_restores_model_and_off_override_after_restart() {
+    let env = env();
+    let config = TestServerConfig::unreachable(&env.root)
+        .extra_alias("plan-key", "plan-model")
+        .variants(json!({"low":{"reasoning_effort":"low"}}), Some("low"))
+        .config();
+    std::fs::write(
+        env.root.join("cfg/config.json"),
+        json!({"agents":{"build":{"model":"mock/mock-model"},"plan":{"model":"mock/plan-model"}}})
+            .to_string(),
+    )
+    .unwrap();
+    let state = AppState::new(config.clone()).unwrap();
+    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    assert!(
+        state
+            .run_command(id, "model", "mock/plan-model")
+            .await
+            .unwrap()
+            .ok
+    );
+    assert!(state.run_command(id, "variant", "off").await.unwrap().ok);
+    assert!(state.run_command(id, "agent", "plan").await.unwrap().ok);
+    let plan = state.session_summary(id).await.unwrap();
+    assert_eq!(plan.agent, "plan");
+    assert_eq!(plan.variant.as_deref(), Some("low"));
+    assert!(state.run_command(id, "agent", "build").await.unwrap().ok);
+    let build = state.session_summary(id).await.unwrap();
+    assert_eq!(build.agent, "build");
+    assert_eq!(build.model, "mock/plan-model");
+    assert_eq!(build.variant, None);
+    state.close_session(id).await.unwrap();
+    let reopened = AppState::new(config).unwrap();
+    reopened
+        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .await
+        .unwrap();
+    let restored = reopened.session_summary(id).await.unwrap();
+    assert_eq!(restored.agent, "build");
+    assert_eq!(restored.model, "mock/plan-model");
+    assert_eq!(restored.variant, None);
+    let provenance = reopened
+        .history()
+        .meta(id)
+        .await
+        .unwrap()
+        .unwrap()
+        .provenance
+        .unwrap();
+    assert_eq!(
+        provenance.model,
+        navai::session::store::ModelSource::Override
+    );
+    assert_eq!(
+        provenance.variant,
+        navai::session::store::VariantSource::Override
+    );
+    assert!(
+        reopened
+            .run_command(id, "variant", "inherit")
+            .await
+            .unwrap()
+            .ok
+    );
+    assert_eq!(
+        reopened
+            .session_summary(id)
+            .await
+            .unwrap()
+            .variant
+            .as_deref(),
+        Some("low")
+    );
+}
+
+#[tokio::test]
+async fn configured_agent_fallback_header_precedence_and_invalid_defaults() {
+    let env = env();
+    let config = TestServerConfig::unreachable(&env.root)
+        .extra_alias("second", "second-model")
+        .config();
+    write_agent(
+        &env,
+        "custom.md",
+        "---\nmode: primary\nmodel: mock/second-model\n---\nCustom role\n",
+    );
+    let settings = env.root.join("cfg/config.json");
+    std::fs::write(&settings,json!({"agents":{"build":{"model":"mock/mock-model"},"custom":{"model":"mock/mock-model"},"plan":{"model":"mock/missing"}}}).to_string()).unwrap();
+    let state = AppState::new(config.clone()).unwrap();
+    for agent in ["custom", "plan"] {
+        let id = state
+            .create_session_with(
+                &env.ws,
+                None,
+                None,
+                navai::session::VariantChoice::Default,
+                Some(agent),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            state.session_summary(id).await.unwrap().model,
+            "mock/mock-model"
+        );
+    }
+    std::fs::write(
+        &settings,
+        json!({"agents":{"build":{"model":"mock/mock-model"}}}).to_string(),
+    )
+    .unwrap();
+    let header = state
+        .create_session_with(
+            &env.ws,
+            None,
+            None,
+            navai::session::VariantChoice::Default,
+            Some("custom"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        state.session_summary(header).await.unwrap().model,
+        "mock/second-model"
+    );
+    let fallback = state
+        .create_session_with(
+            &env.ws,
+            None,
+            None,
+            navai::session::VariantChoice::Default,
+            Some("plan"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        state.session_summary(fallback).await.unwrap().model,
+        "mock/mock-model"
+    );
+    for value in [
+        json!({"default_agent":"missing","agents":{"build":{"model":"mock/mock-model"}}}),
+        json!({"agents":{"build":{"model":"mock/missing"}}}),
+    ] {
+        std::fs::write(&settings, value.to_string()).unwrap();
+        assert!(state.create_session(&env.ws, None, None).await.is_err());
+    }
+    std::fs::write(
+        &settings,
+        json!({"agents":{"build":{"model":"mock/mock-model"}}}).to_string(),
+    )
+    .unwrap();
+    let mut models: Value =
+        serde_json::from_str(&std::fs::read_to_string(env.root.join("models.json")).unwrap())
+            .unwrap();
+    models["models"]["default"]["api"] = json!("fim");
+    std::fs::write(env.root.join("models.json"), models.to_string()).unwrap();
+    assert!(state.create_session(&env.ws, None, None).await.is_err());
+}
+
+#[tokio::test]
+async fn configured_agents_choose_models_and_persist_explicit_off_on_resume() {
+    use navai::session::{
+        store::{AgentVariantOverride, HistoryStore},
+        VariantChoice,
+    };
+    let env = env();
+    let config = TestServerConfig::unreachable(&env.root)
+        .extra_alias("plan-key", "plan-model")
+        .variants(json!({"low":{"reasoning_effort":"low"}}), Some("low"))
+        .config();
+    std::fs::write(
+        env.root.join("cfg/config.json"),
+        json!({"agents":{"build":{"model":"mock/mock-model"},"plan":{"model":"mock/plan-model"}}})
+            .to_string(),
+    )
+    .unwrap();
+    let service = AppState::new(config.clone()).unwrap();
+    let build = service.create_session(&env.ws, None, None).await.unwrap();
+    assert_eq!(
+        service.session_summary(build).await.unwrap().model,
+        "mock/mock-model"
+    );
+    let plan = service
+        .create_session_with(&env.ws, None, None, VariantChoice::Default, Some("plan"))
+        .await
+        .unwrap();
+    assert_eq!(
+        service.session_summary(plan).await.unwrap().model,
+        "mock/plan-model"
+    );
+    std::fs::write(env.root.join("cfg/config.json"),json!({"default_agent":"plan","agents":{"build":{"model":"mock/mock-model"},"plan":{"model":"mock/plan-model"}}}).to_string()).unwrap();
+    let default_plan = service.create_session(&env.ws, None, None).await.unwrap();
+    assert_eq!(
+        service.session_summary(default_plan).await.unwrap().model,
+        "mock/plan-model"
+    );
+    std::fs::write(
+        env.root.join("cfg/config.json"),
+        json!({"agents":{"build":{"model":"mock/mock-model"},"plan":{"model":"mock/plan-model"}}})
+            .to_string(),
+    )
+    .unwrap();
+    let overridden = service
+        .create_session_with(
+            &env.ws,
+            Some("mock/plan-model"),
+            None,
+            VariantChoice::Clear,
+            None,
+        )
+        .await
+        .unwrap();
+    let store = HistoryStore::open(env.root.join("history.db")).unwrap();
+    let meta = store.meta(overridden).await.unwrap().unwrap();
+    assert_eq!(
+        meta.agent_overrides["build"].model.as_deref(),
+        Some("mock/plan-model")
+    );
+    assert_eq!(
+        meta.agent_overrides["build"].variant,
+        AgentVariantOverride::Off
+    );
+    assert_eq!(meta.variant, None);
+    service.close_session(overridden).await.unwrap();
+    let reopened = AppState::new(config).unwrap();
+    reopened
+        .create_or_resume_session(&env.ws, None, None, Some(overridden))
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened.session_summary(overridden).await.unwrap().model,
+        "mock/plan-model"
+    );
+    assert_eq!(store.meta(overridden).await.unwrap().unwrap().variant, None);
+    let child = reopened
+        .service()
+        .create_child_session(overridden, "explore", "inspect")
+        .await
+        .unwrap();
+    let child_meta = store.meta(child).await.unwrap().unwrap();
+    assert_eq!(child_meta.model, "mock/plan-model");
+    assert_eq!(child_meta.variant, None);
+    std::fs::write(env.root.join("cfg/config.json"),json!({"agents":{"build":{"model":"mock/mock-model"},"explore":{"model":"mock/mock-model","variant":"low"}}}).to_string()).unwrap();
+    let assigned_child = reopened
+        .service()
+        .create_child_session(overridden, "explore", "inspect own model")
+        .await
+        .unwrap();
+    let own = store.meta(assigned_child).await.unwrap().unwrap();
+    assert_eq!(own.model, "mock/mock-model");
+    assert_eq!(own.variant.as_deref(), Some("low"));
+    reopened.close_session(overridden).await.unwrap();
+    let mut models: Value =
+        serde_json::from_str(&std::fs::read_to_string(env.root.join("models.json")).unwrap())
+            .unwrap();
+    models["providers"]["mock"]["base_url"] = json!("http://127.0.0.1:2/v1");
+    std::fs::write(env.root.join("models.json"), models.to_string()).unwrap();
+    assert!(reopened
+        .create_or_resume_session(&env.ws, None, None, Some(overridden))
+        .await
+        .is_err());
+}
 use common::server::{collect_until, request_json, TestServerConfig};
 use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_chunk, CapturingProvider};
 

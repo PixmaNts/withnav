@@ -389,6 +389,12 @@ mod tests {
             workspace: PathBuf::from("/w"),
             selected: Arc::new(std::sync::Mutex::new(
                 crate::session::service::SelectedModel {
+                    provenance: None,
+                    role: crate::agent::definitions::Agents::builtin()
+                        .get("build")
+                        .unwrap()
+                        .clone(),
+                    agent: "build".into(),
                     execution: None,
                     alias: "fast".to_string(),
                     resolution: None,

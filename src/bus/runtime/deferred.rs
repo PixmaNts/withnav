@@ -19,6 +19,7 @@ pub(super) enum Deferred {
     Model {
         operation_id: Ulid,
         alias: String,
+        selection: super::model::SelectionRequest,
     },
 }
 
@@ -77,10 +78,11 @@ pub(super) async fn run(
             }
             Deferred::Model {
                 operation_id,
-                alias,
+                alias: _,
+                selection,
             } => {
                 let outcome =
-                    model::run(actor, status, sequencer, cancel, &alias, operation_id).await;
+                    model::run(actor, status, sequencer, cancel, &selection, operation_id).await;
                 model::report(sequencer, operation_id, outcome);
             }
         }

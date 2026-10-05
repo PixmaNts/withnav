@@ -77,6 +77,7 @@ impl VariantChoice {
     pub fn from_word(word: Option<&str>) -> Self {
         match word {
             None => Self::Default,
+            Some("inherit") => Self::Default,
             Some(CLEAR_WORD) => Self::Clear,
             Some(name) => Self::Exact(name.to_string()),
         }
@@ -134,7 +135,129 @@ pub(crate) struct Offer {
     pub known: bool,
 }
 
+pub(super) struct PreparationConfig {
+    pub settings: crate::settings::Settings,
+    pub configured: bool,
+    pub catalog: crate::provider::config::ModelsConfig,
+    pub path: PathBuf,
+}
+type PreparedAssignment = (
+    String,
+    VariantChoice,
+    ResolvedModel,
+    Option<String>,
+    super::super::store::SelectionProvenance,
+);
+
 impl Service {
+    pub(super) fn capture_preparation(
+        &self,
+        workspace: &Path,
+    ) -> Result<PreparationConfig, ServerError> {
+        let settings = crate::settings::load(&self.config.config_dir)
+            .map_err(|e| ServerError::History(e.to_string()))?;
+        let configured = settings.has_assignment_configuration();
+        let (catalog, path) = load_models(
+            self.config.models_path.as_deref(),
+            workspace,
+            &self.config.config_dir,
+        )?;
+        Ok(PreparationConfig {
+            settings,
+            configured,
+            catalog,
+            path,
+        })
+    }
+    pub(crate) fn assignments_configured(&self) -> Result<bool, ServerError> {
+        let settings = crate::settings::load(&self.config.config_dir)
+            .map_err(|e| ServerError::History(e.to_string()))?;
+        Ok(settings.has_assignment_configuration())
+    }
+
+    pub(super) fn assigned_from_snapshot(
+        &self,
+        captured: &PreparationConfig,
+        agents: &crate::agent::definitions::Agents,
+        agent: &str,
+        child: bool,
+    ) -> Result<Option<PreparedAssignment>, ServerError> {
+        use crate::provider::assignments::{AgentModel, AssignmentResolver};
+        use crate::settings::AssignmentVariant;
+        let resolver = AssignmentResolver::new(&captured.catalog, &captured.settings);
+        let records: Vec<_> = agents
+            .all()
+            .map(|a| (a.id.as_str(), a.model.as_deref(), a.mode.is_primary()))
+            .collect();
+        let default = resolver
+            .default_agent_check(&records)
+            .map_err(|e| ServerError::History(e.to_string()))?;
+        let header = agents.get(agent).and_then(|a| a.model.as_deref());
+        let outcome = resolver
+            .agent_model(agent, header)
+            .map_err(ServerError::History)?;
+        let mut warning_text = None;
+        use super::super::store::{ModelSource, SelectionProvenance, VariantSource};
+        let mut source = if captured
+            .settings
+            .agent_assignment(agent)
+            .map_err(ServerError::History)?
+            .is_some()
+        {
+            ModelSource::Config
+        } else {
+            ModelSource::Header
+        };
+        let assigned = match outcome {
+            AgentModel::Assigned(model) => model,
+            AgentModel::Unassigned if child => return Ok(None),
+            outcome => {
+                source = ModelSource::DefaultAgent;
+                if let AgentModel::Fallback(warning) = outcome {
+                    tracing::warn!("{warning}");
+                    warning_text = Some(warning.to_string());
+                }
+                let header = agents.get(&default).and_then(|a| a.model.as_deref());
+                match resolver
+                    .agent_model(&default, header)
+                    .map_err(ServerError::History)?
+                {
+                    AgentModel::Assigned(model) => model,
+                    _ => {
+                        return Err(ServerError::History(format!(
+                            "default_agent '{default}' has no usable model"
+                        )))
+                    }
+                }
+            }
+        };
+        let variant_source =
+            if assigned.variant_choice == crate::settings::AssignmentVariant::Default {
+                VariantSource::ModelDefault
+            } else {
+                match source {
+                    ModelSource::Config => VariantSource::Config,
+                    ModelSource::Header => VariantSource::Header,
+                    _ => VariantSource::DefaultAgent,
+                }
+            };
+        let variant = match assigned.variant_choice {
+            AssignmentVariant::Default => VariantChoice::Default,
+            AssignmentVariant::Off => VariantChoice::Clear,
+            AssignmentVariant::Named(name) => VariantChoice::Exact(name),
+        };
+        Ok(Some((
+            assigned.name.to_string(),
+            variant,
+            assigned.resolved,
+            warning_text,
+            SelectionProvenance {
+                model: source,
+                variant: variant_source,
+            },
+        )))
+    }
+
     pub(super) fn resolve_model(
         &self,
         workspace: &Path,
@@ -145,7 +268,15 @@ impl Service {
             workspace,
             &self.config.config_dir,
         )?;
-        Ok((config.resolve(alias)?, path))
+        let resolved = if self.assignments_configured()? {
+            let name = crate::provider::model_name::ModelName::parse(alias, &config)
+                .map_err(|e| ServerError::History(e.to_string()))?;
+            config.resolve_name(&name)?
+        } else {
+            // Internal transition for unconfigured installations; remove at catalog contract cutover.
+            config.resolve(alias)?
+        };
+        Ok((resolved, path))
     }
 
     pub async fn resolve_model_metadata(
@@ -181,8 +312,17 @@ impl Service {
         workspace: &Path,
         alias: &str,
         resumed: Option<&ResumedSession>,
+        captured_model: Option<(ResolvedModel, PathBuf)>,
     ) -> Result<(ResolvedModel, String, ModelResolution, bool, PathBuf), ServerError> {
-        let (resolved, models_file) = self.resolve_model(workspace, alias)?;
+        let (resolved, models_file) = match captured_model {
+            Some(model) => model,
+            None => self.resolve_model(workspace, alias)?,
+        };
+        if resolved.model.api != crate::provider::config::ApiKind::Chat {
+            return Err(ServerError::History(format!(
+                "model '{alias}' requires API 'chat'"
+            )));
+        }
         let api_key = auth::resolve_key(
             &self.config.config_dir,
             &resolved.provider_name,
@@ -435,15 +575,186 @@ impl Service {
         };
         let resolver = {
             let (service, selected) = (self.clone(), selected.clone());
-            move |alias: String| {
+            move |request: crate::bus::runtime::model::SelectionRequest| {
                 let (service, selected, workspace) =
                     (service.clone(), selected.clone(), workspace.clone());
                 Box::pin(async move {
-                    let running = lock(&selected).resolution.clone();
-                    service
-                        .resolve_switch_target(id, &workspace, &alias, running.as_deref())
+                    let current = lock(&selected).clone();
+                    let meta = service
+                        .history
+                        .meta(id)
                         .await
-                        .map_err(|e| e.to_string())
+                        .map_err(|e| e.to_string())?
+                        .ok_or("session missing")?;
+                    let agent_name = request
+                        .target_agent
+                        .as_deref()
+                        .unwrap_or(&request.requesting_agent);
+                    let agents = service.load_agents(&workspace, id, false).await;
+                    let agent = agents
+                        .get(agent_name)
+                        .filter(|a| a.mode.is_primary())
+                        .cloned()
+                        .ok_or_else(|| format!("unknown primary agent '{agent_name}'"))?;
+                    let saved = meta.agent_overrides.get(agent_name).cloned();
+                    use super::super::store::{ModelSource, SelectionProvenance, VariantSource};
+                    let captured = service
+                        .capture_preparation(&workspace)
+                        .map_err(|e| e.to_string())?;
+                    let configured = captured.configured;
+                    let assignment = if configured {
+                        service
+                            .assigned_from_snapshot(&captured, &agents, agent_name, false)
+                            .map_err(|e| e.to_string())?
+                    } else {
+                        None
+                    };
+                    let mut provenance = assignment
+                        .as_ref()
+                        .map(|a| a.4.clone())
+                        .or(current.provenance.clone())
+                        .unwrap_or(SelectionProvenance {
+                            model: ModelSource::Parent,
+                            variant: VariantSource::ModelDefault,
+                        });
+                    let (alias, choice, override_value) = if request.command == "agent" {
+                        let assigned = if configured {
+                            assignment.as_ref().map(|a| (a.0.clone(), a.1.clone()))
+                        } else {
+                            None
+                        };
+                        let (base, variant) =
+                            assigned.unwrap_or((current.alias.clone(), VariantChoice::Default));
+                        let choice = match saved.as_ref().map(|s| &s.variant) {
+                            Some(super::super::store::AgentVariantOverride::Off) => {
+                                VariantChoice::Clear
+                            }
+                            Some(super::super::store::AgentVariantOverride::Named(name)) => {
+                                VariantChoice::Exact(name.clone())
+                            }
+                            Some(super::super::store::AgentVariantOverride::Inherit)
+                                if saved.as_ref().and_then(|s| s.model.as_ref()).is_some() =>
+                            {
+                                VariantChoice::Default
+                            }
+                            _ => variant,
+                        };
+                        (
+                            saved.as_ref().and_then(|s| s.model.clone()).unwrap_or(base),
+                            choice,
+                            saved,
+                        )
+                    } else if request.command == "variant" {
+                        let choice = request.variant.clone().unwrap_or(VariantChoice::Default);
+                        let value = super::super::store::AgentOverride {
+                            model: saved.as_ref().and_then(|s| s.model.clone()),
+                            variant: choice.clone().into(),
+                        };
+                        let (alias, inherited_choice) = if value.model.is_none() && configured {
+                            assignment
+                                .as_ref()
+                                .map(|a| (a.0.clone(), a.1.clone()))
+                                .unwrap_or((current.alias.clone(), VariantChoice::Default))
+                        } else {
+                            (current.alias.clone(), VariantChoice::Default)
+                        };
+                        let effective_choice = if choice == VariantChoice::Default {
+                            inherited_choice
+                        } else {
+                            choice
+                        };
+                        (alias, effective_choice, Some(value))
+                    } else {
+                        let value = super::super::store::AgentOverride {
+                            model: Some(request.alias.clone()),
+                            variant: super::super::store::AgentVariantOverride::Inherit,
+                        };
+                        (request.alias.clone(), VariantChoice::Default, Some(value))
+                    };
+                    let resolved = if configured {
+                        let name = crate::provider::model_name::ModelName::parse(
+                            &alias,
+                            &captured.catalog,
+                        )
+                        .map_err(|e| e.to_string())?;
+                        captured
+                            .catalog
+                            .resolve_name(&name)
+                            .map_err(|e| e.to_string())?
+                    } else {
+                        captured
+                            .catalog
+                            .resolve(&alias)
+                            .map_err(|e| e.to_string())?
+                    };
+                    #[cfg(test)]
+                    {
+                        let barrier = service.preparation_barrier.lock().unwrap().take();
+                        if let Some(barrier) = barrier {
+                            barrier.reached.notify_one();
+                            barrier.release.notified().await;
+                        }
+                    }
+                    let warning = assignment.as_ref().and_then(|a| a.3.clone()).filter(|_| {
+                        override_value
+                            .as_ref()
+                            .and_then(|o| o.model.as_ref())
+                            .is_none()
+                    });
+                    let mut target = service
+                        .resolve_switch_target(
+                            id,
+                            &workspace,
+                            &alias,
+                            current.resolution.as_deref(),
+                            &choice,
+                            (resolved, captured.path),
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    target.agent = Some(agent);
+                    target.warning = warning;
+                    if override_value
+                        .as_ref()
+                        .and_then(|o| o.model.as_ref())
+                        .is_some()
+                    {
+                        provenance.model = ModelSource::Override;
+                        provenance.variant = VariantSource::ModelDefault;
+                    }
+                    if override_value.as_ref().is_some_and(|o| {
+                        o.variant != super::super::store::AgentVariantOverride::Inherit
+                    }) {
+                        provenance.variant = VariantSource::Override;
+                    }
+                    target.source = serde_json::to_value(provenance.model)
+                        .unwrap()
+                        .as_str()
+                        .unwrap()
+                        .into();
+                    target.variant_source = serde_json::to_value(provenance.variant)
+                        .unwrap()
+                        .as_str()
+                        .unwrap()
+                        .into();
+                    target.provenance = Some(provenance);
+                    target.override_value = override_value.map(|value| {
+                        (
+                            value.model,
+                            match value.variant {
+                                super::super::store::AgentVariantOverride::Inherit => {
+                                    VariantChoice::Default
+                                }
+                                super::super::store::AgentVariantOverride::Off => {
+                                    VariantChoice::Clear
+                                }
+                                super::super::store::AgentVariantOverride::Named(name) => {
+                                    VariantChoice::Exact(name)
+                                }
+                            },
+                        )
+                    });
+                    Ok(target)
                 }) as crate::bus::runtime::BoxFuture<Result<ModelTarget, String>>
             }
         };
@@ -455,20 +766,50 @@ impl Service {
             let (service, selected) = (self.clone(), selected);
             move |target: ModelTarget,
                   floor: usize,
-                  envelope: crate::bus::event::EventEnvelope,
-                  install: crate::bus::runtime::Install| {
+                  staged: Option<crate::bus::runtime::model::StagedCheckpoint>,
+                  envelopes: Vec<crate::bus::event::EventEnvelope>,
+                  install: crate::bus::runtime::Install,
+                  cancel: tokio_util::sync::CancellationToken| {
                 let (service, selected) = (service.clone(), selected.clone());
                 Box::pin(async move {
-                    let revision = envelope.payload["revision"].as_u64().unwrap_or(0);
+                    if cancel.is_cancelled() {
+                        return Err("selection cancelled before callback".into());
+                    }
+                    let revision = envelopes
+                        .iter()
+                        .find(|e| e.kind == "model.changed")
+                        .and_then(|e| e.payload["revision"].as_u64())
+                        .unwrap_or(0);
                     service
                         .history
-                        .switch_model(
+                        .commit_agent_selection_cancellable(
                             id,
-                            &target.alias,
-                            &target.resolution,
-                            target.variant.as_ref(),
-                            floor,
-                            envelope,
+                            target.agent.as_ref().expect("resolved agent").id.as_str(),
+                            target.override_value.clone().map(|(model, variant)| {
+                                super::super::store::AgentOverride {
+                                    model,
+                                    variant: variant.into(),
+                                }
+                            }),
+                            super::super::store::EffectiveAgentSelection {
+                                provenance: target.provenance.clone(),
+                                model: target.alias.clone(),
+                                resolution: target.resolution.clone(),
+                                variant: target.variant.clone(),
+                                primary_agent: target
+                                    .agent
+                                    .as_ref()
+                                    .expect("resolved agent")
+                                    .id
+                                    .to_string(),
+                                reasoning_floor: floor,
+                            },
+                            staged.map(|staged| super::super::store::SelectionCheckpoint {
+                                transcript: staged.transcript,
+                                checkpoint: staged.checkpoint,
+                            }),
+                            envelopes,
+                            Some(cancel),
                         )
                         .await?;
                     service.before_switch_install().await;
@@ -477,6 +818,14 @@ impl Service {
                     // reader sees the old selection or the new, never a mix.
                     let mut guard = lock(&selected);
                     install();
+                    guard.provenance = target.provenance.clone();
+                    guard.agent = target
+                        .agent
+                        .as_ref()
+                        .expect("resolved agent")
+                        .id
+                        .to_string();
+                    guard.role = target.agent.as_ref().expect("resolved agent").clone();
                     guard.alias = target.alias.clone();
                     if let Some(execution) = &guard.execution {
                         let mut resolved = execution.resolved.clone();
@@ -521,11 +870,13 @@ impl Service {
     async fn resolve_switch_target(
         &self,
         id: Ulid,
-        workspace: &Path,
+        _workspace: &Path,
         alias: &str,
         running: Option<&ModelResolution>,
+        choice: &VariantChoice,
+        captured: (ResolvedModel, PathBuf),
     ) -> Result<ModelTarget, ServerError> {
-        let (mut resolved, models_file) = self.resolve_model(workspace, alias)?;
+        let (mut resolved, models_file) = captured;
         if resolved.model.api != crate::provider::config::ApiKind::Chat {
             return Err(ServerError::Model(
                 crate::error::ProviderError::UnknownModelAlias(alias.to_string()),
@@ -554,7 +905,7 @@ impl Service {
                 &resolved,
                 &api_key,
                 &models_file,
-                VariantStart::Choice(&VariantChoice::Default),
+                VariantStart::Choice(choice),
             )
             .await?;
         let limits = crate::agent::context::ContextLimits::from_resolution(
@@ -579,6 +930,12 @@ impl Service {
                 model: String::new(),
             });
         Ok(ModelTarget {
+            warning: None,
+            provenance: None,
+            source: String::new(),
+            variant_source: String::new(),
+            agent: None,
+            override_value: None,
             alias: alias.to_string(),
             provider: resolved.provider.clone(),
             api_key,

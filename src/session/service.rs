@@ -130,6 +130,9 @@ pub use crate::bus::event::{SkillEntry, SkillsBody};
 /// variant of another. A model switch installs all of it under one lock.
 #[derive(Debug, Clone)]
 pub struct SelectedModel {
+    pub provenance: Option<super::store::SelectionProvenance>,
+    pub role: Arc<AgentDefinition>,
+    pub agent: String,
     pub(crate) execution: Option<Arc<EffectiveExecution>>,
     pub alias: String,
     /// The saved resolution (identity, window, where the window came from)
@@ -256,6 +259,9 @@ impl Drop for ChildReservation {
 }
 
 struct PreparedSession {
+    provenance: Option<super::store::SelectionProvenance>,
+    assignment_warning: Option<String>,
+    initial_override: Option<super::store::AgentOverride>,
     execution: Arc<EffectiveExecution>,
     session_id: SessionId,
     workspace: PathBuf,
@@ -359,6 +365,8 @@ pub struct Service {
     /// installation.
     #[cfg(test)]
     pub(super) install_barrier: Arc<Mutex<Option<Arc<super::run_command::Barrier>>>>,
+    #[cfg(test)]
+    pub(super) preparation_barrier: Arc<Mutex<Option<Arc<super::run_command::Barrier>>>>,
     #[cfg(test)]
     pub(super) publish_barrier: Arc<Mutex<Option<Arc<super::run_command::Barrier>>>>,
 }
@@ -613,6 +621,8 @@ impl Service {
             #[cfg(test)]
             install_barrier: Arc::default(),
             #[cfg(test)]
+            preparation_barrier: Arc::default(),
+            #[cfg(test)]
             publish_barrier: Arc::default(),
         })
     }
@@ -709,7 +719,6 @@ impl Service {
         if parent_handle.parent_session_id.is_some() {
             return Err(ServerError::ChildReadOnly);
         }
-        let parent_role = parent_handle.status.selection.current();
         let agents = self
             .load_agents(&parent_handle.workspace, parent, false)
             .await;
@@ -750,6 +759,7 @@ impl Service {
         // Concurrent calls in this process reserve capacity atomically; the
         // persistent active count includes children from other processes.
         let inherited = parent_handle.selected();
+        let parent_role = inherited.role.clone();
         let parent_alias = inherited.alias.clone();
         let alias = definition.model.as_deref().unwrap_or(&parent_alias);
         let mut policy = BTreeMap::new();
@@ -790,8 +800,7 @@ impl Service {
                     allowed,
                     definition.access == crate::agent::definitions::AgentAccess::ReadOnly
                         || parent_role.access == crate::agent::definitions::AgentAccess::ReadOnly,
-                    parent_handle
-                        .selected()
+                    inherited
                         .execution
                         .as_ref()
                         .is_some_and(|execution| execution.automatic_permission_review),
@@ -799,15 +808,14 @@ impl Service {
                         .latest_driver_message(parent)
                         .await
                         .map_err(ServerError::History)?,
-                    parent_handle
-                        .selected()
+                    inherited
                         .execution
                         .as_ref()
                         .map(|execution| execution.scratch_choice.clone())
                         .unwrap_or_default(),
                 )),
                 Some(parent),
-                definition.model.is_none().then_some(inherited),
+                (self.assignments_configured()? || definition.model.is_none()).then_some(inherited),
             )
             .await;
         let prepared = prepared?;
@@ -1640,7 +1648,7 @@ impl Service {
             workspace: handle.workspace.display().to_string(),
             variant: selected.variant_name(),
             model: selected.alias,
-            agent: handle.status.selection.current().id.to_string(),
+            agent: selected.agent,
             current_seq,
             parent_session_id: handle.parent_session_id.map(|id| id.to_string()),
             child_status: if handle.parent_session_id.is_some() {
@@ -1873,7 +1881,7 @@ impl Service {
             // session must mint its own id.
             None => Ulid::new(),
         };
-        let (workspace, alias, profile) = match &resumed {
+        let (workspace, mut alias, profile) = match &resumed {
             Some(loaded) => (
                 PathBuf::from(&loaded.meta.workspace),
                 loaded.meta.model.clone(),
@@ -1892,6 +1900,15 @@ impl Service {
         let agents = self
             .load_agents(&workspace, session_id, resumed.is_some())
             .await;
+        let captured = self.capture_preparation(&workspace)?;
+        let configured = captured.configured;
+        let settings = &captured.settings;
+        let wanted = if configured && agent.is_none() && resumed.is_none() && child_parent.is_none()
+        {
+            Some(settings.default_agent().map_err(ServerError::History)?)
+        } else {
+            agent
+        };
         let role = if child_parent.is_some() {
             let wanted = agent.unwrap_or_default();
             agents
@@ -1908,8 +1925,100 @@ impl Service {
                         .join(", "),
                 })?
         } else {
-            Self::pick_agent(&agents, session_id, agent, resumed.as_ref())?
+            Self::pick_agent(&agents, session_id, wanted, resumed.as_ref())?
         };
+        let mut inherited = inherited;
+        let mut assignment_variant = variant.clone();
+        let mut captured_model = None;
+        let mut assignment_warning = None;
+        let mut provenance = resumed.as_ref().and_then(|r| r.meta.provenance.clone());
+        let initial_override = if configured {
+            if let Some(loaded) = &resumed {
+                if let Some(saved) = loaded.meta.agent_overrides.get(role.id.as_str()) {
+                    if saved
+                        .model
+                        .as_ref()
+                        .is_some_and(|model| model != &loaded.meta.model)
+                    {
+                        return Err(ServerError::History(
+                            "saved agent override disagrees with effective model".into(),
+                        ));
+                    }
+                }
+            }
+            let assignment = self.assigned_from_snapshot(
+                &captured,
+                &agents,
+                role.id.as_str(),
+                child_parent.is_some(),
+            )?;
+            if resumed.is_none() {
+                if child_parent.is_some() {
+                    if let Some((name, choice, resolved, warning, source)) = assignment {
+                        provenance = Some(source);
+                        captured_model = Some(resolved);
+                        assignment_warning = warning;
+                        alias = name;
+                        assignment_variant = choice;
+                        inherited = None;
+                    }
+                } else if let Some(explicit) = model {
+                    provenance = Some(super::store::SelectionProvenance {
+                        model: super::store::ModelSource::Override,
+                        variant: super::store::VariantSource::ModelDefault,
+                    });
+                    alias = explicit.into();
+                } else if let Some((name, choice, resolved, warning, source)) = assignment {
+                    provenance = Some(source);
+                    captured_model = Some(resolved);
+                    assignment_warning = warning;
+                    alias = name;
+                    if *variant == VariantChoice::Default {
+                        assignment_variant = choice;
+                    }
+                }
+            }
+            (resumed.is_none()
+                && child_parent.is_none()
+                && (model.is_some() || *variant != VariantChoice::Default))
+                .then(|| super::store::AgentOverride {
+                    model: model.map(str::to_owned),
+                    variant: variant.clone().into(),
+                })
+        } else {
+            // Internal legacy creation path until the final catalog contract cutover.
+            None
+        };
+        if resumed.is_none() && configured {
+            if inherited.is_some() {
+                provenance = Some(super::store::SelectionProvenance {
+                    model: super::store::ModelSource::Parent,
+                    variant: super::store::VariantSource::Parent,
+                });
+            }
+            if child_parent.is_none() && *variant != VariantChoice::Default {
+                if let Some(source) = &mut provenance {
+                    source.variant = super::store::VariantSource::Override;
+                }
+            }
+        }
+        if captured_model.is_none() && inherited.is_none() {
+            captured_model = Some(if configured {
+                let name = crate::provider::model_name::ModelName::parse(&alias, &captured.catalog)
+                    .map_err(|e| ServerError::History(e.to_string()))?;
+                captured.catalog.resolve_name(&name)?
+            } else {
+                captured.catalog.resolve(&alias)?
+            });
+        }
+        #[cfg(test)]
+        {
+            let barrier = self.preparation_barrier.lock().unwrap().take();
+            if let Some(barrier) = barrier {
+                barrier.reached.notify_one();
+                barrier.release.notified().await;
+            }
+        }
         let (resolved, api_key, snapshot, save_late, models_file) =
             if let Some(selection) = &inherited {
                 let execution = selection
@@ -1931,8 +2040,18 @@ impl Service {
                 let api_key = execution.api_key.clone();
                 (resolved, api_key, snapshot, false, models_file)
             } else {
-                self.resolve_for_spawn(session_id, resume_workspace, &alias, resumed.as_ref())
-                    .await?
+                self.resolve_for_spawn(
+                    session_id,
+                    if configured {
+                        &workspace
+                    } else {
+                        resume_workspace
+                    },
+                    &alias,
+                    resumed.as_ref(),
+                    captured_model.map(|model| (model, captured.path.clone())),
+                )
+                .await?
             };
         // A resume keeps the variant the row saved; a fresh session takes the
         // request's choice. Either way it is checked against what the alias
@@ -1955,7 +2074,7 @@ impl Service {
                             }
                         }))
                     }
-                    None => VariantStart::Choice(variant),
+                    None => VariantStart::Choice(&assignment_variant),
                 },
             )
             .await?
@@ -1985,10 +2104,7 @@ impl Service {
         let execution = Arc::new(EffectiveExecution {
             scratch_choice: match &child_policy {
                 Some((_, _, _, _, choice)) => choice.clone(),
-                None => match crate::settings::load(&self.config.config_dir)
-                    .map_err(|e| e.to_string())
-                    .and_then(|settings| settings.permissions_scratch_dirs())
-                {
+                None => match settings.permissions_scratch_dirs() {
                     Ok(paths) => paths,
                     Err(error) => {
                         crate::agent::scratch::warn_once(&error);
@@ -1998,10 +2114,7 @@ impl Service {
             },
             automatic_permission_review: match &child_policy {
                 Some((_, _, enabled, _, _)) => *enabled,
-                None => match crate::settings::load(&self.config.config_dir)
-                    .map_err(|e| e.to_string())
-                    .and_then(|settings| settings.permissions_automatic_review())
-                {
+                None => match settings.permissions_automatic_review() {
                     Ok(enabled) => enabled,
                     Err(error) => {
                         tracing::warn!("automatic permission review disabled: {error}");
@@ -2127,10 +2240,16 @@ impl Service {
             &workspace,
             &self.config.config_dir,
         ) {
-            actor.permission_reviewer_unavailable = if models.resolve("metacognition").is_ok() {
+            let reviewer_present = crate::provider::layers::assigned(
+                &models,
+                &self.config.config_dir,
+                crate::provider::assignments::Layer::Metacognition,
+            )
+            .is_ok();
+            actor.permission_reviewer_unavailable = if reviewer_present {
                 "no key"
             } else {
-                "no alias"
+                "metacognition layer unavailable"
             };
             actor.permission_reviewer = crate::navigator::bootstrap::LazyCommenter::new(
                 &models,
@@ -2166,6 +2285,9 @@ impl Service {
         };
 
         Ok(PreparedSession {
+            provenance,
+            assignment_warning,
+            initial_override,
             execution,
             session_id,
             workspace,
@@ -2187,8 +2309,12 @@ impl Service {
     }
 
     async fn store_prepared(&self, prepared: &PreparedSession) -> Result<(), ServerError> {
+        let mut overrides = super::store::AgentOverrides::new();
+        if let Some(value) = &prepared.initial_override {
+            overrides.insert(prepared.role.id.to_string(), value.clone());
+        }
         self.history
-            .record_session_resolved(
+            .record_session_with_provenance(
                 prepared.session_id,
                 &prepared.workspace.display().to_string(),
                 &prepared.alias,
@@ -2197,6 +2323,8 @@ impl Service {
                 prepared.selected.as_ref(),
                 (prepared.resumed.is_none() && !prepared.role.id.is_build())
                     .then(|| prepared.role.id.as_str()),
+                &overrides,
+                prepared.provenance.as_ref(),
             )
             .await
             .map_err(ServerError::History)?;
@@ -2209,6 +2337,9 @@ impl Service {
 
     async fn publish_session(&self, prepared: PreparedSession) -> Result<SessionId, ServerError> {
         let PreparedSession {
+            provenance,
+            assignment_warning,
+            initial_override: _,
             execution,
             session_id,
             workspace,
@@ -2329,6 +2460,9 @@ impl Service {
         if !is_resume {
             // session.start is seq 0, sequenced before the runtime exists.
             let _ = sequencer.publish(start_candidate(&workspace));
+        }
+        if let Some(warning) = assignment_warning {
+            sequencer.publish(Candidate::new(EventKind::CommandResult, serde_json::json!({"operation_id":Ulid::new(),"name":"model_assignment","ok":true,"data":{"warning":warning}}))).map_err(|_| ServerError::SessionStopping)?;
         }
         // THEN the runtime task; the handle is retained so /stop can await
         // the interrupted turn's events before the session.end fence.
@@ -2519,6 +2653,9 @@ impl Service {
             1
         };
         let selected_model = Arc::new(Mutex::new(SelectedModel {
+            provenance,
+            role: status.selection.current(),
+            agent: status.selection.current().id.to_string(),
             execution: Some(execution),
             alias: alias.clone(),
             resolution: Some(Arc::new(snapshot.clone())),

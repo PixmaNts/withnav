@@ -21,7 +21,9 @@ pub use delivery::DriverCommit;
 pub use delivery::PendingNotice;
 pub use watchdog::PauseToken;
 pub use watchdog::TerminalOwner;
-mod model;
+pub(crate) mod model;
+#[cfg(debug_assertions)]
+pub use model::observe_selection_install;
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -387,11 +389,29 @@ impl RuntimeStatus {
         alias: String,
         operation_id: Ulid,
     ) -> Option<ModelReply> {
+        self.request_selection_switch(
+            model::SelectionRequest {
+                alias,
+                requesting_agent: self.selection.current().id.to_string(),
+                command: "model".into(),
+                ..Default::default()
+            },
+            operation_id,
+        )
+        .await
+    }
+
+    pub async fn request_selection_switch(
+        &self,
+        selection: model::SelectionRequest,
+        operation_id: Ulid,
+    ) -> Option<ModelReply> {
         let (reply, answer) = tokio::sync::oneshot::channel();
         self.controls
             .tx
             .send(Control::Model(ModelRequest {
-                alias,
+                alias: selection.alias.clone(),
+                selection,
                 operation_id,
                 reply,
             }))
@@ -954,7 +974,7 @@ async fn runtime_loop(
                             &status,
                             &sequencer,
                             &session_cancel,
-                            &request.alias,
+                            &request.selection,
                             request.operation_id,
                         )
                         .await;
@@ -1213,12 +1233,17 @@ async fn runtime_loop(
                                 }
                             }
                             Control::Model(request) => {
-                                let (operation_id, alias) =
-                                    (request.operation_id, request.alias.clone());
+                                let (operation_id, alias, selection) =
+                                    (request.operation_id, request.alias.clone(), request.selection.clone());
+                                if selection.command != "model" {
+                                    model::answer(&status, &sequencer, request, Err("the agent is working: wait for the turn to end".into())).await;
+                                    continue;
+                                }
                                 if model::accept_deferred(&sequencer, request).await {
                                     deferred.push(deferred::Deferred::Model {
                                         operation_id,
                                         alias,
+                                        selection,
                                     });
                                 }
                             }

@@ -6,7 +6,7 @@ Module._load = function(id, ...args) { return id === "vscode" ? { workspace: { w
 const { CognitionBackend } = require("../out/tests/cognition.js");
 Module._load = load;
 const { contextMeter, tokens, parseContext } = require("../out/tests/contextMeter.js");
-const snapshot = (revision = 1, extra = {}) => ({ alias: "model", window: 1000000, window_source: "catalog", estimate_total: 42000,
+const snapshot = (revision = 1, extra = {}) => ({ model: "gw/model", gateway:"gw", upstream_id:"model", window: 1000000, window_source: "catalog", estimate_total: 42000,
   breakdown: { system: 842, rules: 1000, skills_catalog: 2000, tools: 3000, messages: 35158 },
   output_reserve: 100000, margin: 100000, input_budget: 800000, percent: 4, revision, incarnation: "I", ...extra });
 

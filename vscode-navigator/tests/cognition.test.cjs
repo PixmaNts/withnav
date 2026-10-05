@@ -29,12 +29,13 @@ test("deferred model resolves only its operation and agent replay updates displa
   backend.state.currentTurn = "T";
   await backend.runComposerCommand("/model next");
   apply("command.result", { operation_id: "OP", name: "model", ok: true, data: { accepted: true, applies: "after_turn" } });
-  assert.equal(backend.state.pendingModel.alias, "next");
-  apply("model.changed", { operation_id: "OTHER", new: { alias: "other" } });
-  assert.equal(backend.state.pendingModel.alias, "next");
-  apply("model.changed", { operation_id: "OP", new: { alias: "next" } });
+  assert.equal(backend.state.pendingModel.name, "next");
+  apply("model.changed", { operation_id: "OTHER", new: { agent: "build", source: "override", model: "other" } });
+  assert.equal(backend.state.pendingModel.name, "next");
+  apply("model.changed", { operation_id: "OP", new: { agent: "build", source: "override", model: "next" } });
   assert.equal(backend.state.pendingModel, undefined);
-  assert.equal(apply("session.agent_changed", { agent: "plan" }).name, "plan");
+  apply("model.changed", { new: { agent: "plan", model: "gw/plan", source: "config", variant: null } }, 10);
+  assert.equal(backend.state.agent, "plan");
 });
 test("skill sends typed content; durable refusal retains draft and is operation correlated", async t => {
   const { backend, calls, apply } = setup(t, { command_id: "SK", accepted: true });
@@ -420,6 +421,8 @@ test("summary 503 retries then reconciles and releases child enrichment", async 
   let childReads = 0;
   t.mock.method(globalThis, "fetch", async url => {
     if (url.endsWith("/events")) { childReads++; return new Response(""); }
+    if (url.includes('/v1/agents?')) return new Response(JSON.stringify({agents:[],default_agent:'build'}));
+    if (url.includes('/v1/layers?')) return new Response(JSON.stringify({layers:[]}));
     summaries++;
     return new Response(JSON.stringify(summaries === 1 ? { error: "Unavailable" } : { current_seq: 4, model: "model" }), { status: summaries === 1 ? 503 : 200 });
   });
@@ -521,9 +524,9 @@ test("server-wide catalog installs after bootstrap changes conversation generati
   const pending = backend.fetchModels();
   await backend.bootstrapConversations();
   assert.equal(backend.currentConversationId(), "parent");
-  finish(new Response(JSON.stringify({ models: [{ alias: "cognition", model: "model" }], default: "cognition" })));
+  finish(new Response(JSON.stringify({ models: [{ name: "cognition", gateway: "gw", provider_group: "gw", upstream_id: "model", api: "chat", enabled: true }], default: "cognition" })));
   await pending;
-  assert.equal(backend.models[0].alias, "cognition");
+  assert.equal(backend.models[0].name, "cognition");
   backend.dispose();
 });
 
@@ -533,10 +536,10 @@ test("obsolete endpoint catalog cannot replace current models", async t => {
   t.mock.method(globalThis, "fetch", async () => new Promise(resolve => { finish = resolve; }));
   const pending = backend.fetchModels();
   backend.endpoint = { port: 4321, token: "new" };
-  backend.models = [{ alias: "current", model: "new" }];
-  finish(new Response(JSON.stringify({ models: [{ alias: "obsolete", model: "old" }] })));
+  backend.models = [{ name: "current", gateway: "gw", provider_group: "gw", upstream_id: "new", api: "chat", enabled: true }];
+  finish(new Response(JSON.stringify({ models: [{ name: "obsolete", gateway: "gw", provider_group: "gw", upstream_id: "old", api: "chat", enabled: true }] })));
   await pending;
-  assert.equal(backend.models[0].alias, "current");
+  assert.equal(backend.models[0].name, "current");
   backend.dispose();
 });
 

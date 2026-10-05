@@ -1,5 +1,7 @@
 export interface ContextSnapshot {
-  alias: string;
+  model: string;
+  gateway?: string;
+  upstream_id?: string;
   window: number;
   window_source: string;
   estimate_total: number;
@@ -10,14 +12,14 @@ export interface ContextSnapshot {
   percent: number;
   revision: number;
   incarnation?: string;
-  last_usage?: { prompt_tokens: number; completion_tokens: number; step: string } | null;
+  last_usage?: { prompt_tokens: number; completion_tokens: number; step: string; model?: string; gateway?: string; upstream_id?: string } | null;
 }
 
 const count = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) >= 0;
 
 /** Validate server data before it reaches the webview. */
 export function parseContext(value: any): ContextSnapshot | undefined {
-  if (!value || typeof value.alias !== "string" || typeof value.window_source !== "string" ||
+  if (!value || typeof value.model !== "string" || typeof value.window_source !== "string" ||
       ![value.window, value.estimate_total, value.output_reserve, value.margin, value.input_budget, value.percent, value.revision].every(count) ||
       !value.breakdown || !["system", "rules", "skills_catalog", "tools", "messages"].every(key => count(value.breakdown[key])) ||
       (value.incarnation !== undefined && typeof value.incarnation !== "string") ||

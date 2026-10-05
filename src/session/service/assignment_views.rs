@@ -305,33 +305,39 @@ impl Service {
         )
         .map_err(|_| diagnostic("default_agent is not a valid agent id"))?;
         let wanted = snapshot.settings.default_agent().map_err(diagnostic)?;
-        if let Some(definition) = snapshot.agents.get(wanted) {
-            let configured = snapshot
-                .settings
-                .agent_assignment(wanted)
-                .map_err(diagnostic)?;
-            if configured
-                .as_ref()
-                .map(|a| a.model.as_str())
-                .or(definition.model.as_deref())
-                .is_some_and(|raw| canonical_name(raw, &snapshot.catalog).is_err())
-            {
-                return Err(diagnostic(format!(
-                    "default_agent '{wanted}' has an invalid canonical model assignment"
-                )));
+        if saved.is_none() {
+            if let Some(definition) = snapshot.agents.get(wanted) {
+                let configured = snapshot
+                    .settings
+                    .agent_assignment(wanted)
+                    .map_err(diagnostic)?;
+                if configured
+                    .as_ref()
+                    .map(|a| a.model.as_str())
+                    .or(definition.model.as_deref())
+                    .is_some_and(|raw| canonical_name(raw, &snapshot.catalog).is_err())
+                {
+                    return Err(diagnostic(format!(
+                        "default_agent '{wanted}' has an invalid canonical model assignment"
+                    )));
+                }
             }
         }
-        let default_agent = resolver
-            .default_agent_check(&known)
-            .map_err(|error| diagnostic(default_agent_reason(error)))?;
-        let default = snapshot
-            .agents
-            .get(&default_agent)
-            .ok_or_else(|| diagnostic("default_agent definition unavailable"))?;
-        let fallback = self
-            .base_assignment(&snapshot, default)?
-            .0
-            .ok_or_else(|| diagnostic("default_agent has no usable model"))?;
+        let (default_agent, fallback) = match resolver.default_agent_check(&known) {
+            Ok(default_agent) => {
+                let default = snapshot
+                    .agents
+                    .get(&default_agent)
+                    .ok_or_else(|| diagnostic("default_agent definition unavailable"))?;
+                let fallback = self.base_assignment(&snapshot, default)?.0;
+                if fallback.is_none() && saved.is_none() {
+                    return Err(diagnostic("default_agent has no usable model"));
+                }
+                (default_agent, fallback)
+            }
+            Err(_) if saved.is_some() => (wanted.to_owned(), None),
+            Err(error) => return Err(diagnostic(default_agent_reason(error))),
+        };
         if let Some(row) = &saved {
             let current = row.primary_agent.as_deref().unwrap_or("build");
             AgentId::parse(current)
@@ -351,6 +357,11 @@ impl Service {
                 }
             }
         }
+        // Validate the durable identity before projecting today's possibly unusable defaults.
+        let saved_effective = saved
+            .as_ref()
+            .map(|row| saved_selection(row, pinned_provenance(row).as_ref(), &snapshot.catalog))
+            .transpose()?;
         let mut agents = Vec::with_capacity(definitions.len());
         for definition in definitions {
             let (base, mut warning) = self.base_assignment(&snapshot, definition)?;
@@ -362,32 +373,52 @@ impl Service {
                     definition.id
                 ));
             }
+            if base.is_none() && !inherits_parent && fallback.is_none() {
+                warning = Some(format!(
+                    "{}; default_agent '{default_agent}' has no usable fallback",
+                    warning.as_deref().unwrap_or("model assignment unavailable")
+                ));
+            }
             let assignment = if inherits_parent {
                 None
             } else {
-                Some(base.unwrap_or_else(|| {
-                    let mut selected = fallback.clone();
-                    selected.source = AssignmentSource::DefaultAgent;
-                    if !matches!(selected.variant_source, AssignmentSource::ModelDefault) {
-                        selected.variant_source = AssignmentSource::DefaultAgent;
-                    }
-                    selected
-                }))
+                base.or_else(|| {
+                    fallback.clone().map(|mut selected| {
+                        selected.source = AssignmentSource::DefaultAgent;
+                        if !matches!(selected.variant_source, AssignmentSource::ModelDefault) {
+                            selected.variant_source = AssignmentSource::DefaultAgent;
+                        }
+                        selected
+                    })
+                })
             };
             let mut effective = assignment.clone();
             let mut selection_override = None;
             if let Some(row) = &saved {
                 if let Some(over) = row.agent_overrides.get(definition.id.as_str()) {
-                    effective =
-                        Some(self.override_assignment(&snapshot, assignment.as_ref(), over)?);
+                    if definition.id.as_str() != row.primary_agent.as_deref().unwrap_or("build") {
+                        if let Some(model) = &over.model {
+                            canonical_name(model, &snapshot.catalog).map_err(diagnostic)?;
+                        }
+                        match self.override_assignment(&snapshot, assignment.as_ref(), over) {
+                            Ok(selected) => effective = Some(selected),
+                            Err(_) => {
+                                effective = None;
+                                warning = Some(format!(
+                                    "agent '{}' saved override unavailable with current assignments",
+                                    definition.id
+                                ));
+                            }
+                        }
+                    }
                     selection_override = Some(override_view(over));
                 }
                 if definition.id.as_str() == row.primary_agent.as_deref().unwrap_or("build") {
-                    let pinned = pinned_provenance(row);
-                    effective = Some(saved_selection(row, pinned.as_ref(), &snapshot.catalog)?);
+                    effective = saved_effective.clone();
                 } else if inherits_parent && selection_override.is_none() {
-                    let pinned = pinned_provenance(row);
-                    let mut parent = saved_selection(row, pinned.as_ref(), &snapshot.catalog)?;
+                    let mut parent = saved_effective
+                        .clone()
+                        .expect("validated session selection");
                     parent.source = AssignmentSource::Parent;
                     parent.variant_source = AssignmentSource::Parent;
                     effective = Some(parent);
@@ -445,8 +476,9 @@ impl Service {
             AgentModel::Fallback(warning) => Ok((
                 None,
                 Some(format!(
-                    "agent '{}' has an unusable model assignment; using default_agent",
-                    warning.agent
+                    "agent '{}' model '{}' unavailable; using default_agent",
+                    warning.agent,
+                    requested.expect("fallback has a requested canonical model")
                 )),
             )),
             AgentModel::Assigned(model) => match self.assignment_variant(snapshot, &model, false) {
@@ -695,6 +727,158 @@ mod tests {
     use http_body_util::BodyExt;
     use serde_json::{json, Value};
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn current_pinned_override_survives_catalog_model_and_variant_removal_live_and_stopped() {
+        let (root, state) = fixture(json!({"agents":{"build":{"model":"mock/combo/chat"}}}));
+        crate::provider::auth::set_key(&state.config.config_dir, "mock", "test").unwrap();
+        let id = state
+            .create_session_with(
+                root.path(),
+                Some("mock/combo/chat"),
+                None,
+                crate::session::VariantChoice::Exact("low".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        let path = state.config.models_path.as_ref().unwrap();
+        let mut catalog: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        catalog["models"]
+            .as_object_mut()
+            .unwrap()
+            .retain(|_, model| model["model"] != "combo/chat");
+        catalog["models"]["replacement"] =
+            json!({"provider":"mock","model":"replacement","context_window":128000});
+        std::fs::write(path, catalog.to_string()).unwrap();
+        std::fs::write(
+            state.config.config_dir.join("config.json"),
+            json!({"agents":{"build":{"model":"mock/replacement"}}}).to_string(),
+        )
+        .unwrap();
+        for stopped in [false, true] {
+            if stopped {
+                state.close_session(id).await.unwrap();
+            }
+            let (status, body) =
+                get(&state, root.path(), "agents", &format!("&session_id={id}")).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let build = body["agents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["id"] == "build")
+                .unwrap();
+            assert_eq!(build["effective"]["model"], "mock/combo/chat");
+            assert_eq!(build["effective"]["variant"], "low");
+            assert_eq!(build["effective"]["source"], "override");
+        }
+    }
+
+    #[tokio::test]
+    async fn pinned_selection_survives_model_removal_without_retargeting_config_live_and_stopped() {
+        for overridden in [false, true] {
+            let settings = json!({"agents":{"build":{"model":"mock/combo/chat","variant":"low"}}});
+            let (root, state) = fixture(settings.clone());
+            crate::provider::auth::set_key(&state.config.config_dir, "mock", "test-only-secret")
+                .unwrap();
+            let id = state
+                .create_session_with(
+                    root.path(),
+                    overridden.then_some("mock/combo/chat"),
+                    None,
+                    if overridden {
+                        crate::session::VariantChoice::Exact("low".into())
+                    } else {
+                        crate::session::VariantChoice::Default
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+            state
+                .history()
+                .update_agent_override(
+                    id,
+                    "oracle",
+                    AgentOverride {
+                        model: Some("mock/combo/chat".into()),
+                        variant: AgentVariantOverride::Named("low".into()),
+                    },
+                )
+                .await
+                .unwrap();
+            let path = state.config.models_path.as_ref().unwrap();
+            let mut catalog: Value =
+                serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+            catalog["models"]
+                .as_object_mut()
+                .unwrap()
+                .retain(|_, model| model["model"] != "combo/chat");
+            std::fs::write(path, catalog.to_string()).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(
+                    &std::fs::read_to_string(state.config.config_dir.join("config.json")).unwrap()
+                )
+                .unwrap(),
+                settings
+            );
+            for stopped in [false, true] {
+                if stopped {
+                    state.close_session(id).await.unwrap();
+                }
+                let (status, body) =
+                    get(&state, root.path(), "agents", &format!("&session_id={id}")).await;
+                assert_eq!(status, StatusCode::OK, "{body}");
+                let build = agent(&body, "build");
+                assert!(build["assignment"].is_null());
+                assert_eq!(build["effective"]["model"], "mock/combo/chat");
+                assert_eq!(build["effective"]["variant"], "low");
+                let source = if overridden { "override" } else { "config" };
+                assert_eq!(build["effective"]["source"], source);
+                assert_eq!(build["effective"]["variant_source"], source);
+                assert!(build["warning"]
+                    .as_str()
+                    .unwrap()
+                    .contains("mock/combo/chat"));
+                assert!(build["warning"]
+                    .as_str()
+                    .unwrap()
+                    .contains("no usable fallback"));
+                assert!(agent(&body, "oracle")["effective"].is_null());
+                assert!(!agent(&body, "oracle")["warning"].is_null());
+                assert!(agent(&body, "plan")["effective"].is_null());
+                assert!(!agent(&body, "plan")["warning"].is_null());
+                assert_eq!(
+                    agent(&body, "child")["effective"]["model"],
+                    "mock/combo/chat"
+                );
+                assert_eq!(agent(&body, "child")["effective"]["source"], "parent");
+                for secret in [
+                    "url-secret",
+                    "AUTH_SECRET",
+                    "header-secret",
+                    "test-only-secret",
+                ] {
+                    assert!(!body.to_string().contains(secret));
+                }
+                let (status, _) = get(&state, root.path(), "agents", "").await;
+                assert_eq!(status, StatusCode::BAD_REQUEST);
+            }
+            let connection = rusqlite::Connection::open(&state.config.history_db).unwrap();
+            connection
+                .execute(
+                    "UPDATE sessions SET model_resolution=?1 WHERE id=?2",
+                    rusqlite::params!["{malformed-secret", id.to_string()],
+                )
+                .unwrap();
+            let (status, body) =
+                get(&state, root.path(), "agents", &format!("&session_id={id}")).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(!body.to_string().contains("malformed-secret"));
+        }
+    }
 
     fn fixture(settings: Value) -> (tempfile::TempDir, crate::server::AppState) {
         let root = tempfile::tempdir().unwrap();

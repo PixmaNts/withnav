@@ -950,6 +950,57 @@ mod tests {
         assert_eq!(rx.recv().await.unwrap().seq, assigned);
     }
 
+    #[tokio::test]
+    async fn cancelled_queued_callback_emits_nothing_and_reuses_reserved_sequence() {
+        let (seq, mut rx) = spawn_with_collector();
+        let (entered, wait) = oneshot::channel();
+        let (release, resume) = oneshot::channel();
+        let first = tokio::spawn({
+            let seq = seq.clone();
+            async move {
+                seq.commit_acked(
+                    turn_candidate("first"),
+                    Box::new(move |_| {
+                        Box::pin(async move {
+                            let _ = entered.send(());
+                            let _ = resume.await;
+                            Ok(())
+                        })
+                    }),
+                )
+                .await
+            }
+        });
+        wait.await.unwrap();
+        let token = tokio_util::sync::CancellationToken::new();
+        let cancelled = tokio::spawn({
+            let seq = seq.clone();
+            let token = token.clone();
+            async move {
+                seq.commit_acked(
+                    turn_candidate("cancelled"),
+                    Box::new(move |_| {
+                        Box::pin(async move {
+                            if token.is_cancelled() {
+                                Err("cancelled callback".into())
+                            } else {
+                                Ok(())
+                            }
+                        })
+                    }),
+                )
+                .await
+            }
+        });
+        token.cancel();
+        release.send(()).unwrap();
+        first.await.unwrap().unwrap();
+        assert!(cancelled.await.unwrap().is_err());
+        assert_eq!(rx.recv().await.unwrap().seq, 0);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(seq.publish_acked(turn_candidate("next")).await.unwrap(), 1);
+    }
+
     // Given a commit that fails
     // Then nothing is emitted, the error comes back, and the next event takes
     //      the same seq: no gap

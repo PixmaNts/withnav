@@ -22,6 +22,8 @@ pub use delivery::PendingNotice;
 pub use watchdog::PauseToken;
 pub use watchdog::TerminalOwner;
 pub(crate) mod model;
+#[cfg(debug_assertions)]
+pub use model::observe_selection_install;
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;

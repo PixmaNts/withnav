@@ -1653,6 +1653,8 @@ fn models_now(s: &mut State, default: Option<String>) -> Result<Vec<Effect>, Pro
     update(
         s,
         ClientEvent::Models {
+            workspace: "/ws".into(),
+            request: 0,
             generation: s.generation.clone(),
             result: Ok(ModelsBody {
                 models: catalog(),
@@ -1665,6 +1667,8 @@ fn models_now(s: &mut State, default: Option<String>) -> Result<Vec<Effect>, Pro
         update(
             s,
             ClientEvent::Agents {
+                workspace: s.workspace.clone(),
+                request: 0,
                 generation: s.generation.clone(),
                 session_id: None,
                 result: Ok(AgentsBody {
@@ -2068,6 +2072,8 @@ fn bug2_resync_keeps_catalog_model_sessions_pending_submit_and_notice() {
     s.catalog = catalog();
     s.selected_model_id = Some("a".into());
     s.sessions = vec![SessionListEntry {
+        read_only: false,
+        resume_disabled_reason: None,
         id: "S0".into(),
         title: None,
         created_at: "t".into(),
@@ -3240,6 +3246,8 @@ fn a_catalog_answer_reaches_every_tab() {
     update(
         &mut s,
         ClientEvent::Models {
+            workspace: "/ws".into(),
+            request: 0,
             generation,
             result: Ok(ModelsBody {
                 models,
@@ -3553,7 +3561,11 @@ fn toggling_the_agent_before_a_conversation_sets_the_one_it_starts_as() {
     let mut back = st();
     handle_action(&mut back, &mut ui, Action::ToggleAgent);
     handle_action(&mut back, &mut ui, Action::ToggleAgent);
-    assert_eq!(back.agent, None, "build is the server's default: not sent");
+    assert_eq!(
+        back.agent.as_deref(),
+        Some("build"),
+        "explicit build is not the server default"
+    );
 }
 
 #[test]
@@ -3580,8 +3592,8 @@ fn toggling_the_agent_of_a_conversation_goes_through_the_server() {
     );
     let mut script = Script::new();
     script.raw(
-        "session.agent_changed",
-        json!({"agent": "plan", "previous": "build"}),
+        "model.changed",
+        json!({"new":{"agent":"plan","model":"a","variant":"high","source":"config","variant_source":"override"},"previous":null,"window":1000,"reason":"agent"}),
     );
     feed(&mut s, &script.out);
     assert_eq!(s.agent_name(), "plan");
@@ -3635,8 +3647,8 @@ fn the_session_summary_and_a_background_change_set_each_tabs_agent() {
     assert_eq!(s.agent_name(), "build", "a new tab starts as build");
     let mut script = Script::new();
     script.raw(
-        "session.agent_changed",
-        json!({"agent": "build", "previous": "plan"}),
+        "model.changed",
+        json!({"new":{"agent":"build","model":"a","variant":null,"source":"config","variant_source":"model_default"},"previous":null,"window":1000,"reason":"agent"}),
     );
     update(
         &mut s,
@@ -3822,7 +3834,7 @@ fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server
     assert_eq!(ui.overlay, Some(Overlay::Variants));
     assert_eq!(ui.variant_pick, Some(VariantPick::Current));
     let (rows, _) = navai::tui::commands::variant_choices(&s, &VariantPick::Current);
-    assert_eq!(rows, ["low", "max", "off"]);
+    assert_eq!(rows, ["low", "max", "off", "inherit"]);
     assert_eq!(
         rows[ui.selection["Variants"]], "max",
         "starts on the variant the answer names, not the tab's older `high`"
@@ -3848,12 +3860,12 @@ fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server
     script.raw(
         "command.result",
         json!({"operation_id": Ulid(4).to_string(), "name": "variant", "ok": true,
-               "data": {"variant": null, "offered": ["low", "high"]}}),
+               "data": {"agent":"build","model":"opus","variant_source":"override","variant": null, "offered": ["low", "high"]}}),
     );
     script.raw(
         "command.result",
         json!({"operation_id": Ulid(5).to_string(), "name": "variant", "ok": true,
-               "data": {"variant": "low", "offered": ["low", "high"], "applies": "next_turn"}}),
+               "data": {"agent":"build","model":"opus","variant_source":"override","variant": "low", "offered": ["low", "high"], "applies": "next_turn"}}),
     );
     let ev = envelope(&s, &script.out[0]);
     update(&mut s, ev).unwrap();
@@ -3872,11 +3884,7 @@ fn slash_variant_without_a_conversation_asks_the_server_nothing() {
     let (mut s, mut ui) = (with_variants(), ui());
     let fx = handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Variants));
     assert!(fx.is_empty());
-    assert_eq!(ui.overlay, None);
-    assert!(matches!(
-        &s.conversation.blocks.last().unwrap().kind,
-        BlockKind::Command { ok: false, text, .. } if text.contains("send a message first")
-    ));
+    assert_eq!(ui.overlay, Some(Overlay::Variants));
 }
 
 #[test]
@@ -3905,13 +3913,13 @@ fn a_summary_read_before_a_confirmed_change_does_not_undo_it() {
     let mut script = Script::new();
     script.seq = 10;
     script.raw(
-        "session.agent_changed",
-        json!({"agent": "plan", "previous": "build"}),
+        "model.changed",
+        json!({"new":{"agent":"plan","model":"a","variant":"high","source":"config","variant_source":"override"},"previous":null,"window":1000,"reason":"agent"}),
     );
     script.raw(
         "command.result",
         json!({"operation_id": Ulid(1).to_string(), "name": "variant", "ok": true,
-               "data": {"variant": "high", "offered": ["low", "high"]}}),
+               "data": {"agent":"plan","model":"a","variant_source":"override","variant": "high", "offered": ["low", "high"]}}),
     );
     feed(&mut s, &script.out);
     let (agent_seq, variant_seq) = (script.out[0].seq, script.out[1].seq);
@@ -4012,7 +4020,7 @@ fn slash_variant_always_offers_off_even_with_an_empty_catalog() {
     // before any answer, and with an offer of nothing: `off` is still there
     assert_eq!(
         navai::tui::commands::variant_choices(&s, &VariantPick::Current),
-        (vec!["off".to_string()], 0)
+        (vec!["off".to_string(), "inherit".to_string()], 0)
     );
     let answer = ClientEvent::CommandRan {
         generation: s.generation.clone(),
@@ -4029,7 +4037,10 @@ fn slash_variant_always_offers_off_even_with_an_empty_catalog() {
     handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Variants));
     update(&mut s, answer).unwrap();
     let (rows, start) = navai::tui::commands::variant_choices(&s, &VariantPick::Current);
-    assert_eq!((rows, start), (vec!["high".into(), "off".into()], 0));
+    assert_eq!(
+        (rows, start),
+        (vec!["high".into(), "off".into(), "inherit".into()], 0)
+    );
     // a failed answer opens nothing
     handle_action(&mut s, &mut ui, Action::OpenOverlay(Overlay::Variants));
     let failed = ClientEvent::CommandRan {
@@ -5082,6 +5093,8 @@ fn a_catalog_refresh_leaves_the_committed_model_and_window_alone() {
     );
     // the catalog (F2) now says luna maps to another model with another window
     let ev = ClientEvent::Models {
+        workspace: "/ws".into(),
+        request: 0,
         generation: s.generation.clone(),
         result: Ok(ModelsBody {
             models: vec![ModelEntry {

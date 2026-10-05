@@ -236,6 +236,8 @@ fn state() -> State {
             },
         ],
         sessions: vec![SessionListEntry {
+            read_only: false,
+            resume_disabled_reason: None,
             id: "01JABCDEFGH".into(),
             title: Some("Fix parser".into()),
             created_at: "2026-10-01T08:00:00Z".into(),
@@ -3176,6 +3178,8 @@ fn the_header_keeps_the_committed_model_when_the_catalog_says_otherwise() {
     s.model_seq = Some(10);
     s.conversation.context_tokens = Some(1_000);
     let ev = navai::tui::protocol::ClientEvent::Models {
+        workspace: String::new(),
+        request: 0,
         generation: s.generation.clone(),
         result: Ok(navai::tui::protocol::ModelsBody {
             models: vec![ModelEntry {

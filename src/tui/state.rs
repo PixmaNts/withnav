@@ -141,6 +141,10 @@ pub struct TabView {
 /// no other tab.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Tab {
+    pub default_agent: Option<String>,
+    pub agents: Vec<super::protocol::AgentEntry>,
+    pub agents_request: u64,
+    pub effective: Option<super::protocol::ModelIdentity>,
     pub model_source: String,
     pub variant_source: String,
     pub start_model: Option<String>,
@@ -228,6 +232,13 @@ pub const DEFAULT_AGENT: &str = "build";
 pub const PLAN_AGENT: &str = "plan";
 
 impl Tab {
+    pub fn archive(&self) -> bool {
+        self.parent_session_id.is_none()
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|m| m.read_only || !m.promptable)
+    }
     pub fn read_only(&self) -> bool {
         self.parent_session_id.is_some()
             || self
@@ -248,7 +259,13 @@ impl Tab {
 
     /// The primary agent's name for display.
     pub fn agent_name(&self) -> &str {
-        self.agent.as_deref().unwrap_or(DEFAULT_AGENT)
+        if let Some(effective) = &self.effective {
+            return &effective.agent;
+        }
+        self.agent
+            .as_deref()
+            .or(self.default_agent.as_deref())
+            .unwrap_or(DEFAULT_AGENT)
     }
 
     /// True when the tab holds nothing yet: no session, nothing being created or resumed, no block.
@@ -370,7 +387,8 @@ impl ChildStatus {
 /// the active tab through `Deref`, so code that handles one conversation stays as it was.
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
-    pub agents: Vec<super::protocol::AgentEntry>,
+    pub models_request: u64,
+    pub layers_request: u64,
     pub layers: Vec<super::protocol::LayerEntry>,
     pub default_agent: String,
     pub tabs: Vec<Tab>,
@@ -393,7 +411,8 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
-            agents: vec![],
+            models_request: 0,
+            layers_request: 0,
             layers: vec![],
             default_agent: DEFAULT_AGENT.into(),
             tabs: vec![Tab::default()],

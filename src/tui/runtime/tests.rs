@@ -219,7 +219,9 @@ async fn http_effects_report_back_tagged_with_the_context_generation() {
     let mut seen = Vec::new();
     for _ in 0..6 {
         let (generation, name) = match next(&mut rx).await {
-            ClientEvent::Models { generation, result } => {
+            ClientEvent::Models {
+                generation, result, ..
+            } => {
                 assert!(result.is_err());
                 (generation, "models")
             }
@@ -394,6 +396,8 @@ fn options(model: Option<&str>) -> TuiOptions {
 async fn startup_presets_the_model_and_asks_for_catalog_and_sessions() {
     let mut runtime = Runtime::new(&options(Some("fast")));
     assert_eq!(runtime.state.selected_model_id.as_deref(), Some("fast"));
+    assert_eq!(runtime.state.model_source, "override");
+    assert_eq!(runtime.state.variant_source, "model_default");
     runtime.start(None);
     let mut kinds = Vec::new();
     for _ in 0..4 {
@@ -411,6 +415,46 @@ async fn startup_presets_the_model_and_asks_for_catalog_and_sessions() {
     }
     kinds.sort_unstable();
     assert_eq!(kinds, ["agents", "layers", "models", "sessions"]);
+}
+
+#[tokio::test]
+async fn startup_resume_fetches_workspace_layers_under_the_resumed_generation() {
+    let mut runtime = Runtime::new(&options(None));
+    runtime.start(Some("saved".into()));
+    let generation = runtime.state.generation.clone();
+    let mut got_layers = false;
+    let mut got_models = false;
+    for _ in 0..6 {
+        let event = tokio::time::timeout(Duration::from_secs(10), runtime.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match event {
+            ClientEvent::Layers {
+                generation: owner,
+                workspace,
+                ..
+            } => {
+                assert_eq!(owner, generation);
+                assert_eq!(workspace, "/ws");
+                got_layers = true;
+            }
+            ClientEvent::Models {
+                generation: owner,
+                workspace,
+                ..
+            } => {
+                assert_eq!(owner, generation);
+                assert_eq!(workspace, "/ws");
+                got_models = true;
+            }
+            _ => {}
+        }
+        if got_layers && got_models {
+            break;
+        }
+    }
+    assert!(got_layers && got_models);
 }
 
 #[tokio::test]

@@ -215,7 +215,7 @@ pub fn short_id(id: &str) -> String {
 fn resume(s: &mut State, ui: &mut UiState, id: String) -> Vec<Effect> {
     if s.sessions
         .iter()
-        .any(|e| e.id == id && (!e.promptable || e.parent_session_id.is_some()))
+        .any(|e| e.id == id && e.parent_session_id.is_some())
         || s.tabs
             .iter()
             .any(|t| t.children.iter().any(|c| c.session_id == id))
@@ -230,7 +230,7 @@ fn resume(s: &mut State, ui: &mut UiState, id: String) -> Vec<Effect> {
         };
         // A stopped session keeps its projection and cursor (the subscribe after `Resumed` starts
         // from `last_applied_seq`); a live one, or one being resumed, needs nothing.
-        if s.activity == Activity::Stopped && s.resuming.is_none() {
+        if s.activity == Activity::Stopped && s.resuming.is_none() && !s.read_only() {
             s.resuming = Some(id.clone());
             effects.push(Effect::Resume(id));
         }
@@ -320,6 +320,12 @@ fn pick_model(
     s.selected_model_id = Some(model_id);
     s.start_model = s.selected_model_id.clone();
     s.model_source = "override".into();
+    s.variant_source = if variant.is_some() {
+        "override"
+    } else {
+        "model_default"
+    }
+    .into();
     refresh_model(s);
     let default = s
         .catalog
@@ -422,7 +428,7 @@ fn toggle_agent(s: &mut State) -> Vec<Effect> {
         PLAN_AGENT
     };
     if s.session.is_none() && s.resuming.is_none() && s.pending_submit_text.is_none() {
-        s.agent = (next != DEFAULT_AGENT).then(|| next.to_string());
+        s.agent = Some(next.to_string());
         s.start_model = None;
         s.start_variant = None;
         s.selected_model_id = None;
@@ -486,6 +492,14 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                 return blank_tab(s, ui).unwrap_or_default();
             }
             let mut effects = blank_tab(s, ui).unwrap_or_default();
+            s.agent = None;
+            s.start_model = None;
+            s.start_variant = None;
+            s.selected_model_id = None;
+            s.selected_model_name = None;
+            s.variant = None;
+            s.model_source.clear();
+            s.variant_source.clear();
             ui.overlay = Some(Overlay::Agents);
             ui.filter.clear();
             let selected = s
@@ -523,6 +537,11 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
         Action::OpenChild(id) => open_child(s, ui, id),
         Action::ContinueChild => confirm_child(s, ui, crate::tui::protocol::ChildControl::Continue),
         Action::ConfirmChildControl => {
+            if s.archive() {
+                ui.child_confirm = None;
+                ui.child_confirm_token = None;
+                return vec![];
+            }
             let Some((parent_session_id, child_session_id, control)) = ui.child_confirm.take()
             else {
                 return vec![];
@@ -558,6 +577,21 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             match pick {
                 Some(VariantPick::NewConversation(model_id)) => {
                     pick_model(s, ui, model_id, Some(chosen)).unwrap_or_default()
+                }
+                Some(VariantPick::Current) if !occupied(s) => {
+                    s.start_variant = if chosen.as_deref() == Some("inherit") {
+                        None
+                    } else {
+                        Some(chosen.clone())
+                    };
+                    s.variant = s.start_variant.clone().flatten();
+                    s.variant_source = if s.start_variant.is_some() {
+                        "override"
+                    } else {
+                        "model_default"
+                    }
+                    .into();
+                    vec![]
                 }
                 Some(VariantPick::Current) => run_command(
                     s,
@@ -659,6 +693,15 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                     vec![Effect::FetchModels]
                 }
                 Overlay::Variants => {
+                    if !occupied(s) {
+                        ui.variant_pick = Some(VariantPick::Current);
+                        s.variant_offer = s
+                            .catalog
+                            .iter()
+                            .find(|m| Some(&m.name) == s.selected_model_id.as_ref())
+                            .map(|m| m.variants.clone());
+                        return vec![];
+                    }
                     // `/variant` asks the server what this conversation offers; its answer opens
                     // the list. With no live conversation `run_command` says why.
                     ui.overlay = None;
@@ -721,6 +764,9 @@ fn confirm_child(
     ui: &mut UiState,
     control: crate::tui::protocol::ChildControl,
 ) -> Vec<Effect> {
+    if s.archive() {
+        return vec![];
+    }
     if control == crate::tui::protocol::ChildControl::Continue
         && s.parent_session_id.is_none()
         && s.watchdog_paused

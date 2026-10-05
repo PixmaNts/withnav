@@ -555,20 +555,14 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         Some(EventKind::ModelChanged) => {
             let changed: ModelChanged = serde_json::from_value(e.payload).map_err(|_| bad())?;
             let new = &changed.new;
-            s.selected_model_id = Some(strip_controls(&new.selection.model));
-            s.selected_model_name = Some(strip_controls(&new.selection.model));
-            s.agent = Some(strip_controls(&new.agent));
-            s.agent_seq = Some(e.seq);
-            s.model_source = strip_controls(&new.selection.source);
-            s.variant_source = strip_controls(&new.selection.variant_source);
-            s.model_switch = s
-                .model_switch
-                .take()
-                .filter(|pending| pending.agent == new.agent);
-            s.context_window = Some(changed.window);
-            s.variant = new.selection.variant.as_deref().map(strip_controls);
-            s.model_seq = Some(e.seq);
-            s.variant_seq = Some(e.seq);
+            let current = s.model_seq.is_none_or(|held| e.seq >= held);
+            if current {
+                super::apply_selection(s, new.clone(), e.seq, Some(changed.window));
+                s.model_switch = s
+                    .model_switch
+                    .take()
+                    .filter(|pending| pending.agent == new.agent);
+            }
             // Only the switch this selection came from stops waiting.
             if let Some(op) = changed.operation_id {
                 super::settle_model_op(s, &op.to_string());
@@ -589,10 +583,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                     .push(block(format!("notice:{}", e.seq), BlockKind::Notice(text)));
             }
         }
-        Some(EventKind::SessionAgentChanged) => {
-            let agent = e.payload["agent"].as_str().ok_or_else(bad)?;
-            s.agent = Some(strip_controls(agent));
-            s.agent_seq = Some(e.seq);
+        Some(EventKind::SessionAgentChanged) => { /* Secondary notification: model.changed owns the complete selection. */
         }
         Some(EventKind::CommandResult) => {
             let v = e.payload;
@@ -668,11 +659,27 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 }
             }
             // `/variant` answers with the variant in use, after a change or not.
-            if name == "variant" && ok {
+            if name == "variant"
+                && ok
+                && s.model_seq.is_none_or(|held| e.seq >= held)
+                && v["data"]["agent"].as_str() == Some(s.agent_name())
+                && v["data"]["model"].as_str() == s.selected_model_id.as_deref()
+            {
                 if let Some(data) = v.get("data") {
                     if let Some(variant) = data.get("variant") {
                         s.variant = variant.as_str().map(strip_controls);
                         s.variant_seq = Some(e.seq);
+                        s.model_seq = Some(e.seq);
+                        s.variant_source = v["data"]["variant_source"]
+                            .as_str()
+                            .map(strip_controls)
+                            .unwrap_or_default();
+                        let variant = s.variant.clone();
+                        let source = s.variant_source.clone();
+                        if let Some(effective) = s.effective.as_mut() {
+                            effective.selection.variant = variant;
+                            effective.selection.variant_source = source;
+                        }
                     }
                     super::set_variant_offer(s, data);
                 }

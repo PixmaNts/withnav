@@ -23,6 +23,21 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
         return;
     }
     frame.buffer_mut().set_style(area, theme.panel());
+    if state.archive() {
+        let reason = state
+            .session
+            .as_ref()
+            .and_then(|m| m.resume_disabled_reason.as_deref())
+            .unwrap_or("read-only history");
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                fit_end(&format!(" ◆ archive · {reason}"), usize::from(area.width)),
+                theme.muted(),
+            )),
+            area,
+        );
+        return;
+    }
     let agent = state.agent_name();
     let agent_style = super::sidebar::agent_style(agent, theme);
     if let Some(parent) = &state.parent_session_id {
@@ -61,7 +76,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
         return;
     }
     let model_id = state.selected_model_id.as_deref().unwrap_or("—");
-    let model = if state.model_source == "override" {
+    let model = if state.model_source == "override" || state.variant_source == "override" {
         "override"
     } else {
         "assigned"

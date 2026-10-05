@@ -46,6 +46,7 @@ pub struct Executor {
     client: Client,
     tx: mpsc::Sender<ClientEvent>,
     streams: Vec<ActiveStream>,
+    request: u64,
 }
 
 impl Executor {
@@ -54,6 +55,7 @@ impl Executor {
             client,
             tx,
             streams: Vec::new(),
+            request: 0,
         }
     }
 
@@ -170,19 +172,27 @@ impl Executor {
                 });
             }
             Effect::FetchModels => {
+                self.request += 1;
+                let request = self.request;
                 let (client, workspace) = (self.client.clone(), ctx.workspace.clone());
                 self.spawn_event(async move {
                     ClientEvent::Models {
+                        workspace: workspace.clone(),
+                        request,
                         generation,
                         result: client.models(&workspace).await,
                     }
                 });
             }
             Effect::FetchAgents(session_id) => {
+                self.request += 1;
+                let request = self.request;
                 let (client, workspace) = (self.client.clone(), ctx.workspace.clone());
                 self.spawn_event(async move {
                     let result = client.agents(&workspace, session_id.as_deref()).await;
                     ClientEvent::Agents {
+                        workspace: workspace.clone(),
+                        request,
                         generation,
                         session_id,
                         result,
@@ -190,9 +200,13 @@ impl Executor {
                 });
             }
             Effect::FetchLayers => {
+                self.request += 1;
+                let request = self.request;
                 let (client, workspace) = (self.client.clone(), ctx.workspace.clone());
                 self.spawn_event(async move {
                     ClientEvent::Layers {
+                        workspace: workspace.clone(),
+                        request,
                         generation,
                         result: client.layers(&workspace).await,
                     }

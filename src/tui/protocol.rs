@@ -113,7 +113,7 @@ pub struct ContextSnapshot {
     pub incarnation: ulid::Ulid,
     pub revision: u64,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelIdentity {
     pub agent: String,
     #[serde(flatten)]
@@ -129,6 +129,10 @@ pub struct ModelChanged {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionListEntry {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub read_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_disabled_reason: Option<String>,
     pub id: String,
     pub title: Option<String>,
     pub created_at: String,
@@ -150,6 +154,9 @@ pub struct SessionListEntry {
 
 fn promptable_default() -> bool {
     true
+}
+fn is_false(value: &bool) -> bool {
+    !value
 }
 fn is_promptable(value: &bool) -> bool {
     *value
@@ -274,11 +281,15 @@ pub struct CommandResponse {
 pub enum ClientEvent {
     Agents {
         generation: Generation,
+        workspace: String,
+        request: u64,
         session_id: Option<String>,
         result: Result<AgentsBody, String>,
     },
     Layers {
         generation: Generation,
+        workspace: String,
+        request: u64,
         result: Result<LayersBody, String>,
     },
     Skills {
@@ -308,6 +319,8 @@ pub enum ClientEvent {
     },
     Models {
         generation: Generation,
+        workspace: String,
+        request: u64,
         result: Result<ModelsBody, String>,
     },
     Sessions {

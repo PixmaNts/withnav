@@ -56,6 +56,8 @@ fn configured_default_agent_creates_without_editor_or_model_inheritance() {
     reducer::update(
         &mut s,
         ClientEvent::Models {
+            workspace: String::new(),
+            request: 0,
             generation: g.clone(),
             result: Ok(models()),
         },
@@ -64,6 +66,8 @@ fn configured_default_agent_creates_without_editor_or_model_inheritance() {
     reducer::update(
         &mut s,
         ClientEvent::Agents {
+            workspace: String::new(),
+            request: 0,
             generation: g,
             session_id: None,
             result: Ok(agents()),
@@ -88,7 +92,7 @@ fn configured_default_agent_creates_without_editor_or_model_inheritance() {
         })
         .unwrap();
     let body = serde_json::to_value(request).unwrap();
-    assert_eq!(body["agent"], "plan");
+    assert!(body.get("agent").is_none());
     assert!(body.get("model").is_none());
     assert!(body.get("editor").is_none());
     assert!(
@@ -102,6 +106,8 @@ fn stale_assignment_fetch_cannot_change_another_generation_or_session() {
     reducer::update(
         &mut s,
         ClientEvent::Agents {
+            workspace: String::new(),
+            request: 0,
             generation: Generation(99),
             session_id: None,
             result: Ok(agents()),
@@ -113,6 +119,8 @@ fn stale_assignment_fetch_cannot_change_another_generation_or_session() {
     reducer::update(
         &mut s,
         ClientEvent::Agents {
+            workspace: String::new(),
+            request: 0,
             generation: g,
             session_id: Some("foreign".into()),
             result: Ok(agents()),

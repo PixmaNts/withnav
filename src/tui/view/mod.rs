@@ -104,6 +104,17 @@ fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
             required: 1,
         }];
     }
+    if state.archive() {
+        return &[Hints {
+            hints: &[
+                "alt+w close archive",
+                "drag copy text",
+                "y copy block",
+                "page↑/↓ scroll",
+            ],
+            required: 1,
+        }];
+    }
     if state.read_only() {
         if matches!(
             state.active_child_status(),

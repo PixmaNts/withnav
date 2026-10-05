@@ -63,6 +63,10 @@ impl Runtime {
         };
         state.selected_model_id = options.initial_model.clone();
         state.start_model = options.initial_model.clone();
+        if options.initial_model.is_some() {
+            state.model_source = "override".into();
+            state.variant_source = "model_default".into();
+        }
         let ui = UiState {
             follow_bottom: true,
             theme: options
@@ -92,6 +96,9 @@ impl Runtime {
     /// Asks for the model catalog and the session list, and resumes the
     /// session named on the command line, if any.
     pub fn start(&mut self, session: Option<String>) {
+        if let Some(id) = session {
+            self.dispatch(Action::ResumeSession(id));
+        }
         self.run_effects(vec![
             Effect::FetchModels,
             Effect::FetchAgents(None),
@@ -99,9 +106,6 @@ impl Runtime {
             Effect::ListSessions,
             Effect::FetchCommands,
         ]);
-        if let Some(id) = session {
-            self.dispatch(Action::ResumeSession(id));
-        }
     }
 
     pub fn executor(&self) -> &Executor {

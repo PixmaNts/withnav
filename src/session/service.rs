@@ -1143,6 +1143,7 @@ impl Service {
         &self,
         id: SessionId,
     ) -> Result<SessionHandle, ServerError> {
+        self.ensure_not_archived(id).await?;
         match self.lock_sessions().get(&id) {
             Some(handle) if handle.lifecycle == Lifecycle::Active => {
                 return Ok(handle.clone());
@@ -1160,6 +1161,45 @@ impl Service {
         } else {
             ServerError::SessionNotFound(id.to_string())
         })
+    }
+
+    pub(super) async fn ensure_not_archived(&self, id: SessionId) -> Result<(), ServerError> {
+        if let Some(reason) = self
+            .history
+            .meta(id)
+            .await
+            .map_err(ServerError::History)?
+            .and_then(|meta| meta.resume_disabled_reason)
+        {
+            return Err(ServerError::SessionArchived {
+                session: id.to_string(),
+                reason,
+            });
+        }
+        Ok(())
+    }
+
+    /// Explicitly archive an offline conversation. Any retained runtime (including
+    /// stopping) is refused; stop it completely before marking its history.
+    pub async fn mark_archive(&self, id: SessionId, reason: &str) -> Result<(), ServerError> {
+        let _lifecycle = self.lifecycle_gate().await;
+        let _admission = self.admission_gate.lock().await;
+        if self.handle(id).is_some()
+            || self
+                .child_operations
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(&id)
+        {
+            return Err(ServerError::MalformedBody(
+                "archive marking requires an offline session with no retained runtime".into(),
+            ));
+        }
+        self.history.flush().await.map_err(ServerError::History)?;
+        self.history
+            .mark_archive(id, reason)
+            .await
+            .map_err(ServerError::History)
     }
 
     /// Accepts one command into its session: the session must be live and

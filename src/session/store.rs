@@ -1116,11 +1116,13 @@ impl HistoryStore {
     }
 
     /// Mark an existing historical session read-only without changing its history.
+    /// OFFLINE ONLY: the caller must quiesce all runtimes using this database.
+    /// This raw store cannot inspect registries; live callers use `Service::mark_archive`.
     /// Reasons are single-line safe text, at most 512 UTF-8 bytes.
     pub async fn mark_archive(&self, id: Ulid, reason: &str) -> Result<(), String> {
         if reason.trim().is_empty()
             || reason.len() > 512
-            || reason.chars().any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+            || reason.chars().any(|c| c.is_control() || matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
         {
             return Err("archive reason must be nonempty safe single-line text of at most 512 bytes".into());
         }

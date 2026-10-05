@@ -2,6 +2,7 @@
 use axum::http::StatusCode;
 use http_body_util::BodyExt;
 use navai::bus::event::{EventEnvelope, EventKind};
+use navai::error::ServerError;
 use navai::provider::openai::ChatMessage;
 use navai::server::routes::app as router;
 use navai::session::store::HistoryStore;
@@ -10,9 +11,130 @@ use tower::ServiceExt;
 use ulid::Ulid;
 
 mod common;
-use common::server::{request_json, TestServerConfig};
+use common::server::{driver_command, request_json, TestServerConfig};
 
 const REASON: &str = "Historic model identity has no proven resolution";
+
+#[tokio::test]
+async fn service_marking_requires_offline_and_raw_live_marker_refuses_all_admissions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let state = TestServerConfig::unreachable(tmp.path()).state();
+    let id = state.create_session(&ws, None, None).await.unwrap();
+    let store = state.history();
+    store.flush().await.unwrap();
+    let before = store.load(id).await.unwrap().unwrap();
+    assert!(state.mark_archive(id, REASON).await.is_err());
+    let after = store.load(id).await.unwrap().unwrap();
+    assert!(after.meta.resume_disabled_reason.is_none());
+    assert_eq!(after.meta.last_seq, before.meta.last_seq);
+    assert_eq!(
+        serde_json::to_value(after.envelopes).unwrap(),
+        serde_json::to_value(&before.envelopes).unwrap()
+    );
+
+    // Deliberately violate the raw primitive's offline contract to exercise the
+    // defensive boundary against a marker present alongside a retained runtime.
+    store.mark_archive(id, REASON).await.unwrap();
+    assert!(matches!(
+        state.send(driver_command(id, "must not run".into())).await,
+        Err(ServerError::SessionArchived { .. })
+    ));
+    assert!(matches!(
+        state.run_command(id, "model", "default").await,
+        Err(ServerError::SessionArchived { .. })
+    ));
+    assert!(matches!(
+        state.run_command(id, "unknown-archive-command", "").await,
+        Err(ServerError::SessionArchived { .. })
+    ));
+    assert!(matches!(
+        state
+            .answer_permission(
+                id,
+                Ulid::new(),
+                navai::agent::permissions::PermissionDecision::AllowOnce
+            )
+            .await,
+        Err(ServerError::SessionArchived { .. })
+    ));
+    assert!(matches!(
+        state.continue_child(id, id).await,
+        Err(ServerError::SessionArchived { .. })
+    ));
+    assert!(matches!(
+        state.steer_child(id, id, "must not steer", true).await,
+        Err(ServerError::SessionArchived { .. })
+    ));
+    assert!(matches!(
+        state.close_session(id).await,
+        Err(ServerError::SessionArchived { .. })
+    ));
+    assert!(matches!(
+        state
+            .create_or_resume_session(&ws, None, None, Some(id))
+            .await,
+        Err(ServerError::SessionArchived { .. })
+    ));
+    let app = router(state.clone());
+    for (path, body) in [
+        (
+            format!("/v1/sessions/{id}/messages"),
+            json!({"target_actor_id":"agent:main","content":[{"type":"text","text":"no admission"}]}),
+        ),
+        (
+            format!("/v1/sessions/{id}/commands"),
+            json!({"name":"unknown-archive-command"}),
+        ),
+        (
+            format!("/v1/sessions/{id}/permissions/{}", Ulid::new()),
+            json!({"decision":"allow_once"}),
+        ),
+        (
+            format!("/v1/sessions/{id}/children/{id}/continue"),
+            json!({}),
+        ),
+        (format!("/v1/sessions/{id}/stop"), json!({})),
+    ] {
+        let (status, body) = request_json(&app, "POST", &path, Some(&body)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
+        assert_eq!(body["reason"], "session_archived");
+    }
+    let (status, meta) = request_json(&app, "GET", &format!("/v1/sessions/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(meta["read_only"], true);
+    assert_eq!(meta["promptable"], false);
+    assert!(
+        state.subscribe(id, None).await.is_ok(),
+        "event reads remain allowed"
+    );
+    store.flush().await.unwrap();
+    let after = store.load(id).await.unwrap().unwrap();
+    assert_eq!(after.meta.last_seq, before.meta.last_seq);
+    assert_eq!(after.meta.updated_at, before.meta.updated_at);
+    assert_eq!(after.meta.model_resolution, before.meta.model_resolution);
+    assert_eq!(
+        serde_json::to_value(after.envelopes).unwrap(),
+        serde_json::to_value(before.envelopes).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(after.transcript).unwrap(),
+        serde_json::to_value(before.transcript).unwrap()
+    );
+    // Explicit deletion remains allowed, including retained-runtime teardown.
+    state.delete(id).await.unwrap();
+    assert!(!store.exists(id).await.unwrap());
+
+    let stopped = state.create_session(&ws, None, None).await.unwrap();
+    state.close_session(stopped).await.unwrap();
+    state.mark_archive(stopped, REASON).await.unwrap();
+    assert!(store.meta(stopped).await.unwrap().unwrap().read_only());
+    assert!(matches!(
+        state.close_session(stopped).await,
+        Err(ServerError::SessionArchived { .. })
+    ));
+}
 
 #[tokio::test]
 async fn old_schema_adds_nullable_marker_without_classifying_sessions() {
@@ -84,6 +206,10 @@ async fn archive_marker_is_explicit_validated_and_preserves_store_history() {
         "\u{0}",
         "\u{1b}[31m",
         "\u{202e}spoof",
+        "\u{2066}isolate",
+        "\u{061c}arabic",
+        "\u{200e}left",
+        "\u{200f}right",
         &"x".repeat(513),
     ] {
         assert!(store.mark_archive(id, reason).await.is_err());
@@ -167,7 +293,7 @@ async fn archived_legacy_http_reads_work_and_resume_and_mutations_refuse() {
         json!({"content":"historic event", "source":"user:http"}),
     );
     store.append_event(id, event.clone());
-    store.mark_archive(id, REASON).await.unwrap();
+    state.mark_archive(id, REASON).await.unwrap();
     let before = store.load(id).await.unwrap().unwrap();
     // Neither catalog nor auth can be loaded: the refusal must precede preparation.
     std::fs::remove_file(config.models_path()).unwrap();
@@ -213,7 +339,7 @@ async fn archived_legacy_http_reads_work_and_resume_and_mutations_refuse() {
     for (path, body) in [
         (
             format!("/v1/sessions/{id}/messages"),
-            json!({"content":[{"type":"text","text":"do not run"}]}),
+            json!({"target_actor_id":"agent:main","content":[{"type":"text","text":"do not run"}]}),
         ),
         (
             format!("/v1/sessions/{id}/commands"),

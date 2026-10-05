@@ -788,16 +788,6 @@ async fn stop_session(State(state): State<AppState>, Path(id): Path<String>) -> 
         Ok(parsed) => parsed,
         Err(_) => return error_response(ServerError::SessionNotFound(id)),
     };
-    match state.history().meta(parsed).await {
-        Ok(Some(meta)) if meta.resume_disabled_reason.is_some() => {
-            return error_response(ServerError::SessionArchived {
-                session: id,
-                reason: meta.resume_disabled_reason.unwrap(),
-            });
-        }
-        Err(err) => return error_response(ServerError::History(err)),
-        _ => {}
-    }
     match state.close_session(parsed).await {
         Ok(()) => Json(StopAccepted {
             accepted: true,

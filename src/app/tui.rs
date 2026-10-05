@@ -148,17 +148,20 @@ impl EmbeddedServer {
     async fn start(models: Option<&Path>, workspace: &Path) -> anyhow::Result<Self> {
         use crate::server::session::{AppState, ServerConfig};
 
+        let config_dir = super::config_dir()?;
+        let rules_roots = crate::agent::instructions::RulesRoots::from_user_home();
+        crate::session::preflight::check(&config_dir, models, workspace, &rules_roots).await?;
         let token = bearer_token();
         let config = ServerConfig {
             bind: "127.0.0.1:0".parse().expect("loopback bind"),
             models_path: crate::navigator::resolve_models(models, workspace),
-            config_dir: super::config_dir()?,
+            config_dir,
             allow_non_loopback: false,
             bearer_token: Some(token.clone()),
             history_db: super::history_db_path()?,
             data_dir: crate::paths::data_dir()
                 .ok_or_else(|| anyhow::anyhow!("cannot resolve data dir"))?,
-            rules_roots: crate::agent::instructions::RulesRoots::from_user_home(),
+            rules_roots,
         };
         let state = AppState::with_hooks(config, Arc::new(crate::navigator::NavigatorHooks::new()))
             .context("cannot start the embedded server")?;
@@ -224,6 +227,17 @@ async fn check_health(base: &str) -> anyhow::Result<()> {
             Ok(response) if response.status().is_success() => return Ok(()),
             Ok(response) => {
                 last = format!("answered HTTP {}", response.status());
+                if let Ok(body) = response.json::<serde_json::Value>().await {
+                    if let Some(message) = body.get("error").and_then(serde_json::Value::as_str) {
+                        let diagnostic: String = message
+                            .chars()
+                            .filter(|c| !c.is_control())
+                            .take(1024)
+                            .collect();
+                        last.push_str(": ");
+                        last.push_str(&diagnostic);
+                    }
+                }
                 break;
             }
             Err(err) => last = err.without_url().to_string(),

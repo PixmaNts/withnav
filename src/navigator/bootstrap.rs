@@ -323,6 +323,27 @@ impl Layers {
 /// Builds the layers, starts the cognition chat server and serves the
 /// navigator over stdio until the client exits.
 pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
+    use tokio::io::AsyncReadExt as _;
+    let cwd = std::env::current_dir()?;
+    let config_dir =
+        auth::default_config_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve config dir"))?;
+    let preflight = crate::session::preflight::Preflight::capture(
+        &config_dir,
+        models_path,
+        &cwd,
+        &crate::agent::instructions::RulesRoots::from_user_home(),
+    )
+    .await?;
+    let provisional = preflight.check_provisional(&cwd).await?;
+    let mut stdin = tokio::io::stdin();
+    let Some((frame, initialized_workspace)) = initial_workspace(&mut stdin, &cwd).await? else {
+        anyhow::ensure!(
+            provisional.is_some(),
+            "default_agent is unresolved at process cwd; an initialize workspace is required"
+        );
+        return Ok(());
+    };
+    preflight.check(&initialized_workspace).await?;
     let clients = Arc::new(ClientCache::new());
     let mut layers = build_layers(models_path, clients);
 
@@ -334,7 +355,7 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
 
     // The workspace root starts at the process cwd; initialize upgrades it
     // from rootUri when the client sends one.
-    let workspace = std::env::current_dir().ok();
+    let workspace = Some(initialized_workspace);
     let user_dir = navigator::default_user_dir();
 
     // The cognition chat rides on an in-process Phase-2 server bound to a
@@ -380,7 +401,12 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
         deps = deps.with_reflex_context(llm);
     }
 
-    navigator::serve(tokio::io::stdin(), tokio::io::stdout(), deps).await;
+    navigator::serve(
+        std::io::Cursor::new(frame).chain(stdin),
+        tokio::io::stdout(),
+        deps,
+    )
+    .await;
 
     // LSP exit/EOF: close every chat session and let the server drain, so
     // the process exits instead of leaking the HTTP task.
@@ -389,6 +415,68 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(10), http.task).await;
     }
     Ok(())
+}
+
+/// Reads and replays the first initialize frame: an editor's cwd is not its project.
+/// Bounded framing keeps untrusted stdio input from allocating without a limit.
+async fn initial_workspace<R: tokio::io::AsyncRead + Unpin>(
+    input: &mut R,
+    cwd: &Path,
+) -> anyhow::Result<Option<(Vec<u8>, PathBuf)>> {
+    use tokio::io::AsyncReadExt as _;
+    let mut frame = Vec::new();
+    loop {
+        let mut byte = [0];
+        if input.read(&mut byte).await? == 0 {
+            anyhow::ensure!(frame.is_empty(), "incomplete LSP initialize header");
+            return Ok(None);
+        }
+        frame.push(byte[0]);
+        anyhow::ensure!(
+            frame.len() <= 8192,
+            "LSP initialize header exceeds 8192 bytes"
+        );
+        if frame.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+    let header = std::str::from_utf8(&frame)?;
+    let lengths: Vec<_> = header
+        .split("\r\n")
+        .filter_map(|line| line.split_once(':'))
+        .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .map(|(_, value)| value.trim().parse::<usize>())
+        .collect::<Result<_, _>>()?;
+    anyhow::ensure!(
+        lengths.len() == 1,
+        "LSP initialize requires one Content-Length"
+    );
+    let length = lengths[0];
+    anyhow::ensure!(length <= 1024 * 1024, "LSP initialize body exceeds 1 MiB");
+    let start = frame.len();
+    frame.resize(start + length, 0);
+    input.read_exact(&mut frame[start..]).await?;
+    let message: serde_json::Value = serde_json::from_slice(&frame[start..])?;
+    anyhow::ensure!(
+        message["method"] == "initialize",
+        "first LSP request must be initialize"
+    );
+    let params: tower_lsp_server::ls_types::InitializeParams =
+        serde_json::from_value(message["params"].clone())?;
+    #[allow(deprecated)]
+    let root = params
+        .root_uri
+        .as_ref()
+        .and_then(super::lsp::uri::uri_to_path);
+    let folder = params.workspace_folders.as_ref().and_then(|folders| {
+        folders
+            .first()
+            .and_then(|f| super::lsp::uri::uri_to_path(&f.uri))
+    });
+    Ok(Some((
+        frame,
+        root.or(folder).unwrap_or_else(|| cwd.to_path_buf()),
+    )))
 }
 
 /// The running cognition chat server: the spawned HTTP task plus the

@@ -13,6 +13,7 @@ mod hooks;
 mod instance;
 mod lifecycle;
 mod message;
+pub mod preflight;
 mod rules_log;
 mod run_command;
 mod sender;

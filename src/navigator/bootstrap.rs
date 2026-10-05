@@ -462,7 +462,15 @@ async fn initial_workspace<R: tokio::io::AsyncRead + Unpin>(
         "first LSP request must be initialize"
     );
     let params: tower_lsp_server::ls_types::InitializeParams =
-        serde_json::from_value(message["params"].clone())?;
+        serde_json::from_value(message["params"].clone()).map_err(|error| {
+            anyhow::anyhow!("invalid LSP initialize workspace or parameters: {error}")
+        })?;
+    #[allow(deprecated)]
+    let supplied_workspace = params.root_uri.is_some()
+        || params
+            .workspace_folders
+            .as_ref()
+            .is_some_and(|folders| !folders.is_empty());
     #[allow(deprecated)]
     let root = params
         .root_uri
@@ -470,13 +478,17 @@ async fn initial_workspace<R: tokio::io::AsyncRead + Unpin>(
         .and_then(super::lsp::uri::uri_to_path);
     let folder = params.workspace_folders.as_ref().and_then(|folders| {
         folders
-            .first()
-            .and_then(|f| super::lsp::uri::uri_to_path(&f.uri))
+            .iter()
+            .find_map(|f| super::lsp::uri::uri_to_path(&f.uri))
     });
-    Ok(Some((
-        frame,
-        root.or(folder).unwrap_or_else(|| cwd.to_path_buf()),
-    )))
+    let workspace = match root.or(folder) {
+        Some(workspace) => workspace,
+        None if !supplied_workspace => cwd.to_path_buf(),
+        None => anyhow::bail!(
+            "LSP initialize supplied a workspace but no supported local file path; provide a valid file:// rootUri or workspace folder"
+        ),
+    };
+    Ok(Some((frame, workspace)))
 }
 
 /// The running cognition chat server: the spawned HTTP task plus the

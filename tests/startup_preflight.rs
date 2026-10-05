@@ -328,6 +328,88 @@ async fn remote_tui_reports_server_diagnostic_without_local_assignment_preflight
 }
 
 #[tokio::test]
+async fn lsp_supplied_unsupported_workspace_never_falls_back_to_valid_cwd() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    for (workspace_params, succeeds) in [
+        (json!({"rootUri":"untitled:remote"}), false),
+        (
+            json!({"workspaceFolders":[{"uri":"vscode-remote://host/project","name":"remote"}]}),
+            false,
+        ),
+        (json!({"rootUri":"file:///bad%2"}), false),
+        (json!({}), true),
+        (json!({"rootUri":null,"workspaceFolders":[]}), true),
+        (
+            json!({"rootUri":"untitled:remote","workspaceFolders":[{"uri":"LOCAL","name":"local"}]}),
+            true,
+        ),
+    ] {
+        let dir = fixture(json!({"agents":{"build":{"model":"mock/chat"}}}));
+        let mut params = json!({"processId":null,"capabilities":{}});
+        for (key, value) in workspace_params.as_object().unwrap() {
+            params[key] = value.clone();
+        }
+        if params["workspaceFolders"][0]["uri"] == "LOCAL" {
+            params["workspaceFolders"][0]["uri"] =
+                json!(format!("file://{}", dir.path().display()));
+        }
+        let body =
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":params}).to_string();
+        let mut child = command(dir.path(), true)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(format!("Content-Length: {}\r\n\r\n{body}", body.len()).as_bytes())
+            .await
+            .unwrap();
+        if succeeds {
+            let mut out = child.stdout.take().unwrap();
+            let mut received = Vec::new();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let mut buffer = [0; 8192];
+                loop {
+                    let count = out.read(&mut buffer).await.unwrap();
+                    assert!(
+                        count > 0,
+                        "unexpected EOF: {}",
+                        String::from_utf8_lossy(&received)
+                    );
+                    received.extend_from_slice(&buffer[..count]);
+                    if String::from_utf8_lossy(&received).contains("capabilities") {
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            child.start_kill().unwrap();
+            child.wait().await.unwrap();
+        } else {
+            let output = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1));
+            assert!(output.stdout.is_empty());
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                error.contains("workspace")
+                    && (error.contains("no supported local file path")
+                        || error.contains("invalid percent-encoded")),
+                "{error}"
+            );
+            assert!(!dir.path().join("data/navai/history.sqlite3").exists());
+        }
+    }
+}
+
+#[tokio::test]
 async fn global_primary_default_and_invalid_runtime_variant_are_checked() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};

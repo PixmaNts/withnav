@@ -23,7 +23,7 @@ async fn successful_switch_fallback_warning_is_durable_and_replayed() {
     )
     .unwrap();
     let state = AppState::new(config).unwrap();
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     let result = state.run_command(id, "agent", "plan").await.unwrap();
     assert!(result.ok);
     assert!(result.data.unwrap()["warning"]

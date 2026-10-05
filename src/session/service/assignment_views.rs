@@ -736,7 +736,7 @@ mod tests {
             .create_session_with(
                 root.path(),
                 Some("mock/combo/chat"),
-                None,
+                false,
                 crate::session::VariantChoice::Exact("low".into()),
                 None,
             )
@@ -787,7 +787,7 @@ mod tests {
                 .create_session_with(
                     root.path(),
                     overridden.then_some("mock/combo/chat"),
-                    None,
+                    false,
                     if overridden {
                         crate::session::VariantChoice::Exact("low".into())
                     } else {

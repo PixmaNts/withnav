@@ -826,7 +826,7 @@ async fn a_stop_after_selection_commit_completes_the_new_identity_before_teardow
             ))
             .unwrap();
     });
-    assert_eq!(state.context(id).await.unwrap().alias, "a/model-a");
+    assert_eq!(state.context(id).await.unwrap().model, "a/model-a");
     let stopping = tokio::spawn({
         let state = state.clone();
         async move { state.close_session(id).await }
@@ -880,7 +880,7 @@ async fn a_stop_after_selection_commit_completes_the_new_identity_before_teardow
     assert_eq!(after.0.provenance, committed.0.provenance);
     assert_eq!(after.2, committed.2);
     state
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
     let live = state.session_summary(id).await.unwrap();
@@ -923,7 +923,7 @@ async fn a_failed_switch_preserves_an_existing_checkpoint_and_the_same_live_runt
         .await
         .unwrap();
     state
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
     let before = state.history().load_for_resume(id).await.unwrap().unwrap();

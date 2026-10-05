@@ -1986,7 +1986,7 @@ mod tests {
     async fn cancellation_at_writer_precommit_rolls_back_override_and_inserted_event() {
         let (_dir, store) = temp_store();
         let id = Ulid::new();
-        store.record_session(id, "/w", "old", None).await.unwrap();
+        store.record_session(id, "/w", "old", false).await.unwrap();
         let token = tokio_util::sync::CancellationToken::new();
         let reached = Arc::new(std::sync::Barrier::new(2));
         let release = Arc::new(std::sync::Barrier::new(2));

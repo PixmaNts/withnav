@@ -12,7 +12,7 @@ async fn switching_uses_one_captured_endpoint_variant_and_source_generation() {
     crate::provider::auth::set_key(&service.config.config_dir, "mock", "test").unwrap();
     std::fs::write(dir.path().join("models.json"),r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"key":{"provider":"mock","model":"old","context_window":128000,"variants":{"low":{"reasoning_effort":"low"}}}}}"#).unwrap();
     let id = service
-        .create_session(dir.path(), None, None)
+        .create_session(dir.path(), None, false)
         .await
         .unwrap();
     let barrier = Arc::new(crate::session::run_command::Barrier::default());

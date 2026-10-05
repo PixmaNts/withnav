@@ -550,19 +550,14 @@ impl Service {
         } else {
             VariantChoice::Default
         };
-        let profile = self
+        let editor = self
             .history()
             .meta(session_id)
             .await
             .map_err(|e| CommandFailure::Server(ServerError::History(e)))?
-            .and_then(|meta| meta.profile);
+            .is_some_and(|meta| meta.editor);
         match self
-            .create_session_with_variant(
-                &handle.workspace,
-                Some(&alias),
-                profile.as_deref(),
-                variant,
-            )
+            .create_session_with_variant(&handle.workspace, Some(&alias), editor, variant)
             .await
         {
             Ok(id) => Ok(Done {
@@ -799,7 +794,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let service = service(tmp.path());
         let id = service
-            .create_session(tmp.path(), None, None)
+            .create_session(tmp.path(), None, false)
             .await
             .unwrap();
         let barrier = arm(&service);
@@ -842,7 +837,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let service = service(tmp.path());
         let id = service
-            .create_session(tmp.path(), None, None)
+            .create_session(tmp.path(), None, false)
             .await
             .unwrap();
         let barrier = arm(&service);
@@ -872,7 +867,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let service = service(tmp.path());
         let id = service
-            .create_session(tmp.path(), None, None)
+            .create_session(tmp.path(), None, false)
             .await
             .unwrap();
         let handle = service.handle(id).unwrap();
@@ -928,7 +923,7 @@ mod tests {
     /// A conversation of four long turns on a window that it overruns.
     async fn seeded_long(service: &Service, dir: &Path) -> SessionId {
         use crate::provider::openai::ChatMessage;
-        let id = service.create_session(dir, None, None).await.unwrap();
+        let id = service.create_session(dir, None, false).await.unwrap();
         service.close_session(id).await.unwrap();
         service.history().flush().await.unwrap();
         let turns: Vec<ChatMessage> = (0..4)
@@ -949,7 +944,7 @@ mod tests {
         service.history().save_transcript(id, turns);
         service.history().flush().await.unwrap();
         service
-            .create_or_resume_session(dir, None, None, Some(id))
+            .create_or_resume_session(dir, None, false, Some(id))
             .await
             .unwrap();
         id
@@ -1070,7 +1065,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let service = two_model_service(tmp.path());
         let id = service
-            .create_session(tmp.path(), None, None)
+            .create_session(tmp.path(), None, false)
             .await
             .unwrap();
         assert_eq!(

@@ -821,7 +821,7 @@ mod tests {
         let id = ulid::Ulid::new();
         state
             .history()
-            .record_session(id, root.path().to_str().unwrap(), "legacy-chat", None)
+            .record_session(id, root.path().to_str().unwrap(), "legacy-chat", false)
             .await
             .unwrap();
         let resolution = crate::provider::catalog::ModelResolution {
@@ -949,7 +949,7 @@ mod tests {
         let id = ulid::Ulid::new();
         state
             .history()
-            .record_session(id, root.path().to_str().unwrap(), "legacy-chat", None)
+            .record_session(id, root.path().to_str().unwrap(), "legacy-chat", false)
             .await
             .unwrap();
         let (status, body) = get(&state, root.path(), "agents", &format!("&session_id={id}")).await;
@@ -1051,7 +1051,7 @@ mod tests {
             let id = ulid::Ulid::new();
             state
                 .history()
-                .record_session(id, root.path().to_str().unwrap(), "legacy-chat", None)
+                .record_session(id, root.path().to_str().unwrap(), "legacy-chat", false)
                 .await
                 .unwrap();
             state
@@ -1126,7 +1126,7 @@ mod tests {
         crate::provider::auth::set_key(&state.config.config_dir, "mock", "test-only-secret")
             .unwrap();
         let id = state
-            .create_session_as(root.path(), Some("mock/combo/chat"), None, Some("oracle"))
+            .create_session_as(root.path(), Some("mock/combo/chat"), false, Some("oracle"))
             .await
             .unwrap();
         let before = state

@@ -46,7 +46,10 @@ async fn results(state: &AppState, id: ulid::Ulid) -> Vec<EventEnvelope> {
 async fn help_lists_commands_and_publishes_a_result() {
     let (tmp, ws) = tmp_ws();
     let state = state(tmp.path());
-    let id = state.create_session(&ws, None, None).await.expect("create");
+    let id = state
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
     let out = state.run_command(id, "help", "").await.expect("run");
     assert!(out.ok, "{out:?}");
     let names: Vec<String> = out.data.as_ref().unwrap()["commands"]
@@ -78,7 +81,10 @@ async fn help_lists_commands_and_publishes_a_result() {
 async fn model_reports_alias_window_and_source() {
     let (tmp, ws) = tmp_ws();
     let state = state(tmp.path());
-    let id = state.create_session(&ws, None, None).await.expect("create");
+    let id = state
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
     let out = state.run_command(id, "/model", "").await.expect("run");
     assert!(out.ok, "{out:?}");
     let data = out.data.unwrap();
@@ -95,7 +101,10 @@ async fn model_reports_alias_window_and_source() {
 async fn new_creates_a_fresh_session_and_keeps_the_old_one() {
     let (tmp, ws) = tmp_ws();
     let state = state(tmp.path());
-    let id = state.create_session(&ws, None, None).await.expect("create");
+    let id = state
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
 
     let out = state.run_command(id, "new", "").await.expect("run");
     assert!(out.ok, "{out:?}");
@@ -137,7 +146,10 @@ async fn new_creates_a_fresh_session_and_keeps_the_old_one() {
 async fn stop_ends_the_session_after_publishing_its_result() {
     let (tmp, ws) = tmp_ws();
     let state = state(tmp.path());
-    let id = state.create_session(&ws, None, None).await.expect("create");
+    let id = state
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
     let out = state.run_command(id, "stop", "").await.expect("run");
     assert!(out.ok);
     assert_eq!(
@@ -156,7 +168,10 @@ async fn stop_ends_the_session_after_publishing_its_result() {
 async fn unknown_and_unbuilt_commands_answer_clear_errors() {
     let (tmp, ws) = tmp_ws();
     let state = state(tmp.path());
-    let id = state.create_session(&ws, None, None).await.expect("create");
+    let id = state
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
 
     let out = state.run_command(id, "hlep", "").await.expect("run");
     assert!(!out.ok);
@@ -179,7 +194,10 @@ async fn a_session_that_cannot_take_commands_is_an_error() {
         .await
         .unwrap_err();
     assert!(matches!(err, navai::error::ServerError::SessionNotFound(_)));
-    let id = state.create_session(&ws, None, None).await.expect("create");
+    let id = state
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
     state.close_session(id).await.expect("close");
     state.history().flush().await.expect("flush");
     let err = state.run_command(id, "help", "").await.unwrap_err();
@@ -202,7 +220,10 @@ async fn a_command_during_a_pending_ask_is_refused() {
     let state = TestServerConfig::mock(tmp.path(), &provider.url).state();
     let (addr, _task) = spawn_server(state.clone()).await;
     let base = format!("http://{addr}");
-    let id = state.create_session(&ws, None, None).await.expect("create");
+    let id = state
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
     let sub = state.subscribe(id, None).await.expect("sub");
     post_message_ok(&base, &id.to_string(), "go").await;
     collect_until(sub, |e| {
@@ -259,7 +280,10 @@ async fn http_endpoints_list_and_run_commands() {
     let (tmp, ws) = tmp_ws();
     let state = state(tmp.path());
     let router = app(state.clone());
-    let id = state.create_session(&ws, None, None).await.expect("create");
+    let id = state
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
 
     let (status, body) = request_json(&router, "GET", "/v1/commands", None).await;
     assert_eq!(status, StatusCode::OK);
@@ -318,7 +342,10 @@ async fn command_names_are_normalised_once() {
     let (tmp, ws) = tmp_ws();
     let state = state(tmp.path());
     let router = app(state.clone());
-    let id = state.create_session(&ws, None, None).await.expect("create");
+    let id = state
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
     let path = format!("/v1/sessions/{id}/commands");
 
     for name in ["//stop", "STOP", "/ stop", "//", ""] {
@@ -349,7 +376,10 @@ async fn command_names_are_normalised_once() {
     let events = results(&state, id).await;
     assert_eq!(events.last().unwrap().payload["name"], "stop");
 
-    let id = state.create_session(&ws, None, None).await.expect("create");
+    let id = state
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
     let path = format!("/v1/sessions/{id}/commands");
     let (_, body) = request_json(&router, "POST", &path, Some(&json!({"name": "stop"}))).await;
     assert_eq!(body["ok"], true);
@@ -366,7 +396,10 @@ async fn command_names_are_normalised_once() {
 async fn arguments_to_argument_free_commands_are_rejected() {
     let (tmp, ws) = tmp_ws();
     let state = state(tmp.path());
-    let id = state.create_session(&ws, None, None).await.expect("create");
+    let id = state
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
 
     let out = state
         .run_command(id, "stop", "anything")
@@ -390,7 +423,10 @@ async fn model_lists_a_bounded_alias_catalog() {
         .chat_tools(128_000)
         .extra_alias("other", "other-model")
         .state();
-    let id = state.create_session(&ws, None, None).await.expect("create");
+    let id = state
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
     let out = state.run_command(id, "model", "").await.expect("run");
     let catalog = &out.data.unwrap()["catalog"];
     assert_eq!(catalog["count"], 2);
@@ -412,7 +448,10 @@ async fn a_resumed_pending_ask_refuses_an_immediate_command() {
     let config = TestServerConfig::mock(tmp.path(), &provider.url);
     let first = config.state();
     let (addr, task) = spawn_server(first.clone()).await;
-    let id = first.create_session(&ws, None, None).await.expect("create");
+    let id = first
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
     let sub = first.subscribe(id, None).await.expect("sub");
     post_message_ok(&format!("http://{addr}"), &id.to_string(), "go").await;
     collect_until(sub, |e| {
@@ -436,7 +475,7 @@ async fn a_resumed_pending_ask_refuses_an_immediate_command() {
 
     let second = config.state();
     let (resumed, _) = second
-        .create_or_resume_session(&ws, None, None, Some(id))
+        .create_or_resume_session(&ws, None, false, Some(id))
         .await
         .expect("resume");
     let out = second.run_command(resumed, "help", "").await.expect("run");

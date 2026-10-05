@@ -1,5 +1,5 @@
-//! The navigator profile: creating a session with `profile: "navigator"`
-//! resolves the `cognition` alias and sends the cognition role prompt as a
+//! The editor context: creating a session with `editor: true`
+//! uses its explicitly assigned build model and sends the cognition role prompt as a
 //! SECOND system message after the agent loop's own contract — observed on
 //! the wire as the request the provider receives (wiremock).
 //!
@@ -42,10 +42,7 @@ async fn navigator_child_delivers_normally_without_joining_the_conversation_feed
     let state = test_state_with_feed(tmp.path(), &server.uri(), Some(feed.clone()));
     let ws = tmp.path().join("ws");
     std::fs::create_dir(&ws).unwrap();
-    let parent = state
-        .create_session(&ws, None, Some("navigator"))
-        .await
-        .unwrap();
+    let parent = state.create_session(&ws, None, true).await.unwrap();
     let subscription = state.subscribe(parent, None).await.unwrap();
     send_text(&state, parent, "inspect with a child").await;
     collect_until(subscription, |event| event.kind == "turn.end").await;
@@ -82,6 +79,12 @@ async fn navigator_child_delivers_normally_without_joining_the_conversation_feed
     for tool in ["task", "steer_subagent", "decide_subagent", "intent"] {
         assert!(!tools.contains(&tool), "child {child} cannot use {tool}");
     }
+    assert!(!state.history().meta(child).await.unwrap().unwrap().editor);
+    assert!(!child_body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|message| { message["content"] == navai::navigator::COGNITION_PROMPT }));
     state.close_all().await;
 }
 
@@ -92,10 +95,10 @@ fn test_state_with_feed(
 ) -> AppState {
     TestServerConfig::mock(tmp, base_url)
         .model_alias("cognition", "mock-opus")
-        .navigator_state_with_conversation(conversation)
+        .assigned_navigator_state_with_conversation(conversation)
 }
 
-// Given a session created with profile "navigator" against a scripted
+// Given a session created with editor context against a scripted
 // wiremock provider
 // When a message is posted and the turn completes
 // Then the request the provider received carries TWO system messages — the
@@ -103,7 +106,7 @@ fn test_state_with_feed(
 //      the user message; the session resolved the `cognition` alias; and the
 //      `intent` tool is offered (no conversation feed is involved).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn navigator_profile_sends_the_cognition_prompt_as_second_system_message() {
+async fn editor_context_sends_the_pair_programmer_prompt_as_second_system_message() {
     let server = MockServer::start().await;
     let done =
         r#"{"choices":[{"index":0,"delta":{"content":"guide answer"},"finish_reason":"stop"}]}"#;
@@ -122,13 +125,13 @@ async fn navigator_profile_sends_the_cognition_prompt_as_second_system_message()
     std::fs::create_dir_all(&ws).expect("ws dir");
 
     let id = state
-        .create_session(&ws, None, Some("navigator"))
+        .create_session(&ws, None, true)
         .await
         .expect("create navigator session");
     assert_eq!(
         state.session_summary(id).await.expect("summary").model,
         "mock/mock-opus",
-        "the navigator profile reports the resolved catalog identity"
+        "the editor context uses the configured build model"
     );
     let sub = state.subscribe(id, None).await.expect("subscribe");
 
@@ -210,7 +213,7 @@ async fn wake_through_the_feed_lands_as_a_navigator_sourced_message_and_turn() {
     std::fs::create_dir_all(&ws).expect("ws dir");
 
     let id = state
-        .create_session(&ws, None, Some("navigator"))
+        .create_session(&ws, None, true)
         .await
         .expect("create navigator session");
 
@@ -343,10 +346,7 @@ async fn a_wake_while_the_cognition_yields_is_queued_behind_the_ask_answer() {
     let ws = root.join("ws");
     std::fs::create_dir_all(&ws).expect("ws dir");
 
-    let id = state
-        .create_session(&ws, None, Some("navigator"))
-        .await
-        .expect("create");
+    let id = state.create_session(&ws, None, true).await.expect("create");
 
     // Turn 1: the cognition yields on ask.
     // Subscribe before sending: `collect_until` matches live events only,
@@ -508,10 +508,7 @@ async fn a_wake_never_cancels_an_open_permission_request() {
     }
     let feed = navai::navigator::ConversationFeed::new();
     let state = test_state_with_feed(&root, &server.uri(), Some(feed.clone()));
-    let id = state
-        .create_session(&ws, None, Some("navigator"))
-        .await
-        .expect("create");
+    let id = state.create_session(&ws, None, true).await.expect("create");
 
     send_text(&state, id, "write the note").await;
     let requested = tokio::time::timeout(Duration::from_secs(20), async {
@@ -648,10 +645,12 @@ async fn resumed_feed_rebuilds_without_announcing_old_turns() {
     let state = TestServerConfig::mock(&root, &server.uri())
         .model_alias("cognition", "mock-opus")
         .history_db(root.join("sessions.db"))
-        .navigator_state_with_conversation(Some(navai::navigator::ConversationFeed::new()));
+        .assigned_navigator_state_with_conversation(
+            Some(navai::navigator::ConversationFeed::new()),
+        );
 
     let id = state
-        .create_session(&ws, None, Some("navigator"))
+        .create_session(&ws, None, true)
         .await
         .expect("create navigator session");
     let sub = state.subscribe(id, None).await.expect("subscribe");
@@ -665,10 +664,10 @@ async fn resumed_feed_rebuilds_without_announcing_old_turns() {
     let resumed_state = TestServerConfig::mock(&root, &server.uri())
         .model_alias("cognition", "mock-opus")
         .history_db(root.join("sessions.db"))
-        .navigator_state_with_conversation(Some(feed.clone()));
+        .assigned_navigator_state_with_conversation(Some(feed.clone()));
     let mut announced = feed.subscribe();
     let (resumed_id, resumed) = resumed_state
-        .create_or_resume_session(&ws, None, None, Some(id))
+        .create_or_resume_session(&ws, None, false, Some(id))
         .await
         .expect("resume");
     assert_eq!((resumed_id, resumed), (id, true));

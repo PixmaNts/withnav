@@ -209,7 +209,7 @@ fn apply_sections(current: &str, sections: &IntentSections) -> String {
 }
 
 /// The cognition's `intent` tool: replaces sections of the workspace's
-/// intent record. Registered only in navigator-profile sessions, so a
+/// intent record. Registered only in editor sessions, so a
 /// plain session keeps the default toolset. Restricted to the one path:
 /// it never takes a path argument.
 pub struct IntentTool;

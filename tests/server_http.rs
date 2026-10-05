@@ -30,6 +30,81 @@ fn test_state(tmp: &Path) -> AppState {
     TestServerConfig::unreachable(tmp).state()
 }
 
+#[tokio::test]
+async fn editor_is_explicit_saved_context_and_resume_rejects_selection_fields() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = test_state(tmp.path());
+    let router = app(state.clone());
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    for body in [
+        json!({"workspace": ws, "profile": "navigator"}),
+        json!({"workspace": ws, "editor": "true"}),
+        json!({"workspace": ws, "unexpected": true}),
+    ] {
+        let (status, _) = request_json(&router, "POST", "/v1/sessions", Some(&body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    for editor in [false, true] {
+        let body = if editor {
+            json!({"workspace": ws, "editor": true})
+        } else {
+            json!({"workspace": ws})
+        };
+        let (status, body) = request_json(&router, "POST", "/v1/sessions", Some(&body)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let id: ulid::Ulid = body["session_id"].as_str().unwrap().parse().unwrap();
+        assert_eq!(
+            state.history().meta(id).await.unwrap().unwrap().editor,
+            editor
+        );
+        let fresh = state.run_command(id, "new", "").await.unwrap();
+        assert!(fresh.ok, "{fresh:?}");
+        let fresh_id: ulid::Ulid = fresh.data.unwrap()["session_id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            state
+                .history()
+                .meta(fresh_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .editor,
+            editor
+        );
+        for conflicting in [
+            json!({"editor": false}),
+            json!({"editor": true}),
+            json!({"agent": "build"}),
+            json!({"model": "default"}),
+            json!({"variant": null}),
+        ] {
+            let mut body = conflicting;
+            body["workspace"] = json!(ws);
+            body["resume"] = json!(id.to_string());
+            let (status, _) = request_json(&router, "POST", "/v1/sessions", Some(&body)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+        }
+        state.close_session(id).await.unwrap();
+        let (status, body) = request_json(
+            &router,
+            "POST",
+            "/v1/sessions",
+            Some(&json!({"workspace": ws, "resume": id.to_string()})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            state.history().meta(id).await.unwrap().unwrap().editor,
+            editor
+        );
+    }
+    state.close_all().await;
+}
+
 async fn create_session(state: &AppState, workspace: &str, model: Option<&str>) -> Value {
     let (status, body) = request_json(
         &app(state.clone()),
@@ -303,11 +378,11 @@ async fn sigterm_drives_graceful_shutdown_sessions_end_and_clean_exit() {
     std::fs::create_dir_all(&ws).expect("workspace dir");
 
     let id_a = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .await
         .expect("create a");
     let id_b = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .await
         .expect("create b");
 

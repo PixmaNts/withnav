@@ -166,7 +166,7 @@ fn task_asked(provider: &CapturingProvider, n: usize) -> Value {
 
 async fn plan_session(state: &AppState, env: &Env) -> ulid::Ulid {
     state
-        .create_session_as(&env.ws, None, None, Some("plan"))
+        .create_session_as(&env.ws, None, false, Some("plan"))
         .await
         .expect("create")
 }
@@ -324,7 +324,7 @@ async fn build_is_not_guarded() {
     let target = env.ws.join("main.rs");
     let provider = provider(vec![write_call(&target), done()], vec![]).await;
     let state = state(&env, &provider, false);
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     say(&state, id, "write the stub").await;
     let requested = wait_events(&state, id, "permission.requested", 1).await;
     assert!(requested[0].payload["reason"]
@@ -355,7 +355,7 @@ async fn a_resumed_session_judges_against_the_drivers_stored_words() {
 
     let second = state(&env, &provider, true);
     second
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
     wake(&second, id, "drift: look at the lexer").await;
@@ -388,7 +388,7 @@ async fn without_a_driver_message_the_task_is_null() {
 
     let second = state(&env, &provider, true);
     second
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
     wake(&second, id, "drift again").await;

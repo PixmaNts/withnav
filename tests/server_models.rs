@@ -159,6 +159,7 @@ async fn lists_all_api_kinds_with_canonical_identity_and_configured_default_agen
     let base = format!("http://{addr}");
     let client = reqwest::Client::new();
 
+    // Editor hooks do not supply a model default; catalog selection is separate.
     let ok = client
         .get(format!("{base}/v1/models"))
         .query(&[("workspace", tmp.path())])

@@ -38,7 +38,7 @@ async fn child_lifecycle_during_publication(delete: bool, cleanup: bool) {
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("default"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -193,7 +193,7 @@ async fn stop_cancels_parent_before_waiting_for_child_publication() {
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("default"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -250,7 +250,7 @@ async fn committed_child_is_terminalized_when_publication_or_start_fails() {
         install_agents(&fx.root, &fx.ws);
         let parent = fx
             .state
-            .create_session(&fx.ws, Some("default"), None)
+            .create_session(&fx.ws, Some("default"), false)
             .bounded(file!(), line!())
             .await
             .unwrap();
@@ -319,7 +319,7 @@ async fn inherited_child_keeps_parent_headers_and_output_limit_after_alias_edit(
     std::fs::write(&path, config.to_string()).unwrap();
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("default"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -377,7 +377,7 @@ async fn cascaded_child_stop_is_pending_until_parent_resume() {
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("default"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -429,7 +429,7 @@ async fn cascaded_child_stop_is_pending_until_parent_resume() {
         1
     );
     fx.state
-        .create_or_resume_session(&fx.ws, None, None, Some(parent))
+        .create_or_resume_session(&fx.ws, None, false, Some(parent))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -456,7 +456,7 @@ async fn cascaded_child_stop_is_pending_until_parent_resume() {
         .await
         .unwrap();
     fx.state
-        .create_or_resume_session(&fx.ws, None, None, Some(parent))
+        .create_or_resume_session(&fx.ws, None, false, Some(parent))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -481,7 +481,7 @@ async fn pending_completion_at_resume_snapshot_has_no_sequence_collision() {
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("default"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -517,7 +517,7 @@ async fn pending_completion_at_resume_snapshot_has_no_sequence_collision() {
     let ws = fx.ws.clone();
     let resume = tokio::spawn(async move {
         service
-            .create_or_resume_session(&ws, None, None, Some(parent))
+            .create_or_resume_session(&ws, None, false, Some(parent))
             .bounded(file!(), line!())
             .await
     });
@@ -598,7 +598,7 @@ async fn paused_child_admission(resume: bool) {
     add_cognition_model(&fx.root);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("cognition"), None)
+        .create_session(&fx.ws, Some("cognition"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -630,7 +630,7 @@ async fn paused_child_admission(resume: bool) {
     .unwrap();
     if resume {
         fx.state
-            .create_or_resume_session(&fx.ws, None, None, Some(parent))
+            .create_or_resume_session(&fx.ws, None, false, Some(parent))
             .bounded(file!(), line!())
             .await
             .unwrap();
@@ -744,7 +744,7 @@ async fn writable_child_inherits_disabled_or_invalid_review_despite_settings_rem
         .unwrap();
         let parent = fx
             .state
-            .create_session(&fx.ws, Some("default"), None)
+            .create_session(&fx.ws, Some("default"), false)
             .await
             .unwrap();
         std::fs::remove_file(settings).unwrap();
@@ -818,7 +818,7 @@ async fn permission_parked_child_keeps_capacity_until_stopped() {
     .unwrap();
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("default"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -911,7 +911,7 @@ async fn forbidden_child_calls_are_denied_before_permissions() {
     .unwrap();
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("default"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -976,7 +976,7 @@ async fn child_policy_depth_metadata_and_terminal_notices() {
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("default"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1084,7 +1084,7 @@ async fn filtered_agent_declared_false_tool_is_removed() {
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("default"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1121,7 +1121,7 @@ async fn capacity_error_has_clear_machine_and_model_message() {
     .unwrap();
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("default"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1148,7 +1148,7 @@ async fn child_depth_has_no_task_registry_entry() {
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("default"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1188,7 +1188,7 @@ async fn parent_sse_replay_contains_spawned_and_done_after_completion() {
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("default"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1247,7 +1247,7 @@ async fn child_slot_is_released_after_terminal_result() {
     .unwrap();
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("default"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1307,7 +1307,7 @@ async fn concurrent_children_reuse_exactly_two_completed_capacity_slots() {
     .unwrap();
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("default"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1400,7 +1400,7 @@ async fn child_prompt_is_not_attributed_as_driver_task_or_transcript_inherited()
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("default"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1471,7 +1471,7 @@ async fn task_ack_returns_before_child_turn_finishes() {
     add_cognition_model(&fx.root);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("cognition"), None)
+        .create_session(&fx.ws, Some("cognition"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1569,7 +1569,7 @@ async fn full_access_child_of_plan_parent_has_no_write_dispatch() {
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session_as(&fx.ws, Some("default"), None, Some("plan"))
+        .create_session_as(&fx.ws, Some("default"), false, Some("plan"))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1607,7 +1607,7 @@ async fn declared_read_only_child_tool_denial_is_reflected_in_saved_policy() {
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("default"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1642,7 +1642,7 @@ async fn child_stop_http_is_allowed_but_chat_command_and_resume_are_forbidden() 
     install_agents(&fx.root, &fx.ws);
     let parent = fx
         .state
-        .create_session(&fx.ws, Some("default"), None)
+        .create_session(&fx.ws, Some("default"), false)
         .bounded(file!(), line!())
         .await
         .unwrap();

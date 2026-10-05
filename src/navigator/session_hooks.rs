@@ -1,6 +1,5 @@
-//! The navigator's actor-profile policy for the session service: the
-//! `navigator` profile defaults to the `cognition` alias, carries the
-//! pair-programmer role prompt and the `intent` tool, and drops a legacy
+//! Editor context for the session service: editor roots carry the
+//! pair-programmer prompt and the `intent` tool, and drop a legacy
 //! copy of that prompt from a restored transcript. When a conversation feed
 //! is attached, a navigator session also registers with it and feeds it
 //! the session's events.
@@ -17,14 +16,10 @@ use crate::navigator::intent::IntentTool;
 use crate::provider::openai::ChatMessage;
 use crate::session::{SessionHooks, SessionSender, StartedSession, Subscription};
 
-/// Session profile selecting the navigator's cognition: the `cognition`
-/// model alias by default and the pair-programmer system prompt.
-pub const NAVIGATOR_PROFILE: &str = "navigator";
-
-/// The cognition's role in a navigator session, editable as Markdown.
+/// Pair-programmer context in an editor session, editable as Markdown.
 pub const COGNITION_PROMPT: &str = include_str!("cognition.md");
 
-/// [`SessionHooks`] for the navigator profile; other profiles are left plain.
+/// [`SessionHooks`] for editor sessions; other sessions are left plain.
 #[derive(Debug, Clone, Default)]
 pub struct NavigatorHooks {
     feed: Option<ConversationFeed>,
@@ -123,24 +118,16 @@ async fn watch(feed: ConversationFeed, subscription: Subscription, cancel: Cance
     }
 }
 
-fn is_navigator(profile: Option<&str>) -> bool {
-    profile == Some(NAVIGATOR_PROFILE)
-}
-
 impl SessionHooks for NavigatorHooks {
-    fn default_model(&self, profile: Option<&str>) -> Option<&str> {
-        is_navigator(profile).then_some("cognition")
-    }
-
-    fn configure_actor(&self, profile: Option<&str>, actor: &mut AgentActor) {
-        if !is_navigator(profile) {
+    fn configure_actor(&self, editor: bool, actor: &mut AgentActor) {
+        if !editor {
             return;
         }
         // The navigator role rides as a second system message after the
         // agent loop's own contract; it is not part of the transcript.
         actor.system_prompt = Some(COGNITION_PROMPT.to_string());
         // The intent record is the navigator's working memory: only a
-        // navigator-profile cognition may update it.
+        // editor-session agent may update it.
         actor.registry.register(Box::new(IntentTool));
         // A transcript saved before the role prompt left the transcript
         // starts with that prompt as a system message; drop it so the
@@ -163,7 +150,7 @@ impl SessionHooks for NavigatorHooks {
         let Some(feed) = self.feed.clone() else {
             return;
         };
-        if !is_navigator(info.profile.as_deref()) {
+        if !info.editor {
             return;
         }
         let id = info.id;

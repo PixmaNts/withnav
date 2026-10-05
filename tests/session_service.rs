@@ -22,7 +22,7 @@ async fn service_create_without_http_emits_start_zero() {
         .expect("service");
 
     let id = service
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .await
         .expect("create without http");
 
@@ -56,7 +56,7 @@ async fn service_send_rejects_invalid_content_without_event() {
     let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0)
         .expect("service");
     let id = service
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .await
         .expect("create");
 
@@ -217,7 +217,7 @@ async fn service_delete_removes_listing_and_routing() {
     let ws_str = ws.display().to_string();
 
     let id = service
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .await
         .expect("create");
     let listed = service.list(&ws_str).await.expect("list");
@@ -289,16 +289,7 @@ struct IncarnationWatch {
 struct WatchHooks(std::sync::Arc<IncarnationWatch>);
 
 impl navai::session::SessionHooks for WatchHooks {
-    fn default_model(&self, _profile: Option<&str>) -> Option<&str> {
-        None
-    }
-
-    fn configure_actor(
-        &self,
-        _profile: Option<&str>,
-        _actor: &mut navai::agent::actor::AgentActor,
-    ) {
-    }
+    fn configure_actor(&self, _editor: bool, _actor: &mut navai::agent::actor::AgentActor) {}
 
     fn started(
         &self,
@@ -342,7 +333,7 @@ async fn concurrent_resume_stop_delete_never_creates_two_runtimes() {
     for round in 0..16 {
         let with_delete = round % 2 == 1;
         let id = service
-            .create_session(&ws, None, None)
+            .create_session(&ws, None, false)
             .await
             .expect("create");
         let mut calls = Vec::new();
@@ -355,7 +346,7 @@ async fn concurrent_resume_stop_delete_never_creates_two_runtimes() {
                     service.delete(id).await
                 } else if step % 2 == 0 {
                     service
-                        .create_or_resume_session(&ws, None, None, Some(id))
+                        .create_or_resume_session(&ws, None, false, Some(id))
                         .await
                         .map(|_| ())
                 } else {

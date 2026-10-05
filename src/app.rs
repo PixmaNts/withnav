@@ -229,7 +229,7 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
         .create_session_with(
             &workspace,
             args.model.as_deref(),
-            None,
+            false,
             crate::session::VariantChoice::from_word(args.variant.as_deref()),
             args.agent.as_deref(),
         )

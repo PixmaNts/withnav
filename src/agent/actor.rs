@@ -232,9 +232,9 @@ impl AgentActor {
     }
 
     /// The text of the role system message: the selected agent's prompt, then
-    /// the profile's instructions (the profile has the last word). `None`
+    /// the editor's instructions (the editor has the last word). `None`
     /// when both are empty, which is the case for the default `build` agent
-    /// on a session without a profile.
+    /// on a session without editor context.
     pub fn role_message(&self) -> Option<String> {
         let message = compose_role_message(
             self.role.as_ref().map(|role| role.prompt.as_str()),
@@ -324,7 +324,7 @@ impl AgentActor {
     /// floor at `floor`.
     pub fn context_breakdown_at(&self, floor: usize) -> crate::agent::context::Breakdown {
         // The same role message `build_request` sends: the selected agent's
-        // prompt composed with the profile's.
+        // prompt composed with the editor's.
         let role = self.role_message();
         crate::agent::context::estimate(
             role.as_deref(),
@@ -502,13 +502,13 @@ impl AgentActor {
 }
 
 /// Composes the role system message from the agent's prompt and the
-/// profile's instructions (the profile has the last word); `None` when both
+/// editor's instructions (the editor has the last word); `None` when both
 /// are empty.
-pub fn compose_role_message(agent: Option<&str>, profile: Option<&str>) -> Option<String> {
+pub fn compose_role_message(agent: Option<&str>, editor: Option<&str>) -> Option<String> {
     let agent = agent.map(str::trim).filter(|prompt| !prompt.is_empty());
-    let profile = profile.filter(|prompt| !prompt.trim().is_empty());
-    match (agent, profile) {
-        (Some(agent), Some(profile)) => Some(format!("{agent}\n\n{profile}")),
+    let editor = editor.filter(|prompt| !prompt.trim().is_empty());
+    match (agent, editor) {
+        (Some(agent), Some(editor)) => Some(format!("{agent}\n\n{editor}")),
         (Some(only), None) | (None, Some(only)) => Some(only.to_string()),
         (None, None) => None,
     }

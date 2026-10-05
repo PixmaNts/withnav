@@ -1,0 +1,16 @@
+{
+  "layers": {
+    "reflex": "inception/mercury-edit-2",
+    "instinct": "omniroute/typesafe/jev-1.13",
+    "metacognition": {
+      "model": "omniroute/combo/deepseek-v4-flash",
+      "variant": "low"
+    }
+  },
+  "default_agent": "build",
+  "agents": {
+    "build": { "model": "omniroute/cc/claude-opus-5-5" },
+    "oracle": { "model": "omniroute/combo/gpt-6-astra" },
+    "librarian": { "model": "omniroute/combo/gpt-6-luna" }
+  }
+}

@@ -17,48 +17,54 @@
     }
   },
   "models": {
-    "default": {
-      "provider": "omniroute",
-      "model": "opencode-go/deepseek-v4-flash",
-      "context_window": 128000,
-      "max_output_tokens": 16000,
-      "supports_tools": true,
-      "supports_parallel_tool_calls": true,
-      "default_variant": "low",
-      "reasoning_history": "preserve"
-    },
-    "fast": {
-      "provider": "omniroute",
-      "model": "opencode-go/deepseek-v4-flash",
-      "context_window": 128000,
-      "max_output_tokens": 16000,
-      "supports_tools": true,
-      "supports_parallel_tool_calls": true,
-      "default_variant": "low",
-      "reasoning_history": "preserve"
-    },
-    "cognition": {
+    "omniroute/cc/claude-opus-5-5": {
       "provider": "omniroute",
       "model": "cc/claude-opus-5-5",
-      "context_window": 200000,
-      "max_output_tokens": 32000,
       "supports_tools": true,
       "supports_parallel_tool_calls": true,
-      "default_variant": "high",
       "reasoning_history": "preserve",
       "api": "chat"
     },
-    "metacognition": {
+    "omniroute/combo/deepseek-v4-flash": {
       "provider": "omniroute",
       "model": "combo/deepseek-v4-flash",
-      "context_window": 128000,
-      "max_output_tokens": 8000,
       "supports_tools": true,
       "supports_parallel_tool_calls": false,
+      "variants": {
+        "low": { "reasoning_effort": "low" },
+        "medium": { "reasoning_effort": "medium" },
+        "high": { "reasoning_effort": "high" }
+      },
       "reasoning_history": "preserve",
       "api": "chat"
     },
-    "reflex": {
+    "omniroute/combo/gpt-6-astra": {
+      "provider": "omniroute",
+      "model": "combo/gpt-6-astra",
+      "api": "chat",
+      "supports_tools": true,
+      "supports_parallel_tool_calls": true,
+      "variants": {
+        "low": { "reasoning_effort": "low" },
+        "medium": { "reasoning_effort": "medium" },
+        "high": { "reasoning_effort": "high" }
+      },
+      "reasoning_history": "preserve"
+    },
+    "omniroute/combo/gpt-6-luna": {
+      "provider": "omniroute",
+      "model": "combo/gpt-6-luna",
+      "api": "chat",
+      "supports_tools": true,
+      "supports_parallel_tool_calls": true,
+      "variants": {
+        "low": { "reasoning_effort": "low" },
+        "medium": { "reasoning_effort": "medium" },
+        "high": { "reasoning_effort": "high" }
+      },
+      "reasoning_history": "preserve"
+    },
+    "inception/mercury-edit-2": {
       "provider": "inception",
       "model": "mercury-edit-2",
       "context_window": 128000,
@@ -68,7 +74,7 @@
       "reasoning_history": "preserve",
       "api": "fim"
     },
-    "instinct": {
+    "omniroute/typesafe/jev-1.13": {
       "provider": "omniroute",
       "model": "typesafe/jev-1.13",
       "context_window": 64000,

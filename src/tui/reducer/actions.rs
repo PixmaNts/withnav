@@ -314,6 +314,9 @@ fn pick_model(
     model_id: String,
     variant: Option<Option<String>>,
 ) -> Option<Vec<Effect>> {
+    if reject_non_chat_model(s, &model_id) {
+        return None;
+    }
     // A tab with a conversation, or one being created or resumed, keeps its model.
     let occupied = s.session.is_some() || s.resuming.is_some() || s.pending_submit_text.is_some();
     let effects = if occupied { open_tab(s, ui)? } else { vec![] };
@@ -359,10 +362,29 @@ pub fn occupied(tab: &Tab) -> bool {
     tab.session.is_some() || tab.resuming.is_some() || tab.pending_submit_text.is_some()
 }
 
+fn reject_non_chat_model(s: &mut State, model_id: &str) -> bool {
+    if s.catalog
+        .iter()
+        .any(|model| model.name == model_id && model.api == crate::tui::protocol::ApiKind::Chat)
+    {
+        return false;
+    }
+    push_local(
+        s,
+        BlockKind::Notice(format!(
+            "cannot select {model_id}: conversations require a model with the chat API"
+        )),
+    );
+    true
+}
+
 /// Moves the active conversation to `model_id` through `/model`: the model only, the server applies
 /// the model_id's default variant (`/variant` changes it after). A tab with no conversation yet
 /// starts on it instead.
 fn switch_model(s: &mut State, ui: &mut UiState, model_id: String) -> Vec<Effect> {
+    if reject_non_chat_model(s, &model_id) {
+        return vec![];
+    }
     if !occupied(s) {
         return pick_model(s, ui, model_id, None).unwrap_or_default();
     }

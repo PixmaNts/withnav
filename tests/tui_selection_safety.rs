@@ -167,7 +167,7 @@ fn workspace_order_and_tab_scoped_agents_reject_foreign_and_reversed_answers() {
         (1, "/ws", "gateway/old"),
         (3, "/foreign", "gateway/foreign"),
     ] {
-        let body=serde_json::from_value(json!({"models":[{"name":name,"gateway":"gateway","upstream_id":"new","provider_group":"gateway","context_window":1}],"default_agent":"build"})).unwrap();
+        let body=serde_json::from_value(json!({"models":[{"name":name,"gateway":"gateway","upstream_id":"new","api":"chat","provider_group":"gateway","context_window":1}],"default_agent":"build"})).unwrap();
         reducer::update(
             &mut s,
             ClientEvent::Models {
@@ -226,7 +226,7 @@ fn workspace_order_and_tab_scoped_agents_reject_foreign_and_reversed_answers() {
     // Workspace catalog survives closure of the tab that issued it.
     s.tabs.remove(0);
     s.active = 0;
-    let body=serde_json::from_value(json!({"models":[{"name":"gateway/latest","gateway":"gateway","upstream_id":"latest","provider_group":"gateway"}],"default_agent":"build"})).unwrap();
+    let body=serde_json::from_value(json!({"models":[{"name":"gateway/latest","gateway":"gateway","upstream_id":"latest","api":"chat","provider_group":"gateway"}],"default_agent":"build"})).unwrap();
     reducer::update(
         &mut s,
         ClientEvent::Models {
@@ -265,11 +265,13 @@ fn same_model_summary_keeps_committed_window_but_new_model_resolves_its_own() {
         let mut s = State {
             catalog: vec![
                 ModelEntry {
+                    api: navai::tui::protocol::ApiKind::Chat,
                     name: "gateway/current".into(),
                     context_window: catalog_window,
                     ..Default::default()
                 },
                 ModelEntry {
+                    api: navai::tui::protocol::ApiKind::Chat,
                     name: "gateway/new".into(),
                     context_window: Some(200000),
                     ..Default::default()
@@ -299,6 +301,7 @@ fn real_variant_key_paths_restore_agent_or_model_base_and_omit_inherited_create_
         let mut s = State::default();
         agents(&mut s, 1, None, "build");
         s.catalog = vec![ModelEntry {
+            api: navai::tui::protocol::ApiKind::Chat,
             name: "gateway/build".into(),
             variants: vec!["low".into(), "high".into()],
             default_variant: Some("high".into()),
@@ -348,6 +351,7 @@ fn model_picker_inherit_key_choice_creates_with_omitted_variant() {
     use navai::tui::input::{route_key, Editor};
     let mut s = State {
         catalog: vec![ModelEntry {
+            api: navai::tui::protocol::ApiKind::Chat,
             name: "gateway/model".into(),
             gateway: "gateway".into(),
             provider_group: "gateway".into(),

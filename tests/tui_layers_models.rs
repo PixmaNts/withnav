@@ -5,15 +5,231 @@ use navai::tui::{
     input::{route_key, Editor},
     protocol::*,
     reducer,
-    state::{State, UiState},
+    state::{State, UiState, VariantPick},
 };
 use serde_json::json;
 
 fn models() -> ModelsBody {
     serde_json::from_value(json!({"default_agent":"plan","models":[
-        {"name":"omniroute/combo/astra","gateway":"omniroute","provider_group":"combo","upstream_id":"combo/astra","context_window":1000000,"variants":["low"]},
-        {"name":"openai/astra","gateway":"openai","provider_group":"openai","upstream_id":"astra","context_window":1000000}
+        {"name":"omniroute/combo/astra","gateway":"omniroute","api":"chat","provider_group":"combo","upstream_id":"combo/astra","context_window":1000000,"variants":["low"]},
+        {"name":"openai/astra","gateway":"openai","api":"chat","provider_group":"openai","upstream_id":"astra","context_window":1000000}
     ]})).unwrap()
+}
+
+fn mixed_models() -> ModelsBody {
+    serde_json::from_value(json!({"default_agent":"plan","models":[
+        {"name":"gateway/chat","gateway":"gateway","provider_group":"vendor","upstream_id":"chat","api":"chat","enabled":true,"context_window":100000},
+        {"name":"gateway/fim","gateway":"gateway","provider_group":"vendor","upstream_id":"fim","api":"fim","enabled":true,"context_window":100000},
+        {"name":"gateway/systemone","gateway":"gateway","provider_group":"vendor","upstream_id":"systemone","api":"systemone","enabled":true,"context_window":100000}
+    ]})).unwrap()
+}
+
+fn live_session() -> SessionMetadata {
+    serde_json::from_value(json!({
+        "session_id":"S", "actor_state":"idle", "workspace":"", "model":"gateway/chat", "current_seq":0
+    })).unwrap()
+}
+
+#[test]
+fn mixed_catalog_retains_layer_models_but_conversation_rows_only_offer_chat() {
+    let mut s = State::default();
+    let generation = s.generation.clone();
+    reducer::update(
+        &mut s,
+        ClientEvent::Models {
+            workspace: String::new(),
+            request: 0,
+            generation,
+            result: Ok(mixed_models()),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        s.catalog.len(),
+        3,
+        "layer capabilities remain in the full catalog"
+    );
+    assert_eq!(
+        s.catalog.iter().map(|m| m.api).collect::<Vec<_>>(),
+        vec![ApiKind::Chat, ApiKind::Fim, ApiKind::SystemOne]
+    );
+    let mut ui = UiState::default();
+    let keys = |ui: &UiState| {
+        catalog::rows(&s.catalog, ui)
+            .iter()
+            .map(Row::key)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        keys(&ui),
+        vec!["group:gateway", "group:gateway/vendor", "gateway/chat"]
+    );
+    ui.collapsed_models.insert("gateway/vendor".into());
+    assert_eq!(keys(&ui), vec!["group:gateway", "group:gateway/vendor"]);
+    ui.filter = "CHAT".into();
+    assert_eq!(
+        keys(&ui),
+        vec!["group:gateway", "group:gateway/vendor", "gateway/chat"]
+    );
+    for filter in ["fim", "systemone"] {
+        ui.filter = filter.into();
+        assert!(keys(&ui).is_empty());
+    }
+}
+
+#[test]
+fn missing_and_future_api_are_not_conversation_choices() {
+    let mut body = serde_json::to_value(mixed_models()).unwrap();
+    body["models"][0].as_object_mut().unwrap().remove("api");
+    body["models"][1]["api"] = json!("future-api");
+    let models: ModelsBody = serde_json::from_value(body).unwrap();
+    assert_eq!(models.models[0].api, ApiKind::Unknown);
+    assert_eq!(models.models[1].api, ApiKind::Unknown);
+    assert!(catalog::rows(&models.models, &UiState::default()).is_empty());
+}
+
+#[test]
+fn enter_and_ctrl_n_cannot_route_lower_layer_models() {
+    for occupied in [false, true] {
+        for (code, modifiers) in [
+            (KeyCode::Enter, KeyModifiers::NONE),
+            (KeyCode::Char('n'), KeyModifiers::CONTROL),
+        ] {
+            for filter in ["fim", "systemone"] {
+                let mut s = State {
+                    catalog: mixed_models().models,
+                    ..State::default()
+                };
+                if occupied {
+                    s.session = Some(live_session());
+                }
+                let mut ui = UiState {
+                    overlay: Some(Overlay::Models),
+                    filter: filter.into(),
+                    ..UiState::default()
+                };
+                let action = route_key(
+                    KeyEvent::new(code, modifiers),
+                    &s,
+                    &mut ui,
+                    &mut Editor::default(),
+                );
+                assert_eq!(action, None);
+                assert_eq!(ui.variant_pick, None);
+                assert_eq!(ui.overlay, Some(Overlay::Models));
+                assert!(s.start_model.is_none());
+                assert!(s.model_switch.is_none());
+                assert_eq!(s.tabs.len(), 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn mixed_catalog_picker_renders_and_routes_chat_only() {
+    use ratatui::{backend::TestBackend, Terminal};
+    let mut s = State {
+        catalog: mixed_models().models,
+        ..State::default()
+    };
+    s.session = Some(live_session());
+    let mut ui = UiState {
+        overlay: Some(Overlay::Models),
+        ..UiState::default()
+    };
+    ui.selection.insert(format!("{:?}", Overlay::Models), 2);
+    let mut editor = Editor::default();
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal
+        .draw(|frame| {
+            navai::tui::view::draw(
+                frame,
+                &s,
+                &ui,
+                &editor,
+                &mut navai::tui::view::RenderCache::default(),
+            )
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let text = (0..40)
+        .map(|y| {
+            (0..120)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("gateway/chat"));
+    assert!(!text.contains("gateway/fim"));
+    assert!(!text.contains("gateway/systemone"));
+    assert_eq!(
+        route_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &s,
+            &mut ui,
+            &mut editor
+        ),
+        Some(Action::SwitchModel("gateway/chat".into()))
+    );
+    ui.overlay = Some(Overlay::Models);
+    assert_eq!(
+        route_key(
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            &s,
+            &mut ui,
+            &mut editor
+        ),
+        None
+    );
+    assert_eq!(
+        ui.variant_pick,
+        Some(VariantPick::NewConversation("gateway/chat".into()))
+    );
+    assert_eq!(
+        route_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &s,
+            &mut ui,
+            &mut editor
+        ),
+        Some(Action::PickModel("gateway/chat".into()))
+    );
+}
+
+#[test]
+fn direct_lower_layer_model_actions_are_rejected_before_tab_or_switch_effects() {
+    for occupied in [false, true] {
+        for name in ["gateway/fim", "gateway/systemone", "gateway/unknown"] {
+            for action in [
+                Action::PickModel(name.into()),
+                Action::SwitchModel(name.into()),
+            ] {
+                let mut s = State {
+                    catalog: mixed_models().models,
+                    ..State::default()
+                };
+                s.catalog.push(ModelEntry {
+                    name: "gateway/unknown".into(),
+                    ..ModelEntry::default()
+                });
+                if occupied {
+                    s.session = Some(live_session());
+                }
+                s.selected_model_id = Some("gateway/chat".into());
+                let tabs = s.tabs.len();
+                let generation = s.generation.clone();
+                assert!(reducer::handle_action(&mut s, &mut UiState::default(), action).is_empty());
+                assert_eq!(s.tabs.len(), tabs);
+                assert_eq!(s.generation, generation);
+                assert_eq!(s.selected_model_id.as_deref(), Some("gateway/chat"));
+                assert!(s.start_model.is_none());
+                assert!(s.model_switch.is_none());
+                assert!(matches!(&s.conversation.blocks.last().unwrap().kind,
+                    navai::tui::state::BlockKind::Notice(text) if text.contains(name) && text.contains("chat API")));
+            }
+        }
+    }
 }
 fn agents() -> AgentsBody {
     serde_json::from_value(json!({"default_agent":"plan","agents":[

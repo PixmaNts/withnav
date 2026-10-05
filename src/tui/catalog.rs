@@ -1,4 +1,7 @@
-use super::{protocol::ModelEntry, state::UiState};
+use super::{
+    protocol::{ApiKind, ModelEntry},
+    state::UiState,
+};
 use std::collections::BTreeMap;
 
 pub enum Row<'a> {
@@ -24,7 +27,7 @@ pub fn rows<'a>(catalog: &'a [ModelEntry], ui: &UiState) -> Vec<Row<'a>> {
     let filter = ui.filter.to_lowercase();
     let mut groups: BTreeMap<&str, BTreeMap<&str, Vec<&ModelEntry>>> = BTreeMap::new();
     for model in catalog {
-        if model.name.to_lowercase().contains(&filter) {
+        if model.api == ApiKind::Chat && model.name.to_lowercase().contains(&filter) {
             groups
                 .entry(&model.gateway)
                 .or_default()

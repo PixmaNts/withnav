@@ -3,9 +3,22 @@ use crate::bus::event::EventEnvelope;
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct Generation(pub u64);
+/// Wire capability: missing or future APIs must not become conversation choices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ApiKind {
+    Chat,
+    Fim,
+    SystemOne,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ModelEntry {
     pub name: String,
+    #[serde(default)]
+    pub api: ApiKind,
     pub gateway: String,
     pub provider_group: String,
     pub upstream_id: String,

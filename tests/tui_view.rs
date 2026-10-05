@@ -219,6 +219,7 @@ fn state() -> State {
         tabs: vec![tab],
         catalog: vec![
             ModelEntry {
+                api: navai::tui::protocol::ApiKind::Chat,
                 gateway: "gateway".into(),
                 provider_group: "gateway".into(),
                 name: "cognition".into(),
@@ -227,6 +228,7 @@ fn state() -> State {
                 ..Default::default()
             },
             ModelEntry {
+                api: navai::tui::protocol::ApiKind::Chat,
                 gateway: "gateway".into(),
                 provider_group: "gateway".into(),
                 name: "fast".into(),
@@ -1428,6 +1430,7 @@ fn big_catalog() -> State {
     let mut s = state();
     s.catalog = (0..293)
         .map(|n| ModelEntry {
+            api: navai::tui::protocol::ApiKind::Chat,
             gateway: "gateway".into(),
             provider_group: "gateway".into(),
             name: format!("alias-{n:03}"),
@@ -1437,6 +1440,7 @@ fn big_catalog() -> State {
         })
         .collect();
     s.catalog.push(ModelEntry {
+        api: navai::tui::protocol::ApiKind::Chat,
         gateway: "gateway".into(),
         provider_group: "gateway".into(),
         name: "opus".into(),
@@ -1447,6 +1451,7 @@ fn big_catalog() -> State {
         ..Default::default()
     });
     s.catalog.push(ModelEntry {
+        api: navai::tui::protocol::ApiKind::Chat,
         gateway: "gateway".into(),
         provider_group: "gateway".into(),
         name: "flash".into(),
@@ -3183,6 +3188,7 @@ fn the_header_keeps_the_committed_model_when_the_catalog_says_otherwise() {
         generation: s.generation.clone(),
         result: Ok(navai::tui::protocol::ModelsBody {
             models: vec![ModelEntry {
+                api: navai::tui::protocol::ApiKind::Chat,
                 gateway: "gateway".into(),
                 provider_group: "gateway".into(),
                 name: "luna".into(),

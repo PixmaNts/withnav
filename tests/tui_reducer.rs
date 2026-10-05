@@ -1624,6 +1624,7 @@ fn resumed_ev(s: &State, id: &str) -> ClientEvent {
 fn catalog() -> Vec<ModelEntry> {
     vec![
         ModelEntry {
+            api: navai::tui::protocol::ApiKind::Chat,
             gateway: "gateway".into(),
             provider_group: "gateway".into(),
             name: "a".into(),
@@ -1632,6 +1633,7 @@ fn catalog() -> Vec<ModelEntry> {
             ..Default::default()
         },
         ModelEntry {
+            api: navai::tui::protocol::ApiKind::Chat,
             gateway: "gateway".into(),
             provider_group: "gateway".into(),
             name: "b".into(),
@@ -3666,6 +3668,7 @@ fn the_session_summary_and_a_background_change_set_each_tabs_agent() {
 fn variant_catalog() -> Vec<ModelEntry> {
     vec![
         ModelEntry {
+            api: navai::tui::protocol::ApiKind::Chat,
             gateway: "gateway".into(),
             provider_group: "gateway".into(),
             name: "opus".into(),
@@ -3676,6 +3679,7 @@ fn variant_catalog() -> Vec<ModelEntry> {
             ..Default::default()
         },
         ModelEntry {
+            api: navai::tui::protocol::ApiKind::Chat,
             gateway: "gateway".into(),
             provider_group: "gateway".into(),
             name: "flash".into(),
@@ -4601,6 +4605,7 @@ fn switching_a_live_conversation_sends_model_and_opens_no_tab() {
 #[test]
 fn no_switch_is_sent_while_the_agent_waits_for_the_driver() {
     let (mut s, mut ui) = (st(), ui());
+    models_now(&mut s, Some("a".into())).unwrap();
     created_now(&mut s, "S1").unwrap();
     feed(&mut s, &permission_script(5).out);
     assert!(handle_action(&mut s, &mut ui, Action::SwitchModel("b".into())).is_empty());
@@ -4611,6 +4616,7 @@ fn no_switch_is_sent_while_the_agent_waits_for_the_driver() {
     assert_eq!(s.model_switch, None);
     // a question
     let mut s = st();
+    models_now(&mut s, Some("a".into())).unwrap();
     created_now(&mut s, "S1").unwrap();
     s.activity = Activity::AwaitingUser;
     assert!(handle_action(&mut s, &mut ui, Action::SwitchModel("b".into())).is_empty());
@@ -4690,6 +4696,11 @@ fn model_answered_to(s: &mut State, token: u64, op: u128, result: Result<Option<
 fn switching() -> (State, UiState) {
     let (mut s, mut ui) = (st(), ui());
     models_now(&mut s, Some("a".into())).unwrap();
+    s.catalog.push(ModelEntry {
+        api: navai::tui::protocol::ApiKind::Chat,
+        name: "c".into(),
+        ..Default::default()
+    });
     created_now(&mut s, "S1").unwrap();
     s.activity = Activity::Running;
     assert_eq!(
@@ -5098,6 +5109,7 @@ fn a_catalog_refresh_leaves_the_committed_model_and_window_alone() {
         generation: s.generation.clone(),
         result: Ok(ModelsBody {
             models: vec![ModelEntry {
+                api: navai::tui::protocol::ApiKind::Chat,
                 gateway: "gateway".into(),
                 provider_group: "gateway".into(),
                 name: "luna".into(),

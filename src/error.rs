@@ -32,6 +32,10 @@ pub enum ProviderError {
     Auth(String),
     #[error("unknown model alias: {0}")]
     UnknownModelAlias(String),
+    #[error("unknown catalog model: {0}")]
+    UnknownModel(String),
+    #[error("ambiguous catalog model '{model}': {}", keys.join(", "))]
+    AmbiguousModel { model: String, keys: Vec<String> },
     #[error("unexpected content-type (expected text/event-stream): {0}")]
     WrongContentType(String),
     #[error("provider request canceled")]
@@ -117,6 +121,8 @@ pub enum BusError {
 
 #[derive(Debug, Error)]
 pub enum ServerError {
+    #[error("session {session} is a read-only archive: {reason}")]
+    SessionArchived { session: String, reason: String },
     #[error("child is not parked on its step budget")]
     ChildNotParked,
     #[error("child sessions are read-only to clients")]

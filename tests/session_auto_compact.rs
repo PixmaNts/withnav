@@ -79,13 +79,13 @@ fn history(turns: usize) -> Vec<ChatMessage> {
 }
 
 async fn seeded(state: &AppState, ws: &Path, turns: usize) -> ulid::Ulid {
-    let id = state.create_session(ws, None, None).await.expect("create");
+    let id = state.create_session(ws, None, false).await.expect("create");
     state.close_session(id).await.expect("close");
     state.history().flush().await.expect("flush");
     state.history().save_transcript(id, history(turns));
     state.history().flush().await.expect("flush");
     state
-        .create_or_resume_session(ws, None, None, Some(id))
+        .create_or_resume_session(ws, None, false, Some(id))
         .await
         .expect("resume");
     id
@@ -146,7 +146,7 @@ async fn a_tool_heavy_turn_that_crosses_the_budget_is_compacted_and_goes_on() {
     })
     .await;
     let state = state(&env, &provider, WINDOW);
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     let sub = state.subscribe(id, None).await.unwrap();
 
     send_text(&state, id, "look at big.txt a few times").await;
@@ -224,7 +224,7 @@ async fn a_tail_that_cannot_fit_ends_the_turn_with_a_clear_error() {
     // The user message alone is bigger than the whole budget.
     let provider = spawn_capturing_provider(vec![]).await;
     let state = state(&env, &provider, 10_000);
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     let sub = state.subscribe(id, None).await.unwrap();
 
     send_text(&state, id, &"huge ".repeat(8_000)).await;
@@ -345,8 +345,8 @@ fn two_models_both(
         json!({
             "providers": {"a": provider(&a.url), "b": provider(&b.url)},
             "models": {
-                "default": entry("a", "model-a", window_a),
-                "small": entry("b", "model-b", window_b),
+                "a/model-a": entry("a", "model-a", window_a),
+                "b/model-b": entry("b", "model-b", window_b),
             }
         })
         .to_string(),
@@ -357,6 +357,7 @@ fn two_models_both(
         json!({"a": {"api_key": "key-a"}, "b": {"api_key": "key-b"}}).to_string(),
     )
     .expect("auth.json");
+    std::fs::write(config.config_dir.join("config.json"),json!({"agents":{"build":{"model":"a/model-a"},"plan":{"model":"a/model-a"}},"permissions":{"scratch_dirs":[]}}).to_string()).unwrap();
     AppState::new(config).expect("state")
 }
 
@@ -376,7 +377,7 @@ async fn a_switch_to_a_smaller_window_compacts_with_the_old_model_then_switches(
     let id = seeded(&state, &env.ws, 8).await;
     let sub = state.subscribe(id, None).await.unwrap();
 
-    let out = state.run_command(id, "model", "small").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(out.ok, "{out:?}");
     let data = out.data.unwrap();
     assert_eq!(data["changed"], true);
@@ -407,7 +408,7 @@ async fn a_switch_to_a_smaller_window_compacts_with_the_old_model_then_switches(
         .unwrap();
     assert_eq!(notice.payload["reason"], "switch");
     assert_eq!(stored(&state, id, "context.compacted").await.len(), 1);
-    assert_eq!(state.session_summary(id).await.unwrap().model, "small");
+    assert_eq!(state.session_summary(id).await.unwrap().model, "b/model-b");
 
     let sub = state.subscribe(id, None).await.unwrap();
     send_text(&state, id, "go on").await;
@@ -434,13 +435,13 @@ async fn a_switch_that_cannot_be_made_to_fit_is_refused_without_compacting() {
     let state = two_models(&env, &a, &b, 8_000);
     let id = seeded(&state, &env.ws, 8).await;
 
-    let out = state.run_command(id, "model", "small").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(!out.ok, "{out:?}");
     let error = out.error.unwrap();
     assert!(error.contains("cannot be compacted to fit it"), "{error}");
     assert!(error.contains("larger context window"), "{error}");
     assert!(a.bodies().is_empty() && b.bodies().is_empty());
-    assert_eq!(state.session_summary(id).await.unwrap().model, "default");
+    assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
     assert!(stored(&state, id, "context.compacted").await.is_empty());
     assert!(stored(&state, id, "model.changed").await.is_empty());
     let (_, _, checkpoint) = state.history().load_for_resume(id).await.unwrap().unwrap();
@@ -460,13 +461,13 @@ async fn a_switch_whose_summary_fails_changes_nothing() {
     let state = two_models(&env, &a, &b, 20_000);
     let id = seeded(&state, &env.ws, 8).await;
 
-    let out = state.run_command(id, "model", "small").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(!out.ok, "{out:?}");
     assert!(out
         .error
         .unwrap()
         .contains("compaction before the switch failed"));
-    assert_eq!(state.session_summary(id).await.unwrap().model, "default");
+    assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
     assert!(stored(&state, id, "model.changed").await.is_empty());
     assert!(stored(&state, id, "context.compacted").await.is_empty());
 }
@@ -527,16 +528,16 @@ async fn a_switched_session_with_large_old_reasoning_compacts_and_continues() {
             ]
         })
         .collect();
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     state.close_session(id).await.unwrap();
     state.history().flush().await.unwrap();
     state.history().save_transcript(id, heavy);
     state.history().flush().await.unwrap();
     state
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
-    let out = state.run_command(id, "model", "small").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(out.ok, "{out:?}");
     assert!(
         out.data.as_ref().unwrap()["compacted"].is_null(),
@@ -680,26 +681,21 @@ async fn controls_during_an_automatic_summary_are_refused_or_wait_their_turn() {
     assert!(again.ok, "{again:?}");
 }
 
-// Given a switch to a smaller window whose second commit (the switch and its
-//       model.changed) cannot be written, after the checkpoint was committed
-// Then the switch is refused and the conversation stays on the OLD model with
-//      the new checkpoint, which a stop and a resume restore: the old model
-//      then answers from the summary and the recent turns
+// A failed destination selection must not install its staged compaction.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_failed_switch_after_its_checkpoint_leaves_the_old_model_with_the_checkpoint() {
+async fn a_failed_switch_rolls_back_the_staged_checkpoint_and_selection() {
     let env = env();
     let a = spawn_capturing_provider(vec![answer(SUMMARY), answer("still the old model")]).await;
     let b = spawn_capturing_provider(vec![]).await;
     let state = two_models(&env, &a, &b, 20_000);
     let id = seeded(&state, &env.ws, 8).await;
     state.history().flush().await.unwrap();
-    // The checkpoint's own events take the next seqs (`context.compacted`,
-    // stored with insert-or-ignore, and a live `context.updated`); the switch's
-    // `model.changed` is written with a strict insert right after. Occupy the
-    // seqs after the notice: only that strict insert can trip over them.
+    let before = state.history().load_for_resume(id).await.unwrap().unwrap();
+    let before_gauge = serde_json::to_value(state.context(id).await.unwrap()).unwrap();
+    // Occupy the later model.changed seq, after context.compacted was inserted.
     let head = state.session_summary(id).await.unwrap().current_seq + 1;
     let conn = rusqlite::Connection::open(env.root.join("history.db")).unwrap();
-    for seq in head + 1..=head + 3 {
+    for seq in head + 1..=head + 1 {
         conn.execute(
             "INSERT INTO events (session_id, seq, kind, envelope) VALUES (?1, ?2, 'x', '{}')",
             rusqlite::params![id.to_string(), seq as i64],
@@ -707,29 +703,32 @@ async fn a_failed_switch_after_its_checkpoint_leaves_the_old_model_with_the_chec
         .unwrap();
     }
 
-    let out = state.run_command(id, "model", "small").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(!out.ok, "{out:?}");
     assert!(out.error.unwrap().contains("could not be saved"));
-    assert_eq!(state.session_summary(id).await.unwrap().model, "default");
+    assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
     assert!(stored(&state, id, "model.changed").await.is_empty());
-    // The checkpoint stands, in the store and in the notice.
+    // Neither the staged checkpoint nor its notice survives the failed transaction.
     let notices = stored(&state, id, "context.compacted").await;
-    assert_eq!(notices.len(), 1);
-    assert_eq!(notices[0].payload["reason"], "switch");
+    assert!(notices.is_empty());
     let meta = state.history().meta(id).await.unwrap().unwrap();
-    assert_eq!(meta.model, "default");
+    assert_eq!(meta.model, "a/model-a");
     assert!(!meta.model_resolution.unwrap().contains("model-b"));
     let (_, _, checkpoint) = state.history().load_for_resume(id).await.unwrap().unwrap();
-    assert_eq!(checkpoint.expect("the checkpoint").checkpoint.generation, 1);
+    assert!(checkpoint.is_none());
+    let after = state.history().load_for_resume(id).await.unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(&after.1).unwrap(),
+        serde_json::to_value(&before.1).unwrap()
+    );
+    assert_eq!(after.2, before.2);
+    assert_eq!(
+        serde_json::to_value(state.context(id).await.unwrap()).unwrap(),
+        before_gauge
+    );
 
-    // A stop and a resume: still the old model, still the checkpoint.
-    state.close_session(id).await.unwrap();
-    state.history().flush().await.unwrap();
-    state
-        .create_or_resume_session(&env.ws, None, None, Some(id))
-        .await
-        .unwrap();
-    assert_eq!(state.session_summary(id).await.unwrap().model, "default");
+    // The same actor must still send the original history after the refusal.
+    assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
     let sub = state.subscribe(id, None).await.unwrap();
     send_text(&state, id, "go on").await;
     collect_until(sub, |e| e.kind == "turn.end").await;
@@ -737,10 +736,265 @@ async fn a_failed_switch_after_its_checkpoint_leaves_the_old_model_with_the_chec
     let request = body(&a, 1);
     assert_eq!(request["model"], "model-a");
     let text = all_text(&request);
-    assert!(text.contains("Goal: finish the parser."), "the checkpoint");
+    assert!(
+        !text.contains("Goal: finish the parser."),
+        "no staged checkpoint installed"
+    );
     assert!(text.contains("go on"));
     assert!(
-        !text.contains("answer 0 "),
-        "the early turns are summarized"
+        text.contains("answer 0 "),
+        "the original transcript is retained"
     );
+}
+
+// A successful SQLite commit is the linearization point, even when stop wins
+// before its callback can install the selection or publish the batch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_after_selection_commit_completes_the_new_identity_before_teardown() {
+    let env = env();
+    let a = spawn_capturing_provider(vec![answer(SUMMARY)]).await;
+    let b = spawn_capturing_provider(vec![answer("new selection still works")]).await;
+    let state = two_models(&env, &a, &b, 20_000);
+    let path = env.root.join("models.json");
+    let mut models: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    models["models"]["b/model-b"]["variants"] = json!({"high":{"reasoning_effort":"high"}});
+    models["models"]["b/model-b"]["default_variant"] = json!("high");
+    std::fs::write(path, models.to_string()).unwrap();
+    std::fs::write(
+        env.root.join("cfg/config.json"),
+        json!({"agents":{"build":{"model":"a/model-a"},"scribe":{"model":"b/model-b"}}})
+            .to_string(),
+    )
+    .unwrap();
+    // This role is not build/plan: its distinct prompt proves the actor swap.
+    std::fs::create_dir_all(env.root.join("cfg/agents")).unwrap();
+    std::fs::write(
+        env.root.join("cfg/agents/scribe.md"),
+        "---\nmode: primary\nmodel: b/model-b\n---\nPOSTCOMMIT SCRIBE ROLE\n",
+    )
+    .unwrap();
+    let id = seeded(&state, &env.ws, 8).await;
+    // Seed an inactive agent override; /agent must install it with its provenance.
+    state
+        .history()
+        .update_agent_override(
+            id,
+            "scribe",
+            navai::session::store::AgentOverride {
+                model: Some("b/model-b".into()),
+                variant: navai::session::store::AgentVariantOverride::Named("high".into()),
+            },
+        )
+        .await
+        .unwrap();
+    let sub = state.subscribe(id, None).await.unwrap();
+    let barrier = state.history().arm_selection_commit_barrier();
+    let mut switching = tokio::spawn({
+        let state = state.clone();
+        async move { state.run_command(id, "agent", "scribe").await }
+    });
+    tokio::select! {
+        _ = barrier.reached.notified() => {},
+        out = &mut switching => panic!("switch returned before postcommit boundary: {out:?}"),
+    }
+    // Independent SQLite reads prove the write completed before cancellation.
+    let committed = state.history().load_for_resume(id).await.unwrap().unwrap();
+    assert_eq!(committed.0.primary_agent.as_deref(), Some("scribe"));
+    assert_eq!(committed.0.model, "b/model-b");
+    assert_eq!(committed.0.variant.as_deref(), Some("high"));
+    assert!(committed.2.is_some());
+    let loaded = state.history().load(id).await.unwrap().unwrap();
+    let operation = loaded
+        .envelopes
+        .iter()
+        .rev()
+        .find(|e| e.kind == "model.changed")
+        .unwrap()
+        .payload["operation_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let (installed, observed) = tokio::sync::oneshot::channel();
+    navai::bus::runtime::observe_selection_install(operation, move |actor| {
+        installed
+            .send((
+                actor.role.as_ref().unwrap().id.to_string(),
+                actor.model.clone(),
+                serde_json::to_value(&actor.variant).unwrap(),
+                actor.compaction.clone(),
+                actor.reasoning_floor,
+            ))
+            .unwrap();
+    });
+    assert_eq!(state.context(id).await.unwrap().model, "a/model-a");
+    let stopping = tokio::spawn({
+        let state = state.clone();
+        async move { state.close_session(id).await }
+    });
+    barrier.cancelled().await; // no scheduling assumption or sleep
+    barrier.release.notify_one();
+    let out = switching.await.unwrap().unwrap();
+    assert!(out.ok, "{out:?}");
+    let (role, model, variant, checkpoint, floor) = observed.await.unwrap();
+    assert_eq!(role, "scribe");
+    assert_eq!(model, "model-b");
+    assert_eq!(variant["reasoning_effort"], "high");
+    assert_eq!(checkpoint, committed.2);
+    assert_eq!(Some(floor as u64), committed.0.reasoning_floor);
+    stopping.await.unwrap().unwrap();
+    let events = collect_until(sub, |e| e.kind == "session.end").await;
+    let changed = events.iter().find(|e| e.kind == "model.changed").unwrap();
+    assert_eq!(changed.payload["new"]["agent"], "scribe");
+    assert_eq!(changed.payload["new"]["model"], "b/model-b");
+    assert_eq!(changed.payload["new"]["gateway"], "b");
+    assert_eq!(changed.payload["new"]["upstream_id"], "model-b");
+    assert_eq!(changed.payload["variant"], "high");
+    assert_eq!(changed.payload["new"]["source"], "override");
+    assert_eq!(changed.payload["new"]["variant_source"], "override");
+    let compacted = events
+        .iter()
+        .find(|e| e.kind == "context.compacted")
+        .unwrap();
+    let role = events
+        .iter()
+        .find(|e| e.kind == "session.agent_changed")
+        .unwrap();
+    assert_eq!(role.payload["agent"], "scribe");
+    assert!(compacted.seq < changed.seq && changed.seq < role.seq);
+    let result = events
+        .iter()
+        .find(|e| {
+            e.kind == "command.result" && e.payload["operation_id"] == out.operation_id.to_string()
+        })
+        .unwrap();
+    assert_eq!(result.payload["ok"], true);
+    let gauge = events
+        .iter()
+        .find(|e| e.kind == "context.updated" && e.seq > changed.seq)
+        .unwrap();
+    assert_eq!(gauge.payload["model"], "b/model-b");
+    let end = events.last().unwrap();
+    assert!(changed.seq < gauge.seq && gauge.seq < result.seq && result.seq < end.seq);
+    let after = state.history().load_for_resume(id).await.unwrap().unwrap();
+    assert_eq!(after.0.agent_overrides, committed.0.agent_overrides);
+    assert_eq!(after.0.provenance, committed.0.provenance);
+    assert_eq!(after.2, committed.2);
+    state
+        .create_or_resume_session(&env.ws, None, false, Some(id))
+        .await
+        .unwrap();
+    let live = state.session_summary(id).await.unwrap();
+    assert_eq!(live.agent, "scribe");
+    assert_eq!(live.model, "b/model-b");
+    assert_eq!(live.variant.as_deref(), Some("high"));
+    let sub = state.subscribe(id, None).await.unwrap();
+    send_text(&state, id, "continue after stop").await;
+    collect_until(sub, |e| e.kind == "turn.end").await;
+    let request = body(&b, 0);
+    assert_eq!(request["model"], "model-b");
+    assert_eq!(request["reasoning_effort"], "high");
+    let text = all_text(&request);
+    assert!(text.contains("POSTCOMMIT SCRIBE ROLE"));
+    assert!(text.contains(SUMMARY));
+    assert_eq!(a.bodies().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_switch_preserves_an_existing_checkpoint_and_the_same_live_runtime() {
+    let env = env();
+    let a = spawn_capturing_provider(vec![
+        answer(SUMMARY),
+        answer("NEW STAGED SUMMARY"),
+        answer("old runtime still works"),
+    ])
+    .await;
+    let b = spawn_capturing_provider(vec![]).await;
+    let state = two_models(&env, &a, &b, 20_000);
+    let id = seeded(&state, &env.ws, 8).await;
+    assert!(state.run_command(id, "compact", "").await.unwrap().ok);
+    state.close_session(id).await.unwrap();
+    let (_, mut transcript, checkpoint) =
+        state.history().load_for_resume(id).await.unwrap().unwrap();
+    let checkpoint = checkpoint.expect("valid prior compaction");
+    transcript.extend(history(5));
+    state
+        .history()
+        .save_checkpoint(id, transcript, &checkpoint)
+        .await
+        .unwrap();
+    state
+        .create_or_resume_session(&env.ws, None, false, Some(id))
+        .await
+        .unwrap();
+    let before = state.history().load_for_resume(id).await.unwrap().unwrap();
+    navai::agent::compaction::validate(before.2.as_ref().unwrap(), &before.1).unwrap();
+    let live = state.session_summary(id).await.unwrap();
+    let gauge = serde_json::to_value(state.context(id).await.unwrap()).unwrap();
+    let notices = stored(&state, id, "context.compacted").await;
+    let head = live.current_seq + 1;
+    let conn = rusqlite::Connection::open(env.root.join("history.db")).unwrap();
+    conn.execute(
+        "INSERT INTO events (session_id, seq, kind, envelope) VALUES (?1, ?2, 'x', '{}')",
+        rusqlite::params![id.to_string(), (head + 1) as i64],
+    )
+    .unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
+    assert!(!out.ok, "{out:?}");
+    assert!(out.error.unwrap().contains("could not be saved"));
+    assert_eq!(
+        a.bodies().len(),
+        2,
+        "the second compaction was actually staged"
+    );
+    assert!(is_summary(&a.bodies()[1]));
+    let after = state.history().load_for_resume(id).await.unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(&after.1).unwrap(),
+        serde_json::to_value(&before.1).unwrap()
+    );
+    assert_eq!(after.2, before.2);
+    navai::agent::compaction::validate(after.2.as_ref().unwrap(), &after.1).unwrap();
+    assert_eq!(after.0.model, before.0.model);
+    assert_eq!(after.0.primary_agent, before.0.primary_agent);
+    assert_eq!(after.0.variant, before.0.variant);
+    assert_eq!(after.0.variant_override, before.0.variant_override);
+    assert_eq!(after.0.model_resolution, before.0.model_resolution);
+    assert_eq!(after.0.reasoning_floor, before.0.reasoning_floor);
+    assert_eq!(after.0.agent_overrides, before.0.agent_overrides);
+    assert_eq!(after.0.provenance, before.0.provenance);
+    let current = state.session_summary(id).await.unwrap();
+    assert_eq!(
+        (current.agent, current.model, current.variant),
+        (live.agent, live.model, live.variant)
+    );
+    assert_eq!(
+        serde_json::to_value(state.context(id).await.unwrap()).unwrap(),
+        gauge
+    );
+    assert_eq!(
+        serde_json::to_value(stored(&state, id, "context.compacted").await).unwrap(),
+        serde_json::to_value(notices).unwrap()
+    );
+    assert!(stored(&state, id, "model.changed").await.is_empty());
+    // No close/resume here: exercise the actor whose staged switch failed.
+    let sub = state.subscribe(id, None).await.unwrap();
+    send_text(&state, id, "same runtime continues").await;
+    let events = collect_until(sub, |e| e.kind == "turn.end").await;
+    assert_eq!(
+        events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "turn.end")
+            .unwrap()
+            .payload["outcome"],
+        "done"
+    );
+    assert!(b.bodies().is_empty());
+    let request = body(&a, 2);
+    assert_eq!(request["model"], "model-a");
+    let text = all_text(&request);
+    assert!(text.contains(SUMMARY));
+    assert!(!text.contains("NEW STAGED SUMMARY"));
+    assert!(text.contains("same runtime continues"));
 }

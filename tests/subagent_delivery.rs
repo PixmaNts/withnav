@@ -20,12 +20,12 @@ async fn owner_continue_admits_one_budget_renewal_and_child_finishes() {
         .chat_tools(128_000)
         .state();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
     let other = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -152,7 +152,7 @@ async fn queued_driver_correction_precedes_completion_only_wake() {
         .chat_tools(128_000)
         .state();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -246,7 +246,7 @@ async fn mirrored_child_permission_is_resolved_after_parent_stop_and_resume() {
         .chat_tools(128_000)
         .state();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -297,7 +297,7 @@ async fn mirrored_child_permission_is_resolved_after_parent_stop_and_resume() {
         .await
         .unwrap();
     state
-        .create_or_resume_session(&ws, None, None, Some(parent))
+        .create_or_resume_session(&ws, None, false, Some(parent))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -333,12 +333,12 @@ async fn abandoned_mirrored_permission_is_expired_on_resume() {
     let child = ulid::Ulid::new();
     let request = ulid::Ulid::new();
     store
-        .record_session(parent, &ws.display().to_string(), "default", None)
+        .record_session(parent, &ws.display().to_string(), "mock/mock-model", false)
         .bounded(file!(), line!())
         .await
         .unwrap();
     store
-        .record_session(child, &ws.display().to_string(), "default", None)
+        .record_session(child, &ws.display().to_string(), "mock/mock-model", false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -372,7 +372,7 @@ async fn abandoned_mirrored_permission_is_expired_on_resume() {
     drop(store);
     let state = AppState::new(config).unwrap();
     state
-        .create_or_resume_session(&ws, None, None, Some(parent))
+        .create_or_resume_session(&ws, None, false, Some(parent))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -407,13 +407,13 @@ async fn recovery_leaves_live_instance_children_and_recovers_stale_owner() {
     let child = ulid::Ulid::new();
     first
         .history()
-        .record_session(parent, "/ws", "default", None)
+        .record_session(parent, "/ws", "default", false)
         .bounded(file!(), line!())
         .await
         .unwrap();
     first
         .history()
-        .record_session(child, "/ws", "default", None)
+        .record_session(child, "/ws", "default", false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -541,7 +541,7 @@ async fn finished_child_wakes_idle_parent_and_consumes_once() {
         .chat_tools(128_000)
         .state();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -592,7 +592,7 @@ async fn finished_child_wakes_idle_parent_and_consumes_once() {
         .await
         .unwrap();
     state
-        .create_or_resume_session(&ws, None, None, Some(parent))
+        .create_or_resume_session(&ws, None, false, Some(parent))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -629,7 +629,7 @@ async fn busy_parent_consumes_several_notices_in_order_at_next_boundary() {
         .chat_tools(128_000)
         .state();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -741,7 +741,7 @@ async fn unconsumed_notice_survives_child_delete_and_service_recreation() {
         .config();
     let state = AppState::new(config.clone()).unwrap();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -769,7 +769,7 @@ async fn unconsumed_notice_survives_child_delete_and_service_recreation() {
     drop(state);
     let state = AppState::new(config).unwrap();
     state
-        .create_or_resume_session(&ws, None, None, Some(parent))
+        .create_or_resume_session(&ws, None, false, Some(parent))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -795,7 +795,7 @@ async fn parent_delete_removes_child_tree_and_notices() {
         .chat_tools(128_000)
         .state();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -858,12 +858,12 @@ async fn recovery_terminalizes_unfinished_child_without_tool_replay() {
     let parent = ulid::Ulid::new();
     let child = ulid::Ulid::new();
     history
-        .record_session(parent, &ws.display().to_string(), "default", None)
+        .record_session(parent, &ws.display().to_string(), "mock/mock-model", false)
         .bounded(file!(), line!())
         .await
         .unwrap();
     history
-        .record_session(child, &ws.display().to_string(), "default", None)
+        .record_session(child, &ws.display().to_string(), "mock/mock-model", false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -896,7 +896,7 @@ async fn recovery_terminalizes_unfinished_child_without_tool_replay() {
     assert_eq!(link.terminal_reason.as_deref(), Some("restart"));
     assert_eq!(state.reserved_child_count(parent), 0);
     state
-        .create_or_resume_session(&ws, None, None, Some(parent))
+        .create_or_resume_session(&ws, None, false, Some(parent))
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -927,12 +927,12 @@ async fn child_permission_is_answered_by_owner_without_parent_interaction() {
         .chat_tools(128_000)
         .state();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
     let other = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1071,7 +1071,7 @@ async fn child_permission_and_result_do_not_answer_parent_ask() {
         .chat_tools(128_000)
         .state();
     let parent = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .bounded(file!(), line!())
         .await
         .unwrap();
@@ -1230,12 +1230,12 @@ async fn published_notice_is_consumed_after_crash_and_never_consumed_twice() {
     let child = ulid::Ulid::new();
     let store = navai::session::store::HistoryStore::open(&path).unwrap();
     store
-        .record_session(parent, "/ws", "default", None)
+        .record_session(parent, "/ws", "default", false)
         .bounded(file!(), line!())
         .await
         .unwrap();
     store
-        .record_session(child, "/ws", "default", None)
+        .record_session(child, "/ws", "default", false)
         .bounded(file!(), line!())
         .await
         .unwrap();

@@ -12,14 +12,14 @@ function keyboardPage(){
   return {dom,d,posts,receive,key,type:text=>{for(const c of text)key(c);}};
 }
 test('R1.3 focused composer key-by-key preserves literal slash, command arguments and palette completion',()=>{
-  const {dom,d,posts,receive,key,type}=keyboardPage();receive({type:'commands',items:[{name:'model',description:'Choose model',args_hint:'[alias]'}]});const prompt=d.querySelector('#prompt');prompt.focus();
+  const {dom,d,posts,receive,key,type}=keyboardPage();receive({type:'commands',items:[{name:'model',description:'Choose model',args_hint:'[name]'}]});const prompt=d.querySelector('#prompt');prompt.focus();
   type('//text');assert.equal(d.activeElement,prompt);key('Enter');assert.equal(posts.at(-1).text,'//text');receive({type:'sendResult',text:'//text',accepted:true});
   type('/compact focus');assert.equal(d.activeElement,prompt);key('Enter');assert.equal(posts.at(-1).text,'/compact focus');receive({type:'sendResult',text:'/compact focus',accepted:true});
   type('/mo');key('Tab');assert.equal(prompt.value,'/model ');assert.equal(d.activeElement,prompt);dom.window.close();
 });
 test('R1.2 selector picker selection and refusal preserve existing typed draft',()=>{
   const {dom,d,posts,receive,key,type}=keyboardPage();const prompt=d.querySelector('#prompt');prompt.focus();type('my unfinished request');
-  receive({type:'models',items:[{alias:'target',model:'provider/model'}],locked:false});d.querySelector('#model').focus();key('Enter');type('target');key('Enter');assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))),{type:'selectModel',alias:'target',generation:1});assert.equal(prompt.value,'my unfinished request');receive({type:'commandError',text:'Switch refused'});assert.equal(prompt.value,'my unfinished request');dom.window.close();
+  receive({type:'models',items:[{name:'target',gateway:'gw',provider_group:'provider',upstream_id:'provider/model',api:'chat',enabled:true}],locked:false});d.querySelector('#model').focus();key('Enter');type('target');key('Enter');assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))),{type:'selectModel',name:'target',generation:1});assert.equal(prompt.value,'my unfinished request');receive({type:'commandError',text:'Switch refused'});assert.equal(prompt.value,'my unfinished request');dom.window.close();
 });
 test('R1.6 conversation editing and IME stay in search; arrows scroll selected last row',()=>{
   const {dom,d,posts,receive,key}=keyboardPage();receive({type:'conversations',items:Array.from({length:50},(_,i)=>({id:String(i),title:`item ${i}`,updatedAt:'2026-01-01',messageCount:1}))});d.querySelector('.conv-trigger').click();const search=d.activeElement;
@@ -54,7 +54,7 @@ test('searchable shipped pickers rank names, match descriptions, cap 300 rows an
   key('ArrowDown');assert.equal(search.getAttribute('aria-activedescendant'),'command-option-1');key('Enter');assert.equal(posts.at(-1).text,'/model target-more');
   receive({type:'commandPicker',kind:'skills',items});input('provider id 299');assert.match(d.querySelector('#command-palette .picker-count').textContent,/1 of 300/);key('Enter');assert.equal(d.querySelector('#prompt').value,'/skill model-299 ');
   receive({type:'commandPicker',kind:'variant',items});input('missing');assert.match(d.querySelector('#picker-options').textContent,/No matches/);key('Escape');assert.equal(search.value,'');assert.equal(d.querySelector('#command-palette').hidden,false);key('Escape');assert.equal(d.querySelector('#command-palette').hidden,true);
-  receive({type:'models',items:items.map(i=>({alias:i.name,model:i.description})),locked:false});d.querySelector('#model').dispatchEvent(new dom.window.MouseEvent('mousedown',{bubbles:true,cancelable:true}));assert.equal(d.activeElement,search);
+  receive({type:'models',items:items.map(i=>({name:i.name,gateway:"gw",provider_group:"gw",upstream_id:i.description,api:"chat",enabled:true})),locked:false});d.querySelector('#model').dispatchEvent(new dom.window.MouseEvent('mousedown',{bubbles:true,cancelable:true}));assert.equal(d.activeElement,search);assert.equal(d.querySelectorAll('#picker-options [role=option]').length,50);
   dom.window.close();
 });
 
@@ -74,7 +74,7 @@ test("R2 shipped page restores refused admitted skill without overwriting newer 
   prompt.value = "new typing"; prompt.dispatchEvent(new dom.window.Event("input"));
   receive({ type: "sendResult", text: "/skill review check", accepted: false, restoreDraft: true });
   assert.equal(prompt.value, "new typing");
-  receive({ type: "models", items: [{ alias: "a", model: "a" }], locked: true });
+  receive({ type: "models", items: [{ name: "a", gateway: "gw", provider_group: "gw", upstream_id: "a", api: "chat", enabled: true }], locked: true });
   assert.equal(dom.window.document.querySelector("#model").disabled, true);
   dom.window.dispatchEvent(new dom.window.MessageEvent("message", { data: { type: "conversationOpened", id: "B", title: "B", generation: 2 } }));
   prompt.value = "/stop";
@@ -92,7 +92,7 @@ test("shipped palette supports filter, arrows, Tab, Enter, Escape and mouse; age
   const receive = data => dom.window.dispatchEvent(new dom.window.MessageEvent("message", { data: { ...data, generation: 1 } }));
   receive({ type: "conversationOpened", title: "A", id: "A" });
   receive({ type: "status", state: "ready" });
-  receive({ type: "commands", items: [{ name: "model", description: "Switch model", args_hint: "[alias]" }, { name: "compact", description: "Compact", args_hint: "[focus]" }] });
+  receive({ type: "commands", items: [{ name: "model", description: "Switch model", args_hint: "[name]" }, { name: "compact", description: "Compact", args_hint: "[focus]" }] });
   const prompt = d.querySelector("#prompt");
   const input = text => { prompt.value = text; prompt.dispatchEvent(new dom.window.Event("input")); };
   const key = key => prompt.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));

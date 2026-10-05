@@ -9,17 +9,7 @@
     }
   },
   "models": {
-    "default": {
-      "provider": "omniroute",
-      "model": "opencode-go/deepseek-v4-flash",
-      "context_window": 128000,
-      "max_output_tokens": 16000,
-      "supports_tools": true,
-      "supports_parallel_tool_calls": true,
-      "thinking": "low",
-      "reasoning_history": "preserve"
-    },
-    "fast": {
+    "omniroute/opencode-go/deepseek-v4-flash": {
       "provider": "omniroute",
       "model": "opencode-go/deepseek-v4-flash",
       "context_window": 128000,

@@ -56,7 +56,7 @@ pub use ports::{
 pub use reflex::{
     SuggestOutcome, Suggestion, DEBOUNCE_MS, MAX_CONTEXT_BYTES, MAX_PREFIX_BYTES, MAX_SUFFIX_BYTES,
 };
-pub use session_hooks::{NavigatorHooks, COGNITION_PROMPT, NAVIGATOR_PROFILE};
+pub use session_hooks::{NavigatorHooks, COGNITION_PROMPT};
 
 /// Everything the navigator needs besides the LSP channel itself. The model
 /// seams (metacognition, and `fim`/`decision` for the reflex and instinct

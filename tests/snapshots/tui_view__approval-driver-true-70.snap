@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: shown
 ---
- ◆ navai                                        ▌build  — · — · — / — 
+ ◆ navai                                 ▌build  — · assigned · — / — 
 ──────────────────────────────────────────────────────────────────────
  │ ▾ ✓ bash · driver approved cargo test parser  ok  1.42 s  exit 101 
  │   Role check: conforms · Within the plan role                      

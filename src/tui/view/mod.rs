@@ -83,6 +83,17 @@ fn key_bar(choices: &[Hints], width: usize, theme: &Theme) -> Vec<Span<'static>>
 /// choices always shown, shorter when the row is narrow), the deny message's while one is typed,
 /// else the everyday ones.
 fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
+    if state.archive() {
+        return &[Hints {
+            hints: &[
+                "alt+w close archive",
+                "drag copy text",
+                "y copy block",
+                "page↑/↓ scroll",
+            ],
+            required: 1,
+        }];
+    }
     if state.watchdog_paused && state.open_permission().is_none() {
         return &[Hints {
             hints: &["alt+c continue", "esc stop"],
@@ -100,6 +111,17 @@ fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
                 "shift+drag native",
                 "shift+tab write",
                 "f1 help",
+            ],
+            required: 1,
+        }];
+    }
+    if state.archive() {
+        return &[Hints {
+            hints: &[
+                "alt+w close archive",
+                "drag copy text",
+                "y copy block",
+                "page↑/↓ scroll",
             ],
             required: 1,
         }];
@@ -340,8 +362,12 @@ pub fn draw(
     frame.render_widget(border, input);
     if state.read_only() {
         frame.render_widget(
-            Paragraph::new("This subagent can't be written to · alt+w returns to its parent")
-                .style(theme.muted()),
+            Paragraph::new(if state.archive() {
+                "Archive is read-only · copy text or close with alt+w"
+            } else {
+                "This subagent can't be written to · alt+w returns to its parent"
+            })
+            .style(theme.muted()),
             inner,
         );
     } else {

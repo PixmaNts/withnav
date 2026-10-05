@@ -454,13 +454,30 @@ pub struct SessionAgentChanged {
     pub previous: String,
 }
 
-/// Who a session talks to: the alias it was asked for and what that resolved
-/// to.
+/// The canonical catalog identity and selection provenance of a session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelIdentity {
-    pub alias: String,
-    pub provider: String,
     pub model: String,
+    pub gateway: String,
+    pub upstream_id: String,
+    pub agent: Option<String>,
+    pub variant: Option<String>,
+    pub source: Option<String>,
+    pub variant_source: Option<String>,
+}
+
+impl ModelIdentity {
+    pub fn from_upstream(gateway: &str, upstream_id: &str) -> Self {
+        Self {
+            model: format!("{gateway}/{upstream_id}"),
+            gateway: gateway.into(),
+            upstream_id: upstream_id.into(),
+            agent: None,
+            variant: None,
+            source: None,
+            variant_source: None,
+        }
+    }
 }
 
 /// Why the model selection of a session was announced.
@@ -469,10 +486,13 @@ pub enum ModelChangeReason {
     /// The first selection of a new session.
     #[serde(rename = "initial")]
     Initial,
-    /// `/model <alias>` moved the conversation to another alias.
-    #[serde(rename = "switch")]
+    /// `/model` moved the conversation to another catalog model.
+    #[serde(rename = "model")]
     Switch,
-    /// The variant changed on the same alias.
+    /// The active agent changed.
+    #[serde(rename = "agent")]
+    Agent,
+    /// The variant changed on the same model.
     #[serde(rename = "variant")]
     Variant,
     /// A resume refreshed the saved variant from the current offer.
@@ -481,7 +501,7 @@ pub enum ModelChangeReason {
 }
 
 /// The model selection of a session was committed: the first one at its
-/// start, then every switch of alias or variant. The events table is the
+/// start, then every switch of model or variant. The events table is the
 /// selection history; a turn belongs to the selection in force at its
 /// `turn.start`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -704,8 +724,10 @@ pub struct Breakdown {
 /// provider actually counted for that request, never the estimate of the next.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LastUsage {
-    /// The alias the step ran on.
-    pub alias: String,
+    /// The canonical identity the historical step ran on.
+    pub model: String,
+    pub gateway: String,
+    pub upstream_id: String,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     /// The `step_id` of the `llm.response` that reported it.
@@ -735,7 +757,9 @@ fn always_true() -> bool {
 /// join it as optional fields when those features land.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextSnapshot {
-    pub alias: String,
+    pub model: String,
+    pub gateway: String,
+    pub upstream_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant: Option<String>,
     pub window: u64,
@@ -1056,7 +1080,9 @@ mod tests {
             (
                 "context.updated",
                 serde_json::to_value(&ContextSnapshot {
-                    alias: "default".into(),
+                    model: "p/m".into(),
+                    gateway: "p".into(),
+                    upstream_id: "m".into(),
                     variant: None,
                     window: 200_000,
                     window_source: "models.json".into(),
@@ -1125,16 +1151,8 @@ mod tests {
                     operation_id: Some(Ulid::new()),
                     revision: 2,
                     reason: ModelChangeReason::Switch,
-                    previous: Some(ModelIdentity {
-                        alias: "a".into(),
-                        provider: "p".into(),
-                        model: "m1".into(),
-                    }),
-                    new: ModelIdentity {
-                        alias: "b".into(),
-                        provider: "p".into(),
-                        model: "m2".into(),
-                    },
+                    previous: Some(ModelIdentity::from_upstream("p", "m1")),
+                    new: ModelIdentity::from_upstream("p", "m2"),
                     variant: Some("high".into()),
                     window: 200_000,
                     input_budget: 181_808,

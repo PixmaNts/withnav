@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::compaction::{
     effective_history, project_reasoning, validate as validate_compaction, Compaction, Components,
 };
-use crate::agent::definitions::AgentDefinition;
+use crate::agent::definitions::{AgentAccess, AgentDefinition};
 use crate::agent::guard::RoleGuard;
 use crate::agent::instructions::Instructions;
 use crate::agent::permissions::{Grants, PermissionRequest};
@@ -122,6 +122,60 @@ pub struct AgentActor {
 }
 
 impl AgentActor {
+    /// The registry is the frozen session/child ceiling. A role only narrows it;
+    /// switching roles never removes entries or restores unavailable tools.
+    pub fn tool_allowed(&self, name: &str) -> bool {
+        self.tool_allowed_for_role(name, self.role.as_deref())
+    }
+
+    /// Destination-role projection for switch preparation, without mutation.
+    pub fn tool_allowed_for_role(&self, name: &str, role: Option<&AgentDefinition>) -> bool {
+        self.registry.get(name).is_some()
+            && role.is_none_or(|role| {
+                role.tools.get(name).copied().unwrap_or(true)
+                    && (role.access != AgentAccess::ReadOnly
+                        || !matches!(
+                            name,
+                            "write"
+                                | "edit"
+                                | "bash"
+                                | "ask"
+                                | "task"
+                                | "steer_subagent"
+                                | "decide_subagent"
+                                | "intent"
+                        ))
+            })
+    }
+
+    /// Read-only follows the known child access exclusions, including session
+    /// control and the navigator's intent writer. Unknown installed tools keep
+    /// their declared policy; they are not guessed to be mutations by name.
+    pub fn effective_tool_schemas(&self) -> Vec<crate::provider::openai::ToolDef> {
+        self.effective_tool_schemas_for_role(self.role.as_deref())
+    }
+
+    pub fn effective_tool_schemas_for_role(
+        &self,
+        role: Option<&AgentDefinition>,
+    ) -> Vec<crate::provider::openai::ToolDef> {
+        self.registry
+            .schemas_filtered(|name| self.tool_allowed_for_role(name, role))
+    }
+
+    pub fn effective_skills_catalog(&self) -> Option<&str> {
+        self.effective_skills_catalog_for_role(self.role.as_deref())
+    }
+
+    pub fn effective_skills_catalog_for_role(
+        &self,
+        role: Option<&AgentDefinition>,
+    ) -> Option<&str> {
+        self.tool_allowed_for_role("skill", role)
+            .then(|| self.skills.catalog())
+            .flatten()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         registry: Registry,
@@ -178,9 +232,9 @@ impl AgentActor {
     }
 
     /// The text of the role system message: the selected agent's prompt, then
-    /// the profile's instructions (the profile has the last word). `None`
+    /// the editor's instructions (the editor has the last word). `None`
     /// when both are empty, which is the case for the default `build` agent
-    /// on a session without a profile.
+    /// on a session without editor context.
     pub fn role_message(&self) -> Option<String> {
         let message = compose_role_message(
             self.role.as_ref().map(|role| role.prompt.as_str()),
@@ -229,7 +283,7 @@ impl AgentActor {
         Components {
             system_prompt: role,
             rules: self.rules.message(),
-            skills: self.skills.catalog(),
+            skills: self.effective_skills_catalog(),
             tools,
         }
     }
@@ -270,14 +324,14 @@ impl AgentActor {
     /// floor at `floor`.
     pub fn context_breakdown_at(&self, floor: usize) -> crate::agent::context::Breakdown {
         // The same role message `build_request` sends: the selected agent's
-        // prompt composed with the profile's.
+        // prompt composed with the editor's.
         let role = self.role_message();
         crate::agent::context::estimate(
             role.as_deref(),
             self.rules.message(),
-            self.skills.catalog(),
+            self.effective_skills_catalog(),
             &self.effective_history_at(floor),
-            &self.registry.schemas(),
+            &self.effective_tool_schemas(),
         )
     }
 
@@ -448,13 +502,13 @@ impl AgentActor {
 }
 
 /// Composes the role system message from the agent's prompt and the
-/// profile's instructions (the profile has the last word); `None` when both
+/// editor's instructions (the editor has the last word); `None` when both
 /// are empty.
-pub fn compose_role_message(agent: Option<&str>, profile: Option<&str>) -> Option<String> {
+pub fn compose_role_message(agent: Option<&str>, editor: Option<&str>) -> Option<String> {
     let agent = agent.map(str::trim).filter(|prompt| !prompt.is_empty());
-    let profile = profile.filter(|prompt| !prompt.trim().is_empty());
-    match (agent, profile) {
-        (Some(agent), Some(profile)) => Some(format!("{agent}\n\n{profile}")),
+    let editor = editor.filter(|prompt| !prompt.trim().is_empty());
+    match (agent, editor) {
+        (Some(agent), Some(editor)) => Some(format!("{agent}\n\n{editor}")),
         (Some(only), None) | (None, Some(only)) => Some(only.to_string()),
         (None, None) => None,
     }

@@ -17,9 +17,19 @@ _Avoid_: copilot, assistant, agent (for the whole system)
 
 ## Layers
 
+The layer, model and agent vocabulary below describes the implementation prepared for **v0.5.0**;
+see [ADR 0011](docs/adr/0011-layers-models-and-agent-overrides.md). It does not describe which
+version is installed on the driver's machine.
+
+**Layer**:
+One of four cognitive roles: reflex, instinct, metacognition and cognition. The first three each
+have one configured model at a time; cognition runs agents in parallel sessions. Configurable
+flows are planned for 0.6.
+_Avoid_: model tier, model alias
+
 **Reflex**:
 The fastest layer: completes what the driver is typing, as ghost text, from a fill-in-the-middle
-model.
+model, only in editor contexts.
 _Avoid_: autocomplete layer, FIM layer
 
 **Instinct**:
@@ -61,6 +71,27 @@ _Avoid_: feedback, vote
 
 The ownership and delivery decisions are in
 [ADR 0009](docs/adr/0009-background-subagents-and-durable-delivery.md).
+Model selection and editor context follow
+[ADR 0011](docs/adr/0011-layers-models-and-agent-overrides.md).
+An invalid nondefault model assignment falls back to the default agent's model with a visible
+warning; an invalid default agent or unusable default model prevents startup.
+
+**Agent**:
+The role cognition plays, such as `build`, `plan`, `explore`, `review` or a custom role: its prompt,
+tools, access and optional assigned model and variant. A configured assignment takes precedence
+over the model in its markdown header.
+_Avoid_: model, profile, persona
+
+**Default agent**:
+The agent a new session starts with unless the driver chooses another: configured by
+`default_agent`, or `build` when absent. It must have a usable model or Navai cannot start.
+_Avoid_: default model, default alias
+
+**Editor session**:
+A session created by an editor client, adding the pair-programmer prompt, `intent` tool and
+navigator conversation attachment to its agent. This context is independent of agent and model
+selection and starts on the default agent like any other session.
+_Avoid_: navigator profile, session profile
 
 **Primary agent**:
 The role a session runs as: `build` (implement, verify, report), `plan` (research, write markdown
@@ -71,12 +102,12 @@ _Avoid_: mode (a mode is where an agent definition may be used), persona
 **Agent definition**:
 A role described in a built-in or a markdown file: description, mode (primary, subagent or both),
 role prompt, optional model, tool allow/deny map and access level. `build` and `plan` are reserved.
-_Avoid_: profile (a profile is the kind of session, such as the navigator)
+_Avoid_: profile, session type
 
 **Subagent**:
 An agent definition whose mode is `subagent` or `all`, meant to be given a task by another agent
 (`explore` and `review` are built in and read-only). A cognition session may start one through
-`task(agent, prompt)` from either the terminal or a VS Code navigator-profile root conversation. Children never
+`task(agent, prompt)` from either the terminal or an editor root conversation. Children never
 register with the conversation feed or receive the navigator's `intent` tool. Their results use
 normal durable delivery, not navigator wakes; the root digest labels them as untrusted subagent text.
 The subagent is a real, non-promptable child session. It has an independent transcript, an
@@ -165,18 +196,25 @@ _Avoid_: role guard (that checks role conformance, not progress), permission req
 
 ## Models and commands
 
-**Model alias**:
-A name in `models.json` (`cognition`, `fast`, your own) that stands for one provider, model, API and
-set of limits. Sessions, agents and the navigator layers refer to aliases, never to raw model ids. A
-conversation saves what its alias resolved to and keeps it, until `/model <alias>` moves it to
-another alias between turns (the history goes with it, and the switch is announced by `model.changed`).
-_Avoid_: model name, preset
+These selection terms follow the decision in
+[ADR 0011](docs/adr/0011-layers-models-and-agent-overrides.md).
+
+**Model**:
+A catalog identity written `gateway/upstream-id`, such as `omniroute/combo/gpt-6-astra`;
+the gateway is the configured endpoint and the remaining id is sent to it verbatim. Catalog
+groups distinguish the gateway from providers within it, such as `omniroute` → `cc` or `combo`.
+_Avoid_: alias, nickname, preset
+
+**Model override**:
+A durable model or variant choice for one session and one agent, restored on reopening or switching
+back to that agent. Without an override or assignment, a primary agent uses the default agent's
+model; an unassigned subagent uses its parent's effective model, including overrides.
+_Avoid_: global model change, session-wide model
 
 **Variant**:
-A named set of request overrides that an alias offers, such as a reasoning effort (`low`, `high`).
-One variant is in use per conversation: it starts on the alias's default, `/variant <name>` changes
-it from the next turn, and `/variant off` clears it. Variants come from `models.json` or from the
-tiers the provider reports.
+A model's named request settings, such as reasoning effort (`low`, `high`), selected per session
+and agent. The choice is `inherit` (use the applicable default), `off` (no variant overrides), or
+a named variant; changing model without a variant takes the new model's default.
 _Avoid_: thinking level, mode, profile
 
 **Session command**:
@@ -184,8 +222,10 @@ A `/name` the server runs on a conversation: `/help`, `/model`, `/new`, `/stop`,
 `/variant`, `/compact`, `/agent`. A command has a result, shown in the conversation. While a permission request is pending, `/stop`
 runs (and cancels the request) and every other command is refused. While an `ask` is pending, every
 command is refused, `/stop` included; the stop endpoint (`POST /v1/sessions/{id}/stop`) still works. `//text` sends the literal text `/text`. The
-terminal client also has its own commands (`/sessions`, `/theme`, `/quit`), and it opens a new tab
-for `/model <alias>` and `/new <alias>` instead of running them on the open conversation.
+terminal client also has its own commands (`/sessions`, `/theme`, `/quit`). `/model <gateway/id>`
+switches the current agent's model in the open conversation, after the turn if busy; on an empty
+tab it sets the starting override. `/new [agent]` starts fresh on that agent's assignment, without
+the previous session's overrides.
 _Avoid_: tool, action (an action is what a pipeline branch decides)
 
 ## Permissions
@@ -197,7 +237,7 @@ delegations remain untrusted evidence. Approval still requires understood, recov
 protected configuration always requires a typed driver answer.
 
 Navai's explicitly configured config directory is a protected root: native writes/edits ask the
-driver before any model review, including symlink aliases. Scratch never overlaps this root.
+driver before any model review, including symlinks. Scratch never overlaps this root.
 Bash calls literally naming it ask too, but indirect bash effects cannot be fully confined.
 
 **Scratch directory**:

@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: shown
 ---
- ◆ navai                                        ▌build  — · — · — / — 
+ ◆ navai                                 ▌build  — · assigned · — / — 
 ──────────────────────────────────────────────────────────────────────
  │ ▾ ✓ bash · auto · Jev cargo test parser  ok  1.42 s  exit 101      
  │   Auto-approved by Jev: Matches the requested change               

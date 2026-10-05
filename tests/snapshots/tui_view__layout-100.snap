@@ -2,7 +2,7 @@
 source: tests/tui_view.rs
 expression: snapshot
 ---
- Conversations       │ ◆ navai  feat/tui-design ●14  ▌build  cognition · cc/cl… · ~41k / 200k · 21% 
+ Conversations       │ ◆ navai  feat/tui-design ●14  ▌build  cognition · assig… · ~41k / 200k · 21% 
 ▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
 ▌  build · idle      │ │ YOU                                                                        
                      │ │  Explain the failure, then fix it.                                         

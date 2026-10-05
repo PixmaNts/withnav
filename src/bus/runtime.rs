@@ -21,7 +21,9 @@ pub use delivery::DriverCommit;
 pub use delivery::PendingNotice;
 pub use watchdog::PauseToken;
 pub use watchdog::TerminalOwner;
-mod model;
+pub(crate) mod model;
+#[cfg(debug_assertions)]
+pub use model::observe_selection_install;
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -125,9 +127,9 @@ pub struct RuntimeStatus {
     /// The session's context gauge: written by the runtime at each boundary,
     /// read on demand by the service.
     context: Mutex<Option<ContextTracker>>,
-    /// The profile's instructions, which the role message carries after the
+    /// The editor's instructions, which the role message carries after the
     /// agent's prompt; needed to re-estimate the role when the agent changes.
-    profile_prompt: Mutex<Option<String>>,
+    editor_prompt: Mutex<Option<String>>,
     /// The id of the permission request the actor waits on, if any, so the
     /// service can refuse a stale decision without waiting for the runtime.
     pending_permission: Mutex<PermissionSlot>,
@@ -387,11 +389,29 @@ impl RuntimeStatus {
         alias: String,
         operation_id: Ulid,
     ) -> Option<ModelReply> {
+        self.request_selection_switch(
+            model::SelectionRequest {
+                alias,
+                requesting_agent: self.selection.current().id.to_string(),
+                command: "model".into(),
+                ..Default::default()
+            },
+            operation_id,
+        )
+        .await
+    }
+
+    pub async fn request_selection_switch(
+        &self,
+        selection: model::SelectionRequest,
+        operation_id: Ulid,
+    ) -> Option<ModelReply> {
         let (reply, answer) = tokio::sync::oneshot::channel();
         self.controls
             .tx
             .send(Control::Model(ModelRequest {
-                alias,
+                alias: selection.alias.clone(),
+                selection,
                 operation_id,
                 reply,
             }))
@@ -488,12 +508,12 @@ impl RuntimeStatus {
 
     /// Installs the session's context tracker before the runtime starts.
     /// Without one the runtime publishes no `context.updated`.
-    pub fn install_context(&self, tracker: ContextTracker, profile_prompt: Option<String>) {
+    pub fn install_context(&self, tracker: ContextTracker, editor_prompt: Option<String>) {
         *self.lock_context() = Some(tracker);
-        *match self.profile_prompt.lock() {
+        *match self.editor_prompt.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
-        } = profile_prompt;
+        } = editor_prompt;
     }
 
     /// Parks the runtime after its next compaction and before the result is
@@ -517,13 +537,13 @@ impl RuntimeStatus {
         &self,
         role: &crate::agent::definitions::AgentDefinition,
     ) -> Option<ContextSnapshot> {
-        let profile = match self.profile_prompt.lock() {
+        let editor = match self.editor_prompt.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         }
         .clone();
         let message =
-            crate::agent::actor::compose_role_message(Some(&role.prompt), profile.as_deref());
+            crate::agent::actor::compose_role_message(Some(&role.prompt), editor.as_deref());
         let mut tracker = self.lock_context();
         let tracker = tracker.as_mut()?;
         let mut breakdown = tracker.snapshot().breakdown;
@@ -954,7 +974,7 @@ async fn runtime_loop(
                             &status,
                             &sequencer,
                             &session_cancel,
-                            &request.alias,
+                            &request.selection,
                             request.operation_id,
                         )
                         .await;
@@ -1213,12 +1233,17 @@ async fn runtime_loop(
                                 }
                             }
                             Control::Model(request) => {
-                                let (operation_id, alias) =
-                                    (request.operation_id, request.alias.clone());
+                                let (operation_id, alias, selection) =
+                                    (request.operation_id, request.alias.clone(), request.selection.clone());
+                                if selection.command != "model" {
+                                    model::answer(&status, &sequencer, request, Err("the agent is working: wait for the turn to end".into())).await;
+                                    continue;
+                                }
                                 if model::accept_deferred(&sequencer, request).await {
                                     deferred.push(deferred::Deferred::Model {
                                         operation_id,
                                         alias,
+                                        selection,
                                     });
                                 }
                             }
@@ -1963,7 +1988,7 @@ mod tests {
         let store = Arc::new(crate::session::store::HistoryStore::open(&path).unwrap());
         let id = Ulid::new();
         store
-            .record_session(id, "/workspace", "test-model", None)
+            .record_session(id, "/workspace", "test-model", false)
             .await
             .unwrap();
         let agents = Arc::new(Agents::builtin());

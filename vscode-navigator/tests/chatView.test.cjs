@@ -218,17 +218,159 @@ test('R2.1 registered host posts queued message while idle compact HTTP remains 
 });
 test('R2.2 cancelled selector cannot route slash completion as model selection, including after conversation switch',async t=>{
   const {b,dom,tick,prompt}=fullChat(t);b.state.session='P';b.refreshCommands=async()=>{};
-  b.commands.push({name:'compact',description:'Compact',args_hint:''});b.emit({type:'commands',items:b.commands});b.emit({type:'models',items:[{alias:'a',model:'provider/a'}],locked:false});
+  b.commands.push({name:'compact',description:'Compact',args_hint:''});b.emit({type:'commands',items:b.commands});b.emit({type:'models',items:[{name:'gw/a',gateway:'gw',provider_group:'gw',upstream_id:'a',api:'chat',enabled:true}],locked:false});
   await tick();b.emit({type:'commands',items:[{name:'compact',description:'Compact',args_hint:''}]});
   const {key,type}=focusedKeys(dom);let posts=0;
   t.mock.method(globalThis,'fetch',()=>{posts++;return new Promise(()=>{});});
-  const selector=dom.window.document.querySelector('#model');selector.focus();key('Enter');key('Escape');prompt.focus();type('/com');key('Tab');assert.equal(prompt.value,'/compact ');assert.equal(posts,0);
+   const selector=dom.window.document.querySelector('#model');selector.focus();key('Enter');assert.equal(dom.window.document.querySelectorAll('#picker-options [role=option]').length,1);key('Escape');prompt.focus();type('/com');key('Tab');assert.equal(prompt.value,'/compact ');assert.equal(posts,0);
   selector.focus();key('Enter');await b.newConversation();await tick();prompt.focus();while(prompt.value)key('Backspace');type('/com');key('Tab');assert.equal(prompt.value,'/compact ');assert.equal(posts,0);
 });
 test('R2.3 unknown bare slash reaches registered host validation and retains focused draft',async t=>{
   const {b,dom,tick,prompt}=fullChat(t);b.state.session='P';b.refreshCommands=async()=>{};b.emit({type:'commands',items:b.commands});
   let calls=0;t.mock.method(globalThis,'fetch',()=>{calls++;return new Promise(()=>{});});const {key,type}=focusedKeys(dom);
   prompt.focus();type('/nonexistent');key('ArrowDown');key('Enter');await tick();assert.match(dom.window.document.querySelector('.command-error').textContent,/Unknown command/);assert.equal(prompt.value,'/nonexistent');assert.equal(calls,0);
+});
+test('target configured default agent, editor creation body, agent switching and layer tooltip use canonical identities',async t=>{
+  const {b,dom,tick,event,send}=fullChat(t);b.state.session=undefined;
+  const assignments=[{id:'plan',description:'Plan changes',mode:'primary',effective:{model:'omniroute/combo/think',variant:'high',source:'config'}},{id:'build',description:'Build',mode:'all',effective:{model:'direct/model',variant:null,source:'config'}},{id:'child',description:'Child',mode:'subagent',effective:null}];
+  const calls=[];t.mock.method(globalThis,'fetch',async(url,init)=>{
+    calls.push({url,...init});
+    if(url.includes('/agents?'))return new Response(JSON.stringify({default_agent:'plan',agents:assignments}));
+    if(url.includes('/layers?'))return new Response(JSON.stringify({layers:[{layer:'reflex',status:'disabled',model:'direct/editor',reason:'wrong API'},{layer:'instinct',status:'usable',model:'omniroute/typesafe/jev',variant:null},{layer:'metacognition',status:'usable',model:'omniroute/combo/fast',variant:'low'}]}));
+    return new Response(JSON.stringify(url.endsWith('/messages')?{accepted:true}:{session_id:'S'}));
+  });
+  await b.refreshAssignments();assert.equal(b.state.agent,'plan');assert.equal(dom.window.document.querySelector('[aria-label="Conversation agent"]').value,'plan');assert.equal(dom.window.document.querySelectorAll('[aria-label="Conversation agent"] option').length,2);
+  assert.match(dom.window.document.querySelector('.topbar').title,/FIM.*disabled.*wrong API/);assert.match(dom.window.document.querySelector('.topbar').title,/not network availability/);
+  send('hello');await tick();const creation=calls.find(c=>c.url.endsWith('/v1/sessions'));assert.deepEqual(JSON.parse(creation.body),{workspace:process.cwd(),editor:true});
+  event('model.changed',{operation_id:'A',reason:'agent',new:{agent:'build',model:'direct/override',gateway:'direct',upstream_id:'override',variant:null,source:'override',variant_source:'override'}});
+  assert.equal(b.state.selectedModel,'direct/override');assert.match(dom.window.document.querySelector('.agent-label').textContent,/build.*override/);
+  event('model.changed',{operation_id:'B',reason:'agent',new:{agent:'plan',model:'omniroute/combo/think',gateway:'omniroute',upstream_id:'combo/think',variant:'high',source:'config',variant_source:'config'}});assert.equal(b.state.selectedModel,'omniroute/combo/think');
+  await b.newConversation();assert.equal(b.state.modelOverride,undefined);assert.equal(b.state.agent,'plan');
+});
+test('target stale agents and layers cannot update replacement conversation',async t=>{
+  const {b,dom}=fullChat(t);let finishAgents,finishLayers;b.refreshCommands=async()=>{};
+  t.mock.method(globalThis,'fetch',url=>new Promise(resolve=>{if(url.includes('/agents?'))finishAgents=resolve;else finishLayers=resolve;}));
+  const pending=b.refreshAssignments().catch(()=>{});await b.newConversation();
+  finishAgents(new Response(JSON.stringify({default_agent:'obsolete',agents:[{id:'obsolete',description:'old',mode:'primary',effective:{model:'gw/old',source:'config'}}]})));finishLayers(new Response(JSON.stringify({layers:[{layer:'reflex',status:'disabled',reason:'old reason'}]})));await pending;assert.notEqual(b.state.agent,'obsolete');assert.doesNotMatch(dom.window.document.querySelector('.topbar').title,/old reason/);
+});
+test('target grouped model picker canonical names collapse and search without choosing headers',async t=>{
+  const {b,dom,tick}=fullChat(t);b.state.session='P';b.refreshAssignments=async()=>{};
+  const models=[{name:'omniroute/combo/think',gateway:'omniroute',provider_group:'combo',upstream_id:'combo/think',api:'chat',enabled:true},{name:'direct/model',gateway:'direct',provider_group:'direct',upstream_id:'model',api:'chat',enabled:true}];
+  b.models=models;b.emit({type:'models',items:models,locked:false});const {key,type}=focusedKeys(dom);dom.window.document.querySelector('#model').focus();key('Enter');
+  const groups=[...dom.window.document.querySelectorAll('.picker-group')];assert.deepEqual(groups.map(g=>g.textContent),['direct','omniroute','combo']);
+  groups.find(g=>g.textContent==='omniroute').click();assert.equal(dom.window.document.querySelectorAll('#picker-options [role=option]').length,1);
+  const search=dom.window.document.querySelector('#command-palette .picker-search');search.focus();type('combo/think');assert.equal(dom.window.document.querySelectorAll('#picker-options [role=option]').length,1);assert.equal(dom.window.document.querySelector('#picker-options [role=option]').title,'omniroute/combo/think');
+  let request;t.mock.method(globalThis,'fetch',async(url,init)=>{request=JSON.parse(init.body);return new Response(JSON.stringify({operation_id:'M'}));});key('Enter');await tick();assert.deepEqual(request,{name:'model',arguments:'omniroute/combo/think'});
+});
+test('target reopened summary restores effective override and blocks stale metadata selection',async t=>{
+  const {b,dom,event}=fullChat(t);b.state.session='S';b.refreshAssignments=async()=>{};
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({current_seq:3,agent:'plan',model:'gw/saved',variant:'high',source:'override',variant_source:'override'})));
+  await b.loadSessionModel('S');assert.equal(b.state.selectedModel,'gw/saved');assert.match(dom.window.document.querySelector('.topbar').title,/gw\/saved.*override/);
+  for(let i=0;i<5;i++)event('model.changed',{new:{agent:'build',model:'gw/new',gateway:'gw',upstream_id:'new',variant:null,source:'config',variant_source:'config'}});
+  await b.loadSessionModel('S');assert.equal(b.state.selectedModel,'gw/new');
+});
+test('review1 monotonic identity remains atomic across replay summaries and cached command selection rollback',async t=>{
+  const {b,event,dom}=fullChat(t);b.state.session='S';b.refreshAssignments=async()=>{};
+  const identity={agent:'plan',model:'gw/current',variant:'high',source:'override',variant_source:'override'};
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({...identity,current_seq:10})));
+  await b.loadSessionModel('S');
+  for(let i=0;i<9;i++)event('model.changed',{new:{agent:'build',model:'gw/old',variant:null,source:'config',variant_source:'config'}});
+  event('session.agent_changed',{agent:'build'});assert.equal(b.state.agent,'plan');assert.match(dom.window.document.querySelector('.topbar').title,/plan.*gw\/current.*high.*override/);
+  b.state.commandResults.set('old',{operation_id:'old',name:'agent',ok:true,data:{selection:{agent:'build',model:'gw/old',variant:null,source:'config'}}});
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({error:'missing'}),{status:404}));await b.openConversation('missing').catch(()=>{});
+  assert.equal(b.state.agent,'plan');assert.equal(b.state.selectedModel,'gw/current');
+  event('model.changed',{new:{agent:'review',model:'gw/new',variant:'low',source:'config',variant_source:'config'}});
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({...identity,current_seq:9})));await b.loadSessionModel('S');assert.equal(b.state.agent,'review');assert.equal(b.state.selectedModel,'gw/new');
+});
+test('review2 immediate creation omits unselected agent while assignment responses are pending',async t=>{
+  const {b,send,tick}=fullChat(t);b.state.session=undefined;let finishAgents,finishLayers;const bodies=[];
+  t.mock.method(globalThis,'fetch',(url,init)=>{
+    if(url.includes('/agents?'))return new Promise(r=>finishAgents=r);if(url.includes('/layers?'))return new Promise(r=>finishLayers=r);
+    if(init.method==='POST')bodies.push(JSON.parse(init.body));return Promise.resolve(new Response(JSON.stringify(url.endsWith('/messages')?{accepted:true}:{session_id:'S'})));
+  });
+  const loading=b.refreshAssignments().catch(()=>{});send('immediate');await tick();assert.equal(bodies[0].agent,undefined);
+  finishAgents(new Response(JSON.stringify({default_agent:'plan',agents:[]})));finishLayers(new Response(JSON.stringify({layers:[]})));await loading;
+});
+test('review3 archive mode persists on ready and list refresh, inert history and new root lifecycle',async t=>{
+  const {b,dom,tick,event}=fullChat(t);let posts=0;
+  t.mock.method(globalThis,'fetch',async(_url,init)=>{if(init.method==='POST')posts++;return new Response(JSON.stringify({current_seq:10,read_only:true,resume_disabled_reason:'identity unproven',title:'Old history',agent:'plan',model:'gw/history',source:'config'}));});
+  await b.openConversation('archive');assert.equal(posts,0);b.publishSubagents();
+  event('permission.requested',{request_id:'R',tool:'bash',agent:'plan',arguments:'{}',reason:'historic'});event('agent.yield',{kind:'budget'});
+  b.publishSubagents();assert.equal(dom.window.document.querySelector('#prompt').disabled,true);assert.equal(dom.window.document.querySelector('[aria-label="Conversation agent"]').disabled,true);assert.equal([...dom.window.document.querySelectorAll('.control-card button')].length,0);assert.match(dom.window.document.querySelector('.child-header').textContent,/archive/);assert.doesNotMatch(dom.window.document.querySelector('.child-header').textContent,/subagent of/);
+  delete b.listConversations;
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({sessions:[{id:'archive',title:'Old history',read_only:true,promptable:false}]})));
+  await b.listConversations();await tick();assert.equal(dom.window.document.querySelector('#prompt').disabled,true);assert.equal(dom.window.document.querySelector('#composer').hidden,true);assert.match(dom.window.document.querySelector('.child-header').textContent,/archive/);assert.equal([...dom.window.document.querySelectorAll('.control-card button')].length,0);
+  const messages=[];let receive;provider.resolveWebviewView({webview:{cspSource:'test',asWebviewUri:v=>v,postMessage:m=>messages.push(m),onDidReceiveMessage:fn=>{receive=fn;return noopDisposable();}},onDidDispose(){}});receive({type:'ready'});assert(messages.some(m=>m.type==='viewMode'&&m.readOnly&&m.archiveReason));
+  await b.newConversation();assert.equal(b.isReadOnly(),false);assert.equal(b.terminalChild,false);
+  assert.equal(dom.window.document.querySelector('#composer').hidden,false);assert.equal(dom.window.document.querySelector('#prompt').disabled,false);assert.equal(dom.window.document.querySelector('.child-header').hidden,true);
+});
+for(const transition of ['new','saved','restart'])test(`final archive to ${transition} restores visible composer and accepts focused submission`,async t=>{
+  const {b,dom,tick,prompt}=fullChat(t);
+  b.refreshAssignments=async()=>{};b.refreshCommands=async()=>{};b.fetchModels=async()=>{};b.bootstrapConversations=async()=>{};
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({current_seq:1,read_only:true,resume_disabled_reason:'archived identity',title:'Archive'})));
+  await b.openConversation('archive');assert.equal(dom.window.document.querySelector('#composer').hidden,true);
+  const posts=[];t.mock.method(globalThis,'fetch',async(url,init)=>{
+    if(init.method==='POST')posts.push({url,body:JSON.parse(init.body)});
+    return new Response(JSON.stringify(url.endsWith('/messages')?{accepted:true}:url.endsWith('/v1/sessions')?{session_id:'saved'}:{current_seq:1,agent:'build',model:'gw/chat',variant:null,source:'config',variant_source:'config',actor_state:'idle'}));
+  });
+  if(transition==='new')await b.newConversation();
+  else if(transition==='saved')await b.openConversation('saved');
+  else b.setServerInfo({port:5678,token:'restart'});
+  await tick();
+  assert.equal(dom.window.document.querySelector('#composer').hidden,false);assert.equal(dom.window.document.querySelector('.child-header').hidden,true);
+  if(transition==='restart')b.emit({type:'status',state:'ready'}); // Controlled empty-server bootstrap completion.
+  assert.equal(prompt.disabled,false);
+  const {key,type}=focusedKeys(dom);prompt.focus();type('ordinary draft');key('Enter');await tick();
+  assert(posts.some(post=>post.url.endsWith('/messages')&&post.body.content[0].text==='ordinary draft'));assert.equal(prompt.value,'');
+});
+for(const variant of ['high','off','inherit'])test(`review4 ${variant} variant-only preview and create wire tri-state`,async t=>{
+  const {b,dom,tick,send}=fullChat(t);b.state.session=undefined;b.refreshAssignments=async()=>{};
+  b.agents=[{id:'build',description:'Build',mode:'primary',effective:{model:'gw/chat',variant:'low',source:'config',variant_source:'config'}}];b.models=[{name:'gw/chat',gateway:'gw',provider_group:'gw',upstream_id:'chat',api:'chat',variants:['low','high']}];b.state.selectedModel='gw/chat';b.state.selection=b.agents[0].effective;
+  b.commands.push({name:'variant',description:'Variant',args_hint:''});const bodies=[];t.mock.method(globalThis,'fetch',async(url,init)=>{if(init.method==='POST')bodies.push(JSON.parse(init.body));return new Response(JSON.stringify(url.endsWith('/messages')?{accepted:true}:{session_id:'S'}));});
+  send('/variant '+variant);await tick();assert.match(dom.window.document.querySelector('.topbar').title,variant==='off'?/variant off/:variant==='inherit'?/low/:/high/);send('hello');await tick();assert.equal(bodies[0].model,undefined);assert.equal(bodies[0].variant,variant==='inherit'?undefined:variant==='off'?null:'high');
+});
+test('review5 hierarchy preserves gateway with collapsed providers and group key actions never select model',async t=>{
+  const {b,dom}=fullChat(t);const rows=['a','b'].map(provider=>({name:`gw/${provider}/model`,gateway:'gw',provider_group:provider,upstream_id:`${provider}/model`,api:'chat',enabled:true}));rows.push({name:'direct/model',gateway:'direct',provider_group:'direct',upstream_id:'model',api:'chat',enabled:true});b.emit({type:'models',items:rows,locked:false});
+  const {key}=focusedKeys(dom);dom.window.document.querySelector('#model').focus();key('Enter');let requests=0;t.mock.method(globalThis,'fetch',()=>{requests++;return new Promise(()=>{});});
+  const group=text=>[...dom.window.document.querySelectorAll('.picker-group')].find(button=>button.textContent===text);
+  group('a').click();assert.equal(dom.window.document.querySelectorAll('#picker-options [role=option]').length,2);group('b').click();assert(group('gw'));assert.equal(dom.window.document.querySelectorAll('#picker-options [role=option]').length,1);group('gw').click();assert.equal(group('a'),undefined);assert.equal(group('b'),undefined);
+  group('gw').focus();key('Enter');group('gw').click(); // jsdom needs native button activation simulated.
+  group('a').focus();key(' ');group('a').click();assert.equal(requests,0);assert.equal([...dom.window.document.querySelectorAll('.picker-group')].filter(button=>button.textContent==='direct').length,1);
+});
+test('review2 send before endpoint announcement also omits unselected agent',async t=>{
+  const {b,send,tick}=fullChat(t);b.endpoint=undefined;b.state.session=undefined;
+  let available;b.waitForEndpoint=()=>new Promise(resolve=>available=resolve);const bodies=[];
+  t.mock.method(globalThis,'fetch',async(url,init)=>{if(init.method==='POST')bodies.push(JSON.parse(init.body));return new Response(JSON.stringify(url.endsWith('/messages')?{accepted:true}:{session_id:'S'}));});
+  send('before announcement');await tick();assert.equal(bodies.length,0);b.endpoint={port:1234,token:'t'};available();await tick();assert.equal(bodies[0].agent,undefined);
+});
+test('round2 archive terminal flag resets on saved open and restart, rollback restores it and root EOF reconnects',async t=>{
+  const {b,dom,tick}=fullChat(t);b.refreshAssignments=async()=>{};b.fetchModels=async()=>{};b.bootstrapConversations=async()=>{};b.refreshCommands=async()=>{};
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({current_seq:1,read_only:true,resume_disabled_reason:'old identity',title:'Archive'})));
+  await b.openConversation('archive');assert.equal(b.terminalChild,true);
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({error:'missing'}),{status:404}));await b.openConversation('missing').catch(()=>{});assert.equal(b.terminalChild,true);assert.equal(b.isReadOnly(),true);assert.match(dom.window.document.querySelector('.child-header').textContent,/archive/);
+  let streams=0;delete b.connect;
+  t.mock.method(globalThis,'fetch',async(url,init)=>{
+    if(url.endsWith('/events')){streams++;return new Response(new ReadableStream({start(controller){init.signal.addEventListener('abort',()=>{try{controller.close();}catch{}});if(streams===1)controller.close();}}));}
+    return new Response(JSON.stringify(url.endsWith('/v1/sessions')?{session_id:'saved'}:{current_seq:1,agent:'build',model:'gw/chat',variant:null,source:'config',variant_source:'config',actor_state:'idle'}));
+  });
+  await b.openConversation('saved');assert.equal(b.terminalChild,false);await new Promise(resolve=>setTimeout(resolve,650));assert(streams>=2);b.abortStream();
+  b.terminalChild=true;b.setServerInfo({port:5678,token:'restart'});assert.equal(b.terminalChild,false);b.dispose();await tick();
+});
+for(const choice of ['high','off'])test(`round2 initial ${choice} variant preview survives async assignment refresh`,async t=>{
+  const {b,dom,send,tick}=fullChat(t);b.state.session=undefined;b.models=[{name:'gw/A',gateway:'gw',provider_group:'gw',upstream_id:'A',api:'chat',variants:['high'],defaultVariant:'high'}];b.state.selectedModel='gw/A';b.commands.push({name:'variant',description:'Variant',args_hint:''});
+  send('/variant '+choice);await tick();
+  t.mock.method(globalThis,'fetch',async url=>new Response(JSON.stringify(url.includes('/agents?')?{default_agent:'build',agents:[{id:'build',description:'Build',mode:'primary',assignment:{model:'gw/A',variant:null,source:'config',variant_source:'config'},effective:{model:'gw/A',variant:null,source:'config',variant_source:'config'}}]}:{layers:[]})));
+  await b.refreshAssignments();assert.equal(b.state.selection.variant,choice==='off'?null:'high');assert.match(dom.window.document.querySelector('.topbar').title,/model source: config.*variant source: override/);
+});
+test('round2 model override inherit uses its model default, assignment null stays explicitly off',async t=>{
+  const {b,dom,send,tick}=fullChat(t);b.state.session=undefined;b.commands.push({name:'variant',description:'Variant',args_hint:''});
+  b.models=[{name:'gw/A',gateway:'gw',provider_group:'gw',upstream_id:'A',api:'chat',variants:['high'],defaultVariant:'high'},{name:'gw/B',gateway:'gw',provider_group:'gw',upstream_id:'B',api:'chat',variants:['low'],defaultVariant:'low'}];
+  const base={model:'gw/A',variant:null,source:'config',variant_source:'config'};b.agents=[{id:'build',description:'Build',mode:'primary',assignment:base,effective:base}];
+  t.mock.method(globalThis,'fetch',async url=>new Response(JSON.stringify(url.includes('/agents?')?{default_agent:'build',agents:b.agents}:{layers:[]})));
+  await b.refreshAssignments();assert.equal(b.state.selection.variant,null);assert.match(dom.window.document.querySelector('.topbar').title,/variant off/);
+  b.emit({type:'models',items:b.models,locked:false});const {key,type}=focusedKeys(dom);dom.window.document.querySelector('#model').focus();key('Enter');type('gw/B');key('Enter');await tick();
+  send('/variant inherit');await tick();assert.equal(b.state.selection.model,'gw/B');assert.equal(b.state.selection.variant,'low');assert.match(dom.window.document.querySelector('.topbar').title,/model source: override.*variant source: model_default/);
+  await b.refreshAssignments();assert.equal(b.state.selection.variant,'low');
 });
 function fullChat(t) {
   const { JSDOM } = require('jsdom');
@@ -329,7 +471,7 @@ for (const early of [true,false]) test(`R3.1 end-to-end failed open unlocks aban
 });
 test('R3.2 end-to-end populated picker locks at nonzero opening generation and unlocks on completion', async t => {
   const { b,dom,tick } = fullChat(t);
-  b.models=[{alias:'a',model:'a'}];
+  b.models=[{name:'gw/a',gateway:'gw',provider_group:'gw',upstream_id:'a',api:'chat',enabled:true}];
   await b.newConversation();
   const picker=dom.window.document.querySelector('#model');
   assert(b.currentGeneration()>=1); assert.equal(picker.disabled,false);
@@ -385,7 +527,7 @@ test('R2.2 end-to-end restart abandons pending creation', async t => {
 });
 test('R2.3 end-to-end newer refused model relinquishes existing pending switch before HTTP', async t => {
   const { b,send,event,tick,dom } = fullChat(t); b.state.session='A';
-  b.state.pendingModel={alias:'old',operationId:'OLD'}; b.emit({type:'modelPending',alias:'old'});
+  b.state.pendingModel={name:'old',operationId:'OLD'}; b.emit({type:'modelPending',name:'old'});
   let finish; t.mock.method(globalThis,'fetch',() => new Promise(resolve => finish=resolve));
   send('/model next'); assert.equal(dom.window.document.querySelector('.pending-model').textContent,'');
   event('command.result',{name:'model',operation_id:'NEW',ok:false,error:'refused'});
@@ -398,7 +540,7 @@ test('R2.4 end-to-end failed open restores outstanding model command ownership',
   send('/model next'); const opening=b.openConversation('B').catch(() => {}); await opening;
   event('command.result',{name:'model',operation_id:'M',ok:true,data:{accepted:true,applies:'after_turn'}});
   finish(new Response(JSON.stringify({operation_id:'M'}))); await tick();
-  assert.equal(b.state.pendingModel.alias,'next'); assert.match(dom.window.document.querySelector('.pending-model').textContent,/next/);
+  assert.equal(b.state.pendingModel.name,'next'); assert.match(dom.window.document.querySelector('.pending-model').textContent,/next/);
 });
 
 test("R1 skill confirms permission cancellation before submission without editor context", async () => {
@@ -444,6 +586,7 @@ test("late-created and recreated views receive current session identity before r
     currentContext: () => ({ incarnation: "I", revision: 3, estimate_total: 42 }),
     publishSubagents() {},
     publishCompaction() {},
+    refreshAssignments: async()=>{},
     currentGeneration: () => 1,
     refreshCommands: async () => {},
     resumePermissionReads: () => {},

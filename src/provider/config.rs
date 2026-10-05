@@ -1,10 +1,55 @@
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{ConfigError, ProviderError};
+
+/// Reject repeated catalog keys before a map can discard either declaration.
+fn deserialize_unique_map<'de, D, T>(deserializer: D) -> Result<BTreeMap<String, T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct UniqueMap<T>(PhantomData<T>);
+
+    impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for UniqueMap<T> {
+        type Value = BTreeMap<String, T>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a map with unique keys")
+        }
+
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut access: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut map = BTreeMap::new();
+            while let Some(key) = access.next_key::<String>()? {
+                if map.contains_key(&key) {
+                    // Raw keys have not been validated and may contain secrets.
+                    return Err(serde::de::Error::custom("duplicate catalog map key"));
+                }
+                map.insert(key, access.next_value()?);
+            }
+            Ok(map)
+        }
+    }
+
+    deserializer.deserialize_map(UniqueMap(PhantomData))
+}
+
+fn deserialize_optional_variants<'de, D>(deserializer: D) -> Result<Option<Variants>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    struct UniqueVariants(#[serde(deserialize_with = "deserialize_unique_map")] Variants);
+
+    Option::<UniqueVariants>::deserialize(deserializer).map(|variants| variants.map(|v| v.0))
+}
 
 /// One variant: a JSON object merged shallowly into the chat request body.
 /// Only the keys the request owns are refused ([`RESERVED_VARIANT_KEYS`]);
@@ -112,7 +157,11 @@ pub struct ModelConfig {
     pub default_variant: Option<String>,
     /// Named request overrides. Omitted: generated from the model's effort
     /// tiers when the provider's `catalog_format` is `omniroute`. `{}`: none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_variants"
+    )]
     pub variants: Option<Variants>,
     #[serde(default)]
     pub reasoning_history: ReasoningHistory,
@@ -120,7 +169,9 @@ pub struct ModelConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelsConfig {
+    #[serde(deserialize_with = "deserialize_unique_map")]
     pub providers: BTreeMap<String, ProviderConfig>,
+    #[serde(deserialize_with = "deserialize_unique_map")]
     pub models: BTreeMap<String, ModelConfig>,
 }
 
@@ -133,8 +184,46 @@ pub struct ResolvedModel {
 }
 
 impl ModelsConfig {
+    /// Resolves a canonical gateway/upstream catalog identity.
+    pub fn resolve_name(
+        &self,
+        name: &super::model_name::ModelName,
+    ) -> Result<ResolvedModel, ProviderError> {
+        let keys: Vec<_> = self
+            .models
+            .iter()
+            .filter(|(_, model)| model.provider == name.gateway() && model.model == name.id())
+            .map(|(key, _)| key.clone())
+            .collect();
+        if keys.len() > 1 {
+            return Err(ProviderError::AmbiguousModel {
+                model: name.to_string(),
+                keys,
+            });
+        }
+        let key = keys
+            .first()
+            .ok_or_else(|| ProviderError::UnknownModel(name.to_string()))?;
+        if !self.providers.contains_key(name.gateway()) {
+            return Err(ProviderError::UnknownModel(name.to_string()));
+        }
+        self.resolve(key)
+    }
+
     pub fn parse(s: &str) -> Result<Self, ConfigError> {
         let cfg: ModelsConfig = serde_json::from_str(s)?;
+        for (key, model) in &cfg.models {
+            let name = super::model_name::ModelName::parse(key, &cfg).map_err(|_| {
+                ConfigError::Invalid(
+                    "catalog keys must be declared gateway/upstream identities".into(),
+                )
+            })?;
+            if name.gateway() != model.provider || name.id() != model.model {
+                return Err(ConfigError::Invalid(
+                    "catalog key disagrees with gateway/upstream identity".into(),
+                ));
+            }
+        }
         cfg.validate_variants()?;
         cfg.warn_deprecated();
         Ok(cfg)
@@ -146,6 +235,8 @@ impl ModelsConfig {
     }
 
     pub fn resolve(&self, alias: &str) -> Result<ResolvedModel, ProviderError> {
+        super::model_name::ModelName::parse(alias, self)
+            .map_err(|_| ProviderError::UnknownModel(alias.into()))?;
         let model = self
             .models
             .get(alias)
@@ -323,9 +414,104 @@ mod tests {
     const FIXTURE: &str = include_str!("../../tests/fixtures/models.json");
 
     #[test]
+    fn catalog_rejects_duplicate_model_keys_even_with_identical_metadata() {
+        let first = r#"{"provider":"p","model":"m","context_window":1000,"supports_tools":true}"#;
+        for second in [
+            first,
+            r#"{"provider":"p","model":"m","context_window":2000,"supports_tools":false}"#,
+        ] {
+            // Raw JSON is essential: a Value/map fixture would lose duplicates.
+            let raw = format!(
+                r#"{{"providers":{{"p":{{"base_url":"http://unused"}}}},"models":{{"p/m":{first},"p/m":{second}}}}}"#
+            );
+            let error = ModelsConfig::parse(&raw).unwrap_err();
+            assert!(matches!(error, ConfigError::ParseJson(_)));
+            assert!(error.to_string().contains("duplicate catalog map key"));
+            assert!(serde_json::from_str::<ModelsConfig>(&raw).is_err());
+        }
+    }
+
+    #[test]
+    fn catalog_rejects_duplicate_gateway_and_variant_keys() {
+        let raw = r#"{"providers":{"p":{"base_url":"http://first"},"p":{"base_url":"http://second"}},"models":{}}"#;
+        assert!(ModelsConfig::parse(raw)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate catalog map key"));
+        for second in ["high", "low"] {
+            let raw = config_with(
+                "",
+                &format!(
+                    r#", "variants": {{"high": {{"reasoning_effort": "high"}}, "high": {{"reasoning_effort": "{second}"}}}}"#
+                ),
+            );
+            assert!(ModelsConfig::parse(&raw)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate catalog map key"));
+        }
+    }
+
+    #[test]
+    fn duplicate_key_errors_do_not_echo_unvalidated_keys_or_values() {
+        for raw in [
+            r#"{"providers":{"secret-gateway":{"base_url":"http://secret-first"},"secret-gateway":{"base_url":"http://secret-second"}},"models":{}}"#.to_string(),
+            r#"{"providers":{},"models":{"secret-model":{"provider":"p","model":"m"},"secret-model":{"provider":"p","model":"m"}}}"#.to_string(),
+            config_with("", r#", "variants":{"secret-variant":{"reasoning_effort":"secret-first"},"secret-variant":{"reasoning_effort":"secret-second"}}"#),
+        ] {
+            let error = ModelsConfig::parse(&raw).unwrap_err().to_string();
+            assert!(error.contains("duplicate catalog map key"), "{error}");
+            assert!(!error.contains("secret"), "{error}");
+        }
+    }
+
+    #[test]
+    fn catalog_rejects_duplicate_decoded_keys() {
+        let raw = r#"{"providers":{"p":{"base_url":"http://unused"}},"models":{"p/m":{"provider":"p","model":"m"},"p\/\u006d":{"provider":"p","model":"m"}}}"#;
+        assert!(ModelsConfig::parse(raw)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate catalog map key"));
+    }
+
+    #[test]
+    fn unique_nested_catalog_round_trips_without_changing_fields() {
+        let raw = r#"{"providers":{"p":{"base_url":"http://unused","catalog_format":"omniroute"}},"models":{"p/upstream/m":{"provider":"p","model":"upstream/m","context_window":1000,"max_input_tokens":800,"max_output_tokens":200,"supports_tools":true,"supports_parallel_tool_calls":false,"default_variant":"high","variants":{"high":{"reasoning_effort":"high"},"think":{"thinking":{"type":"enabled","budget_tokens":50}}}},"p/other/m":{"provider":"p","model":"other/m","variants":null}}}"#;
+        let config = ModelsConfig::parse(raw).unwrap();
+        let model = config.resolve("p/upstream/m").unwrap().model;
+        assert_eq!(model.context_window, Some(1000));
+        assert_eq!(model.max_input_tokens, Some(800));
+        assert_eq!(model.max_output_tokens, Some(200));
+        assert!(model.supports_tools);
+        assert_eq!(model.supports_parallel_tool_calls, Some(false));
+        assert_eq!(model.default_variant.as_deref(), Some("high"));
+        assert_eq!(
+            model.variants.unwrap()["think"]["thinking"]["budget_tokens"],
+            50
+        );
+        assert!(config.models["p/other/m"].variants.is_none());
+        let serialized = serde_json::to_string(&config).unwrap();
+        let reparsed = ModelsConfig::parse(&serialized).unwrap();
+        assert_eq!(serialized, serde_json::to_string(&reparsed).unwrap());
+    }
+
+    #[test]
+    fn catalog_rejects_legacy_keys_and_mismatched_canonical_identity() {
+        for key in ["default", "p/other", "unknown/m"] {
+            let raw = serde_json::json!({"providers":{"p":{"base_url":"http://unused"}},"models":{key:{"provider":"p","model":"m"}}});
+            assert!(ModelsConfig::parse(&raw.to_string()).is_err());
+        }
+        let config = ModelsConfig::parse(&serde_json::json!({"providers":{"p":{"base_url":"http://unused"}},"models":{"p/m":{"provider":"p","model":"m"}}}).to_string()).unwrap();
+        assert!(config.resolve("default").is_err());
+        assert_eq!(config.resolve("p/m").unwrap().model.model, "m");
+    }
+
+    #[test]
     fn resolves_fast_alias_to_model() {
         let cfg = ModelsConfig::parse(FIXTURE).unwrap();
-        let r = cfg.resolve("fast").unwrap();
+        let r = cfg
+            .resolve("omniroute/opencode-go/deepseek-v4-flash")
+            .unwrap();
         assert_eq!(r.model.model, "opencode-go/deepseek-v4-flash");
         assert_eq!(r.provider_name, "omniroute");
         assert_eq!(r.provider.base_url, "http://localhost:20128/v1");
@@ -334,7 +520,9 @@ mod tests {
     #[test]
     fn resolves_default_alias() {
         let cfg = ModelsConfig::parse(FIXTURE).unwrap();
-        let r = cfg.resolve("default").unwrap();
+        let r = cfg
+            .resolve("omniroute/opencode-go/deepseek-v4-flash")
+            .unwrap();
         assert_eq!(r.model.model, "opencode-go/deepseek-v4-flash");
     }
 
@@ -342,13 +530,15 @@ mod tests {
     fn unknown_alias_errors_before_any_request() {
         let cfg = ModelsConfig::parse(FIXTURE).unwrap();
         let e = cfg.resolve("nonexistent").unwrap_err();
-        assert!(matches!(e, ProviderError::UnknownModelAlias(a) if a == "nonexistent"));
+        assert!(matches!(e, ProviderError::UnknownModel(a) if a == "nonexistent"));
     }
 
     #[test]
     fn reasoning_history_defaults_to_preserve() {
         let cfg = ModelsConfig::parse(FIXTURE).unwrap();
-        let r = cfg.resolve("fast").unwrap();
+        let r = cfg
+            .resolve("omniroute/opencode-go/deepseek-v4-flash")
+            .unwrap();
         assert_eq!(r.model.reasoning_history, ReasoningHistory::Preserve);
     }
 
@@ -381,7 +571,9 @@ mod tests {
     #[test]
     fn api_kind_defaults_to_chat() {
         let cfg = ModelsConfig::parse(FIXTURE).unwrap();
-        let r = cfg.resolve("fast").unwrap();
+        let r = cfg
+            .resolve("omniroute/opencode-go/deepseek-v4-flash")
+            .unwrap();
         assert_eq!(r.model.api, ApiKind::Chat);
     }
 
@@ -390,14 +582,17 @@ mod tests {
         let raw = serde_json::json!({
             "providers": { "p": { "base_url": "http://x/v1" } },
             "models": {
-                "r": { "provider": "p", "model": "m", "api": "fim" },
-                "i": { "provider": "p", "model": "m", "api": "systemone" }
+                "p/fill": { "provider": "p", "model": "fill", "api": "fim" },
+                "p/decision": { "provider": "p", "model": "decision", "api": "systemone" }
             }
         })
         .to_string();
         let cfg = ModelsConfig::parse(&raw).unwrap();
-        assert_eq!(cfg.resolve("r").unwrap().model.api, ApiKind::Fim);
-        assert_eq!(cfg.resolve("i").unwrap().model.api, ApiKind::SystemOne);
+        assert_eq!(cfg.resolve("p/fill").unwrap().model.api, ApiKind::Fim);
+        assert_eq!(
+            cfg.resolve("p/decision").unwrap().model.api,
+            ApiKind::SystemOne
+        );
     }
 
     #[test]
@@ -414,9 +609,9 @@ mod tests {
     fn repo_models_json_is_strict_and_resolves_both_aliases() {
         let repo_models = include_str!("../../models.example.json");
         let cfg = ModelsConfig::parse(repo_models).expect("repo models.json must be strict JSON");
-        let fast = cfg.resolve("fast").unwrap();
-        let default = cfg.resolve("default").unwrap();
-        assert_eq!(fast.model.model, "opencode-go/deepseek-v4-flash");
+        let fast = cfg.resolve("omniroute/combo/deepseek-v4-flash").unwrap();
+        let default = cfg.resolve("omniroute/cc/claude-opus-5-5").unwrap();
+        assert_eq!(fast.model.model, "combo/deepseek-v4-flash");
         assert!(!default.model.model.is_empty());
         assert_eq!(fast.model.reasoning_history, ReasoningHistory::Preserve);
         assert!(!repo_models.contains("\"api_key\""));
@@ -461,7 +656,9 @@ mod tests {
         assert_eq!(path, explicit);
         let (config, path) = load_models(None, ws.path(), cfg.path()).unwrap();
         assert_eq!(path, ws.path().join("models.json"));
-        assert!(config.resolve("fast").is_ok());
+        assert!(config
+            .resolve("omniroute/opencode-go/deepseek-v4-flash")
+            .is_ok());
         std::fs::remove_file(ws.path().join("models.json")).unwrap();
         let (_, path) = load_models(None, ws.path(), cfg.path()).unwrap();
         assert_eq!(path, cfg.path().join("models.json"));
@@ -480,7 +677,7 @@ mod tests {
     fn config_with(provider_extra: &str, model_extra: &str) -> String {
         format!(
             r#"{{"providers": {{"p": {{"base_url": "http://x/v1"{provider_extra}}}}},
-               "models": {{"m": {{"provider": "p", "model": "mm"{model_extra}}}}}}}"#
+               "models": {{"p/mm": {{"provider": "p", "model": "mm"{model_extra}}}}}}}"#
         )
     }
 
@@ -497,7 +694,7 @@ mod tests {
                               "think": {"thinking": {"type": "enabled", "budget_tokens": 8000}}}"#,
         );
         let cfg = ModelsConfig::parse(&raw).unwrap();
-        let m = &cfg.models["m"];
+        let m = &cfg.models["p/mm"];
         assert_eq!(m.default_variant.as_deref(), Some("high"));
         let variants = m.variants.as_ref().unwrap();
         assert_eq!(variants["high"]["reasoning_effort"], "high");
@@ -510,7 +707,7 @@ mod tests {
             let raw = config_with("", &format!(r#", "variants": {{"v": {{"{key}": 1}}}}"#));
             let err = ModelsConfig::parse(&raw).unwrap_err().to_string();
             assert!(
-                err.contains("'m'") && err.contains("'v'") && err.contains(&format!("'{key}'")),
+                err.contains("'p/mm'") && err.contains("'v'") && err.contains(&format!("'{key}'")),
                 "{key}: {err}"
             );
         }
@@ -523,7 +720,7 @@ mod tests {
             r#", "default_variant": "max", "variants": {"high": {"reasoning_effort": "high"}}"#,
         );
         let err = ModelsConfig::parse(&raw).unwrap_err().to_string();
-        assert!(err.contains("'m'") && err.contains("'max'"), "{err}");
+        assert!(err.contains("'p/mm'") && err.contains("'max'"), "{err}");
         // `{}` offers nothing to default to; with no catalog_format nothing is generated.
         let raw = config_with("", r#", "default_variant": "high", "variants": {}"#);
         assert!(ModelsConfig::parse(&raw).is_err());
@@ -556,7 +753,7 @@ mod tests {
     fn resolve_in(provider_extra: &str, model_extra: &str) -> ResolvedModel {
         ModelsConfig::parse(&config_with(provider_extra, model_extra))
             .unwrap()
-            .resolve("m")
+            .resolve("p/mm")
             .unwrap()
     }
 
@@ -612,7 +809,7 @@ mod tests {
     #[test]
     fn thinking_is_inert_and_names_the_variant_to_write() {
         let cfg = ModelsConfig::parse(&config_with("", r#", "thinking": "high""#)).unwrap();
-        let m = &cfg.models["m"];
+        let m = &cfg.models["p/mm"];
         assert_eq!(m.default_variant, None);
         assert_eq!(m.variants, None);
         let notes = cfg.deprecations();
@@ -620,7 +817,7 @@ mod tests {
         assert!(
             notes[0].contains("deprecated")
                 && notes[0].contains(r#""default_variant": "high""#)
-                && notes[0].contains("'m'"),
+                && notes[0].contains("'p/mm'"),
             "{}",
             notes[0]
         );

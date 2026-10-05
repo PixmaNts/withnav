@@ -3,7 +3,7 @@
 //! fast layers watch the driver). One hub shared by both — the whole
 //! navigator runs in one process over two channels.
 //!
-//! It tracks the ACTIVE conversation — the latest navigator-profile session
+//! It tracks the ACTIVE conversation — the latest editor session
 //! that received a driver message — keeps a bounded digest of it, remembers
 //! whether the cognition is waiting on an `ask`, and posts wakes: short
 //! navigator-sourced messages routed in-process, never over HTTP, so the

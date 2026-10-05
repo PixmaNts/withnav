@@ -205,6 +205,8 @@ fn percent_rounds_to_the_nearest_whole_number() {
 fn limits() -> ContextLimits {
     ContextLimits {
         alias: "default".into(),
+        gateway: "omniroute".into(),
+        upstream_id: "combo/model".into(),
         variant: None,
         window_source: "models.json".into(),
         budget: Budget::compute(1_000_000, None, None, None).unwrap(),
@@ -223,6 +225,9 @@ fn a_snapshot_never_mixes_the_estimate_with_the_provider_count() {
     assert_eq!(first.estimate_total, b.total());
     assert_eq!(first.window, 1_000_000);
     assert_eq!(first.input_budget, 1_000_000 - 8192 - 50_000);
+    assert_eq!(first.model, "omniroute/combo/model");
+    assert_eq!(first.gateway, "omniroute");
+    assert_eq!(first.upstream_id, "combo/model");
 
     let step = ulid::Ulid::new();
     tracker.record_usage(
@@ -311,14 +316,17 @@ fn a_snapshot_is_marked_estimated_and_names_the_sources_behind_the_estimate() {
     assert_eq!(snap.rule_files, 3);
     tracker.record_usage(ulid::Ulid::new(), crate::provider::Usage::default());
     let snap = tracker.update(b).expect("usage changed").clone();
-    assert_eq!(snap.last_usage.expect("usage").alias, "default");
+    assert_eq!(
+        snap.last_usage.expect("usage").model,
+        "omniroute/combo/model"
+    );
     assert_eq!(snap.skills.listed, 7);
 }
 
 #[test]
 fn a_snapshot_without_the_newer_fields_still_reads() {
     let wire = serde_json::json!({
-        "alias": "a", "window": 100000, "window_source": "models.json",
+        "model": "p/a", "gateway": "p", "upstream_id": "a", "window": 100000, "window_source": "models.json",
         "estimate_total": 10, "breakdown": {"system": 10, "rules": 0, "skills_catalog": 0, "tools": 0, "messages": 0},
         "output_reserve": 1, "margin": 1, "input_budget": 98, "percent": 0,
         "incarnation": ulid::Ulid::new().to_string(), "revision": 1,

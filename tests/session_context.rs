@@ -66,7 +66,7 @@ async fn scripted_turn(
         .chat_tools(1_000_000)
         .state();
     let (addr, _task) = spawn_server(state.clone()).await;
-    let id = state.create_session(ws, None, None).await.expect("create");
+    let id = state.create_session(ws, None, false).await.expect("create");
     let sub = state.subscribe(id, None).await.expect("sub");
     post_message_ok(&format!("http://{addr}"), &id.to_string(), "read the notes").await;
     let events = collect_until(sub, |e| {
@@ -86,9 +86,15 @@ async fn a_fresh_session_has_a_snapshot_with_the_fixed_parts() {
     let state = TestServerConfig::unreachable(tmp.path())
         .chat_tools(1_000_000)
         .state();
-    let id = state.create_session(&ws, None, None).await.expect("create");
+    let id = state
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
     let snap = serde_json::to_value(state.context(id).await.expect("context")).unwrap();
-    assert_eq!(snap["alias"], "default");
+    assert_eq!(snap["model"], "mock/mock-model");
+    assert_eq!(snap["gateway"], "mock");
+    assert_eq!(snap["upstream_id"], "mock-model");
+    assert!(snap.get("alias").is_none());
     assert_eq!(snap["window"], 1_000_000);
     assert_eq!(snap["window_source"], "models.json");
     assert_eq!(snap["revision"], 0);
@@ -111,7 +117,10 @@ async fn the_snapshot_after_a_scripted_turn_keeps_estimate_and_usage_apart() {
     let fresh = TestServerConfig::unreachable(tmp.path())
         .chat_tools(1_000_000)
         .state();
-    let fresh_id = fresh.create_session(&ws, None, None).await.expect("create");
+    let fresh_id = fresh
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
     let before = serde_json::to_value(fresh.context(fresh_id).await.unwrap()).unwrap();
 
     let tmp2 = tempfile::tempdir().unwrap();
@@ -129,6 +138,10 @@ async fn the_snapshot_after_a_scripted_turn_keeps_estimate_and_usage_apart() {
     // The provider's count for the LAST step, not a sum and not the estimate.
     assert_eq!(snap["last_usage"]["prompt_tokens"], 1500);
     assert_eq!(snap["last_usage"]["completion_tokens"], 5);
+    assert_eq!(snap["last_usage"]["model"], "mock/mock-model");
+    assert_eq!(snap["last_usage"]["gateway"], "mock");
+    assert_eq!(snap["last_usage"]["upstream_id"], "mock-model");
+    assert!(snap["last_usage"].get("alias").is_none());
     assert_ne!(snap["last_usage"]["prompt_tokens"], snap["estimate_total"]);
     let last_response = events
         .iter()
@@ -195,12 +208,15 @@ async fn the_http_endpoint_serves_the_snapshot() {
     let state = TestServerConfig::unreachable(tmp.path())
         .chat_tools(200_000)
         .state();
-    let id = state.create_session(&ws, None, None).await.expect("create");
+    let id = state
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
     let router = app(state.clone());
     let path = format!("/v1/sessions/{id}/context");
     let (status, body) = request_json(&router, "GET", &path, None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["alias"], "default");
+    assert_eq!(body["model"], "mock/mock-model");
     assert_eq!(body["window"], 200_000);
     assert_eq!(body["input_budget"], 200_000 - 8192 - 10_000);
     assert_eq!(estimate_of(&body), category_sum(&body));
@@ -231,7 +247,10 @@ async fn the_context_command_renders_the_gauge_and_the_breakdown() {
     let state = TestServerConfig::unreachable(tmp.path())
         .chat_tools(1_000_000)
         .state();
-    let id = state.create_session(&ws, None, None).await.expect("create");
+    let id = state
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
     let out = state.run_command(id, "/context", "").await.expect("run");
     assert!(out.ok, "{out:?}");
     let data = out.data.clone().expect("data");
@@ -259,7 +278,7 @@ async fn a_resumed_session_has_a_new_incarnation() {
     state.close_session(id).await.expect("close");
     state.history().flush().await.expect("flush");
     let (resumed_id, resumed) = state
-        .create_or_resume_session(&ws, None, None, Some(id))
+        .create_or_resume_session(&ws, None, false, Some(id))
         .await
         .expect("resume");
     assert!(resumed && resumed_id == id);
@@ -279,7 +298,10 @@ async fn the_context_command_takes_no_arguments() {
     let state = TestServerConfig::unreachable(tmp.path())
         .chat_tools(1_000_000)
         .state();
-    let id = state.create_session(&ws, None, None).await.expect("create");
+    let id = state
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
     let out = state.run_command(id, "context", "now").await.expect("run");
     assert!(!out.ok);
     assert_eq!(out.error.as_deref(), Some("usage: /context"));
@@ -295,7 +317,7 @@ async fn an_impossible_budget_refuses_the_session() {
         .chat_tools(4096)
         .state();
     let err = state
-        .create_session(&ws, None, None)
+        .create_session(&ws, None, false)
         .await
         .expect_err("refused");
     assert!(

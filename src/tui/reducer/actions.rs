@@ -49,7 +49,7 @@ fn submit(s: &mut State, text: String, revision: u64) -> Vec<Effect> {
             s.pending_submit = Some(revision);
             vec![Effect::Create(CreateSessionRequest {
                 workspace: s.workspace.clone(),
-                model: s.selected_model_alias.clone(),
+                model: s.start_model.clone(),
                 resume: None,
                 agent: s.agent.clone(),
                 variant: s.start_variant.clone(),
@@ -109,9 +109,7 @@ fn open_tab(s: &mut State, ui: &mut UiState) -> Option<Vec<Effect>> {
     let tab = Tab {
         id,
         generation,
-        selected_model_alias: s.selected_model_alias.clone(),
-        selected_model_name: s.selected_model_name.clone(),
-        context_window: s.context_window,
+        agent: Some(s.default_agent.clone()),
         view: TabView {
             follow_bottom: true,
             ..TabView::default()
@@ -169,8 +167,7 @@ fn close_tab(s: &mut State, ui: &mut UiState) -> Vec<Effect> {
         let fresh = s.issue();
         s.id = fresh;
         start_conversation(s);
-        s.selected_model_alias = closed.selected_model_alias.clone();
-        refresh_model(s);
+        s.agent = Some(s.default_agent.clone());
         s.view.follow_bottom = true;
         let view = s.view.clone();
         ui.scroll = view.scroll;
@@ -218,7 +215,7 @@ pub fn short_id(id: &str) -> String {
 fn resume(s: &mut State, ui: &mut UiState, id: String) -> Vec<Effect> {
     if s.sessions
         .iter()
-        .any(|e| e.id == id && (!e.promptable || e.parent_session_id.is_some()))
+        .any(|e| e.id == id && e.parent_session_id.is_some())
         || s.tabs
             .iter()
             .any(|t| t.children.iter().any(|c| c.session_id == id))
@@ -233,7 +230,7 @@ fn resume(s: &mut State, ui: &mut UiState, id: String) -> Vec<Effect> {
         };
         // A stopped session keeps its projection and cursor (the subscribe after `Resumed` starts
         // from `last_applied_seq`); a live one, or one being resumed, needs nothing.
-        if s.activity == Activity::Stopped && s.resuming.is_none() {
+        if s.activity == Activity::Stopped && s.resuming.is_none() && !s.read_only() {
             s.resuming = Some(id.clone());
             effects.push(Effect::Resume(id));
         }
@@ -296,7 +293,7 @@ fn open_child(s: &mut State, ui: &mut UiState, id: String) -> Vec<Effect> {
     s.child_status = status;
     s.agent = Some(agent);
     s.resuming = Some(id.clone());
-    s.selected_model_alias = None;
+    s.selected_model_id = None;
     s.selected_model_name = None;
     s.context_window = None;
     ui.focus = crate::tui::state::Focus::Transcript;
@@ -308,27 +305,40 @@ fn open_child(s: &mut State, ui: &mut UiState, id: String) -> Vec<Effect> {
     effects
 }
 
-/// Points the active tab at `alias` (a new tab when the active one holds a conversation: a
+/// Points the active tab at `model_id` (a new tab when the active one holds a conversation: a
 /// conversation keeps its model). `variant` is the start variant chosen in the picker; `None`
-/// leaves the alias's default. `None` when the tab limit refused a new tab.
+/// leaves the model_id's default. `None` when the tab limit refused a new tab.
 fn pick_model(
     s: &mut State,
     ui: &mut UiState,
-    alias: String,
+    model_id: String,
     variant: Option<Option<String>>,
 ) -> Option<Vec<Effect>> {
+    if reject_non_chat_model(s, &model_id) {
+        return None;
+    }
     // A tab with a conversation, or one being created or resumed, keeps its model.
     let occupied = s.session.is_some() || s.resuming.is_some() || s.pending_submit_text.is_some();
     let effects = if occupied { open_tab(s, ui)? } else { vec![] };
-    s.selected_model_alias = Some(alias);
+    s.selected_model_id = Some(model_id);
+    s.start_model = s.selected_model_id.clone();
+    s.model_source = "override".into();
+    s.variant_source = if variant.is_some() {
+        "override"
+    } else {
+        "model_default"
+    }
+    .into();
     refresh_model(s);
     let default = s
         .catalog
         .iter()
-        .find(|m| Some(&m.alias) == s.selected_model_alias.as_ref())
+        .find(|m| Some(&m.name) == s.selected_model_id.as_ref())
         .and_then(|m| m.default_variant.clone());
     s.variant = variant.clone().unwrap_or(default);
     s.start_variant = variant;
+    let catalog = s.catalog.clone();
+    super::refresh_start_variant(s, &catalog);
     Some(effects)
 }
 
@@ -352,12 +362,31 @@ pub fn occupied(tab: &Tab) -> bool {
     tab.session.is_some() || tab.resuming.is_some() || tab.pending_submit_text.is_some()
 }
 
-/// Moves the active conversation to `alias` through `/model`: the model only, the server applies
-/// the alias's default variant (`/variant` changes it after). A tab with no conversation yet
+fn reject_non_chat_model(s: &mut State, model_id: &str) -> bool {
+    if s.catalog
+        .iter()
+        .any(|model| model.name == model_id && model.api == crate::tui::protocol::ApiKind::Chat)
+    {
+        return false;
+    }
+    push_local(
+        s,
+        BlockKind::Notice(format!(
+            "cannot select {model_id}: conversations require a model with the chat API"
+        )),
+    );
+    true
+}
+
+/// Moves the active conversation to `model_id` through `/model`: the model only, the server applies
+/// the model_id's default variant (`/variant` changes it after). A tab with no conversation yet
 /// starts on it instead.
-fn switch_model(s: &mut State, ui: &mut UiState, alias: String) -> Vec<Effect> {
+fn switch_model(s: &mut State, ui: &mut UiState, model_id: String) -> Vec<Effect> {
+    if reject_non_chat_model(s, &model_id) {
+        return vec![];
+    }
     if !occupied(s) {
-        return pick_model(s, ui, alias, None).unwrap_or_default();
+        return pick_model(s, ui, model_id, None).unwrap_or_default();
     }
     if let Some(why) = switch_blocked(s) {
         push_local(
@@ -371,20 +400,21 @@ fn switch_model(s: &mut State, ui: &mut UiState, alias: String) -> Vec<Effect> {
         return vec![];
     }
     // The model in use: nothing to switch (a switch waiting for the turn is left as it is).
-    if s.selected_model_alias.as_deref() == Some(alias.as_str()) && s.pending_model().is_none() {
+    if s.selected_model_id.as_deref() == Some(model_id.as_str()) && s.pending_model().is_none() {
         push_local(
             s,
             BlockKind::Notice(format!(
-                "already on {alias}; use /variant to change the variant"
+                "already on {model_id}; use /variant to change the variant"
             )),
         );
         return vec![];
     }
-    let effects = run_command(s, "model".into(), alias.clone(), None);
+    let effects = run_command(s, "model".into(), model_id.clone(), None);
     // A new switch replaces the one shown, whatever became of it.
     if !effects.is_empty() {
         s.model_switch = Some(crate::tui::state::ModelSwitch {
-            alias,
+            agent: s.agent_name().into(),
+            model_id,
             token: s.command_token,
             operation_id: None,
             deferred: false,
@@ -422,8 +452,12 @@ fn toggle_agent(s: &mut State) -> Vec<Effect> {
         PLAN_AGENT
     };
     if s.session.is_none() && s.resuming.is_none() && s.pending_submit_text.is_none() {
-        s.agent = (next != DEFAULT_AGENT).then(|| next.to_string());
-        return vec![];
+        s.agent = Some(next.to_string());
+        s.start_model = None;
+        s.start_variant = None;
+        s.selected_model_id = None;
+        s.variant = None;
+        return vec![Effect::FetchAgents(None)];
     }
     run_command(s, "agent".into(), next.into(), None)
 }
@@ -477,11 +511,61 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
     match a {
         Action::Submit(text) => submit(s, text, 0),
         Action::SubmitAt { text, revision } => submit(s, text, revision),
-        Action::NewConversation => blank_tab(s, ui).unwrap_or_default(),
+        Action::NewConversation => {
+            if s.tabs.len() >= MAX_TABS && !s.is_blank() {
+                return blank_tab(s, ui).unwrap_or_default();
+            }
+            let mut effects = blank_tab(s, ui).unwrap_or_default();
+            s.agent = None;
+            s.start_model = None;
+            s.start_variant = None;
+            s.selected_model_id = None;
+            s.selected_model_name = None;
+            s.variant = None;
+            s.model_source.clear();
+            s.variant_source.clear();
+            ui.overlay = Some(Overlay::Agents);
+            ui.filter.clear();
+            let selected = s
+                .agents
+                .iter()
+                .filter(|a| matches!(a.mode.as_str(), "primary" | "all"))
+                .position(|a| a.id == s.default_agent)
+                .unwrap_or(0);
+            ui.selection.insert("Agents".into(), selected);
+            effects.push(Effect::FetchAgents(None));
+            effects
+        }
+        Action::PickAgent(agent) => {
+            if !s
+                .agents
+                .iter()
+                .any(|a| a.id == agent && matches!(a.mode.as_str(), "primary" | "all"))
+            {
+                push_local(s, BlockKind::Notice(format!("agent {agent} is not available for a root conversation; choose a primary/all agent")));
+                return vec![];
+            }
+            let Some(mut effects) = blank_tab(s, ui) else {
+                return vec![];
+            };
+            s.agent = Some(agent);
+            s.start_model = None;
+            s.start_variant = None;
+            s.selected_model_id = None;
+            s.selected_model_name = None;
+            s.variant = None;
+            effects.push(Effect::FetchAgents(None));
+            effects
+        }
         Action::ResumeSession(id) => resume(s, ui, id),
         Action::OpenChild(id) => open_child(s, ui, id),
         Action::ContinueChild => confirm_child(s, ui, crate::tui::protocol::ChildControl::Continue),
         Action::ConfirmChildControl => {
+            if s.archive() {
+                ui.child_confirm = None;
+                ui.child_confirm_token = None;
+                return vec![];
+            }
             let Some((parent_session_id, child_session_id, control)) = ui.child_confirm.take()
             else {
                 return vec![];
@@ -508,15 +592,34 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             ui.child_confirm_token = None;
             vec![]
         }
-        Action::PickModel(alias) => pick_model(s, ui, alias, None).unwrap_or_default(),
-        Action::SwitchModel(alias) => switch_model(s, ui, alias),
+        Action::PickModel(model_id) => pick_model(s, ui, model_id, None).unwrap_or_default(),
+        Action::SwitchModel(model_id) => switch_model(s, ui, model_id),
         Action::PickVariant(name) => {
             let pick = ui.variant_pick.take();
             ui.overlay = None;
+            let inherit = name == "inherit";
             let chosen = (name != NO_VARIANT).then_some(name);
             match pick {
-                Some(VariantPick::NewConversation(alias)) => {
-                    pick_model(s, ui, alias, Some(chosen)).unwrap_or_default()
+                Some(VariantPick::NewConversation(model_id)) => {
+                    pick_model(s, ui, model_id, if inherit { None } else { Some(chosen) })
+                        .unwrap_or_default()
+                }
+                Some(VariantPick::Current) if !occupied(s) => {
+                    s.start_variant = if chosen.as_deref() == Some("inherit") {
+                        None
+                    } else {
+                        Some(chosen.clone())
+                    };
+                    s.variant = s.start_variant.clone().flatten();
+                    s.variant_source = if s.start_variant.is_some() {
+                        "override"
+                    } else {
+                        "model_default"
+                    }
+                    .into();
+                    let catalog = s.catalog.clone();
+                    super::refresh_start_variant(s, &catalog);
+                    vec![]
                 }
                 Some(VariantPick::Current) => run_command(
                     s,
@@ -588,6 +691,9 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
         Action::OpenOverlay(o) => {
             ui.overlay = Some(o);
             match o {
+                Overlay::Agents => vec![Effect::FetchAgents(
+                    s.session.as_ref().map(|m| m.session_id.clone()),
+                )],
                 Overlay::Skills => {
                     ui.filter.clear();
                     ui.selection.insert("Skills".into(), 0);
@@ -615,6 +721,15 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
                     vec![Effect::FetchModels]
                 }
                 Overlay::Variants => {
+                    if !occupied(s) {
+                        ui.variant_pick = Some(VariantPick::Current);
+                        s.variant_offer = s
+                            .catalog
+                            .iter()
+                            .find(|m| Some(&m.name) == s.selected_model_id.as_ref())
+                            .map(|m| m.variants.clone());
+                        return vec![];
+                    }
                     // `/variant` asks the server what this conversation offers; its answer opens
                     // the list. With no live conversation `run_command` says why.
                     ui.overlay = None;
@@ -677,6 +792,9 @@ fn confirm_child(
     ui: &mut UiState,
     control: crate::tui::protocol::ChildControl,
 ) -> Vec<Effect> {
+    if s.archive() {
+        return vec![];
+    }
     if control == crate::tui::protocol::ChildControl::Continue
         && s.parent_session_id.is_none()
         && s.watchdog_paused

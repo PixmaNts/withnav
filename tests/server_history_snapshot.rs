@@ -48,18 +48,17 @@ async fn a_stopped_mid_turn_session_keeps_its_transcript() {
     let state = TestServerConfig::mock(tmp.path(), &url)
         .model_alias("cognition", "mock-opus")
         .history_db(db.clone())
-        .navigator_state();
+        .assigned_navigator_state();
     let (addr, task) = spawn_server(state.clone()).await;
     let base = format!("http://{addr}");
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("ws");
 
-    let created: Value =
-        post_create_session(&base, &json!({ "workspace": ws, "profile": "navigator" }))
-            .await
-            .json()
-            .await
-            .expect("json");
+    let created: Value = post_create_session(&base, &json!({ "workspace": ws, "editor": true }))
+        .await
+        .json()
+        .await
+        .expect("json");
     let id = created["session_id"].as_str().expect("id").to_string();
     let ulid: ulid::Ulid = id.parse().unwrap();
 

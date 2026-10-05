@@ -28,6 +28,10 @@ const stop = document.querySelector<HTMLButtonElement>("#stop")!;
 const includeContext = document.querySelector<HTMLInputElement>("#include-context")!;
 const contextPreview = document.querySelector<HTMLElement>("#context-preview")!;
 const modelSelect = document.querySelector<HTMLSelectElement>("#model")!;
+const agentSelect = document.createElement("select");
+agentSelect.className = "model-select"; agentSelect.setAttribute("aria-label", "Conversation agent");
+modelSelect.before(agentSelect);
+agentSelect.addEventListener("change", () => post({ type: "selectAgent", id: agentSelect.value }));
 const childHeader = document.createElement("div");
 childHeader.className = "child-header"; childHeader.hidden = true;
 form.before(childHeader);
@@ -37,6 +41,7 @@ const childrenSummary = document.createElement("summary"); childrenSummary.textC
 const childrenRows = document.createElement("div"); childrenSection.append(childrenSummary, childrenRows);
 form.before(childrenSection);
 let readOnly = false;
+let archiveReadOnly = false;
 let parentId = "";
 const childStates: Record<ChildInfo["state"], string> = { unknown: "Unknown", running: "Running", permission: "Waiting for permission", budget: "Out of steps", watchdog: "In doubt · watchdog paused", done: "Done", failed: "Failed", stopped: "Stopped" };
 function childActions(child: ChildInfo): HTMLElement {
@@ -86,11 +91,12 @@ const pendingModel = document.createElement("span");
 pendingModel.className = "pending-model";
 modelSelect.after(agentLabel, pendingModel);
 let commands: CommandInfo[] = [];
-let paletteRows: { name: string; description: string; args_hint?: string }[] = [];
+let paletteRows: { name: string; description: string; args_hint?: string; gateway?: string; provider_group?: string }[] = [];
 let pickerItems: typeof paletteRows = [];
 let modelItems: typeof paletteRows = [];
 let paletteIndex = 0;
-let pickerKind: "model" | "variant" | "skills" | undefined;
+let pickerKind: "model" | "variant" | "skills" | "agent" | undefined;
+const collapsedGroups = new Set<string>();
 let selectorPicker = false;
 let paletteDismissed = false;
 function closePalette(): void {
@@ -105,7 +111,7 @@ function closePalette(): void {
 function choosePalette(index: number): void {
   const row = paletteRows[index];
   if (!row) return;
-  if (selectorPicker) post({ type: "selectModel", alias: row.name });
+  if (selectorPicker) post({ type: "selectModel", name: row.name });
   else if (pickerKind === "skills") prompt.value = `/skill ${row.name} `;
   else if (pickerKind) {
     const text = `/${pickerKind} ${row.name}`;
@@ -120,9 +126,11 @@ function choosePalette(index: number): void {
 }
 function renderPalette(): void {
   pickerOptions.replaceChildren();
-  const matches = ranked(pickerItems, pickerSearch.value, row => row.name, row => row.description);
+  if (pickerKind === "model") pickerItems.sort((a,b) => (a.gateway ?? "").localeCompare(b.gateway ?? "") || (a.provider_group ?? "").localeCompare(b.provider_group ?? ""));
+  const allMatches = ranked(pickerItems, pickerSearch.value, row => row.name, row => row.description);
+  const matches = pickerKind === "model" && !pickerSearch.value ? allMatches.filter(row => !row.gateway || (!collapsedGroups.has(row.gateway) && !collapsedGroups.has(`${row.gateway}/${row.provider_group}`))) : allMatches;
   paletteRows = matches.slice(0, PICKER_LIMIT);
-  pickerCount.textContent = `${matches.length} of ${pickerItems.length}${matches.length > PICKER_LIMIT ? " · Type to narrow (first 50 shown)" : ""}`;
+  pickerCount.textContent = `${allMatches.length} of ${pickerItems.length}${matches.length > PICKER_LIMIT ? " · Type to narrow (first 50 shown)" : ""}`;
   paletteIndex = Math.max(0, Math.min(paletteIndex, paletteRows.length - 1));
   palette.hidden = false;
   pickerSearch.setAttribute("aria-expanded", "true");
@@ -137,10 +145,18 @@ function renderPalette(): void {
     if (paletteRows.length) prompt.setAttribute("aria-activedescendant", `command-option-${paletteIndex}`);
     else prompt.removeAttribute("aria-activedescendant");
   }
-  for (const [index, row] of paletteRows.entries()) {
+
+  const group = (label: string, id: string): void => {
+    const button = el("button", "picker-group", label); button.type = "button";
+    button.setAttribute("aria-expanded", String(!collapsedGroups.has(id) || !!pickerSearch.value));
+    button.addEventListener("click", () => { if (collapsedGroups.has(id)) collapsedGroups.delete(id); else collapsedGroups.add(id); renderPalette(); });
+    pickerOptions.append(button);
+  };
+  const renderOption = (row: typeof paletteRows[number], index: number): void => {
     const option = document.createElement("div");
     option.id = `command-option-${index}`;
     option.className = "command-option";
+    option.title = row.name;
     option.setAttribute("role", "option");
     option.setAttribute("aria-selected", String(index === paletteIndex));
     const name = document.createElement("strong");
@@ -152,7 +168,24 @@ function renderPalette(): void {
     option.addEventListener("click", () => choosePalette(index));
     pickerOptions.append(option);
   }
-  pickerOptions.children[paletteIndex]?.scrollIntoView?.({ block: "nearest" });
+  if (pickerKind === "model") {
+    const gateways = [...new Set(allMatches.map(row => row.gateway ?? "Models"))];
+    for (const gateway of gateways) {
+      group(gateway, gateway);
+      if (!pickerSearch.value && collapsedGroups.has(gateway)) continue;
+      const rows = allMatches.filter(row => (row.gateway ?? "Models") === gateway);
+      for (const provider of [...new Set(rows.map(row => row.provider_group ?? gateway))]) {
+        const id = `${gateway}/${provider}`;
+        if (provider !== gateway) group(provider, id);
+        if (!pickerSearch.value && collapsedGroups.has(id)) continue;
+        for (const row of rows.filter(row => (row.provider_group ?? gateway) === provider)) {
+          const index = paletteRows.indexOf(row);
+          if (index >= 0) renderOption(row, index);
+        }
+      }
+    }
+  } else paletteRows.forEach(renderOption);
+  pickerOptions.querySelector(`#command-option-${paletteIndex}`)?.scrollIntoView?.({ block: "nearest" });
 }
 function filterPalette(): void {
   if (paletteDismissed || !/^\/[^\s/]*$/.test(prompt.value)) { closePalette(); return; }
@@ -183,7 +216,7 @@ const usage = document.querySelector<HTMLElement>("#usage")!;
 const usageFill = document.querySelector<HTMLElement>("#usage-fill")!;
 const usageLabel = document.querySelector<HTMLElement>("#usage-label")!;
 modelSelect.addEventListener("change", () => {
-  if (modelSelect.value) post({ type: "selectModel", alias: modelSelect.value });
+  if (modelSelect.value) post({ type: "selectModel", name: modelSelect.value });
 });
 modelSelect.addEventListener("mousedown", event => {
   if (modelSelect.disabled) return;
@@ -554,6 +587,8 @@ function renderPause(event: Extract<HostToWebview, { type: "pause" }>): void {
 function receive(event: HostToWebview): void {
   if (!identity.receive(event)) return;
   if (event.type === "conversationOpened") {
+    form.hidden = false;
+    archiveReadOnly = false;
     compacting = false; compactionRow = undefined;
     usage.removeAttribute("aria-busy"); usage.removeAttribute("data-updating");
     readOnly = false; parentId = ""; childHeader.hidden = true; childrenSection.hidden = true;
@@ -597,11 +632,21 @@ function receive(event: HostToWebview): void {
       }
       break;
     }
+    case "viewMode": {
+      archiveReadOnly = !!event.archiveReason;
+      readOnly = event.readOnly;
+      agentSelect.disabled = readOnly;
+      if (event.archiveReason) { childHeader.hidden = false; childHeader.replaceChildren(el("strong", "", "Read-only archive"), el("p", "", event.archiveReason)); form.hidden = true; }
+      for (const control of document.querySelectorAll<HTMLButtonElement | HTMLTextAreaElement>(".control-card button, .control-card textarea")) control.disabled = readOnly;
+      updateControls(); break;
+    }
     case "childView": {
+      if (archiveReadOnly) break;
       readOnly = !!event.child;
       if (event.child) parentId = event.parentId ?? "";
       childHeader.replaceChildren(); childHeader.hidden = !readOnly;
       if (event.child) {
+        agentSelect.disabled = true;
         childHeader.append(el("p", "", `Read-only · subagent of ${event.parentTitle ?? "parent conversation"}`),
           el("strong", "", `${event.child.agent} · ${childStates[event.child.state]}`), el("p", "", "Read-only subagent transcript. Send messages and answer permissions in the parent."), childActions(event.child));
         childrenSection.hidden = true;
@@ -613,7 +658,17 @@ function receive(event: HostToWebview): void {
     case "commands": commands = event.items; filterPalette(); break;
     case "commandError": commandError.textContent = event.text; commandError.hidden = false; updateControls(); break;
     case "agent": agentLabel.textContent = event.name; break;
-    case "modelPending": pendingModel.textContent = event.alias ? `→ ${event.alias} · pending after turn` : ""; break;
+    case "assignments": {
+      if (event.models) renderModels({ type: "models", items: event.models, current: event.model, locked: !!event.locked });
+      agentSelect.replaceChildren(...event.agents.map(agent => { const option = el("option", "", agent.id); option.value = agent.id; option.title = `${agent.description} · ${agent.effective?.model ?? "Unassigned"}${agent.warning ? ` · ${agent.warning}` : ""}`; return option; }));
+      agentSelect.value = event.current; agentSelect.disabled = readOnly || !!event.locked;
+      agentLabel.textContent = `${event.current}${event.source === "override" ? " · model override" : ""}${event.variant_source === "override" ? " · variant override" : ""}`;
+      const types: Record<string,string> = { reflex: "FIM · editor", instinct: "SystemOne", metacognition: "Chat" };
+      const tooltip = [`Cognition · ${event.current}: ${event.model ?? "Unassigned"}${event.variant === null ? " · variant off" : event.variant ? ` · ${event.variant}` : ""} · model source: ${event.source ?? "assignment"} · variant source: ${event.variant_source ?? "assignment"}`, ...event.layers.map(layer => `${layer.layer} (${types[layer.layer]}): ${layer.model ?? "Unassigned"}${layer.variant ? ` · ${layer.variant}` : ""} · ${layer.status}${layer.reason ? ` — ${layer.reason}` : ""}`), "Usable describes configuration, not network availability. Assignments are read-only."].join("\n");
+      document.querySelector<HTMLElement>(".topbar")!.title = tooltip; agentLabel.title = tooltip;
+      break;
+    }
+    case "modelPending": pendingModel.textContent = event.name ? `→ ${event.name} · pending after turn` : ""; break;
     case "commandPicker":
       sending = false;
       if (event.disabledReason) { commandError.textContent = event.disabledReason; commandError.hidden = false; closePalette(); }
@@ -633,6 +688,7 @@ function receive(event: HostToWebview): void {
       replaying = true;
       try { for (const item of event.items) if (item.type !== "history") receive(item); }
       finally { replaying = false; }
+      if (readOnly) { agentSelect.disabled = true; modelSelect.disabled = true; for (const control of document.querySelectorAll<HTMLButtonElement | HTMLTextAreaElement>(".control-card button, .control-card textarea")) control.disabled = true; }
       if (state === "connecting") setStatus("ready");
       follow();
       break;
@@ -662,7 +718,7 @@ function receive(event: HostToWebview): void {
       const review = card.root.querySelector(".approval-evidence summary");
     if (review?.textContent === "Driver review required" && ["allow_once", "allow_folder"].includes(event.resolution)) review.textContent = "approved · driver";
       card.controls.hidden = !["pending", "error"].includes(event.resolution);
-      for (const control of card.controls.querySelectorAll<HTMLButtonElement | HTMLTextAreaElement>("button, textarea")) control.disabled = event.resolution === "pending";
+      for (const control of card.controls.querySelectorAll<HTMLButtonElement | HTMLTextAreaElement>("button, textarea")) control.disabled = readOnly || event.resolution === "pending";
       follow();
       break;
     }
@@ -672,7 +728,7 @@ function receive(event: HostToWebview): void {
       if (!card) break;
       card.outcome.textContent = event.message ?? (event.state === "pending" ? "Waiting for the server…" : "No longer paused");
       card.controls.hidden = event.state === "resolved";
-      for (const button of card.controls.querySelectorAll("button")) button.disabled = event.state === "pending";
+      for (const button of card.controls.querySelectorAll("button")) button.disabled = readOnly || event.state === "pending";
       follow();
       break;
     }
@@ -731,14 +787,14 @@ function receive(event: HostToWebview): void {
 
 /** Rebuilds the model picker; a locked picker shows the open conversation's model. */
 function renderModels(event: Extract<HostToWebview, { type: "models" }>): void {
-  modelItems = event.items.map(model => ({ name: model.alias, description: model.model }));
+  modelItems = event.items.filter(model => model.api === "chat" && model.enabled !== false).map(model => ({ name: model.name, description: model.upstream_id, gateway: model.gateway, provider_group: model.provider_group })).sort((a,b) => a.gateway.localeCompare(b.gateway) || a.provider_group.localeCompare(b.provider_group));
   const options = event.items.map(model => {
-    const option = el("option", undefined, model.alias);
-    option.value = model.alias;
-    option.title = model.contextWindow ? `${model.model} · ${tokens(model.contextWindow)} context` : model.model;
+    const option = el("option", undefined, model.name);
+    option.value = model.name;
+    option.title = model.contextWindow ? `${model.name} · ${tokens(model.contextWindow)} context` : model.name;
     return option;
   });
-  if (event.current && !event.items.some(model => model.alias === event.current)) {
+  if (event.current && !event.items.some(model => model.name === event.current)) {
     const option = el("option", undefined, event.current);
     option.value = event.current;
     options.push(option);

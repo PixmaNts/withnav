@@ -1,5 +1,5 @@
 //! The header row: `◆ navai`, the workspace, the git branch and its changes on the left; the
-//! agent and the model in use (alias · model · variant · context gauge) on the right. What does
+//! agent and the model in use (model_id · model · variant · context gauge) on the right. What does
 //! not fit is dropped, least useful first.
 use super::{
     status::{context_gauge, shorten},
@@ -23,6 +23,21 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
         return;
     }
     frame.buffer_mut().set_style(area, theme.panel());
+    if state.archive() {
+        let reason = state
+            .session
+            .as_ref()
+            .and_then(|m| m.resume_disabled_reason.as_deref())
+            .unwrap_or("read-only history");
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                fit_end(&format!(" ◆ archive · {reason}"), usize::from(area.width)),
+                theme.muted(),
+            )),
+            area,
+        );
+        return;
+    }
     let agent = state.agent_name();
     let agent_style = super::sidebar::agent_style(agent, theme);
     if let Some(parent) = &state.parent_session_id {
@@ -48,7 +63,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
                             state
                                 .selected_model_name
                                 .as_deref()
-                                .or(state.selected_model_alias.as_deref())
+                                .or(state.selected_model_id.as_deref())
                                 .unwrap_or("—"),
                             width.saturating_sub(42)
                         )
@@ -60,8 +75,12 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
         );
         return;
     }
-    let alias = state.selected_model_alias.as_deref().unwrap_or("—");
-    let model = state.selected_model_name.as_deref().unwrap_or("—");
+    let model_id = state.selected_model_id.as_deref().unwrap_or("—");
+    let model = if state.model_source == "override" || state.variant_source == "override" {
+        "override"
+    } else {
+        "assigned"
+    };
     let (used, window, percent) = context_gauge(state);
 
     // Left: the logo always; the branch, then the path, as room allows.
@@ -86,7 +105,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
         .map(|s| s.workspace.as_str())
         .unwrap_or(state.workspace.as_str());
 
-    // Right: the agent and the alias always (each cut to a share of the row); then the gauge,
+    // Right: the agent and the model_id always (each cut to a share of the row); then the gauge,
     // the variant and the model.
     let total = usize::from(area.width);
     let lead = vec![
@@ -96,7 +115,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
             agent_style.add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("  {}", fit_end(alias, (total / 5).max(4))),
+            format!("  {}", fit_end(model_id, (total / 5).max(4))),
             theme.title(),
         ),
     ];
@@ -115,8 +134,8 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     });
 
     // A switch the server accepted for after this turn, beside the model still in use.
-    let pending = state.pending_model().map(|alias| {
-        let target = format!("→ {}", fit_end(alias, (total / 6).max(4)));
+    let pending = state.pending_model().map(|model_id| {
+        let target = format!("→ {}", fit_end(model_id, (total / 6).max(4)));
         vec![
             Span::raw("  "),
             Span::styled(target, theme.warning()),

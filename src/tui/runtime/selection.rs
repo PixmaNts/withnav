@@ -27,7 +27,7 @@ impl Runtime {
         let yank = key.code == KeyCode::Char('y')
             && key.modifiers.is_empty()
             && (self.ui.focus == Focus::Transcript || self.state.read_only())
-            && self.state.open_permission().is_none();
+            && (self.state.archive() || self.state.open_permission().is_none());
         if !shortcut && !yank {
             return false;
         }

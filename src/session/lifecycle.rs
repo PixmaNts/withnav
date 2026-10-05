@@ -62,6 +62,7 @@ impl Service {
     /// already closed (or only stored) is a no-op; unknown is a 404.
     pub async fn close_session(&self, id: SessionId) -> Result<(), ServerError> {
         let _gate = self.lifecycle_gate().await;
+        self.ensure_not_archived(id).await?;
         self.wait_child_operation(id).await;
         let parent = self.handle(id).and_then(|h| h.parent_session_id);
         self.close_session_gated(id).await?;
@@ -389,6 +390,12 @@ mod tests {
             workspace: PathBuf::from("/w"),
             selected: Arc::new(std::sync::Mutex::new(
                 crate::session::service::SelectedModel {
+                    provenance: None,
+                    role: crate::agent::definitions::Agents::builtin()
+                        .get("build")
+                        .unwrap()
+                        .clone(),
+                    agent: "build".into(),
                     execution: None,
                     alias: "fast".to_string(),
                     resolution: None,

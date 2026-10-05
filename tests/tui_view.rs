@@ -194,10 +194,14 @@ fn tool_block(status: Option<ToolStatus>) -> Block {
 fn state() -> State {
     let tab = Tab {
         connection: ConnectionStatus::Connected,
-        selected_model_alias: Some("cognition".into()),
+        selected_model_id: Some("cognition".into()),
         selected_model_name: Some("cc/claude-opus-5-5".into()),
         context_window: Some(200_000),
         session: Some(SessionMetadata {
+            source: "config".into(),
+            variant_source: "model_default".into(),
+            read_only: false,
+            resume_disabled_reason: None,
             session_id: "01JABCDEFGH".into(),
             actor_state: "idle".into(),
             workspace: "/home/pixma/dev/project".into(),
@@ -215,19 +219,27 @@ fn state() -> State {
         tabs: vec![tab],
         catalog: vec![
             ModelEntry {
-                alias: "cognition".into(),
-                model: "cc/claude-opus-5-5".into(),
+                api: navai::tui::protocol::ApiKind::Chat,
+                gateway: "gateway".into(),
+                provider_group: "gateway".into(),
+                name: "cognition".into(),
+                upstream_id: "cc/claude-opus-5-5".into(),
                 context_window: Some(200_000),
                 ..Default::default()
             },
             ModelEntry {
-                alias: "fast".into(),
-                model: "cc/flash".into(),
+                api: navai::tui::protocol::ApiKind::Chat,
+                gateway: "gateway".into(),
+                provider_group: "gateway".into(),
+                name: "fast".into(),
+                upstream_id: "cc/flash".into(),
                 context_window: None,
                 ..Default::default()
             },
         ],
         sessions: vec![SessionListEntry {
+            read_only: false,
+            resume_disabled_reason: None,
             id: "01JABCDEFGH".into(),
             title: Some("Fix parser".into()),
             created_at: "2026-10-01T08:00:00Z".into(),
@@ -515,8 +527,10 @@ fn overlay_precedence_and_empty_slash() {
     );
     assert_eq!(editor.text(), "/abc");
     ui.overlay = Some(Overlay::Models);
+    ui.selection.insert("Models".into(), 1);
     let enter = key(KeyCode::Enter, KeyModifiers::NONE);
     // a live conversation switches the model, with no variant step
+    ui.selection.insert("Models".into(), 1);
     assert_eq!(
         route_key(enter, &s, &mut ui, &mut editor),
         Some(Action::SwitchModel("cognition".into()))
@@ -591,6 +605,7 @@ fn pickers_filter_and_keep_draft() {
     s.session = None;
     let mut ui = UiState {
         overlay: Some(Overlay::Models),
+        selection: std::collections::HashMap::from([("Models".into(), 1)]),
         ..UiState::default()
     };
     let mut editor = Editor::new();
@@ -602,6 +617,7 @@ fn pickers_filter_and_keep_draft() {
         &mut editor,
     );
     assert_eq!(ui.filter, "f");
+    ui.selection.insert("Models".into(), 1);
     let enter = key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(
         route_key(enter, &s, &mut ui, &mut editor),
@@ -638,12 +654,14 @@ fn the_status_gauge_shows_the_server_estimate_with_its_percent() {
     let mut s = done();
     // Before any snapshot: the provider's last prompt count over the window.
     assert!(buffer_text(&s).contains("· 12.4k / 200k"));
-    s.conversation.context = Some(navai::bus::event::ContextSnapshot {
-        alias: "cognition".into(),
+    s.conversation.context = Some(navai::tui::protocol::ContextSnapshot {
+        gateway: "gateway".into(),
+        upstream_id: "upstream".into(),
+        model: "cognition".into(),
         variant: None,
         window: 1_000_000,
         window_source: "models.json".into(),
-        estimated: true,
+
         estimate_total: 42_000,
         breakdown: Default::default(),
         output_reserve: 8192,
@@ -1147,12 +1165,14 @@ fn sidebar_shows_waiting_and_error_states() {
 
 #[test]
 fn the_gauge_follows_the_active_tab() {
-    let gauge = |estimate_total: u64| navai::bus::event::ContextSnapshot {
-        alias: "cognition".into(),
+    let gauge = |estimate_total: u64| navai::tui::protocol::ContextSnapshot {
+        gateway: "gateway".into(),
+        upstream_id: "upstream".into(),
+        model: "cognition".into(),
         variant: None,
         window: 1_000_000,
         window_source: "models.json".into(),
-        estimated: true,
+
         estimate_total,
         breakdown: Default::default(),
         output_reserve: 8192,
@@ -1410,23 +1430,32 @@ fn big_catalog() -> State {
     let mut s = state();
     s.catalog = (0..293)
         .map(|n| ModelEntry {
-            alias: format!("alias-{n:03}"),
-            model: format!("vendor/model-{n:03}"),
+            api: navai::tui::protocol::ApiKind::Chat,
+            gateway: "gateway".into(),
+            provider_group: "gateway".into(),
+            name: format!("alias-{n:03}"),
+            upstream_id: format!("vendor/model-{n:03}"),
             context_window: Some(128_000),
             ..Default::default()
         })
         .collect();
     s.catalog.push(ModelEntry {
-        alias: "opus".into(),
-        model: "cc/claude-opus-5-5".into(),
+        api: navai::tui::protocol::ApiKind::Chat,
+        gateway: "gateway".into(),
+        provider_group: "gateway".into(),
+        name: "opus".into(),
+        upstream_id: "cc/claude-opus-5-5".into(),
         context_window: Some(1_000_000),
         variants: vec!["low".into(), "high".into(), "max".into()],
         default_variant: Some("high".into()),
         ..Default::default()
     });
     s.catalog.push(ModelEntry {
-        alias: "flash".into(),
-        model: "cc/flash".into(),
+        api: navai::tui::protocol::ApiKind::Chat,
+        gateway: "gateway".into(),
+        provider_group: "gateway".into(),
+        name: "flash".into(),
+        upstream_id: "cc/flash".into(),
         context_window: None,
         ..Default::default()
     });
@@ -1452,7 +1481,7 @@ fn the_model_picker_filters_a_long_catalog_and_shows_window_and_variants() {
     );
     assert_eq!(ui.overlay, Some(Overlay::Models));
     // the selection can walk the whole list; the popup scrolls to keep it in view
-    for _ in 0..300 {
+    for _ in 0..400 {
         route_key(
             key(KeyCode::Down, KeyModifiers::NONE),
             &s,
@@ -1463,10 +1492,11 @@ fn the_model_picker_filters_a_long_catalog_and_shows_window_and_variants() {
     let t = cells(&s, &ui, (100, 30));
     let all: String = (0..30).map(|y| row_text(&t, y, 100) + "\n").collect();
     assert!(
-        all.contains("▌flash"),
+        all.contains("▌opus"),
         "the last row is shown selected: {all}"
     );
     type_text("opus", &s, &mut ui, &mut editor);
+    ui.selection.insert("Models".into(), 1);
     render("model-picker-filtered", (100, 30), &s, &ui, &editor);
     let t = cells(&s, &ui, (100, 30));
     let row = (0..30)
@@ -1478,11 +1508,11 @@ fn the_model_picker_filters_a_long_catalog_and_shows_window_and_variants() {
     assert!(row.contains("low high max"), "{row}");
     assert!(!all.contains("alias-") || !row.contains("alias-"));
     // the filter also matches the model name
-    ui.filter = "model-29".into();
+    ui.filter = "alias-29".into();
     let t = cells(&s, &ui, (100, 30));
     let shown: Vec<String> = (0..30)
         .map(|y| row_text(&t, y, 100))
-        .filter(|r| r.contains("alias-29"))
+        .filter(|r| r.contains("alias-29") && r.contains("vendor/model"))
         .collect();
     assert_eq!(shown.len(), 3, "alias-290 … alias-292: {shown:?}");
 }
@@ -1501,6 +1531,7 @@ fn picking_a_model_with_variants_asks_which_one_default_first() {
         &mut editor,
     );
     type_text("opus", &s, &mut ui, &mut editor);
+    ui.selection.insert("Models".into(), 1);
     let enter = key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(route_key(enter, &s, &mut ui, &mut editor), None);
     assert_eq!(ui.overlay, Some(Overlay::Variants));
@@ -1551,6 +1582,7 @@ fn a_model_without_variants_shows_a_note_and_starts_without_one() {
         &mut editor,
     );
     type_text("flash", &s, &mut ui, &mut editor);
+    ui.selection.insert("Models".into(), 1);
     let enter = key(KeyCode::Enter, KeyModifiers::NONE);
     route_key(enter, &s, &mut ui, &mut editor);
     assert_eq!(ui.overlay, Some(Overlay::Variants));
@@ -1568,7 +1600,7 @@ fn a_model_without_variants_shows_a_note_and_starts_without_one() {
 #[test]
 fn the_variant_list_of_a_running_conversation_says_it_applies_next_turn() {
     let mut s = big_catalog();
-    s.selected_model_alias = Some("opus".into());
+    s.selected_model_id = Some("opus".into());
     s.variant = Some("high".into());
     s.variant_offer = Some(vec!["low".into(), "high".into(), "max".into()]);
     s.activity = Activity::Running;
@@ -1608,12 +1640,14 @@ fn the_variant_list_of_a_running_conversation_says_it_applies_next_turn() {
 fn the_status_line_reads_model_variant_and_gauge() {
     let mut s = done();
     s.variant = Some("high".into());
-    s.conversation.context = Some(navai::bus::event::ContextSnapshot {
-        alias: "cognition".into(),
+    s.conversation.context = Some(navai::tui::protocol::ContextSnapshot {
+        gateway: "gateway".into(),
+        upstream_id: "upstream".into(),
+        model: "cognition".into(),
         variant: Some("high".into()),
         window: 1_000_000,
         window_source: "models.json".into(),
-        estimated: true,
+
         estimate_total: 42_000,
         breakdown: Default::default(),
         output_reserve: 8192,
@@ -1632,7 +1666,7 @@ fn the_status_line_reads_model_variant_and_gauge() {
         .find(|r| r.contains("▌build"))
         .unwrap();
     assert!(
-        line.contains("cognition · cc/claude-opus-5-5 · high · ~42k / 1M · 4%"),
+        line.contains("cognition · assigned · high · ~42k / 1M · 4%"),
         "{line}"
     );
     // on a narrow screen the model name is cut before the variant or the gauge
@@ -1884,7 +1918,7 @@ fn a_typed_local_command_with_an_argument_is_refused_with_a_notice() {
     assert_eq!(editor.text(), "", "a client command clears its line");
     // `/new <alias>` still opens a tab on it
     let actions = keys("/new fast⏎", &s, &mut ui, &mut editor);
-    assert_eq!(actions.last(), Some(&Action::PickModel("fast".into())));
+    assert_eq!(actions.last(), Some(&Action::PickAgent("fast".into())));
 }
 
 #[test]
@@ -2595,7 +2629,7 @@ fn the_header_shows_the_branch_its_changes_and_the_agent_in_its_colour() {
         "◆ navai",
         "~/dev/project",
         "feat/tui-design ●3",
-        "▌build  cognition · cc/claude-opus-5-5 · 12.4k / 200k",
+        "▌build  cognition · assigned · 12.4k / 200k",
     ] {
         assert!(header.contains(want), "{want}: {header}");
     }
@@ -2619,13 +2653,15 @@ fn the_header_shows_the_branch_its_changes_and_the_agent_in_its_colour() {
 
 // ---------------------------------------------------------------- right column
 
-fn snapshot_with(breakdown: navai::bus::event::Breakdown) -> navai::bus::event::ContextSnapshot {
-    navai::bus::event::ContextSnapshot {
-        alias: "cognition".into(),
+fn snapshot_with(breakdown: navai::bus::event::Breakdown) -> navai::tui::protocol::ContextSnapshot {
+    navai::tui::protocol::ContextSnapshot {
+        gateway: "gateway".into(),
+        upstream_id: "upstream".into(),
+        model: "cognition".into(),
         variant: None,
         window: 200_000,
         window_source: "models.json".into(),
-        estimated: true,
+
         estimate_total: 41_200,
         breakdown,
         output_reserve: 8192,
@@ -2697,14 +2733,12 @@ fn the_right_column_reads_the_snapshot_the_compaction_and_git() {
         "listed                        12",
         "omitted, no room               3",
         "M src/tui/view/file_0.rs",
-        "4 more",
+        "CHANGES",
     ] {
         assert!(shown.contains(want), "{want}: {shown}");
     }
     // nothing the server does not report
-    for absent in [
-        "INTENT", "drift", "LAYERS", "MCP", "PLUGINS", "explore", "review",
-    ] {
+    for absent in ["INTENT", "drift", "MCP", "PLUGINS", "explore", "review"] {
         assert!(!shown.contains(absent), "{absent}: {shown}");
     }
 }
@@ -3039,7 +3073,8 @@ fn the_header_shows_the_model_in_use_and_a_switch_waiting_for_the_turn() {
     let mut s = done();
     s.activity = Activity::Running;
     s.model_switch = Some(navai::tui::state::ModelSwitch {
-        alias: "luna".into(),
+        agent: "build".into(),
+        model_id: "luna".into(),
         token: 1,
         operation_id: Some("op".into()),
         deferred: true,
@@ -3051,9 +3086,7 @@ fn the_header_shows_the_model_in_use_and_a_switch_waiting_for_the_turn() {
     render("model-pending", (140, 24), &s, &ui, &Editor::new());
     let header = row_text(&cells(&s, &ui, (140, 24)), 0, 140);
     assert!(
-        header.contains(
-            "▌build  cognition · cc/claude-opus-5-5 · 12.4k / 200k  → luna (after this turn)"
-        ),
+        header.contains("▌build  cognition · assigned · 12.4k / 200k  → luna (after this turn)"),
         "{header}"
     );
     // narrow: the switch stays, the model name gives way first
@@ -3062,6 +3095,7 @@ fn the_header_shows_the_model_in_use_and_a_switch_waiting_for_the_turn() {
     // the picker on a running conversation says when it applies
     let ui = UiState {
         overlay: Some(Overlay::Models),
+        selection: std::collections::HashMap::from([("Models".into(), 1)]),
         ..UiState::default()
     };
     let shown = screen_text(&s, &ui, (100, 30));
@@ -3088,6 +3122,7 @@ fn enter_in_the_model_list_switches_a_live_tab_and_ctrl_n_opens_a_new_one() {
         &mut editor,
     );
     // ctrl+n: the variant step for a new tab
+    ui.selection.insert("Models".into(), 1);
     route_key(
         key(KeyCode::Char('n'), KeyModifiers::CONTROL),
         &s,
@@ -3112,6 +3147,7 @@ fn enter_in_the_model_list_switches_a_live_tab_and_ctrl_n_opens_a_new_one() {
         &mut ui,
         &mut editor,
     );
+    ui.selection.insert("Models".into(), 1);
     assert_eq!(
         route_key(enter, &s, &mut ui, &mut editor),
         Some(Action::SwitchModel("cognition".into()))
@@ -3128,6 +3164,7 @@ fn enter_in_the_model_list_switches_a_live_tab_and_ctrl_n_opens_a_new_one() {
         &mut ui,
         &mut editor,
     );
+    ui.selection.insert("Models".into(), 1);
     let action = route_key(enter, &waiting, &mut ui, &mut editor);
     assert!(
         matches!(&action, Some(Action::ShowNotice(why)) if why.contains("waiting for your answer")),
@@ -3140,29 +3177,31 @@ fn enter_in_the_model_list_switches_a_live_tab_and_ctrl_n_opens_a_new_one() {
 fn the_header_keeps_the_committed_model_when_the_catalog_says_otherwise() {
     let mut s = done();
     // committed by model.changed
-    s.selected_model_alias = Some("luna".into());
+    s.selected_model_id = Some("luna".into());
     s.selected_model_name = Some("gpt-5.6-luna".into());
     s.context_window = Some(872_000);
     s.model_seq = Some(10);
     s.conversation.context_tokens = Some(1_000);
     let ev = navai::tui::protocol::ClientEvent::Models {
+        workspace: String::new(),
+        request: 0,
         generation: s.generation.clone(),
         result: Ok(navai::tui::protocol::ModelsBody {
             models: vec![ModelEntry {
-                alias: "luna".into(),
-                model: "elsewhere/other".into(),
+                api: navai::tui::protocol::ApiKind::Chat,
+                gateway: "gateway".into(),
+                provider_group: "gateway".into(),
+                name: "luna".into(),
+                upstream_id: "elsewhere/other".into(),
                 context_window: Some(32_000),
                 ..Default::default()
             }],
-            default: None,
+            default_agent: None,
         }),
     };
     navai::tui::reducer::update(&mut s, ev).unwrap();
     let header = row_text(&cells(&s, &UiState::default(), (140, 20)), 0, 140);
-    assert!(
-        header.contains("luna · gpt-5.6-luna · 1k / 872k"),
-        "{header}"
-    );
+    assert!(header.contains("luna · assigned · 1k / 872k"), "{header}");
 }
 
 #[test]

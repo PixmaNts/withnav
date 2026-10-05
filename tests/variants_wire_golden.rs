@@ -38,9 +38,9 @@ fn models(base_url: &str) -> String {
         r#"{{
   "providers": {{"p": {{"base_url": "{base_url}", "catalog_format": "omniroute"}}}},
   "models": {{
-    "plain": {{"provider": "p", "model": "m", "variants": {{}}}},
-    "deep": {{"provider": "p", "model": "m", "default_variant": "high"}},
-    "nested": {{"provider": "p", "model": "m", "variants": {{
+    "p/plain": {{"provider": "p", "model": "plain", "variants": {{}}}},
+    "p/deep": {{"provider": "p", "model": "deep", "default_variant": "high"}},
+    "p/nested": {{"provider": "p", "model": "nested", "variants": {{
       "think": {{"thinking": {{"type": "enabled", "budget_tokens": 8000}}, "reasoning_effort": "high"}}
     }}}}
   }}
@@ -55,14 +55,14 @@ async fn resolve(alias: &str, tiers: &[&str]) -> ResolvedChat {
     wiremock::Mock::given(wiremock::matchers::path("/v1/models"))
         .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
             serde_json::json!({"data": [{
-                "id": "m", "context_length": 8000,
+                "id": alias, "context_length": 8000,
                 "capabilities": {"effort_tiers": tiers}
             }]}),
         ))
         .mount(&provider)
         .await;
     let cfg = ModelsConfig::parse(&models(&format!("{}/v1", provider.uri()))).unwrap();
-    let resolved = cfg.resolve(alias).unwrap();
+    let resolved = cfg.resolve(&format!("p/{alias}")).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
     resolve_chat(&catalog, &resolved, "k", &ClientCache::new())

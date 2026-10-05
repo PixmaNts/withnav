@@ -5,6 +5,10 @@ goes. Vocabulary is defined in [`CONTEXT.md`](CONTEXT.md); the decisions behind 
 [`docs/adr/`](docs/adr/). Read this before adding a module or a helper: most past duplication came
 from agents who did not know the piece already existed.
 
+The runtime map below describes the implementation prepared for **0.5**, not which binaries
+are installed on the driver's machine. See
+[ADR 0011](docs/adr/0011-layers-models-and-agent-overrides.md) and the contract section below.
+
 ## What runs
 
 ```
@@ -32,11 +36,11 @@ Dependencies point down this list. A module never imports one above it.
 | Module | Owns | Does not own |
 |---|---|---|
 | `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
-| `provider/` | `models.json` aliases (`config.rs`, `load_models`), keys (`auth.rs`), one `ModelClient` per endpoint (`client.rs`: auth header, deadline, cancellation, status errors), the chat SSE decoder (`sse.rs`, `mod.rs`), the FIM and System One wire clients | anything navigator-specific: no `crate::navigator` import |
+| `provider/` | `models.json` catalogue (`config.rs`, `load_models`), canonical identities (`model_name.rs`: `ModelName`), pure assignment resolution (`assignments.rs`) and lower-layer clients (`layers.rs`), keys (`auth.rs`), one `ModelClient` per endpoint (`client.rs`: auth header, deadline, cancellation, status errors), the chat SSE decoder (`sse.rs`, `mod.rs`), the FIM and System One wire clients | anything navigator-specific: no `crate::navigator` import |
 | `tools/` | the tool trait, registry, path validation (`validate_path`), and eight registry tools; `glob.rs` provides bounded file search, `fetch.rs` provides bounded HTTP(S) GET, `task.rs` starts a background subagent, `nofollow.rs` opens reviewed write/edit destinations without following links; file tools use `ToolContext`'s writable and read-only roots (`read`/`grep`/`glob` accept both, `write`/`edit` only the writable roots); `bash` starts in the workspace but is not confined to these roots | which tools a session gets; the per-session `skill` tool is installed by `agent/` |
-| `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the session's folder grants, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission gate (`permissions.rs`: `needs_permission`, `Scope`, `Grants`, `PermissionRequest`, the `plan` exemption), the role guard (`guard.rs`: the `RoleGuard` trait, the `role_conformance` question, `consult`; `session/guard.rs` wires Jev from the `instinct` alias), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`explore`/`review` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
+| `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the session's folder grants, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission gate (`permissions.rs`: `needs_permission`, `Scope`, `Grants`, `PermissionRequest`, the `plan` exemption), the role guard (`guard.rs`: the `RoleGuard` trait, the `role_conformance` question, `consult`; `session/guard.rs` wires Jev from the instinct layer assignment), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`explore`/`review` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events | HTTP, storage |
-| `session/` | the `Service` (registry/router, `service.rs`), child creation and parent policy snapshot, result delivery callbacks and owner permission routing, tree teardown (`lifecycle.rs`), actor construction (`actor.rs`), the SQLite history (`store.rs`, including `child_links`, terminal CAS and completion outbox), primary agent selection, session commands and variants | HTTP, SSE, any profile by name |
+| `session/` | the `Service` (registry/router, `service.rs`), child creation and parent policy snapshot, result delivery callbacks and owner permission routing, tree teardown (`lifecycle.rs`), actor construction (`actor.rs`), the SQLite history (`store.rs`, including `child_links`, terminal CAS and completion outbox), primary agent selection, per-agent model/variant overrides and editor context | HTTP, SSE, lower-layer assignment ownership |
 | `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service` | session state, the model layers |
 | `navigator/` | everything the driver perceives as the navigator, below | session internals |
 
@@ -56,7 +60,7 @@ Dependencies point down this list. A module never imports one above it.
 | `intent.rs` | `.navigator/intent.md`: read, section-wise atomic write, and the cognition's `intent` tool |
 | `ports.rs` | the model seams (`FimModel`, `DecisionModel`, `Metacognition`, `ReflexContextModel`) and `ModelError` |
 | `models.rs` | adapters from the provider clients to those seams |
-| `bootstrap.rs` | process wiring: builds each layer from its alias, starts the in-process session server |
+| `bootstrap.rs` | process wiring: builds each lower layer from its assignment, starts the in-process session server |
 | `default_pipeline/` | the built-in pipeline TOML and prompts; a project's `.navigator/` overrides them |
 
 ### Inside `tui/`
@@ -87,9 +91,9 @@ are read without depending on a newer server event enum. Missing data is not gue
 | `client.rs` | the HTTP client: models, sessions, create/resume, send, stop, the command list and a command run, a permission answer (409 `permission_stale` read as stale), open the event stream; send failures split into rejected and uncertain |
 | `stream.rs` | one SSE subscription: decoding, reconnect with backoff, resume after the last seq, cancellation |
 | `reducer/mod.rs` | `update`: `ClientEvent` to `State` changes and new `Effect`s; routes each event to the tab holding its generation, marks a background tab unread, drops events no tab holds |
-| `reducer/envelope.rs` | `EventEnvelope` to blocks: steps, tools (planned, running, settled), usage, errors, command results, permission prompts (open until their `permission.resolved`); the tab's agent from `session.agent_changed`, its variant from a `/variant` result, its model, variant and window from `model.changed` (with a one-line notice for a switch; a catalog refresh never overwrites them); the tab's own `/model` waits on the operation id of its HTTP answer, shown as pending once accepted for after the turn and ended only by that operation's `command.result` or `model.changed`, a new switch, a stop, the session's end or the tab's close; events and replays never send a command; most blocks are reconstructed alike, but a deferred switch acceptance names its target only live when matched to this tab's pending operation, or when the event includes the alias (replay otherwise shows generic text) |
+| `reducer/envelope.rs` | `EventEnvelope` to blocks: steps, tools (planned, running, settled), usage, errors, command results and permission prompts; authoritative selection from `model.changed`, with `session.agent_changed` secondary; catalog refresh never overwrites selection. Pending `/model` is correlated to its operation id and ends only on its result/change, replacement, stop, end or tab close. Events and replay never send commands; a deferred target is named only from a matching pending operation or reported model identity. |
 | `reducer/command.rs` | `outcome_text`: a command result as the short text the transcript shows, in the client's own words; `tokens` for `42k` / `1M` |
-| `reducer/actions.rs` | `handle_action`: `Action` to `UiState`/`State` changes and `Effect`s; opening (at most nine), switching and closing tabs; server commands, the build/plan switch, the model and variant picks: on a live conversation the model list and `/model <alias>` send `/model` only (the server applies the target's default variant), nothing for the alias in use, refused locally with the reason while a question or permission request waits; on an empty tab the model and variant picks set what the conversation starts on |
+| `reducer/actions.rs` | `handle_action`: `Action` to `UiState`/`State` changes and `Effect`s; opening (at most nine), switching and closing tabs; server commands, agent/model/variant picks: live `/model <gateway/id>` changes the current agent's model (server applies target default variant), refused with a reason while an interaction waits; empty tabs choose an agent and optional overrides for creation |
 | `reducer/text.rs` | `strip_controls`, applied to every piece of model and tool text |
 | `input.rs` | the `Editor` and `route_key`/`route_paste`: keys to editor edits or `Action`s; the open permission request's `y`/`a`/`n` and deny message; the second enter before text that would cancel it |
 | `commands.rs` | the command catalog, the key help and the key to `Action` map; `palette`, the client's and the server's commands in one list; `route`, the server's prefix rule (a slash in the first column, `//text` is the literal `/text`) with the client's own commands kept local and their arguments checked; `variant_choices`, the rows of the variant list |
@@ -99,7 +103,7 @@ are read without depending on a newer server event enum. Missing data is not gue
 | `terminal.rs` | raw mode, alternate screen, bracketed paste and mouse capture, restored on exit and on panic |
 | `theme.rs` | the four themes (`ThemeId`, the `Theme` colour roles), the RGB `blend` for tints, and the semantic styles the views draw with |
 | `view/mod.rs` | `draw`: layout of header, sidebar, transcript, right panel, status line, editor, key bar and overlays; the key bar lists the keys that apply now, the prompt's while one waits |
-| `view/header.rs` | the header row: `◆ navai`, workspace, git branch and change count, `▌agent` in its colour, alias · model · variant · context gauge, and an accepted model switch scheduled for after the turn; the path and model give way first |
+| `view/header.rs` | the header row: `◆ navai`, workspace, git branch and change count, `▌agent` in its colour, model · variant · context gauge, and an accepted model switch scheduled for after the turn; the path and model give way first |
 | `view/panel.rs` | the right panel (36 columns, hidden under 140 unless `alt+r` asks): Agents and role, Context breakdown and last compaction, Skills listed and omitted, and Changes from git; a section with no data shows `—` |
 | `view/sidebar.rs` | the left conversation sidebar: number, title, `<agent> · <state>`, unread mark, active tint and tab keys; hidden under 80 columns (`alt+b` also toggles it) |
 | `view/transcript.rs` | block layout and drawing: messages by origin, steps, tools, errors, permission prompts, scroll and selection |
@@ -109,7 +113,7 @@ are read without depending on a newer server event enum. Missing data is not gue
 | `view/markdown.rs` | markdown to styled lines, cached per block revision |
 | `view/text.rs` | terminal-column measurement and grapheme-safe truncation and padding |
 | `view/status.rs` | the status line of the active tab: activity, connection, delivery warning, notice, session tokens; `context_gauge` and `shorten`, shared with the header |
-| `view/pickers.rs` | the model (alias, model, window, variants; on a live conversation enter switches the model only, `ctrl+n` opens a new tab, with a note saying so, when the switch waits for the turn, or why it is refused), variant, session, command, theme and help overlays: centred, accent border, the screen behind dimmed, a `❯` filter line and the keys at the foot; a long list scrolls to its selected row |
+| `view/pickers.rs` | model, variant, agent, session, command, theme and help overlays; models group by gateway/provider with search across collapsed groups and server-reported windows/variants. Live enter switches in place, `ctrl+n` opens a fresh tab; waiting/refused controls explain why. A long list scrolls to its selected row. |
 
 ## Data flows
 
@@ -136,7 +140,7 @@ generation it was started in; `reducer::update` drops events of an older generat
 into `State` (envelopes become blocks) and may return more effects. After each batch the loop calls
 `view::draw`, which only reads the state. Starting or resuming a conversation in a tab bumps its
 generation, so late results of its previous session are ignored. Picking a model for a live
-conversation sends `/model <alias>` on that same session; on an empty tab it changes the starting
+conversation sends `/model <gateway/id>` on that same session; on an empty tab it changes the starting
 configuration. A conversation is created on the first message, not before.
 
 **Driver-selected skills.** `/skills` reads `GET /v1/sessions/{id}/skills`: the session snapshot's
@@ -184,7 +188,7 @@ starting with `/` goes through `commands::route`: the client's own commands (`/s
 on the stream as `command.result` and becomes a `BlockKind::Command`. The build/plan switch (tab on an
 empty message) and `/variant` are `/agent` and `/variant` runs; the `/variant` list opens on the answer
 to a bare `/variant`, so it shows the conversation's own offer. The tab's agent and variant change only
-when the server says so (`session.agent_changed`, the `/variant` result, the session summary), so a
+when the server says so (`model.changed`, command results, the session summary), so a
 refusal leaves them as they were; each keeps the seq that last set it, and a summary read at an older
 seq does not overwrite it. Before a conversation exists, the agent and the variant picked with
 the model are sent in the create request instead.
@@ -194,7 +198,7 @@ SSE stream per generation. An event is applied to the tab that holds its generat
 screen or not (a background tab is then marked unread), and the effects it returns run with that tab's
 session. New-conversation actions such as `/new`, `ctrl+n`, and `ctrl+n` in the model picker allocate
 or reset a generation; `/sessions` opens or resumes a selected session in a tab. Picking a model for
-a live conversation keeps its tab, generation and session and sends `/model <alias>`; on an empty tab,
+a live conversation keeps its tab, generation and session and sends `/model <gateway/id>`; on an empty tab,
 the model pick only sets its starting model and variant. Closing a tab drops its generation, so the runtime
 cancels its stream and its late results are ignored; nothing is sent to the server. Before each action the runtime copies the editor into the active tab's draft; the
 reducer puts the next tab's draft back with `Effect::SetEditor`. The context gauge is per tab too: each
@@ -247,7 +251,7 @@ permission review. Every other `write` or `edit`, and every `bash`, asks Jev `ro
 same batched request (role prompt, the driver's latest message, workspace, resolved target, tool,
 exact arguments, at most 16 KiB); a `fetch` asks it alone. Only a valid `conforms` lets the call
 continue, and the verdict is recorded as `guard` in the metadata of its durable `tool.post_call`.
-Anything else (`violates`, `uncertain`, a malformed answer, no `instinct` alias or key, a timeout, an
+Anything else (`violates`, `uncertain`, a malformed answer, no usable instinct assignment or key, a timeout, an
 oversized call) is an ordinary permission request whose `reason` says why. Jev is advisory, never a
 sandbox.
 
@@ -264,10 +268,10 @@ condition holds. `remark` calls the metacognition with the rendered branch promp
 `ConversationFeed`. One trigger record is written per evaluation.
 
 **Chat to cognition.** The extension posts driver messages to the session server. The bus
-sequences them, the runtime task runs `run_agent` on the `cognition` alias, events stream back over
+sequences them, the runtime task runs `run_agent` with the chosen agent's effective chat model, events stream back over
 SSE. A navigator session also feeds the `ConversationFeed`, attached by `NavigatorHooks::started` (`navigator/session_hooks.rs`; a resume replays without announcing old turns): its digest reaches the fast layers'
 prompts, and every driver turn end triggers a `conversation` evaluation on the focused document.
-Navigator roots have the same root subagent tools as terminal roots. Children have no profile,
+Editor roots have the same root subagent tools as terminal roots. Children have no editor attachment,
 do not receive `intent`, and are never registered by `started`. Completion uses the normal durable
 outbox and root stream, not the latest-wins navigator wake channel. The digest labels delivered
 subagent text as untrusted and never treats it as a driver turn.
@@ -376,7 +380,7 @@ as before; no supervision state is restored. The event catalog has 22 kinds.
 
 | Path | What | Written by |
 |---|---|---|
-| `~/.config/navai/models.json`, `auth.json`, `config.json` | model aliases, provider keys and client settings | the driver, `navai auth`, the TUI |
+| `~/.config/navai/models.json`, `auth.json`, `config.json` | model catalogue, provider keys, assignments and client settings | the driver/importer (catalogue), `navai auth` (keys), TUI (client settings, not assignments) |
 | `~/.config/navai/navigator/pipeline.toml`, `prompts/*.md` | the user's pipeline and prompts | the driver |
 | `~/.config/navai/agents/*.md` | user agent definitions | the driver |
 | `<workspace>/.navigator/pipeline.toml`, `prompts/*.md` | the project's pipeline and prompts, overriding the user and built-in defaults | the driver |
@@ -393,18 +397,93 @@ and `~/.local/share/rust-agent/*` (`navigator.db` or `navigator/sessions.db`, wi
 start does nothing, and a database moves only when no other process holds it: otherwise it stays where
 it is and that run keeps using it.
 
+That existing path relocation is not automatic 0.5 configuration conversion. Catalogue and
+assignment migration is manual. History without provable saved model identity remains readable
+but read-only, with resume disabled; it is never silently rebound. Existing session ids are preserved.
+
+## Selection and wire ownership
+
+Catalogue names are
+`<gateway>/<upstream_id>`; `ModelName` splits only the first slash and retains the rest verbatim.
+`models.json` contains capabilities/API/limits/variants, never assignments. `config.json` owns
+`layers`, `agents` and `default_agent` (`build` when absent), with assignments taking precedence
+over Markdown `model:` headers. See [the examples](models.example.json) and
+[assignment example](config.example.json).
+
+Reflex = one FIM model (editor only), instinct = one System One model, metacognition = one chat
+model (prefers `low`, otherwise model default). Cognition runs agents, not a singleton model.
+Missing/unknown/API-incompatible lower layers are disabled with reasons and existing conservative
+fallbacks: no suggestions, driver permission review, renewable 500-step supervision cap when
+instinct is unavailable. Invalid nondefault agent models warn and fall back to the default agent.
+An unknown/nonprimary default agent or one without a usable chat model prevents server/LSP startup.
+
+Root selection resolves the `(session, agent)` override, then the agent assignment, then the
+default agent's model. Children with an assignment use it; unassigned children inherit the
+parent's effective model and variant. `/model` without a variant takes the target model default.
+`/variant` distinguishes named, `off` and `inherit`: the latter removes the local variant choice.
+Switching agents or resuming restores that agent's durable override, never mutates global config,
+and never applies a deferred selection to a different agent. `/new [agent]` starts without old
+session overrides. Editor context adds prompt/intent/feed independently of the chosen agent.
+
+| Route | Response/request contract |
+|---|---|
+| `GET /v1/models?workspace=...` | `models` entries: `name`, `gateway`, `provider_group`, `upstream_id`, API, capabilities, variants/default and existing limit/diagnostic fields; top-level `default_agent` |
+| `GET /v1/agents?workspace=...&session_id=...` | `default_agent`, all definitions with `id`, description, mode, `assignment`, `effective`, optional `override`, warning; without session id omit override; an unassigned child without parent context has null choices and `inherits_parent: true` |
+| `GET /v1/layers?workspace=...` | exactly reflex/instinct/metacognition entries: `layer`, `status` (`usable` or `disabled`), `model`, `variant`, `gateway`, `upstream_id`, `api`, `reason` and optional `variant_diagnostic`; usable validates assignment/API, not future network access |
+| `POST /v1/sessions` | `workspace`, optional `editor` (default false), `agent` (default agent), `model`/`variant` overrides; variant-only allowed; response `session_id`; resume uses workspace + resume only and rejects conflicting selection fields |
+
+Catalogue `name` and active `model` are canonical identities; internal provider `model` remains
+the upstream id. `provider_group` is the first upstream-id segment, or gateway when unslashed.
+Summaries expose no endpoint URL, headers or credentials. Assignment/effective selections include
+`source` (`config`, `header`, `default_agent`, `parent`, `override`) and `variant_source` (those
+plus `model_default`, `layer_preference`). Override JSON permits optional model: omitted variant
+inherits, null is off, a string names a variant. Session summaries/lists retain tree/state fields
+and add editor/agent/model/variant/source/variant_source/gateway/upstream_id/current_seq; only
+summaries may include the overrides map. Archives expose `read_only` and `resume_disabled_reason`.
+
+`model.changed.previous` and `.new` carry agent/model/gateway/upstream_id/variant/source/
+variant_source; reason is `model`, `variant` or `agent`. Bounds/revision/context stay outside those
+identities and operation correlation is preserved. `session.agent_changed` is secondary, not a
+separate authoritative selection. Context snapshots and `last_usage` expose canonical model,
+gateway and upstream_id (usage retains its own identity and step string). Bare `/model` reports
+agent/model/variant/source/models; bare `/variant` reports agent/model/variant/offered/variant_source.
+`/model TARGET` returns changed/applies/selection or deferred accepted/applies after_turn/agent/model;
+`/agent ID` returns changed/previous/agent/selection. All retain operation_id/name/ok/data/error.
+
+Selection commits save agent, model resolution, variant, reasoning floor and per-agent
+overrides together with the ordered durable selection events in one acknowledged transaction.
+`EffectiveAgentSelection` carries the applied identity; optional `SelectionCheckpoint` in
+`session/store.rs` stages transcript and compaction checkpoint for installation only if that
+selection transaction succeeds. Publish/install only after commit; a failed write leaves the
+previous coherent selection intact. The runtime safe-boundary queue is reused, not a second
+control path. Destination prompt, tools and skills are measured without installing the destination
+role on the live actor. Compaction for a selection change is staged, not independently saved;
+the checkpoint and selection succeed or fail together.
+
+Clients consume these server choices, group models by gateway then upstream `provider_group`, and show layer and agent
+sources rather than deriving assignments themselves. Configuration editors and flows belong to
+the later 0.6 scope, not this contract.
+
 ## Where new code goes
 
-- A chat alias's context window (models.json, else the provider's model list, cached in
+- Canonical identity parsing belongs in `provider/model_name.rs` (`ModelName`), assignment and
+  default-agent validation in `provider/assignments.rs`, and shared lower-layer construction in
+  `provider/layers.rs`. Do not put these policies in clients or duplicate them in navigator bootstrap.
+  Typed assignment access belongs in `settings.rs`; unknown unrelated config keys must survive saves.
+- Durable per-agent overrides and selection staging belong in `session/store.rs`
+  (`EffectiveAgentSelection`, optional `SelectionCheckpoint`), with service/runtime callbacks
+  applying the transaction contract above.
+  Wire source fields belong with selection summaries/events, never in provider credentials.
+- A chat model's context window (models.json, else the provider's model list, cached in
   `<data dir>/model-catalog/`): `provider/catalog.rs` (`resolve_chat`); the session service calls it
-  before building an actor and refuses an alias with no window. The result is saved once in
+  before building an actor and refuses a model with no window. The result is saved once in
   `sessions.model_resolution` (`session/store.rs`, versioned JSON, no credentials): a resume reads it
-  back instead of resolving again, so a live or resumed conversation keeps its bounds, and an alias
-  retargeted to another provider, model or api is `ServerError::ModelIdentityChanged`, never a silent move.
+  back instead of resolving again, so a live or resumed conversation keeps its bounds; changed
+  gateway/upstream/API identity is `ServerError::ModelIdentityChanged`, never a silent move.
   The metacognition resolves through the same function in `navigator/bootstrap.rs`.
   The fetch is single-flight per endpoint, bounded (3 s, 2 MB, 10 000 entries), never follows a
   cross-origin redirect (`ClientCache::get_same_origin`) and keeps stale values on failure; `GET /v1/models`
-  (`server/routes.rs`) reports the source, staleness and discrepancy of each alias.
+  (`server/routes.rs`) reports the window source, staleness and discrepancy of each model.
 - The context budget (what the next request weighs, and how much of the window it may fill):
   `agent/context.rs`. `estimate` is the one place that sizes a request, by category; `Budget::compute`
   is the one place that applies the window, output reserve, input limit and margin; `ContextTracker`
@@ -438,27 +517,26 @@ it is and that run keeps using it.
   below ~0.7 B, then B, and only then `Aim::FitMidTurn`, which gives up the recent-turns protection
   and keeps just the latest exchange so a single long turn can summarize its own earlier steps. A
   plan that cannot fit costs no provider call; the turn then ends with a `compaction` error that
-  says `/compact` cannot help and to use a larger window. A model switch reuses `summarize` and
-  `install` (`bus/runtime/model.rs::compact_for_target`): the old model compacts, aiming at the
-  target's budget, in an acknowledged commit that precedes the switch's own. These are two
-  commits, not one transaction: if the switch then fails (or a stop cancels it) the conversation
-  stays on the old model WITH the new checkpoint, and a resume restores exactly that. The
-  checkpoint is sized for the target's budget, not the old model's.
-- Model switching (`/model <alias>` inside a conversation): `bus/runtime/model.rs`, run like
+  says `/compact` cannot help and to use a larger window. A selection change uses
+  `bus/runtime/model.rs::compact_for_target`: the old model summarizes for the destination's
+  budget, role prompt, tools, skills and reasoning projection. The resulting checkpoint stays
+  staged until the selection transaction commits. Failure or cancellation before commit leaves
+  both the old selection and old checkpoint intact; resume restores the committed pair.
+- Model switching (`/model <gateway/id>` inside a conversation): `bus/runtime/model.rs`, run like
   `/compact` through the same control channel (`RuntimeStatus::request_model_switch`), between turns
   or after the running turn, from one ordered queue of deferred controls (`bus/runtime/deferred.rs`;
   adjacent compactions are one). The session service supplies the `ModelSwitch` callbacks
   (`session/service/resolve.rs`: the target resolved like a new session, its default variant;
-  `HistoryStore::switch_model`: `sessions.model`, `model_resolution`, the variant, the nullable
-  `sessions.reasoning_floor` and the `model.changed` event row in one transaction), so the bus never
-  imports the service or the store. The write goes through `Sequencer::commit_acked`: the event is
-  sequenced, written and acknowledged by the store, and only then emitted; a failed write emits
-  nothing and gives the seq back. `SelectedModel` (alias, resolution, revision, variant, offer) is one
-  value behind one lock: the commit callback installs it, together with the runtime's variant and the
-  context gauge, before the event is emitted, so a reader sees the old selection or the new one. `AgentSelection::switching`
-  refuses `/agent`, `/variant`, `/compact` and another switch while one prepares. After the
-  commit callback installs the selection, runtime variant and context tracker; `commit_acked` then
-  emits `model.changed` before acknowledging the runtime. Only after that acknowledgement does the
+  `HistoryStore::commit_agent_selection_cancellable`: the selection, overrides, optional
+  `SelectionCheckpoint` and ordered events), so the bus never imports the service or the store.
+  `Sequencer::commit_batch_acked` sequences the batch, waits for the store's acknowledgement,
+  then emits it; a failed write emits nothing and returns the reserved sequence numbers.
+  `SelectedModel` (model identity, resolution, revision, variant, offer) is one value behind one
+  lock. The commit callback installs the coherent selection, runtime variant and context tracker
+  before emission. Selection switching refuses `/agent`, `/variant`, `/compact` and another
+  switch while one prepares. The event batch includes any `context.compacted` notice, then
+  `model.changed`, then the secondary `session.agent_changed` on an agent change.
+  Only after that acknowledgement does the
   runtime swap the actor's provider, model, variant and limits. `AgentActor::reasoning_floor`
   (restored on resume) keeps the earlier reasoning out of the request projection unless the resolved
   identity is the same; the fit check measures that destination projection (`context_breakdown_at`).
@@ -486,7 +564,7 @@ it is and that run keeps using it.
   project skill inside the workspace is writable like any workspace file, and `bash` is unsandboxed. The `skill` tool is registered per session (`AgentActor::set_skills`),
   never in a direct Phase-1 registry.
 - The role prompt of the primary agent reaches the model through `AgentActor::role_message`, composed
-  with the profile's instructions; the turn reads a snapshot of the selected agent when it starts
+  with editor-context instructions when attached; the turn reads a snapshot of the selected agent when it starts
   (`RuntimeStatus.selection`), so a tool dispatch can read the agent of its turn from `actor.role`.
   Agent files are discovered with `AgentRoots` (give it the home, never read `~` in a test).
 - Keep a production file under ~600 lines. Past that, split by responsibility, not by size.

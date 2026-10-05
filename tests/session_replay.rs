@@ -85,7 +85,7 @@ async fn seed_conversation(fx: &Fixture) -> Ulid {
     let id = Ulid::new();
     let store = HistoryStore::open(&fx.db).expect("open store");
     store
-        .record_session(id, &fx.ws.display().to_string(), "default", None)
+        .record_session(id, &fx.ws.display().to_string(), "mock/mock-model", false)
         .await
         .expect("record session");
     for seq in 0..SEEDED {
@@ -124,7 +124,7 @@ async fn over_4096_events_replay_completely_across_live_seam() {
     let id = seed_conversation(&fx).await;
     let state = state(&fx);
     let (resumed_id, resumed) = state
-        .create_or_resume_session(&fx.ws, None, None, Some(id))
+        .create_or_resume_session(&fx.ws, None, false, Some(id))
         .await
         .expect("resume");
     assert_eq!((resumed_id, resumed), (id, true));
@@ -201,7 +201,7 @@ async fn a_resumed_stream_hides_the_stale_session_end() {
         .seq;
 
     state
-        .create_or_resume_session(&fx.ws, None, None, Some(id))
+        .create_or_resume_session(&fx.ws, None, false, Some(id))
         .await
         .expect("resume");
     // Subscribe before posting: a fast turn could otherwise end before the

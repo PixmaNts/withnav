@@ -208,11 +208,24 @@ impl TestServerConfig {
             alias_entry["default_variant"] = json!(default);
         }
         let mut models = serde_json::Map::new();
-        models.insert(self.alias.clone(), alias_entry.clone());
+        let mut layers = serde_json::Map::new();
+        let primary = format!("{PROVIDER}/{}", self.model);
+        models.insert(primary.clone(), alias_entry.clone());
         for (alias, model) in &self.extra_aliases {
             let mut entry = alias_entry.clone();
             entry["model"] = json!(model);
-            models.insert(alias.clone(), entry);
+            if matches!(alias.as_str(), "instinct" | "metacognition" | "reflex") {
+                entry["api"] = json!(match alias.as_str() {
+                    "instinct" => "systemone",
+                    "reflex" => "fim",
+                    _ => "chat",
+                });
+                let name = format!("{PROVIDER}/{model}");
+                models.insert(name.clone(), entry.clone());
+                layers.insert(alias.clone(), json!(name));
+                continue;
+            }
+            models.insert(format!("{PROVIDER}/{model}"), entry);
         }
         let mut provider = json!({
             "base_url": self.base_url,
@@ -237,7 +250,7 @@ impl TestServerConfig {
         std::fs::create_dir_all(&config_dir).expect("config dir");
         std::fs::write(
             config_dir.join("config.json"),
-            r#"{"permissions":{"scratch_dirs":[]}}"#,
+            json!({"permissions":{"scratch_dirs":[]}, "layers":layers, "agents":{"build":{"model":primary},"plan":{"model":primary}}}).to_string(),
         )
         .expect("isolated scratch settings");
         write_auth_file(&config_dir, PROVIDER, "test-key");
@@ -261,7 +274,7 @@ impl TestServerConfig {
         AppState::new(self.config()).expect("state over a temp history database")
     }
 
-    /// Like [`Self::state`], with the navigator profile's hooks.
+    /// Like [`Self::state`], with editor hooks.
     pub fn navigator_state(&self) -> AppState {
         self.navigator_state_with_conversation(None)
     }
@@ -271,11 +284,41 @@ impl TestServerConfig {
         &self,
         conversation: Option<navai::navigator::ConversationFeed>,
     ) -> AppState {
+        self.editor_state(conversation, false)
+    }
+
+    /// Editor hooks with an explicitly configured build model, not a hook default.
+    pub fn assigned_navigator_state(&self) -> AppState {
+        self.assigned_navigator_state_with_conversation(None)
+    }
+
+    pub fn assigned_navigator_state_with_conversation(
+        &self,
+        conversation: Option<navai::navigator::ConversationFeed>,
+    ) -> AppState {
+        self.editor_state(conversation, true)
+    }
+
+    fn editor_state(
+        &self,
+        conversation: Option<navai::navigator::ConversationFeed>,
+        assigned_build: bool,
+    ) -> AppState {
         let hooks = match conversation {
             Some(feed) => navai::navigator::NavigatorHooks::with_feed(feed),
             None => navai::navigator::NavigatorHooks::new(),
         };
-        AppState::with_hooks(self.config(), std::sync::Arc::new(hooks))
+        let assigned = format!("{PROVIDER}/{}", self.model);
+        let config = self.config();
+        let path = config.config_dir.join("config.json");
+        let mut settings: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("isolated settings"))
+                .expect("settings JSON");
+        if assigned_build {
+            settings["agents"] = json!({"build": {"model": assigned}});
+        }
+        std::fs::write(path, settings.to_string()).expect("explicit build assignment");
+        AppState::with_hooks(config, std::sync::Arc::new(hooks))
             .expect("state over a temp history database")
     }
 }

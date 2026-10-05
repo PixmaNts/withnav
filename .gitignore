@@ -32,3 +32,7 @@ auth.json
 # A models.json at the repository root would shadow ~/.config/navai/models.json for every
 # session started from this checkout; models.example.json is the committed example.
 /models.json
+
+# Python bytecode
+__pycache__/
+*.pyc

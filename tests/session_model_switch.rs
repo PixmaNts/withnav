@@ -93,9 +93,8 @@ fn state_at(
         json!({
             "providers": {"a": provider(a_url), "b": provider(b_url)},
             "models": {
-                "default": entry("a", "model-a", window_a),
-                "twin": entry("a", "model-a", window_a),
-                "other": other,
+                "a/model-a": entry("a", "model-a", window_a),
+                "b/model-b": other,
             }
         })
         .to_string(),
@@ -106,6 +105,7 @@ fn state_at(
         json!({"a": {"api_key": "key-a"}, "b": {"api_key": "key-b"}}).to_string(),
     )
     .expect("auth.json");
+    std::fs::write(config.config_dir.join("config.json"),json!({"agents":{"build":{"model":"a/model-a"},"plan":{"model":"a/model-a"}},"permissions":{"scratch_dirs":[]}}).to_string()).unwrap();
     AppState::new(config).expect("state")
 }
 
@@ -134,13 +134,13 @@ async fn seeded(state: &AppState, ws: &Path, turns: usize, reasoning: bool) -> u
 
 /// A live session that resumed from the stored `transcript`.
 async fn seeded_with(state: &AppState, ws: &Path, transcript: Vec<ChatMessage>) -> ulid::Ulid {
-    let id = state.create_session(ws, None, None).await.expect("create");
+    let id = state.create_session(ws, None, false).await.expect("create");
     state.close_session(id).await.expect("close");
     state.history().flush().await.expect("flush");
     state.history().save_transcript(id, transcript);
     state.history().flush().await.expect("flush");
     state
-        .create_or_resume_session(ws, None, None, Some(id))
+        .create_or_resume_session(ws, None, false, Some(id))
         .await
         .expect("resume");
     id
@@ -191,24 +191,28 @@ async fn an_idle_switch_sends_the_next_request_to_the_new_model_with_its_default
     let id = seeded(&state, &env.ws, 2, true).await;
     let sub = state.subscribe(id, None).await.unwrap();
 
-    let out = state.run_command(id, "model", "other").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(out.ok, "{out:?}");
     let data = out.data.clone().unwrap();
     assert_eq!(data["changed"], true);
+    assert_eq!(data["model"], "b/model-b");
+    assert!(data.get("alias").is_none());
     assert_eq!(data["applies"], "now");
     assert_eq!(data["variant"], "high");
-    assert_eq!(data["previous"]["alias"], "default");
-    assert_eq!(data["new"]["model"], "model-b");
+    assert_eq!(data["previous"]["model"], "a/model-a");
+    assert_eq!(data["new"]["model"], "b/model-b");
 
     let live = collect_until(sub, |e| e.kind == "model.changed").await;
     let changed = live.iter().find(|e| e.kind == "model.changed").unwrap();
-    assert_eq!(changed.payload["reason"], "switch");
+    assert_eq!(changed.payload["reason"], "model");
     assert_eq!(changed.payload["operation_id"], json!(out.operation_id));
-    assert_eq!(changed.payload["previous"]["alias"], "default");
-    assert_eq!(changed.payload["previous"]["provider"], "a");
-    assert_eq!(changed.payload["new"]["alias"], "other");
-    assert_eq!(changed.payload["new"]["provider"], "b");
-    assert_eq!(changed.payload["new"]["model"], "model-b");
+    assert_eq!(changed.payload["previous"]["model"], "a/model-a");
+    assert_eq!(changed.payload["previous"]["gateway"], "a");
+    assert_eq!(changed.payload["new"]["upstream_id"], "model-b");
+    assert_eq!(changed.payload["new"]["gateway"], "b");
+    assert_eq!(changed.payload["new"]["model"], "b/model-b");
+    assert!(changed.payload["new"].get("alias").is_none());
+    assert!(changed.payload["new"].get("provider").is_none());
     assert_eq!(changed.payload["variant"], "high");
     assert_eq!(changed.payload["window"], 128_000);
     assert_eq!(changed.payload["from_message"], 4);
@@ -217,14 +221,18 @@ async fn an_idle_switch_sends_the_next_request_to_the_new_model_with_its_default
 
     // Saved: the row, the summary and the command.
     let meta = state.history().meta(id).await.unwrap().unwrap();
-    assert_eq!(meta.model, "other");
+    assert_eq!(meta.model, "b/model-b");
     assert_eq!(meta.variant.as_deref(), Some("high"));
     assert!(meta.model_resolution.unwrap().contains("model-b"));
     let summary = state.session_summary(id).await.unwrap();
-    assert_eq!(summary.model, "other");
+    assert_eq!(summary.model, "b/model-b");
     assert_eq!(summary.variant.as_deref(), Some("high"));
     let model = state.run_command(id, "model", "").await.unwrap();
-    assert_eq!(model.data.unwrap()["alias"], "other");
+    assert_eq!(model.data.unwrap()["model"], "b/model-b");
+    let unchanged = state.run_command(id, "model", "b/model-b").await.unwrap();
+    let unchanged = unchanged.data.unwrap();
+    assert_eq!(unchanged["model"], data["model"]);
+    assert_eq!(unchanged["changed"], false);
     assert_eq!(stored(&state, id, "model.changed").await.len(), 1);
 
     turn_done(&state, id, "go on").await;
@@ -257,7 +265,7 @@ async fn reasoning_is_kept_for_the_same_resolved_identity() {
     let state = state(&env, &a, &b, 128_000, 128_000);
     let id = seeded(&state, &env.ws, 2, true).await;
 
-    let out = state.run_command(id, "model", "twin").await.unwrap();
+    let out = state.run_command(id, "model", "a/model-a").await.unwrap();
     assert!(out.ok, "{out:?}");
     turn_done(&state, id, "go on").await;
     assert!(provider_saw_reasoning(&body(&a, 0)));
@@ -274,13 +282,13 @@ async fn the_same_alias_is_a_no_op() {
     let state = state(&env, &a, &b, 128_000, 128_000);
     let id = seeded(&state, &env.ws, 1, false).await;
 
-    let out = state.run_command(id, "model", "default").await.unwrap();
+    let out = state.run_command(id, "model", "a/model-a").await.unwrap();
     assert!(out.ok, "{out:?}");
     assert_eq!(out.data.unwrap()["changed"], false);
     assert!(stored(&state, id, "model.changed").await.is_empty());
     assert_eq!(
         state.history().meta(id).await.unwrap().unwrap().model,
-        "default"
+        "a/model-a"
     );
 }
 
@@ -300,12 +308,12 @@ async fn a_switch_during_a_turn_applies_after_it() {
 
     send_text(&state, id, "first").await;
     wait_for("the turn's request", || a.bodies().len() == 1).await;
-    let out = state.run_command(id, "model", "other").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(out.ok, "{out:?}");
     assert_eq!(out.data.as_ref().unwrap()["accepted"], true);
     assert_eq!(out.data.as_ref().unwrap()["applies"], "after_turn");
     assert!(b.bodies().is_empty());
-    assert_eq!(state.session_summary(id).await.unwrap().model, "default");
+    assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
 
     release.notify_one();
     let events = collect_until(sub, |e| e.kind == "model.changed").await;
@@ -313,7 +321,7 @@ async fn a_switch_during_a_turn_applies_after_it() {
     let end = kinds.iter().position(|k| *k == "turn.end").unwrap();
     let changed = kinds.iter().position(|k| *k == "model.changed").unwrap();
     assert!(end < changed, "after the turn: {kinds:?}");
-    assert_eq!(state.session_summary(id).await.unwrap().model, "other");
+    assert_eq!(state.session_summary(id).await.unwrap().model, "b/model-b");
 
     turn_done(&state, id, "second").await;
     assert_eq!(a.bodies().len(), 1);
@@ -339,10 +347,10 @@ async fn a_switch_is_refused_while_an_ask_waits() {
     })
     .await;
 
-    let out = state.run_command(id, "model", "other").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(!out.ok);
     assert!(out.error.unwrap().contains("waiting for"));
-    assert_eq!(state.session_summary(id).await.unwrap().model, "default");
+    assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
     assert!(stored(&state, id, "model.changed").await.is_empty());
 }
 
@@ -357,14 +365,14 @@ async fn a_switch_is_refused_while_a_permission_request_waits() {
     let a = spawn_capturing_provider(vec![http_sse(&sse_body(&[&write]))]).await;
     let b = spawn_capturing_provider(vec![]).await;
     let state = state(&env, &a, &b, 128_000, 128_000);
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
     let sub = state.subscribe(id, None).await.unwrap();
     send_text(&state, id, "write it").await;
     collect_until(sub, |e| e.kind == "permission.requested").await;
 
-    let out = state.run_command(id, "model", "other").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(!out.ok);
-    assert_eq!(state.session_summary(id).await.unwrap().model, "default");
+    assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
     assert!(stored(&state, id, "model.changed").await.is_empty());
 }
 
@@ -385,13 +393,13 @@ async fn a_switch_is_refused_during_a_compaction() {
         tokio::spawn(async move { state.run_command(id, "compact", "").await })
     };
     wait_for("the summary request", || a.bodies().len() == 1).await;
-    let refused = state.run_command(id, "model", "other").await.unwrap();
+    let refused = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(!refused.ok, "{refused:?}");
     assert!(refused.error.unwrap().contains("a compaction is running"));
 
     release.notify_one();
     assert!(compacting.await.unwrap().unwrap().ok);
-    let out = state.run_command(id, "model", "other").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(out.ok, "{out:?}");
 }
 
@@ -407,22 +415,22 @@ async fn a_target_too_small_for_the_conversation_is_refused_and_nothing_changes(
     let id = seeded(&state, &env.ws, 4, false).await;
     let before = serde_json::to_value(state.context(id).await.unwrap()).unwrap();
 
-    let out = state.run_command(id, "model", "other").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(!out.ok);
     let error = out.error.unwrap();
     assert!(
-        error.contains("does not fit other's window and cannot be compacted to fit it"),
+        error.contains("does not fit b/model-b's window and cannot be compacted to fit it"),
         "{error}"
     );
     assert!(error.contains("larger context window"), "{error}");
     assert!(a.bodies().is_empty(), "no summary was asked for");
     let meta = state.history().meta(id).await.unwrap().unwrap();
-    assert_eq!(meta.model, "default");
+    assert_eq!(meta.model, "a/model-a");
     assert!(!meta.model_resolution.unwrap().contains("model-b"));
     assert!(stored(&state, id, "model.changed").await.is_empty());
     let after = serde_json::to_value(state.context(id).await.unwrap()).unwrap();
     assert_eq!(after, before);
-    assert_eq!(state.session_summary(id).await.unwrap().model, "default");
+    assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
 }
 
 // Given a switch to another alias and a stop
@@ -435,19 +443,19 @@ async fn a_resume_after_a_switch_uses_the_new_model() {
     let b = spawn_capturing_provider(vec![answer("still b")]).await;
     let state = state(&env, &a, &b, 128_000, 128_000);
     let id = seeded(&state, &env.ws, 2, false).await;
-    let out = state.run_command(id, "model", "other").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(out.ok, "{out:?}");
     state.close_session(id).await.unwrap();
     state.history().flush().await.unwrap();
 
     let (resumed, was_resumed) = state
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
     assert!(was_resumed);
     assert_eq!(resumed, id);
     let summary = state.session_summary(id).await.unwrap();
-    assert_eq!(summary.model, "other");
+    assert_eq!(summary.model, "b/model-b");
     assert_eq!(summary.variant.as_deref(), Some("high"));
     assert_eq!(stored(&state, id, "model.changed").await.len(), 1);
 
@@ -459,7 +467,7 @@ async fn a_resume_after_a_switch_uses_the_new_model() {
     assert!(all_text(&request).contains("answer 1"));
 
     // A second switch counts on from the stored one.
-    let back = state.run_command(id, "model", "default").await.unwrap();
+    let back = state.run_command(id, "model", "a/model-a").await.unwrap();
     assert!(back.ok, "{back:?}");
     let events = stored(&state, id, "model.changed").await;
     assert_eq!(events.len(), 2);
@@ -544,7 +552,7 @@ async fn a_resume_keeps_the_reasoning_boundary_of_the_switch() {
     let b = spawn_capturing_provider(vec![answer("one"), answer("two")]).await;
     let state = state(&env, &a, &b, 128_000, 128_000);
     let id = seeded_with(&state, &env.ws, rich_history()).await;
-    let out = state.run_command(id, "model", "other").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(out.ok, "{out:?}");
     let meta = state.history().meta(id).await.unwrap().unwrap();
     assert_eq!(meta.reasoning_floor, Some(6));
@@ -555,7 +563,7 @@ async fn a_resume_keeps_the_reasoning_boundary_of_the_switch() {
     state.close_session(id).await.unwrap();
     state.history().flush().await.unwrap();
     state
-        .create_or_resume_session(&env.ws, None, None, Some(id))
+        .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
     turn_done(&state, id, "after the stop").await;
@@ -595,15 +603,15 @@ async fn a_switch_whose_event_cannot_be_stored_changes_nothing() {
     )
     .unwrap();
 
-    let out = state.run_command(id, "model", "other").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(!out.ok, "{out:?}");
     assert!(out.error.unwrap().contains("could not be saved"));
     let meta = state.history().meta(id).await.unwrap().unwrap();
-    assert_eq!(meta.model, "default");
+    assert_eq!(meta.model, "a/model-a");
     assert_eq!(meta.variant, None);
     assert_eq!(meta.reasoning_floor, None);
     assert!(!meta.model_resolution.unwrap().contains("model-b"));
-    assert_eq!(state.session_summary(id).await.unwrap().model, "default");
+    assert_eq!(state.session_summary(id).await.unwrap().model, "a/model-a");
     assert!(stored(&state, id, "model.changed").await.is_empty());
 
     turn_done(&state, id, "go on").await;
@@ -616,7 +624,7 @@ async fn a_switch_whose_event_cannot_be_stored_changes_nothing() {
         .iter()
         .any(|m| m.get("reasoning_content").is_some()));
 
-    let retry = state.run_command(id, "model", "other").await.unwrap();
+    let retry = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(retry.ok, "{retry:?}");
     assert_eq!(stored(&state, id, "model.changed").await.len(), 1);
 }
@@ -653,7 +661,7 @@ async fn deferred_controls_run_in_the_order_they_were_accepted() {
 
     send_text(&state, id, "go").await;
     wait_for("the turn's request", || a.bodies().len() == 1).await;
-    let switch = state.run_command(id, "model", "other").await.unwrap();
+    let switch = state.run_command(id, "model", "b/model-b").await.unwrap();
     let compact = state.run_command(id, "compact", "").await.unwrap();
     assert_eq!(switch.data.as_ref().unwrap()["applies"], "after_turn");
     assert_eq!(compact.data.as_ref().unwrap()["applies"], "after_turn");
@@ -664,7 +672,7 @@ async fn deferred_controls_run_in_the_order_they_were_accepted() {
     let summary = body(&b, 0);
     assert_eq!(summary["model"], "model-b");
     assert!(summary.get("tools").is_none());
-    assert_eq!(state.session_summary(id).await.unwrap().model, "other");
+    assert_eq!(state.session_summary(id).await.unwrap().model, "b/model-b");
 
     let done: Vec<(String, bool, String)> = results(&state, id)
         .await
@@ -694,7 +702,7 @@ async fn deferred_controls_are_cancelled_in_order_before_session_end() {
     send_text(&state, id, "go").await;
     wait_for("the turn's request", || a.bodies().len() == 1).await;
     let compact = state.run_command(id, "compact", "").await.unwrap();
-    let switch = state.run_command(id, "model", "other").await.unwrap();
+    let switch = state.run_command(id, "model", "b/model-b").await.unwrap();
 
     state.close_session(id).await.unwrap();
     state.history().flush().await.unwrap();
@@ -717,7 +725,7 @@ async fn deferred_controls_are_cancelled_in_order_before_session_end() {
     assert!(stored(&state, id, "model.changed").await.is_empty());
     assert_eq!(
         state.history().meta(id).await.unwrap().unwrap().model,
-        "default"
+        "a/model-a"
     );
     assert!(b.bodies().is_empty());
 }
@@ -755,14 +763,14 @@ async fn the_fit_check_measures_the_projection_the_target_will_receive() {
         "the source projection must not fit: {before}"
     );
 
-    let out = state.run_command(id, "model", "other").await.unwrap();
+    let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(out.ok, "{out:?}");
     let after = serde_json::to_value(state.context(id).await.unwrap()).unwrap();
     assert!(
         after["estimate_total"].as_u64().unwrap() <= budget_b,
         "{after}"
     );
-    assert_eq!(after["alias"], "other");
+    assert_eq!(after["model"], "b/model-b");
 }
 
 // Given a session whose variant offer was unknown, a turn in flight with a
@@ -788,7 +796,7 @@ async fn a_variant_read_against_the_old_model_is_not_installed_after_a_switch() 
         128_000,
         true,
     );
-    let id = state.create_session(&env.ws, None, None).await.unwrap();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
 
     // The provider comes back: the model list is slow, and so is the turn,
     // but less. A failed lookup is not repeated for a few seconds.
@@ -830,19 +838,18 @@ async fn a_variant_read_against_the_old_model_is_not_installed_after_a_switch() 
             .any(|r| r.url.path() == "/v1/chat/completions")
     })
     .await;
-    let accepted = state.run_command(id, "model", "other").await.unwrap();
+    let accepted = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert_eq!(accepted.data.as_ref().unwrap()["applies"], "after_turn");
     let refused = state.run_command(id, "variant", "high").await.unwrap();
-    // (the command above returns only once the list arrived: the switch,
-    // deferred behind the 400 ms turn, has landed by then)
+    // Variant changes are refused during the turn; the deferred model switch still applies.
     collect_until(sub, |e| e.kind == "model.changed").await;
-    assert_eq!(state.session_summary(id).await.unwrap().model, "other");
+    assert_eq!(state.session_summary(id).await.unwrap().model, "b/model-b");
 
     assert!(!refused.ok, "{refused:?}");
     let error = refused.error.unwrap();
-    assert!(error.contains("switched"), "{error}");
+    assert!(error.contains("working or held"), "{error}");
     let meta = state.history().meta(id).await.unwrap().unwrap();
-    assert_eq!(meta.model, "other");
+    assert_eq!(meta.model, "b/model-b");
     // The new model keeps its own default variant (none), not a choice read
     // against the old model's offer.
     assert_eq!(meta.variant.as_deref(), Some("high"));

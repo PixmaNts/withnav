@@ -84,6 +84,32 @@ fn agents(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
             Span::styled("  in use", theme.muted()),
         ]),
     ];
+    for part in wrap(
+        &format!(
+            "{} · {} · {}",
+            state.selected_model_id.as_deref().unwrap_or("—"),
+            state.variant.as_deref().unwrap_or("off"),
+            state.model_source
+        ),
+        width.saturating_sub(2),
+    ) {
+        lines.push(Line::styled(format!(" {part}"), theme.text()));
+    }
+    if let Some(entry) = state.agents.iter().find(|a| a.id == agent) {
+        if let Some(assigned) = &entry.assignment {
+            for part in wrap(
+                &format!("assigned: {}", assigned.model),
+                width.saturating_sub(2),
+            ) {
+                lines.push(Line::styled(format!(" {part}"), theme.muted()));
+            }
+        }
+        if let Some(warning) = &entry.warning {
+            for part in wrap(warning, width.saturating_sub(2)) {
+                lines.push(Line::styled(format!(" {part}"), theme.warning()));
+            }
+        }
+    }
     // The role of build or plan; another agent's comes from its file, which the server does not
     // send, so none is shown.
     if let Some(description) = role(agent) {
@@ -240,6 +266,39 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
         lines.push(Line::raw(""));
         lines.extend(section);
     }
+    lines.push(Line::raw(""));
+    lines.push(title("Lower layers · config", theme));
+    for layer in &state.layers {
+        let kind = match layer.layer.as_str() {
+            "reflex" => "FIM · editor only",
+            "instinct" => "System One",
+            _ => "Chat",
+        };
+        lines.push(Line::styled(
+            format!(" {} · {kind}", layer.layer),
+            theme.accent(),
+        ));
+        for part in wrap(
+            layer.model.as_deref().unwrap_or("unassigned"),
+            width.saturating_sub(2),
+        ) {
+            lines.push(Line::styled(format!(" {part}"), theme.text()));
+        }
+        lines.push(Line::styled(
+            format!(
+                " {} · {}",
+                layer.variant.as_deref().unwrap_or("off"),
+                layer.status
+            ),
+            theme.muted(),
+        ));
+        if let Some(reason) = &layer.reason {
+            for part in wrap(reason, width.saturating_sub(2)) {
+                lines.push(Line::styled(format!(" {part}"), theme.warning()));
+            }
+        }
+    }
+    lines.push(Line::styled(" Assignments: config.json", theme.muted()));
     let left = usize::from(inner.height).saturating_sub(lines.len() + 1);
     if let Some(section) = changes(state, width, left, theme).filter(|_| left >= 3) {
         lines.push(Line::raw(""));

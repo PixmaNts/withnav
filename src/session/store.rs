@@ -340,6 +340,26 @@ pub struct HistoryStore {
     owner: Option<Ulid>,
     tx: mpsc::Sender<Msg>,
     path: Arc<PathBuf>,
+    #[cfg(debug_assertions)]
+    selection_commit_barrier: Arc<std::sync::Mutex<Option<Arc<SelectionCommitBarrier>>>>,
+}
+
+/// Debug-only boundary: SQLite has committed, but the selection callback has
+/// not returned to install or publish anything. Scoped to this store instance.
+#[cfg(debug_assertions)]
+#[derive(Debug, Default)]
+pub struct SelectionCommitBarrier {
+    pub reached: tokio::sync::Notify,
+    pub release: tokio::sync::Notify,
+    cancel: std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
+}
+
+#[cfg(debug_assertions)]
+impl SelectionCommitBarrier {
+    pub async fn cancelled(&self) {
+        let cancel = self.cancel.lock().unwrap().clone().expect("commit reached");
+        cancel.cancelled().await;
+    }
 }
 
 impl std::fmt::Debug for HistoryStore {
@@ -353,6 +373,13 @@ impl std::fmt::Debug for HistoryStore {
 const WRITER_GONE: &str = "history writer stopped";
 
 impl HistoryStore {
+    #[cfg(debug_assertions)]
+    pub fn arm_selection_commit_barrier(&self) -> Arc<SelectionCommitBarrier> {
+        let barrier = Arc::new(SelectionCommitBarrier::default());
+        *self.selection_commit_barrier.lock().unwrap() = Some(barrier.clone());
+        barrier
+    }
+
     /// Updates only the saved override. Runtime applications should use
     /// `commit_agent_selection` inside the existing sequencer acknowledged callback.
     pub async fn update_agent_override(
@@ -457,6 +484,8 @@ impl HistoryStore {
                     .into(),
             );
         }
+        #[cfg(debug_assertions)]
+        let token = cancel.clone();
         self.acked(Write::AgentSelection {
             #[cfg(test)]
             before_commit: None,
@@ -468,7 +497,17 @@ impl HistoryStore {
             staged,
             envelopes,
         })
-        .await
+        .await?;
+        #[cfg(debug_assertions)]
+        {
+            let barrier = self.selection_commit_barrier.lock().unwrap().take();
+            if let Some(barrier) = barrier {
+                *barrier.cancel.lock().unwrap() = token;
+                barrier.reached.notify_one();
+                barrier.release.notified().await;
+            }
+        }
+        Ok(())
     }
     /// Opens (creating parents) and migrates the database, opens the writer's
     /// connection, then spawns the single writer thread. Fails when the
@@ -494,6 +533,8 @@ impl HistoryStore {
             owner: None,
             tx,
             path: Arc::new(path),
+            #[cfg(debug_assertions)]
+            selection_commit_barrier: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 

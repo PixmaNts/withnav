@@ -111,6 +111,26 @@ pub struct ModelSwitch {
 /// The shared form of [`ModelSwitch`].
 pub type ModelSwitcher = Arc<ModelSwitch>;
 
+#[cfg(debug_assertions)]
+type SwitchObserver = Box<dyn FnOnce(&AgentActor) + Send>;
+#[cfg(debug_assertions)]
+static SWITCH_OBSERVERS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<Ulid, SwitchObserver>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Debug-only, one-shot observation of the actual actor after a successful
+/// switch, before its completion is returned (not the service projection).
+#[cfg(debug_assertions)]
+pub fn observe_selection_install(
+    operation: Ulid,
+    observer: impl FnOnce(&AgentActor) + Send + 'static,
+) {
+    SWITCH_OBSERVERS
+        .lock()
+        .unwrap()
+        .insert(operation, Box::new(observer));
+}
+
 pub(super) struct SwitcherCell(pub(super) ModelSwitcher);
 
 impl std::fmt::Debug for SwitcherCell {
@@ -363,6 +383,13 @@ pub(super) async fn run(
     actor.reasoning_history = target.reasoning_history;
     actor.max_tokens = target.max_tokens;
     actor.variant = target.variant.clone().map(|(_, variant)| variant);
+    #[cfg(debug_assertions)]
+    {
+        let observer = SWITCH_OBSERVERS.lock().unwrap().remove(&operation_id);
+        if let Some(observer) = observer {
+            observer(actor);
+        }
+    }
     let variant_name = target.variant.as_ref().map(|(name, _)| name.clone());
 
     if let Ok(payload) = serde_json::to_value(&snapshot) {

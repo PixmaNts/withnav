@@ -43,10 +43,16 @@ fn workspace(server: &TestServer) -> String {
 }
 
 async fn create(client: &Client, server: &TestServer) -> String {
+    std::fs::write(
+        server.ws.parent().unwrap().join("cfg/config.json"),
+        json!({"agents":{"build":{"model":"mock/mock-model"}},"permissions":{"scratch_dirs":[]}})
+            .to_string(),
+    )
+    .unwrap();
     client
         .create(CreateSessionRequest {
             workspace: workspace(server),
-            model: Some("default".into()),
+            model: Some("mock/mock-model".into()),
             resume: None,
             agent: None,
             variant: None,
@@ -128,7 +134,7 @@ async fn models_lists_the_catalog() {
         .expect("models");
     task.abort();
     assert_eq!(body.models.len(), 1);
-    assert_eq!(body.models[0].name, "default");
+    assert_eq!(body.models[0].name, "mock/mock-model");
     assert_eq!(body.models[0].upstream_id, "mock-model");
     assert_eq!(body.models[0].context_window, Some(128_000));
 }
@@ -136,13 +142,19 @@ async fn models_lists_the_catalog() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sessions_lists_a_created_conversation_and_summary_reports_the_cursor() {
     let server = TestServer::start(vec![]).await;
+    std::fs::write(
+        server.ws.parent().unwrap().join("cfg/config.json"),
+        json!({"agents":{"build":{"model":"mock/mock-model"}},"permissions":{"scratch_dirs":[]}})
+            .to_string(),
+    )
+    .unwrap();
     let client = Client::new(server.base.clone(), None);
     let id = create(&client, &server).await;
     let listed = client.sessions(&workspace(&server)).await.expect("list");
     assert!(listed.sessions.iter().any(|s| s.id == id && s.live));
     let summary = client.summary(&id).await.expect("summary");
     assert_eq!(summary.session_id, id);
-    assert_eq!(summary.model, "default");
+    assert_eq!(summary.model, "mock/mock-model");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

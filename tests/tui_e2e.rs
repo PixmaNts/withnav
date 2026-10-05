@@ -71,10 +71,11 @@ impl Env {
     ) -> Self {
         isolate_xdg();
         let config = TestServerConfig::mock(root.path(), provider_url)
-            .model_alias("alpha", "mock-alpha")
-            .extra_alias("beta", "mock-beta")
+            .model_alias("mock/mock-alpha", "mock-alpha")
+            .extra_alias("mock/mock-beta", "mock-beta")
             .chat_tools(100_000);
         let state = adjust(config).state();
+        std::fs::write(root.path().join("cfg/config.json"), json!({"default_agent":"build","agents":{"build":{"model":"mock/mock-alpha"},"plan":{"model":"mock/mock-alpha"}},"permissions":{"scratch_dirs":[]}}).to_string()).unwrap();
         let (addr, task) = spawn_server(state).await;
         let ws = workspace_of(&root);
         std::fs::create_dir_all(&ws).expect("workspace dir");
@@ -242,7 +243,14 @@ fn rate_limited() -> Vec<u8> {
 /// preselected variant (the default, or none) in the second step.
 fn pick_model(rt: &mut Runtime, index: usize) {
     press(rt, KeyCode::F(2));
-    for _ in 0..index {
+    let row = navai::tui::catalog::rows(&rt.state.catalog, &rt.ui)
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| matches!(row, navai::tui::catalog::Row::Model(_)))
+        .nth(index)
+        .unwrap()
+        .0;
+    for _ in 0..row {
         press(rt, KeyCode::Down);
     }
     press(rt, KeyCode::Enter);
@@ -320,7 +328,10 @@ async fn pick_send_stream_tool_reconnect_stop_and_resume() {
     let mut rt = started(&env).await;
 
     pick_model(&mut rt, 1);
-    assert_eq!(rt.state.selected_model_id.as_deref(), Some("beta"));
+    assert_eq!(
+        rt.state.selected_model_id.as_deref(),
+        Some("mock/mock-beta")
+    );
     assert!(rt.state.session.is_none(), "picking alone creates nothing");
 
     type_and_send(&mut rt, "read the notes");
@@ -532,6 +543,11 @@ async fn two_tabs_stream_their_own_conversations_at_once() {
         KeyModifiers::CONTROL,
     )));
     assert_eq!((rt.state.tabs.len(), rt.state.active), (2, 1));
+    until("the new tab assignments", &mut rt, |_, rt| {
+        rt.state.selected_model_id.is_some()
+    })
+    .await;
+    press(&mut rt, KeyCode::Enter);
     assert!(
         rt.editor.text().is_empty(),
         "the new tab starts with an empty editor"
@@ -769,7 +785,7 @@ async fn variant_step_and_slash_variant_drive_the_server() {
         .state
         .catalog
         .iter()
-        .find(|m| m.name == "alpha")
+        .find(|m| m.name == "mock/mock-alpha")
         .expect("alpha")
         .clone();
     assert_eq!(alpha.variants, ["high", "low"]);
@@ -777,6 +793,7 @@ async fn variant_step_and_slash_variant_drive_the_server() {
 
     // F2, alpha, then the variant step (high, low, off): the default is preselected; down is `low`.
     press(&mut rt, KeyCode::F(2));
+    press(&mut rt, KeyCode::Down);
     press(&mut rt, KeyCode::Enter);
     press(&mut rt, KeyCode::Down);
     press(&mut rt, KeyCode::Enter);
@@ -810,7 +827,10 @@ async fn variant_step_and_slash_variant_drive_the_server() {
     .await;
     assert_eq!(
         navai::tui::commands::variant_choices(&rt.state, &navai::tui::state::VariantPick::Current),
-        (vec!["high".into(), "low".into(), "off".into()], 1)
+        (
+            vec!["high".into(), "low".into(), "off".into(), "inherit".into()],
+            1
+        )
     );
     press(&mut rt, KeyCode::Up);
     press(&mut rt, KeyCode::Enter);
@@ -1054,7 +1074,7 @@ async fn two_provider_env(root: tempfile::TempDir, a_url: &str, b_url: &str) -> 
         config.models_path.as_ref().expect("models path"),
         json!({
             "providers": {"a": provider(a_url), "b": provider(b_url)},
-            "models": {"alpha": entry("a", "model-a", 128_000), "luna": luna}
+            "models": {"a/model-a": entry("a", "model-a", 128_000), "b/model-b": luna}
         })
         .to_string(),
     )
@@ -1064,6 +1084,7 @@ async fn two_provider_env(root: tempfile::TempDir, a_url: &str, b_url: &str) -> 
         json!({"a": {"api_key": "key-a"}, "b": {"api_key": "key-b"}}).to_string(),
     )
     .expect("auth.json");
+    std::fs::write(config.config_dir.join("config.json"), json!({"default_agent":"build","agents":{"build":{"model":"a/model-a"},"plan":{"model":"a/model-a"}},"permissions":{"scratch_dirs":[]}}).to_string()).unwrap();
     let state = navai::server::session::AppState::new(config).expect("state");
     let (addr, task) = spawn_server(state).await;
     let ws = workspace_of(&root);
@@ -1104,7 +1125,7 @@ async fn the_model_list_and_slash_model_switch_the_live_conversation_between_pro
         has_final(rt, "From a.")
     })
     .await;
-    assert_eq!(rt.state.selected_model_id.as_deref(), Some("alpha"));
+    assert_eq!(rt.state.selected_model_id.as_deref(), Some("a/model-a"));
 
     // the model list on a live tab: enter on luna switches the model; the server applies its
     // default variant
@@ -1112,10 +1133,12 @@ async fn the_model_list_and_slash_model_switch_the_live_conversation_between_pro
     let shown = screen(&mut rt);
     assert!(shown.contains("Switch this conversation to…"), "{shown}");
     press(&mut rt, KeyCode::Down);
+    press(&mut rt, KeyCode::Down);
+    press(&mut rt, KeyCode::Down);
     press(&mut rt, KeyCode::Enter);
     assert_eq!(rt.ui.overlay, None, "no variant step");
     until("the switch", &mut rt, |_, rt| {
-        rt.state.selected_model_id.as_deref() == Some("luna")
+        rt.state.selected_model_id.as_deref() == Some("b/model-b")
     })
     .await;
     assert_eq!(rt.state.tabs.len(), 1, "no new tab");
@@ -1126,7 +1149,7 @@ async fn the_model_list_and_slash_model_switch_the_live_conversation_between_pro
         .next()
         .unwrap_or_default()
         .to_string();
-    assert!(header.contains("luna"), "{header}");
+    assert!(header.contains("model-b"), "{header}");
     let notices: Vec<_> = rt
         .state
         .conversation
@@ -1137,7 +1160,7 @@ async fn the_model_list_and_slash_model_switch_the_live_conversation_between_pro
             _ => None,
         })
         .collect();
-    assert_eq!(notices, ["model: alpha → luna · high · 256k"]);
+    assert_eq!(notices, ["model: a/model-a → b/model-b · high · 256k"]);
 
     type_and_send(&mut rt, "and now?");
     until("the answer from b", &mut rt, |_, rt| {
@@ -1149,9 +1172,9 @@ async fn the_model_list_and_slash_model_switch_the_live_conversation_between_pro
     assert_eq!(a.bodies().len(), 1);
 
     // `/model alpha` typed in the editor switches back, in the same tab
-    type_and_send(&mut rt, "/model alpha");
+    type_and_send(&mut rt, "/model a/model-a");
     until("the switch back", &mut rt, |_, rt| {
-        rt.state.selected_model_id.as_deref() == Some("alpha")
+        rt.state.selected_model_id.as_deref() == Some("a/model-a")
     })
     .await;
     assert_eq!(rt.state.tabs.len(), 1);
@@ -1166,18 +1189,23 @@ async fn the_model_list_and_slash_model_switch_the_live_conversation_between_pro
     // ctrl+n in the model list opens luna in a new tab; the first conversation stays on alpha
     press(&mut rt, KeyCode::F(2));
     press(&mut rt, KeyCode::Down);
+    press(&mut rt, KeyCode::Down);
+    press(&mut rt, KeyCode::Down);
     rt.handle_terminal_event(Event::Key(KeyEvent::new(
         KeyCode::Char('n'),
         KeyModifiers::CONTROL,
     )));
     press(&mut rt, KeyCode::Enter);
     assert_eq!((rt.state.tabs.len(), rt.state.active), (2, 1));
-    assert_eq!(rt.state.selected_model_id.as_deref(), Some("luna"));
+    assert_eq!(rt.state.selected_model_id.as_deref(), Some("b/model-b"));
     assert!(
         rt.state.session.is_none(),
         "it starts with the first message"
     );
-    assert_eq!(rt.state.tabs[0].selected_model_id.as_deref(), Some("alpha"));
+    assert_eq!(
+        rt.state.tabs[0].selected_model_id.as_deref(),
+        Some("a/model-a")
+    );
 }
 
 // Given a conversation on `alpha` whose answer is still streaming
@@ -1205,24 +1233,25 @@ async fn a_switch_typed_during_a_turn_waits_for_it_and_shows_in_the_header() {
     })
     .await;
 
-    type_and_send(&mut rt, "/model luna");
+    type_and_send(&mut rt, "/model b/model-b");
     until("the acceptance", &mut rt, |_, rt| {
-        rt.state.pending_model() == Some("luna")
+        rt.state.pending_model() == Some("b/model-b")
     })
     .await;
-    assert_eq!(rt.state.selected_model_id.as_deref(), Some("alpha"));
+    assert_eq!(rt.state.selected_model_id.as_deref(), Some("a/model-a"));
     let header = screen(&mut rt)
         .lines()
         .next()
         .unwrap_or_default()
         .to_string();
-    assert!(header.contains("→ luna (after this turn)"), "{header}");
-    assert!(header.contains("alpha"), "{header}");
+    assert!(header.contains("→ b/model-b (after this turn)"), "{header}");
+    assert!(header.contains("model-a"), "{header}");
 
     answer.send(usage_chunk("stop", usage(10, 2))).unwrap();
     drop(answer);
     until("the switch after the turn", &mut rt, |_, rt| {
-        rt.state.selected_model_id.as_deref() == Some("luna") && rt.state.pending_model().is_none()
+        rt.state.selected_model_id.as_deref() == Some("b/model-b")
+            && rt.state.pending_model().is_none()
     })
     .await;
     let header = screen(&mut rt)
@@ -1231,5 +1260,5 @@ async fn a_switch_typed_during_a_turn_waits_for_it_and_shows_in_the_header() {
         .unwrap_or_default()
         .to_string();
     assert!(!header.contains("after this turn"), "{header}");
-    assert!(header.contains("luna"), "{header}");
+    assert!(header.contains("model-b"), "{header}");
 }

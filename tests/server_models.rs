@@ -1,18 +1,12 @@
-//! `GET /v1/models`: chat models with tools from the models.json a new
-//! session would load; 400 without `workspace`.
+//! `GET /v1/models`: canonical identities, all API kinds and safe metadata.
 
 use serde_json::{json, Value};
 
 mod common;
 use common::server::{spawn_server, TestServerConfig, PROVIDER};
 
-// Given a models.json with a chat+tools alias, a chat alias without tools
-//      and a fim alias
-// When GET /v1/models?workspace=... runs
-// Then only the chat+tools alias is listed, with its context window, and
-//      the navigator default is "cognition"; without workspace it is a 400
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn lists_chat_models_with_tools_only() {
+async fn lists_all_api_kinds_with_canonical_identity_and_configured_default_agent() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let state = TestServerConfig::mock(tmp.path(), "http://127.0.0.1:9").navigator_state();
 
@@ -27,21 +21,27 @@ async fn lists_chat_models_with_tools_only() {
                 }
             },
             "models": {
-                "cognition": { "provider": PROVIDER, "model": "mock-opus",
+                "cognition": { "provider": PROVIDER, "model": "combo/mock-opus",
                                "supports_tools": true, "context_window": 200000 },
                 "plain": { "provider": PROVIDER, "model": "mock-plain", "supports_tools": false },
-                "fill": { "provider": PROVIDER, "model": "mock-fim", "api": "fim", "supports_tools": true }
+                "fill": { "provider": PROVIDER, "model": "mock-fim", "api": "fim", "supports_tools": true },
+                "instinct": { "provider": PROVIDER, "model": "typesafe/jev", "api": "systemone" }
             }
         })
         .to_string(),
     )
     .expect("write models.json");
 
+    std::fs::write(
+        tmp.path().join("cfg/config.json"),
+        r#"{"default_agent":"plan"}"#,
+    )
+    .unwrap();
+
     let (addr, _task) = spawn_server(state).await;
     let base = format!("http://{addr}");
     let client = reqwest::Client::new();
 
-    // With a workspace: only the chat+tools alias, and the navigator default.
     let ok = client
         .get(format!("{base}/v1/models"))
         .query(&[("workspace", tmp.path())])
@@ -50,12 +50,25 @@ async fn lists_chat_models_with_tools_only() {
         .expect("get models");
     assert_eq!(ok.status(), 200);
     let body: Value = ok.json().await.expect("models json");
-    assert_eq!(
-        body["models"],
-        json!([{ "alias": "cognition", "model": "mock-opus", "context_window": 200000,
-                 "enabled": true, "window_source": "models.json", "stale": false }])
-    );
-    assert_eq!(body["default"], "cognition");
+    assert_eq!(body["models"].as_array().unwrap().len(), 4);
+    let chat = by_alias(&body, "combo/mock-opus");
+    assert_eq!(chat["gateway"], PROVIDER);
+    assert_eq!(chat["upstream_id"], "combo/mock-opus");
+    assert_eq!(chat["provider_group"], "combo");
+    assert_eq!(chat["api"], "chat");
+    assert_eq!(chat["supports_tools"], true);
+    assert_eq!(chat["context_window"], 200000);
+    let fim = by_alias(&body, "mock-fim");
+    assert_eq!(fim["provider_group"], PROVIDER);
+    assert_eq!(fim["api"], "fim");
+    assert_eq!(by_alias(&body, "typesafe/jev")["api"], "systemone");
+    assert_eq!(body["default_agent"], "plan");
+    assert!(body.get("default").is_none());
+    for model in body["models"].as_array().unwrap() {
+        assert!(model.get("alias").is_none());
+        assert!(model.get("model").is_none());
+        assert!(model.get("provider").is_none());
+    }
 
     // Without a workspace: 400.
     let missing = client
@@ -73,7 +86,7 @@ fn write_models(root: &std::path::Path, base_url: &str) {
             "providers": { PROVIDER: { "base_url": base_url, "api_key_env": "NAVAI_TEST_KEY", "headers": {} } },
             "models": {
                 "found": { "provider": PROVIDER, "model": "m-found", "supports_tools": true },
-                "pinned": { "provider": PROVIDER, "model": "m-found", "supports_tools": true,
+                "pinned": { "provider": PROVIDER, "model": "m-pinned", "supports_tools": true,
                             "context_window": 200000 }
             }
         })
@@ -114,7 +127,7 @@ fn by_alias<'a>(body: &'a Value, alias: &str) -> &'a Value {
         .as_array()
         .unwrap()
         .iter()
-        .find(|m| m["alias"] == alias)
+        .find(|m| m["name"] == format!("{PROVIDER}/{alias}"))
         .unwrap_or_else(|| panic!("no {alias} in {body}"))
 }
 
@@ -132,24 +145,29 @@ async fn lists_the_source_limits_and_discrepancy() {
             wiremock::ResponseTemplate::new(200).set_body_json(json!({"data": [{
                 "id": "m-found", "context_length": 1_000_000,
                 "max_input_tokens": 900_000, "max_output_tokens": 128_000
-            }]})),
+            }, {"id": "m-pinned", "context_length": 1_000_000,
+                "max_input_tokens": 900_000, "max_output_tokens": 128_000}]})),
         )
         .mount(&provider)
         .await;
     let body = get_models(tmp.path(), &format!("{}/v1", provider.uri())).await;
 
     assert_eq!(
-        by_alias(&body, "found"),
+        by_alias(&body, "m-found"),
         &json!({
-            "alias": "found", "model": "m-found", "context_window": 1_000_000,
+            "name": format!("{PROVIDER}/m-found"), "gateway": PROVIDER,
+            "provider_group": PROVIDER, "upstream_id": "m-found", "api": "chat",
+            "supports_tools": true, "supports_parallel_tool_calls": null, "context_window": 1_000_000,
             "enabled": true, "window_source": "discovered.context_length", "stale": false,
             "reported_output": 128_000, "max_input_tokens": 900_000
         })
     );
     assert_eq!(
-        by_alias(&body, "pinned"),
+        by_alias(&body, "m-pinned"),
         &json!({
-            "alias": "pinned", "model": "m-found", "context_window": 200_000,
+            "name": format!("{PROVIDER}/m-pinned"), "gateway": PROVIDER,
+            "provider_group": PROVIDER, "upstream_id": "m-pinned", "api": "chat",
+            "supports_tools": true, "supports_parallel_tool_calls": null, "context_window": 200_000,
             "enabled": true, "window_source": "models.json", "stale": false,
             "reported_output": 128_000, "max_input_tokens": 900_000,
             "discrepancy": { "configured": 200_000, "discovered": 1_000_000 }
@@ -197,7 +215,7 @@ async fn a_failed_refresh_shows_stale_values_with_age_and_error() {
         .await;
 
     let body = get_models(tmp.path(), &base).await;
-    let found = by_alias(&body, "found");
+    let found = by_alias(&body, "m-found");
     assert_eq!(found["enabled"], true);
     assert_eq!(found["context_window"], 1_000_000);
     assert_eq!(found["stale"], true);
@@ -209,8 +227,7 @@ async fn a_failed_refresh_shows_stale_values_with_age_and_error() {
     );
 }
 
-/// Two OmniRoute aliases on one model: `pinned` with an explicit window and
-/// a default variant, `plain` with neither.
+/// Two distinct OmniRoute models, with and without a pinned window/default.
 fn write_variant_models(root: &std::path::Path, base_url: &str) {
     std::fs::write(
         root.join("models.json"),
@@ -220,7 +237,7 @@ fn write_variant_models(root: &std::path::Path, base_url: &str) {
             "models": {
                 "pinned": { "provider": PROVIDER, "model": "m-tiers", "supports_tools": true,
                             "context_window": 200000, "default_variant": "high" },
-                "plain": { "provider": PROVIDER, "model": "m-tiers", "supports_tools": true }
+                "plain": { "provider": PROVIDER, "model": "m-plain", "supports_tools": true }
             }
         })
         .to_string(),
@@ -241,7 +258,8 @@ async fn lists_variant_names_and_the_default_only() {
             wiremock::ResponseTemplate::new(200).set_body_json(json!({"data": [{
                 "id": "m-tiers", "context_length": 1_000_000,
                 "capabilities": {"effort_tiers": ["low", "high"]}
-            }]})),
+            }, {"id": "m-plain", "context_length": 1_000_000,
+                "capabilities": {"effort_tiers": ["low", "high"]}}]})),
         )
         .mount(&provider)
         .await;
@@ -252,12 +270,15 @@ async fn lists_variant_names_and_the_default_only() {
     )
     .await;
 
-    let pinned = by_alias(&body, "pinned");
+    let pinned = by_alias(&body, "m-tiers");
     assert_eq!(pinned["variants"], json!(["high", "low"]));
     assert_eq!(pinned["default_variant"], "high");
     assert!(pinned.get("default_variant_unavailable").is_none());
-    assert_eq!(by_alias(&body, "plain")["variants"], json!(["high", "low"]));
-    assert!(by_alias(&body, "plain").get("default_variant").is_none());
+    assert_eq!(
+        by_alias(&body, "m-plain")["variants"],
+        json!(["high", "low"])
+    );
+    assert!(by_alias(&body, "m-plain").get("default_variant").is_none());
     assert!(
         !body.to_string().contains("reasoning_effort"),
         "no override object is exposed: {body}"
@@ -285,11 +306,83 @@ async fn a_pinned_alias_with_the_provider_down_reports_its_default_unavailable()
     )
     .await;
 
-    let pinned = by_alias(&body, "pinned");
+    let pinned = by_alias(&body, "m-tiers");
     assert_eq!(pinned["enabled"], true);
     assert_eq!(pinned["context_window"], 200_000);
     assert!(pinned["refresh_error"].as_str().unwrap().contains("503"));
     assert!(pinned.get("variants").is_none());
     assert!(pinned.get("default_variant").is_none(), "{pinned}");
     assert_eq!(pinned["default_variant_unavailable"], "high");
+}
+
+#[tokio::test]
+async fn duplicate_gateway_upstream_identity_is_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = TestServerConfig::unreachable(tmp.path()).state();
+    std::fs::write(
+        tmp.path().join("models.json"),
+        json!({
+            "providers": {"mock": {"base_url": "http://127.0.0.1:1/v1"}},
+            "models": {
+                "first": {"provider":"mock","model":"combo/same","context_window":200000},
+                "second": {"provider":"mock","model":"combo/same","context_window":100000}
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let (addr, task) = spawn_server(state).await;
+    let response = reqwest::Client::new()
+        .get(format!("http://{addr}/v1/models"))
+        .query(&[("workspace", tmp.path())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    let body = response.text().await.unwrap();
+    assert!(
+        body.contains("mock/combo/same") && body.contains("first") && body.contains("second"),
+        "{body}"
+    );
+    assert!(!body.contains("127.0.0.1"));
+    task.abort();
+}
+
+#[tokio::test]
+async fn identical_upstream_ids_on_distinct_gateways_are_distinct_models() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = TestServerConfig::unreachable(tmp.path()).state();
+    std::fs::write(
+        tmp.path().join("models.json"),
+        json!({
+            "providers": {
+                "first": {"base_url": "http://127.0.0.1:1/v1"},
+                "second": {"base_url": "http://127.0.0.1:2/v1"}
+            },
+            "models": {
+                "legacy-first": {"provider":"first","model":"vendor/same","api":"fim"},
+                "legacy-second": {"provider":"second","model":"vendor/same","api":"fim"}
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let (addr, task) = spawn_server(state).await;
+    let response = reqwest::Client::new()
+        .get(format!("http://{addr}/v1/models"))
+        .query(&[("workspace", tmp.path())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    let models = body["models"].as_array().unwrap();
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0]["name"], "first/vendor/same");
+    assert_eq!(models[1]["name"], "second/vendor/same");
+    assert_eq!(models[0]["provider_group"], "vendor");
+    assert_eq!(body["default_agent"], "build");
+    let text = body.to_string();
+    assert!(!text.contains("base_url") && !text.contains("headers") && !text.contains("127.0.0.1"));
+    task.abort();
 }

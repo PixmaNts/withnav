@@ -327,7 +327,7 @@ pub struct Service {
     _instance: Arc<super::instance::Instance>,
     /// The live sessions of this process; a closed session is removed.
     pub(super) sessions: Arc<Mutex<HashMap<SessionId, SessionHandle>>>,
-    pub(super) config: Arc<SessionConfig>,
+    pub(crate) config: Arc<SessionConfig>,
     /// The conversation-history store: every conversation is persisted.
     history: Arc<super::store::HistoryStore>,
     /// Actor-profile policy injected by the host binary.

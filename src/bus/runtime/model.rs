@@ -133,11 +133,7 @@ pub struct ModelRequest {
 }
 
 fn identity_json(identity: &ModelIdentity) -> Value {
-    json!({
-        "alias": identity.alias,
-        "provider": identity.provider,
-        "model": identity.model,
-    })
+    json!(identity)
 }
 
 /// Moves `actor` to the model `alias`. Nothing about the selection changes
@@ -192,8 +188,7 @@ pub(super) async fn run(
     if actor.role.is_some() {
         actor.role = Some(status.selection.current());
     }
-    let mut target = (switcher.resolve)(alias.to_string()).await?;
-    target.previous.alias = current;
+    let target = (switcher.resolve)(alias.to_string()).await?;
     // Reasoning is only replayed to the identity that produced it: against
     // another one (or a model that omits it) the whole history so far is
     // projected without it. The check measures exactly that projection.
@@ -274,7 +269,7 @@ pub(super) async fn run(
     }
     Ok(Switched {
         data: json!({
-            "alias": target.new.alias,
+            "alias": target.new.model,
             "changed": true,
             "previous": identity_json(&target.previous),
             "new": identity_json(&target.new),

@@ -88,7 +88,10 @@ async fn a_fresh_session_has_a_snapshot_with_the_fixed_parts() {
         .state();
     let id = state.create_session(&ws, None, None).await.expect("create");
     let snap = serde_json::to_value(state.context(id).await.expect("context")).unwrap();
-    assert_eq!(snap["alias"], "default");
+    assert_eq!(snap["model"], "mock/mock-model");
+    assert_eq!(snap["gateway"], "mock");
+    assert_eq!(snap["upstream_id"], "mock-model");
+    assert!(snap.get("alias").is_none());
     assert_eq!(snap["window"], 1_000_000);
     assert_eq!(snap["window_source"], "models.json");
     assert_eq!(snap["revision"], 0);
@@ -129,6 +132,10 @@ async fn the_snapshot_after_a_scripted_turn_keeps_estimate_and_usage_apart() {
     // The provider's count for the LAST step, not a sum and not the estimate.
     assert_eq!(snap["last_usage"]["prompt_tokens"], 1500);
     assert_eq!(snap["last_usage"]["completion_tokens"], 5);
+    assert_eq!(snap["last_usage"]["model"], "mock/mock-model");
+    assert_eq!(snap["last_usage"]["gateway"], "mock");
+    assert_eq!(snap["last_usage"]["upstream_id"], "mock-model");
+    assert!(snap["last_usage"].get("alias").is_none());
     assert_ne!(snap["last_usage"]["prompt_tokens"], snap["estimate_total"]);
     let last_response = events
         .iter()
@@ -200,7 +207,7 @@ async fn the_http_endpoint_serves_the_snapshot() {
     let path = format!("/v1/sessions/{id}/context");
     let (status, body) = request_json(&router, "GET", &path, None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["alias"], "default");
+    assert_eq!(body["model"], "mock/mock-model");
     assert_eq!(body["window"], 200_000);
     assert_eq!(body["input_budget"], 200_000 - 8192 - 10_000);
     assert_eq!(estimate_of(&body), category_sum(&body));

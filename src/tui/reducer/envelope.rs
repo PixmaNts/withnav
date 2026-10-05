@@ -554,7 +554,7 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
         Some(EventKind::ModelChanged) => {
             let changed: ModelChanged = serde_json::from_value(e.payload).map_err(|_| bad())?;
             let new = &changed.new;
-            s.selected_model_alias = Some(strip_controls(&new.alias));
+            s.selected_model_alias = Some(strip_controls(&new.model));
             s.selected_model_name = Some(strip_controls(&new.model));
             s.context_window = Some(changed.window);
             s.variant = changed.variant.as_deref().map(strip_controls);
@@ -568,9 +568,9 @@ pub(super) fn apply_envelope(s: &mut State, e: EventEnvelope) -> Result<(), Prot
                 let from = changed
                     .previous
                     .as_ref()
-                    .map(|p| strip_controls(&p.alias))
+                    .map(|p| strip_controls(&p.model))
                     .unwrap_or_else(|| "—".into());
-                let mut text = format!("model: {from} → {}", strip_controls(&new.alias));
+                let mut text = format!("model: {from} → {}", strip_controls(&new.model));
                 if let Some(variant) = &s.variant {
                     text.push_str(&format!(" · {variant}"));
                 }

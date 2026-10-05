@@ -3,7 +3,7 @@
 //!
 //! Response bodies are FROZEN:
 //! - `GET  /v1/health`        -> `{status:"ok"}`
-//! - `GET  /v1/models?workspace=` -> `{models:[{alias, model, context_window?, enabled?, disabled_reason?, window_source?, stale?, stale_age_secs?, refresh_error?, reported_output?, max_input_tokens?, discrepancy?, variants?, default_variant?, default_variant_unavailable?}], default?}`
+//! - `GET  /v1/models?workspace=` -> canonical catalog entries and `default_agent`
 //! - `POST /v1/sessions`      -> `{session_id, root_actor_id:"agent:main", actor_state:"idle"}`
 //!   (422 `{"error", "reason":"no_context_window"}` for a chat alias with no known window)
 //! - `GET  /v1/sessions/:id`  -> `{session_id, actor_state, workspace, model, variant, current_seq}`
@@ -415,8 +415,13 @@ async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -
 
 #[derive(Debug, Serialize)]
 pub struct ModelEntry {
-    pub alias: String,
-    pub model: String,
+    pub name: String,
+    pub gateway: String,
+    pub provider_group: String,
+    pub upstream_id: String,
+    pub api: crate::provider::config::ApiKind,
+    pub supports_tools: bool,
+    pub supports_parallel_tool_calls: Option<bool>,
     pub context_window: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
@@ -441,10 +446,10 @@ pub struct ModelEntry {
     /// An explicit `context_window` that differs from the provider's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub discrepancy: Option<DiscrepancyBody>,
-    /// Names of the variants the alias offers; never their override objects.
+    /// Names of the variants the model offers; never their override objects.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<String>,
-    /// The default variant, when the alias sets one that it offers.
+    /// The default variant, when the model sets one that it offers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_variant: Option<String>,
     /// The configured `default_variant`, when it names a variant that is not
@@ -463,10 +468,10 @@ pub struct DiscrepancyBody {
 #[derive(Debug, Serialize)]
 pub struct ModelsBody {
     pub models: Vec<ModelEntry>,
-    pub default: Option<String>,
+    pub default_agent: String,
 }
 
-/// `GET /v1/models?workspace=<abs path>`: chat models with tools.
+/// `GET /v1/models?workspace=<abs path>`: the canonical model catalog.
 async fn list_models(
     State(state): State<AppState>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -476,37 +481,75 @@ async fn list_models(
             "missing query parameter: workspace".to_string(),
         ));
     };
-    match state.list_models(std::path::Path::new(workspace)) {
-        Ok(entries) => {
-            let mut models = entries
+    let workspace = std::path::Path::new(workspace);
+    let catalog = crate::provider::config::load_models(
+        state.config.models_path.as_deref(),
+        workspace,
+        &state.config.config_dir,
+    );
+    match catalog {
+        Ok((catalog, _)) => {
+            let default_agent = match crate::settings::load(&state.config.config_dir)
+                .map_err(|e| e.to_string())
+                .and_then(|s| s.default_agent().map(str::to_string))
+            {
+                Ok(agent) => agent,
+                Err(reason) => return error_response(ServerError::MalformedBody(reason)),
+            };
+            for model in catalog.models.values() {
+                let name = format!("{}/{}", model.provider, model.model);
+                let resolved = crate::provider::model_name::ModelName::parse(&name, &catalog)
+                    .map_err(|e| e.to_string())
+                    .and_then(|name| catalog.resolve_name(&name).map_err(|e| e.to_string()));
+                if let Err(reason) = resolved {
+                    return error_response(ServerError::MalformedBody(reason));
+                }
+            }
+            let mut models = catalog
+                .models
                 .into_iter()
-                .map(|(alias, m)| ModelEntry {
-                    alias,
-                    model: m.model,
-                    context_window: m.context_window,
-                    enabled: None,
-                    disabled_reason: None,
-                    window_source: None,
-                    stale: None,
-                    stale_age_secs: None,
-                    refresh_error: None,
-                    reported_output: None,
-                    max_input_tokens: None,
-                    discrepancy: None,
-                    variants: Vec::new(),
-                    default_variant: None,
-                    default_variant_unavailable: None,
+                .map(|(key, m)| {
+                    (
+                        key,
+                        ModelEntry {
+                            name: format!("{}/{}", m.provider, m.model),
+                            provider_group: m
+                                .model
+                                .split_once('/')
+                                .map_or_else(|| m.provider.clone(), |(group, _)| group.to_string()),
+                            gateway: m.provider,
+                            upstream_id: m.model,
+                            api: m.api,
+                            supports_tools: m.supports_tools,
+                            supports_parallel_tool_calls: m.supports_parallel_tool_calls,
+                            context_window: m.context_window,
+                            enabled: None,
+                            disabled_reason: None,
+                            window_source: None,
+                            stale: None,
+                            stale_age_secs: None,
+                            refresh_error: None,
+                            reported_output: None,
+                            max_input_tokens: m.max_input_tokens,
+                            discrepancy: None,
+                            variants: m.variants.unwrap_or_default().into_keys().collect(),
+                            default_variant: m.default_variant,
+                            default_variant_unavailable: None,
+                        },
+                    )
                 })
                 .collect::<Vec<_>>();
-            for entry in &mut models {
-                match state
-                    .resolve_model_metadata(std::path::Path::new(workspace), &entry.alias)
-                    .await
-                {
+            for (key, entry) in &mut models {
+                if entry.api != crate::provider::config::ApiKind::Chat {
+                    entry.enabled = Some(true);
+                    continue;
+                }
+                match state.resolve_model_metadata(workspace, key).await {
                     Ok(resolution) => {
-                        match resolution.default_override(&entry.alias) {
+                        match resolution.default_override(key) {
                             Ok(chosen) => entry.default_variant = chosen.map(|(name, _)| name),
                             Err(unknown) => {
+                                entry.default_variant = None;
                                 entry.default_variant_unavailable = Some(unknown.variant)
                             }
                         }
@@ -530,10 +573,18 @@ async fn list_models(
                     }
                 }
             }
-            let default = state.default_model(Some("navigator")).map(str::to_string);
-            (StatusCode::OK, Json(ModelsBody { models, default })).into_response()
+            let mut models: Vec<_> = models.into_iter().map(|(_, entry)| entry).collect();
+            models.sort_by(|a, b| a.name.cmp(&b.name));
+            (
+                StatusCode::OK,
+                Json(ModelsBody {
+                    models,
+                    default_agent,
+                }),
+            )
+                .into_response()
         }
-        Err(err) => error_response(err),
+        Err(err) => error_response(err.into()),
     }
 }
 

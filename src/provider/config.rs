@@ -1,10 +1,55 @@
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{ConfigError, ProviderError};
+
+/// Reject repeated catalog keys before a map can discard either declaration.
+fn deserialize_unique_map<'de, D, T>(deserializer: D) -> Result<BTreeMap<String, T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct UniqueMap<T>(PhantomData<T>);
+
+    impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for UniqueMap<T> {
+        type Value = BTreeMap<String, T>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a map with unique keys")
+        }
+
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut access: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut map = BTreeMap::new();
+            while let Some(key) = access.next_key::<String>()? {
+                if map.contains_key(&key) {
+                    // Raw keys have not been validated and may contain secrets.
+                    return Err(serde::de::Error::custom("duplicate catalog map key"));
+                }
+                map.insert(key, access.next_value()?);
+            }
+            Ok(map)
+        }
+    }
+
+    deserializer.deserialize_map(UniqueMap(PhantomData))
+}
+
+fn deserialize_optional_variants<'de, D>(deserializer: D) -> Result<Option<Variants>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    struct UniqueVariants(#[serde(deserialize_with = "deserialize_unique_map")] Variants);
+
+    Option::<UniqueVariants>::deserialize(deserializer).map(|variants| variants.map(|v| v.0))
+}
 
 /// One variant: a JSON object merged shallowly into the chat request body.
 /// Only the keys the request owns are refused ([`RESERVED_VARIANT_KEYS`]);
@@ -112,7 +157,11 @@ pub struct ModelConfig {
     pub default_variant: Option<String>,
     /// Named request overrides. Omitted: generated from the model's effort
     /// tiers when the provider's `catalog_format` is `omniroute`. `{}`: none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_variants"
+    )]
     pub variants: Option<Variants>,
     #[serde(default)]
     pub reasoning_history: ReasoningHistory,
@@ -120,7 +169,9 @@ pub struct ModelConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelsConfig {
+    #[serde(deserialize_with = "deserialize_unique_map")]
     pub providers: BTreeMap<String, ProviderConfig>,
+    #[serde(deserialize_with = "deserialize_unique_map")]
     pub models: BTreeMap<String, ModelConfig>,
 }
 
@@ -361,6 +412,88 @@ mod tests {
     use super::*;
 
     const FIXTURE: &str = include_str!("../../tests/fixtures/models.json");
+
+    #[test]
+    fn catalog_rejects_duplicate_model_keys_even_with_identical_metadata() {
+        let first = r#"{"provider":"p","model":"m","context_window":1000,"supports_tools":true}"#;
+        for second in [
+            first,
+            r#"{"provider":"p","model":"m","context_window":2000,"supports_tools":false}"#,
+        ] {
+            // Raw JSON is essential: a Value/map fixture would lose duplicates.
+            let raw = format!(
+                r#"{{"providers":{{"p":{{"base_url":"http://unused"}}}},"models":{{"p/m":{first},"p/m":{second}}}}}"#
+            );
+            let error = ModelsConfig::parse(&raw).unwrap_err();
+            assert!(matches!(error, ConfigError::ParseJson(_)));
+            assert!(error.to_string().contains("duplicate catalog map key"));
+            assert!(serde_json::from_str::<ModelsConfig>(&raw).is_err());
+        }
+    }
+
+    #[test]
+    fn catalog_rejects_duplicate_gateway_and_variant_keys() {
+        let raw = r#"{"providers":{"p":{"base_url":"http://first"},"p":{"base_url":"http://second"}},"models":{}}"#;
+        assert!(ModelsConfig::parse(raw)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate catalog map key"));
+        for second in ["high", "low"] {
+            let raw = config_with(
+                "",
+                &format!(
+                    r#", "variants": {{"high": {{"reasoning_effort": "high"}}, "high": {{"reasoning_effort": "{second}"}}}}"#
+                ),
+            );
+            assert!(ModelsConfig::parse(&raw)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate catalog map key"));
+        }
+    }
+
+    #[test]
+    fn duplicate_key_errors_do_not_echo_unvalidated_keys_or_values() {
+        for raw in [
+            r#"{"providers":{"secret-gateway":{"base_url":"http://secret-first"},"secret-gateway":{"base_url":"http://secret-second"}},"models":{}}"#.to_string(),
+            r#"{"providers":{},"models":{"secret-model":{"provider":"p","model":"m"},"secret-model":{"provider":"p","model":"m"}}}"#.to_string(),
+            config_with("", r#", "variants":{"secret-variant":{"reasoning_effort":"secret-first"},"secret-variant":{"reasoning_effort":"secret-second"}}"#),
+        ] {
+            let error = ModelsConfig::parse(&raw).unwrap_err().to_string();
+            assert!(error.contains("duplicate catalog map key"), "{error}");
+            assert!(!error.contains("secret"), "{error}");
+        }
+    }
+
+    #[test]
+    fn catalog_rejects_duplicate_decoded_keys() {
+        let raw = r#"{"providers":{"p":{"base_url":"http://unused"}},"models":{"p/m":{"provider":"p","model":"m"},"p\/\u006d":{"provider":"p","model":"m"}}}"#;
+        assert!(ModelsConfig::parse(raw)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate catalog map key"));
+    }
+
+    #[test]
+    fn unique_nested_catalog_round_trips_without_changing_fields() {
+        let raw = r#"{"providers":{"p":{"base_url":"http://unused","catalog_format":"omniroute"}},"models":{"p/upstream/m":{"provider":"p","model":"upstream/m","context_window":1000,"max_input_tokens":800,"max_output_tokens":200,"supports_tools":true,"supports_parallel_tool_calls":false,"default_variant":"high","variants":{"high":{"reasoning_effort":"high"},"think":{"thinking":{"type":"enabled","budget_tokens":50}}}},"p/other/m":{"provider":"p","model":"other/m","variants":null}}}"#;
+        let config = ModelsConfig::parse(raw).unwrap();
+        let model = config.resolve("p/upstream/m").unwrap().model;
+        assert_eq!(model.context_window, Some(1000));
+        assert_eq!(model.max_input_tokens, Some(800));
+        assert_eq!(model.max_output_tokens, Some(200));
+        assert!(model.supports_tools);
+        assert_eq!(model.supports_parallel_tool_calls, Some(false));
+        assert_eq!(model.default_variant.as_deref(), Some("high"));
+        assert_eq!(
+            model.variants.unwrap()["think"]["thinking"]["budget_tokens"],
+            50
+        );
+        assert!(config.models["p/other/m"].variants.is_none());
+        let serialized = serde_json::to_string(&config).unwrap();
+        let reparsed = ModelsConfig::parse(&serialized).unwrap();
+        assert_eq!(serialized, serde_json::to_string(&reparsed).unwrap());
+    }
 
     #[test]
     fn catalog_rejects_legacy_keys_and_mismatched_canonical_identity() {

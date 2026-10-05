@@ -233,6 +233,11 @@ type Ack = oneshot::Sender<Result<(), String>>;
 /// What the writer thread accepts.
 enum Write {
     AgentSelection {
+        #[cfg(test)]
+        before_commit: Option<(
+            std::sync::Arc<std::sync::Barrier>,
+            std::sync::Arc<std::sync::Barrier>,
+        )>,
         cancel: Option<tokio_util::sync::CancellationToken>,
         id: Ulid,
         agent: String,
@@ -335,6 +340,26 @@ pub struct HistoryStore {
     owner: Option<Ulid>,
     tx: mpsc::Sender<Msg>,
     path: Arc<PathBuf>,
+    #[cfg(debug_assertions)]
+    selection_commit_barrier: Arc<std::sync::Mutex<Option<Arc<SelectionCommitBarrier>>>>,
+}
+
+/// Debug-only boundary: SQLite has committed, but the selection callback has
+/// not returned to install or publish anything. Scoped to this store instance.
+#[cfg(debug_assertions)]
+#[derive(Debug, Default)]
+pub struct SelectionCommitBarrier {
+    pub reached: tokio::sync::Notify,
+    pub release: tokio::sync::Notify,
+    cancel: std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
+}
+
+#[cfg(debug_assertions)]
+impl SelectionCommitBarrier {
+    pub async fn cancelled(&self) {
+        let cancel = self.cancel.lock().unwrap().clone().expect("commit reached");
+        cancel.cancelled().await;
+    }
 }
 
 impl std::fmt::Debug for HistoryStore {
@@ -348,6 +373,13 @@ impl std::fmt::Debug for HistoryStore {
 const WRITER_GONE: &str = "history writer stopped";
 
 impl HistoryStore {
+    #[cfg(debug_assertions)]
+    pub fn arm_selection_commit_barrier(&self) -> Arc<SelectionCommitBarrier> {
+        let barrier = Arc::new(SelectionCommitBarrier::default());
+        *self.selection_commit_barrier.lock().unwrap() = Some(barrier.clone());
+        barrier
+    }
+
     /// Updates only the saved override. Runtime applications should use
     /// `commit_agent_selection` inside the existing sequencer acknowledged callback.
     pub async fn update_agent_override(
@@ -357,6 +389,8 @@ impl HistoryStore {
         value: AgentOverride,
     ) -> Result<(), String> {
         self.acked(Write::AgentSelection {
+            #[cfg(test)]
+            before_commit: None,
             cancel: None,
             id,
             agent: agent.into(),
@@ -370,6 +404,8 @@ impl HistoryStore {
 
     pub async fn clear_agent_override(&self, id: Ulid, agent: &str) -> Result<(), String> {
         self.acked(Write::AgentSelection {
+            #[cfg(test)]
+            before_commit: None,
             cancel: None,
             id,
             agent: agent.into(),
@@ -448,7 +484,11 @@ impl HistoryStore {
                     .into(),
             );
         }
+        #[cfg(debug_assertions)]
+        let token = cancel.clone();
         self.acked(Write::AgentSelection {
+            #[cfg(test)]
+            before_commit: None,
             cancel,
             id,
             agent: agent.into(),
@@ -457,7 +497,17 @@ impl HistoryStore {
             staged,
             envelopes,
         })
-        .await
+        .await?;
+        #[cfg(debug_assertions)]
+        {
+            let barrier = self.selection_commit_barrier.lock().unwrap().take();
+            if let Some(barrier) = barrier {
+                *barrier.cancel.lock().unwrap() = token;
+                barrier.reached.notify_one();
+                barrier.release.notified().await;
+            }
+        }
+        Ok(())
     }
     /// Opens (creating parents) and migrates the database, opens the writer's
     /// connection, then spawns the single writer thread. Fails when the
@@ -483,6 +533,8 @@ impl HistoryStore {
             owner: None,
             tx,
             path: Arc::new(path),
+            #[cfg(debug_assertions)]
+            selection_commit_barrier: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 
@@ -1274,6 +1326,11 @@ fn queue_permission_resolution(
 }
 
 fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
+    #[cfg(test)]
+    let before_commit = match &write {
+        Write::AgentSelection { before_commit, .. } => before_commit.clone(),
+        _ => None,
+    };
     let cancellation = match &write {
         Write::AgentSelection { cancel, .. } => cancel.clone(),
         _ => None,
@@ -1286,6 +1343,8 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     match write {
         Write::AgentSelection {
+            #[cfg(test)]
+                before_commit: _,
             cancel: _,
             id,
             agent,
@@ -1557,6 +1616,11 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                 params![id.to_string()],
             )?;
         }
+    }
+    #[cfg(test)]
+    if let Some((reached, release)) = before_commit {
+        reached.wait();
+        release.wait();
     }
     if cancellation.as_ref().is_some_and(|c| c.is_cancelled()) {
         return Err(WriteError::InvalidSelection(
@@ -1918,6 +1982,60 @@ mod tests {
     use super::*;
     use crate::bus::event::EventKind;
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancellation_at_writer_precommit_rolls_back_override_and_inserted_event() {
+        let (_dir, store) = temp_store();
+        let id = Ulid::new();
+        store.record_session(id, "/w", "old", None).await.unwrap();
+        let token = tokio_util::sync::CancellationToken::new();
+        let reached = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let task = tokio::spawn({
+            let store = store.clone();
+            let token = token.clone();
+            let reached = reached.clone();
+            let release = release.clone();
+            async move {
+                store
+                    .acked(Write::AgentSelection {
+                        before_commit: Some((reached, release)),
+                        cancel: Some(token),
+                        id,
+                        agent: "build".into(),
+                        value: Some(AgentOverride {
+                            model: Some("p/new".into()),
+                            variant: AgentVariantOverride::Off,
+                        }),
+                        selection: None,
+                        staged: None,
+                        envelopes: vec![EventEnvelope::new(
+                            id,
+                            0,
+                            EventKind::ModelChanged,
+                            serde_json::json!({}),
+                        )],
+                    })
+                    .await
+            }
+        });
+        tokio::task::spawn_blocking(move || reached.wait())
+            .await
+            .unwrap();
+        token.cancel();
+        tokio::task::spawn_blocking(move || release.wait())
+            .await
+            .unwrap();
+        assert!(task
+            .await
+            .unwrap()
+            .unwrap_err()
+            .contains("cancelled before commit"));
+        let loaded = store.load(id).await.unwrap().unwrap();
+        assert!(loaded.meta.agent_overrides.is_empty());
+        assert!(loaded.envelopes.is_empty());
+        assert_eq!(loaded.meta.model, "old");
+    }
+
     #[tokio::test]
     async fn cancelled_selection_writer_leaves_identity_override_and_events_unchanged() {
         let (_dir, store) = temp_store();
@@ -1928,6 +2046,7 @@ mod tests {
         // Exercise writer cancellation independently of the public admission check.
         let error = store
             .acked(Write::AgentSelection {
+                before_commit: None,
                 id,
                 agent: "build".into(),
                 value: Some(AgentOverride {

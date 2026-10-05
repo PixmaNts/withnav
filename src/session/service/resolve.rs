@@ -596,14 +596,12 @@ impl Service {
                         .filter(|a| a.mode.is_primary())
                         .cloned()
                         .ok_or_else(|| format!("unknown primary agent '{agent_name}'"))?;
-                    let configured = service
-                        .assignments_configured()
-                        .map_err(|e| e.to_string())?;
                     let saved = meta.agent_overrides.get(agent_name).cloned();
                     use super::super::store::{ModelSource, SelectionProvenance, VariantSource};
                     let captured = service
                         .capture_preparation(&workspace)
                         .map_err(|e| e.to_string())?;
+                    let configured = captured.configured;
                     let assignment = if configured {
                         service
                             .assigned_from_snapshot(&captured, &agents, agent_name, false)
@@ -673,6 +671,36 @@ impl Service {
                         };
                         (request.alias.clone(), VariantChoice::Default, Some(value))
                     };
+                    let resolved = if configured {
+                        let name = crate::provider::model_name::ModelName::parse(
+                            &alias,
+                            &captured.catalog,
+                        )
+                        .map_err(|e| e.to_string())?;
+                        captured
+                            .catalog
+                            .resolve_name(&name)
+                            .map_err(|e| e.to_string())?
+                    } else {
+                        captured
+                            .catalog
+                            .resolve(&alias)
+                            .map_err(|e| e.to_string())?
+                    };
+                    #[cfg(test)]
+                    {
+                        let barrier = service.preparation_barrier.lock().unwrap().take();
+                        if let Some(barrier) = barrier {
+                            barrier.reached.notify_one();
+                            barrier.release.notified().await;
+                        }
+                    }
+                    let warning = assignment.as_ref().and_then(|a| a.3.clone()).filter(|_| {
+                        override_value
+                            .as_ref()
+                            .and_then(|o| o.model.as_ref())
+                            .is_none()
+                    });
                     let mut target = service
                         .resolve_switch_target(
                             id,
@@ -680,10 +708,12 @@ impl Service {
                             &alias,
                             current.resolution.as_deref(),
                             &choice,
+                            (resolved, captured.path),
                         )
                         .await
                         .map_err(|e| e.to_string())?;
                     target.agent = Some(agent);
+                    target.warning = warning;
                     if override_value
                         .as_ref()
                         .and_then(|o| o.model.as_ref())
@@ -845,12 +875,13 @@ impl Service {
     async fn resolve_switch_target(
         &self,
         id: Ulid,
-        workspace: &Path,
+        _workspace: &Path,
         alias: &str,
         running: Option<&ModelResolution>,
         choice: &VariantChoice,
+        captured: (ResolvedModel, PathBuf),
     ) -> Result<ModelTarget, ServerError> {
-        let (mut resolved, models_file) = self.resolve_model(workspace, alias)?;
+        let (mut resolved, models_file) = captured;
         if resolved.model.api != crate::provider::config::ApiKind::Chat {
             return Err(ServerError::Model(
                 crate::error::ProviderError::UnknownModelAlias(alias.to_string()),
@@ -896,6 +927,7 @@ impl Service {
             .map(|r| ModelIdentity::from_upstream(&r.provider, &r.model))
             .unwrap_or_else(|| ModelIdentity::from_upstream("", ""));
         Ok(ModelTarget {
+            warning: None,
             provenance: None,
             source: String::new(),
             variant_source: String::new(),

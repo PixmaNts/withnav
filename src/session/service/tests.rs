@@ -1,6 +1,46 @@
 use super::*;
 
 #[tokio::test]
+async fn switching_uses_one_captured_endpoint_variant_and_source_generation() {
+    let (dir, service) = test_service();
+    std::fs::create_dir_all(dir.path().join("cfg")).unwrap();
+    std::fs::write(
+        dir.path().join("cfg/config.json"),
+        r#"{"agents":{"build":{"model":"mock/old"},"plan":{"model":"mock/old","variant":"low"}}}"#,
+    )
+    .unwrap();
+    crate::provider::auth::set_key(&service.config.config_dir, "mock", "test").unwrap();
+    std::fs::write(dir.path().join("models.json"),r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"key":{"provider":"mock","model":"old","context_window":128000,"variants":{"low":{"reasoning_effort":"low"}}}}}"#).unwrap();
+    let id = service
+        .create_session(dir.path(), None, None)
+        .await
+        .unwrap();
+    let barrier = Arc::new(crate::session::run_command::Barrier::default());
+    *service.preparation_barrier.lock().unwrap() = Some(barrier.clone());
+    let task = tokio::spawn({
+        let service = service.clone();
+        async move { service.run_command(id, "agent", "plan").await }
+    });
+    barrier.reached.notified().await;
+    std::fs::write(dir.path().join("cfg/config.json"), "{}").unwrap();
+    std::fs::write(dir.path().join("models.json"),r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:2/v1"}},"models":{"key":{"provider":"mock","model":"new","context_window":128000}}}"#).unwrap();
+    barrier.release.notify_one();
+    assert!(task.await.unwrap().unwrap().ok);
+    let meta = service.history.meta(id).await.unwrap().unwrap();
+    assert_eq!(meta.model, "mock/old");
+    assert_eq!(meta.variant.as_deref(), Some("low"));
+    assert_eq!(
+        meta.variant_override.as_deref(),
+        Some(r#"{"reasoning_effort":"low"}"#)
+    );
+    assert!(meta.model_resolution.unwrap().contains("127.0.0.1:1"));
+    assert_eq!(
+        meta.provenance.unwrap().model,
+        crate::session::store::ModelSource::Config
+    );
+}
+
+#[tokio::test]
 async fn preparation_uses_captured_assignment_catalog_and_variant_generation() {
     let (dir, service) = test_service();
     std::fs::create_dir_all(dir.path().join("cfg")).unwrap();

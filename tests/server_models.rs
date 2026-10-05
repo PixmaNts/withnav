@@ -5,6 +5,123 @@ use serde_json::{json, Value};
 mod common;
 use common::server::{spawn_server, TestServerConfig, PROVIDER};
 
+const SECRET_SENTINEL: &str = "synthetic-secret-never-echo";
+
+async fn catalog_response(state: navai::server::AppState, root: &std::path::Path) -> (u16, Value) {
+    let (addr, task) = spawn_server(state).await;
+    let response = reqwest::Client::new()
+        .get(format!("http://{addr}/v1/models"))
+        .query(&[("workspace", root)])
+        .send()
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let body: Value = response.json().await.unwrap();
+    // Do not include response content in failure diagnostics: it may contain credentials.
+    assert!(
+        !body.to_string().contains(SECRET_SENTINEL),
+        "catalog leaked a synthetic secret"
+    );
+    task.abort();
+    (status, body)
+}
+
+#[tokio::test]
+async fn invalid_settings_and_capabilities_do_not_echo_supplied_values() {
+    for field in ["default_agent", "supports_tools", "settings"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = TestServerConfig::unreachable(tmp.path()).state();
+        if field == "settings" {
+            std::fs::write(
+                tmp.path().join("cfg/config.json"),
+                json!(SECRET_SENTINEL).to_string(),
+            )
+            .unwrap();
+        } else if field == "default_agent" {
+            std::fs::write(
+                tmp.path().join("cfg/config.json"),
+                json!({"default_agent": {"secret": SECRET_SENTINEL}}).to_string(),
+            )
+            .unwrap();
+        } else {
+            let path = tmp.path().join("models.json");
+            let mut catalog: Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            catalog["models"]["default"][field] = json!(SECRET_SENTINEL);
+            std::fs::write(path, catalog.to_string()).unwrap();
+        }
+        let (status, _) = catalog_response(state, tmp.path()).await;
+        assert_eq!(status, 400);
+    }
+}
+
+#[tokio::test]
+async fn default_agent_must_be_a_valid_agent_id() {
+    for (agent, expected) in [("Build", 400), ("build/plan", 400), ("plan", 200)] {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = TestServerConfig::unreachable(tmp.path()).state();
+        std::fs::write(
+            tmp.path().join("cfg/config.json"),
+            json!({"default_agent": agent}).to_string(),
+        )
+        .unwrap();
+        let (status, body) = catalog_response(state, tmp.path()).await;
+        assert_eq!(status, expected);
+        if status == 200 {
+            assert_eq!(body["default_agent"], agent);
+        } else {
+            assert!(!body.to_string().contains(agent));
+        }
+    }
+}
+
+#[tokio::test]
+async fn malformed_auth_store_diagnostic_does_not_echo_its_contents() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = TestServerConfig::unreachable(tmp.path()).state();
+    std::fs::write(
+        tmp.path().join("cfg/auth.json"),
+        json!(SECRET_SENTINEL).to_string(),
+    )
+    .unwrap();
+    let (status, body) = catalog_response(state, tmp.path()).await;
+    assert_eq!(status, 200);
+    assert!(body["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| entry["disabled_reason"] == "model authentication unavailable"));
+}
+
+#[tokio::test]
+async fn provider_response_diagnostic_does_not_echo_endpoint_or_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::path("/v1/models"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(503)
+                .set_body_string(format!("endpoint={} key={SECRET_SENTINEL}", provider.uri())),
+        )
+        .mount(&provider)
+        .await;
+    let state = TestServerConfig::mock(tmp.path(), &format!("{}/v1", provider.uri()))
+        .omniroute()
+        .state();
+    let (status, body) = catalog_response(state, tmp.path()).await;
+    assert_eq!(status, 200);
+    assert!(
+        !body.to_string().contains(&provider.uri()),
+        "catalog leaked provider endpoint"
+    );
+    assert!(body["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| entry["refresh_error"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("503"))));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lists_all_api_kinds_with_canonical_identity_and_configured_default_agent() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -340,10 +457,7 @@ async fn duplicate_gateway_upstream_identity_is_rejected() {
         .unwrap();
     assert_eq!(response.status(), 400);
     let body = response.text().await.unwrap();
-    assert!(
-        body.contains("mock/combo/same") && body.contains("first") && body.contains("second"),
-        "{body}"
-    );
+    assert!(body.contains("ambiguous catalog identity"), "{body}");
     assert!(!body.contains("127.0.0.1"));
     task.abort();
 }

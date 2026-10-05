@@ -195,6 +195,7 @@ async fn an_idle_switch_sends_the_next_request_to_the_new_model_with_its_default
     assert!(out.ok, "{out:?}");
     let data = out.data.clone().unwrap();
     assert_eq!(data["changed"], true);
+    assert_eq!(data["alias"], "other");
     assert_eq!(data["applies"], "now");
     assert_eq!(data["variant"], "high");
     assert_eq!(data["previous"]["model"], "a/model-a");
@@ -227,6 +228,10 @@ async fn an_idle_switch_sends_the_next_request_to_the_new_model_with_its_default
     assert_eq!(summary.variant.as_deref(), Some("high"));
     let model = state.run_command(id, "model", "").await.unwrap();
     assert_eq!(model.data.unwrap()["alias"], "other");
+    let unchanged = state.run_command(id, "model", "other").await.unwrap();
+    let unchanged = unchanged.data.unwrap();
+    assert_eq!(unchanged["alias"], data["alias"]);
+    assert_eq!(unchanged["changed"], false);
     assert_eq!(stored(&state, id, "model.changed").await.len(), 1);
 
     turn_done(&state, id, "go on").await;

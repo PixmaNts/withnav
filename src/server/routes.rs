@@ -545,19 +545,30 @@ async fn list_models(
     match catalog {
         Ok((catalog, _)) => {
             let default_agent = match crate::settings::load(&state.config.config_dir)
-                .map_err(|e| e.to_string())
-                .and_then(|s| s.default_agent().map(str::to_string))
-            {
+                .map_err(|_| "settings unavailable")
+                .and_then(|s| {
+                    let id = s.default_agent().map_err(|_| "invalid default_agent")?;
+                    crate::agent::definitions::AgentId::parse(id)
+                        .map(|_| id.to_string())
+                        .map_err(|_| "invalid default_agent")
+                }) {
                 Ok(agent) => agent,
-                Err(reason) => return error_response(ServerError::MalformedBody(reason)),
+                Err(reason) => return error_response(ServerError::MalformedBody(reason.into())),
             };
             for model in catalog.models.values() {
                 let name = format!("{}/{}", model.provider, model.model);
                 let resolved = crate::provider::model_name::ModelName::parse(&name, &catalog)
-                    .map_err(|e| e.to_string())
-                    .and_then(|name| catalog.resolve_name(&name).map_err(|e| e.to_string()));
+                    .map_err(|_| "invalid catalog identity")
+                    .and_then(|name| {
+                        catalog.resolve_name(&name).map_err(|error| match error {
+                            crate::error::ProviderError::AmbiguousModel { .. } => {
+                                "ambiguous catalog identity"
+                            }
+                            _ => "unavailable catalog identity",
+                        })
+                    });
                 if let Err(reason) = resolved {
-                    return error_response(ServerError::MalformedBody(reason));
+                    return error_response(ServerError::MalformedBody(reason.into()));
                 }
             }
             let mut models = catalog
@@ -624,7 +635,7 @@ async fn list_models(
                     }
                     Err(error) => {
                         entry.enabled = Some(false);
-                        entry.disabled_reason = Some(error.to_string());
+                        entry.disabled_reason = Some(model_catalog_error(&error).into());
                     }
                 }
             }
@@ -639,7 +650,21 @@ async fn list_models(
             )
                 .into_response()
         }
-        Err(err) => error_response(err.into()),
+        Err(_) => error_response(ServerError::MalformedBody(
+            "model catalog configuration unavailable".into(),
+        )),
+    }
+}
+
+/// Catalog diagnostics never echo supplied configuration, authentication or response bodies.
+fn model_catalog_error(error: &ServerError) -> &'static str {
+    match error {
+        ServerError::Config(_) => "model catalog configuration unavailable",
+        ServerError::Model(
+            crate::error::ProviderError::Auth(_) | crate::error::ProviderError::MissingApiKey,
+        ) => "model authentication unavailable",
+        ServerError::NoContextWindow { .. } => "model context window unavailable",
+        _ => "model metadata unavailable",
     }
 }
 

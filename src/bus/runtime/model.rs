@@ -269,7 +269,7 @@ pub(super) async fn run(
     }
     Ok(Switched {
         data: json!({
-            "alias": target.new.model,
+            "alias": target.alias,
             "changed": true,
             "previous": identity_json(&target.previous),
             "new": identity_json(&target.new),

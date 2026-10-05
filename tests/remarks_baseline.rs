@@ -90,7 +90,9 @@ async fn failed_instinct_keeps_the_diff_for_the_next_save() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn newer_edit_cancels_instinct_and_its_released_answer_cannot_start_a_remark() {
+async fn newer_edit_cancels_cooperative_instinct_and_next_save_keeps_the_diff() {
+    // This fake respects cancellation. Rejection of a late successful answer from
+    // a non-cooperative client remains a separate evaluator acceptance boundary.
     let gate = Arc::new(CancellationToken::new());
     let mut stale = silent_answers();
     stale.insert("worth_attention".into(), Answer::Noul { noul: 0.95 });

@@ -9,6 +9,8 @@ pub enum Row<'a> {
         key: String,
         label: String,
         collapsed: bool,
+        /// Visual depth: 0 for a gateway, 1 for a provider under it.
+        level: u8,
     },
     Model(&'a ModelEntry),
 }
@@ -18,6 +20,16 @@ impl Row<'_> {
         match self {
             Self::Group { key, .. } => format!("group:{key}"),
             Self::Model(model) => model.name.clone(),
+        }
+    }
+
+    /// Visual depth in the picker: gateway 0, provider 1, model 2, or 1 for a model of a
+    /// direct gateway (no provider heading between them).
+    pub fn level(&self) -> u8 {
+        match self {
+            Self::Group { level, .. } => *level,
+            Self::Model(model) if model.provider_group == model.gateway => 1,
+            Self::Model(_) => 2,
         }
     }
 }
@@ -43,6 +55,7 @@ pub fn rows<'a>(catalog: &'a [ModelEntry], ui: &UiState) -> Vec<Row<'a>> {
             key: gateway.into(),
             label: gateway.into(),
             collapsed,
+            level: 0,
         });
         if collapsed {
             continue;
@@ -54,8 +67,9 @@ pub fn rows<'a>(catalog: &'a [ModelEntry], ui: &UiState) -> Vec<Row<'a>> {
             if provider != gateway {
                 rows.push(Row::Group {
                     key,
-                    label: format!("  {provider}"),
+                    label: provider.into(),
                     collapsed,
+                    level: 1,
                 });
                 if collapsed {
                     continue;

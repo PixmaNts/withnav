@@ -1,0 +1,20 @@
+---
+source: tests/tui_layers_models.rs
+expression: "picker_lines(&state, &ui, (60, 16)).join(\"\\n\")"
+---
+ ◆ navai                        build  — · assigned · — / — 
+────────────────────────────────────────────────────────────
+  ┌─────────────────── Choose a model ───────────────────┐  
+  │ ❯ filter models…                                     │  
+  │ ▾ direct                                             │  
+  │   direct/solo       solo                      200k   │  
+  │ ▾ omniroute                                          │  
+  │   ▾ cc                                               │  
+  │     omniroute/cc/cla… cc/claude-opus          200k   │  
+  │   ▾ kimi                                             │  
+──│     omniroute/kimi/k2 kimi/k2                 200k   │──
+ r│                                                      │k 
+┌ │ ↑↓ move  ←→ fold  enter choose/fold  esc close       │─┐
+│ └──────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────┘
+ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model

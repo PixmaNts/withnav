@@ -16,8 +16,8 @@ expression: snapshot
             │ ❯ filter models…                                                         │            
             │ switches the model only; /variant after the switch · ctrl+n new tab      │            
             │▌▾ gateway                                                                │            
-            │ cognition         cc/claude-opus-5-5                              200k   │            
-            │ fast              cc/flash                                           —   │            
+            │   cognition         cc/claude-opus-5-5                            200k   │            
+            │   fast              cc/flash                                         —   │            
             │                                                                          │            
             │ ↑↓ move  ←→ fold  enter choose/fold  esc close                           │            
             └──────────────────────────────────────────────────────────────────────────┘            

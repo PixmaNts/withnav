@@ -351,3 +351,139 @@ async fn the_text_report_counts_per_action_and_lists_what_changed() {
     assert!(text.contains("changed decisions (2)"), "{text}");
     assert!(text.contains("... 2 more"), "{text}");
 }
+
+#[tokio::test]
+async fn current_builtin_replays_synthetic_save_idle_and_conversation_but_not_diagnostics() {
+    use navai::navigator::pipeline::PipelineSnapshot;
+    use navai::navigator::TriggerKind;
+    use serde_json::json;
+
+    let pipeline = Pipeline::new(PipelineSnapshot::builtin().unwrap());
+    let mut records = Vec::new();
+    for (id, kind, help, stuck, remark_ms, wake_ms, changed, expected, branch) in [
+        (
+            "save-help",
+            TriggerKind::Save,
+            true,
+            0.9,
+            0,
+            0,
+            0,
+            "remark",
+            Some(0),
+        ),
+        (
+            "idle-stuck",
+            TriggerKind::Idle,
+            false,
+            0.9,
+            0,
+            120_000,
+            1,
+            "wake_cognition",
+            Some(1),
+        ),
+        (
+            "save-wake-cooldown",
+            TriggerKind::Save,
+            false,
+            0.9,
+            45_000,
+            119_999,
+            1,
+            "remark",
+            Some(3),
+        ),
+        (
+            "idle-remark-cooldown",
+            TriggerKind::Idle,
+            false,
+            0.1,
+            44_999,
+            120_000,
+            1,
+            "silent",
+            Some(4),
+        ),
+        (
+            "idle-unchanged",
+            TriggerKind::Idle,
+            false,
+            0.1,
+            45_000,
+            120_000,
+            0,
+            "silent",
+            None,
+        ),
+        (
+            "conversation",
+            TriggerKind::Conversation,
+            false,
+            0.1,
+            30_000,
+            0,
+            0,
+            "remark",
+            Some(0),
+        ),
+        (
+            "conversation-cooldown",
+            TriggerKind::Conversation,
+            false,
+            0.1,
+            29_999,
+            0,
+            0,
+            "silent",
+            None,
+        ),
+    ] {
+        let answers = BTreeMap::from([
+            noul("worth_attention", 0.95),
+            route("route", "metacognition"),
+            noul("drift", 0.1),
+            noul("contradicts_conversation", 0.1),
+            noul("unfinished", 0.1),
+            noul("stuck", stuck),
+            noul("code_contradicts_conversation", 0.95),
+        ]);
+        let record = json!({
+            "kind": "trigger", "trigger_id": id, "event": kind.as_str(),
+            "uri": "file:///synthetic/parser.rs", "version": 2,
+            "prefilter": {"inputs": {
+                "changed_lines": changed, "called_for_help": help,
+                "since_last_remark_ms": remark_ms, "since_last_wake_ms": wake_ms,
+                "has_intent": false, "has_errors": false, "has_conversation": true,
+            }},
+            "questions": pipeline.questions(kind), "answers": answers,
+            "requested_action": expected, "delivered": "silent",
+        });
+        records.push((record.to_string(), id, expected, branch));
+    }
+    let diagnostics = json!({
+        "kind": "trigger", "trigger_id": "diagnostics-unhandled", "event": "diagnostics",
+        "prefilter": {"inputs": {"changed_lines": 1}}, "delivered": "none",
+    });
+    let text = records
+        .iter()
+        .map(|(record, _, _, _)| record.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+        + &diagnostics.to_string();
+    let log = ReplayLog::parse(&text);
+    let report = Replayer::new(&pipeline).run(&log).await;
+    assert_eq!(report.compared, 7);
+    assert_eq!(report.reasked, 0);
+    assert!(report.changed.is_empty(), "{:?}", report.changed);
+    assert_eq!(report.not_comparable.len(), 1);
+    assert_eq!(report.not_comparable[0].event, "diagnostics");
+    assert_eq!(report.not_comparable[0].reason, "no_trigger_for_event");
+    for (compared, (_, id, action, branch)) in report.compared_triggers.iter().zip(records) {
+        assert_eq!(compared.trigger_id, id);
+        assert_eq!(compared.candidate, action);
+        assert_eq!(compared.branch, branch);
+        assert!(!compared.reasked);
+    }
+}

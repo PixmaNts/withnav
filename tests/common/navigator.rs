@@ -167,7 +167,10 @@ enum DecisionMode {
 pub struct ScriptedDecision {
     mode: DecisionMode,
     states: Arc<Mutex<Vec<String>>>,
+    questions: Arc<Mutex<Vec<Questions>>>,
     calls: Arc<AtomicUsize>,
+    started: tokio::sync::Semaphore,
+    gate: Option<Arc<CancellationToken>>,
 }
 
 impl ScriptedDecision {
@@ -175,7 +178,10 @@ impl ScriptedDecision {
         Self {
             mode,
             states: Arc::default(),
+            questions: Arc::default(),
             calls: Arc::default(),
+            started: tokio::sync::Semaphore::new(0),
+            gate: None,
         }
     }
 
@@ -200,6 +206,27 @@ impl ScriptedDecision {
     /// Every call fails with `ModelError::Malformed(message)`.
     pub fn failing(message: &str) -> Self {
         Self::with_mode(DecisionMode::Failing(message.to_string()))
+    }
+
+    /// Holds each scripted answer until released, respecting cancellation.
+    pub fn gated(answers: Vec<Answers>, gate: Arc<CancellationToken>) -> Self {
+        Self {
+            gate: Some(gate),
+            ..Self::new(answers)
+        }
+    }
+
+    /// Waits for one call to enter the fake, without advancing the idle clock.
+    pub async fn wait_for_call(&self) {
+        tokio::time::timeout(Duration::from_secs(20), self.started.acquire())
+            .await
+            .expect("decision call started")
+            .expect("decision call signal open")
+            .forget();
+    }
+
+    pub fn questions(&self) -> Vec<Questions> {
+        self.questions.lock().unwrap().clone()
     }
 
     pub fn states(&self) -> Vec<String> {
@@ -253,10 +280,12 @@ impl DecisionModel for ScriptedDecision {
         &'a self,
         state: &'a str,
         questions: &'a Questions,
-        _cancel: &'a CancellationToken,
+        cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<Answers, ModelError>> {
         let index = self.calls.fetch_add(1, Ordering::SeqCst);
         self.states.lock().unwrap().push(state.to_string());
+        self.questions.lock().unwrap().push(questions.clone());
+        self.started.add_permits(1);
         let result = match &self.mode {
             DecisionMode::Script(script) => Ok(script
                 .get(index)
@@ -276,7 +305,18 @@ impl DecisionModel for ScriptedDecision {
                 .collect()),
             DecisionMode::Failing(message) => Err(ModelError::Malformed(message.clone())),
         };
-        Box::pin(async move { result })
+        Box::pin(async move {
+            if let Some(gate) = &self.gate {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Err(ModelError::Provider(
+                        ProviderError::Canceled { partial: None },
+                    )),
+                    _ = gate.cancelled() => {}
+                }
+            }
+            result
+        })
     }
 }
 
@@ -601,6 +641,35 @@ impl LspClient {
             "params": params
         }))
         .await;
+    }
+
+    /// Runs a custom method as a request and retains intervening notifications.
+    pub async fn request(&mut self, id: u64, method: &str, params: Value) -> Vec<Value> {
+        self.send(&json!({
+            "jsonrpc": "2.0", "id": id, "method": method, "params": params,
+        }))
+        .await;
+        let mut seen = Vec::new();
+        loop {
+            let msg = self.recv().await;
+            if msg["id"] == id {
+                assert!(msg.get("error").is_none(), "request failed: {msg}");
+                return seen;
+            }
+            seen.push(msg);
+        }
+    }
+
+    /// An empty reflex request acknowledges preceding document notifications.
+    pub async fn sync_notifications(&mut self) -> Vec<Value> {
+        self.request(
+            10,
+            "navigator/inlineCompletion",
+            json!({
+                "uri": URI, "version": 0, "line": 0, "character": 0,
+            }),
+        )
+        .await
     }
 }
 

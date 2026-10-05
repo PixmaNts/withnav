@@ -59,14 +59,26 @@ async fn startup_does_not_wait_for_model_discovery() {
                 "api_key_env": "NAVAI_TEST_KEY"
             }},
             "models": {
-                "metacognition": { "provider": "slow", "model": "m-chat", "supports_tools": true },
-                "reflex": { "provider": "slow", "model": "m-fim", "api": "fim" },
-                "instinct": { "provider": "slow", "model": "m-s1", "api": "systemone" }
+                "slow/m-chat": { "provider": "slow", "model": "m-chat", "supports_tools": true },
+                "slow/main": { "provider": "slow", "model": "main", "context_window": 128000, "supports_tools": true },
+                "slow/m-fim": { "provider": "slow", "model": "m-fim", "api": "fim" },
+                "slow/m-s1": { "provider": "slow", "model": "m-s1", "api": "systemone" }
             }
         })
     )
     .expect("write");
     drop(file);
+    let config = root.path().join("config/navai");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("config.json"),
+        json!({
+            "agents":{"build":{"model":"slow/main"}},
+            "layers":{"reflex":"slow/m-fim","instinct":"slow/m-s1","metacognition":"slow/m-chat"}
+        })
+        .to_string(),
+    )
+    .unwrap();
 
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_navai-lsp"))
         .arg("--models")

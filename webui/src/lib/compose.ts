@@ -60,6 +60,15 @@ export function route(line: string, delegate = false): Routed {
   return { type: "server", name, arguments: args };
 }
 
+/**
+ * The title to show for a session. The server titles a session after its first
+ * message, so a delegated first message would otherwise show the delegation line.
+ */
+export function sessionTitle(title: string | null | undefined): string {
+  const text = title ? readDelegation(title).text : "";
+  return text || "Untitled session";
+}
+
 /** Splits a stored driver message back into its delegation flag and text. */
 export function readDelegation(text: string): { delegated: boolean; text: string } {
   if (text.startsWith(DELEGATION_LINE)) return { delegated: true, text: text.slice(DELEGATION_LINE.length).replace(/^\s*\n/, "").trimStart() };

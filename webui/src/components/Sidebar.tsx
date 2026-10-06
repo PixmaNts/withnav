@@ -2,6 +2,7 @@ import { CaretDown, CaretRight, Folder, FolderPlus, Plus } from "@phosphor-icons
 import { useState } from "react";
 import { useSessions, useWorkspaces } from "../api/queries";
 import type { SessionListEntry, WorkspaceEntry } from "../api/types";
+import { sessionTitle } from "../lib/compose";
 import { dayLabel, plural, shortPath } from "../lib/format";
 import type { Route } from "../router";
 
@@ -119,9 +120,9 @@ function SessionRow({ s, kids, ws, route, navigate }: { s: SessionListEntry; kid
         className="sess"
         aria-current={selected ? "page" : undefined}
         onClick={() => navigate({ workspace: ws, session: s.id, subagent: null })}
-        title={s.title ?? undefined}
+        title={sessionTitle(s.title)}
       >
-        <span className="title">{s.title || "Untitled session"}</span>
+        <span className="title">{sessionTitle(s.title)}</span>
         <span className="meta">
           {[dayLabel(s.updated_at), plural(s.message_count, "msg")].filter(Boolean).join(" · ")}
         </span>

@@ -11,7 +11,7 @@ import { RightPanel, type PanelTab } from "./components/RightPanel";
 import { Sidebar } from "./components/Sidebar";
 import { SubagentView } from "./components/SubagentView";
 import { EmptySession, Transcript } from "./components/Transcript";
-import type { ClientCommand } from "./lib/compose";
+import { sessionTitle, type ClientCommand } from "./lib/compose";
 import { baseName, modKey, shortPath } from "./lib/format";
 import { useRoute } from "./router";
 import { useChat } from "./session/useChat";
@@ -54,7 +54,7 @@ function ChatPage() {
   const sessions = useSessions(workspace);
   const commands = useCommands();
   const sessionRow = sessions.data?.find((s) => s.id === route.session);
-  const title = sessionRow?.title || (route.session ? "Untitled session" : "New session");
+  const title = route.session ? sessionTitle(sessionRow?.title) : "New session";
   const childRow = route.subagent ? sessions.data?.find((s) => s.id === route.subagent) : undefined;
   const childAgent = (route.subagent && chat.view.children[route.subagent]?.agent) || childRow?.agent;
 
@@ -122,7 +122,7 @@ function ChatPage() {
         page: () => ({
           title: "Sessions",
           placeholder: "Choose a session…",
-          items: (sessions.data ?? []).filter((s) => !s.parent_session_id).map((s) => ({ id: s.id, group: s.agent, label: s.title || "Untitled session", description: `${s.message_count} msgs`, run: () => navigate({ session: s.id, subagent: null }) })),
+          items: (sessions.data ?? []).filter((s) => !s.parent_session_id).map((s) => ({ id: s.id, group: s.agent, label: sessionTitle(s.title), description: `${s.message_count} msgs`, run: () => navigate({ session: s.id, subagent: null }) })),
         }),
       },
       ...(hasSession && chat.running ? [{ id: "stop", group: "Session", label: "Stop the session", hint: "/stop", run: () => void chat.stop() }] : []),

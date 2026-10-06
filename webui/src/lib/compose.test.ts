@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DELEGATION_LINE, readDelegation, route } from "./compose";
+import { DELEGATION_LINE, readDelegation, route, sessionTitle } from "./compose";
 
 describe("compose routing", () => {
   it("sends plain text and literal slashes as messages", () => {
@@ -32,5 +32,14 @@ describe("compose routing", () => {
     expect(text.startsWith(DELEGATION_LINE)).toBe(true);
     expect(readDelegation(text)).toEqual({ delegated: true, text: "swap the parser" });
     expect(readDelegation("plain")).toEqual({ delegated: false, text: "plain" });
+  });
+});
+
+describe("sessionTitle", () => {
+  it("drops the delegation line the server copied into the title", () => {
+    expect(sessionTitle(`${DELEGATION_LINE} Edit README.md`)).toBe("Edit README.md");
+    expect(sessionTitle("Fix the parser")).toBe("Fix the parser");
+    expect(sessionTitle(null)).toBe("Untitled session");
+    expect(sessionTitle(DELEGATION_LINE)).toBe("Untitled session");
   });
 });

@@ -112,8 +112,9 @@ impl EmbeddedServer {
     }
 }
 
-/// A random 32-byte bearer token, hex-encoded: two ULIDs give 128 random
-/// bits each, plenty for a per-process secret.
+/// A per-process bearer token: two ULIDs in lowercase Crockford base32
+/// (52 characters, not hex), whose random parts give plenty of entropy for a
+/// secret that only lives as long as the process.
 fn bearer_token() -> String {
     format!("{}{}", ulid::Ulid::new(), ulid::Ulid::new()).to_lowercase()
 }

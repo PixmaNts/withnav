@@ -1,0 +1,112 @@
+id: 0
+data: {"schema_version":1,"event_id":"01M48NAES8QXYTQ1TW444BJ1HQ","seq":0,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"session.start","occurred_at":"2026-10-06T13:09:20.808Z","causation_id":null,"correlation_id":null,"payload":{"root_actor_id":"agent:main","workspace":"/tmp/opencode/navai-webui-ws"}}
+
+id: 1
+data: {"schema_version":1,"event_id":"01M48NAFT45SRSENXSPRZV4B9F","seq":1,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"message.received","occurred_at":"2026-10-06T13:09:21.860Z","causation_id":"01M48NAFSZCCZBJC6RHFDV50FP","correlation_id":null,"payload":{"command_id":"01M48NAFSZCCZBJC6RHFDV50FP","content":"List the files in this workspace with a tool, then create hello.txt containing the word hi. Keep the reply to one short sentence.","mode":"next-turn","source":"user:http","target":"agent:main"}}
+
+id: 2
+data: {"schema_version":1,"event_id":"01M48NAFT5RJVNVW2JCFBHDMYQ","seq":2,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"turn.start","occurred_at":"2026-10-06T13:09:21.861Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"actor_id":"agent:main","task_id":"01M48NAFSZCCZBJC6RHFDV50FP","turn_id":"01M48NAFT4KF8FKMPNN0G35H42"}}
+
+id: 3
+data: {"schema_version":1,"event_id":"01M48NAFT5K3QRB1AWY6X8JNJM","seq":3,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"context.updated","occurred_at":"2026-10-06T13:09:21.861Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"breakdown":{"messages":37,"rules":1092,"skills_catalog":4925,"system":226,"tools":1270},"estimate_total":7550,"estimated":true,"gateway":"omniroute","incarnation":"01M48NAES7E6AXBNJW6W0K1DAE","input_budget":941808,"margin":50000,"model":"omniroute/cc/claude-opus-5-5","output_reserve":8192,"percent":1,"revision":1,"rule_files":1,"skills":{"listed":88,"omitted":0},"upstream_id":"cc/claude-opus-5-5","window":1000000,"window_source":"models.json"}}
+
+id: 4
+data: {"schema_version":1,"event_id":"01M48NAJVQTMN1E8PHNHDEFMPM","seq":4,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"llm.delta","occurred_at":"2026-10-06T13:09:24.983Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"delta":{"delta_type":"tool_call_started","index":0,"name":"glob"},"step_id":"01M48NAFT57MPEK7ZSP28MMMJB","turn_id":"01M48NAFT4KF8FKMPNN0G35H42"}}
+
+id: 5
+data: {"schema_version":1,"event_id":"01M48NAKQFNF4MFQEWDXCDBSG6","seq":5,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"llm.delta","occurred_at":"2026-10-06T13:09:25.871Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"delta":{"delta_type":"tool_call_args","fragment":"{\"patte","index":0},"step_id":"01M48NAFT57MPEK7ZSP28MMMJB","turn_id":"01M48NAFT4KF8FKMPNN0G35H42"}}
+
+id: 6
+data: {"schema_version":1,"event_id":"01M48NAKQFZ0NRWTWBKBCDW3F9","seq":6,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"llm.delta","occurred_at":"2026-10-06T13:09:25.871Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"delta":{"delta_type":"tool_call_args","fragment":"rn\": \"*","index":0},"step_id":"01M48NAFT57MPEK7ZSP28MMMJB","turn_id":"01M48NAFT4KF8FKMPNN0G35H42"}}
+
+id: 7
+data: {"schema_version":1,"event_id":"01M48NAKQF4SHX4M7HRSP1M820","seq":7,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"llm.delta","occurred_at":"2026-10-06T13:09:25.871Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"delta":{"delta_type":"tool_call_args","fragment":"*/*\"}","index":0},"step_id":"01M48NAFT57MPEK7ZSP28MMMJB","turn_id":"01M48NAFT4KF8FKMPNN0G35H42"}}
+
+id: 8
+data: {"schema_version":1,"event_id":"01M48NAKQYC336HJN5W6HDA4GE","seq":8,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"llm.response","occurred_at":"2026-10-06T13:09:25.886Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"finish_reason":"tool_calls","message":{"finish_reason":"tool_calls","text":"","thinking":"","tool_calls":[{"args":{"pattern":"**/*"},"args_valid":true,"id":"toolu_01NxsZ1vtCv2ZWF2acgpAyGA","name":"glob"}],"usage":{"completion_tokens":51,"prompt_tokens":12250,"total_tokens":12301}},"step_id":"01M48NAFT57MPEK7ZSP28MMMJB","turn_id":"01M48NAFT4KF8FKMPNN0G35H42","usage":{"completion_tokens":51,"prompt_tokens":12250,"total_tokens":12301}}}
+
+id: 9
+data: {"schema_version":1,"event_id":"01M48NAKQY1WVVN5H8YRXPBP1Y","seq":9,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"context.updated","occurred_at":"2026-10-06T13:09:25.886Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"breakdown":{"messages":54,"rules":1092,"skills_catalog":4925,"system":226,"tools":1270},"estimate_total":7567,"estimated":true,"gateway":"omniroute","incarnation":"01M48NAES7E6AXBNJW6W0K1DAE","input_budget":941808,"last_usage":{"completion_tokens":51,"gateway":"omniroute","model":"omniroute/cc/claude-opus-5-5","prompt_tokens":12250,"step":"01M48NAFT57MPEK7ZSP28MMMJB","upstream_id":"cc/claude-opus-5-5"},"margin":50000,"model":"omniroute/cc/claude-opus-5-5","output_reserve":8192,"percent":1,"revision":2,"rule_files":1,"skills":{"listed":88,"omitted":0},"upstream_id":"cc/claude-opus-5-5","window":1000000,"window_source":"models.json"}}
+
+id: 10
+data: {"schema_version":1,"event_id":"01M48NAKQY7GHJ0BNDVHT0WBPM","seq":10,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"tool.pre_call","occurred_at":"2026-10-06T13:09:25.886Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"actor_id":"agent:main","args":{"pattern":"**/*"},"name":"glob","source":"native","tool_call_id":"toolu_01NxsZ1vtCv2ZWF2acgpAyGA"}}
+
+id: 11
+data: {"schema_version":1,"event_id":"01M48NAKQYS7FAJ8A19VGFWZS4","seq":11,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"tool.post_call","occurred_at":"2026-10-06T13:09:25.886Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"metadata":{"duration_ms":0,"returned":1,"stopped":null,"total_matches":1,"truncated":false,"visited":2},"name":"glob","output":"README.md","status":"ok","tool_call_id":"toolu_01NxsZ1vtCv2ZWF2acgpAyGA"}}
+
+id: 12
+data: {"schema_version":1,"event_id":"01M48NAKQYK29FH11RKSFTBQ70","seq":12,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"context.updated","occurred_at":"2026-10-06T13:09:25.886Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"breakdown":{"messages":68,"rules":1092,"skills_catalog":4925,"system":226,"tools":1270},"estimate_total":7581,"estimated":true,"gateway":"omniroute","incarnation":"01M48NAES7E6AXBNJW6W0K1DAE","input_budget":941808,"last_usage":{"completion_tokens":51,"gateway":"omniroute","model":"omniroute/cc/claude-opus-5-5","prompt_tokens":12250,"step":"01M48NAFT57MPEK7ZSP28MMMJB","upstream_id":"cc/claude-opus-5-5"},"margin":50000,"model":"omniroute/cc/claude-opus-5-5","output_reserve":8192,"percent":1,"revision":3,"rule_files":1,"skills":{"listed":88,"omitted":0},"upstream_id":"cc/claude-opus-5-5","window":1000000,"window_source":"models.json"}}
+
+id: 13
+data: {"schema_version":1,"event_id":"01M48NAMVW4WNMEXHR8TXT03SW","seq":13,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"llm.delta","occurred_at":"2026-10-06T13:09:27.036Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"delta":{"delta_type":"tool_call_started","index":0,"name":"write"},"step_id":"01M48NAKQZ92BPCEX7T4YJDBVB","turn_id":"01M48NAFT4KF8FKMPNN0G35H42"}}
+
+id: 14
+data: {"schema_version":1,"event_id":"01M48NAN53Q91D6E0XE94840D2","seq":14,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"llm.delta","occurred_at":"2026-10-06T13:09:27.331Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"delta":{"delta_type":"tool_call_args","fragment":"{\"path\"","index":0},"step_id":"01M48NAKQZ92BPCEX7T4YJDBVB","turn_id":"01M48NAFT4KF8FKMPNN0G35H42"}}
+
+id: 15
+data: {"schema_version":1,"event_id":"01M48NAN53Q4W74M8K246JGW5J","seq":15,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"llm.delta","occurred_at":"2026-10-06T13:09:27.331Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"delta":{"delta_type":"tool_call_args","fragment":": \"hell","index":0},"step_id":"01M48NAKQZ92BPCEX7T4YJDBVB","turn_id":"01M48NAFT4KF8FKMPNN0G35H42"}}
+
+id: 16
+data: {"schema_version":1,"event_id":"01M48NAN539Z1WHEY69CTRHMBV","seq":16,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"llm.delta","occurred_at":"2026-10-06T13:09:27.331Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"delta":{"delta_type":"tool_call_args","fragment":"o.txt\"","index":0},"step_id":"01M48NAKQZ92BPCEX7T4YJDBVB","turn_id":"01M48NAFT4KF8FKMPNN0G35H42"}}
+
+id: 17
+data: {"schema_version":1,"event_id":"01M48NAN6NZCXQZZW2NCXQ0ZP0","seq":17,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"llm.delta","occurred_at":"2026-10-06T13:09:27.381Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"delta":{"delta_type":"tool_call_args","fragment":", \"cont","index":0},"step_id":"01M48NAKQZ92BPCEX7T4YJDBVB","turn_id":"01M48NAFT4KF8FKMPNN0G35H42"}}
+
+id: 18
+data: {"schema_version":1,"event_id":"01M48NAN6N22FHEENQ4Q3NR2FK","seq":18,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"llm.delta","occurred_at":"2026-10-06T13:09:27.381Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"delta":{"delta_type":"tool_call_args","fragment":"ent\": \"","index":0},"step_id":"01M48NAKQZ92BPCEX7T4YJDBVB","turn_id":"01M48NAFT4KF8FKMPNN0G35H42"}}
+
+id: 19
+data: {"schema_version":1,"event_id":"01M48NAN6NW637N8GHVQF6BJ6A","seq":19,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"llm.delta","occurred_at":"2026-10-06T13:09:27.381Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"delta":{"delta_type":"tool_call_args","fragment":"hi\"}","index":0},"step_id":"01M48NAKQZ92BPCEX7T4YJDBVB","turn_id":"01M48NAFT4KF8FKMPNN0G35H42"}}
+
+id: 20
+data: {"schema_version":1,"event_id":"01M48NAN6YP5B72F9HQ7494S6N","seq":20,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"llm.response","occurred_at":"2026-10-06T13:09:27.390Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"finish_reason":"tool_calls","message":{"finish_reason":"tool_calls","text":"","thinking":"","tool_calls":[{"args":{"content":"hi","path":"hello.txt"},"args_valid":true,"id":"toolu_018TKcDBKwnuMT28Shschm9x","name":"write"}],"usage":{"completion_tokens":72,"prompt_tokens":12142,"total_tokens":12214}},"step_id":"01M48NAKQZ92BPCEX7T4YJDBVB","turn_id":"01M48NAFT4KF8FKMPNN0G35H42","usage":{"completion_tokens":72,"prompt_tokens":12142,"total_tokens":12214}}}
+
+id: 21
+data: {"schema_version":1,"event_id":"01M48NAN6YFTGD6N5JRK9E6W7S","seq":21,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"context.updated","occurred_at":"2026-10-06T13:09:27.390Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"breakdown":{"messages":90,"rules":1092,"skills_catalog":4925,"system":226,"tools":1270},"estimate_total":7603,"estimated":true,"gateway":"omniroute","incarnation":"01M48NAES7E6AXBNJW6W0K1DAE","input_budget":941808,"last_usage":{"completion_tokens":72,"gateway":"omniroute","model":"omniroute/cc/claude-opus-5-5","prompt_tokens":12142,"step":"01M48NAKQZ92BPCEX7T4YJDBVB","upstream_id":"cc/claude-opus-5-5"},"margin":50000,"model":"omniroute/cc/claude-opus-5-5","output_reserve":8192,"percent":1,"revision":4,"rule_files":1,"skills":{"listed":88,"omitted":0},"upstream_id":"cc/claude-opus-5-5","window":1000000,"window_source":"models.json"}}
+
+id: 22
+data: {"schema_version":1,"event_id":"01M48NANG53AHTEWZJMEZ4MXJ3","seq":22,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"tool.pre_call","occurred_at":"2026-10-06T13:09:27.685Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"actor_id":"agent:main","args":{"content":"hi","path":"hello.txt"},"name":"write","permission_gate":{"canonical_target":"/tmp/opencode/navai-webui-ws/hello.txt","latency_ms":{"jev":294},"models":{"jev":"openrouter/typesafe/jev-1.13"},"overrides":["read_write"],"policy_version":1,"read_only":false,"reason":"Read-only or low-risk project effects","sensitive_read":false,"source":"jev","truncated":false,"verdicts":{"effect":"read_write","risk":"low","scope":"inside"}},"source":"native","tool_call_id":"toolu_018TKcDBKwnuMT28Shschm9x"}}
+
+id: 23
+data: {"schema_version":1,"event_id":"01M48NANG5YT8Q1NYNNNHNEANR","seq":23,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"tool.post_call","occurred_at":"2026-10-06T13:09:27.685Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"metadata":{"duration_ms":0,"permission_gate":{"canonical_target":"/tmp/opencode/navai-webui-ws/hello.txt","latency_ms":{"jev":294},"models":{"jev":"openrouter/typesafe/jev-1.13"},"overrides":["read_write"],"policy_version":1,"read_only":false,"reason":"Read-only or low-risk project effects","sensitive_read":false,"source":"jev","truncated":false,"verdicts":{"effect":"read_write","risk":"low","scope":"inside"}}},"name":"write","output":"wrote 2 bytes","status":"ok","tool_call_id":"toolu_018TKcDBKwnuMT28Shschm9x"}}
+
+id: 24
+data: {"schema_version":1,"event_id":"01M48NANG57F9R6G1WR97HF4Y3","seq":24,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"context.updated","occurred_at":"2026-10-06T13:09:27.685Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"breakdown":{"messages":105,"rules":1092,"skills_catalog":4925,"system":226,"tools":1270},"estimate_total":7618,"estimated":true,"gateway":"omniroute","incarnation":"01M48NAES7E6AXBNJW6W0K1DAE","input_budget":941808,"last_usage":{"completion_tokens":72,"gateway":"omniroute","model":"omniroute/cc/claude-opus-5-5","prompt_tokens":12142,"step":"01M48NAKQZ92BPCEX7T4YJDBVB","upstream_id":"cc/claude-opus-5-5"},"margin":50000,"model":"omniroute/cc/claude-opus-5-5","output_reserve":8192,"percent":1,"revision":5,"rule_files":1,"skills":{"listed":88,"omitted":0},"upstream_id":"cc/claude-opus-5-5","window":1000000,"window_source":"models.json"}}
+
+id: 25
+data: {"schema_version":1,"event_id":"01M48NAPT4Z9M7RDX0E7J4W3BX","seq":25,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"llm.delta","occurred_at":"2026-10-06T13:09:29.028Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"delta":{"delta_type":"text","text":"The workspace only had `README"},"step_id":"01M48NANG6T6PWT3708AVJZFTX","turn_id":"01M48NAFT4KF8FKMPNN0G35H42"}}
+
+id: 26
+data: {"schema_version":1,"event_id":"01M48NAPT443YER11KNE3VN8VP","seq":26,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"llm.delta","occurred_at":"2026-10-06T13:09:29.028Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"delta":{"delta_type":"text","text":".md`, and I created `"},"step_id":"01M48NANG6T6PWT3708AVJZFTX","turn_id":"01M48NAFT4KF8FKMPNN0G35H42"}}
+
+id: 27
+data: {"schema_version":1,"event_id":"01M48NAPT4SQFA18TEREPRD6GP","seq":27,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"llm.delta","occurred_at":"2026-10-06T13:09:29.028Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"delta":{"delta_type":"text","text":"hello.txt` contain"},"step_id":"01M48NANG6T6PWT3708AVJZFTX","turn_id":"01M48NAFT4KF8FKMPNN0G35H42"}}
+
+id: 28
+data: {"schema_version":1,"event_id":"01M48NAPT4Y3J6M8VE2N6E3WAB","seq":28,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"llm.delta","occurred_at":"2026-10-06T13:09:29.028Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"delta":{"delta_type":"text","text":"ing `hi`."},"step_id":"01M48NANG6T6PWT3708AVJZFTX","turn_id":"01M48NAFT4KF8FKMPNN0G35H42"}}
+
+id: 29
+data: {"schema_version":1,"event_id":"01M48NAPT7WJAMFPD988GG53G6","seq":29,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"llm.response","occurred_at":"2026-10-06T13:09:29.031Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"finish_reason":"stop","message":{"finish_reason":"stop","text":"The workspace only had `README.md`, and I created `hello.txt` containing `hi`.","thinking":"","tool_calls":[],"usage":{"completion_tokens":31,"prompt_tokens":12315,"total_tokens":12346}},"step_id":"01M48NANG6T6PWT3708AVJZFTX","turn_id":"01M48NAFT4KF8FKMPNN0G35H42","usage":{"completion_tokens":31,"prompt_tokens":12315,"total_tokens":12346}}}
+
+id: 30
+data: {"schema_version":1,"event_id":"01M48NAPT7TNYBVXMZXW83CMA3","seq":30,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"context.updated","occurred_at":"2026-10-06T13:09:29.031Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"breakdown":{"messages":129,"rules":1092,"skills_catalog":4925,"system":226,"tools":1270},"estimate_total":7642,"estimated":true,"gateway":"omniroute","incarnation":"01M48NAES7E6AXBNJW6W0K1DAE","input_budget":941808,"last_usage":{"completion_tokens":31,"gateway":"omniroute","model":"omniroute/cc/claude-opus-5-5","prompt_tokens":12315,"step":"01M48NANG6T6PWT3708AVJZFTX","upstream_id":"cc/claude-opus-5-5"},"margin":50000,"model":"omniroute/cc/claude-opus-5-5","output_reserve":8192,"percent":1,"revision":6,"rule_files":1,"skills":{"listed":88,"omitted":0},"upstream_id":"cc/claude-opus-5-5","window":1000000,"window_source":"models.json"}}
+
+id: 31
+data: {"schema_version":1,"event_id":"01M48NAPT7P8NAHSP5H9D6FX0Y","seq":31,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"turn.end","occurred_at":"2026-10-06T13:09:29.031Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"actor_id":"agent:main","duration_ms":7170,"outcome":"done","turn_id":"01M48NAFT4KF8FKMPNN0G35H42","usage":{"completion_tokens":31,"prompt_tokens":12315,"total_tokens":12346}}}
+
+id: 32
+data: {"schema_version":1,"event_id":"01M48NAPT7FG9G6FT2486HSCFY","seq":32,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"task.done","occurred_at":"2026-10-06T13:09:29.031Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"actor_id":"agent:main","result_message_id":"01M48NAPT7PD7NRBWGVXQNFEEX","status":"done","task_id":"01M48NAFSZCCZBJC6RHFDV50FP"}}
+
+id: 33
+data: {"schema_version":1,"event_id":"01M48NAPT7BBD5EXPVH30M19KW","seq":33,"session_id":"01M48NAERVZT0BNRH0ZRA21HFJ","actor_id":"agent:main","kind":"agent.state","occurred_at":"2026-10-06T13:09:29.031Z","causation_id":null,"correlation_id":"01M48NAFSZCCZBJC6RHFDV50FP","payload":{"actor_id":"agent:main","from":"running","to":"idle"}}
+
+:
+
+:
+
+:
+
+:
+
+:
+

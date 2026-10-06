@@ -94,6 +94,13 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
                 // Two cells per level, never more than the row itself.
                 let indent = (usize::from(row.level()) * 2).min(row_width);
                 let room = row_width - indent;
+                let star = match &row {
+                    crate::tui::catalog::Row::Favorite(entry)
+                    | crate::tui::catalog::Row::Model(entry) => {
+                        ui.favorite_models.contains(&entry.name)
+                    }
+                    _ => false,
+                };
                 let mut line = match row {
                     crate::tui::catalog::Row::Group {
                         label, collapsed, ..
@@ -104,9 +111,21 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
                         ),
                         theme.accent(),
                     )),
-                    crate::tui::catalog::Row::Model(entry) => model_row(entry, room, theme),
+                    crate::tui::catalog::Row::Section { label } => Line::from(Span::styled(
+                        fit(&format!("★ {label}"), room),
+                        theme.accent(),
+                    )),
+                    crate::tui::catalog::Row::Model(entry)
+                    | crate::tui::catalog::Row::Favorite(entry) => model_row(entry, room, theme),
                 };
-                line.spans.insert(0, Span::raw(" ".repeat(indent)));
+                // The star takes the last two cells of the indent, where a group has its fold
+                // mark, so favorites mark without moving any column.
+                if star && indent >= 2 {
+                    line.spans.insert(0, Span::styled("★ ", theme.accent()));
+                    line.spans.insert(0, Span::raw(" ".repeat(indent - 2)));
+                } else {
+                    line.spans.insert(0, Span::raw(" ".repeat(indent)));
+                }
                 line
             })
             .collect(),
@@ -309,7 +328,7 @@ fn keys_line(overlay: Overlay) -> &'static str {
         Overlay::Help => "esc close",
         Overlay::Themes => "↑↓ preview  enter keep  esc put back",
         Overlay::Commands => "↑↓ move  enter run  esc close",
-        Overlay::Models => "↑↓ move  ←→ fold  alt+a all  enter choose  esc close",
+        Overlay::Models => "↑↓ move ←→ fold alt+a all ^f fav enter choose esc",
         _ => "↑↓ move  enter choose  esc close",
     }
 }

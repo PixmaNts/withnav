@@ -19,7 +19,7 @@ expression: snapshot
             │ ▾ gateway                                                                │            
             │▌  opus              cc/claude-opus-5-5                1M  low high max   │            
             │                                                                          │            
-            │ ↑↓ move  ←→ fold  alt+a all  enter choose  esc close                     │            
+            │ ↑↓ move ←→ fold alt+a all ^f fav enter choose esc                        │            
             └──────────────────────────────────────────────────────────────────────────┘            
                      │                                                                              
                      │                                                                              

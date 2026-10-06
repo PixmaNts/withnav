@@ -4,6 +4,12 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- **Favorite models.** In both model pickers, Ctrl+F (or the star in VS Code) marks a model as a
+favorite; favorites are listed first in an always-open section. The terminal and VS Code keep
+separate lists.
+
 ## [0.5.1] - 2026-10-06
 
 ### Fixed

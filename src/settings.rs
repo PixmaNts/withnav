@@ -131,6 +131,21 @@ impl Settings {
         self.root.get("tui")?.get("theme")?.as_str()
     }
 
+    /// The models the terminal client marked as favorites, `tui.favorite_models`. Entries that
+    /// are not strings are ignored.
+    pub fn tui_favorite_models(&self) -> Vec<String> {
+        self.root
+            .get("tui")
+            .and_then(|tui| tui.get("favorite_models"))
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// `subagents.max_concurrent`: how many children one session may have at
     /// once (starting, running or waiting for an answer). Absent means
     /// [`DEFAULT_MAX_SUBAGENTS`]; anything but an integer from 1 to
@@ -165,6 +180,27 @@ impl Settings {
         }
         if let Value::Object(tui) = tui {
             tui.insert("theme".into(), Value::String(id.into()));
+        }
+    }
+
+    /// Stores the favorite models; an empty list removes the key. Other `tui` keys stay.
+    pub fn set_tui_favorite_models(&mut self, names: &[String]) {
+        let tui = self
+            .root
+            .entry("tui")
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !tui.is_object() {
+            *tui = Value::Object(Map::new());
+        }
+        if let Value::Object(tui) = tui {
+            if names.is_empty() {
+                tui.remove("favorite_models");
+            } else {
+                tui.insert(
+                    "favorite_models".into(),
+                    Value::Array(names.iter().cloned().map(Value::String).collect()),
+                );
+            }
         }
     }
 }
@@ -239,6 +275,13 @@ pub fn save(config_dir: &Path, settings: &Settings) -> Result<(), SettingsError>
 pub fn save_tui_theme(config_dir: &Path, id: &str) -> Result<(), SettingsError> {
     let mut settings = load(config_dir)?;
     settings.set_tui_theme(id);
+    save(config_dir, &settings)
+}
+
+/// Saves the terminal client's favorite models. An unreadable file is left untouched.
+pub fn save_tui_favorite_models(config_dir: &Path, names: &[String]) -> Result<(), SettingsError> {
+    let mut settings = load(config_dir)?;
+    settings.set_tui_favorite_models(names);
     save(config_dir, &settings)
 }
 
@@ -448,6 +491,49 @@ mod tests {
             .root
             .insert("subagents".into(), serde_json::json!({ "other": 1 }));
         assert_eq!(settings.subagents_max_concurrent(), Ok(4));
+    }
+
+    #[test]
+    fn favorite_models_round_trip_and_keep_other_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            path(dir.path()),
+            r#"{"editor":{"font":"mono"},"tui":{"theme":"ayu-dark","sidebar":false},"n":3}"#,
+        )
+        .unwrap();
+        assert!(load(dir.path()).unwrap().tui_favorite_models().is_empty());
+        let names = vec!["a/one".to_string(), "b/two".to_string()];
+        save_tui_favorite_models(dir.path(), &names).unwrap();
+        let settings = load(dir.path()).unwrap();
+        assert_eq!(settings.tui_favorite_models(), names);
+        assert_eq!(settings.tui_theme(), Some("ayu-dark"));
+        let raw: Value =
+            serde_json::from_str(&std::fs::read_to_string(path(dir.path())).unwrap()).unwrap();
+        assert_eq!(raw["editor"]["font"], "mono");
+        assert_eq!(raw["tui"]["sidebar"], false);
+        assert_eq!(raw["n"], 3);
+        // Saving the theme afterwards keeps the favorites; an empty list drops the key only.
+        save_tui_theme(dir.path(), "nord-dark").unwrap();
+        assert_eq!(load(dir.path()).unwrap().tui_favorite_models(), names);
+        save_tui_favorite_models(dir.path(), &[]).unwrap();
+        let raw: Value =
+            serde_json::from_str(&std::fs::read_to_string(path(dir.path())).unwrap()).unwrap();
+        assert!(raw["tui"].get("favorite_models").is_none());
+        assert_eq!(raw["tui"]["theme"], "nord-dark");
+    }
+
+    #[test]
+    fn malformed_favorite_models_are_ignored_not_fatal() {
+        let mut settings = Settings::default();
+        settings.root.insert(
+            "tui".into(),
+            serde_json::json!({"favorite_models": ["ok", 3, null, "also"]}),
+        );
+        assert_eq!(settings.tui_favorite_models(), ["ok", "also"]);
+        settings
+            .root
+            .insert("tui".into(), serde_json::json!({"favorite_models": "x"}));
+        assert!(settings.tui_favorite_models().is_empty());
     }
 
     #[test]

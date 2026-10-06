@@ -623,3 +623,241 @@ fn narrow_terminal_with_long_canonical_names_keeps_indentation_without_panic() {
         }
     }
 }
+
+fn ctrl_f() -> KeyEvent {
+    KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL)
+}
+
+fn favorites_picker() -> (State, UiState) {
+    let state = State {
+        catalog: hierarchy_models().models,
+        ..State::default()
+    };
+    let ui = UiState {
+        overlay: Some(Overlay::Models),
+        ..UiState::default()
+    };
+    (state, ui)
+}
+
+fn keys_of(state: &State, ui: &UiState) -> Vec<String> {
+    catalog::rows(&state.catalog, ui)
+        .iter()
+        .map(Row::key)
+        .collect()
+}
+
+/// Opens the picker's row `index` and presses ctrl+f on it.
+fn toggle_at(state: &State, ui: &mut UiState, index: usize) -> Option<Action> {
+    ui.selection.insert("Models".into(), index);
+    route_key(ctrl_f(), state, ui, &mut Editor::default())
+}
+
+#[test]
+fn ctrl_f_adds_and_removes_a_favorite_and_the_section_comes_first() {
+    let (state, mut ui) = favorites_picker();
+    let plain = keys_of(&state, &ui);
+    assert_eq!(plain[0], "group:direct", "no favorites, no section");
+    // Row 6 is omniroute/kimi/k2.
+    assert_eq!(plain[6], "omniroute/kimi/k2");
+    let action = toggle_at(&state, &mut ui, 6);
+    assert_eq!(
+        action,
+        Some(Action::SaveFavoriteModels(vec!["omniroute/kimi/k2".into()]))
+    );
+    let keys = keys_of(&state, &ui);
+    assert_eq!(
+        &keys[..2],
+        ["section:favorites", "omniroute/kimi/k2"],
+        "section first"
+    );
+    assert_eq!(keys.len(), plain.len() + 2);
+    assert_eq!(
+        keys.iter().filter(|k| *k == "omniroute/kimi/k2").count(),
+        2,
+        "also kept in its group"
+    );
+    // The highlight stays on the same model, in its group.
+    assert_eq!(ui.selection["Models"], 8);
+    assert_eq!(keys[8], "omniroute/kimi/k2");
+
+    // From the section: the model leaves it, and the highlight lands on its group row.
+    let action = toggle_at(&state, &mut ui, 1);
+    assert_eq!(action, Some(Action::SaveFavoriteModels(vec![])));
+    assert_eq!(
+        keys_of(&state, &ui),
+        plain,
+        "last favorite hides the section"
+    );
+    assert_eq!(
+        keys_of(&state, &ui)[ui.selection["Models"]],
+        "omniroute/kimi/k2"
+    );
+}
+
+#[test]
+fn ctrl_f_on_a_heading_does_nothing() {
+    let (state, mut ui) = favorites_picker();
+    assert_eq!(toggle_at(&state, &mut ui, 0), None);
+    assert!(ui.favorite_models.is_empty());
+    ui.favorite_models.insert("direct/solo".into());
+    assert_eq!(toggle_at(&state, &mut ui, 0), None, "section heading");
+    assert_eq!(ui.favorite_models.len(), 1);
+}
+
+#[test]
+fn favorites_are_sorted_chat_only_and_unknown_ones_stay_hidden() {
+    let (state, mut ui) = favorites_picker();
+    for name in [
+        "omniroute/kimi/k2",
+        "direct/solo",
+        "omniroute/kimi/fim",
+        "gone/model",
+    ] {
+        ui.favorite_models.insert(name.into());
+    }
+    let keys = keys_of(&state, &ui);
+    assert_eq!(
+        &keys[..3],
+        ["section:favorites", "direct/solo", "omniroute/kimi/k2"]
+    );
+    assert!(!keys
+        .iter()
+        .any(|k| k == "omniroute/kimi/fim" || k == "gone/model"));
+    assert_eq!(ui.favorite_models.len(), 4, "kept in storage");
+}
+
+#[test]
+fn favorites_section_ignores_folding_and_alt_a() {
+    let (state, mut ui) = favorites_picker();
+    ui.favorite_models.insert("omniroute/cc/claude-opus".into());
+    let mut editor = Editor::default();
+    ui.selection.insert("Models".into(), 0);
+    for code in [KeyCode::Enter, KeyCode::Left, KeyCode::Right] {
+        assert_eq!(
+            route_key(
+                KeyEvent::new(code, KeyModifiers::NONE),
+                &state,
+                &mut ui,
+                &mut editor
+            ),
+            None
+        );
+        assert!(ui.collapsed_models.is_empty(), "{code:?}");
+        assert_eq!(ui.overlay, Some(Overlay::Models));
+    }
+    let alt_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT);
+    route_key(alt_a, &state, &mut ui, &mut editor);
+    let keys = keys_of(&state, &ui);
+    assert_eq!(
+        keys,
+        [
+            "section:favorites",
+            "omniroute/cc/claude-opus",
+            "group:direct",
+            "group:omniroute"
+        ]
+    );
+    assert_eq!(ui.selection["Models"], 0);
+    // Selected on a favorite row, alt+a keeps the highlight there.
+    ui.selection.insert("Models".into(), 1);
+    route_key(alt_a, &state, &mut ui, &mut editor);
+    assert!(ui.collapsed_models.is_empty());
+    assert_eq!(
+        keys_of(&state, &ui)[ui.selection["Models"]],
+        "omniroute/cc/claude-opus"
+    );
+    assert!(ui.selection["Models"] >= 1);
+}
+
+#[test]
+fn search_filters_the_favorites_section_and_hides_it_without_a_match() {
+    let (state, mut ui) = favorites_picker();
+    ui.favorite_models.insert("omniroute/cc/claude-opus".into());
+    ui.favorite_models.insert("direct/solo".into());
+    ui.filter = "solo".into();
+    let keys = keys_of(&state, &ui);
+    assert_eq!(
+        keys,
+        [
+            "section:favorites",
+            "direct/solo",
+            "group:direct",
+            "direct/solo"
+        ]
+    );
+    ui.filter = "k2".into();
+    assert!(!keys_of(&state, &ui).contains(&"section:favorites".to_string()));
+}
+
+#[test]
+fn enter_on_a_favorite_row_picks_that_model_like_its_group_row() {
+    let (state, mut ui) = favorites_picker();
+    ui.favorite_models.insert("direct/solo".into());
+    ui.selection.insert("Models".into(), 1);
+    let mut editor = Editor::default();
+    route_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &state,
+        &mut ui,
+        &mut editor,
+    );
+    let from_favorite = (ui.overlay, ui.variant_pick.clone());
+    // The same model through its group row.
+    let (_, mut other) = favorites_picker();
+    other.selection.insert("Models".into(), 1);
+    route_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &state,
+        &mut other,
+        &mut editor,
+    );
+    assert_eq!(from_favorite, (other.overlay, other.variant_pick.clone()));
+    assert_eq!(
+        ui.variant_pick,
+        Some(VariantPick::NewConversation("direct/solo".into()))
+    );
+    // ctrl+n works on it as on any model row.
+    let (_, mut ui) = favorites_picker();
+    ui.favorite_models.insert("direct/solo".into());
+    ui.selection.insert("Models".into(), 1);
+    route_key(
+        KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+        &state,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(
+        ui.variant_pick,
+        Some(VariantPick::NewConversation("direct/solo".into()))
+    );
+}
+
+#[test]
+fn picker_marks_favorites_with_a_star_section_and_group() {
+    let (state, mut ui) = favorites_picker();
+    ui.favorite_models.insert("omniroute/kimi/k2".into());
+    ui.favorite_models.insert("direct/solo".into());
+    let lines = picker_lines(&state, &ui, (60, 20));
+    let section = column(&lines, "★ Favorites");
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|l| l.contains("★ direct/solo") || l.contains("★ omniroute/kimi/k2"))
+            .count(),
+        4,
+        "each favorite is starred in the section and in its group: {lines:#?}"
+    );
+    assert!(lines.iter().any(|l| l.contains("▾ direct")));
+    assert!(
+        section < column(&lines, "direct/solo"),
+        "section models are indented"
+    );
+    let levels: Vec<u8> = catalog::rows(&state.catalog, &ui)
+        .iter()
+        .map(Row::level)
+        .collect();
+    assert_eq!(levels[..3], [0, 1, 1]);
+    assert!(lines.iter().any(|l| l.contains("^f fav")));
+    insta::assert_snapshot!("model-picker-favorites", lines.join("\n"));
+}

@@ -535,6 +535,9 @@ pub enum Focus {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UiState {
     pub collapsed_models: std::collections::HashSet<String>,
+    /// Models the driver marked as favorites, saved in the settings. Kept even when a model is
+    /// no longer in the catalogue; the picker only lists those it knows.
+    pub favorite_models: std::collections::BTreeSet<String>,
     pub child_confirm: Option<(String, String, super::protocol::ChildControl)>,
     pub child_confirm_token: Option<crate::bus::event::PauseToken>,
     pub focus: Focus,

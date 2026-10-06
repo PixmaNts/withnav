@@ -1,0 +1,24 @@
+---
+source: tests/tui_layers_models.rs
+expression: "lines.join(\"\\n\")"
+---
+ ◆ navai                        build  — · assigned · — / — 
+────────────────────────────────────────────────────────────
+  ┌─────────────────── Choose a model ───────────────────┐  
+  │ ❯ filter models…                                     │  
+  │ ★ Favorites                                          │  
+  │ ★ direct/solo       solo                      200k   │  
+  │ ★ omniroute/kimi/k2 kimi/k2                   200k   │  
+  │ ▾ direct                                             │  
+  │ ★ direct/solo       solo                      200k   │  
+  │ ▾ omniroute                                          │  
+  │   ▾ cc                                               │  
+  │     omniroute/cc/cla… cc/claude-opus          200k   │  
+  │   ▾ kimi                                             │  
+  │   ★ omniroute/kimi/k2 kimi/k2                 200k   │  
+──│                                                      │──
+ r│ ↑↓ move ←→ fold alt+a all ^f fav enter choose esc    │k 
+┌ └──────────────────────────────────────────────────────┘─┐
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model

@@ -16,6 +16,7 @@ expression: snapshot
             │ alt+r                   hide / show the side panel                       │            
             │ f2                      switch this conversation's model                 │            
             │ ctrl+n (in models)      open that model in a new tab                     │            
+            │ ctrl+f (in models)      add / remove the model as a favorite             │            
             │ f1                      help                                             │            
             │ tab                     build / plan (empty message)                     │            
             │ shift+tab               switch focus                                     │            
@@ -25,9 +26,8 @@ expression: snapshot
             │ drag / double-click     select text / word; release copies via OSC 52    │            
             │ y / ctrl+shift+c        y copies; multi-block selections group sender na │            
             │ shift+drag              native selection; OSC 52: tmux set-clipboard on  │            
-            │ space / enter           expand selected block                            │            
-            │ ctrl+end                follow newest                                    │────────────
-            │ esc / ctrl+c            stop / close                                     │n 31.2k tok 
+            │ space / enter           expand selected block                            │────────────
+            │ ctrl+end                follow newest                                    │n 31.2k tok 
             │                                                                          │───────────┐
  alt+1…9 swi│ esc close                                                                │           │
  alt+w close└──────────────────────────────────────────────────────────────────────────┘───────────┘

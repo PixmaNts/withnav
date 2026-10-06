@@ -769,6 +769,7 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             // retried by picking the same theme again.
             vec![Effect::SaveTheme(theme)]
         }
+        Action::SaveFavoriteModels(names) => vec![Effect::SaveFavoriteModels(names)],
         Action::Select(_) => vec![],
         Action::Scroll(n) => {
             ui.scroll = ui.scroll.saturating_add_signed(n as i16);

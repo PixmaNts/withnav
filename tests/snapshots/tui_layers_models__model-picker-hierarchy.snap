@@ -14,7 +14,7 @@ expression: "picker_lines(&state, &ui, (60, 16)).join(\"\\n\")"
   │   ▾ kimi                                             │  
 ──│     omniroute/kimi/k2 kimi/k2                 200k   │──
  r│                                                      │k 
-┌ │ ↑↓ move  ←→ fold  alt+a all  enter choose  esc close │─┐
+┌ │ ↑↓ move ←→ fold alt+a all ^f fav enter choose esc    │─┐
 │ └──────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────┘
  tab build/plan · ctrl+p palette · alt+1…9 tabs · /model

@@ -445,6 +445,8 @@ pub enum Action {
     PreviewTheme(crate::tui::theme::ThemeId),
     /// Keeps this theme and saves it in the settings.
     PickTheme(crate::tui::theme::ThemeId),
+    /// Saves the favorite models (already updated in the UI state) in the settings.
+    SaveFavoriteModels(Vec<String>),
     /// Submit with the editor revision the text was read at; `Submit(t)` is `SubmitAt { t, 0 }`.
     SubmitAt {
         text: String,
@@ -554,6 +556,8 @@ pub enum Effect {
     Quit,
     /// Writes the theme id to the user settings.
     SaveTheme(crate::tui::theme::ThemeId),
+    /// Writes the favorite model names to the user settings.
+    SaveFavoriteModels(Vec<String>),
     /// Reads the workspace's git state in the background; it comes back as `ClientEvent::Git`.
     ReadGit,
     /// Clears the editor if it still holds the text sent at `revision`.

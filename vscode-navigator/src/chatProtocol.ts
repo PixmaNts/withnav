@@ -80,6 +80,8 @@ export type HostToWebview = { generation?: number } & (
   | { type: "history"; items: HostToWebview[] }
   /** Chat models; current is effective selection. Locked only while opening/creating. */
   | { type: "models"; items: ModelInfo[]; current?: string; locked: boolean }
+  /** The driver's favorite model names (kept by the host, shared by every panel; names no longer in the catalogue are not listed by the picker). */
+  | { type: "favorites"; items: string[] }
   /** Context of the last model call: `used` tokens out of `window` (absent when unknown). */
   | { type: "usage"; snapshot: import("./contextMeter").ContextSnapshot });
 
@@ -143,7 +145,9 @@ export type WebviewToHost = { generation?: number } & (
   /** The driver deletes a saved conversation. */
   | { type: "deleteConversation"; id: string }
   /** The driver picks the model for the next new conversation. */
-  | { type: "selectModel"; name: string });
+  | { type: "selectModel"; name: string }
+  /** The driver adds the model to the favorites, or removes it. The host answers with `favorites`. */
+  | { type: "toggleFavorite"; name: string });
 
 /** What the chat view needs from the host side; implemented by the cognition bridge. */
 export interface ChatBackend {

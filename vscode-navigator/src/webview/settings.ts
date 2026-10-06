@@ -534,8 +534,14 @@ window.addEventListener("message", (event: MessageEvent<HostToSettings>) => {
 });
 
 // A committed change or cancelled list editor ends the deferral. A pristine
-// text/number control also releases it when focus leaves the editor.
-rowsHost.addEventListener("change", flushProjection);
+// text/number control also releases it when focus leaves the editor. The Add
+// Item input is the exception: it fires `change` on blur, just before its OK
+// button's click, and flushing there would remove the editor and lose the
+// draft; its commit and cancel paths flush themselves.
+rowsHost.addEventListener("change", (event) => {
+  if (event.target instanceof Element && event.target.closest(".list-edit")) return;
+  flushProjection();
+});
 rowsHost.addEventListener("focusout", () => {
   queueMicrotask(() => {
     if (!editing()) flushProjection();

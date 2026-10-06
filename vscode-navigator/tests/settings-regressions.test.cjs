@@ -66,6 +66,31 @@ test('delayed projections preserve Add Item draft, focus and caret, then commit 
   assert.deepEqual(puts,[{revision:'one',key:'permissions.scratch_dirs',value:['/srv/scratch']}]);
   assert.equal(v.document.querySelector('.list-edit'),null);assert.match(v.document.querySelector('.list').textContent,/\/srv\/scratch/);v.dom.window.close();
 });
+test('delayed projections keep the Add Item draft through blur and change, then OK saves',async()=>{
+  let release,host;const pending=new Promise(r=>release=r),saves=[],puts=[];
+  const v=view(undefined,m=>{if(m.type==='save')saves.push(host.handle(m));});
+  host=new SettingsHost({request:async(p,i)=>{
+    if(p.startsWith('/v1/settings')){
+      const body=settings();
+      if(i.method==='PUT'){const write=JSON.parse(i.body);puts.push(write);body.fields.find(f=>f.key===write.key).value=write.value;}
+      return json(body);
+    }
+    await pending;return json({});
+  }},m=>v.deliver(structuredClone(m)),{workspace:'/work'});
+  const load=host.handle({type:'ready'});await new Promise(r=>setImmediate(r));
+  v.document.querySelector('.list button').click();
+  const input=v.document.querySelector('.list-edit input');input.value='/srv/scratch';
+  release();await load;
+  // Leaving the input for the OK button: the browser fires change on blur before the click.
+  input.dispatchEvent(new v.dom.window.Event('change',{bubbles:true}));
+  input.dispatchEvent(new v.dom.window.FocusEvent('focusout',{bubbles:true}));
+  await new Promise(r=>setImmediate(r));
+  const ok=[...v.document.querySelectorAll('.list-edit button')].find(b=>b.textContent==='OK');
+  assert.ok(ok&&ok.isConnected,'the OK button is still in the page after blur');
+  ok.click();await Promise.all(saves);
+  assert.deepEqual(puts,[{revision:'one',key:'permissions.scratch_dirs',value:['/srv/scratch']}]);
+  v.dom.window.close();
+});
 test('delayed projections preserve number draft and focus, then change saves',async()=>{
   let release,host;const pending=new Promise(r=>release=r),saves=[],puts=[];
   const v=view(undefined,m=>{if(m.type==='save')saves.push(host.handle(m));},'subagents');

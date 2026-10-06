@@ -17,6 +17,14 @@ export default defineConfig({
       name: "navai-dev-fallbacks",
       apply: "serve",
       configureServer(server) {
+        // Dev only: a `navai web` server wants its bearer token, which the page served by Vite
+        // does not have. Added here so both the proxy and the stand-ins send it.
+        const token = process.env.NAVAI_TOKEN;
+        if (token)
+          server.middlewares.use((req, _res, next) => {
+            if (req.url?.startsWith("/v1") && !req.headers.authorization) req.headers.authorization = `Bearer ${token}`;
+            next();
+          });
         server.middlewares.use(fallbacks(target, workspaces));
       },
     },

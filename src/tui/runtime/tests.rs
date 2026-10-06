@@ -664,6 +664,7 @@ async fn a_picked_theme_is_saved_and_restored_at_the_next_start() {
     assert_eq!(runtime.ui.theme, ThemeId::AyuDark);
     pick_theme(&mut runtime, 3);
     assert_eq!(runtime.ui.theme, ThemeId::NordLight);
+    runtime.executor().flush_saves().await;
     drop(runtime);
     let restarted = Runtime::new(&options_in(dir.path()));
     assert_eq!(restarted.ui.theme, ThemeId::NordLight);
@@ -701,9 +702,25 @@ async fn a_failed_save_is_shown_and_picking_again_retries() {
     std::fs::remove_dir_all(crate::settings::path(dir.path())).unwrap();
     pick_theme(&mut runtime, 0);
     assert_eq!(runtime.ui.theme, ThemeId::AyuLight);
+    runtime.executor().flush_saves().await;
     assert_eq!(
         crate::settings::load(dir.path()).unwrap().tui_theme(),
         Some("ayu-light")
+    );
+}
+
+#[tokio::test]
+async fn rapid_theme_picks_save_in_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut runtime = Runtime::new(&options_in(dir.path()));
+    for _ in 0..20 {
+        pick_theme(&mut runtime, 1);
+    }
+    let expected = runtime.ui.theme.id();
+    runtime.executor().flush_saves().await;
+    assert_eq!(
+        crate::settings::load(dir.path()).unwrap().tui_theme(),
+        Some(expected)
     );
 }
 

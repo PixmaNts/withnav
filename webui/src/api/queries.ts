@@ -12,6 +12,8 @@ export const keys = {
   skills: (id: string) => ["skills", id] as const,
   intent: (ws: string) => ["intent", ws] as const,
   context: (id: string) => ["context", id] as const,
+  settings: (ws: string) => ["settings", ws] as const,
+  layers: (ws: string) => ["layers", ws] as const,
 };
 
 export const useWorkspaces = () => useQuery({ queryKey: keys.workspaces, queryFn: api.workspaces, refetchInterval: 30_000 });
@@ -39,3 +41,8 @@ export const useIntent = (ws: string | null) =>
 /** The context gauge of a live session; `context.updated` is live-only, so a reopened stream lacks it. */
 export const useContextSnapshot = (id: string | null, live: boolean) =>
   useQuery({ queryKey: keys.context(id ?? ""), queryFn: () => api.context(id!), enabled: !!id && live, retry: false });
+
+export const useSettings = (ws: string | null) =>
+  useQuery({ queryKey: keys.settings(ws ?? ""), queryFn: () => api.settings(ws!), enabled: !!ws, retry: false });
+export const useLayers = (ws: string | null) =>
+  useQuery({ queryKey: keys.layers(ws ?? ""), queryFn: () => api.layers(ws!), enabled: !!ws, retry: false });

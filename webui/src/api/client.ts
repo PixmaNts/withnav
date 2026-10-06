@@ -1,14 +1,17 @@
-import { get, post, q } from "./http";
+import { get, post, put, q } from "./http";
 import type {
   AgentsBody,
   CommandInfo,
   CommandOutcome,
   ContentBlock,
   ContextSnapshot,
+  GatewayTest,
   IntentBody,
+  LayerEntry,
   ModelEntry,
   SessionListEntry,
   SessionSummary,
+  SettingsBody,
   SkillsBody,
   WorkspaceEntry,
 } from "./types";
@@ -25,6 +28,13 @@ export const api = {
   commands: () => get<{ commands: CommandInfo[] }>("/v1/commands").then((b) => b.commands ?? []),
   skills: (id: string) => get<SkillsBody>(`/v1/sessions/${q(id)}/skills`),
   context: (id: string) => get<ContextSnapshot>(`/v1/sessions/${q(id)}/context`),
+  layers: (workspace: string) => get<{ layers: LayerEntry[] }>(`/v1/layers?workspace=${q(workspace)}`).then((b) => b.layers ?? []),
+  settings: (workspace: string) => get<SettingsBody>(`/v1/settings?workspace=${q(workspace)}`),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  saveSetting: (workspace: string, body: { revision: string; key: string; value: any }) =>
+    put<SettingsBody>(`/v1/settings?workspace=${q(workspace)}`, body),
+  testGateway: (workspace: string, name: string) =>
+    post<GatewayTest>(`/v1/gateways/${q(name)}/test?workspace=${q(workspace)}`),
   intent: (workspace: string) => get<IntentBody>(`/v1/intent?workspace=${q(workspace)}`),
 
   create: (body: { workspace: string; agent?: string; model?: string; variant?: string | null; resume?: string }) =>

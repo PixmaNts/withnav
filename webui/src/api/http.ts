@@ -42,6 +42,9 @@ export class HttpError extends Error {
     readonly status: number,
     message: string,
     readonly reason?: string,
+    /** The parsed JSON error body, for routes that answer with more than `error` and `reason`. */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    readonly body?: any,
   ) {
     super(message);
   }
@@ -72,7 +75,7 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   }
   if (!response.ok) {
     const detail = typeof body?.error === "string" ? body.error : typeof body?.reason === "string" ? body.reason : text.trim();
-    throw new HttpError(response.status, detail || `HTTP ${response.status}`, typeof body?.reason === "string" ? body.reason : undefined);
+    throw new HttpError(response.status, detail || `HTTP ${response.status}`, typeof body?.reason === "string" ? body.reason : undefined, body);
   }
   return body as T;
 }
@@ -81,4 +84,5 @@ export const get = <T>(path: string) => request<T>(path);
 export const post = <T>(path: string, body?: unknown) =>
   request<T>(path, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) });
 
+export const put = <T>(path: string, body: unknown) => request<T>(path, { method: "PUT", body: JSON.stringify(body) });
 export const q = (value: string) => encodeURIComponent(value);

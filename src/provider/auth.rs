@@ -73,6 +73,24 @@ pub fn resolve_key(
     Err(ProviderError::MissingApiKey)
 }
 
+/// Credential provenance only, following exactly the key resolver's precedence.
+pub fn key_source(
+    config_dir: &Path,
+    provider_name: &str,
+    api_key_env: Option<&str>,
+) -> Result<&'static str, ProviderError> {
+    if load_store(config_dir)?
+        .providers
+        .contains_key(provider_name)
+    {
+        return Ok("auth_store");
+    }
+    if std::env::var(api_key_env.unwrap_or("OMNIROUTE_API_KEY")).is_ok_and(|v| !v.is_empty()) {
+        return Ok("environment");
+    }
+    Ok("missing")
+}
+
 pub fn remove_key(config_dir: &Path, provider_name: &str) -> Result<(), ProviderError> {
     let mut store = load_store(config_dir)?;
     if let Some(_entry) = store.providers.remove_entry(provider_name) {

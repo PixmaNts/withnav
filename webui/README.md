@@ -22,14 +22,23 @@ npm run dev
   when the server answers 404. The stand-in lists the folders of `NAVAI_WORKSPACES`
   (colon-separated, default `/tmp/opencode/navai-webui-ws`), with their git branch and changed files,
   and reads `.navigator/intent.md` from disk. A server that has these routes is always used instead.
-- In dev there is no token. In production `navai web` opens `http://127.0.0.1:<port>/#token=<token>`:
+- `GET/PUT /v1/settings` and `POST /v1/gateways/{name}/test` fall back the same way to
+  `dev/settingsFallback.ts`: it starts from the real `config.json` / `models.json` of
+  `NAVAI_CONFIG_DIR` (default `~/.config/navai`), keeps changes **in memory only** (never writes a
+  file), validates models and agents against the real `/v1/models` and `/v1/agents`, and answers
+  409 / 400 as the contract (`.scratch/settings/contract.md`) says.
+- Against a `navai web` server (which wants its token), pass the token of its URL:
+  `NAVAI_SERVER=http://127.0.0.1:<port> NAVAI_TOKEN=<token> npm run dev`. The dev server adds it as
+  `Authorization: Bearer` to every proxied `/v1` call (and to the stand-ins' own calls). Dev only:
+  it never reaches the built app.
+- In dev there is no token in the page. In production `navai web` opens `http://127.0.0.1:<port>/#token=<token>`:
   the app reads the token, keeps it in `sessionStorage` for that tab, removes it from the address bar
   and sends it as `Authorization: Bearer` on every `/v1` call. A 401 shows "Session expired".
 
 ## Check
 
 ```sh
-npm test            # vitest: SSE decoder, transcript projection (with recorded streams), compose routing
+npm test            # vitest: SSE decoder, transcript projection (with recorded streams), compose routing, settings logic
 npx tsc --noEmit    # strict type check
 npm run build       # type check + production build into webui/dist/
 ```
@@ -48,6 +57,9 @@ answer `/` with `index.html` and `/assets/*` with the files.
 | `src/api/` | HTTP client with the bearer token, SSE reader (`fetch` + stream, `Last-Event-ID` resume, backoff, `resync`), TanStack Query hooks |
 | `src/session/` | The event reducer: one projection for history replay and live events; tool-row text, wake parsing, command outcomes |
 | `src/components/` | Shell pieces: sidebar, transcript, composer, model picker, command palette, right panel, subagent view |
-| `src/theme/` | Theme tokens (CSS custom properties) and the saved theme choice |
-| `src/router.ts` | Hash routes; later pages (Settings, InstinctFlow) add a `page` value |
+| `src/settings/` | The Settings page (`#/settings?ws=…&section=…`): sections, catalogue picker, immediate saves |
+| `src/lib/settings.ts` | Settings field mapping, sidebar summaries, search, the save state (tested) |
+| `src/lib/catalog.ts` | Catalogue grouping gateway › provider, shared by the model picker and Settings |
+| `src/theme/` | Theme tokens (CSS custom properties) and the local theme choice; `tui.theme` from config.json wins |
+| `src/router.ts` | Hash routes: `chat`, `settings`; later pages (InstinctFlow) add a `page` value |
 | `dev/` | Dev-server-only code, never bundled |

@@ -6,6 +6,13 @@ requests land in `develop`.
 
 ### Added
 
+- **Settings in the browser.** In `navai web`, the gear in the top bar (or "Open settings" in the
+  command palette) opens Settings: gateways (read-only, with a connection test), the model of each
+  layer and agent and its variant, the default agent, automatic review and scratch directories,
+  subagent limits and watchdogs, and the theme. Each change is checked against the catalogue and
+  written to `config.json` at once; a change made elsewhere in the meantime is reloaded instead of
+  overwritten. Layer models apply after restarting Navai, the rest to new sessions and subagents.
+  API keys are never shown, only where they come from.
 - **Favorite models.** In both model pickers, Ctrl+F (or the star in VS Code) marks a model as a
 favorite; favorites are listed first in an always-open section. The terminal and VS Code keep
 separate lists.

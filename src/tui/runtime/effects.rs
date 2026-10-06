@@ -437,7 +437,7 @@ impl Executor {
                 self.spawn_event(async move {
                     ClientEvent::Git {
                         generation,
-                        status: crate::tui::git::read(&workspace).await,
+                        status: crate::workspace::git::read(&workspace).await,
                     }
                 });
             }

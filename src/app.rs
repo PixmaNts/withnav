@@ -35,6 +35,8 @@ pub enum Commands {
     Serve(ServeArgs),
     Auth(AuthArgs),
     Tui(TuiArgs),
+    /// Serves the browser client of the conversation and opens it.
+    Web(WebArgs),
     /// Converts HTML from stdin to text on stdout; run by the `fetch` tool in
     /// a resource-limited child process.
     #[command(name = "internal-html-convert", hide = true)]
@@ -47,7 +49,9 @@ pub struct HtmlConvertArgs {
     pub format: crate::tools::fetch::ConvertFormat,
 }
 
+mod embedded;
 pub mod tui;
+pub mod web;
 
 /// Logging for `tui`: a file in the data dir, never the terminal.
 pub fn init_tui_logging() {
@@ -72,6 +76,23 @@ pub struct TuiArgs {
     /// NAVAI_SERVER_TOKEN.
     #[arg(long, conflicts_with = "models")]
     pub url: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct WebArgs {
+    /// A workspace directory to offer in the browser; repeat for several. Defaults to the current
+    /// directory.
+    #[arg(long = "workspace", value_name = "PATH")]
+    pub workspaces: Vec<PathBuf>,
+    /// Path of the models file for the embedded server.
+    #[arg(long)]
+    pub models: Option<PathBuf>,
+    /// Loopback port to listen on; 0 picks a free one.
+    #[arg(long, default_value_t = 0)]
+    pub port: u16,
+    /// Print the address without opening the browser.
+    #[arg(long)]
+    pub no_open: bool,
 }
 
 #[derive(Args, Debug)]
@@ -146,6 +167,7 @@ pub async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
         Commands::Serve(args) => serve_command(args).await,
         Commands::Auth(args) => auth_command(args),
         Commands::Tui(args) => tui::run(args).await,
+        Commands::Web(args) => web::run(args).await,
         Commands::InternalHtmlConvert(args) => Ok(crate::tools::fetch::convert_stdio(args.format)),
     }
 }
@@ -225,6 +247,7 @@ async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
         data_dir: crate::paths::data_dir()
             .ok_or_else(|| anyhow::anyhow!("cannot resolve data dir"))?,
         rules_roots,
+        web: None,
     })?;
     // A session that cannot start (no window, unknown alias, no key) ends the
     // run the way a failed turn does: the `error:` line, exit 1.
@@ -461,6 +484,7 @@ async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
         data_dir: crate::paths::data_dir()
             .ok_or_else(|| anyhow::anyhow!("cannot resolve data dir"))?,
         rules_roots,
+        web: None,
     };
     crate::server::routes::serve(
         config,

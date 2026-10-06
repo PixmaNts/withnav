@@ -1206,6 +1206,15 @@ pub struct ListedSession {
     pub message_count: u64,
 }
 
+/// One workspace seen in the history: how many conversations it has and when the
+/// latest one changed. Subagent (child) sessions are not counted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceSummary {
+    pub workspace: String,
+    pub session_count: u64,
+    pub updated_at: String,
+}
+
 /// How long the writer waits on a lock held by another server process.
 const WRITER_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 

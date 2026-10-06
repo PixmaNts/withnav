@@ -31,6 +31,18 @@ pub struct ServerConfig {
     /// Where session instructions are read from besides the workspace; the
     /// binaries use the user's home, tests an empty or temporary one.
     pub rules_roots: RulesRoots,
+    /// `Some` only when `navai web` starts the server: it then also serves the
+    /// browser client's static files. `None` for `serve`, the terminal client
+    /// and the language server, which keep the API surface alone.
+    pub web: Option<WebConfig>,
+}
+
+/// What only the browser client's server knows.
+#[derive(Debug, Clone, Default)]
+pub struct WebConfig {
+    /// The workspaces `navai web` was started with, in argument order; they
+    /// head the list `GET /v1/workspaces` answers.
+    pub launch_workspaces: Vec<PathBuf>,
 }
 
 /// The HTTP-only half of [`ServerConfig`].
@@ -39,6 +51,7 @@ pub struct HttpConfig {
     pub bind: SocketAddr,
     pub allow_non_loopback: bool,
     pub bearer_token: Option<String>,
+    pub web: Option<WebConfig>,
 }
 
 impl ServerConfig {
@@ -65,6 +78,7 @@ impl ServerConfig {
                 bind: self.bind,
                 allow_non_loopback: self.allow_non_loopback,
                 bearer_token: self.bearer_token,
+                web: self.web,
             },
         )
     }
@@ -84,6 +98,7 @@ mod tests {
             history_db: PathBuf::from("/tmp/navai-test/history.db"),
             data_dir: PathBuf::from("/tmp/navai-test/data"),
             rules_roots: RulesRoots::default(),
+            web: None,
         }
     }
 

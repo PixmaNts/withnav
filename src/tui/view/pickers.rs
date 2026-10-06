@@ -94,6 +94,13 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
                 // Two cells per level, never more than the row itself.
                 let indent = (usize::from(row.level()) * 2).min(row_width);
                 let room = row_width - indent;
+                let star = match &row {
+                    crate::tui::catalog::Row::Favorite(entry)
+                    | crate::tui::catalog::Row::Model(entry) => {
+                        ui.favorite_models.contains(&entry.name)
+                    }
+                    _ => false,
+                };
                 let mut line = match row {
                     crate::tui::catalog::Row::Group {
                         label, collapsed, ..
@@ -104,9 +111,27 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
                         ),
                         theme.accent(),
                     )),
-                    crate::tui::catalog::Row::Model(entry) => model_row(entry, room, theme),
+                    crate::tui::catalog::Row::Section { label } => Line::from(Span::styled(
+                        fit(&format!("★ {label}"), room),
+                        theme.accent(),
+                    )),
+                    // In a group the headers already say gateway and provider; the Favorites
+                    // section has no group above its rows, so it shows the whole name.
+                    crate::tui::catalog::Row::Model(entry) => {
+                        model_row(crate::tui::catalog::short_name(entry), entry, room, theme)
+                    }
+                    crate::tui::catalog::Row::Favorite(entry) => {
+                        model_row(&entry.name, entry, room, theme)
+                    }
                 };
-                line.spans.insert(0, Span::raw(" ".repeat(indent)));
+                // The star takes the last two cells of the indent, where a group has its fold
+                // mark, so favorites mark without moving any column.
+                if star && indent >= 2 {
+                    line.spans.insert(0, Span::styled("★ ", theme.accent()));
+                    line.spans.insert(0, Span::raw(" ".repeat(indent - 2)));
+                } else {
+                    line.spans.insert(0, Span::raw(" ".repeat(indent)));
+                }
                 line
             })
             .collect(),
@@ -244,9 +269,23 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
         ..inner
     };
     frame.render_widget(
-        Paragraph::new(Span::styled(keys_line(overlay), theme.muted())),
+        Paragraph::new(Span::styled(
+            keys_line(overlay, usize::from(keys.width)),
+            theme.muted(),
+        )),
         keys,
     );
+    if overlay == Overlay::Models {
+        // The blank line above the keys: the full name and variants of the highlighted model.
+        let selected = ui.selection.get("Models").copied().unwrap_or(0);
+        let detail = model_detail(state, ui, selected, usize::from(keys.width));
+        if !detail.is_empty() && keys.y > inner.y + 1 {
+            frame.render_widget(
+                Paragraph::new(Span::styled(detail, theme.muted())),
+                Rect::new(keys.x, keys.y - 1, keys.width, 1),
+            );
+        }
+    }
     if overlay != Overlay::Help {
         let placeholder = match overlay {
             Overlay::Commands => "type a command…",
@@ -301,17 +340,85 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
     }
 }
 
-/// The keys a popup takes, at its foot.
-fn keys_line(overlay: Overlay) -> &'static str {
+/// The keys a popup takes, at its foot. The model picker's line is built from whole items that
+/// fit in `width`; `esc close` stays last whenever it fits.
+fn keys_line(overlay: Overlay, width: usize) -> String {
     match overlay {
-        Overlay::Agents => "↑↓ choose · enter assigned model · F2 override · esc close",
-        Overlay::Skills => "↑↓ move  enter fill draft  esc close",
-        Overlay::Help => "esc close",
-        Overlay::Themes => "↑↓ preview  enter keep  esc put back",
-        Overlay::Commands => "↑↓ move  enter run  esc close",
-        Overlay::Models => "↑↓ move  ←→ fold  alt+a all  enter choose  esc close",
-        _ => "↑↓ move  enter choose  esc close",
+        Overlay::Agents => "↑↓ choose · enter assigned model · F2 override · esc close".into(),
+        Overlay::Skills => "↑↓ move  enter fill draft  esc close".into(),
+        Overlay::Help => "esc close".into(),
+        Overlay::Themes => "↑↓ preview  enter keep  esc put back".into(),
+        Overlay::Commands => "↑↓ move  enter run  esc close".into(),
+        Overlay::Models => fit_items(
+            &[
+                "↑↓ move",
+                "←→ fold",
+                "alt+a all",
+                "ctrl+f fav",
+                "enter choose",
+                "esc close",
+            ],
+            width,
+        ),
+        _ => "↑↓ move  enter choose  esc close".into(),
     }
+}
+
+/// The items joined by two spaces, as many as fit in `width`, never cutting one. The last item is
+/// kept in preference to the ones before it.
+fn fit_items(items: &[&str], width: usize) -> String {
+    const SEPARATOR: &str = "  ";
+    let Some((last, head)) = items.split_last() else {
+        return String::new();
+    };
+    let mut line = String::new();
+    for item in head {
+        let next = if line.is_empty() {
+            item.to_string()
+        } else {
+            format!("{line}{SEPARATOR}{item}")
+        };
+        if columns(&format!("{next}{SEPARATOR}{last}")) > width {
+            break;
+        }
+        line = next;
+    }
+    if line.is_empty() {
+        // No room for any other item next to the last: the longest prefix of the items that fits.
+        for item in items {
+            let next = if line.is_empty() {
+                item.to_string()
+            } else {
+                format!("{line}{SEPARATOR}{item}")
+            };
+            if columns(&next) > width {
+                break;
+            }
+            line = next;
+        }
+        return line;
+    }
+    if columns(&format!("{line}{SEPARATOR}{last}")) <= width {
+        format!("{line}{SEPARATOR}{last}")
+    } else {
+        line
+    }
+}
+
+/// The highlighted model's full name and its variants; empty on a header or without a row.
+fn model_detail(state: &State, ui: &UiState, selected: usize, width: usize) -> String {
+    let rows = crate::tui::catalog::rows(&state.catalog, ui);
+    let Some(crate::tui::catalog::Row::Model(entry) | crate::tui::catalog::Row::Favorite(entry)) =
+        rows.get(selected)
+    else {
+        return String::new();
+    };
+    let detail = if entry.variants.is_empty() {
+        entry.name.clone()
+    } else {
+        format!("{} · variants: {}", entry.name, entry.variants.join(" "))
+    };
+    fit(&detail, width)
 }
 
 /// Darkens what is behind a popup: the text goes muted, the background stays.
@@ -402,30 +509,20 @@ fn note<'a>(overlay: Overlay, state: &'a State, ui: &UiState, empty: bool) -> Op
     }
 }
 
-/// One model in the picker: model_id, model, context window and variant names, cut to `width`.
-fn model_row(entry: &ModelEntry, width: usize, theme: &Theme) -> Line<'static> {
+/// One model in the picker: its name, with the context window right-aligned; the name takes all
+/// the remaining width and is cut with an ellipsis only when it still does not fit.
+fn model_row(label: &str, entry: &ModelEntry, width: usize, theme: &Theme) -> Line<'static> {
     let window = entry
         .context_window
         .map(crate::tui::reducer::tokens)
         .unwrap_or_else(|| "—".into());
-    let variants = if entry.variants.is_empty() {
-        String::new()
-    } else {
-        format!("  {}", entry.variants.join(" "))
-    };
-    // model_id (18) + model + "  " + window + variants; the model gives way first, then variants.
-    // A narrow popup cuts the model_id with an ellipsis rather than clipping it at the border.
-    let model_id = format!("{} ", pad(&entry.name, width.saturating_sub(1).min(17)));
-    let fixed = columns(&model_id) + 2 + columns(&window);
-    let variants = fit(&variants, width.saturating_sub(fixed + 12));
-    let model_room = width.saturating_sub(fixed + columns(&variants));
-    let model = pad(&entry.upstream_id, model_room);
+    let name_room = width.saturating_sub(columns(&window) + 1);
+    let name = pad(label, name_room);
+    let gap = " ".repeat(width.saturating_sub(columns(&name) + columns(&window)));
     let mut spans = vec![
-        Span::styled(model_id, theme.accent()),
-        Span::styled(model, theme.text()),
-        Span::raw("  "),
+        Span::styled(name, theme.accent()),
+        Span::raw(gap),
         Span::styled(window, theme.number()),
-        Span::styled(variants, theme.subagent()),
     ];
     if entry.enabled == Some(false) {
         for span in &mut spans {

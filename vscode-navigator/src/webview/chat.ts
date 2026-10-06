@@ -97,6 +97,12 @@ let modelItems: typeof paletteRows = [];
 let paletteIndex = 0;
 let pickerKind: "model" | "variant" | "skills" | "agent" | undefined;
 const collapsedGroups = new Set<string>();
+// Favorite model names, kept by the host; the Favorites section lists those the catalogue still has.
+let favorites = new Set<string>();
+// After a favorite toggle the highlight follows the model: its row in the section if it is still
+// there, else its row in its group.
+let favoriteAnchor: { name: string; inSection: boolean } | undefined;
+let favoriteRows: typeof paletteRows = [];
 let selectorPicker = false;
 let paletteDismissed = false;
 function closePalette(): void {
@@ -124,13 +130,29 @@ function choosePalette(index: number): void {
   prompt.focus();
   updateControls();
 }
+/** The canonical name without the `gateway/provider_group/` prefix the group headers show (`gateway/` for a direct gateway); the full name when the prefix does not match. */
+function shortModelName(row: { name: string; gateway?: string; provider_group?: string }): string {
+  if (!row.gateway) return row.name;
+  const prefix = row.provider_group && row.provider_group !== row.gateway ? `${row.gateway}/${row.provider_group}/` : `${row.gateway}/`;
+  return row.name.startsWith(prefix) && row.name.length > prefix.length ? row.name.slice(prefix.length) : row.name;
+}
 function renderPalette(): void {
   pickerOptions.replaceChildren();
   if (pickerKind === "model") pickerItems.sort((a,b) => (a.gateway ?? "").localeCompare(b.gateway ?? "") || (a.provider_group ?? "").localeCompare(b.provider_group ?? ""));
   const allMatches = ranked(pickerItems, pickerSearch.value, row => row.name, row => row.description);
   const matches = pickerKind === "model" && !pickerSearch.value ? allMatches.filter(row => !row.gateway || (!collapsedGroups.has(row.gateway) && !collapsedGroups.has(`${row.gateway}/${row.provider_group}`))) : allMatches;
-  paletteRows = matches.slice(0, PICKER_LIMIT);
-  pickerCount.textContent = `${allMatches.length} of ${pickerItems.length}${matches.length > PICKER_LIMIT ? " · Type to narrow (first 50 shown)" : ""}${pickerKind === "model" ? " · Alt+A folds or unfolds all" : ""}`;
+  const groupRows = matches.slice(0, PICKER_LIMIT);
+  // The Favorites section sits first, is never folded and is not part of the first-50 cut; its rows
+  // come before the groups' rows in `paletteRows`, so indices and option ids stay unique.
+  favoriteRows = pickerKind === "model" ? allMatches.filter(row => favorites.has(row.name)).sort((a, b) => a.name.localeCompare(b.name)) : [];
+  paletteRows = [...favoriteRows, ...groupRows];
+  pickerCount.textContent = `${allMatches.length} of ${pickerItems.length}${matches.length > PICKER_LIMIT ? " · Type to narrow (first 50 shown)" : ""}${pickerKind === "model" ? " · Alt+A folds or unfolds all · Ctrl+F favorite" : ""}`;
+  if (favoriteAnchor) {
+    const found = favoriteAnchor.inSection ? paletteRows.findIndex((row, i) => i < favoriteRows.length && row.name === favoriteAnchor!.name) : -1;
+    const anywhere = found >= 0 ? found : paletteRows.findIndex((row, i) => i >= favoriteRows.length && row.name === favoriteAnchor!.name);
+    if (anywhere >= 0) paletteIndex = anywhere;
+    favoriteAnchor = undefined;
+  }
   paletteIndex = Math.max(0, Math.min(paletteIndex, paletteRows.length - 1));
   palette.hidden = false;
   pickerSearch.setAttribute("aria-expanded", "true");
@@ -155,24 +177,45 @@ function renderPalette(): void {
     button.addEventListener("click", () => { if (collapsedGroups.has(id)) collapsedGroups.delete(id); else collapsedGroups.add(id); renderPalette(); });
     pickerOptions.append(button);
   };
-  const renderOption = (row: typeof paletteRows[number], index: number, level?: 1 | 2): void => {
+  const renderOption = (row: typeof paletteRows[number], index: number, level?: 1 | 2, inGroup = false): void => {
     const option = document.createElement("div");
     if (level !== undefined) option.dataset.level = String(level);
     option.id = `command-option-${index}`;
     option.className = "command-option";
     option.title = row.name;
     option.setAttribute("role", "option");
+    // The group headers already show gateway and provider, so a row inside a group shows the
+    // short name; the accessible name stays the full canonical name.
+    if (inGroup) option.setAttribute("aria-label", row.name);
     option.setAttribute("aria-selected", String(index === paletteIndex));
     const name = document.createElement("strong");
-    name.textContent = `${pickerKind ? "" : "/"}${row.name}${row.args_hint ? ` ${row.args_hint}` : ""}`;
+    name.textContent = `${pickerKind ? "" : "/"}${inGroup ? shortModelName(row) : row.name}${row.args_hint ? ` ${row.args_hint}` : ""}`;
     const description = document.createElement("span");
     description.textContent = row.description;
     option.append(name, description);
+    if (pickerKind === "model") {
+      const starred = favorites.has(row.name);
+      const star = el("button", "favorite-toggle", starred ? "★" : "☆"); star.type = "button";
+      star.tabIndex = -1;
+      star.setAttribute("aria-label", starred ? "Remove from favorites" : "Add to favorites");
+      star.setAttribute("aria-pressed", String(starred));
+      star.title = starred ? "Remove from favorites" : "Add to favorites";
+      star.addEventListener("mousedown", event => event.preventDefault());
+      star.addEventListener("click", event => { event.stopPropagation(); toggleFavorite(index); });
+      option.append(star);
+    }
     option.addEventListener("mousedown", event => event.preventDefault());
     option.addEventListener("click", () => choosePalette(index));
     pickerOptions.append(option);
   }
   if (pickerKind === "model") {
+    if (favoriteRows.length) {
+      const heading = el("h3", "picker-section", "Favorites");
+      heading.dataset.level = "0";
+      heading.setAttribute("aria-label", "Favorites, always open");
+      pickerOptions.append(heading);
+      favoriteRows.forEach((row, index) => renderOption(row, index, 1));
+    }
     const gateways = [...new Set(allMatches.map(row => row.gateway ?? "Models"))];
     for (const gateway of gateways) {
       group(gateway, gateway, 0);
@@ -183,8 +226,8 @@ function renderPalette(): void {
         if (provider !== gateway) group(provider, id, 1, gateway);
         if (!pickerSearch.value && collapsedGroups.has(id)) continue;
         for (const row of rows.filter(row => (row.provider_group ?? gateway) === provider)) {
-          const index = paletteRows.indexOf(row);
-          if (index >= 0) renderOption(row, index, provider === gateway ? 1 : 2);
+          const index = groupRows.indexOf(row);
+          if (index >= 0) renderOption(row, favoriteRows.length + index, provider === gateway ? 1 : 2, true);
         }
       }
     }
@@ -204,6 +247,14 @@ function filterPalette(): void {
   if (paletteRows.length) prompt.setAttribute("aria-activedescendant", `command-option-${paletteIndex}`);
   else prompt.removeAttribute("aria-activedescendant");
 }
+// Asks the host to add or remove the model at `index`; the host answers with the new list.
+function toggleFavorite(index: number): void {
+  const row = paletteRows[index];
+  if (!row || pickerKind !== "model") return;
+  favoriteAnchor = { name: row.name, inSection: index < favoriteRows.length };
+  paletteIndex = index;
+  post({ type: "toggleFavorite", name: row.name });
+}
 pickerSearch.addEventListener("input", () => { paletteIndex = 0; renderPalette(); });
 pickerSearch.addEventListener("keydown", event => {
   if (event.isComposing) return;
@@ -214,6 +265,9 @@ pickerSearch.addEventListener("keydown", event => {
   } else if (["ArrowUp", "ArrowDown"].includes(event.key)) {
     event.preventDefault();
     if (paletteRows.length) { paletteIndex = (paletteIndex + (event.key === "ArrowDown" ? 1 : -1) + paletteRows.length) % paletteRows.length; renderPalette(); }
+  } else if (event.ctrlKey && !event.altKey && event.key.toLowerCase() === "f" && pickerKind === "model") {
+    event.preventDefault();
+    toggleFavorite(paletteIndex);
   } else if (event.altKey && event.code === "KeyA" && pickerKind === "model") {
     event.preventDefault();
     toggleAllGroups();
@@ -755,6 +809,11 @@ function receive(event: HostToWebview): void {
       break;
     }
     case "models": renderModels(event); break;
+    case "favorites": {
+      favorites = new Set(event.items.filter(name => typeof name === "string"));
+      if (!palette.hidden && pickerKind === "model") renderPalette(); else favoriteAnchor = undefined;
+      break;
+    }
     case "usage": renderUsage(event.snapshot); break;
     case "editorContext":
       contextPreview.textContent = event.label;

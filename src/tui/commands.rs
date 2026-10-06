@@ -150,6 +150,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ("alt+c", "continue a subagent out of steps"),
     ("f2", "switch this conversation's model"),
     ("ctrl+n (in models)", "open that model in a new tab"),
+    ("ctrl+f (in models)", "add / remove the model as a favorite"),
     ("f1", "help"),
     ("tab", "build / plan (empty message)"),
     ("shift+tab", "switch focus"),

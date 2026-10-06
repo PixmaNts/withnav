@@ -416,6 +416,22 @@ impl Executor {
                     }
                 }
             }
+            Effect::SaveFavoriteModels(names) => {
+                // Same as the theme: a small inline write; a failure is shown, the list in
+                // memory stays and the next toggle saves it again.
+                if let Some(dir) = &ctx.config_dir {
+                    if let Err(err) = crate::settings::save_tui_favorite_models(dir, &names) {
+                        tracing::warn!("cannot save the favorite models: {err}");
+                        let message = format!("could not save the favorite models: {err}");
+                        self.spawn_event(async move {
+                            ClientEvent::SettingsNotSaved {
+                                generation,
+                                message,
+                            }
+                        });
+                    }
+                }
+            }
             Effect::ReadGit => {
                 let workspace = std::path::PathBuf::from(&ctx.workspace);
                 self.spawn_event(async move {

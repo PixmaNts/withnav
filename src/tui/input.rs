@@ -140,11 +140,40 @@ pub fn route_key(
                 if overlay == Overlay::Models && key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
                 let name = names.get(*selected)?.clone();
-                if name.starts_with("group:") {
+                if name.starts_with("group:") || name.starts_with(super::catalog::SECTION_PREFIX) {
                     return None;
                 }
                 variant_step(state, ui, VariantPick::NewConversation(name));
                 return None;
+            }
+            // ctrl+f in the model list: the highlighted model becomes a favorite, or stops being
+            // one. A heading does nothing. The highlight stays on the same model: on its row in
+            // the Favorites section if it is still there, else on its row in its group.
+            KeyCode::Char('f')
+                if overlay == Overlay::Models && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                let at = *selected;
+                let rows = super::catalog::rows(&state.catalog, ui);
+                let (name, was_favorite_row) = match rows.get(at)? {
+                    super::catalog::Row::Model(m) => (m.name.clone(), false),
+                    super::catalog::Row::Favorite(m) => (m.name.clone(), true),
+                    _ => return None,
+                };
+                drop(rows);
+                if !ui.favorite_models.remove(&name) {
+                    ui.favorite_models.insert(name.clone());
+                }
+                let after = super::catalog::rows(&state.catalog, ui);
+                let position = after
+                    .iter()
+                    .position(|r| r.key() == name && r.is_favorite_row() == was_favorite_row)
+                    .or_else(|| after.iter().position(|r| r.key() == name));
+                let count = after.len();
+                let selected = ui.selection.entry(format!("{overlay:?}")).or_default();
+                *selected = position.unwrap_or(0).min(count.saturating_sub(1));
+                return Some(Action::SaveFavoriteModels(
+                    ui.favorite_models.iter().cloned().collect(),
+                ));
             }
             // alt+a: fold every group, or unfold them all; the selection stays on its row, or
             // moves to the gateway header that held it.
@@ -159,19 +188,29 @@ pub fn route_key(
                         gateway = Some(format!("group:{key}"));
                     }
                     if i == at {
-                        before = Some((row.key(), gateway.clone()));
+                        before = Some((row.key(), row.is_favorite_row(), gateway.clone()));
                     }
                 }
                 super::catalog::toggle_all(&state.catalog, ui);
-                let after = overlay_names(overlay, state, ui);
-                let found = before.and_then(|(name, header)| {
+                let after = super::catalog::rows(&state.catalog, ui);
+                let found = before.and_then(|(name, favorite, header)| {
                     after
                         .iter()
-                        .position(|n| *n == name)
-                        .or_else(|| header.and_then(|h| after.iter().position(|n| *n == h)))
+                        .position(|r| r.key() == name && r.is_favorite_row() == favorite)
+                        .or_else(|| header.and_then(|h| after.iter().position(|r| r.key() == h)))
                 });
+                let count = after.len();
                 let selected = ui.selection.entry(format!("{overlay:?}")).or_default();
-                *selected = found.unwrap_or(0).min(after.len().saturating_sub(1));
+                *selected = found.unwrap_or(0).min(count.saturating_sub(1));
+                return None;
+            }
+            // The Favorites heading has no fold: these keys do nothing on it.
+            KeyCode::Enter | KeyCode::Left | KeyCode::Right
+                if overlay == Overlay::Models
+                    && names
+                        .get(*selected)
+                        .is_some_and(|n| n.starts_with(super::catalog::SECTION_PREFIX)) =>
+            {
                 return None;
             }
             KeyCode::Enter | KeyCode::Left | KeyCode::Right

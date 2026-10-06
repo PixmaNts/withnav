@@ -113,7 +113,7 @@ are read without depending on a newer server event enum. Missing data is not gue
 | `view/markdown.rs` | markdown to styled lines, cached per block revision |
 | `view/text.rs` | terminal-column measurement and grapheme-safe truncation and padding |
 | `view/status.rs` | the status line of the active tab: activity, connection, delivery warning, notice, session tokens; `context_gauge` and `shorten`, shared with the header |
-| `view/pickers.rs` | model, variant, agent, session, command, theme and help overlays; models group by gateway/provider with search across collapsed groups and server-reported windows/variants. Live enter switches in place, `ctrl+n` opens a fresh tab; waiting/refused controls explain why. A long list scrolls to its selected row. |
+| `view/pickers.rs` | model, variant, agent, session, command, theme and help overlays; models group by gateway/provider with search across collapsed groups and server-reported windows/variants. Live enter switches in place, `ctrl+n` opens a fresh tab; waiting/refused controls explain why. A long list scrolls to its selected row. `ctrl+f` marks a favorite; favorites (`tui.favorite_models` in `config.json`) are listed first in an always-open section that is also kept in each model's group. |
 
 ## Data flows
 

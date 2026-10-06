@@ -17,9 +17,9 @@ expression: snapshot
             │ ❯ opus                                                                   │            
             │ switches the model only; /variant after the switch · ctrl+n new tab      │            
             │ ▾ gateway                                                                │            
-            │▌  opus              cc/claude-opus-5-5                1M  low high max   │            
-            │                                                                          │            
-            │ ↑↓ move  ←→ fold  alt+a all  enter choose  esc close                     │            
+            │▌  opus                                                              1M   │            
+            │ opus · variants: low high max                                            │            
+            │ ↑↓ move  ←→ fold  alt+a all  ctrl+f fav  enter choose  esc close         │            
             └──────────────────────────────────────────────────────────────────────────┘            
                      │                                                                              
                      │                                                                              

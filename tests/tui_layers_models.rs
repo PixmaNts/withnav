@@ -538,10 +538,16 @@ fn picker_indents_gateway_provider_and_model_and_direct_models_one_level() {
     let gateway = column(&lines, "▾ omniroute");
     assert_eq!(column(&lines, "▾ cc"), gateway + 2);
     assert_eq!(column(&lines, "▾ kimi"), gateway + 2);
-    assert_eq!(column(&lines, "omniroute/cc/cla"), gateway + 4);
-    assert_eq!(column(&lines, "omniroute/kimi/k2"), gateway + 4);
+    assert_eq!(column(&lines, "claude-opus"), gateway + 4);
+    assert_eq!(column(&lines, "k2 "), gateway + 4);
     assert_eq!(column(&lines, "▾ direct"), gateway);
-    assert_eq!(column(&lines, "direct/solo"), gateway + 2);
+    assert_eq!(column(&lines, "solo"), gateway + 2);
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains("omniroute/cc") || l.contains("direct/solo")),
+        "a row in a group shows the short name only"
+    );
     assert_eq!(
         lines.iter().filter(|l| l.contains("▾ direct")).count(),
         1,
@@ -577,7 +583,7 @@ fn search_keeps_levels_and_collapsed_gateway_hides_its_provider_headers() {
         gateway + 2,
         "collapsed provider stays indented"
     );
-    assert!(!lines.iter().any(|l| l.contains("omniroute/kimi/k2")));
+    assert!(!lines.iter().any(|l| l.contains("k2")));
 
     ui.collapsed_models.insert("omniroute".into());
     let lines = picker_lines(&state, &ui, (100, 30));
@@ -591,7 +597,13 @@ fn search_keeps_levels_and_collapsed_gateway_hides_its_provider_headers() {
     let lines = picker_lines(&state, &ui, (100, 30));
     let gateway = column(&lines, "▾ omniroute");
     assert_eq!(column(&lines, "▾ kimi"), gateway + 2);
-    assert_eq!(column(&lines, "omniroute/kimi/k2"), gateway + 4);
+    let kimi = lines.iter().position(|l| l.contains("▾ kimi")).unwrap();
+    assert_eq!(column(&lines[kimi + 1..], "k2"), gateway + 4);
+    assert!(!lines.iter().any(|l| l.contains("▾ cc")));
+    // Search still matches the full canonical name.
+    ui.filter = "omniroute/kimi".into();
+    let lines = picker_lines(&state, &ui, (100, 30));
+    assert!(lines.iter().any(|l| l.contains("▾ kimi")));
     assert!(!lines.iter().any(|l| l.contains("▾ cc")));
 }
 
@@ -617,9 +629,422 @@ fn narrow_terminal_with_long_canonical_names_keeps_indentation_without_panic() {
             // The long model is the row under its provider: cut with `…`, still at level 2.
             let cc = lines.iter().position(|l| l.contains("▾ cc")).unwrap();
             let model = &lines[cc + 1];
-            let start = model.chars().position(|c| c == 'o').unwrap();
+            let start = model.chars().position(|c| c == 'v').unwrap();
             assert_eq!(start, gateway + 4, "width {width}: {model}");
             assert!(model.contains('…'), "width {width}: {model}");
         }
     }
+}
+
+fn ctrl_f() -> KeyEvent {
+    KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL)
+}
+
+fn favorites_picker() -> (State, UiState) {
+    let state = State {
+        catalog: hierarchy_models().models,
+        ..State::default()
+    };
+    let ui = UiState {
+        overlay: Some(Overlay::Models),
+        ..UiState::default()
+    };
+    (state, ui)
+}
+
+fn keys_of(state: &State, ui: &UiState) -> Vec<String> {
+    catalog::rows(&state.catalog, ui)
+        .iter()
+        .map(Row::key)
+        .collect()
+}
+
+/// Opens the picker's row `index` and presses ctrl+f on it.
+fn toggle_at(state: &State, ui: &mut UiState, index: usize) -> Option<Action> {
+    ui.selection.insert("Models".into(), index);
+    route_key(ctrl_f(), state, ui, &mut Editor::default())
+}
+
+#[test]
+fn ctrl_f_adds_and_removes_a_favorite_and_the_section_comes_first() {
+    let (state, mut ui) = favorites_picker();
+    let plain = keys_of(&state, &ui);
+    assert_eq!(plain[0], "group:direct", "no favorites, no section");
+    // Row 6 is omniroute/kimi/k2.
+    assert_eq!(plain[6], "omniroute/kimi/k2");
+    let action = toggle_at(&state, &mut ui, 6);
+    assert_eq!(
+        action,
+        Some(Action::SaveFavoriteModels(vec!["omniroute/kimi/k2".into()]))
+    );
+    let keys = keys_of(&state, &ui);
+    assert_eq!(
+        &keys[..2],
+        ["section:favorites", "omniroute/kimi/k2"],
+        "section first"
+    );
+    assert_eq!(keys.len(), plain.len() + 2);
+    assert_eq!(
+        keys.iter().filter(|k| *k == "omniroute/kimi/k2").count(),
+        2,
+        "also kept in its group"
+    );
+    // The highlight stays on the same model, in its group.
+    assert_eq!(ui.selection["Models"], 8);
+    assert_eq!(keys[8], "omniroute/kimi/k2");
+
+    // From the section: the model leaves it, and the highlight lands on its group row.
+    let action = toggle_at(&state, &mut ui, 1);
+    assert_eq!(action, Some(Action::SaveFavoriteModels(vec![])));
+    assert_eq!(
+        keys_of(&state, &ui),
+        plain,
+        "last favorite hides the section"
+    );
+    assert_eq!(
+        keys_of(&state, &ui)[ui.selection["Models"]],
+        "omniroute/kimi/k2"
+    );
+}
+
+#[test]
+fn ctrl_f_on_a_heading_does_nothing() {
+    let (state, mut ui) = favorites_picker();
+    assert_eq!(toggle_at(&state, &mut ui, 0), None);
+    assert!(ui.favorite_models.is_empty());
+    ui.favorite_models.insert("direct/solo".into());
+    assert_eq!(toggle_at(&state, &mut ui, 0), None, "section heading");
+    assert_eq!(ui.favorite_models.len(), 1);
+}
+
+#[test]
+fn favorites_are_sorted_chat_only_and_unknown_ones_stay_hidden() {
+    let (state, mut ui) = favorites_picker();
+    for name in [
+        "omniroute/kimi/k2",
+        "direct/solo",
+        "omniroute/kimi/fim",
+        "gone/model",
+    ] {
+        ui.favorite_models.insert(name.into());
+    }
+    let keys = keys_of(&state, &ui);
+    assert_eq!(
+        &keys[..3],
+        ["section:favorites", "direct/solo", "omniroute/kimi/k2"]
+    );
+    assert!(!keys
+        .iter()
+        .any(|k| k == "omniroute/kimi/fim" || k == "gone/model"));
+    assert_eq!(ui.favorite_models.len(), 4, "kept in storage");
+}
+
+#[test]
+fn favorites_section_ignores_folding_and_alt_a() {
+    let (state, mut ui) = favorites_picker();
+    ui.favorite_models.insert("omniroute/cc/claude-opus".into());
+    let mut editor = Editor::default();
+    ui.selection.insert("Models".into(), 0);
+    for code in [KeyCode::Enter, KeyCode::Left, KeyCode::Right] {
+        assert_eq!(
+            route_key(
+                KeyEvent::new(code, KeyModifiers::NONE),
+                &state,
+                &mut ui,
+                &mut editor
+            ),
+            None
+        );
+        assert!(ui.collapsed_models.is_empty(), "{code:?}");
+        assert_eq!(ui.overlay, Some(Overlay::Models));
+    }
+    let alt_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT);
+    route_key(alt_a, &state, &mut ui, &mut editor);
+    let keys = keys_of(&state, &ui);
+    assert_eq!(
+        keys,
+        [
+            "section:favorites",
+            "omniroute/cc/claude-opus",
+            "group:direct",
+            "group:omniroute"
+        ]
+    );
+    assert_eq!(ui.selection["Models"], 0);
+    // Selected on a favorite row, alt+a keeps the highlight there.
+    ui.selection.insert("Models".into(), 1);
+    route_key(alt_a, &state, &mut ui, &mut editor);
+    assert!(ui.collapsed_models.is_empty());
+    assert_eq!(
+        keys_of(&state, &ui)[ui.selection["Models"]],
+        "omniroute/cc/claude-opus"
+    );
+    assert!(ui.selection["Models"] >= 1);
+}
+
+#[test]
+fn search_filters_the_favorites_section_and_hides_it_without_a_match() {
+    let (state, mut ui) = favorites_picker();
+    ui.favorite_models.insert("omniroute/cc/claude-opus".into());
+    ui.favorite_models.insert("direct/solo".into());
+    ui.filter = "solo".into();
+    let keys = keys_of(&state, &ui);
+    assert_eq!(
+        keys,
+        [
+            "section:favorites",
+            "direct/solo",
+            "group:direct",
+            "direct/solo"
+        ]
+    );
+    ui.filter = "k2".into();
+    assert!(!keys_of(&state, &ui).contains(&"section:favorites".to_string()));
+}
+
+#[test]
+fn enter_on_a_favorite_row_picks_that_model_like_its_group_row() {
+    let (state, mut ui) = favorites_picker();
+    ui.favorite_models.insert("direct/solo".into());
+    ui.selection.insert("Models".into(), 1);
+    let mut editor = Editor::default();
+    route_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &state,
+        &mut ui,
+        &mut editor,
+    );
+    let from_favorite = (ui.overlay, ui.variant_pick.clone());
+    // The same model through its group row.
+    let (_, mut other) = favorites_picker();
+    other.selection.insert("Models".into(), 1);
+    route_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &state,
+        &mut other,
+        &mut editor,
+    );
+    assert_eq!(from_favorite, (other.overlay, other.variant_pick.clone()));
+    assert_eq!(
+        ui.variant_pick,
+        Some(VariantPick::NewConversation("direct/solo".into()))
+    );
+    // ctrl+n works on it as on any model row.
+    let (_, mut ui) = favorites_picker();
+    ui.favorite_models.insert("direct/solo".into());
+    ui.selection.insert("Models".into(), 1);
+    route_key(
+        KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+        &state,
+        &mut ui,
+        &mut editor,
+    );
+    assert_eq!(
+        ui.variant_pick,
+        Some(VariantPick::NewConversation("direct/solo".into()))
+    );
+}
+
+#[test]
+fn picker_marks_favorites_with_a_star_section_and_group() {
+    let (state, mut ui) = favorites_picker();
+    ui.favorite_models.insert("omniroute/kimi/k2".into());
+    ui.favorite_models.insert("direct/solo".into());
+    let lines = picker_lines(&state, &ui, (60, 20));
+    let section = column(&lines, "★ Favorites");
+    // The section shows the whole name; the group row below its header only the short one.
+    for (full, short) in [("direct/solo", "solo"), ("omniroute/kimi/k2", "k2")] {
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.contains(&format!("★ {full}")))
+                .count(),
+            1,
+            "{full} in the section: {lines:#?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.contains(&format!("★ {short} ")))
+                .count(),
+            1,
+            "{short} in its group: {lines:#?}"
+        );
+    }
+    assert!(lines.iter().any(|l| l.contains("▾ direct")));
+    assert!(
+        section < column(&lines, "direct/solo"),
+        "section models are indented"
+    );
+    let levels: Vec<u8> = catalog::rows(&state.catalog, &ui)
+        .iter()
+        .map(Row::level)
+        .collect();
+    assert_eq!(levels[..3], [0, 1, 1]);
+    assert!(lines.iter().any(|l| l.contains("ctrl+f fav")));
+    insta::assert_snapshot!("model-picker-favorites", lines.join("\n"));
+}
+
+fn long_name_models() -> ModelsBody {
+    serde_json::from_value(json!({"default_agent":"plan","models":[
+        {"name":"omniroute/agy/claude-opus-4-5-thinking","gateway":"omniroute","api":"chat","provider_group":"agy","upstream_id":"agy/claude-opus-4-5-thinking","context_window":1000000,"variants":["high","low","max","medium","none","xhigh"]},
+        {"name":"omniroute/agy/gemini-3-pro","gateway":"omniroute","api":"chat","provider_group":"agy","upstream_id":"agy/gemini-3-pro","context_window":200000}
+    ]})).unwrap()
+}
+
+/// The picker with the first model highlighted (row 0 is the gateway, 1 the provider, 2 the model).
+fn long_name_picker(size: (u16, u16)) -> Vec<String> {
+    let state = State {
+        catalog: long_name_models().models,
+        ..State::default()
+    };
+    let mut ui = UiState {
+        overlay: Some(Overlay::Models),
+        ..UiState::default()
+    };
+    ui.selection.insert("Models".into(), 2);
+    picker_lines(&state, &ui, size)
+}
+
+#[test]
+fn long_model_name_shows_short_in_the_row_and_in_full_with_variants_in_the_detail_line() {
+    let wide = long_name_picker((100, 16));
+    let row = wide
+        .iter()
+        .find(|l| l.contains("claude-opus-4-5-thinking"))
+        .unwrap();
+    assert!(
+        !row.contains("omniroute/agy/claude"),
+        "short name in the row: {row}"
+    );
+    assert!(
+        !row.contains('…') && !row.contains("high"),
+        "no cut, no variants: {row}"
+    );
+    assert!(row.contains("1M"), "{row}");
+    // The popup is at most 76 columns wide, so this long a line is cut at its end.
+    let detail = wide.iter().find(|l| l.contains("· variants:")).unwrap();
+    assert!(
+        detail.contains("omniroute/agy/claude-opus-4-5-thinking · variants: high low max medium"),
+        "{detail}"
+    );
+    assert!(detail.contains('…'), "{detail}");
+    let keys = wide.iter().position(|l| l.contains("esc close")).unwrap();
+    assert!(
+        wide[keys - 1].contains("· variants:"),
+        "detail sits just above the keys line"
+    );
+    insta::assert_snapshot!("model-picker-long-name-100", wide.join("\n"));
+
+    let narrow = long_name_picker((60, 16));
+    let detail = narrow
+        .iter()
+        .find(|l| l.contains("omniroute/agy/claude"))
+        .unwrap();
+    assert!(
+        detail.contains('…'),
+        "the detail cuts with an ellipsis: {detail}"
+    );
+    insta::assert_snapshot!("model-picker-long-name-60", narrow.join("\n"));
+}
+
+#[test]
+fn detail_line_is_blank_on_a_header_and_has_no_variants_without_any() {
+    let state = State {
+        catalog: long_name_models().models,
+        ..State::default()
+    };
+    let mut ui = UiState {
+        overlay: Some(Overlay::Models),
+        ..UiState::default()
+    };
+    for row in [0, 1] {
+        ui.selection.insert("Models".into(), row);
+        let lines = picker_lines(&state, &ui, (100, 16));
+        let keys = lines.iter().position(|l| l.contains("esc close")).unwrap();
+        assert!(
+            !lines[keys - 1].contains("omniroute/agy/"),
+            "header row {row}: {}",
+            lines[keys - 1]
+        );
+    }
+    ui.selection.insert("Models".into(), 3);
+    let lines = picker_lines(&state, &ui, (100, 16));
+    let keys = lines.iter().position(|l| l.contains("esc close")).unwrap();
+    assert!(lines[keys - 1].contains("omniroute/agy/gemini-3-pro"));
+    assert!(!lines[keys - 1].contains("variants"));
+}
+
+#[test]
+fn favorites_rows_show_the_full_name_and_the_detail_line_follows_them() {
+    let state = State {
+        catalog: long_name_models().models,
+        ..State::default()
+    };
+    let mut ui = UiState {
+        overlay: Some(Overlay::Models),
+        ..UiState::default()
+    };
+    ui.favorite_models
+        .insert("omniroute/agy/gemini-3-pro".into());
+    ui.selection.insert("Models".into(), 1);
+    let lines = picker_lines(&state, &ui, (100, 16));
+    assert!(lines
+        .iter()
+        .any(|l| l.contains("★ omniroute/agy/gemini-3-pro")));
+    let keys = lines.iter().position(|l| l.contains("esc close")).unwrap();
+    assert!(lines[keys - 1].contains("omniroute/agy/gemini-3-pro"));
+}
+
+#[test]
+fn keys_line_never_cuts_a_word_and_keeps_esc_close() {
+    for width in [60, 70, 100] {
+        let lines = long_name_picker((width, 16));
+        let keys = lines
+            .iter()
+            .find(|l| l.contains("↑↓ move"))
+            .unwrap_or_else(|| panic!("no keys line at {width}: {lines:#?}"));
+        let words = keys.split("│").nth(1).unwrap().trim();
+        assert!(words.contains("ctrl+f fav"), "{width}: {words}");
+        assert!(words.ends_with("esc close"), "{width}: {words}");
+        for item in [
+            "↑↓ move",
+            "←→ fold",
+            "alt+a all",
+            "ctrl+f fav",
+            "enter choose",
+            "esc close",
+        ] {
+            let start = item.split(' ').next().unwrap();
+            if words.contains(start) {
+                assert!(words.contains(item), "{width}: cut item {item} in {words}");
+            }
+        }
+    }
+    // Below the full line's width, whole items drop, never a part of one.
+    let lines = long_name_picker((40, 16));
+    let keys = lines.iter().find(|l| l.contains("↑↓ move")).unwrap();
+    assert!(keys.contains("esc close"), "{keys}");
+    assert!(!keys.contains("enter choo "), "{keys}");
+}
+
+#[test]
+fn detail_line_shows_the_whole_name_and_variants_when_they_fit() {
+    let mut catalog = long_name_models().models;
+    catalog[0].name = "omniroute/agy/claude-opus-4-5".into();
+    let state = State {
+        catalog,
+        ..State::default()
+    };
+    let mut ui = UiState {
+        overlay: Some(Overlay::Models),
+        ..UiState::default()
+    };
+    ui.selection.insert("Models".into(), 2);
+    let lines = picker_lines(&state, &ui, (100, 16));
+    assert!(
+        lines.iter().any(|l| l
+            .contains("omniroute/agy/claude-opus-4-5 · variants: high low max medium none xhigh")),
+        "{lines:#?}"
+    );
 }

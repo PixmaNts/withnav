@@ -5,6 +5,38 @@ import { buildEditorContext, presentMessage } from "./editorContext";
 import { routeComposer } from "./commands";
 
 const CONTEXT_DEBOUNCE_MS = 200;
+/** `globalState` key of the favorite model names; the terminal client keeps its own list. */
+export const FAVORITE_MODELS_KEY = "navai.favoriteModels";
+const MAX_FAVORITES = 500;
+const MAX_FAVORITE_NAME = 300;
+
+/** Favorite names saved in `state`; anything but a list of strings is ignored. */
+export function readFavorites(state: vscode.Memento): string[] {
+  const saved = state.get<unknown>(FAVORITE_MODELS_KEY);
+  return Array.isArray(saved) ? saved.filter((name): name is string => typeof name === "string") : [];
+}
+
+interface FavoriteStore {
+  get(): string[];
+  toggle(name: string): void;
+  onChange(listener: (items: string[]) => void): () => void;
+}
+
+function favoriteStore(state: vscode.Memento): FavoriteStore {
+  const listeners = new Set<(items: string[]) => void>();
+  return {
+    get: () => readFavorites(state),
+    toggle(name) {
+      const current = readFavorites(state);
+      if (!current.includes(name) && (current.length >= MAX_FAVORITES || !name || name.length > MAX_FAVORITE_NAME)) return;
+      const next = current.includes(name) ? current.filter(saved => saved !== name) : [...current, name];
+      const saved = state.update(FAVORITE_MODELS_KEY, next);
+      for (const listener of listeners) listener(next);
+      void Promise.resolve(saved).catch(showError);
+    },
+    onChange(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+  };
+}
 
 export function registerChatView(
   context: vscode.ExtensionContext,
@@ -12,6 +44,7 @@ export function registerChatView(
 ): vscode.Disposable {
   const panels = new Map<string, vscode.WebviewPanel>();
   const openings = new Map<string, Promise<void>>();
+  const favorites = favoriteStore(context.globalState);
   const registration = vscode.window.registerWebviewViewProvider(CHAT_VIEW_ID, {
     resolveWebviewView(view) {
       let disposed = false;
@@ -45,6 +78,7 @@ export function registerChatView(
         void webview.postMessage(presentMessage(message));
       };
       const unsubscribe = backend.subscribe(post);
+      const unsubscribeFavorites = favorites.onChange(items => post({ type: "favorites", items }));
 
       // Live preview of what the next message would carry.
       let contextTimer: ReturnType<typeof setTimeout> | undefined;
@@ -72,6 +106,7 @@ export function registerChatView(
             if (lastModels) post(lastModels);
             const snapshot = backend.currentContext();
             if (snapshot) post({ type: "usage", snapshot });
+            post({ type: "favorites", items: favorites.get() });
             pushContext();
             backend.resumePermissionReads();
             void backend.refreshCommands().catch(showError);
@@ -150,6 +185,9 @@ export function registerChatView(
           case "selectModel":
             if (typeof message.name === "string") backend.selectModel(message.name);
             break;
+          case "toggleFavorite":
+            if (typeof message.name === "string") favorites.toggle(message.name);
+            break;
           case "selectAgent":
             if (typeof message.id === "string") void backend.selectAgent(message.id).catch(showError);
             break;
@@ -163,7 +201,7 @@ export function registerChatView(
                 if (disposed || message.generation !== backend.currentGeneration()) { childBackend.dispose(); return; }
                 const panel = vscode.window.createWebviewPanel("navai.subagent", "Subagent", vscode.ViewColumn.Active, { enableScripts: true });
                 panels.set(message.childId, panel);
-                mountChildPanel(context, panel, childBackend, backend, message.parentId, message.childId);
+                mountChildPanel(context, panel, childBackend, backend, message.parentId, message.childId, favorites);
                 panel.onDidDispose(() => { if (panels.get(message.childId) === panel) panels.delete(message.childId); childBackend.dispose(); });
                 const off = backend.subscribe(update => { if (update.generation !== message.generation) panel.dispose(); });
                 panel.onDidDispose(off);
@@ -189,6 +227,7 @@ export function registerChatView(
         disposed = true;
         backend.cancelPermissionReads();
         unsubscribe();
+        unsubscribeFavorites();
         messageSubscription.dispose();
         if (contextTimer) clearTimeout(contextTimer);
         for (const subscription of editorSubscriptions) subscription.dispose();
@@ -198,13 +237,14 @@ export function registerChatView(
   return registration;
 }
 
-function mountChildPanel(context: vscode.ExtensionContext, panel: vscode.WebviewPanel, child: ChatBackend, parent: ChatBackend, parentId: string, childId: string): void {
+function mountChildPanel(context: vscode.ExtensionContext, panel: vscode.WebviewPanel, child: ChatBackend, parent: ChatBackend, parentId: string, childId: string, favorites: FavoriteStore): void {
   let disposed = false;
   const webview = panel.webview;
   webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "out")] };
   webview.html = chatHtml(randomNonce(), String(webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "out", "chat.js"))), String(webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "out", "chat.css"))), webview.cspSource);
   const post = (m: HostToWebview): void => { if (!disposed) void webview.postMessage(m); };
   const off = child.subscribe(post);
+  const favoritesOff = favorites.onChange(items => post({ type: "favorites", items, generation: child.currentGeneration() }));
   const parentOff = parent.subscribe(m => { if (m.type === "subagents") {
     const row = m.items.find(c => c.id === childId);
     if (row) { panel.title = `Subagent · ${row.agent} · ${row.goal.slice(0,80)}`; child.publishSubagents(); }
@@ -213,6 +253,7 @@ function mountChildPanel(context: vscode.ExtensionContext, panel: vscode.Webview
     if (disposed || (m.type !== "ready" && m.generation !== child.currentGeneration())) return;
     if (m.type === "ready") {
       post({ type: "conversationOpened", id: childId, title: "Read-only subagent", generation: child.currentGeneration() });
+      post({ type: "favorites", items: favorites.get(), generation: child.currentGeneration() });
       child.publishSubagents();
       post({ type: "history", items: child.history(), generation: child.currentGeneration() });
       child.resumePermissionReads();
@@ -225,7 +266,7 @@ function mountChildPanel(context: vscode.ExtensionContext, panel: vscode.Webview
     }
     // No send, resume, commands or permission answers in this panel.
   });
-  panel.onDidDispose(() => { disposed = true; off(); parentOff(); child.dispose(); });
+  panel.onDidDispose(() => { disposed = true; off(); favoritesOff(); parentOff(); child.dispose(); });
 }
 
 function randomNonce(): string {

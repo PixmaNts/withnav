@@ -4,6 +4,16 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-06
+
+### Fixed
+
+- **Model pickers show the hierarchy.** In the terminal `/model` picker and the VS Code chat picker,
+gateways, providers and models are now indented by level. Search, collapse, keyboard navigation
+and API filtering are unchanged.
+- **Fold or unfold every group at once.** In both model pickers, Alt+A folds every gateway and
+provider, and pressing it again unfolds them.
+
 ## [0.5.0] - 2026-10-05
 
 Models now have explicit gateway-qualified names, while layers and agents keep their own choices.

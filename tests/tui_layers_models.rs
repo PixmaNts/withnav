@@ -266,6 +266,37 @@ fn gateway_groups_collapse_search_reopens_and_headers_never_pick_models() {
 }
 
 #[test]
+fn alt_a_folds_every_group_then_unfolds_them_all() {
+    let state = State {
+        catalog: models().models,
+        ..State::default()
+    };
+    let mut ui = UiState {
+        overlay: Some(Overlay::Models),
+        ..UiState::default()
+    };
+    let mut editor = Editor::default();
+    let keys = |ui: &UiState| {
+        catalog::rows(&state.catalog, ui)
+            .iter()
+            .map(Row::key)
+            .collect::<Vec<_>>()
+    };
+    let all = keys(&ui);
+    assert_eq!(all.len(), 5);
+    // Select the model under the omniroute/combo provider (row 2).
+    ui.selection.insert("Models".into(), 2);
+    let alt_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT);
+    route_key(alt_a, &state, &mut ui, &mut editor);
+    assert_eq!(keys(&ui), vec!["group:omniroute", "group:openai"]);
+    assert_eq!(ui.selection["Models"], 0, "lands on the gateway header");
+    assert!(ui.filter.is_empty());
+    route_key(alt_a, &state, &mut ui, &mut editor);
+    assert_eq!(keys(&ui), all);
+    assert!(ui.collapsed_models.is_empty());
+}
+
+#[test]
 fn configured_default_agent_creates_without_editor_or_model_inheritance() {
     let mut s = State::default();
     let g = s.generation.clone();
@@ -447,4 +478,148 @@ fn panel_shows_config_layer_capability_not_network_status_and_agent_override() {
         assert!(text.contains(value), "{value}: {text}");
     }
     assert!(!text.contains("online"));
+}
+
+fn hierarchy_models() -> ModelsBody {
+    serde_json::from_value(json!({"default_agent":"plan","models":[
+        {"name":"omniroute/cc/claude-opus","gateway":"omniroute","api":"chat","provider_group":"cc","upstream_id":"cc/claude-opus","context_window":200000},
+        {"name":"omniroute/kimi/k2","gateway":"omniroute","api":"chat","provider_group":"kimi","upstream_id":"kimi/k2","context_window":200000},
+        {"name":"omniroute/kimi/fim","gateway":"omniroute","api":"fim","provider_group":"kimi","upstream_id":"kimi/fim","context_window":200000},
+        {"name":"direct/solo","gateway":"direct","api":"chat","provider_group":"direct","upstream_id":"solo","context_window":200000}
+    ]})).unwrap()
+}
+
+/// The screen's rows as drawn; the selection mark is blanked.
+fn picker_lines(state: &State, ui: &UiState, size: (u16, u16)) -> Vec<String> {
+    use ratatui::{backend::TestBackend, Terminal};
+    let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).unwrap();
+    terminal
+        .draw(|frame| {
+            navai::tui::view::draw(
+                frame,
+                state,
+                ui,
+                &Editor::default(),
+                &mut navai::tui::view::RenderCache::default(),
+            )
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    (0..size.1)
+        .map(|y| {
+            (0..size.0)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .map(|line| line.replace('▌', " "))
+        .collect()
+}
+
+/// Column of `needle` inside the picker row that contains it.
+fn column(lines: &[String], needle: &str) -> usize {
+    let line = lines
+        .iter()
+        .find(|l| l.contains(needle))
+        .unwrap_or_else(|| panic!("{needle} not drawn in {lines:#?}"));
+    line[..line.find(needle).unwrap()].chars().count()
+}
+
+#[test]
+fn picker_indents_gateway_provider_and_model_and_direct_models_one_level() {
+    let state = State {
+        catalog: hierarchy_models().models,
+        ..State::default()
+    };
+    let ui = UiState {
+        overlay: Some(Overlay::Models),
+        ..UiState::default()
+    };
+    let lines = picker_lines(&state, &ui, (100, 30));
+    let gateway = column(&lines, "▾ omniroute");
+    assert_eq!(column(&lines, "▾ cc"), gateway + 2);
+    assert_eq!(column(&lines, "▾ kimi"), gateway + 2);
+    assert_eq!(column(&lines, "omniroute/cc/cla"), gateway + 4);
+    assert_eq!(column(&lines, "omniroute/kimi/k2"), gateway + 4);
+    assert_eq!(column(&lines, "▾ direct"), gateway);
+    assert_eq!(column(&lines, "direct/solo"), gateway + 2);
+    assert_eq!(
+        lines.iter().filter(|l| l.contains("▾ direct")).count(),
+        1,
+        "no redundant provider row for a direct gateway"
+    );
+    assert!(!lines.iter().any(|l| l.contains("kimi/fim")), "chat only");
+    insta::assert_snapshot!(
+        "model-picker-hierarchy",
+        picker_lines(&state, &ui, (60, 16)).join("\n")
+    );
+    let levels: Vec<u8> = catalog::rows(&state.catalog, &ui)
+        .iter()
+        .map(Row::level)
+        .collect();
+    assert_eq!(levels, vec![0, 1, 0, 1, 2, 1, 2]);
+}
+
+#[test]
+fn search_keeps_levels_and_collapsed_gateway_hides_its_provider_headers() {
+    let state = State {
+        catalog: hierarchy_models().models,
+        ..State::default()
+    };
+    let mut ui = UiState {
+        overlay: Some(Overlay::Models),
+        ..UiState::default()
+    };
+    ui.collapsed_models.insert("omniroute/kimi".into());
+    let lines = picker_lines(&state, &ui, (100, 30));
+    let gateway = column(&lines, "▾ omniroute");
+    assert_eq!(
+        column(&lines, "▸ kimi"),
+        gateway + 2,
+        "collapsed provider stays indented"
+    );
+    assert!(!lines.iter().any(|l| l.contains("omniroute/kimi/k2")));
+
+    ui.collapsed_models.insert("omniroute".into());
+    let lines = picker_lines(&state, &ui, (100, 30));
+    assert!(lines.iter().any(|l| l.contains("▸ omniroute")));
+    assert!(!lines
+        .iter()
+        .any(|l| l.contains(" cc") || l.contains("kimi")));
+
+    // A search opens every group and keeps each match at its level.
+    ui.filter = "k2".into();
+    let lines = picker_lines(&state, &ui, (100, 30));
+    let gateway = column(&lines, "▾ omniroute");
+    assert_eq!(column(&lines, "▾ kimi"), gateway + 2);
+    assert_eq!(column(&lines, "omniroute/kimi/k2"), gateway + 4);
+    assert!(!lines.iter().any(|l| l.contains("▾ cc")));
+}
+
+#[test]
+fn narrow_terminal_with_long_canonical_names_keeps_indentation_without_panic() {
+    let mut catalog = hierarchy_models().models;
+    catalog[0].name = format!("omniroute/cc/{}", "very-long-model-name-".repeat(6));
+    catalog[0].upstream_id = format!("cc/{}", "very-long-model-name-".repeat(6));
+    let state = State {
+        catalog,
+        ..State::default()
+    };
+    let ui = UiState {
+        overlay: Some(Overlay::Models),
+        ..UiState::default()
+    };
+    // Below 24 columns the view asks for a larger terminal; from there the popup draws.
+    for width in [8, 23, 24, 25, 30, 40, 60] {
+        let lines = picker_lines(&state, &ui, (width, 20));
+        if width >= 24 {
+            let gateway = column(&lines, "▾ omni");
+            assert_eq!(column(&lines, "▾ cc"), gateway + 2, "width {width}");
+            // The long model is the row under its provider: cut with `…`, still at level 2.
+            let cc = lines.iter().position(|l| l.contains("▾ cc")).unwrap();
+            let model = &lines[cc + 1];
+            let start = model.chars().position(|c| c == 'o').unwrap();
+            assert_eq!(start, gateway + 4, "width {width}: {model}");
+            assert!(model.contains('…'), "width {width}: {model}");
+        }
+    }
 }

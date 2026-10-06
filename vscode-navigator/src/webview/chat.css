@@ -1,5 +1,10 @@
 :root { color-scheme: light dark; }
 .picker-group { display: block; width: 100%; text-align: left; background: transparent; color: var(--vscode-descriptionForeground); border: 0; padding: 6px 8px; font-weight: 600; font-size: 11px; }
+/* Model picker hierarchy: gateway 0, provider 1, model 2 (1 under a direct gateway), 12px per level. */
+#picker-options { --picker-indent: 12px; }
+#picker-options [data-level="1"] { margin-left: var(--picker-indent); }
+#picker-options [data-level="2"] { margin-left: calc(2 * var(--picker-indent)); }
+#picker-options .picker-group[data-level="1"] { width: calc(100% - var(--picker-indent)); }
 .picker-group::before { content: "▾ "; }
 .picker-group[aria-expanded="false"]::before { content: "▸ "; }
 .command-option strong { overflow-wrap: anywhere; }

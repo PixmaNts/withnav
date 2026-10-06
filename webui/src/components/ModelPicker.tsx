@@ -2,17 +2,14 @@ import { CaretDown, CaretRight, MagnifyingGlass, Plugs } from "@phosphor-icons/r
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentEntry, ModelEntry } from "../api/types";
 import { windowSize } from "../lib/format";
-import { ranked } from "../lib/search";
+import { groupCatalog, shortName, type CatalogRow } from "../lib/catalog";
 import type { Chat } from "../session/useChat";
 
 // The model picker popover: a session override of the active agent's model and
 // variant. Chat models only, grouped gateway › provider and collapsible, like
 // the terminal picker (`src/tui/catalog.rs`). It never writes config.json.
 
-type Row =
-  | { type: "gateway"; key: string; label: string; count: number; collapsed: boolean }
-  | { type: "provider"; key: string; label: string; count: number; collapsed: boolean }
-  | { type: "model"; model: ModelEntry; direct: boolean };
+type Row = CatalogRow;
 
 const SOURCE_LABEL: Record<string, string> = {
   config: "config.json",
@@ -25,45 +22,10 @@ const SOURCE_LABEL: Record<string, string> = {
 };
 
 function buildRows(models: ModelEntry[], filter: string, collapsed: Set<string>): Row[] {
-  const groups = new Map<string, Map<string, ModelEntry[]>>();
-  for (const model of ranked(models, filter, (m) => m.name, (m) => m.upstream_id)) {
-    const providers = groups.get(model.gateway) ?? new Map<string, ModelEntry[]>();
-    groups.set(model.gateway, providers);
-    const list = providers.get(model.provider_group) ?? [];
-    providers.set(model.provider_group, list);
-    list.push(model);
-  }
-  const searching = !!filter.trim();
-  const rows: Row[] = [];
-  for (const gateway of [...groups.keys()].sort()) {
-    const providers = groups.get(gateway)!;
-    const count = [...providers.values()].reduce((n, l) => n + l.length, 0);
-    const gClosed = !searching && collapsed.has(gateway);
-    rows.push({ type: "gateway", key: gateway, label: gateway, count, collapsed: gClosed });
-    if (gClosed) continue;
-    for (const provider of [...providers.keys()].sort()) {
-      const list = providers.get(provider)!;
-      const key = `${gateway}/${provider}`;
-      const direct = provider === gateway;
-      const pClosed = !searching && collapsed.has(key);
-      if (!direct) rows.push({ type: "provider", key, label: provider, count: list.length, collapsed: pClosed });
-      if (pClosed) continue;
-      const sorted = searching ? list : [...list].sort((a, b) => a.name.localeCompare(b.name));
-      for (const model of sorted) rows.push({ type: "model", model, direct });
-    }
-  }
-  return rows;
+  return groupCatalog(models, filter, { collapsed: (key) => collapsed.has(key) });
 }
 
-/**
- * The canonical name without the `gateway/provider_group/` prefix the group headers already show
- * (`gateway/` for a direct gateway); the full name when the prefix does not match. Same rule as
- * the terminal and VS Code pickers (`src/tui/catalog.rs::short_name`).
- */
-export function shortName(m: Pick<ModelEntry, "name" | "gateway" | "provider_group">): string {
-  const prefix = m.provider_group && m.provider_group !== m.gateway ? `${m.gateway}/${m.provider_group}/` : `${m.gateway}/`;
-  return m.name.startsWith(prefix) && m.name.length > prefix.length ? m.name.slice(prefix.length) : m.name;
-}
+export { shortName };
 
 /** The highlighted model's full name, its variants and what it supports. */
 function detail(m: ModelEntry): string {

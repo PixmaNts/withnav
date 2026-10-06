@@ -73,6 +73,8 @@ export interface ModelEntry {
   disabled_reason?: string;
   variants?: string[];
   default_variant?: string;
+  reported_output?: number;
+  max_input_tokens?: number;
 }
 
 export interface Selection {
@@ -141,3 +143,59 @@ export interface CommandOutcome {
 }
 
 export type ContentBlock = { type: "text"; text: string } | { type: "skill"; name: string };
+
+// Settings (`.scratch/settings/contract.md`): config.json fields and the gateways of models.json.
+export type SettingApplies = "new_sessions" | "restart" | "live";
+
+export interface SettingField {
+  /** Dotted key as in config.json: `layers.reflex`, `agents.build`, `tui.theme`, … */
+  key: string;
+  // The value shape depends on the key; read through `lib/settings.ts`.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  value: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  default: any;
+  set: boolean;
+  error: string | null;
+  applies: SettingApplies;
+}
+
+export interface GatewayInfo {
+  name: string;
+  base_url: string;
+  api_key_env: string | null;
+  key_source: "auth_store" | "environment" | "missing";
+  catalog_format: string | null;
+  connect_timeout_ms: number | null;
+  request_timeout_ms: number | null;
+  headers: string[];
+  model_count: number | null;
+  used_by: string[];
+}
+
+export interface SettingsBody {
+  revision: string;
+  paths: { config: string; models: string | null; agents: string[] };
+  fields: SettingField[];
+  gateways: GatewayInfo[];
+}
+
+export interface LayerEntry {
+  layer: "reflex" | "instinct" | "metacognition" | string;
+  status: "usable" | "disabled" | string;
+  model: string | null;
+  variant: string | null;
+  gateway: string | null;
+  upstream_id: string | null;
+  api: string | null;
+  reason: string | null;
+  variant_diagnostic?: string;
+}
+
+export interface GatewayTest {
+  ok: boolean;
+  status: number | null;
+  latency_ms: number;
+  model_count: number | null;
+  error: string | null;
+}

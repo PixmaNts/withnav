@@ -488,6 +488,14 @@ the later 0.6 scope, not this contract.
 
 ## Where new code goes
 
+- Settings HTTP edits live in `server/settings.rs`: shared `settings::update` locks a stable sidecar
+  across snapshot read, revision comparison, mutation and atomic save. `server/settings/editor.rs` owns
+  editable keys, defaults and scalar validation; `provider/assignments.rs` checks proposed model
+  API and offered variants without runtime fallback. Unknown config keys and siblings survive.
+  `restart` means after Navai restarts (conservative for layers). `new_sessions` means next use:
+  new sessions, model/agent switches or newly started subagents; running turns keep their values.
+  `live` means the changing client applies it at once; other open clients on their next start.
+
 - Canonical identity parsing belongs in `provider/model_name.rs` (`ModelName`), assignment and
   default-agent validation in `provider/assignments.rs`, and shared lower-layer construction in
   `provider/layers.rs`. Do not put these policies in clients or duplicate them in navigator bootstrap.

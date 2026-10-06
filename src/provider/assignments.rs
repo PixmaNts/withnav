@@ -118,6 +118,31 @@ pub struct AssignmentResolver<'a> {
 }
 
 impl<'a> AssignmentResolver<'a> {
+    /// Settings edits reject unusable choices instead of installing runtime fallbacks.
+    pub fn strict_assignment(
+        &self,
+        assignment: &ModelAssignment,
+        api: ApiKind,
+        offered: &[String],
+    ) -> Result<(), String> {
+        let model = self.resolve(assignment)?;
+        if model.resolved.model.api != api {
+            return Err(format!(
+                "required API '{}', actual API '{}'",
+                api_name(api),
+                api_name(model.resolved.model.api)
+            ));
+        }
+        if let AssignmentVariant::Named(name) = &assignment.variant {
+            if !effective_variants(&model.resolved, offered).contains_key(name) {
+                return Err(format!(
+                    "model {} does not offer variant '{name}'",
+                    assignment.model
+                ));
+            }
+        }
+        Ok(())
+    }
     pub fn new(catalog: &'a ModelsConfig, settings: &'a Settings) -> Self {
         Self { catalog, settings }
     }

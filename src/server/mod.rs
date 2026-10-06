@@ -8,6 +8,7 @@
 pub mod config;
 pub mod routes;
 pub mod session;
+mod settings;
 pub mod sse;
 mod web;
 

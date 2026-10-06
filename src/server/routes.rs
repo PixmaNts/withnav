@@ -8,6 +8,14 @@
 //!   Session definitions are pinned for live sessions; base assignments project current config.
 //!   Missing authoritative saved model/variant provenance returns a diagnostic, never inferred override sources.
 //! - `GET  /v1/models?workspace=` -> canonical catalog entries and `default_agent`
+//! - `GET /v1/settings?workspace=` -> `{revision,paths,fields,gateways}`; no keys or header values.
+//! - `PUT /v1/settings?workspace=` accepts `{revision,key,value}`; null removes, stale revisions
+//!   return 409 reason `stale`, invalid choices 400 reason `invalid`. Writes are serialized and atomic.
+//!   `restart`: after Navai restarts (conservative for layers). `new_sessions`: next use, including
+//!   new sessions, model/agent switches and newly started subagents; running turns keep their values.
+//!   `live`: changing client applies at once; other open clients on their next start.
+//! - `POST /v1/gateways/{name}/test?workspace=` -> `{ok,status,latency_ms,model_count,error}`;
+//!   probes `/models` without writing the catalogue or returning upstream secrets.
 //! - `POST /v1/sessions`      -> `{session_id, root_actor_id:"agent:main", actor_state:"idle"}`
 //!   (422 `{"error", "reason":"no_context_window"}` for a chat alias with no known window)
 //! - `GET  /v1/sessions/:id`  -> `{session_id, actor_state, workspace, model, variant, current_seq}`
@@ -143,6 +151,11 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/models", get(list_models))
         .route("/v1/layers", get(list_layers))
         .route("/v1/agents", get(list_agents))
+        .route(
+            "/v1/settings",
+            get(super::settings::get).put(super::settings::put),
+        )
+        .route("/v1/gateways/{name}/test", post(super::settings::test))
         .route("/v1/sessions", get(list_sessions).post(create_session))
         .route("/v1/sessions/{id}", get(get_session).delete(delete_session))
         .route("/v1/sessions/{id}/messages", post(post_message))

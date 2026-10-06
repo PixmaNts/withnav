@@ -1,9 +1,9 @@
-import { Compass, WifiSlash } from "@phosphor-icons/react";
+import { Compass, GearSix, WifiSlash } from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api/client";
 import { onUnauthorized } from "./api/http";
-import { keys, useCommands, useSessions } from "./api/queries";
+import { keys, useCommands, useSessions, useSettings } from "./api/queries";
 import { CommandPalette, type PaletteCommand, type PalettePage } from "./components/CommandPalette";
 import { Composer, type ComposerHandle } from "./components/Composer";
 import { ModelPicker } from "./components/ModelPicker";
@@ -13,8 +13,10 @@ import { SubagentView } from "./components/SubagentView";
 import { EmptySession, Transcript } from "./components/Transcript";
 import { sessionTitle, type ClientCommand } from "./lib/compose";
 import { baseName, modKey, shortPath } from "./lib/format";
-import { useRoute } from "./router";
+import { useRoute, type Route } from "./router";
 import { useChat } from "./session/useChat";
+import { serverTheme } from "./lib/settings";
+import { SettingsPage } from "./settings/SettingsPage";
 import { applyTheme, storedTheme, THEMES, type ThemeId } from "./theme/themes";
 
 type Overlay = null | "models" | { palette: PalettePage };
@@ -22,8 +24,31 @@ type Overlay = null | "models" | { palette: PalettePage };
 export function App() {
   const [expired, setExpired] = useState(false);
   useEffect(() => onUnauthorized(() => setExpired(true)), []);
+  const [route, navigate] = useRoute();
+  const [theme, setTheme] = useAppTheme(route.workspace);
   if (expired) return <Expired />;
-  return <ChatPage />;
+  if (route.page === "settings") return <SettingsPage route={route} navigate={navigate} theme={theme} setTheme={setTheme} />;
+  return <ChatPage route={route} navigate={navigate} theme={theme} setTheme={setTheme} />;
+}
+
+/**
+ * The theme: config.json's `tui.theme` (shared with the terminal client) wins; the choice saved in
+ * this browser is the fallback while the server has none. The server value is adopted when it
+ * changes, not on every refetch, so a theme picked from the palette holds until config.json moves.
+ */
+function useAppTheme(workspace: string | null): [ThemeId, (id: ThemeId) => void] {
+  const [theme, setTheme] = useState<ThemeId>(storedTheme);
+  const settings = useSettings(workspace);
+  const fromServer = serverTheme(settings.data);
+  const adopted = useRef<ThemeId | null>(null);
+  useEffect(() => {
+    if (fromServer && fromServer !== adopted.current) {
+      adopted.current = fromServer;
+      setTheme(fromServer);
+    }
+  }, [fromServer]);
+  useEffect(() => applyTheme(theme), [theme]);
+  return [theme, setTheme];
 }
 
 function Expired() {
@@ -41,10 +66,15 @@ function Expired() {
   );
 }
 
-function ChatPage() {
+interface PageProps {
+  route: Route;
+  navigate: (next: Partial<Route>, replace?: boolean) => void;
+  theme: ThemeId;
+  setTheme: (id: ThemeId) => void;
+}
+
+function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const qc = useQueryClient();
-  const [route, navigate] = useRoute();
-  const [theme, setTheme] = useState<ThemeId>(storedTheme);
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [tab, setTab] = useState<PanelTab>("intent");
   const composer = useRef<ComposerHandle>(null);
@@ -58,7 +88,6 @@ function ChatPage() {
   const childRow = route.subagent ? sessions.data?.find((s) => s.id === route.subagent) : undefined;
   const childAgent = (route.subagent && chat.view.children[route.subagent]?.agent) || childRow?.agent;
 
-  useEffect(() => applyTheme(theme), [theme]);
   useEffect(() => {
     document.title = route.session ? `${title} · Navai` : "Navai";
   }, [route.session, title]);
@@ -78,6 +107,7 @@ function ChatPage() {
   const toggleAgent = useCallback(() => void chat.switchAgent(chat.agentId === "plan" ? "build" : "plan"), [chat]);
   const openChild = useCallback((id: string) => navigate({ subagent: id }), [navigate]);
   const newSession = useCallback(() => navigate({ session: null, subagent: null }), [navigate]);
+  const openSettings = useCallback(() => navigate({ page: "settings", section: null }), [navigate]);
 
   const themePage = useCallback(
     (): PalettePage => ({
@@ -135,6 +165,7 @@ function ChatPage() {
         page: skillsPage,
       },
       { id: "theme", group: "View", label: "Theme…", hint: "", page: themePage },
+      { id: "settings", group: "View", label: "Open settings", hint: "", run: openSettings, disabled: workspace ? undefined : "Choose a workspace first" },
     ];
     // The server's commands, minus the ones above already cover.
     const covered = new Set(["model", "new", "agent", "stop"]);
@@ -153,7 +184,7 @@ function ChatPage() {
     items.sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group));
     return { title: "Commands", placeholder: "Type a command or search…", items };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route.session, chat.view.children, chat.running, otherAgent, workspace, sessions.data, commands.data, themePage, skillsPage]);
+  }, [route.session, chat.view.children, chat.running, otherAgent, workspace, sessions.data, commands.data, themePage, skillsPage, openSettings]);
 
   const runServer = async (name: string, args: string) => {
     if (!route.session) {
@@ -255,6 +286,9 @@ function ChatPage() {
               {id}
             </button>
           ))}
+          <button type="button" className="icon-btn st-gear" onClick={openSettings} disabled={!workspace} aria-label="Settings" title={workspace ? "Settings" : "Choose a workspace first"}>
+            <GearSix size={16} />
+          </button>
           <button type="button" className="kbd" onClick={() => setOverlay({ palette: paletteWithSkills })} aria-label="Open the command palette" title="Command palette">
             {modKey("K")}
           </button>

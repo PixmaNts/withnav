@@ -1,37 +1,43 @@
 // Hash routes, so the server can serve one `index.html` from `/` with no
-// fallback rule. Pages to come (settings, InstinctFlow) add a `page` value.
+// fallback rule. Pages to come (InstinctFlow) add a `page` value.
 //
 //   #/                                  chat, no workspace chosen
 //   #/chat?ws=<path>                    chat, new session in a workspace
 //   #/chat?ws=<path>&s=<id>             chat, one session
 //   #/chat?ws=<path>&s=<id>&sub=<id>    subagent view of a child of that session
+//   #/settings?ws=<path>&section=<id>   settings (gateways, layers, permissions, subagents, appearance)
 
 import { useCallback, useEffect, useState } from "react";
 
 export interface Route {
-  page: "chat";
+  page: "chat" | "settings";
   workspace: string | null;
   session: string | null;
   subagent: string | null;
+  /** The settings section; null on the chat page. */
+  section: string | null;
 }
 
 export function parseRoute(hash: string): Route {
   const [path, query = ""] = hash.replace(/^#/, "").split("?");
   const params = new URLSearchParams(query);
-  void path;
+  const settings = path === "/settings";
   return {
-    page: "chat",
+    page: settings ? "settings" : "chat",
     workspace: params.get("ws"),
-    session: params.get("s"),
-    subagent: params.get("sub"),
+    session: settings ? null : params.get("s"),
+    subagent: settings ? null : params.get("sub"),
+    section: settings ? params.get("section") : null,
   };
 }
 
 export function formatRoute(route: Route): string {
   const params = new URLSearchParams();
   if (route.workspace) params.set("ws", route.workspace);
-  if (route.session) params.set("s", route.session);
-  if (route.subagent) params.set("sub", route.subagent);
+  // The settings page keeps the session in memory (Back returns to it) but not in its address.
+  if (route.page === "chat" && route.session) params.set("s", route.session);
+  if (route.page === "chat" && route.subagent) params.set("sub", route.subagent);
+  if (route.page === "settings" && route.section) params.set("section", route.section);
   const query = params.toString();
   return `#/${route.page}${query ? `?${query}` : ""}`;
 }

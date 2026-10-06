@@ -1,4 +1,5 @@
-// Dev-only stand-ins for `GET /v1/workspaces` and `GET /v1/intent`, used while
+// Dev-only stand-ins for `GET /v1/workspaces`, `GET /v1/intent` and the settings
+// routes (`settingsFallback.ts`), used while
 // the installed server does not have them yet. Each request goes to the real
 // server first; only a 404 falls back to the stand-in, so a server that has the
 // route is always the one that answers. Data comes from disk (git, intent.md),
@@ -9,6 +10,7 @@ import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import type { Connect } from "vite";
+import { settingsFallback } from "./settingsFallback.ts";
 
 const run = promisify(execFile);
 
@@ -58,6 +60,28 @@ function parseIntent(raw: string) {
 export function fallbacks(target: string, workspaces: string[]): Connect.NextHandleFunction {
   return async (req, res, next) => {
     const url = new URL(req.url ?? "/", "http://dev");
+    if (url.pathname === "/v1/settings" || /^\/v1\/gateways\/[^/]+\/test$/.test(url.pathname)) {
+      // Same rule as below: the real server answers unless it does not know the route.
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const payload = Buffer.concat(chunks);
+      const real = await fetch(`${target}${req.url}`, {
+        method: req.method,
+        headers: { authorization: req.headers.authorization ?? "", "content-type": "application/json" },
+        body: req.method === "GET" || req.method === "HEAD" ? undefined : payload,
+      }).catch(() => null);
+      if (real && real.status !== 404) {
+        res.statusCode = real.status;
+        res.setHeader("content-type", real.headers.get("content-type") ?? "application/json");
+        res.end(Buffer.from(await real.arrayBuffer()));
+        return;
+      }
+      // The stand-in reads the body again: hand it a replayable request.
+      const { Readable } = await import("node:stream");
+      const replay = Object.assign(Readable.from([payload]), { headers: req.headers, method: req.method });
+      if (await settingsFallback(target, replay as never, res, url)) return;
+      return next();
+    }
     const route = url.pathname === "/v1/workspaces" ? "workspaces" : url.pathname === "/v1/intent" ? "intent" : null;
     if (!route || req.method !== "GET") return next();
     const real = await fetch(`${target}${req.url}`, { headers: { authorization: req.headers.authorization ?? "" } }).catch(() => null);

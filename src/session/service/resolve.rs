@@ -451,6 +451,14 @@ impl Service {
         }
     }
 
+    /// Cached discovery shared with the session picker, without starting network discovery.
+    pub(crate) fn settings_model_data(
+        &self,
+        resolved: &ResolvedModel,
+    ) -> crate::provider::catalog::CatalogData {
+        self.catalog.cached(resolved)
+    }
+
     /// The variant a session starts with, and what its alias offers. A fresh
     /// session takes the choice made at creation, else the alias default; a
     /// resumed one takes the variant it saved.

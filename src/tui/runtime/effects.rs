@@ -47,15 +47,31 @@ pub struct Executor {
     tx: mpsc::Sender<ClientEvent>,
     streams: Vec<ActiveStream>,
     request: u64,
+    saves: mpsc::UnboundedSender<Box<dyn FnOnce() -> Option<ClientEvent> + Send>>,
 }
 
 impl Executor {
     pub fn new(client: Client, tx: mpsc::Sender<ClientEvent>) -> Self {
+        let (saves, mut pending) =
+            mpsc::unbounded_channel::<Box<dyn FnOnce() -> Option<ClientEvent> + Send>>();
+        let events = tx.clone();
+        tokio::spawn(async move {
+            while let Some(save) = pending.recv().await {
+                match tokio::task::spawn_blocking(save).await {
+                    Ok(Some(event)) => {
+                        let _ = events.send(event).await;
+                    }
+                    Ok(None) => {}
+                    Err(error) => tracing::warn!("settings save worker failed: {error}"),
+                }
+            }
+        });
         Self {
             client,
             tx,
             streams: Vec::new(),
             request: 0,
+            saves,
         }
     }
 
@@ -94,6 +110,18 @@ impl Executor {
     /// A sender into the loop's event channel, for tests that inject events.
     pub fn sender(&self) -> mpsc::Sender<ClientEvent> {
         self.tx.clone()
+    }
+
+    #[cfg(test)]
+    pub async fn flush_saves(&self) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.saves
+            .send(Box::new(move || {
+                let _ = tx.send(());
+                None
+            }))
+            .unwrap();
+        rx.await.unwrap();
     }
 
     pub fn has_stream(&self) -> bool {
@@ -398,38 +426,42 @@ impl Executor {
             }
             Effect::SetEditor { text, revision } => editor.restore(&text, revision),
             Effect::SaveTheme(theme) => {
-                // A few bytes written once per pick: done inline. A failure is shown, not fatal:
+                // Saves run off-loop in pick order. A failure is shown, not fatal:
                 // the theme stays in effect and picking it again retries the save.
                 if let Some(dir) = &ctx.config_dir {
-                    if let Err(err) = crate::settings::save_tui_theme(dir, theme.id()) {
-                        tracing::warn!("cannot save the theme: {err}");
-                        let message = format!(
+                    let dir = dir.clone();
+                    let _ = self.saves.send(Box::new(move || {
+                        if let Err(err) = crate::settings::save_tui_theme(&dir, theme.id()) {
+                            tracing::warn!("cannot save the theme: {err}");
+                            let message = format!(
                             "could not confirm theme {} was saved; pick it again to retry: {err}",
                             theme.name()
                         );
-                        self.spawn_event(async move {
-                            ClientEvent::SettingsNotSaved {
+                            return Some(ClientEvent::SettingsNotSaved {
                                 generation,
                                 message,
-                            }
-                        });
-                    }
+                            });
+                        }
+                        None
+                    }));
                 }
             }
             Effect::SaveFavoriteModels(names) => {
-                // Same as the theme: a small inline write; a failure is shown, the list in
+                // Same ordered off-loop worker as the theme; a failure is shown, the list in
                 // memory stays and the next toggle saves it again.
                 if let Some(dir) = &ctx.config_dir {
-                    if let Err(err) = crate::settings::save_tui_favorite_models(dir, &names) {
-                        tracing::warn!("cannot save the favorite models: {err}");
-                        let message = format!("could not save the favorite models: {err}");
-                        self.spawn_event(async move {
-                            ClientEvent::SettingsNotSaved {
+                    let dir = dir.clone();
+                    let _ = self.saves.send(Box::new(move || {
+                        if let Err(err) = crate::settings::save_tui_favorite_models(&dir, &names) {
+                            tracing::warn!("cannot save the favorite models: {err}");
+                            let message = format!("could not save the favorite models: {err}");
+                            return Some(ClientEvent::SettingsNotSaved {
                                 generation,
                                 message,
-                            }
-                        });
-                    }
+                            });
+                        }
+                        None
+                    }));
                 }
             }
             Effect::ReadGit => {

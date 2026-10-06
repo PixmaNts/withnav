@@ -538,10 +538,16 @@ fn picker_indents_gateway_provider_and_model_and_direct_models_one_level() {
     let gateway = column(&lines, "▾ omniroute");
     assert_eq!(column(&lines, "▾ cc"), gateway + 2);
     assert_eq!(column(&lines, "▾ kimi"), gateway + 2);
-    assert_eq!(column(&lines, "omniroute/cc/cla"), gateway + 4);
-    assert_eq!(column(&lines, "omniroute/kimi/k2"), gateway + 4);
+    assert_eq!(column(&lines, "claude-opus"), gateway + 4);
+    assert_eq!(column(&lines, "k2 "), gateway + 4);
     assert_eq!(column(&lines, "▾ direct"), gateway);
-    assert_eq!(column(&lines, "direct/solo"), gateway + 2);
+    assert_eq!(column(&lines, "solo"), gateway + 2);
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains("omniroute/cc") || l.contains("direct/solo")),
+        "a row in a group shows the short name only"
+    );
     assert_eq!(
         lines.iter().filter(|l| l.contains("▾ direct")).count(),
         1,
@@ -577,7 +583,7 @@ fn search_keeps_levels_and_collapsed_gateway_hides_its_provider_headers() {
         gateway + 2,
         "collapsed provider stays indented"
     );
-    assert!(!lines.iter().any(|l| l.contains("omniroute/kimi/k2")));
+    assert!(!lines.iter().any(|l| l.contains("k2")));
 
     ui.collapsed_models.insert("omniroute".into());
     let lines = picker_lines(&state, &ui, (100, 30));
@@ -591,7 +597,13 @@ fn search_keeps_levels_and_collapsed_gateway_hides_its_provider_headers() {
     let lines = picker_lines(&state, &ui, (100, 30));
     let gateway = column(&lines, "▾ omniroute");
     assert_eq!(column(&lines, "▾ kimi"), gateway + 2);
-    assert_eq!(column(&lines, "omniroute/kimi/k2"), gateway + 4);
+    let kimi = lines.iter().position(|l| l.contains("▾ kimi")).unwrap();
+    assert_eq!(column(&lines[kimi + 1..], "k2"), gateway + 4);
+    assert!(!lines.iter().any(|l| l.contains("▾ cc")));
+    // Search still matches the full canonical name.
+    ui.filter = "omniroute/kimi".into();
+    let lines = picker_lines(&state, &ui, (100, 30));
+    assert!(lines.iter().any(|l| l.contains("▾ kimi")));
     assert!(!lines.iter().any(|l| l.contains("▾ cc")));
 }
 
@@ -617,7 +629,7 @@ fn narrow_terminal_with_long_canonical_names_keeps_indentation_without_panic() {
             // The long model is the row under its provider: cut with `…`, still at level 2.
             let cc = lines.iter().position(|l| l.contains("▾ cc")).unwrap();
             let model = &lines[cc + 1];
-            let start = model.chars().position(|c| c == 'o').unwrap();
+            let start = model.chars().position(|c| c == 'v').unwrap();
             assert_eq!(start, gateway + 4, "width {width}: {model}");
             assert!(model.contains('…'), "width {width}: {model}");
         }
@@ -840,14 +852,25 @@ fn picker_marks_favorites_with_a_star_section_and_group() {
     ui.favorite_models.insert("direct/solo".into());
     let lines = picker_lines(&state, &ui, (60, 20));
     let section = column(&lines, "★ Favorites");
-    assert_eq!(
-        lines
-            .iter()
-            .filter(|l| l.contains("★ direct/solo") || l.contains("★ omniroute/kimi/k2"))
-            .count(),
-        4,
-        "each favorite is starred in the section and in its group: {lines:#?}"
-    );
+    // The section shows the whole name; the group row below its header only the short one.
+    for (full, short) in [("direct/solo", "solo"), ("omniroute/kimi/k2", "k2")] {
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.contains(&format!("★ {full}")))
+                .count(),
+            1,
+            "{full} in the section: {lines:#?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.contains(&format!("★ {short} ")))
+                .count(),
+            1,
+            "{short} in its group: {lines:#?}"
+        );
+    }
     assert!(lines.iter().any(|l| l.contains("▾ direct")));
     assert!(
         section < column(&lines, "direct/solo"),
@@ -858,6 +881,170 @@ fn picker_marks_favorites_with_a_star_section_and_group() {
         .map(Row::level)
         .collect();
     assert_eq!(levels[..3], [0, 1, 1]);
-    assert!(lines.iter().any(|l| l.contains("^f fav")));
+    assert!(lines.iter().any(|l| l.contains("ctrl+f fav")));
     insta::assert_snapshot!("model-picker-favorites", lines.join("\n"));
+}
+
+fn long_name_models() -> ModelsBody {
+    serde_json::from_value(json!({"default_agent":"plan","models":[
+        {"name":"omniroute/agy/claude-opus-4-5-thinking","gateway":"omniroute","api":"chat","provider_group":"agy","upstream_id":"agy/claude-opus-4-5-thinking","context_window":1000000,"variants":["high","low","max","medium","none","xhigh"]},
+        {"name":"omniroute/agy/gemini-3-pro","gateway":"omniroute","api":"chat","provider_group":"agy","upstream_id":"agy/gemini-3-pro","context_window":200000}
+    ]})).unwrap()
+}
+
+/// The picker with the first model highlighted (row 0 is the gateway, 1 the provider, 2 the model).
+fn long_name_picker(size: (u16, u16)) -> Vec<String> {
+    let state = State {
+        catalog: long_name_models().models,
+        ..State::default()
+    };
+    let mut ui = UiState {
+        overlay: Some(Overlay::Models),
+        ..UiState::default()
+    };
+    ui.selection.insert("Models".into(), 2);
+    picker_lines(&state, &ui, size)
+}
+
+#[test]
+fn long_model_name_shows_short_in_the_row_and_in_full_with_variants_in_the_detail_line() {
+    let wide = long_name_picker((100, 16));
+    let row = wide
+        .iter()
+        .find(|l| l.contains("claude-opus-4-5-thinking"))
+        .unwrap();
+    assert!(
+        !row.contains("omniroute/agy/claude"),
+        "short name in the row: {row}"
+    );
+    assert!(
+        !row.contains('…') && !row.contains("high"),
+        "no cut, no variants: {row}"
+    );
+    assert!(row.contains("1M"), "{row}");
+    // The popup is at most 76 columns wide, so this long a line is cut at its end.
+    let detail = wide.iter().find(|l| l.contains("· variants:")).unwrap();
+    assert!(
+        detail.contains("omniroute/agy/claude-opus-4-5-thinking · variants: high low max medium"),
+        "{detail}"
+    );
+    assert!(detail.contains('…'), "{detail}");
+    let keys = wide.iter().position(|l| l.contains("esc close")).unwrap();
+    assert!(
+        wide[keys - 1].contains("· variants:"),
+        "detail sits just above the keys line"
+    );
+    insta::assert_snapshot!("model-picker-long-name-100", wide.join("\n"));
+
+    let narrow = long_name_picker((60, 16));
+    let detail = narrow
+        .iter()
+        .find(|l| l.contains("omniroute/agy/claude"))
+        .unwrap();
+    assert!(
+        detail.contains('…'),
+        "the detail cuts with an ellipsis: {detail}"
+    );
+    insta::assert_snapshot!("model-picker-long-name-60", narrow.join("\n"));
+}
+
+#[test]
+fn detail_line_is_blank_on_a_header_and_has_no_variants_without_any() {
+    let state = State {
+        catalog: long_name_models().models,
+        ..State::default()
+    };
+    let mut ui = UiState {
+        overlay: Some(Overlay::Models),
+        ..UiState::default()
+    };
+    for row in [0, 1] {
+        ui.selection.insert("Models".into(), row);
+        let lines = picker_lines(&state, &ui, (100, 16));
+        let keys = lines.iter().position(|l| l.contains("esc close")).unwrap();
+        assert!(
+            !lines[keys - 1].contains("omniroute/agy/"),
+            "header row {row}: {}",
+            lines[keys - 1]
+        );
+    }
+    ui.selection.insert("Models".into(), 3);
+    let lines = picker_lines(&state, &ui, (100, 16));
+    let keys = lines.iter().position(|l| l.contains("esc close")).unwrap();
+    assert!(lines[keys - 1].contains("omniroute/agy/gemini-3-pro"));
+    assert!(!lines[keys - 1].contains("variants"));
+}
+
+#[test]
+fn favorites_rows_show_the_full_name_and_the_detail_line_follows_them() {
+    let state = State {
+        catalog: long_name_models().models,
+        ..State::default()
+    };
+    let mut ui = UiState {
+        overlay: Some(Overlay::Models),
+        ..UiState::default()
+    };
+    ui.favorite_models
+        .insert("omniroute/agy/gemini-3-pro".into());
+    ui.selection.insert("Models".into(), 1);
+    let lines = picker_lines(&state, &ui, (100, 16));
+    assert!(lines
+        .iter()
+        .any(|l| l.contains("★ omniroute/agy/gemini-3-pro")));
+    let keys = lines.iter().position(|l| l.contains("esc close")).unwrap();
+    assert!(lines[keys - 1].contains("omniroute/agy/gemini-3-pro"));
+}
+
+#[test]
+fn keys_line_never_cuts_a_word_and_keeps_esc_close() {
+    for width in [60, 70, 100] {
+        let lines = long_name_picker((width, 16));
+        let keys = lines
+            .iter()
+            .find(|l| l.contains("↑↓ move"))
+            .unwrap_or_else(|| panic!("no keys line at {width}: {lines:#?}"));
+        let words = keys.split("│").nth(1).unwrap().trim();
+        assert!(words.contains("ctrl+f fav"), "{width}: {words}");
+        assert!(words.ends_with("esc close"), "{width}: {words}");
+        for item in [
+            "↑↓ move",
+            "←→ fold",
+            "alt+a all",
+            "ctrl+f fav",
+            "enter choose",
+            "esc close",
+        ] {
+            let start = item.split(' ').next().unwrap();
+            if words.contains(start) {
+                assert!(words.contains(item), "{width}: cut item {item} in {words}");
+            }
+        }
+    }
+    // Below the full line's width, whole items drop, never a part of one.
+    let lines = long_name_picker((40, 16));
+    let keys = lines.iter().find(|l| l.contains("↑↓ move")).unwrap();
+    assert!(keys.contains("esc close"), "{keys}");
+    assert!(!keys.contains("enter choo "), "{keys}");
+}
+
+#[test]
+fn detail_line_shows_the_whole_name_and_variants_when_they_fit() {
+    let mut catalog = long_name_models().models;
+    catalog[0].name = "omniroute/agy/claude-opus-4-5".into();
+    let state = State {
+        catalog,
+        ..State::default()
+    };
+    let mut ui = UiState {
+        overlay: Some(Overlay::Models),
+        ..UiState::default()
+    };
+    ui.selection.insert("Models".into(), 2);
+    let lines = picker_lines(&state, &ui, (100, 16));
+    assert!(
+        lines.iter().any(|l| l
+            .contains("omniroute/agy/claude-opus-4-5 · variants: high low max medium none xhigh")),
+        "{lines:#?}"
+    );
 }

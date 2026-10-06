@@ -130,6 +130,12 @@ function choosePalette(index: number): void {
   prompt.focus();
   updateControls();
 }
+/** The canonical name without the `gateway/provider_group/` prefix the group headers show (`gateway/` for a direct gateway); the full name when the prefix does not match. */
+function shortModelName(row: { name: string; gateway?: string; provider_group?: string }): string {
+  if (!row.gateway) return row.name;
+  const prefix = row.provider_group && row.provider_group !== row.gateway ? `${row.gateway}/${row.provider_group}/` : `${row.gateway}/`;
+  return row.name.startsWith(prefix) && row.name.length > prefix.length ? row.name.slice(prefix.length) : row.name;
+}
 function renderPalette(): void {
   pickerOptions.replaceChildren();
   if (pickerKind === "model") pickerItems.sort((a,b) => (a.gateway ?? "").localeCompare(b.gateway ?? "") || (a.provider_group ?? "").localeCompare(b.provider_group ?? ""));
@@ -171,16 +177,19 @@ function renderPalette(): void {
     button.addEventListener("click", () => { if (collapsedGroups.has(id)) collapsedGroups.delete(id); else collapsedGroups.add(id); renderPalette(); });
     pickerOptions.append(button);
   };
-  const renderOption = (row: typeof paletteRows[number], index: number, level?: 1 | 2): void => {
+  const renderOption = (row: typeof paletteRows[number], index: number, level?: 1 | 2, inGroup = false): void => {
     const option = document.createElement("div");
     if (level !== undefined) option.dataset.level = String(level);
     option.id = `command-option-${index}`;
     option.className = "command-option";
     option.title = row.name;
     option.setAttribute("role", "option");
+    // The group headers already show gateway and provider, so a row inside a group shows the
+    // short name; the accessible name stays the full canonical name.
+    if (inGroup) option.setAttribute("aria-label", row.name);
     option.setAttribute("aria-selected", String(index === paletteIndex));
     const name = document.createElement("strong");
-    name.textContent = `${pickerKind ? "" : "/"}${row.name}${row.args_hint ? ` ${row.args_hint}` : ""}`;
+    name.textContent = `${pickerKind ? "" : "/"}${inGroup ? shortModelName(row) : row.name}${row.args_hint ? ` ${row.args_hint}` : ""}`;
     const description = document.createElement("span");
     description.textContent = row.description;
     option.append(name, description);
@@ -218,7 +227,7 @@ function renderPalette(): void {
         if (!pickerSearch.value && collapsedGroups.has(id)) continue;
         for (const row of rows.filter(row => (row.provider_group ?? gateway) === provider)) {
           const index = groupRows.indexOf(row);
-          if (index >= 0) renderOption(row, favoriteRows.length + index, provider === gateway ? 1 : 2);
+          if (index >= 0) renderOption(row, favoriteRows.length + index, provider === gateway ? 1 : 2, true);
         }
       }
     }

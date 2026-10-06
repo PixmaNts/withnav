@@ -1503,16 +1503,23 @@ fn the_model_picker_filters_a_long_catalog_and_shows_window_and_variants() {
         .map(|y| row_text(&t, y, 100))
         .find(|r| r.contains("▌  opus"))
         .expect("the filtered row");
-    assert!(row.contains("cc/claude-opus-5-5"), "{row}");
     assert!(row.contains("1M"), "{row}");
-    assert!(row.contains("low high max"), "{row}");
+    assert!(
+        !row.contains("low high max"),
+        "variants are in the detail line: {row}"
+    );
+    let detail = (0..30)
+        .map(|y| row_text(&t, y, 100))
+        .find(|r| r.contains("opus · variants: low high max"))
+        .expect("the detail line of the highlighted model");
+    assert!(detail.contains("opus"), "{detail}");
     assert!(!all.contains("alias-") || !row.contains("alias-"));
     // the filter also matches the model name
     ui.filter = "alias-29".into();
     let t = cells(&s, &ui, (100, 30));
     let shown: Vec<String> = (0..30)
         .map(|y| row_text(&t, y, 100))
-        .filter(|r| r.contains("alias-29") && r.contains("vendor/model"))
+        .filter(|r| r.contains("alias-29") && r.contains("128k"))
         .collect();
     assert_eq!(shown.len(), 3, "alias-290 … alias-292: {shown:?}");
 }

@@ -7,17 +7,17 @@ expression: "lines.join(\"\\n\")"
   ┌─────────────────── Choose a model ───────────────────┐  
   │ ❯ filter models…                                     │  
   │ ★ Favorites                                          │  
-  │ ★ direct/solo       solo                      200k   │  
-  │ ★ omniroute/kimi/k2 kimi/k2                   200k   │  
+  │ ★ direct/solo                                 200k   │  
+  │ ★ omniroute/kimi/k2                           200k   │  
   │ ▾ direct                                             │  
-  │ ★ direct/solo       solo                      200k   │  
+  │ ★ solo                                        200k   │  
   │ ▾ omniroute                                          │  
   │   ▾ cc                                               │  
-  │     omniroute/cc/cla… cc/claude-opus          200k   │  
+  │     claude-opus                               200k   │  
   │   ▾ kimi                                             │  
-  │   ★ omniroute/kimi/k2 kimi/k2                 200k   │  
+  │   ★ k2                                        200k   │  
 ──│                                                      │──
- r│ ↑↓ move ←→ fold alt+a all ^f fav enter choose esc    │k 
+ r│ ↑↓ move  ←→ fold  alt+a all  ctrl+f fav  esc close   │k 
 ┌ └──────────────────────────────────────────────────────┘─┐
 │                                                          │
 └──────────────────────────────────────────────────────────┘

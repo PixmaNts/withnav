@@ -7,14 +7,14 @@ expression: "picker_lines(&state, &ui, (60, 16)).join(\"\\n\")"
   ┌─────────────────── Choose a model ───────────────────┐  
   │ ❯ filter models…                                     │  
   │ ▾ direct                                             │  
-  │   direct/solo       solo                      200k   │  
+  │   solo                                        200k   │  
   │ ▾ omniroute                                          │  
   │   ▾ cc                                               │  
-  │     omniroute/cc/cla… cc/claude-opus          200k   │  
+  │     claude-opus                               200k   │  
   │   ▾ kimi                                             │  
-──│     omniroute/kimi/k2 kimi/k2                 200k   │──
+──│     k2                                        200k   │──
  r│                                                      │k 
-┌ │ ↑↓ move ←→ fold alt+a all ^f fav enter choose esc    │─┐
+┌ │ ↑↓ move  ←→ fold  alt+a all  ctrl+f fav  esc close   │─┐
 │ └──────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────┘
  tab build/plan · ctrl+p palette · alt+1…9 tabs · /model

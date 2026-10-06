@@ -51,6 +51,26 @@ impl Row<'_> {
     }
 }
 
+/// The model's name inside its group: the canonical name without the `gateway/provider_group/`
+/// prefix the group headers already show (`gateway/` for a direct gateway, whose provider group is
+/// the gateway itself). The full name when the prefix does not match.
+pub fn short_name(model: &ModelEntry) -> &str {
+    let rest = if model.provider_group == model.gateway {
+        model
+            .name
+            .strip_prefix(model.gateway.as_str())
+            .and_then(|rest| rest.strip_prefix('/'))
+    } else {
+        model
+            .name
+            .strip_prefix(model.gateway.as_str())
+            .and_then(|rest| rest.strip_prefix('/'))
+            .and_then(|rest| rest.strip_prefix(model.provider_group.as_str()))
+            .and_then(|rest| rest.strip_prefix('/'))
+    };
+    rest.filter(|rest| !rest.is_empty()).unwrap_or(&model.name)
+}
+
 /// Folds every gateway and provider group, or unfolds them all when every group is already
 /// folded. Search opens every group, so with a filter there is nothing to do.
 pub fn toggle_all(catalog: &[ModelEntry], ui: &mut UiState) {
@@ -139,4 +159,47 @@ pub fn rows<'a>(catalog: &'a [ModelEntry], ui: &UiState) -> Vec<Row<'a>> {
         }
     }
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str, gateway: &str, group: &str) -> ModelEntry {
+        serde_json::from_value(serde_json::json!({
+            "name": name, "gateway": gateway, "provider_group": group,
+            "upstream_id": "x", "api": "chat"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn short_name_drops_the_gateway_and_provider_the_headers_show() {
+        let model = entry("omniroute/agy/claude-opus", "omniroute", "agy");
+        assert_eq!(short_name(&model), "claude-opus");
+        // A model id may itself contain slashes.
+        let model = entry("omniroute/agy/vendor/claude", "omniroute", "agy");
+        assert_eq!(short_name(&model), "vendor/claude");
+    }
+
+    #[test]
+    fn short_name_of_a_direct_gateway_drops_only_the_gateway() {
+        let model = entry("direct/solo", "direct", "direct");
+        assert_eq!(short_name(&model), "solo");
+    }
+
+    #[test]
+    fn short_name_falls_back_to_the_full_name_when_the_prefix_does_not_match() {
+        for (name, gateway, group) in [
+            ("other/agy/claude", "omniroute", "agy"),
+            ("omniroute/zzz/claude", "omniroute", "agy"),
+            ("omniroute/agyclaude", "omniroute", "agy"),
+            ("omniroute/agy/", "omniroute", "agy"),
+            ("direct", "direct", "direct"),
+            ("directx/solo", "direct", "direct"),
+        ] {
+            let model = entry(name, gateway, group);
+            assert_eq!(short_name(&model), name, "{name}");
+        }
+    }
 }

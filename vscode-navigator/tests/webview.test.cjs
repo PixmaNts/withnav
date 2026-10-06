@@ -148,12 +148,12 @@ test('model picker levels: gateway 0, provider 1, model 2, direct models 1, no r
   const {dom,d,rows}=modelPicker(hierarchy);
   assert.deepEqual(rows(),[
     {text:'direct',level:'0',kind:'group',label:'direct, gateway'},
-    {text:'direct/solo',level:'1',kind:'option',label:null},
+    {text:'direct/solo',level:'1',kind:'option',label:'direct/solo'},
     {text:'omniroute',level:'0',kind:'group',label:'omniroute, gateway'},
     {text:'cc',level:'1',kind:'group',label:'cc, provider in omniroute'},
-    {text:'omniroute/cc/claude-opus',level:'2',kind:'option',label:null},
+    {text:'omniroute/cc/claude-opus',level:'2',kind:'option',label:'omniroute/cc/claude-opus'},
     {text:'kimi',level:'1',kind:'group',label:'kimi, provider in omniroute'},
-    {text:'omniroute/kimi/k2',level:'2',kind:'option',label:null},
+    {text:'omniroute/kimi/k2',level:'2',kind:'option',label:'omniroute/kimi/k2'},
   ]);
   const sheet=[...d.styleSheets].flatMap(s=>[...s.cssRules]).map(r=>r.cssText).join('\n');
   assert.match(sheet,/--picker-indent: 12px/);assert.match(sheet,/\[data-level="1"\][^}]*margin-left: var\(--picker-indent\)/);assert.match(sheet,/\[data-level="2"\][^}]*margin-left: calc\(2 \* var\(--picker-indent\)\)/);
@@ -189,7 +189,7 @@ test('model picker alt+a folds every group, then unfolds them all',()=>{
 test('model picker long canonical names stay whole in the title and wrap inside the indented row',()=>{
   const long='omniroute/cc/'+'very-long-model-name-'.repeat(8);
   const {dom,d}=modelPicker([{name:long,gateway:'omniroute',provider_group:'cc',upstream_id:long.slice(10)}]);
-  const option=d.querySelector('#picker-options [role=option]');assert.equal(option.title,long);assert.equal(option.querySelector('strong').textContent,long);assert.equal(option.dataset.level,'2');
+  const option=d.querySelector('#picker-options [role=option]');assert.equal(option.title,long);assert.equal(option.getAttribute('aria-label'),long);assert.equal(option.querySelector('strong').textContent,long.slice('omniroute/cc/'.length));assert.equal(option.dataset.level,'2');
   assert.equal(dom.window.getComputedStyle(option.querySelector('strong')).overflowWrap,'anywhere');
   dom.window.close();
 });
@@ -286,5 +286,31 @@ test('favorites: the first-50 cut applies to the groups only and option ids stay
   const search=d.querySelector('#command-palette .picker-search');search.focus();
   key('ArrowDown');key('ArrowDown');key('Enter');
   assert.equal(posts.at(-1).name,titles[2],'enter picks the row that is highlighted');
+  dom.window.close();
+});
+
+test('model rows inside a group show the short name; favorites show the full name; title and accessible name stay canonical',()=>{
+  const {dom,d,receive}=modelPicker(hierarchy);
+  const visible=()=>[...d.querySelectorAll('#picker-options [role=option]')].map(o=>[o.querySelector('strong').textContent,o.title,o.getAttribute('aria-label')]);
+  assert.deepEqual(visible(),[
+    ['solo','direct/solo','direct/solo'],
+    ['claude-opus','omniroute/cc/claude-opus','omniroute/cc/claude-opus'],
+    ['k2','omniroute/kimi/k2','omniroute/kimi/k2'],
+  ]);
+  receive({type:'favorites',items:['omniroute/kimi/k2']});
+  assert.deepEqual(visible(),[
+    ['omniroute/kimi/k2','omniroute/kimi/k2',null],
+    ['solo','direct/solo','direct/solo'],
+    ['claude-opus','omniroute/cc/claude-opus','omniroute/cc/claude-opus'],
+    ['k2','omniroute/kimi/k2','omniroute/kimi/k2'],
+  ]);
+  // Search still matches the canonical name.
+  const search=d.querySelector('#command-palette .picker-search');search.value='omniroute/kimi';search.dispatchEvent(new dom.window.Event('input'));
+  assert.deepEqual(visible().map(v=>v[1]),['omniroute/kimi/k2','omniroute/kimi/k2']);
+  dom.window.close();
+});
+test('a model whose name does not start with its gateway/provider keeps its full name in a group',()=>{
+  const {dom,d}=modelPicker([{name:'odd/name',gateway:'omniroute',provider_group:'cc',upstream_id:'x'},{name:'omniroute/cc/',gateway:'omniroute',provider_group:'cc',upstream_id:'y'}]);
+  assert.deepEqual([...d.querySelectorAll('#picker-options [role=option] strong')].map(e=>e.textContent),['odd/name','omniroute/cc/']);
   dom.window.close();
 });

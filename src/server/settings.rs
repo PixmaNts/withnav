@@ -97,7 +97,10 @@ fn body(state: &AppState, ws: &std::path::Path) -> Result<Value, Box<Response>> 
             })
             .map(|f| &f["key"])
             .collect();
-        gateways.push(json!({"name":name,"base_url":p.base_url,"api_key_env":p.api_key_env,"key_source":source,"catalog_format":p.catalog_format,"connect_timeout_ms":p.connect_timeout_ms,"request_timeout_ms":p.request_timeout_ms,"headers":p.headers.keys().collect::<Vec<_>>(),"model_count":catalog.models.values().filter(|m| &m.provider == name).count(),"used_by":used}));
+        // A base URL may carry credentials (`user:pass@`, `?api_key=`); clients only ever get
+        // the endpoint without them, like every other place Navai names an endpoint.
+        let base_url = crate::provider::catalog::endpoint_without_credentials(&p.base_url);
+        gateways.push(json!({"name":name,"base_url":base_url,"api_key_env":p.api_key_env,"key_source":source,"catalog_format":p.catalog_format,"connect_timeout_ms":p.connect_timeout_ms,"request_timeout_ms":p.request_timeout_ms,"headers":p.headers.keys().collect::<Vec<_>>(),"model_count":catalog.models.values().filter(|m| &m.provider == name).count(),"used_by":used}));
     }
     Ok(
         json!({"revision":revision,"paths":{"config":settings::path(dir),"models":models,"agents":[dir.join("agents"),ws.join(".navai/agents")]},"fields":fields,"gateways":gateways}),

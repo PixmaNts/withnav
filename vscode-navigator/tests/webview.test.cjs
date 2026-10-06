@@ -174,6 +174,18 @@ test('model picker search keeps levels, collapse hides children and group keys n
   assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))),{type:'selectModel',name:'omniroute/kimi/k2',generation:1});
   dom.window.close();
 });
+test('model picker alt+a folds every group, then unfolds them all',()=>{
+  const {dom,d,rows}=modelPicker(hierarchy);
+  const search=d.querySelector('#command-palette .picker-search');search.focus();
+  const altA=()=>search.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'a',code:'KeyA',altKey:true,bubbles:true,cancelable:true}));
+  const all=rows();
+  altA();
+  assert.deepEqual(rows().map(r=>r.text),['direct','omniroute']);
+  assert.match(d.querySelector('#command-palette .picker-count').textContent,/Alt\+A/);
+  altA();
+  assert.deepEqual(rows(),all);
+  dom.window.close();
+});
 test('model picker long canonical names stay whole in the title and wrap inside the indented row',()=>{
   const long='omniroute/cc/'+'very-long-model-name-'.repeat(8);
   const {dom,d}=modelPicker([{name:long,gateway:'omniroute',provider_group:'cc',upstream_id:long.slice(10)}]);

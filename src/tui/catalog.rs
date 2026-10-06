@@ -34,6 +34,34 @@ impl Row<'_> {
     }
 }
 
+/// Folds every gateway and provider group, or unfolds them all when every group is already
+/// folded. Search opens every group, so with a filter there is nothing to do.
+pub fn toggle_all(catalog: &[ModelEntry], ui: &mut UiState) {
+    if !ui.filter.is_empty() {
+        return;
+    }
+    let any_open = rows(catalog, ui).iter().any(|row| {
+        matches!(
+            row,
+            Row::Group {
+                collapsed: false,
+                ..
+            }
+        )
+    });
+    if !any_open {
+        ui.collapsed_models.clear();
+        return;
+    }
+    for model in catalog.iter().filter(|m| m.api == ApiKind::Chat) {
+        ui.collapsed_models.insert(model.gateway.clone());
+        if model.provider_group != model.gateway {
+            ui.collapsed_models
+                .insert(format!("{}/{}", model.gateway, model.provider_group));
+        }
+    }
+}
+
 /// The view and keyboard routing share exactly the same rows. Search opens every group.
 pub fn rows<'a>(catalog: &'a [ModelEntry], ui: &UiState) -> Vec<Row<'a>> {
     let filter = ui.filter.to_lowercase();

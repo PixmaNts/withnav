@@ -266,6 +266,37 @@ fn gateway_groups_collapse_search_reopens_and_headers_never_pick_models() {
 }
 
 #[test]
+fn alt_a_folds_every_group_then_unfolds_them_all() {
+    let state = State {
+        catalog: models().models,
+        ..State::default()
+    };
+    let mut ui = UiState {
+        overlay: Some(Overlay::Models),
+        ..UiState::default()
+    };
+    let mut editor = Editor::default();
+    let keys = |ui: &UiState| {
+        catalog::rows(&state.catalog, ui)
+            .iter()
+            .map(Row::key)
+            .collect::<Vec<_>>()
+    };
+    let all = keys(&ui);
+    assert_eq!(all.len(), 5);
+    // Select the model under the omniroute/combo provider (row 2).
+    ui.selection.insert("Models".into(), 2);
+    let alt_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT);
+    route_key(alt_a, &state, &mut ui, &mut editor);
+    assert_eq!(keys(&ui), vec!["group:omniroute", "group:openai"]);
+    assert_eq!(ui.selection["Models"], 0, "lands on the gateway header");
+    assert!(ui.filter.is_empty());
+    route_key(alt_a, &state, &mut ui, &mut editor);
+    assert_eq!(keys(&ui), all);
+    assert!(ui.collapsed_models.is_empty());
+}
+
+#[test]
 fn configured_default_agent_creates_without_editor_or_model_inheritance() {
     let mut s = State::default();
     let g = s.generation.clone();

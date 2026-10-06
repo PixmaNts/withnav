@@ -130,13 +130,13 @@ function renderPalette(): void {
   const allMatches = ranked(pickerItems, pickerSearch.value, row => row.name, row => row.description);
   const matches = pickerKind === "model" && !pickerSearch.value ? allMatches.filter(row => !row.gateway || (!collapsedGroups.has(row.gateway) && !collapsedGroups.has(`${row.gateway}/${row.provider_group}`))) : allMatches;
   paletteRows = matches.slice(0, PICKER_LIMIT);
-  pickerCount.textContent = `${allMatches.length} of ${pickerItems.length}${matches.length > PICKER_LIMIT ? " · Type to narrow (first 50 shown)" : ""}`;
+  pickerCount.textContent = `${allMatches.length} of ${pickerItems.length}${matches.length > PICKER_LIMIT ? " · Type to narrow (first 50 shown)" : ""}${pickerKind === "model" ? " · Alt+A folds or unfolds all" : ""}`;
   paletteIndex = Math.max(0, Math.min(paletteIndex, paletteRows.length - 1));
   palette.hidden = false;
   pickerSearch.setAttribute("aria-expanded", "true");
   pickerSearch.hidden = !pickerKind;
   if (paletteRows.length) pickerSearch.setAttribute("aria-activedescendant", `command-option-${paletteIndex}`);
-  else { pickerSearch.removeAttribute("aria-activedescendant"); pickerOptions.append(el("p", "picker-empty", "No matches. Try another search.")); }
+  else { pickerSearch.removeAttribute("aria-activedescendant"); if (!allMatches.length) pickerOptions.append(el("p", "picker-empty", "No matches. Try another search.")); }
   if (!pickerKind) {
     prompt.setAttribute("role", "combobox");
     prompt.setAttribute("aria-autocomplete", "list");
@@ -214,8 +214,19 @@ pickerSearch.addEventListener("keydown", event => {
   } else if (["ArrowUp", "ArrowDown"].includes(event.key)) {
     event.preventDefault();
     if (paletteRows.length) { paletteIndex = (paletteIndex + (event.key === "ArrowDown" ? 1 : -1) + paletteRows.length) % paletteRows.length; renderPalette(); }
+  } else if (event.altKey && event.code === "KeyA" && pickerKind === "model") {
+    event.preventDefault();
+    toggleAllGroups();
   } else if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); choosePalette(paletteIndex); }
 });
+// Folds every gateway and provider, or unfolds them all once everything is folded.
+function toggleAllGroups(): void {
+  const ids = pickerItems.flatMap(row => row.gateway ? [row.gateway, `${row.gateway}/${row.provider_group}`] : []);
+  // A folded gateway hides its providers, so only gateways decide whether any group is open.
+  if (pickerItems.every(row => !row.gateway || collapsedGroups.has(row.gateway))) collapsedGroups.clear();
+  else for (const id of ids) collapsedGroups.add(id);
+  renderPalette();
+}
 const usage = document.querySelector<HTMLElement>("#usage")!;
 const usageFill = document.querySelector<HTMLElement>("#usage-fill")!;
 const usageLabel = document.querySelector<HTMLElement>("#usage-label")!;

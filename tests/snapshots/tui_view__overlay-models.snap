@@ -19,7 +19,7 @@ expression: snapshot
             │   cognition         cc/claude-opus-5-5                            200k   │            
             │   fast              cc/flash                                         —   │            
             │                                                                          │            
-            │ ↑↓ move  ←→ fold  enter choose/fold  esc close                           │            
+            │ ↑↓ move  ←→ fold  alt+a all  enter choose  esc close                     │            
             └──────────────────────────────────────────────────────────────────────────┘            
                      │                                                                              
                      │                                                                              

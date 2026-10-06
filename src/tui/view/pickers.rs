@@ -309,7 +309,7 @@ fn keys_line(overlay: Overlay) -> &'static str {
         Overlay::Help => "esc close",
         Overlay::Themes => "↑↓ preview  enter keep  esc put back",
         Overlay::Commands => "↑↓ move  enter run  esc close",
-        Overlay::Models => "↑↓ move  ←→ fold  enter choose/fold  esc close",
+        Overlay::Models => "↑↓ move  ←→ fold  alt+a all  enter choose  esc close",
         _ => "↑↓ move  enter choose  esc close",
     }
 }

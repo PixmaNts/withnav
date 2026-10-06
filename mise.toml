@@ -1,0 +1,4 @@
+wrappers = { cargo = { command = "mbx", env = { MBX_CARGO_SHIM_MODE = "1" } } }
+[tools]
+# Rust stays with rustup (rust-toolchain.toml); mise only provides mbx.
+mr-boxington = "latest"

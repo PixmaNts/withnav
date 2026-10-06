@@ -25,6 +25,7 @@ import { registerReflex } from "./reflex";
 import { affectsSettings, readSetting } from "./settings";
 import { CognitionBackend } from "./cognition";
 import { registerChatView } from "./chatView";
+import { registerSettingsView } from "./settingsView";
 
 const MARKER = "◆ ";
 const MAX_INLINE = 120;
@@ -71,6 +72,7 @@ export function activate(_context: vscode.ExtensionContext) {
 
   registerCommands();
   _context.subscriptions.push(registerChatView(_context, cognition));
+  _context.subscriptions.push(registerSettingsView(_context, cognition));
   _context.subscriptions.push(cognition);
   _context.subscriptions.push(vscode.commands.registerCommand("navai.focusChat", () => vscode.commands.executeCommand("workbench.view.extension.navai")));
 

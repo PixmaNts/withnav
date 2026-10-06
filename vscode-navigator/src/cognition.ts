@@ -215,6 +215,22 @@ export class CognitionBackend implements ChatBackend {
   private state = new ConversationState();
   private nextGeneration = 0;
   private endpoint?: ServerInfoParams;
+  /**
+   * An authenticated request for the settings page. The page may open before
+   * navai-lsp announces its server: wait for it a while, then say so rather
+   * than leave the page loading forever.
+   */
+  async settingsRequest(path: string, init: RequestInit = {}, signal?: AbortSignal): Promise<Response> {
+    if (!this.endpoint) await this.waitForEndpoint(signal);
+    const endpoint = this.endpoint;
+    if (!endpoint) throw new Error("the Navai server has not started (is navai-lsp running?)");
+    const response = await fetch(`http://127.0.0.1:${endpoint.port}${path}`, {
+      ...init, headers: { authorization: `Bearer ${endpoint.token}`, "content-type": "application/json" },
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000), redirect: "error",
+    });
+    if (endpoint !== this.endpoint) throw new Error("Navai restarted; reload settings");
+    return response;
+  }
   private listeners = new Set<(message: HostToWebview) => void>();
   /** Last delivered seq, sent back as `Last-Event-ID` on reconnect. */
   /** Envelope seqs already delivered, so a resync's fresh full replay does
@@ -705,15 +721,23 @@ export class CognitionBackend implements ChatBackend {
     return `workspace=${encodeURIComponent(this.workspacePath())}`;
   }
 
-  private waitForEndpoint(): Promise<void> {
+  private waitForEndpoint(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.reject(new Error("Endpoint wait cancelled"));
     if (this.endpoint) return Promise.resolve();
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      const finish = (error?: Error) => {
+        clearInterval(timer);
+        clearTimeout(deadline);
+        signal?.removeEventListener("abort", cancel);
+        if (error) reject(error);
+        else resolve();
+      };
+      const cancel = () => finish(new Error("Endpoint wait cancelled"));
       const timer = setInterval(() => {
-        if (this.endpoint) {
-          clearInterval(timer);
-          resolve();
-        }
+        if (this.endpoint) finish();
       }, 100);
+      const deadline = setTimeout(() => finish(new Error("Navai's language server is not running")), 30000);
+      signal?.addEventListener("abort", cancel, { once: true });
     });
   }
 

@@ -6,6 +6,7 @@ requests land in `develop`.
 
 ### Added
 
+- **Settings in VS Code.** “Navai: Open Settings” opens a native-style editor for layer and agent assignments, permissions, subagents and appearance, with immediate host-validated saves, conflict reloads, credential-redacted read-only gateways and connection tests. Settings remain editable when model or agent catalogues fail to load; opening without a folder or a running language server offers recovery actions. Editor integration settings remain in VS Code settings.
 - **Settings in the browser.** In `navai web`, the gear in the top bar (or "Open settings" in the
   command palette) opens Settings: gateways (read-only, with a connection test), the model of each
   layer and agent and its variant, the default agent, automatic review and scratch directories,

@@ -146,6 +146,34 @@ pub fn route_key(
                 variant_step(state, ui, VariantPick::NewConversation(name));
                 return None;
             }
+            // alt+a: fold every group, or unfold them all; the selection stays on its row, or
+            // moves to the gateway header that held it.
+            KeyCode::Char('a')
+                if overlay == Overlay::Models && key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                let at = *selected;
+                let mut gateway = None;
+                let mut before = None;
+                for (i, row) in super::catalog::rows(&state.catalog, ui).iter().enumerate() {
+                    if let super::catalog::Row::Group { key, level: 0, .. } = row {
+                        gateway = Some(format!("group:{key}"));
+                    }
+                    if i == at {
+                        before = Some((row.key(), gateway.clone()));
+                    }
+                }
+                super::catalog::toggle_all(&state.catalog, ui);
+                let after = overlay_names(overlay, state, ui);
+                let found = before.and_then(|(name, header)| {
+                    after
+                        .iter()
+                        .position(|n| *n == name)
+                        .or_else(|| header.and_then(|h| after.iter().position(|n| *n == h)))
+                });
+                let selected = ui.selection.entry(format!("{overlay:?}")).or_default();
+                *selected = found.unwrap_or(0).min(after.len().saturating_sub(1));
+                return None;
+            }
             KeyCode::Enter | KeyCode::Left | KeyCode::Right
                 if overlay == Overlay::Models
                     && names

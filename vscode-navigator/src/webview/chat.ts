@@ -130,13 +130,13 @@ function renderPalette(): void {
   const allMatches = ranked(pickerItems, pickerSearch.value, row => row.name, row => row.description);
   const matches = pickerKind === "model" && !pickerSearch.value ? allMatches.filter(row => !row.gateway || (!collapsedGroups.has(row.gateway) && !collapsedGroups.has(`${row.gateway}/${row.provider_group}`))) : allMatches;
   paletteRows = matches.slice(0, PICKER_LIMIT);
-  pickerCount.textContent = `${allMatches.length} of ${pickerItems.length}${matches.length > PICKER_LIMIT ? " · Type to narrow (first 50 shown)" : ""}`;
+  pickerCount.textContent = `${allMatches.length} of ${pickerItems.length}${matches.length > PICKER_LIMIT ? " · Type to narrow (first 50 shown)" : ""}${pickerKind === "model" ? " · Alt+A folds or unfolds all" : ""}`;
   paletteIndex = Math.max(0, Math.min(paletteIndex, paletteRows.length - 1));
   palette.hidden = false;
   pickerSearch.setAttribute("aria-expanded", "true");
   pickerSearch.hidden = !pickerKind;
   if (paletteRows.length) pickerSearch.setAttribute("aria-activedescendant", `command-option-${paletteIndex}`);
-  else { pickerSearch.removeAttribute("aria-activedescendant"); pickerOptions.append(el("p", "picker-empty", "No matches. Try another search.")); }
+  else { pickerSearch.removeAttribute("aria-activedescendant"); if (!allMatches.length) pickerOptions.append(el("p", "picker-empty", "No matches. Try another search.")); }
   if (!pickerKind) {
     prompt.setAttribute("role", "combobox");
     prompt.setAttribute("aria-autocomplete", "list");
@@ -146,14 +146,18 @@ function renderPalette(): void {
     else prompt.removeAttribute("aria-activedescendant");
   }
 
-  const group = (label: string, id: string): void => {
+  // Gateway level 0, provider level 1, model level 2 (1 under a direct gateway); CSS indents by data-level.
+  const group = (label: string, id: string, level: 0 | 1, gateway?: string): void => {
     const button = el("button", "picker-group", label); button.type = "button";
+    button.dataset.level = String(level);
+    button.setAttribute("aria-label", level === 0 ? `${label}, gateway` : `${label}, provider in ${gateway}`);
     button.setAttribute("aria-expanded", String(!collapsedGroups.has(id) || !!pickerSearch.value));
     button.addEventListener("click", () => { if (collapsedGroups.has(id)) collapsedGroups.delete(id); else collapsedGroups.add(id); renderPalette(); });
     pickerOptions.append(button);
   };
-  const renderOption = (row: typeof paletteRows[number], index: number): void => {
+  const renderOption = (row: typeof paletteRows[number], index: number, level?: 1 | 2): void => {
     const option = document.createElement("div");
+    if (level !== undefined) option.dataset.level = String(level);
     option.id = `command-option-${index}`;
     option.className = "command-option";
     option.title = row.name;
@@ -171,20 +175,20 @@ function renderPalette(): void {
   if (pickerKind === "model") {
     const gateways = [...new Set(allMatches.map(row => row.gateway ?? "Models"))];
     for (const gateway of gateways) {
-      group(gateway, gateway);
+      group(gateway, gateway, 0);
       if (!pickerSearch.value && collapsedGroups.has(gateway)) continue;
       const rows = allMatches.filter(row => (row.gateway ?? "Models") === gateway);
       for (const provider of [...new Set(rows.map(row => row.provider_group ?? gateway))]) {
         const id = `${gateway}/${provider}`;
-        if (provider !== gateway) group(provider, id);
+        if (provider !== gateway) group(provider, id, 1, gateway);
         if (!pickerSearch.value && collapsedGroups.has(id)) continue;
         for (const row of rows.filter(row => (row.provider_group ?? gateway) === provider)) {
           const index = paletteRows.indexOf(row);
-          if (index >= 0) renderOption(row, index);
+          if (index >= 0) renderOption(row, index, provider === gateway ? 1 : 2);
         }
       }
     }
-  } else paletteRows.forEach(renderOption);
+  } else paletteRows.forEach((row, index) => renderOption(row, index));
   pickerOptions.querySelector(`#command-option-${paletteIndex}`)?.scrollIntoView?.({ block: "nearest" });
 }
 function filterPalette(): void {
@@ -210,8 +214,19 @@ pickerSearch.addEventListener("keydown", event => {
   } else if (["ArrowUp", "ArrowDown"].includes(event.key)) {
     event.preventDefault();
     if (paletteRows.length) { paletteIndex = (paletteIndex + (event.key === "ArrowDown" ? 1 : -1) + paletteRows.length) % paletteRows.length; renderPalette(); }
+  } else if (event.altKey && event.code === "KeyA" && pickerKind === "model") {
+    event.preventDefault();
+    toggleAllGroups();
   } else if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); choosePalette(paletteIndex); }
 });
+// Folds every gateway and provider, or unfolds them all once everything is folded.
+function toggleAllGroups(): void {
+  const ids = pickerItems.flatMap(row => row.gateway ? [row.gateway, `${row.gateway}/${row.provider_group}`] : []);
+  // A folded gateway hides its providers, so only gateways decide whether any group is open.
+  if (pickerItems.every(row => !row.gateway || collapsedGroups.has(row.gateway))) collapsedGroups.clear();
+  else for (const id of ids) collapsedGroups.add(id);
+  renderPalette();
+}
 const usage = document.querySelector<HTMLElement>("#usage")!;
 const usageFill = document.querySelector<HTMLElement>("#usage-fill")!;
 const usageLabel = document.querySelector<HTMLElement>("#usage-label")!;

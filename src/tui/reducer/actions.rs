@@ -509,6 +509,16 @@ fn run_command(
 
 pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> {
     match a {
+        Action::OpenConfig => {
+            ui.screen = crate::tui::config::Screen::Config;
+            ui.overlay = None;
+            vec![
+                s.config.fetch(),
+                Effect::FetchModels,
+                Effect::FetchAgents(None),
+            ]
+        }
+        Action::Config(action) => crate::tui::config::handle(s, ui, action),
         Action::Submit(text) => submit(s, text, 0),
         Action::SubmitAt { text, revision } => submit(s, text, revision),
         Action::NewConversation => {
@@ -591,6 +601,9 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             ui.child_confirm = None;
             ui.child_confirm_token = None;
             vec![]
+        }
+        Action::PickModel(model_id) if ui.settings_target.is_some() => {
+            crate::tui::config::handle(s, ui, crate::tui::config::ConfigAction::PickModel(model_id))
         }
         Action::PickModel(model_id) => pick_model(s, ui, model_id, None).unwrap_or_default(),
         Action::SwitchModel(model_id) => switch_model(s, ui, model_id),

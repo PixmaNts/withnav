@@ -1,0 +1,45 @@
+---
+source: tests/tui_view.rs
+assertion_line: 323
+expression: snapshot
+---
+ ◆ navai  /ws/refactor-parser  —  /config                                       up to date  /cfg/navai/config.json · /cfg/navai/models.json 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                     │                                                                                  │                                   
+ SETTINGS            │  Layers  config.json → layers, default_agent                                     │ FOCUSED                           
+                     │  Reflex, instinct and metacognition run one model each. The cognition runs age…  │ layers.metacognition.variant      
+ 1 Gateways          │                                                                                  │                                   
+ omniroute           │                                                                                  │ Fast model for remarks, reflex    
+                     │  reflex  fim · LSP only                                                          │ context and risky-call review.    
+▌2 Layers            │    model          inception/mercury-edit-2                                       │                                   
+ reflex · instinct · │                                                                                  │ type    choice                    
+ meta · cognition    │  instinct  systemone · 2 s deadline                                              │ values  — · off · low · medium ·  
+ 3 Agents            │    model          omniroute/typesafe/jev-1.13                                    │ high                              
+ build               │                                                                                  │ saved   low                       
+                     │  metacognition  chat · fast model                                                │ applies to new sessions and       
+ 4 Permissions       │    model          omniroute/combo/deepseek-v4-flash                              │ subagents                         
+ automatic review on │▌   variant        low                                                  ←→ cycle  │                                   
+                     │                                                                                  │ PENDING · 0                       
+ 5 Subagents         │  cognition  chat · 1 agents                                                      │ No changes. config.json is up to  
+ max 4 per session   │    default_agent  build                                                          │ date.                             
+                     │                                                                                  │                                   
+ 6 Appearance        │                                                                                  │ ▌ Written for every client: TUI,  
+ Ayu Dark            │                                                                                  │ WebUI and VS Code. A /models      
+                     │                                                                                  │ pick in a session stays in that   
+                     │                                                                                  │ session and never writes here.    
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+ 1…6 section         │                                                                                  │                                   
+ tab next section    │                                                                                  │                                   
+ esc back to session │                                                                                  │                                   
+                     │                                                                                  │                                   
+                                                                                                                                            
+ ↑↓ move · ←→ change · enter pick/edit · space toggle · / filter · ctrl+s write · ctrl+z revert · esc back

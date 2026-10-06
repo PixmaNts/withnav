@@ -15,7 +15,14 @@ use ratatui::{
 
 pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, theme: &Theme) {
     let Some(overlay) = ui.overlay else { return };
+    let settings_title = ui
+        .settings_target
+        .as_ref()
+        .map(|target| format!(" {} · writes config.json ", target.title));
     let title = match overlay {
+        Overlay::Models if settings_title.is_some() => {
+            settings_title.as_deref().unwrap_or_default()
+        }
         Overlay::Agents => " Choose an agent · assigned model ",
         Overlay::Skills => " Choose a skill ",
         Overlay::Models if crate::tui::reducer::occupied(state) => " Switch this conversation to… ",
@@ -101,6 +108,17 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
                     }
                     _ => false,
                 };
+                let settings_current =
+                    ui.settings_target
+                        .as_ref()
+                        .is_some_and(|target| match &row {
+                            crate::tui::catalog::Row::Model(entry)
+                            | crate::tui::catalog::Row::Favorite(entry) => {
+                                crate::tui::config::model_name(&state.config.value(&target.key))
+                                    == Some(entry.name.as_str())
+                            }
+                            _ => false,
+                        });
                 let mut line = match row {
                     crate::tui::catalog::Row::Group {
                         label, collapsed, ..
@@ -126,7 +144,10 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
                 };
                 // The star takes the last two cells of the indent, where a group has its fold
                 // mark, so favorites mark without moving any column.
-                if star && indent >= 2 {
+                if settings_current && indent >= 2 {
+                    line.spans.insert(0, Span::styled("● ", theme.accent()));
+                    line.spans.insert(0, Span::raw(" ".repeat(indent - 2)));
+                } else if star && indent >= 2 {
                     line.spans.insert(0, Span::styled("★ ", theme.accent()));
                     line.spans.insert(0, Span::raw(" ".repeat(indent - 2)));
                 } else {
@@ -476,6 +497,9 @@ fn note<'a>(overlay: Overlay, state: &'a State, ui: &UiState, empty: bool) -> Op
     let live = crate::tui::reducer::occupied(state);
     let blocked = crate::tui::reducer::switch_blocked(state);
     match overlay {
+        Overlay::Models if ui.settings_target.is_some() => {
+            Some("stages this assignment · writes config.json with ctrl+s")
+        }
         Overlay::Skills => state.skills.disabled_reason.as_deref().or(if empty {
             Some("no listed skills match")
         } else {

@@ -292,6 +292,22 @@ pub struct CommandResponse {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientEvent {
+    ConfigLoaded {
+        generation: Generation,
+        request: u64,
+        result: Result<super::config::SettingsBody, String>,
+    },
+    ConfigWritten {
+        generation: Generation,
+        key: String,
+        value: serde_json::Value,
+        result: Result<super::config::SettingsBody, super::config::SettingsError>,
+    },
+    GatewayTested {
+        generation: Generation,
+        name: String,
+        result: Result<super::config::GatewayTest, String>,
+    },
     Agents {
         generation: Generation,
         workspace: String,
@@ -421,6 +437,8 @@ pub enum Mode {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
+    OpenConfig,
+    Config(super::config::ConfigAction),
     PickAgent(String),
     Submit(String),
     OpenOverlay(Overlay),
@@ -501,6 +519,11 @@ pub enum ChildControl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
+    FetchConfig(u64),
+    WriteConfig(super::config::WriteRequest),
+    TestGateway(String),
+    ApplyConfigTheme(crate::tui::theme::ThemeId),
+    LeaveConfig,
     FetchAgents(Option<String>),
     FetchLayers,
     FetchSkills(String),

@@ -387,6 +387,7 @@ impl ChildStatus {
 /// the active tab through `Deref`, so code that handles one conversation stays as it was.
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
+    pub config: super::config::ConfigState,
     pub models_request: u64,
     pub layers_request: u64,
     pub layers: Vec<super::protocol::LayerEntry>,
@@ -411,6 +412,7 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            config: Default::default(),
             models_request: 0,
             layers_request: 0,
             layers: vec![],
@@ -534,6 +536,9 @@ pub enum Focus {
 }
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UiState {
+    /// Screen routing: `Config` replaces the session transcript; overlays remain shared.
+    pub screen: super::config::Screen,
+    pub settings_target: Option<super::config::SettingsTarget>,
     pub collapsed_models: std::collections::HashSet<String>,
     /// Models the driver marked as favorites, saved in the settings. Kept even when a model is
     /// no longer in the catalogue; the picker only lists those it knows.

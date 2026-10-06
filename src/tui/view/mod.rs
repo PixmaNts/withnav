@@ -1,4 +1,5 @@
 //! Draws the terminal UI without mutating the conversation projection.
+mod config;
 mod header;
 mod markdown;
 pub mod panel;
@@ -267,6 +268,13 @@ pub fn draw(
     let area = frame.area();
     frame.buffer_mut().set_style(area, theme.base());
     cache.panel_drawn = false;
+    if ui.screen == crate::tui::config::Screen::Config {
+        cache.prompt_shown = None;
+        config::draw(frame, area, state, ui, &theme);
+        pickers::draw(frame, area, state, ui, &theme);
+        config::overlays(frame, area, state, &theme);
+        return;
+    }
     if area.width < 24 || area.height < 9 {
         cache.prompt_shown = None;
         let bottom = area.bottom().saturating_sub(3);

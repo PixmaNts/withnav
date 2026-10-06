@@ -13,6 +13,11 @@ pub struct Command {
 }
 pub const CATALOG: &[Command] = &[
     Command {
+        name: "/config",
+        description: "edit settings in config.json",
+        args_hint: "",
+    },
+    Command {
         name: "/new",
         description: "new conversation in a new tab",
         args_hint: "[agent]",
@@ -315,6 +320,7 @@ pub fn command_action(name: &str, mode: Mode) -> Option<Action> {
             Mode::Interrupt => Mode::NextTurn,
         }),
         "/theme" => Action::OpenOverlay(Overlay::Themes),
+        "/config" => Action::OpenConfig,
         "/help" => Action::OpenOverlay(Overlay::Help),
         "/quit" => Action::Quit,
         _ => return None,

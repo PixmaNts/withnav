@@ -1492,8 +1492,8 @@ fn the_model_picker_filters_a_long_catalog_and_shows_window_and_variants() {
     let t = cells(&s, &ui, (100, 30));
     let all: String = (0..30).map(|y| row_text(&t, y, 100) + "\n").collect();
     assert!(
-        all.contains("▌opus"),
-        "the last row is shown selected: {all}"
+        all.contains("▌  opus"),
+        "the last row is shown selected, one level under its direct gateway: {all}"
     );
     type_text("opus", &s, &mut ui, &mut editor);
     ui.selection.insert("Models".into(), 1);
@@ -1501,7 +1501,7 @@ fn the_model_picker_filters_a_long_catalog_and_shows_window_and_variants() {
     let t = cells(&s, &ui, (100, 30));
     let row = (0..30)
         .map(|y| row_text(&t, y, 100))
-        .find(|r| r.contains("▌opus"))
+        .find(|r| r.contains("▌  opus"))
         .expect("the filtered row");
     assert!(row.contains("cc/claude-opus-5-5"), "{row}");
     assert!(row.contains("1M"), "{row}");

@@ -90,14 +90,24 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiState, them
             .collect(),
         Overlay::Models => crate::tui::catalog::rows(&state.catalog, ui)
             .into_iter()
-            .map(|row| match row {
-                crate::tui::catalog::Row::Group {
-                    label, collapsed, ..
-                } => Line::from(Span::styled(
-                    format!("{} {label}", if collapsed { "▸" } else { "▾" }),
-                    theme.accent(),
-                )),
-                crate::tui::catalog::Row::Model(entry) => model_row(entry, row_width, theme),
+            .map(|row| {
+                // Two cells per level, never more than the row itself.
+                let indent = (usize::from(row.level()) * 2).min(row_width);
+                let room = row_width - indent;
+                let mut line = match row {
+                    crate::tui::catalog::Row::Group {
+                        label, collapsed, ..
+                    } => Line::from(Span::styled(
+                        fit(
+                            &format!("{} {label}", if collapsed { "▸" } else { "▾" }),
+                            room,
+                        ),
+                        theme.accent(),
+                    )),
+                    crate::tui::catalog::Row::Model(entry) => model_row(entry, room, theme),
+                };
+                line.spans.insert(0, Span::raw(" ".repeat(indent)));
+                line
             })
             .collect(),
         Overlay::Sessions => state
@@ -299,7 +309,7 @@ fn keys_line(overlay: Overlay) -> &'static str {
         Overlay::Help => "esc close",
         Overlay::Themes => "↑↓ preview  enter keep  esc put back",
         Overlay::Commands => "↑↓ move  enter run  esc close",
-        Overlay::Models => "↑↓ move  ←→ fold  enter choose/fold  esc close",
+        Overlay::Models => "↑↓ move  ←→ fold  alt+a all  enter choose  esc close",
         _ => "↑↓ move  enter choose  esc close",
     }
 }
@@ -404,7 +414,8 @@ fn model_row(entry: &ModelEntry, width: usize, theme: &Theme) -> Line<'static> {
         format!("  {}", entry.variants.join(" "))
     };
     // model_id (18) + model + "  " + window + variants; the model gives way first, then variants.
-    let model_id = format!("{} ", pad(&entry.name, 17));
+    // A narrow popup cuts the model_id with an ellipsis rather than clipping it at the border.
+    let model_id = format!("{} ", pad(&entry.name, width.saturating_sub(1).min(17)));
     let fixed = columns(&model_id) + 2 + columns(&window);
     let variants = fit(&variants, width.saturating_sub(fixed + 12));
     let model_room = width.saturating_sub(fixed + columns(&variants));

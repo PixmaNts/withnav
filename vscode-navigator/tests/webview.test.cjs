@@ -131,3 +131,65 @@ test("real webview initializes with frozen VS Code API, renders history and post
   assert.deepEqual(errors, []);
   dom.window.close();
 });
+
+function modelPicker(items){
+  const page=keyboardPage();const {d,receive,key}=page;
+  receive({type:'models',items:items.map(m=>({api:'chat',enabled:true,...m})),locked:false});d.querySelector('#model').focus();key('Enter');
+  const css=d.createElement('style');css.textContent=fs.readFileSync('out/chat.css','utf8');d.head.append(css);
+  return {...page,rows:()=>[...d.querySelectorAll('#picker-options > *')].map(e=>({text:e.matches('.picker-group')?e.textContent:e.title,level:e.dataset.level,kind:e.matches('.picker-group')?'group':'option',label:e.getAttribute('aria-label')}))};
+}
+const hierarchy=[
+  {name:'omniroute/cc/claude-opus',gateway:'omniroute',provider_group:'cc',upstream_id:'cc/claude-opus'},
+  {name:'omniroute/kimi/k2',gateway:'omniroute',provider_group:'kimi',upstream_id:'kimi/k2'},
+  {name:'omniroute/kimi/fim',gateway:'omniroute',provider_group:'kimi',upstream_id:'kimi/fim',api:'fim'},
+  {name:'direct/solo',gateway:'direct',provider_group:'direct',upstream_id:'solo'},
+];
+test('model picker levels: gateway 0, provider 1, model 2, direct models 1, no redundant provider row',()=>{
+  const {dom,d,rows}=modelPicker(hierarchy);
+  assert.deepEqual(rows(),[
+    {text:'direct',level:'0',kind:'group',label:'direct, gateway'},
+    {text:'direct/solo',level:'1',kind:'option',label:null},
+    {text:'omniroute',level:'0',kind:'group',label:'omniroute, gateway'},
+    {text:'cc',level:'1',kind:'group',label:'cc, provider in omniroute'},
+    {text:'omniroute/cc/claude-opus',level:'2',kind:'option',label:null},
+    {text:'kimi',level:'1',kind:'group',label:'kimi, provider in omniroute'},
+    {text:'omniroute/kimi/k2',level:'2',kind:'option',label:null},
+  ]);
+  const sheet=[...d.styleSheets].flatMap(s=>[...s.cssRules]).map(r=>r.cssText).join('\n');
+  assert.match(sheet,/--picker-indent: 12px/);assert.match(sheet,/\[data-level="1"\][^}]*margin-left: var\(--picker-indent\)/);assert.match(sheet,/\[data-level="2"\][^}]*margin-left: calc\(2 \* var\(--picker-indent\)\)/);
+  for(const group of d.querySelectorAll('.picker-group'))assert.equal(group.tagName,'BUTTON');
+  assert.equal(d.querySelector('#picker-options').getAttribute('role'),'listbox');assert.equal(d.querySelectorAll('[role=tree],[role=treeitem]').length,0);
+  dom.window.close();
+});
+test('model picker search keeps levels, collapse hides children and group keys never post a model',()=>{
+  const {dom,d,posts,rows,type}=modelPicker(hierarchy);const group=t=>[...d.querySelectorAll('.picker-group')].find(g=>g.textContent===t);
+  const before=posts.length;
+  group('kimi').focus();group('kimi').dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));group('kimi').click();
+  assert.equal(group('kimi').getAttribute('aria-expanded'),'false');assert.equal(group('kimi').dataset.level,'1');assert(!rows().some(r=>r.text==='omniroute/kimi/k2'));
+  group('omniroute').dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:' ',bubbles:true,cancelable:true}));group('omniroute').click();
+  assert.deepEqual(rows().map(r=>r.text),['direct','direct/solo','omniroute']);assert.equal(posts.length,before);
+  const search=d.querySelector('#command-palette .picker-search');search.focus();type('k2');
+  assert.deepEqual(rows().map(r=>[r.text,r.level]),[['omniroute','0'],['kimi','1'],['omniroute/kimi/k2','2']]);
+  d.activeElement.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
+  assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))),{type:'selectModel',name:'omniroute/kimi/k2',generation:1});
+  dom.window.close();
+});
+test('model picker alt+a folds every group, then unfolds them all',()=>{
+  const {dom,d,rows}=modelPicker(hierarchy);
+  const search=d.querySelector('#command-palette .picker-search');search.focus();
+  const altA=()=>search.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'a',code:'KeyA',altKey:true,bubbles:true,cancelable:true}));
+  const all=rows();
+  altA();
+  assert.deepEqual(rows().map(r=>r.text),['direct','omniroute']);
+  assert.match(d.querySelector('#command-palette .picker-count').textContent,/Alt\+A/);
+  altA();
+  assert.deepEqual(rows(),all);
+  dom.window.close();
+});
+test('model picker long canonical names stay whole in the title and wrap inside the indented row',()=>{
+  const long='omniroute/cc/'+'very-long-model-name-'.repeat(8);
+  const {dom,d}=modelPicker([{name:long,gateway:'omniroute',provider_group:'cc',upstream_id:long.slice(10)}]);
+  const option=d.querySelector('#picker-options [role=option]');assert.equal(option.title,long);assert.equal(option.querySelector('strong').textContent,long);assert.equal(option.dataset.level,'2');
+  assert.equal(dom.window.getComputedStyle(option.querySelector('strong')).overflowWrap,'anywhere');
+  dom.window.close();
+});

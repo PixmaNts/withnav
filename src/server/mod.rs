@@ -9,7 +9,8 @@ pub mod config;
 pub mod routes;
 pub mod session;
 pub mod sse;
+mod web;
 
-pub use config::{HttpConfig, ServerConfig};
+pub use config::{HttpConfig, ServerConfig, WebConfig};
 pub use routes::{app, serve};
 pub use session::AppState;

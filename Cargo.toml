@@ -71,6 +71,7 @@ htmd = "0.5.5"
 html2text = "0.17.1"
 encoding_rs = "0.8.42"
 unicode-segmentation = "1"
+include_dir = "0.7"
 
 [dev-dependencies]
 tokio = { version = "1.53", features = ["test-util"] }

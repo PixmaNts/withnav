@@ -404,7 +404,7 @@ pub enum ClientEvent {
     /// The workspace's git state was read; `None` when it is not a repository.
     Git {
         generation: Generation,
-        status: Option<crate::tui::git::GitStatus>,
+        status: Option<crate::workspace::git::GitStatus>,
     },
     /// Saving the user settings failed; the change still applies until the client quits.
     SettingsNotSaved {

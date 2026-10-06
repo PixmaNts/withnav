@@ -4479,7 +4479,7 @@ fn answering_posts_once_and_a_stale_answer_drops_the_prompt_with_a_notice() {
 fn git_now(s: &mut State, branch: Option<&str>) -> Vec<Effect> {
     let ev = ClientEvent::Git {
         generation: s.generation.clone(),
-        status: branch.map(|b| navai::tui::git::GitStatus {
+        status: branch.map(|b| navai::workspace::git::GitStatus {
             branch: Some(b.into()),
             dirty: 2,
             files: vec![],
@@ -4526,7 +4526,7 @@ fn a_git_result_reaches_the_tab_that_asked_and_a_stale_one_is_dropped() {
     let first = s.generation.clone();
     handle_action(&mut s, &mut ui, Action::NewConversation);
     assert_eq!(s.active, 1);
-    let status = |branch: &str| navai::tui::git::GitStatus {
+    let status = |branch: &str| navai::workspace::git::GitStatus {
         branch: Some(branch.into()),
         dirty: 1,
         files: vec![],

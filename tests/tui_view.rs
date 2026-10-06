@@ -2624,7 +2624,7 @@ fn sending_text_over_an_open_request_asks_for_a_second_enter() {
 #[test]
 fn the_header_shows_the_branch_its_changes_and_the_agent_in_its_colour() {
     let mut s = done();
-    s.git = Some(navai::tui::git::GitStatus {
+    s.git = Some(navai::workspace::git::GitStatus {
         branch: Some("feat/tui-design".into()),
         dirty: 3,
         files: vec![],
@@ -2705,13 +2705,13 @@ fn with_panel_data() -> State {
         reason: None,
     });
     let files = (0..14)
-        .map(|n| navai::tui::git::Change {
+        .map(|n| navai::workspace::git::Change {
             mark: ['M', 'A', 'D', '?'][n % 4],
             path: format!("src/tui/view/file_{n}.rs"),
         })
-        .take(navai::tui::git::MAX_FILES)
+        .take(navai::workspace::git::MAX_FILES)
         .collect();
-    s.git = Some(navai::tui::git::GitStatus {
+    s.git = Some(navai::workspace::git::GitStatus {
         branch: Some("feat/tui-design".into()),
         dirty: 14,
         files,
@@ -2954,15 +2954,15 @@ fn wide_and_combining_names_never_push_the_gauge_off_the_header() {
         m.workspace = workspace.into();
     }
     s.selected_model_name = Some("ベンダー/とても長いモデルの名前-e\u{301}-v2".into());
-    s.git = Some(navai::tui::git::GitStatus {
+    s.git = Some(navai::workspace::git::GitStatus {
         branch: Some("機能/端末の配置-e\u{301}".into()),
         dirty: 2,
         files: vec![
-            navai::tui::git::Change {
+            navai::workspace::git::Change {
                 mark: 'M',
                 path: "源/表示/とても長いファイルの名前です.rs".into(),
             },
-            navai::tui::git::Change {
+            navai::workspace::git::Change {
                 mark: 'A',
                 path: "cafe\u{301}/re\u{301}sume\u{301}.md".into(),
             },

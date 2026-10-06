@@ -9,6 +9,13 @@ requests land in `develop`.
 - **Favorite models.** In both model pickers, Ctrl+F (or the star in VS Code) marks a model as a
 favorite; favorites are listed first in an always-open section. The terminal and VS Code keep
 separate lists.
+- **A chat in your browser.** `navai web` starts Navai on a private local address, prints a link
+  and opens it. The page lets you chat in any of the workspaces you pass with `--workspace`
+  (repeatable; the current directory by default) and in the others you have worked in before; each
+  one shows its git branch and whether it has changes, and a workspace's intent record
+  (`.navigator/intent.md`) can be read. Use `--port` to choose the port and `--no-open` to print the
+  link without opening it. The link carries a secret that is new on every run and only works on this computer;
+  press Ctrl-C to stop.
 
 ## [0.5.1] - 2026-10-06
 

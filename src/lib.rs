@@ -11,3 +11,4 @@ pub mod session;
 pub mod settings;
 pub mod tools;
 pub mod tui;
+pub mod workspace;

@@ -491,6 +491,7 @@ async fn spawn_cognition_server(
         data_dir: crate::paths::data_dir()
             .ok_or_else(|| anyhow::anyhow!("cannot resolve data dir"))?,
         rules_roots: crate::agent::instructions::RulesRoots::from_user_home(),
+        web: None,
     };
     let state = AppState::with_hooks(
         config,

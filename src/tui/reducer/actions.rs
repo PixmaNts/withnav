@@ -513,7 +513,7 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             ui.screen = crate::tui::config::Screen::Config;
             ui.overlay = None;
             vec![
-                Effect::FetchConfig,
+                s.config.fetch(),
                 Effect::FetchModels,
                 Effect::FetchAgents(None),
             ]

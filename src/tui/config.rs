@@ -219,7 +219,11 @@ pub struct ConfigState {
     pub leave_after_write: bool,
     pub list_editor: Option<String>,
     pub writing: Option<WriteRequest>,
+    /// The cached revision cannot be used until a fetch succeeds.
     pub stale_reload: bool,
+    /// Only the latest fetch may replace the cached settings.
+    pub loading: Option<u64>,
+    pub request: u64,
 }
 
 impl ConfigState {
@@ -557,9 +561,17 @@ impl ConfigState {
             })
             .count()
     }
+    pub fn fetch(&mut self) -> Effect {
+        self.request += 1;
+        self.loading = Some(self.request);
+        Effect::FetchConfig(self.request)
+    }
     pub fn next_write(&mut self) -> Vec<Effect> {
-        if self.writing.is_some() || self.stale_reload {
+        if self.writing.is_some() || self.loading.is_some() {
             return vec![];
+        }
+        if self.stale_reload {
+            return vec![self.fetch()];
         }
         let Some((key, value)) = self.staged.first_key_value() else {
             return vec![];
@@ -573,6 +585,7 @@ impl ConfigState {
             value: value.clone(),
         };
         self.writing = Some(request.clone());
+        self.request += 1;
         self.status = SaveStatus::Writing;
         vec![Effect::WriteConfig(request)]
     }
@@ -720,8 +733,12 @@ pub fn handle(s: &mut State, ui: &mut UiState, action: ConfigAction) -> Vec<Effe
         ConfigAction::ResolveLeave(choice) => {
             config.leave_prompt = false;
             match choice {
-                LeaveChoice::Stay => {}
+                LeaveChoice::Stay => config.leave_after_write = false,
                 LeaveChoice::Discard if config.writing.is_none() => {
+                    config.leave_after_write = false;
+                    for key in config.staged.keys() {
+                        config.field_errors.remove(key);
+                    }
                     config.staged.clear();
                     config.status = SaveStatus::UpToDate;
                     ui.screen = Screen::Session;
@@ -776,7 +793,15 @@ pub fn handle(s: &mut State, ui: &mut UiState, action: ConfigAction) -> Vec<Effe
     vec![]
 }
 
-pub fn loaded(config: &mut ConfigState, result: Result<SettingsBody, String>) {
+pub fn loaded(
+    config: &mut ConfigState,
+    request: u64,
+    result: Result<SettingsBody, String>,
+) -> Vec<Effect> {
+    if config.loading != Some(request) || request != config.request {
+        return vec![];
+    }
+    config.loading = None;
     match result {
         Ok(body) => {
             config.body = Some(body);
@@ -784,14 +809,19 @@ pub fn loaded(config: &mut ConfigState, result: Result<SettingsBody, String>) {
                 config.status = SaveStatus::StaleReloaded(config.staged.len());
                 config.stale_reload = false;
             }
+            if config.leave_after_write {
+                return config.next_write();
+            }
         }
         Err(message) => {
+            config.stale_reload = true;
             config.status = SaveStatus::Error {
                 key: String::new(),
                 message,
             }
         }
     }
+    vec![]
 }
 pub fn written(
     config: &mut ConfigState,
@@ -809,6 +839,9 @@ pub fn written(
     config.writing = None;
     match result {
         Ok(body) => {
+            config.request += 1;
+            config.loading = None;
+            config.stale_reload = false;
             config.body = Some(body);
             config.staged.remove(&key);
             config.field_errors.remove(&key);
@@ -832,7 +865,7 @@ pub fn written(
         Err(SettingsError::Stale) => {
             config.stale_reload = true;
             config.leave_after_write = false;
-            vec![Effect::FetchConfig]
+            vec![config.fetch()]
         }
         Err(error) => {
             let (key, message) = match error {

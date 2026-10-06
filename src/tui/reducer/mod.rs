@@ -358,9 +358,9 @@ pub fn update(s: &mut State, e: ClientEvent) -> Result<Vec<Effect>, ProtocolErro
 fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>, ProtocolError> {
     let mut effects = vec![];
     match e {
-        ClientEvent::ConfigLoaded { result, .. } => {
-            crate::tui::config::loaded(&mut s.config, result)
-        }
+        ClientEvent::ConfigLoaded {
+            request, result, ..
+        } => effects.extend(crate::tui::config::loaded(&mut s.config, request, result)),
         ClientEvent::ConfigWritten {
             key, value, result, ..
         } => effects.extend(crate::tui::config::written(

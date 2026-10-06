@@ -294,6 +294,7 @@ pub struct CommandResponse {
 pub enum ClientEvent {
     ConfigLoaded {
         generation: Generation,
+        request: u64,
         result: Result<super::config::SettingsBody, String>,
     },
     ConfigWritten {
@@ -518,7 +519,7 @@ pub enum ChildControl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
-    FetchConfig,
+    FetchConfig(u64),
     WriteConfig(super::config::WriteRequest),
     TestGateway(String),
     ApplyConfigTheme(crate::tui::theme::ThemeId),

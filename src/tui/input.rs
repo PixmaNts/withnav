@@ -492,8 +492,8 @@ fn config_key(key: KeyEvent, state: &State) -> Option<Action> {
     } else if let Some(text) = &config.list_editor {
         match key.code {
             KeyCode::Esc => C::CancelList,
-            KeyCode::Enter if ctrl => C::ListText(format!("{text}\n")),
-            KeyCode::Enter => C::CommitList,
+            KeyCode::Enter => C::ListText(format!("{text}\n")),
+            KeyCode::Char('s') if ctrl => C::CommitList,
             KeyCode::Backspace => {
                 let mut text = text.clone();
                 text.pop();

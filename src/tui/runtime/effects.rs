@@ -136,6 +136,49 @@ impl Executor {
     pub fn execute(&mut self, effect: Effect, ctx: &Context, editor: &mut Editor) -> Flow {
         let generation = ctx.generation.clone();
         match effect {
+            Effect::FetchConfig => {
+                let client = self.client.clone();
+                let workspace = ctx.workspace.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let result = client.settings(&workspace).await;
+                    let _ = tx
+                        .send(ClientEvent::ConfigLoaded { generation, result })
+                        .await;
+                });
+            }
+            Effect::WriteConfig(request) => {
+                let client = self.client.clone();
+                let workspace = ctx.workspace.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let result = client.write_setting(&workspace, &request).await;
+                    let _ = tx
+                        .send(ClientEvent::ConfigWritten {
+                            generation,
+                            key: request.key,
+                            value: request.value,
+                            result,
+                        })
+                        .await;
+                });
+            }
+            Effect::TestGateway(name) => {
+                let client = self.client.clone();
+                let workspace = ctx.workspace.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let result = client.test_gateway(&workspace, &name).await;
+                    let _ = tx
+                        .send(ClientEvent::GatewayTested {
+                            generation,
+                            name,
+                            result,
+                        })
+                        .await;
+                });
+            }
+            Effect::ApplyConfigTheme(_) | Effect::LeaveConfig => {}
             Effect::UnwatchChild(child_session_id) => {
                 self.streams.retain(|s| {
                     let gone = s.child_session_id.as_ref() == Some(&child_session_id);

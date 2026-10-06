@@ -84,6 +84,9 @@ pub fn route_key(
     if matches!(key.kind, KeyEventKind::Release) {
         return None;
     }
+    if ui.screen == super::config::Screen::Config && ui.overlay.is_none() {
+        return config_key(key, state);
+    }
     if ui.child_confirm.is_some() {
         return match key.code {
             KeyCode::Enter | KeyCode::Char('y') => Some(Action::ConfirmChildControl),
@@ -117,6 +120,7 @@ pub fn route_key(
                     return None;
                 }
                 ui.overlay = None;
+                ui.settings_target = None;
                 return Some(Action::CloseOverlay);
             }
             KeyCode::Up => *selected = selected.saturating_sub(1),
@@ -139,6 +143,9 @@ pub fn route_key(
             KeyCode::Char('n')
                 if overlay == Overlay::Models && key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
+                if ui.settings_target.is_some() {
+                    return None;
+                }
                 let name = names.get(*selected)?.clone();
                 if name.starts_with("group:") || name.starts_with(super::catalog::SECTION_PREFIX) {
                     return None;
@@ -234,6 +241,9 @@ pub fn route_key(
             KeyCode::Enter => {
                 let name = names.get(*selected)?;
                 let action = match overlay {
+                    Overlay::Models if ui.settings_target.is_some() => {
+                        Action::Config(super::config::ConfigAction::PickModel(name.clone()))
+                    }
                     Overlay::Agents => Action::PickAgent(name.clone()),
                     Overlay::Skills => {
                         editor.set_text(&format!("/skill {name} "));
@@ -468,6 +478,66 @@ pub fn route_key(
 /// A key while the palette follows the editor. Every printable key and backspace edit the line;
 /// the palette then closes when the line is no longer a command name being typed (a space or an
 /// argument after it, a name no row starts with, `//`, an empty line), leaving the line for enter.
+fn config_key(key: KeyEvent, state: &State) -> Option<Action> {
+    use super::config::{ConfigAction as C, LeaveChoice, Section};
+    let config = &state.config;
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let action = if config.leave_prompt {
+        match key.code {
+            KeyCode::Char('w') => C::ResolveLeave(LeaveChoice::Write),
+            KeyCode::Char('d') => C::ResolveLeave(LeaveChoice::Discard),
+            KeyCode::Esc | KeyCode::Char('s') => C::ResolveLeave(LeaveChoice::Stay),
+            _ => return None,
+        }
+    } else if let Some(text) = &config.list_editor {
+        match key.code {
+            KeyCode::Esc => C::CancelList,
+            KeyCode::Enter if ctrl => C::ListText(format!("{text}\n")),
+            KeyCode::Enter => C::CommitList,
+            KeyCode::Backspace => {
+                let mut text = text.clone();
+                text.pop();
+                C::ListText(text)
+            }
+            KeyCode::Char(c) if !ctrl => C::ListText(format!("{text}{c}")),
+            _ => return None,
+        }
+    } else if config.filtering {
+        match key.code {
+            KeyCode::Enter | KeyCode::Esc => C::FilterDone,
+            KeyCode::Backspace => {
+                let mut text = config.filter.clone();
+                text.pop();
+                C::Filter(text)
+            }
+            KeyCode::Char(c) if !ctrl => C::Filter(format!("{}{c}", config.filter)),
+            _ => return None,
+        }
+    } else {
+        match key.code {
+            KeyCode::Char('s') if ctrl => C::Write,
+            KeyCode::Char('z') if ctrl => C::Revert,
+            KeyCode::Char(c @ '1'..='6') if !ctrl => {
+                C::Jump(Section::ALL[(c as u8 - b'1') as usize])
+            }
+            KeyCode::BackTab => C::CycleSection(-1),
+            KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => C::CycleSection(-1),
+            KeyCode::Tab => C::CycleSection(1),
+            KeyCode::Up => C::Move(-1),
+            KeyCode::Down => C::Move(1),
+            KeyCode::Left => C::Step(-1),
+            KeyCode::Right => C::Step(1),
+            KeyCode::Char(' ') => C::Toggle,
+            KeyCode::Enter => C::Edit,
+            KeyCode::Char('/') => C::StartFilter,
+            KeyCode::Char('t') => C::TestGateway,
+            KeyCode::Esc => C::Leave,
+            _ => return None,
+        }
+    };
+    Some(Action::Config(action))
+}
+
 fn typed_palette_key(
     key: KeyEvent,
     state: &State,
@@ -731,6 +801,21 @@ pub fn route_paste(
     ui: &mut UiState,
     editor: &mut Editor,
 ) -> Option<Action> {
+    if ui.screen == super::config::Screen::Config && ui.overlay.is_none() {
+        use super::config::ConfigAction;
+        if let Some(draft) = &state.config.list_editor {
+            return Some(Action::Config(ConfigAction::ListText(format!(
+                "{draft}{text}"
+            ))));
+        }
+        if state.config.filtering {
+            return Some(Action::Config(ConfigAction::Filter(format!(
+                "{}{text}",
+                state.config.filter
+            ))));
+        }
+        return None;
+    }
     if state.read_only() {
         return None;
     }

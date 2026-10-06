@@ -6,6 +6,9 @@ requests land in `develop`.
 
 ### Added
 
+- **Terminal settings state.** `/config` stages settings edits, writes them in revision order,
+  preserves unsent changes after a stale reload, reports field errors, tests gateways and applies
+  a written theme live; the terminal Settings screen builds on this non-visual client state.
 - **Settings in the browser.** In `navai web`, the gear in the top bar (or "Open settings" in the
   command palette) opens Settings: gateways (read-only, with a connection test), the model of each
   layer and agent and its variant, the default agent, automatic review and scratch directories,

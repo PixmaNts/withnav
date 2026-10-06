@@ -1,0 +1,45 @@
+---
+source: tests/tui_view.rs
+assertion_line: 323
+expression: snapshot
+---
+ ◆ navai  /ws/refactor-parser  —  /config              Not saved: Must be between 1 and 64  /cfg/navai/config.json · /cfg/navai/models.json 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                     │                                                                                  │                                   
+ SETTINGS            │  Subagents  config.json → subagents, agent                                       │ FOCUSED                           
+                     │  Concurrency limits and watchdog intervals. Zero disables a watchdog.            │ subagents.max_concurrent          
+ 1 Gateways          │                                                                                  │                                   
+ omniroute           │▌ ● subagents.max_concurrent          65                                   ←→ ±1  │ Maximum concurrent subagents per  
+                     │  ! Must be between 1 and 64                                                      │ session.                          
+ 2 Layers            │    subagents.watchdog_interval_secs  300                                         │                                   
+ reflex · instinct · │    agent.watchdog_interval_secs      300                                         │ type    integer · 1–64            
+ meta · cognition    │                                                                                  │ saved   4                         
+ 3 Agents            │                                                                                  │ applies to new sessions and       
+ build               │                                                                                  │ subagents                         
+                     │                                                                                  │                                   
+ 4 Permissions       │                                                                                  │ PENDING · 1                       
+ automatic review on │                                                                                  │ subagents.max_concurrent          
+                     │                                                                                  │ - 4                               
+▌5 Subagents ●1      │                                                                                  │ + 65                              
+ max 65 per session  │                                                                                  │ [ctrl+s] write  [ctrl+z] revert   
+                     │                                                                                  │                                   
+ 6 Appearance        │                                                                                  │ ▌ Written for every client: TUI,  
+ Ayu Dark            │                                                                                  │ WebUI and VS Code. A /models      
+                     │                                                                                  │ pick in a session stays in that   
+                     │                                                                                  │ session and never writes here.    
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+                     │                                                                                  │                                   
+ 1…6 section         │                                                                                  │                                   
+ tab next section    │                                                                                  │                                   
+ esc back to session │                                                                                  │                                   
+                     │                                                                                  │                                   
+ Not saved: Must be between 1 and 64                                                                                                        
+ ↑↓ move · ←→ change · enter pick/edit · space toggle · / filter · ctrl+s write · ctrl+z revert · esc back

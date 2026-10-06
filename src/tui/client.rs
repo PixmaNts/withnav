@@ -49,6 +49,56 @@ pub struct Client {
 }
 
 impl Client {
+    pub async fn settings(&self, workspace: &str) -> Result<super::config::SettingsBody, String> {
+        self.json(self.get("/v1/settings").query(&[("workspace", workspace)]))
+            .await
+    }
+
+    pub async fn write_setting(
+        &self,
+        workspace: &str,
+        request: &super::config::WriteRequest,
+    ) -> Result<super::config::SettingsBody, super::config::SettingsError> {
+        use super::config::SettingsError;
+        let response = self
+            .authorized(self.http.put(format!("{}/v1/settings", self.base_url)))
+            .query(&[("workspace", workspace)])
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| SettingsError::Other(describe(&e)))?;
+        let status = response.status();
+        if status.is_success() {
+            return response
+                .json()
+                .await
+                .map_err(|e| SettingsError::Other(describe(&e)));
+        }
+        let text = response.text().await.unwrap_or_default();
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+        if status == reqwest::StatusCode::CONFLICT && body["reason"] == "stale" {
+            return Err(SettingsError::Stale);
+        }
+        if status == reqwest::StatusCode::BAD_REQUEST && body["reason"] == "invalid" {
+            return Err(SettingsError::Invalid {
+                key: body["key"].as_str().unwrap_or(&request.key).into(),
+                message: body["error"].as_str().unwrap_or("invalid value").into(),
+            });
+        }
+        Err(SettingsError::Other(status_message(status, &text)))
+    }
+
+    pub async fn test_gateway(
+        &self,
+        workspace: &str,
+        name: &str,
+    ) -> Result<super::config::GatewayTest, String> {
+        self.json(
+            self.post(&format!("/v1/gateways/{}/test", encode_segment(name)))
+                .query(&[("workspace", workspace)]),
+        )
+        .await
+    }
     pub fn new(base_url: impl Into<String>, token: Option<String>) -> Self {
         let http = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)

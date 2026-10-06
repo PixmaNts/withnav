@@ -323,6 +323,175 @@ fn render(name: &str, size: (u16, u16), state: &State, ui: &UiState, editor: &Ed
     insta::assert_snapshot!(name, snapshot);
     snapshot
 }
+
+fn settings_view_state() -> (State, UiState) {
+    use navai::tui::{
+        config::{SettingField, SettingsBody, SettingsPaths},
+        protocol::{AgentEntry, ApiKind},
+    };
+    let mut s = state();
+    s.workspace = "/ws/refactor-parser".into();
+    s.catalog = vec![ModelEntry {
+        name: "omniroute/combo/deepseek-v4-flash".into(),
+        upstream_id: "combo/deepseek-v4-flash".into(),
+        gateway: "omniroute".into(),
+        provider_group: "combo".into(),
+        api: ApiKind::Chat,
+        variants: vec!["low".into(), "medium".into(), "high".into()],
+        context_window: Some(200_000),
+        ..Default::default()
+    }];
+    s.agents = vec![AgentEntry {
+        id: "build".into(),
+        mode: "primary".into(),
+        ..Default::default()
+    }];
+    let fields = [
+        ("layers.reflex", json!("inception/mercury-edit-2")),
+        ("layers.instinct", json!("omniroute/typesafe/jev-1.13")),
+        (
+            "layers.metacognition",
+            json!({"model":"omniroute/combo/deepseek-v4-flash","variant":"low"}),
+        ),
+        ("default_agent", json!("build")),
+        (
+            "agents.build",
+            json!({"model":"omniroute/combo/deepseek-v4-flash","variant":"high"}),
+        ),
+        ("permissions.automatic_review", json!(true)),
+        (
+            "permissions.scratch_dirs",
+            json!(["/run/user/1000/navai", "/tmp/navai"]),
+        ),
+        ("subagents.max_concurrent", json!(4)),
+        ("subagents.watchdog_interval_secs", json!(300)),
+        ("agent.watchdog_interval_secs", json!(300)),
+        ("tui.theme", json!("ayu-dark")),
+    ]
+    .into_iter()
+    .map(|(key, value)| SettingField {
+        key: key.into(),
+        default: value.clone(),
+        value,
+        set: true,
+        error: None,
+        applies: "new_sessions".into(),
+    })
+    .collect();
+    s.config.body = Some(SettingsBody {
+        revision: "r0".into(),
+        paths: SettingsPaths {
+            config: "/cfg/navai/config.json".into(),
+            models: Some("/cfg/navai/models.json".into()),
+            agents: vec![],
+        },
+        fields,
+        gateways: vec![navai::tui::config::GatewayInfo {
+            name: "omniroute".into(),
+            base_url: "http://localhost:20128/v1".into(),
+            api_key_env: Some("OMNIROUTE_API_KEY".into()),
+            key_source: "environment".into(),
+            catalog_format: Some("omniroute".into()),
+            connect_timeout_ms: Some(5000),
+            request_timeout_ms: Some(600000),
+            headers: vec![],
+            model_count: Some(42),
+            used_by: vec!["layers.metacognition".into()],
+        }],
+    });
+    (
+        s,
+        UiState {
+            screen: navai::tui::config::Screen::Config,
+            ..Default::default()
+        },
+    )
+}
+
+#[test]
+fn settings_layers_metacognition_variant() {
+    let (mut s, ui) = settings_view_state();
+    s.config.section = navai::tui::config::Section::Layers;
+    s.config.row = 3;
+    let text = render(
+        "settings-layers-variant-140",
+        (140, 40),
+        &s,
+        &ui,
+        &Editor::new(),
+    );
+    assert!(text.contains("layers.metacognition.variant"));
+    assert!(text.contains("low · medium"));
+    assert!(text.contains("high"));
+}
+
+#[test]
+fn settings_pending_two_changes() {
+    let (mut s, ui) = settings_view_state();
+    s.config.section = navai::tui::config::Section::Subagents;
+    s.config
+        .stage("permissions.automatic_review".into(), json!(false));
+    s.config.stage("subagents.max_concurrent".into(), json!(5));
+    let text = render("settings-pending-140", (140, 40), &s, &ui, &Editor::new());
+    assert!(text.contains("● 2 unsaved"));
+    assert!(text.contains("- true"));
+    assert!(text.contains("+ false"));
+}
+
+#[test]
+fn settings_model_picker_for_layer() {
+    let (mut s, mut ui) = settings_view_state();
+    s.config.section = navai::tui::config::Section::Layers;
+    s.config.row = 2;
+    navai::tui::config::handle(&mut s, &mut ui, navai::tui::config::ConfigAction::Edit);
+    let text = render(
+        "settings-model-picker-140",
+        (140, 40),
+        &s,
+        &ui,
+        &Editor::new(),
+    );
+    assert!(text.contains("model for layers.metacognition"));
+    assert!(text.contains("writes config.json"));
+    assert!(!text.contains("switches the model only"));
+}
+
+#[test]
+fn settings_gateways_read_only() {
+    let (s, ui) = settings_view_state();
+    let text = render("settings-gateways-140", (140, 40), &s, &ui, &Editor::new());
+    assert!(text.contains("edit in models.json"));
+    assert!(text.contains("read-only"));
+}
+
+#[test]
+fn settings_leave_prompt() {
+    let (mut s, ui) = settings_view_state();
+    s.config.stage("tui.theme".into(), json!("nord-dark"));
+    s.config.leave_prompt = true;
+    let text = render("settings-leave-140", (140, 40), &s, &ui, &Editor::new());
+    assert!(text.contains("[w] write · [d] discard · [esc] stay"));
+}
+
+#[test]
+fn settings_row_server_error_and_stale_reload() {
+    let (mut s, ui) = settings_view_state();
+    s.config.section = navai::tui::config::Section::Subagents;
+    s.config.stage("subagents.max_concurrent".into(), json!(65));
+    s.config.field_errors.insert(
+        "subagents.max_concurrent".into(),
+        "Must be between 1 and 64".into(),
+    );
+    s.config.status = navai::tui::config::SaveStatus::Error {
+        key: "subagents.max_concurrent".into(),
+        message: "Must be between 1 and 64".into(),
+    };
+    let text = render("settings-row-error-140", (140, 40), &s, &ui, &Editor::new());
+    assert!(text.contains("! Must be between 1 and 64"));
+    s.config.status = navai::tui::config::SaveStatus::StaleReloaded(1);
+    assert!(screen_text(&s, &ui, (140, 40))
+        .contains("config.json changed elsewhere; reloaded · 1 still staged"));
+}
 #[test]
 fn empty_and_streaming() {
     let editor = Editor::new();
@@ -509,7 +678,7 @@ fn overlay_precedence_and_empty_slash() {
             &mut ui,
             &mut editor
         ),
-        Some(Action::NewConversation)
+        Some(Action::OpenConfig)
     );
     assert!(
         editor.text().is_empty(),

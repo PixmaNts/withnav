@@ -279,6 +279,17 @@ impl Runtime {
             config_dir: self.config_dir.clone(),
         };
         for effect in effects {
+            match &effect {
+                Effect::ApplyConfigTheme(theme) => {
+                    self.ui.theme = *theme;
+                    continue;
+                }
+                Effect::LeaveConfig => {
+                    self.ui.screen = crate::tui::config::Screen::Session;
+                    continue;
+                }
+                _ => {}
+            }
             if let Effect::ShowVariants { current } = &effect {
                 // A screen change, not I/O: it needs the `UiState` the reducer's `update` lacks.
                 reducer::show_variants(&self.state, &mut self.ui, current.as_deref());

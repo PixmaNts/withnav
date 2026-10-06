@@ -90,7 +90,14 @@ pub fn toggle_all(catalog: &[ModelEntry], ui: &mut UiState) {
         ui.collapsed_models.clear();
         return;
     }
-    for model in catalog.iter().filter(|m| m.api == ApiKind::Chat) {
+    for model in catalog.iter().filter(|m| {
+        m.api
+            == ui
+                .settings_target
+                .as_ref()
+                .map(|t| t.api)
+                .unwrap_or(ApiKind::Chat)
+    }) {
         ui.collapsed_models.insert(model.gateway.clone());
         if model.provider_group != model.gateway {
             ui.collapsed_models
@@ -105,7 +112,14 @@ pub fn rows<'a>(catalog: &'a [ModelEntry], ui: &UiState) -> Vec<Row<'a>> {
     let filter = ui.filter.to_lowercase();
     let mut groups: BTreeMap<&str, BTreeMap<&str, Vec<&ModelEntry>>> = BTreeMap::new();
     for model in catalog {
-        if model.api == ApiKind::Chat && model.name.to_lowercase().contains(&filter) {
+        if model.api
+            == ui
+                .settings_target
+                .as_ref()
+                .map(|t| t.api)
+                .unwrap_or(ApiKind::Chat)
+            && model.name.to_lowercase().contains(&filter)
+        {
             groups
                 .entry(&model.gateway)
                 .or_default()
@@ -118,7 +132,12 @@ pub fn rows<'a>(catalog: &'a [ModelEntry], ui: &UiState) -> Vec<Row<'a>> {
     let mut favorites: Vec<&ModelEntry> = catalog
         .iter()
         .filter(|m| {
-            m.api == ApiKind::Chat
+            m.api
+                == ui
+                    .settings_target
+                    .as_ref()
+                    .map(|t| t.api)
+                    .unwrap_or(ApiKind::Chat)
                 && ui.favorite_models.contains(&m.name)
                 && m.name.to_lowercase().contains(&filter)
         })

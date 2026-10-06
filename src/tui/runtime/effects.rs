@@ -48,6 +48,8 @@ pub struct Executor {
     streams: Vec<ActiveStream>,
     request: u64,
     saves: mpsc::UnboundedSender<Box<dyn FnOnce() -> Option<ClientEvent> + Send>>,
+    /// [`SAVE_WAIT`]; tests shorten it.
+    save_wait: std::time::Duration,
 }
 
 impl Executor {
@@ -72,6 +74,7 @@ impl Executor {
             streams: Vec::new(),
             request: 0,
             saves,
+            save_wait: SAVE_WAIT,
         }
     }
 
@@ -142,11 +145,12 @@ impl Executor {
         match effect {
             Effect::FetchConfig(request) => {
                 let barrier = self.save_barrier();
+                let deadline = self.save_wait;
                 let client = self.client.clone();
                 let workspace = ctx.workspace.clone();
                 let tx = self.tx.clone();
                 tokio::spawn(async move {
-                    let result = match wait_for_saves(barrier).await {
+                    let result = match wait_for_saves(barrier, deadline).await {
                         Ok(()) => client.settings(&workspace).await,
                         Err(error) => Err(error),
                     };
@@ -161,11 +165,12 @@ impl Executor {
             }
             Effect::WriteConfig(request) => {
                 let barrier = self.save_barrier();
+                let deadline = self.save_wait;
                 let client = self.client.clone();
                 let workspace = ctx.workspace.clone();
                 let tx = self.tx.clone();
                 tokio::spawn(async move {
-                    let result = match wait_for_saves(barrier).await {
+                    let result = match wait_for_saves(barrier, deadline).await {
                         Ok(()) => client.write_setting(&workspace, &request).await,
                         Err(error) => Err(crate::tui::config::SettingsError::Other(error)),
                     };
@@ -617,12 +622,26 @@ impl Drop for Executor {
     }
 }
 
+/// How long a Settings request waits for theme or favorites saves queued before it. Such a save
+/// can itself wait on `config.json.lock` held by another Navai process; past this the request
+/// fails like any unreachable server (staged changes kept, ctrl+s retries) instead of leaving
+/// `/config` loading or writing forever. It never goes ahead without the barrier: that would let
+/// an older queued theme land after a newer `/config` write.
+const SAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 async fn wait_for_saves(
     barrier: Result<tokio::sync::oneshot::Receiver<()>, String>,
+    deadline: std::time::Duration,
 ) -> Result<(), String> {
-    barrier?
-        .await
-        .map_err(|_| "settings save worker stopped".to_string())
+    match tokio::time::timeout(deadline, barrier?).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err("settings save worker stopped".to_string()),
+        Err(_) => Err(format!(
+            "an earlier theme or favorites save is still waiting for config.json after {} s; \
+             try again",
+            deadline.as_secs()
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -735,6 +754,109 @@ mod settings_tests {
             crate::settings::load(&saved_dir).unwrap().tui_theme(),
             Some("nord-dark")
         );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn blocked_save_worker_fails_settings_requests_in_bounded_time_then_retry_works() {
+        let (observed, mut requests) = mpsc::unbounded_channel::<&'static str>();
+        let body = json!({"revision":"r", "paths":{"config":"config.json","models":null,"agents":[]},"fields":[],"gateways":[]});
+        let app = axum::Router::new().route(
+            "/v1/settings",
+            axum::routing::get({
+                let observed = observed.clone();
+                let body = body.clone();
+                move || {
+                    observed.send("GET").unwrap();
+                    let body = body.clone();
+                    async move { axum::Json(body) }
+                }
+            })
+            .put({
+                let observed = observed.clone();
+                move || {
+                    observed.send("PUT").unwrap();
+                    let body = body.clone();
+                    async move { axum::Json(body) }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let (tx, mut events) = mpsc::channel(10);
+        let mut executor = Executor::new(Client::new(url, None), tx);
+        executor.save_wait = Duration::from_millis(100);
+        let ctx = Context {
+            generation: Generation(0),
+            session_id: None,
+            workspace: "/ws".into(),
+            config_dir: None,
+        };
+        let mut editor = Editor::default();
+        async fn next_event(events: &mut mpsc::Receiver<ClientEvent>) -> ClientEvent {
+            tokio::time::timeout(Duration::from_secs(10), events.recv())
+                .await
+                .expect("a settings result arrives in bounded time")
+                .unwrap()
+        }
+
+        // A save stuck behind config.json.lock held by another process.
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        executor
+            .saves
+            .send(Box::new(move || {
+                started.send(()).unwrap();
+                blocked.recv().unwrap();
+                None
+            }))
+            .unwrap();
+        ready.await.unwrap();
+
+        executor.execute(Effect::FetchConfig(1), &ctx, &mut editor);
+        match next_event(&mut events).await {
+            ClientEvent::ConfigLoaded {
+                request: 1,
+                result: Err(error),
+                ..
+            } => assert!(error.contains("still waiting"), "{error}"),
+            other => panic!("expected a bounded load failure, got {other:?}"),
+        }
+        let write = WriteRequest {
+            revision: "r".into(),
+            key: "tui.theme".into(),
+            value: json!("nord-dark"),
+        };
+        executor.execute(Effect::WriteConfig(write.clone()), &ctx, &mut editor);
+        match next_event(&mut events).await {
+            ClientEvent::ConfigWritten { result: Err(_), .. } => {}
+            other => panic!("expected a bounded write failure, got {other:?}"),
+        }
+        assert!(
+            requests.try_recv().is_err(),
+            "no HTTP request may pass the barrier while an earlier save is pending"
+        );
+
+        // Once the earlier save finishes, the same requests go through.
+        release.send(()).unwrap();
+        executor.flush_saves().await;
+        executor.execute(Effect::FetchConfig(2), &ctx, &mut editor);
+        match next_event(&mut events).await {
+            ClientEvent::ConfigLoaded {
+                request: 2,
+                result: Ok(_),
+                ..
+            } => {}
+            other => panic!("expected the retried load to succeed, got {other:?}"),
+        }
+        executor.execute(Effect::WriteConfig(write), &ctx, &mut editor);
+        match next_event(&mut events).await {
+            ClientEvent::ConfigWritten { result: Ok(_), .. } => {}
+            other => panic!("expected the retried write to succeed, got {other:?}"),
+        }
+        assert_eq!(requests.recv().await, Some("GET"));
+        assert_eq!(requests.recv().await, Some("PUT"));
         server.abort();
     }
 }

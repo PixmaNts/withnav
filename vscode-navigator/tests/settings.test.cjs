@@ -249,6 +249,7 @@ test("webview controls post one key per change; refusals show under their row; s
   assert.equal(box.checked, true, "automatic review defaults to on");
   box.click();
   assert.deepEqual(posts.at(-1), { type: "save", key: "permissions.automatic_review", value: false });
+  receive({ type: "saved", key: "permissions.automatic_review" });
 
   rows()[1].querySelector(".list > .button").click();
   const input = rows()[1].querySelector(".list-edit input");

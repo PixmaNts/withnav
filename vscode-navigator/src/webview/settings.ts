@@ -32,9 +32,42 @@ let loadError: string | null = null;
 let noWorkspace = false;
 /** Refusals (400) and failures kept under their key until it saves. */
 const errors = new Map<string, string>();
-const saving = new Set<string>();
+/** Outstanding saves per key; controls stay locked until the last reply. */
+const saving = new Map<string, number>();
+/** Saves posted here whose host `saving` echo has not arrived yet. */
+const unacked = new Map<string, number>();
+const bump = (map: Map<string, number>, key: string): void => void map.set(key, (map.get(key) ?? 0) + 1);
+function drop(map: Map<string, number>, key: string): boolean {
+  const n = map.get(key) ?? 0;
+  if (n <= 0) return false;
+  if (n === 1) map.delete(key);
+  else map.set(key, n - 1);
+  return true;
+}
+
+/** The only way to post a save: locks the key and its controls before the host can answer. */
+function send(key: string, value: unknown): void {
+  errors.delete(key);
+  bump(saving, key);
+  bump(unacked, key);
+  setSaveState("Saving…");
+  post({ type: "save", key, value });
+  render();
+}
 let banner: string | null = null;
 const tests = new Map<string, GatewayTest | "testing">();
+let projectionPending = false;
+
+/** Side loads may update the model, but must not replace an editor mid-edit. */
+function editing(): boolean {
+  if (rowsHost.querySelector(".list-edit")) return true;
+  return [...rowsHost.querySelectorAll<HTMLInputElement>('input[type="text"], input[type="number"]')]
+    .some((input) => input === document.activeElement || input.value !== input.defaultValue);
+}
+
+function flushProjection(): void {
+  if (projectionPending) render();
+}
 
 searchInput.value = query;
 
@@ -136,8 +169,7 @@ function save(row: Row, input: string | boolean | string[]): void {
   if (saving.size || !row.key || !row.write) return;
   const value = row.write(input);
   if (value === undefined) return;
-  errors.delete(row.key);
-  post({ type: "save", key: row.key, value });
+  send(row.key, value);
 }
 
 function controlFor(row: Row): HTMLElement {
@@ -147,7 +179,7 @@ function controlFor(row: Row): HTMLElement {
     case "text": {
       const input = el("input", `control text${c.mono !== false ? " mono" : ""}`);
       input.type = "text";
-      input.value = c.value;
+      input.defaultValue = c.value;
       input.disabled = !!c.disabled;
       input.setAttribute("aria-label", label);
       if (!c.disabled) input.addEventListener("change", () => save(row, input.value));
@@ -156,7 +188,7 @@ function controlFor(row: Row): HTMLElement {
     case "number": {
       const input = el("input", "control number mono");
       input.type = "number";
-      input.value = c.value === null ? "" : String(c.value);
+      input.defaultValue = c.value === null ? "" : String(c.value);
       if (c.placeholder) input.placeholder = c.placeholder;
       if (c.min !== undefined) input.min = String(c.min);
       if (c.max !== undefined) input.max = String(c.max);
@@ -166,7 +198,7 @@ function controlFor(row: Row): HTMLElement {
       if (!c.disabled)
         input.addEventListener("change", () => {
           if (input.value.trim() === "") {
-            if (row.key) post({ type: "save", key: row.key, value: null });
+            if (row.key && !saving.size) send(row.key, null);
             return;
           }
           save(row, input.value);
@@ -274,6 +306,7 @@ function listControl(row: Row, c: Extract<Control, { kind: "list" }>): HTMLEleme
         editor.remove();
         add.hidden = false;
         add.focus();
+        flushProjection();
       };
       ok.addEventListener("click", commit);
       cancel.addEventListener("click", close);
@@ -324,8 +357,7 @@ function rowElement(row: Row): HTMLElement {
     reset.addEventListener("click", (event) => {
       event.preventDefault();
       if (row.key && !saving.size) {
-        errors.delete(row.key);
-        post({ type: "save", key: row.key, value: null });
+        send(row.key, null);
       }
     });
     head.append(reset);
@@ -390,6 +422,7 @@ function renderRows(): number {
 }
 
 function render(): void {
+  projectionPending = false;
   if (!snapshot) {
     rowsHost.replaceChildren(el("p", loadError ? "placeholder error" : "placeholder", noWorkspace ? "Open a folder to edit Navai settings" : loadError ?? "Loading Navai settings…"));
     if (loadError || noWorkspace) {
@@ -435,13 +468,16 @@ window.addEventListener("message", (event: MessageEvent<HostToSettings>) => {
   switch (m.type) {
     case "noWorkspace":
       noWorkspace = true;
+      saving.clear();
+      unacked.clear();
       render();
       break;
     case "snapshot":
       snapshot = m.data;
       loadError = null;
       sections = buildSections(m.data);
-      render();
+      if (m.projectionOnly && editing()) projectionPending = true;
+      else render();
       break;
     case "loadError":
       loadError = m.message;
@@ -452,32 +488,36 @@ window.addEventListener("message", (event: MessageEvent<HostToSettings>) => {
       }
       break;
     case "saving":
-      saving.add(m.key);
+      // Echo of a save posted here is already counted; otherwise the host started it.
+      if (!drop(unacked, m.key)) bump(saving, m.key);
       setSaveState("Saving…");
       render();
       break;
     case "saved":
-      saving.delete(m.key);
+      drop(saving, m.key);
       errors.delete(m.key);
       banner = null;
       setSaveState(saving.size ? "Saving…" : "Saved", "ok");
       render();
       break;
     case "invalid":
-      saving.delete(m.key);
+      // Refused before `saving` was sent, so no echo will follow.
+      drop(unacked, m.key);
+      drop(saving, m.key);
       errors.set(m.key, m.message);
       setSaveState("Not saved", "error");
       render();
       break;
     case "stale":
       saving.clear();
+      unacked.clear();
       errors.clear();
       banner = m.message;
       setSaveState("Reloaded", "error");
       render();
       break;
     case "saveFailed":
-      saving.delete(m.key);
+      drop(saving, m.key);
       errors.set(m.key, m.message);
       setSaveState("Not saved", "error");
       render();
@@ -491,6 +531,15 @@ window.addEventListener("message", (event: MessageEvent<HostToSettings>) => {
       render();
       break;
   }
+});
+
+// A committed change or cancelled list editor ends the deferral. A pristine
+// text/number control also releases it when focus leaves the editor.
+rowsHost.addEventListener("change", flushProjection);
+rowsHost.addEventListener("focusout", () => {
+  queueMicrotask(() => {
+    if (!editing()) flushProjection();
+  });
 });
 
 searchInput.addEventListener("input", () => {

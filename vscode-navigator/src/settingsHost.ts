@@ -122,10 +122,10 @@ export class SettingsHost {
 
   /** Agent assignments and layer status are projections of config.json: re-read them after a write. */
   private async refreshProjections(): Promise<void> {
-    await Promise.all([this.loadProjection("agents"), this.loadProjection("layers")]);
+    await Promise.all([this.loadProjection("agents", false), this.loadProjection("layers", false)]);
   }
 
-  private async loadProjection(kind: "models" | "agents" | "layers"): Promise<void> {
+  private async loadProjection(kind: "models" | "agents" | "layers", projectionOnly = true): Promise<void> {
     const snapshot = this.snapshot;
     if (!snapshot || this.disposed) return;
     const notes = snapshot.notes ??= {};
@@ -139,7 +139,7 @@ export class SettingsHost {
     } catch (error) {
       notes[kind] = `Cannot read ${kind}: ${errorText(error)}`;
     }
-    this.send({ type: "snapshot", data: snapshot });
+    this.send({ type: "snapshot", data: snapshot, projectionOnly });
   }
 
   private async save(key: string, value: unknown): Promise<void> {

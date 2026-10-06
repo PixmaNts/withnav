@@ -13,9 +13,9 @@ function setup(request,options={workspace:'/work'}) {
   const messages=[],calls=[];
   return {messages,calls,host:new SettingsHost({request:async(p,i)=>{calls.push({p,i});return request(p,i);}},m=>messages.push(structuredClone(m)),options)};
 }
-function view(snapshot) {
+function view(snapshot,onPost,section='permissions') {
   const sent=[],dom=new JSDOM(settingsHtml('abc','settings.js','settings.css','https://host'),{runScripts:'outside-only'});
-  dom.window.acquireVsCodeApi=()=>({postMessage:m=>sent.push(m),getState:()=>({section:'permissions'}),setState(){}});
+  dom.window.acquireVsCodeApi=()=>({postMessage:m=>{sent.push(m);onPost?.(m);},getState:()=>({section}),setState(){}});
   dom.window.eval(fs.readFileSync(require.resolve('../out/settings.js'),'utf8'));
   const deliver=data=>dom.window.dispatchEvent(new dom.window.MessageEvent('message',{data}));
   if(snapshot)deliver({type:'snapshot',data:snapshot});
@@ -45,12 +45,98 @@ test('settings render before side loads finish and survive models and agents fai
   assert.deepEqual(sections.find(s=>s.id==='layer:reflex').rows[0].control.options.find(o=>o.value==='gw/fim'),{value:'gw/fim',label:'gw/fim'});
   const v=view(snapshot);v.document.querySelector('[data-section="layer:reflex"]').click();assert.match(v.document.querySelector('#rows').textContent,/Cannot read models/);assert.equal(v.document.querySelector('select').value,'gw/fim');v.dom.window.close();
 });
+test('delayed projections preserve Add Item draft, focus and caret, then commit saves',async()=>{
+  let release,host;const pending=new Promise(r=>release=r),saves=[],puts=[];
+  const v=view(undefined,m=>{if(m.type==='save')saves.push(host.handle(m));});
+  host=new SettingsHost({request:async(p,i)=>{
+    if(p.startsWith('/v1/settings')){
+      const body=settings();
+      if(i.method==='PUT'){const write=JSON.parse(i.body);puts.push(write);body.fields.find(f=>f.key===write.key).value=write.value;}
+      return json(body);
+    }
+    await pending;return json({});
+  }},m=>v.deliver(structuredClone(m)),{workspace:'/work'});
+  const load=host.handle({type:'ready'});await new Promise(r=>setImmediate(r));
+  v.document.querySelector('.list button').click();
+  const input=v.document.querySelector('.list-edit input');input.value='/srv/scratch';input.setSelectionRange(4,8,'backward');
+  release();await load;
+  assert.equal(v.document.querySelector('.list-edit input'),input);assert.equal(input.value,'/srv/scratch');
+  assert.equal(v.document.activeElement,input);assert.equal(input.selectionStart,4);assert.equal(input.selectionEnd,8);assert.equal(input.selectionDirection,'backward');
+  input.dispatchEvent(new v.dom.window.KeyboardEvent('keydown',{key:'Enter'}));await Promise.all(saves);
+  assert.deepEqual(puts,[{revision:'one',key:'permissions.scratch_dirs',value:['/srv/scratch']}]);
+  assert.equal(v.document.querySelector('.list-edit'),null);assert.match(v.document.querySelector('.list').textContent,/\/srv\/scratch/);v.dom.window.close();
+});
+test('delayed projections preserve number draft and focus, then change saves',async()=>{
+  let release,host;const pending=new Promise(r=>release=r),saves=[],puts=[];
+  const v=view(undefined,m=>{if(m.type==='save')saves.push(host.handle(m));},'subagents');
+  host=new SettingsHost({request:async(p,i)=>{
+    if(p.startsWith('/v1/settings')){
+      const body=settings();
+      if(i.method==='PUT'){const write=JSON.parse(i.body);puts.push(write);body.fields.find(f=>f.key===write.key).value=write.value;}
+      return json(body);
+    }
+    await pending;return json({});
+  }},m=>v.deliver(structuredClone(m)),{workspace:'/work'});
+  const load=host.handle({type:'ready'});await new Promise(r=>setImmediate(r));
+  const input=v.document.querySelector('input[type="number"]');assert.equal(input.value,'4');input.focus();input.value='12';
+  // Native number inputs expose no selection API; retaining the same focused
+  // DOM node preserves the browser's internal caret rather than restoring it.
+  const caret=[input.selectionStart,input.selectionEnd];release();await load;
+  assert.equal(v.document.querySelector('input[type="number"]'),input);assert.equal(input.value,'12');assert.equal(v.document.activeElement,input);
+  assert.deepEqual([input.selectionStart,input.selectionEnd],caret);
+  input.dispatchEvent(new v.dom.window.Event('change',{bubbles:true}));await Promise.all(saves);
+  assert.deepEqual(puts,[{revision:'one',key:'subagents.max_concurrent',value:12}]);v.dom.window.close();
+});
+test('409 authoritative reload replaces an in-progress Add Item draft',async()=>{
+  const v=view();let reads=0,replaced=false;
+  const host=new SettingsHost({request:async(p,i)=>{
+    if(!p.startsWith('/v1/settings'))return json({});
+    if(i.method==='PUT')return json({error:'stale'},409);
+    const body=settings(`read-${++reads}`);if(reads===2)body.fields.find(f=>f.key==='permissions.scratch_dirs').value=['/external'];return json(body);
+  }},m=>{
+    // Isolate the reload from the separate saving notification, which also
+    // renders: the authoritative snapshot itself must discard the draft.
+    if(m.type==='saving')return;
+    if(m.type==='snapshot'&&m.data.settings.revision==='read-2'&&!m.projectionOnly){assert.equal(v.document.querySelector('.list-edit input').value,'/srv/scratch');replaced=true;}
+    v.deliver(structuredClone(m));
+  },{workspace:'/work'});
+  await host.handle({type:'ready'});v.document.querySelector('.list button').click();v.document.querySelector('.list-edit input').value='/srv/scratch';
+  await host.handle({type:'save',key:'permissions.automatic_review',value:false});
+  assert.equal(replaced,true);assert.equal(v.document.querySelector('.list-edit'),null);assert.match(v.document.querySelector('.list').textContent,/\/external/);assert.match(v.document.querySelector('.banner').textContent,/changed elsewhere/);v.dom.window.close();
+});
 test('busy navigation and search re-renders keep all controls disabled',()=>{
   const v=view({settings:settings(),models:[],agents:[],layers:[]});v.deliver({type:'saving',key:'permissions.automatic_review'});
   assert.ok([...v.document.querySelectorAll('#rows input, #rows select, #rows button')].every(c=>c.disabled));
   v.document.querySelector('[data-section="subagents"]').click();assert.ok([...v.document.querySelectorAll('#rows input')].every(c=>c.disabled));
   const search=v.document.querySelector('#search');search.value='model';search.dispatchEvent(new v.dom.window.Event('input'));assert.ok([...v.document.querySelectorAll('#rows select')].every(c=>c.disabled));
   v.deliver({type:'saved',key:'permissions.automatic_review'});assert.ok([...v.document.querySelectorAll('#rows select')].some(c=>!c.disabled));v.dom.window.close();
+});
+test('a second agent edit is impossible until the first save replies, so model A never returns',()=>{
+  const models=['gw/A','gw/B'].map(name=>({name,api:'chat',gateway:'gw',enabled:true,variants:['low','high'],default_variant:'low'}));
+  const data=settings();data.fields.find(f=>f.key==='agents.build').value={model:'gw/A',variant:'low'};
+  const v=view({settings:data,models,agents:[],layers:[]},undefined,'agent:build');
+  const select=title=>[...v.document.querySelectorAll('.row')].find(r=>r.querySelector('.row-name').textContent===title).querySelector('select');
+  const model=select('Model'),variant=select('Variant');
+  model.value='gw/B';model.dispatchEvent(new v.dom.window.Event('change',{bubbles:true}));
+  // No host reply yet: every control is already locked and the stale variant select is gone or disabled.
+  assert.ok([...v.document.querySelectorAll('#rows input, #rows select, #rows button')].every(c=>c.disabled));
+  variant.value='high';variant.dispatchEvent(new v.dom.window.Event('change',{bubbles:true}));
+  const saves=v.sent.filter(m=>m.type==='save');
+  assert.deepEqual(JSON.parse(JSON.stringify(saves.map(m=>m.value))),[{model:'gw/B',variant:'low'}]);
+  assert.ok(!saves.some(m=>m.value.model==='gw/A'));
+  v.deliver({type:'saving',key:'agents.build'});v.deliver({type:'saved',key:'agents.build'});
+  assert.ok([...v.document.querySelectorAll('#rows select')].some(c=>!c.disabled));v.dom.window.close();
+});
+test('a key with two outstanding saves stays disabled until both replies arrive',()=>{
+  const v=view({settings:settings(),models:[],agents:[],layers:[]});
+  const controls=()=>[...v.document.querySelectorAll('#rows input, #rows select, #rows button')];
+  v.deliver({type:'saving',key:'permissions.automatic_review'});v.deliver({type:'saving',key:'permissions.automatic_review'});
+  v.deliver({type:'saved',key:'permissions.automatic_review'});assert.ok(controls().every(c=>c.disabled));
+  v.deliver({type:'saved',key:'permissions.automatic_review'});assert.ok(controls().some(c=>!c.disabled));
+  // Locally posted saves are counted once even though the host echoes each with `saving`.
+  const box=v.document.querySelector('input[type="checkbox"]');box.checked=false;box.dispatchEvent(new v.dom.window.Event('change',{bubbles:true}));
+  assert.ok(controls().every(c=>c.disabled));v.deliver({type:'saving',key:'permissions.automatic_review'});
+  v.deliver({type:'saved',key:'permissions.automatic_review'});assert.ok(controls().some(c=>!c.disabled));v.dom.window.close();
 });
 test('agents refresh after assignment and default-agent saves with non-fatal failures',async()=>{
   let generation=0;const {host}=setup((p,i)=>{if(p.startsWith('/v1/settings')){if(i.method==='PUT')generation++;return json(settings());}if(p.startsWith('/v1/agents'))return generation===2?json({error:'offline'},500):json({agents:[{id:'build',effective:{model:`gw/${generation}`,source:'config'}}]});return json({});});

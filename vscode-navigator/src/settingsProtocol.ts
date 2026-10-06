@@ -94,7 +94,7 @@ export interface GatewayTest {
 }
 
 export type HostToSettings =
-  | { type: "snapshot"; data: SettingsSnapshot }
+  | { type: "snapshot"; data: SettingsSnapshot; projectionOnly?: boolean }
   | { type: "noWorkspace" }
   /** The settings could not be read (no server yet, server error). */
   | { type: "loadError"; message: string }

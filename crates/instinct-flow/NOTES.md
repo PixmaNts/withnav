@@ -16,3 +16,5 @@
   a direct dependency because no root direct hash dependency existed.
 - Runtime error messages supplied by the included provider transport are fixed/sanitized;
   host implementations remain responsible for excluding secrets from their context captures.
+- CLI JSONL replay currently reads a bounded file (32 MiB) before evaluating records rather
+  than streaming them; no capture writer or persistence layer is part of the crate.

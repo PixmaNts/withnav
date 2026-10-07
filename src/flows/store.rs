@@ -323,14 +323,21 @@ impl FlowStore {
         })
     }
     pub fn list(&self) -> Result<Vec<FlowSummary>, StoreError> {
-        Ok(self.documents()?.iter().map(Document::summary).collect())
+        Ok(self
+            .documents(true)?
+            .iter()
+            .map(Document::summary)
+            .collect())
     }
-    fn documents(&self) -> Result<Vec<Document>, StoreError> {
+    fn documents(&self, include_workspace: bool) -> Result<Vec<Document>, StoreError> {
         let mut documents = super::builtin::definitions()
             .into_iter()
             .map(|(d, _)| self.get(&d.flow.name, Location::Builtin))
             .collect::<Result<Vec<_>, _>>()?;
         for location in [Location::Global, Location::Workspace] {
+            if location == Location::Workspace && !include_workspace {
+                continue;
+            }
             let path = self.directory(location)?;
             let dir = match Directory::open(&path, false) {
                 Ok(d) => d,
@@ -359,8 +366,8 @@ impl FlowStore {
     }
     pub fn reload(&self) -> Result<(), StoreError> {
         let _guard = self.write.lock().map_err(|_| StoreError::reason("io"))?;
-        let documents = self.documents()?;
         let trusted = self.trusted();
+        let documents = self.documents(trusted)?;
         let mut candidate = BTreeMap::new();
         let mut revisions = BTreeMap::new();
         let mut errors = vec![];
@@ -559,6 +566,26 @@ pub(crate) fn timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn untrusted_files_are_excluded_before_enumeration() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let store = FlowStore::new(temp.path().into(), temp.path().join("config"));
+        store
+            .save(
+                "guard",
+                Location::Global,
+                None,
+                content("guard", "no_objection"),
+            )
+            .unwrap();
+        std::fs::create_dir_all(temp.path().join(".navai")).unwrap();
+        symlink("/not-readable", temp.path().join(".navai/flows")).unwrap();
+        store.reload().unwrap();
+        assert!(store.snapshot().contains_key("guard"));
+        let restarted = FlowStore::new(temp.path().into(), temp.path().join("config"));
+        assert!(restarted.snapshot().contains_key("guard"));
+    }
     #[test]
     fn independent_stores_serialize_trust_updates() {
         let temp = tempfile::tempdir().unwrap();

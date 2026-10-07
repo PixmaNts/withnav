@@ -197,7 +197,9 @@ async fn handle(
         ("GET", "catalogue") => ok(
             serde_json::to_value(crate::flows::catalogue::catalogue()).map_err(|_| invalid())?
         ),
-        ("GET", "") => ok(json!({"flows":store.list()?})),
+        ("GET", "") => {
+            ok(json!({"flows":store.list()?,"errors":state.flows.diagnostics(&workspace)}))
+        }
         ("POST", "") => {
             let document = store.save(
                 required(&data, "name")?,
@@ -281,7 +283,11 @@ async fn handle(
                 .ok_or_else(|| StoreError::reason("not_found"))?;
             ok(json!(replay(&compiled, &record, &record.identity)))
         }
-        ("GET", "health") => ok(records.health()?),
+        ("GET", "health") => {
+            let mut health = records.health()?;
+            health["errors"] = json!(state.flows.diagnostics(&workspace));
+            ok(health)
+        }
         _ => {
             let parts: Vec<_> = tail.split('/').collect();
             if parts.len() >= 2 && parts[1] == "runs" && method == Method::GET {

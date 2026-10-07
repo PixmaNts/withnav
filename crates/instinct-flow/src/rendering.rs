@@ -186,6 +186,30 @@ pub fn params(
 mod tests {
     use super::*;
     #[test]
+    fn repeated_placeholder_bomb_stops_at_append_ceiling() {
+        let values = BTreeMap::from([(
+            "x".into(),
+            InputValue {
+                value: Some("x".repeat(16384).into()),
+                cut: false,
+                redacted: false,
+            },
+        )]);
+        let template = "{{x}}".repeat(12000);
+        let start = std::time::Instant::now();
+        assert_eq!(state(&values, Some(&template)).unwrap_err().code, "limit");
+        assert_eq!(
+            params(
+                &BTreeMap::from([("text".into(), "{x}".repeat(5000).into())]),
+                &values
+            )
+            .unwrap_err()
+            .code,
+            "limit"
+        );
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+    }
+    #[test]
     fn absent_and_cut_rendering_is_explicit() {
         let values = BTreeMap::from([
             (

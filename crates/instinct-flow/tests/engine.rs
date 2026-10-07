@@ -356,3 +356,581 @@ async fn replay_rejects_changed_question_with_unchanged_template() {
         .unwrap();
     assert!(!replay(&changed, &result.trace, &client.identity()).comparable);
 }
+struct Controlled {
+    entered: tokio::sync::Notify,
+    joined: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    join_calls: AtomicUsize,
+}
+impl Controlled {
+    fn new() -> Self {
+        Self {
+            entered: tokio::sync::Notify::new(),
+            joined: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            join_calls: AtomicUsize::new(0),
+        }
+    }
+}
+impl DecisionClient for Controlled {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities { images: false }
+    }
+    fn identity(&self) -> ClientIdentity {
+        Fake::new().identity()
+    }
+    fn decide<'a>(
+        &'a self,
+        request: DecisionRequest<'a>,
+        _: &'a CancellationToken,
+        _: Instant,
+    ) -> BoxFuture<'a, Result<DecisionResponse, DecisionError>> {
+        Box::pin(async move {
+            if request.questions.contains_key("slow") {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+            if request.questions.contains_key("join") {
+                self.join_calls.fetch_add(1, Ordering::SeqCst);
+                self.joined.notify_one();
+            }
+            Ok(DecisionResponse {
+                answers: request
+                    .questions
+                    .keys()
+                    .map(|id| (id.clone(), Answer::Noul { noul: 1.0 }))
+                    .collect(),
+                usage: None,
+            })
+        })
+    }
+}
+#[tokio::test]
+async fn join_waits_only_for_declared_answers_and_never_runs_twice() {
+    for declared in [false, true] {
+        let text = header("['fast','slow']")
+            + &decision(
+                "fast",
+                "[node.inputs]\nx='constant.F'\n[node.next]\nyes=['join']",
+            )
+            + &decision(
+                "slow",
+                "[node.inputs]\nx='constant.S'\n[node.next]\nyes=['join']",
+            )
+            + &decision(
+                "join",
+                if declared {
+                    "[node.inputs]\nx='answer.slow'"
+                } else {
+                    ""
+                },
+            )
+            + "\n[constants]\nF='fast'\nS='slow'\n";
+        let c = compile(&text);
+        let client = Controlled::new();
+        let event = event();
+        let cancel = CancellationToken::new();
+        let work = run(
+            &c,
+            &event,
+            &Inputs,
+            &client,
+            RunOptions {
+                deadline: Instant::now() + Duration::from_secs(2),
+                run_id: "sync".into(),
+            },
+            &cancel,
+        );
+        let observe = async {
+            client.entered.notified().await;
+            if declared {
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(20), client.joined.notified())
+                        .await
+                        .is_err()
+                );
+                client.release.notify_one();
+                client.joined.notified().await;
+            } else {
+                tokio::time::timeout(Duration::from_millis(200), client.joined.notified())
+                    .await
+                    .unwrap();
+                client.release.notify_one();
+            }
+        };
+        let (outcome, ()) = tokio::join!(work, observe);
+        assert!(matches!(outcome.result, RunResult::Success { .. }));
+        assert_eq!(client.join_calls.load(Ordering::SeqCst), 1);
+    }
+}
+struct BlockingInput<'a>(&'a Controlled);
+impl InputSource for BlockingInput<'_> {
+    fn collect<'a>(
+        &'a self,
+        names: &'a [String],
+        _: &'a CancellationToken,
+        _: Instant,
+    ) -> BoxFuture<'a, Result<BTreeMap<String, InputValue>, InputError>> {
+        Box::pin(async move {
+            self.0.joined.notified().await;
+            Ok(names
+                .iter()
+                .map(|n| {
+                    (
+                        n.clone(),
+                        InputValue {
+                            value: Some("ok".into()),
+                            cut: false,
+                            redacted: false,
+                        },
+                    )
+                })
+                .collect())
+        })
+    }
+}
+#[tokio::test]
+async fn blocked_input_collection_does_not_starve_inflight_decisions() {
+    let text = header("['fast','host']")
+        + &decision("fast", "[node.next]\nyes=['join']")
+        + &decision("host", "[node.inputs]\nx='session.agent'")
+        + &decision("join", "");
+    let c = compile(&text);
+    let client = Controlled::new();
+    let result = run(
+        &c,
+        &event(),
+        &BlockingInput(&client),
+        &client,
+        RunOptions {
+            deadline: Instant::now() + Duration::from_secs(1),
+            run_id: "collect".into(),
+        },
+        &CancellationToken::new(),
+    )
+    .await;
+    assert!(matches!(result.result, RunResult::Success { .. }));
+    assert_eq!(client.join_calls.load(Ordering::SeqCst), 1);
+}
+struct Values {
+    value: serde_json::Value,
+    redacted: bool,
+}
+impl InputSource for Values {
+    fn collect<'a>(
+        &'a self,
+        names: &'a [String],
+        _: &'a CancellationToken,
+        _: Instant,
+    ) -> BoxFuture<'a, Result<BTreeMap<String, InputValue>, InputError>> {
+        Box::pin(async move {
+            Ok(names
+                .iter()
+                .map(|n| {
+                    (
+                        n.clone(),
+                        InputValue {
+                            value: Some(self.value.clone()),
+                            cut: false,
+                            redacted: self.redacted,
+                        },
+                    )
+                })
+                .collect())
+        })
+    }
+}
+async fn with_values(c: &CompiledDefinition, values: &Values) -> RunOutcome {
+    run(
+        c,
+        &event(),
+        values,
+        &Fake::new(),
+        RunOptions {
+            deadline: Instant::now() + Duration::from_secs(1),
+            run_id: "values".into(),
+        },
+        &CancellationToken::new(),
+    )
+    .await
+}
+#[tokio::test]
+async fn typed_parameter_overflow_is_a_limit_not_a_string() {
+    let text = header("['log']")
+        + &action("log", "log", "text={ref='x'}")
+        + "[node.inputs]\nx='workspace.dirty_files'\n";
+    let mut cat = catalogue();
+    cat.actions
+        .iter_mut()
+        .find(|a| a.name == "log")
+        .unwrap()
+        .params[0]
+        .value_type = ValueType::Array;
+    cat.limits.input_bytes = 8;
+    let c = Definition::parse(&text)
+        .unwrap()
+        .validate(&cat, &Capabilities { images: false }, &BTreeMap::new())
+        .unwrap();
+    let outcome = with_values(
+        &c,
+        &Values {
+            value: serde_json::json!(["oversized value"]),
+            redacted: false,
+        },
+    )
+    .await;
+    assert!(matches!(
+        outcome.result,
+        RunResult::Failure {
+            kind: FailureKind::Limit,
+            ..
+        }
+    ));
+    assert!(outcome.trace.actions.is_empty());
+}
+#[tokio::test]
+async fn replay_compares_original_constants_and_references_even_with_fixed_state() {
+    let text = header("['b']")
+        + &decision("b", "state_template='fixed'\n[node.inputs]\nx='constant.X'")
+        + "\n[constants]\nX='old'\nY='old'\n";
+    let templates = BTreeMap::from([("fixed".into(), "unchanged".into())]);
+    let make = |text: &str| {
+        Definition::parse(text)
+            .unwrap()
+            .validate(&catalogue(), &Capabilities { images: false }, &templates)
+            .unwrap()
+    };
+    let c = make(&text);
+    let record = evaluate(&c, &Fake::new()).await.trace;
+    for changed in [
+        text.replace("X='old'", "X='new'"),
+        text.replace("constant.X", "constant.Y"),
+    ] {
+        let r = replay(&make(&changed), &record, &Fake::new().identity());
+        assert!(!r.comparable);
+        assert_eq!(r.nodes[0].status, "question_changed");
+    }
+    let mut legacy = serde_json::to_value(&record).unwrap();
+    legacy["nodes"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("selected_inputs");
+    let legacy: RunRecord = serde_json::from_value(legacy).unwrap();
+    assert!(replay(&c, &legacy, &Fake::new().identity()).comparable);
+    assert!(
+        !replay(
+            &make(&text.replace("X='old'", "X='new'")),
+            &legacy,
+            &Fake::new().identity()
+        )
+        .comparable
+    );
+}
+#[tokio::test]
+async fn changed_expression_and_action_cannot_read_uncaptured_host_inputs() {
+    for kind in ["expression", "action"] {
+        let original = if kind == "expression" {
+            header("['x']") + "[[node]]\nid='x'\ntype='expression'\ncondition='true'\n"
+        } else {
+            header("['x']") + &action("x", "log", "text='fixed'")
+        };
+        let record = evaluate(&compile(&original), &Fake::new()).await.trace;
+        let changed = original + "[node.inputs]\nx='session.agent'\n";
+        let r = replay(&compile(&changed), &record, &Fake::new().identity());
+        assert!(!r.comparable);
+        assert_eq!(r.nodes[0].status, "missing_capture");
+    }
+}
+#[tokio::test]
+async fn redacted_inputs_are_live_but_never_retained_or_replayed_as_absent() {
+    for body in [decision("b", "[node.inputs]\nx='session.agent'"), "[[node]]\nid='b'\ntype='expression'\ncondition='is_set(x)'\n[node.inputs]\nx='session.agent'\n".into(), action("b", "log", "text='{x}'") + "[node.inputs]\nx='session.agent'\n"] {
+        let c = compile(&(header("['b']") + &body));
+        let outcome = with_values(&c, &Values { value: "secret-value".into(), redacted: true }).await;
+        assert!(matches!(outcome.result, RunResult::Success { .. }));
+        assert!(!serde_json::to_string(&outcome.trace).unwrap().contains("secret-value"));
+        let r = replay(&c, &outcome.trace, &Fake::new().identity());
+        assert!(!r.comparable);
+        assert_eq!(r.nodes[0].status, "missing_capture");
+    }
+    let old: InputValue = serde_json::from_str(r#"{"value":null,"cut":false}"#).unwrap();
+    assert!(!old.redacted);
+}
+#[tokio::test]
+async fn captured_absence_remains_comparable() {
+    struct Absent;
+    impl InputSource for Absent {
+        fn collect<'a>(
+            &'a self,
+            _: &'a [String],
+            _: &'a CancellationToken,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<BTreeMap<String, InputValue>, InputError>> {
+            Box::pin(async { Ok(BTreeMap::new()) })
+        }
+    }
+    let c = compile(&(header("['b']") + &decision("b", "[node.inputs]\nx='session.agent'")));
+    let outcome = run(
+        &c,
+        &event(),
+        &Absent,
+        &Fake::new(),
+        RunOptions {
+            deadline: Instant::now() + Duration::from_secs(1),
+            run_id: "absent".into(),
+        },
+        &CancellationToken::new(),
+    )
+    .await;
+    assert!(replay(&c, &outcome.trace, &Fake::new().identity()).comparable);
+}
+#[tokio::test]
+async fn failed_batch_reuse_also_requires_original_selected_inputs() {
+    let text = header("['b']")
+        + &decision("b", "state_template='fixed'\n[node.inputs]\nx='constant.X'")
+        + "\n[constants]\nX='old'\n";
+    let templates = BTreeMap::from([("fixed".into(), "fixed".into())]);
+    let make = |text: &str| {
+        Definition::parse(text)
+            .unwrap()
+            .validate(&catalogue(), &Capabilities { images: false }, &templates)
+            .unwrap()
+    };
+    let mut client = Fake::new();
+    client.fail = true;
+    let c = make(&text);
+    let outcome = evaluate(&c, &client).await;
+    assert!(replay(&c, &outcome.trace, &client.identity()).comparable);
+    assert!(
+        !replay(
+            &make(&text.replace("X='old'", "X='new'")),
+            &outcome.trace,
+            &client.identity()
+        )
+        .comparable
+    );
+}
+#[tokio::test]
+async fn cancellation_while_running_discards_every_proposal() {
+    let c = compile(
+        &(header("['slow','log']") + &decision("slow", "") + &action("log", "log", "text='ready'")),
+    );
+    let client = Controlled::new();
+    let cancel = CancellationToken::new();
+    let event = event();
+    let work = run(
+        &c,
+        &event,
+        &Inputs,
+        &client,
+        RunOptions {
+            deadline: Instant::now() + Duration::from_secs(1),
+            run_id: "cancel".into(),
+        },
+        &cancel,
+    );
+    let (outcome, ()) = tokio::join!(work, async {
+        client.entered.notified().await;
+        cancel.cancel();
+    });
+    assert!(matches!(
+        outcome.result,
+        RunResult::Failure {
+            kind: FailureKind::Cancelled,
+            ..
+        }
+    ));
+    assert!(outcome.trace.actions.is_empty());
+}
+#[tokio::test]
+async fn semaphore_wait_counts_against_run_deadline() {
+    let text = (header("['slow','other']")
+        + &decision("slow", "[node.inputs]\nx='constant.S'")
+        + &decision("other", "[node.inputs]\nx='constant.O'")
+        + "\n[constants]\nS='a'\nO='z'\n")
+        .replace("budget_ms=800", "budget_ms=30");
+    let mut cat = catalogue();
+    cat.limits.concurrent_calls = 1;
+    let c = Definition::parse(&text)
+        .unwrap()
+        .validate(&cat, &Capabilities { images: false }, &BTreeMap::new())
+        .unwrap();
+    let outcome = run(
+        &c,
+        &event(),
+        &Inputs,
+        &Controlled::new(),
+        RunOptions {
+            deadline: Instant::now() + Duration::from_secs(1),
+            run_id: "semaphore".into(),
+        },
+        &CancellationToken::new(),
+    )
+    .await;
+    assert!(matches!(
+        outcome.result,
+        RunResult::Failure {
+            kind: FailureKind::Timeout,
+            ..
+        }
+    ));
+}
+#[tokio::test]
+async fn fallback_specific_general_default_and_nonblocking_suppression() {
+    for (fallback, expected) in [("[fallback]\non_invalid_answer={action='log',params={text='specific'}}\non_failure={action='log',params={text='general'}}\n", "log"), ("[fallback]\non_failure={action='log',params={text='general'}}\n", "log"), ("", "ask_driver")] {
+        let c = compile(&(header("['b']") + fallback + &decision("b", "")));
+        let mut client = Fake::new(); client.fail = true;
+        let outcome = evaluate(&c, &client).await;
+        assert_eq!(outcome.trace.fallback_actions[0].action, expected);
+        if !fallback.is_empty() { assert_eq!(outcome.trace.fallback_actions[0].params["text"], if fallback.contains("specific") { "specific" } else { "general" }); }
+        assert!(replay(&c, &outcome.trace, &client.identity()).comparable);
+    }
+    let c = compile(
+        &(header("['b']") + &decision("b", "")).replace("blocking=true\nbudget_ms=800\n", ""),
+    );
+    let mut client = Fake::new();
+    client.fail = true;
+    assert!(evaluate(&c, &client)
+        .await
+        .trace
+        .fallback_actions
+        .is_empty());
+}
+#[tokio::test]
+async fn verdict_priority_ties_use_flow_name_and_merge_notes() {
+    let mut outcomes = Vec::new();
+    for (name, action_name) in [("z", "deny"), ("a", "deny"), ("first", "ask_driver")] {
+        let text = (header("['v']") + &action("v", action_name, &format!("note='{name}'")))
+            .replace("name='test'", &format!("name='{name}'"));
+        outcomes.push(evaluate(&compile(&text), &Fake::new()).await);
+    }
+    let result = combine_verdicts(&outcomes, &catalogue()).unwrap().unwrap();
+    assert_eq!(result.action, "deny");
+    assert_eq!(result.params["note"], "a\nz");
+}
+#[test]
+fn exclusive_choice_ports_allow_different_verdicts() {
+    compile(&(header("['choice']") + "[[node]]\nid='choice'\ntype='choice'\ninstructions='Pick'\ncriteria={a='A',b='B'}\n[node.next]\na=['deny']\nb=['ask']\n" + &action("deny", "deny", "note='deny'") + &action("ask", "ask_driver", "note='ask'")));
+}
+#[tokio::test]
+async fn reconvergent_diamond_activates_join_once() {
+    let text = header("['root']")
+        + &decision("root", "[node.next]\nyes=['left','right']")
+        + &decision("left", "[node.next]\nyes=['join']")
+        + &decision("right", "[node.next]\nyes=['join']")
+        + &action("join", "log", "text='one'");
+    let outcome = evaluate(&compile(&text), &Fake::new()).await;
+    assert!(matches!(outcome.result, RunResult::Success { .. }));
+    assert_eq!(outcome.trace.actions.len(), 1);
+}
+#[test]
+fn static_search_exhaustion_fails_closed() {
+    let starts = (0..16)
+        .map(|i| format!("'q{i}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut text = header(&format!("[{starts}]"));
+    for i in 0..16 {
+        text += &decision(&format!("q{i}"), &format!("[node.next]\nyes=['a{i}']"));
+    }
+    for i in 0..16 {
+        text += &action(&format!("a{i}"), "log", "text='x'");
+    }
+    let errors = Definition::parse(&text)
+        .unwrap()
+        .validate(
+            &catalogue(),
+            &Capabilities { images: false },
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.code == "limit" && e.message.contains("search budget")),
+        "{errors:?}"
+    );
+}
+struct Ordered {
+    first: &'static str,
+    arrived: tokio::sync::Notify,
+}
+impl DecisionClient for Ordered {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities { images: false }
+    }
+    fn identity(&self) -> ClientIdentity {
+        Fake::new().identity()
+    }
+    fn decide<'a>(
+        &'a self,
+        request: DecisionRequest<'a>,
+        _: &'a CancellationToken,
+        _: Instant,
+    ) -> BoxFuture<'a, Result<DecisionResponse, DecisionError>> {
+        Box::pin(async move {
+            if request.questions.contains_key(self.first) {
+                self.arrived.notify_one();
+            } else {
+                self.arrived.notified().await;
+                tokio::task::yield_now().await;
+            }
+            Ok(DecisionResponse {
+                answers: request
+                    .questions
+                    .keys()
+                    .map(|id| (id.clone(), Answer::Noul { noul: 1.0 }))
+                    .collect(),
+                usage: None,
+            })
+        })
+    }
+}
+#[tokio::test]
+async fn reversed_completion_order_produces_identical_bounded_proposals() {
+    let text = header("['left','right']")
+        + &decision(
+            "left",
+            "[node.inputs]\nx='constant.L'\n[node.next]\nyes=['a']",
+        )
+        + &decision(
+            "right",
+            "[node.inputs]\nx='constant.R'\n[node.next]\nyes=['b']",
+        )
+        + &action("a", "log", "text='{x}'")
+        + "[node.inputs]\nx='session.agent'\n"
+        + &action("b", "log", "text='{x}'")
+        + "[node.inputs]\nx='workspace.root'\n"
+        + "[constants]\nL='l'\nR='r'\n";
+    let mut cat = catalogue();
+    cat.limits.run_input_bytes = 20;
+    let c = Definition::parse(&text)
+        .unwrap()
+        .validate(&cat, &Capabilities { images: false }, &BTreeMap::new())
+        .unwrap();
+    let mut results = Vec::new();
+    for first in ["left", "right"] {
+        let client = Ordered {
+            first,
+            arrived: tokio::sync::Notify::new(),
+        };
+        let outcome = run(
+            &c,
+            &event(),
+            &Values {
+                value: "abcdefghijk".into(),
+                redacted: false,
+            },
+            &client,
+            RunOptions {
+                deadline: Instant::now() + Duration::from_secs(1),
+                run_id: "order".into(),
+            },
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(matches!(outcome.result, RunResult::Success { .. }));
+        results.push(outcome.trace.actions);
+    }
+    assert_eq!(results[0], results[1]);
+    assert_eq!(results[0][0].params["text"], "abcde");
+}

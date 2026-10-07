@@ -816,6 +816,19 @@ impl<'a> Evaluation<'a> {
                 }
             }
         }
+        if self
+            .compiled
+            .definition
+            .fallback
+            .as_ref()
+            .is_some_and(|f| self.aliases(&f.inputs).values().any(|v| v.redacted))
+        {
+            for action in &mut self.trace.fallback_actions {
+                for value in action.params.values_mut() {
+                    *value = "<redacted>".into();
+                }
+            }
+        }
         RunOutcome {
             result,
             trace: self.trace,
@@ -1053,6 +1066,9 @@ async fn execute(
                 let response=tokio::select! {biased;_=cancel.cancelled()=>Err(DecisionError::Cancelled),_=tokio::time::sleep_until(deadline.into())=>Err(DecisionError::Timeout),r=work=>r};
                 (batch,nodes,response,elapsed(start))
             }));
+        }
+        if e.ready().iter().any(|i| !collecting.contains(i)) {
+            continue;
         }
         if calls.is_empty() && collections.is_empty() {
             // Newly activated nodes may still need host collection on the next iteration.
@@ -1311,6 +1327,12 @@ pub fn replay(
     })();
     if let Err((kind, message)) = &status {
         let f = &definition.definition;
+        if f.fallback
+            .as_ref()
+            .is_some_and(|f| e.missing_capture(&f.inputs, record))
+        {
+            comparable = false;
+        }
         let chain = f
             .fallback
             .as_ref()
@@ -1333,12 +1355,15 @@ pub fn replay(
                     None
                 }
             });
-        let mut values = e.aliases(
-            &f.fallback
-                .as_ref()
-                .map(|f| f.inputs.clone())
-                .unwrap_or_default(),
-        );
+        let fallback_inputs = f
+            .fallback
+            .as_ref()
+            .map(|f| f.inputs.clone())
+            .unwrap_or_default();
+        if e.prepare_local(&fallback_inputs).is_err() {
+            comparable = false;
+        }
+        let mut values = e.aliases(&fallback_inputs);
         values.insert(
             "failure_kind".into(),
             InputValue {

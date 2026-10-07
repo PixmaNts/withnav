@@ -23,6 +23,12 @@ use crate::tools::{bound_output, validate_path, ToolContext};
 /// The longest rendering of a call's arguments kept in a request, in bytes.
 pub const MAX_REVIEW_ARGUMENT_BYTES: usize = 4 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionOrigin {
+    Driver,
+    Bypass,
+}
+
 /// A driver's answer to a [`PermissionRequest`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]
@@ -58,6 +64,8 @@ impl std::fmt::Display for Scope {
 /// A gated call waiting for a decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionRequest {
+    #[serde(default)]
+    pub requires_driver: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_gate: Option<Box<Value>>,
     pub id: Ulid,
@@ -82,6 +90,7 @@ impl PermissionRequest {
             Scope::Origin(origin) => format!("`{}` reaches {origin}", call.name),
         };
         Self {
+            requires_driver: false,
             permission_gate: None,
             id: Ulid::new(),
             tool_call_id: call.id.clone(),

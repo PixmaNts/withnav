@@ -93,6 +93,7 @@ pub struct CompactRequest {
 /// What the session service asks of the runtime between turns.
 #[derive(Debug)]
 pub enum Control {
+    Bypass(super::bypass::BypassRequest),
     Delivery,
     Continue,
     Steer,

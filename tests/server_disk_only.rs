@@ -177,9 +177,12 @@ async fn restarted_server_answers_get_for_a_stored_conversation() {
         [
             "actor_state",
             "agent",
+            "bypass",
+            "bypass_seq",
             "current_seq",
             "editor",
             "gateway",
+            "incarnation",
             "model",
             "read_only",
             "resume_disabled_reason",

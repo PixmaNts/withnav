@@ -184,6 +184,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/intent", get(crate::server::web::get_intent))
         .route("/v1/commands", get(list_commands))
         .route("/v1/sessions/{id}/commands", post(post_command))
+        .route("/v1/sessions/{id}/bypass", post(post_bypass))
         .route(
             "/v1/sessions/{id}/events",
             get(crate::server::sse::get_events),
@@ -442,6 +443,9 @@ async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> R
 /// registry's liveness.
 #[derive(Debug, Serialize)]
 pub struct SessionListEntry {
+    pub bypass: bool,
+    pub bypass_seq: u64,
+    pub incarnation: Option<String>,
     pub editor: bool,
     pub read_only: bool,
     pub resume_disabled_reason: Option<String>,
@@ -499,6 +503,9 @@ async fn list_sessions(
                     Err(error) => return error_response(error),
                 };
                 sessions.push(SessionListEntry {
+                    bypass: summary.bypass,
+                    bypass_seq: summary.bypass_seq,
+                    incarnation: summary.incarnation,
                     editor: summary.editor,
                     read_only: row.read_only,
                     resume_disabled_reason: row.resume_disabled_reason,
@@ -768,6 +775,54 @@ async fn list_commands(State(state): State<AppState>) -> Json<serde_json::Value>
     Json(json!({ "commands": state.list_commands() }))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PostBypassRequest {
+    enabled: bool,
+}
+
+fn bypass_auth_required() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "reason": "auth_required",
+            "error": "bypass can only be changed by an authenticated client",
+        })),
+    )
+        .into_response()
+}
+
+async fn post_bypass(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Result<Json<PostBypassRequest>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    if state.http.bearer_token.is_none() {
+        return bypass_auth_required();
+    }
+    let parsed: Ulid = match id.parse() {
+        Ok(parsed) => parsed,
+        Err(_) => return error_response(ServerError::SessionNotFound(id)),
+    };
+    let Json(request) = match body {
+        Ok(parsed) => parsed,
+        Err(rejection) => {
+            return error_response(ServerError::MalformedBody(rejection.body_text()));
+        }
+    };
+    match state
+        .set_bypass(
+            parsed,
+            request.enabled,
+            crate::bus::runtime::bypass::BypassOrigin::Http,
+        )
+        .await
+    {
+        Ok(reply) => Json(reply).into_response(),
+        Err(err) => error_response(err),
+    }
+}
+
 /// `POST /v1/sessions/:id/commands` request.
 #[derive(Debug, Deserialize)]
 pub struct PostCommandRequest {
@@ -793,6 +848,17 @@ async fn post_command(
             return error_response(ServerError::MalformedBody(rejection.body_text()));
         }
     };
+    if state.http.bearer_token.is_none()
+        && request
+            .name
+            .trim()
+            .strip_prefix('/')
+            .unwrap_or(request.name.trim())
+            == "bypass"
+        && matches!(request.arguments.trim(), "on" | "off")
+    {
+        return bypass_auth_required();
+    }
     match state
         .run_command(parsed, &request.name, &request.arguments)
         .await

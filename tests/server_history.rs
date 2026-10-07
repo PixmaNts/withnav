@@ -286,10 +286,15 @@ async fn resume_in_a_fresh_state_replays_and_remembers() {
             "a resumed stream must not look closed"
         );
         let replay_max = replay.iter().map(|e| e.seq).max().unwrap_or(0);
+        // The resume wrote one event of its own (bypass starts off); the
+        // stored ones keep their seqs.
         assert!(
-            replay_max <= original_max,
-            "stored seqs preserved: {replay_max} <= {original_max}"
+            replay_max <= original_max + 1,
+            "stored seqs preserved: {replay_max} <= {original_max} + 1"
         );
+        assert!(replay
+            .iter()
+            .any(|e| e.kind == "session.bypass" && e.payload["by"] == "system:resume"));
     } else {
         panic!("expected replay, got {:?}", sub2.replay);
     }

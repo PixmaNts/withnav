@@ -19,6 +19,114 @@ use ulid::Ulid;
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tui");
 
 #[test]
+fn bypass_is_acknowledged_pending_and_scoped_to_the_tab() {
+    let mut s = subagent_parent();
+    let mut ui = UiState::default();
+    assert!(matches!(
+        handle_action(&mut s, &mut ui, Action::ToggleBypass).as_slice(),
+        [Effect::SetBypass { enabled: true, .. }]
+    ));
+    assert!(!s.bypass);
+    assert!(handle_action(&mut s, &mut ui, Action::ToggleBypass).is_empty());
+    let generation = s.generation.clone();
+    update(
+        &mut s,
+        ClientEvent::BypassSet {
+            generation,
+            result: Ok(BypassResponse {
+                enabled: true,
+                changed: true,
+                bypass_seq: 42,
+            }),
+        },
+    )
+    .unwrap();
+    assert!(s.bypass);
+    assert!(!s.bypass_pending);
+    let mut script = Script::new();
+    script.raw("session.bypass", json!({"enabled":false,"by":"user:http"}));
+    for envelope in script.out {
+        let generation = s.generation.clone();
+        update(
+            &mut s,
+            ClientEvent::Envelope {
+                generation,
+                envelope,
+            },
+        )
+        .unwrap();
+    }
+    assert!(s.bypass);
+    assert!(
+        matches!(s.conversation.blocks.last().map(|b| &b.kind), Some(BlockKind::Notice(text)) if text == "bypass off")
+    );
+    handle_action(&mut s, &mut ui, Action::NewConversation);
+    assert!(!s.bypass);
+    assert!(s.tabs.iter().any(|tab| tab.bypass));
+}
+
+#[test]
+fn bypass_setters_are_disabled_for_child_and_archive_views() {
+    let mut s = subagent_parent();
+    let mut ui = UiState::default();
+    s.parent_session_id = Some("parent".into());
+    assert!(handle_action(&mut s, &mut ui, Action::ToggleBypass).is_empty());
+    s.parent_session_id = None;
+    s.session.as_mut().unwrap().read_only = true;
+    assert!(handle_action(&mut s, &mut ui, Action::ToggleBypass).is_empty());
+}
+
+#[test]
+fn bypass_snapshot_watermark_prevents_replayed_on_and_end_clears_live_state() {
+    let mut s = subagent_parent();
+    let mut metadata = s.session.clone().unwrap();
+    metadata.bypass = false;
+    metadata.bypass_seq = 10;
+    let generation = s.generation.clone();
+    update(
+        &mut s,
+        ClientEvent::Metadata {
+            generation,
+            result: Ok(metadata),
+        },
+    )
+    .unwrap();
+    let mut script = Script::new();
+    script.raw("session.bypass", json!({"enabled":true,"by":"user:http"}));
+    for envelope in script.out {
+        let generation = s.generation.clone();
+        update(
+            &mut s,
+            ClientEvent::Envelope {
+                generation,
+                envelope,
+            },
+        )
+        .unwrap();
+    }
+    assert!(!s.bypass);
+    let mut e = EventEnvelope::new(
+        Ulid::new(),
+        11,
+        EventKind::SessionEnd,
+        json!({"reason":"stopped"}),
+    );
+    s.bypass = true;
+    e.actor_id = "agent:main".into();
+    let generation = s.generation.clone();
+    update(
+        &mut s,
+        ClientEvent::Envelope {
+            generation,
+            envelope: e,
+        },
+    )
+    .unwrap();
+    assert!(!s.bypass);
+    assert_eq!(s.bypass_seq, 11);
+}
+
+#[test]
 fn root_watchdog_notice_and_pause_render_and_continue_is_not_an_ask_answer() {
     let mut s = subagent_parent();
     let mut ui = UiState::default();
@@ -693,6 +801,9 @@ async fn child_controls_and_permission_answers_use_the_owner_routes() {
 fn subagent_parent() -> State {
     let tab = Tab {
         session: Some(SessionMetadata {
+            bypass: false,
+            bypass_seq: 0,
+            incarnation: None,
             source: "config".into(),
             variant_source: "model_default".into(),
             read_only: false,
@@ -864,6 +975,9 @@ fn subagent_controls_confirm_effects_and_show_server_refusals() {
             ClientEvent::Metadata {
                 generation: generation.clone(),
                 result: Ok(SessionMetadata {
+                    bypass: false,
+                    bypass_seq: 0,
+                    incarnation: None,
                     source: "config".into(),
                     variant_source: "model_default".into(),
                     read_only: false,
@@ -1585,6 +1699,9 @@ fn steps(s: &State) -> Vec<(String, String)> {
 }
 fn with_session(s: &mut State, id: &str) {
     s.session = Some(SessionMetadata {
+        bypass: false,
+        bypass_seq: 0,
+        incarnation: None,
         source: "config".into(),
         variant_source: "model_default".into(),
         read_only: false,
@@ -2074,6 +2191,9 @@ fn bug2_resync_keeps_catalog_model_sessions_pending_submit_and_notice() {
     s.catalog = catalog();
     s.selected_model_id = Some("a".into());
     s.sessions = vec![SessionListEntry {
+        bypass: false,
+        bypass_seq: 0,
+        incarnation: None,
         read_only: false,
         resume_disabled_reason: None,
         id: "S0".into(),
@@ -2323,6 +2443,9 @@ fn bug9_metadata_refreshes_display_and_stale_metadata_cannot_clobber_a_pick() {
     let meta = |g: &Generation, model: &str| ClientEvent::Metadata {
         generation: g.clone(),
         result: Ok(SessionMetadata {
+            bypass: false,
+            bypass_seq: 0,
+            incarnation: None,
             source: "config".into(),
             variant_source: "model_default".into(),
             read_only: false,
@@ -3627,6 +3750,9 @@ fn the_session_summary_and_a_background_change_set_each_tabs_agent() {
     let meta = ClientEvent::Metadata {
         generation: first.clone(),
         result: Ok(SessionMetadata {
+            bypass: false,
+            bypass_seq: 0,
+            incarnation: None,
             source: "config".into(),
             variant_source: "model_default".into(),
             read_only: false,
@@ -3765,6 +3891,9 @@ fn slash_variant_lists_the_conversations_variants_and_applies_through_the_server
     let summary = ClientEvent::Metadata {
         generation: s.generation.clone(),
         result: Ok(SessionMetadata {
+            bypass: false,
+            bypass_seq: 0,
+            incarnation: None,
             source: "config".into(),
             variant_source: "model_default".into(),
             read_only: false,
@@ -3898,6 +4027,9 @@ fn a_summary_read_before_a_confirmed_change_does_not_undo_it() {
     let summary = |s: &State, seq: u64, agent: &str, variant: Option<&str>| ClientEvent::Metadata {
         generation: s.generation.clone(),
         result: Ok(SessionMetadata {
+            bypass: false,
+            bypass_seq: 0,
+            incarnation: None,
             source: "config".into(),
             variant_source: "model_default".into(),
             read_only: false,
@@ -4766,6 +4898,9 @@ fn model_changed_moves_the_tab_to_the_new_model_live_and_on_replay() {
     let old = ClientEvent::Metadata {
         generation: s.generation.clone(),
         result: Ok(SessionMetadata {
+            bypass: false,
+            bypass_seq: 0,
+            incarnation: None,
             source: "config".into(),
             variant_source: "model_default".into(),
             read_only: false,

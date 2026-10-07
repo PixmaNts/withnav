@@ -35,6 +35,7 @@ use super::{
 /// The generation an event is tagged with: the tab it belongs to.
 pub fn generation(e: &ClientEvent) -> &Generation {
     match e {
+        ClientEvent::BypassSet { generation, .. } => generation,
         ClientEvent::ConfigLoaded { generation, .. }
         | ClientEvent::ConfigWritten { generation, .. }
         | ClientEvent::GatewayTested { generation, .. } => generation,
@@ -64,6 +65,13 @@ pub fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::ProtocolError { generation, .. }
         | ClientEvent::Git { generation, .. }
         | ClientEvent::SettingsNotSaved { generation, .. } => generation,
+    }
+}
+
+fn keep_bypass(s: &mut State, enabled: bool, seq: u64) {
+    if seq >= s.bypass_seq {
+        s.bypass = enabled;
+        s.bypass_seq = seq;
     }
 }
 
@@ -160,6 +168,9 @@ fn reset_projection(s: &mut State) {
 /// and any unsent submit of the old one, and gives the tab a new generation so in-flight results
 /// are dropped.
 pub(crate) fn start_conversation(s: &mut State) {
+    s.bypass = false;
+    s.bypass_seq = 0;
+    s.bypass_pending = false;
     reset_projection(s);
     s.session = None;
     s.resuming = None;
@@ -650,6 +661,18 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         } => match result {
             // The outcome itself arrives as `command.result` on the stream.
             Ok(response) => {
+                if name == "bypass" {
+                    s.bypass_pending = false;
+                    if response.ok {
+                        if let Some(data) = response.data.clone() {
+                            if let Ok(r) =
+                                serde_json::from_value::<super::protocol::BypassResponse>(data)
+                            {
+                                keep_bypass(s, r.enabled, r.bypass_seq);
+                            }
+                        }
+                    }
+                }
                 if name == "model" {
                     model_answered(s, token, &response);
                 }
@@ -679,6 +702,9 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 }
             }
             Err(error) => {
+                if name == "bypass" {
+                    s.bypass_pending = false;
+                }
                 if name == "variant" {
                     s.variant_list_wanted = false;
                 }
@@ -697,6 +723,13 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 )
             }
         },
+        ClientEvent::BypassSet { result, .. } => {
+            s.bypass_pending = false;
+            match result {
+                Ok(r) => keep_bypass(s, r.enabled, r.bypass_seq),
+                Err(error) => push_local(s, BlockKind::Error(error)),
+            }
+        }
         ClientEvent::Sessions { result, .. } => {
             if let Ok(mut b) = result {
                 for entry in &mut b.sessions {
@@ -710,6 +743,19 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     entry.child_status = entry.child_status.as_deref().map(strip_controls);
                 }
                 s.sessions = b.sessions;
+                let snapshots = s.sessions.clone();
+                for tab in &mut s.tabs {
+                    if let Some(entry) = snapshots.iter().find(|entry| {
+                        tab.session
+                            .as_ref()
+                            .is_some_and(|m| m.session_id == entry.id)
+                    }) {
+                        if entry.bypass_seq >= tab.bypass_seq {
+                            tab.bypass = entry.bypass;
+                            tab.bypass_seq = entry.bypass_seq;
+                        }
+                    }
+                }
                 seed_children(s);
                 effects.extend(child_watches(s));
             }
@@ -717,11 +763,15 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         ClientEvent::Created { result, .. } | ClientEvent::Resumed { result, .. } => match result {
             Ok(r) => {
                 s.resuming = None;
+                s.bypass = false;
                 // A fresh runtime has no switch waiting for a turn.
                 s.model_switch = None;
                 // A fetch issued before this (re)start may describe the old runtime.
                 s.conversation.context_epoch += 1;
                 s.session = Some(SessionMetadata {
+                    bypass: false,
+                    bypass_seq: 0,
+                    incarnation: None,
                     session_id: r.session_id.clone(),
                     actor_state: r.actor_state,
                     workspace: s.workspace.clone(),
@@ -771,7 +821,11 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 m.parent_session_id = m.parent_session_id.as_deref().map(strip_controls);
                 m.child_status = m.child_status.as_deref().map(strip_controls);
                 if std::mem::take(&mut s.inspecting) {
-                    if m.parent_session_id.is_some() || !m.promptable || m.read_only {
+                    if m.parent_session_id.is_some()
+                        || !m.promptable
+                        || m.read_only
+                        || m.incarnation.is_some()
+                    {
                         s.parent_session_id = m.parent_session_id.clone();
                         s.child_status = super::state::ChildStatus::from_wire(
                             m.child_status.as_deref().unwrap_or(""),
@@ -821,6 +875,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     m.current_seq,
                     None,
                 );
+                keep_bypass(s, m.bypass, m.bypass_seq);
                 s.session = Some(m);
                 seed_children(s);
                 effects.extend(child_watches(s));

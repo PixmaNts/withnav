@@ -571,7 +571,8 @@ async fn pending_completion_at_resume_snapshot_has_no_sequence_collision() {
         .filter(|e| e.kind == "subagent.done")
         .collect::<Vec<_>>();
     assert_eq!(notices.len(), 1);
-    assert_eq!(notices[0].seq, before + 1);
+    // The resume's own `session.bypass` (off) comes first, then the notice.
+    assert_eq!(notices[0].seq, before + 2);
     let mut seqs = replay.iter().map(|e| e.seq).collect::<Vec<_>>();
     let count = seqs.len();
     seqs.sort_unstable();
@@ -1768,4 +1769,511 @@ async fn child_stop_http_is_allowed_but_chat_command_and_resume_are_forbidden() 
             .as_str(),
         "stopped" | "failed"
     ));
+}
+
+// ---- session bypass and children ----
+
+async fn bypass_events(fx: &Fx, id: ulid::Ulid) -> Vec<navai::bus::event::EventEnvelope> {
+    events(fx, id)
+        .bounded(file!(), line!())
+        .await
+        .into_iter()
+        .filter(|e| e.kind == "session.bypass")
+        .collect()
+}
+
+async fn bypass_of(fx: &Fx, id: ulid::Ulid) -> bool {
+    fx.state
+        .session_summary(id)
+        .bounded(file!(), line!())
+        .await
+        .unwrap()
+        .bypass
+}
+
+async fn set_bypass(fx: &Fx, id: ulid::Ulid, enabled: bool) {
+    fx.state
+        .set_bypass(id, enabled, navai::bus::runtime::bypass::BypassOrigin::Http)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+}
+
+/// A parent and a child that stays running (its model answer is held open).
+async fn parent_with_running_child(
+    fx: &Fx,
+    provider: &mut common::sse::StreamingProvider,
+    parent_on: bool,
+) -> (
+    ulid::Ulid,
+    ulid::Ulid,
+    tokio::sync::mpsc::UnboundedSender<String>,
+) {
+    install_agents(&fx.root, &fx.ws);
+    let parent = fx
+        .state
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    if parent_on {
+        set_bypass(fx, parent, true).await;
+    }
+    let child = fx
+        .state
+        .create_child_session(parent, "writer", "write")
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (_, hold) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    (parent, child, hold)
+}
+
+#[tokio::test]
+async fn child_inherits_the_parents_current_bypass_before_its_first_prompt() {
+    for parent_on in [true, false] {
+        let mut provider = common::sse::spawn_streaming_provider()
+            .bounded(file!(), line!())
+            .await;
+        let fx = fixture_at(&provider.url);
+        let (parent, child, _hold) = parent_with_running_child(&fx, &mut provider, parent_on).await;
+        assert_eq!(bypass_of(&fx, child).await, parent_on);
+        let toggles = bypass_events(&fx, child).await;
+        if parent_on {
+            assert_eq!(toggles.len(), 1);
+            assert_eq!(
+                toggles[0].payload,
+                json!({"enabled":true,"by":format!("parent:{parent}")})
+            );
+            let first_prompt = events(&fx, child)
+                .bounded(file!(), line!())
+                .await
+                .into_iter()
+                .find(|e| e.kind == "message.received")
+                .expect("the child's first prompt");
+            assert!(toggles[0].seq < first_prompt.seq, "ON before the prompt");
+        } else {
+            assert!(toggles.is_empty());
+        }
+        fx.state.close_all().bounded(file!(), line!()).await;
+    }
+}
+
+#[tokio::test]
+async fn parent_changes_reach_live_children_both_ways_and_no_unrelated_root() {
+    let mut provider = common::sse::spawn_streaming_provider()
+        .bounded(file!(), line!())
+        .await;
+    let fx = fixture_at(&provider.url);
+    let (parent, child, _hold) = parent_with_running_child(&fx, &mut provider, false).await;
+    let other = fx
+        .state
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    set_bypass(&fx, parent, true).await;
+    assert!(bypass_of(&fx, parent).await && bypass_of(&fx, child).await);
+    assert!(!bypass_of(&fx, other).await);
+    set_bypass(&fx, parent, false).await;
+    assert!(!bypass_of(&fx, parent).await && !bypass_of(&fx, child).await);
+    let toggles = bypass_events(&fx, child).await;
+    let by = format!("parent:{parent}");
+    assert_eq!(
+        toggles
+            .iter()
+            .map(|e| e.payload.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            json!({"enabled":true,"by":by}),
+            json!({"enabled":false,"by":by})
+        ]
+    );
+    assert!(bypass_events(&fx, other).await.is_empty());
+    // A child cannot be toggled by hand.
+    assert!(matches!(
+        fx.state
+            .set_bypass(child, true, navai::bus::runtime::bypass::BypassOrigin::Http)
+            .bounded(file!(), line!())
+            .await,
+        Err(navai::error::ServerError::ChildReadOnly)
+    ));
+    // A child that ended is simply not followed.
+    fx.state
+        .close_session(child)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    set_bypass(&fx, parent, true).await;
+    assert!(bypass_of(&fx, parent).await);
+    fx.state.close_all().bounded(file!(), line!()).await;
+}
+
+#[tokio::test]
+async fn a_toggle_during_child_registration_is_never_missed() {
+    // Paused before the child is registered: the toggle completes without it
+    // and the child reads the parent's value when it registers.
+    // Paused inside the bypass gate: the toggle waits and then reaches the child.
+    for inside_gate in [false, true] {
+        let mut provider = common::sse::spawn_streaming_provider()
+            .bounded(file!(), line!())
+            .await;
+        let fx = fixture_at(&provider.url);
+        install_agents(&fx.root, &fx.ws);
+        let parent = fx
+            .state
+            .create_session(&fx.ws, Some("mock/mock-model"), false)
+            .bounded(file!(), line!())
+            .await
+            .unwrap();
+        let barrier = navai::session::ChildPreparationBarrier::default();
+        if inside_gate {
+            fx.state.pause_child_bypass_gate(barrier.clone());
+        } else {
+            fx.state.pause_child_registration(barrier.clone());
+        }
+        let service = fx.state.service();
+        let spawn = tokio::spawn(async move {
+            service
+                .create_child_session(parent, "writer", "write")
+                .bounded(file!(), line!())
+                .await
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            barrier.reached.notified(),
+        )
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+        let service = fx.state.service();
+        let toggle = tokio::spawn(async move {
+            service
+                .set_bypass(
+                    parent,
+                    true,
+                    navai::bus::runtime::bypass::BypassOrigin::Http,
+                )
+                .bounded(file!(), line!())
+                .await
+        });
+        if inside_gate {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            assert!(!toggle.is_finished(), "the toggle waits for the child");
+        } else {
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while !toggle.is_finished() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .bounded(file!(), line!())
+            .await
+            .unwrap();
+        }
+        barrier.release.notify_one();
+        toggle.bounded(file!(), line!()).await.unwrap().unwrap();
+        let child = spawn.bounded(file!(), line!()).await.unwrap().unwrap();
+        assert!(bypass_of(&fx, child).await, "inside_gate={inside_gate}");
+        let (_, _hold) = provider
+            .requests
+            .recv()
+            .bounded(file!(), line!())
+            .await
+            .unwrap();
+        fx.state.close_all().bounded(file!(), line!()).await;
+    }
+}
+
+#[tokio::test]
+async fn failed_durable_toggle_enables_nothing_in_the_tree() {
+    let mut provider = common::sse::spawn_streaming_provider()
+        .bounded(file!(), line!())
+        .await;
+    let fx = fixture_at(&provider.url);
+    let (parent, child, _hold) = parent_with_running_child(&fx, &mut provider, false).await;
+    fx.state.fail_bypass_commit();
+    assert!(fx
+        .state
+        .set_bypass(
+            parent,
+            true,
+            navai::bus::runtime::bypass::BypassOrigin::Http
+        )
+        .bounded(file!(), line!())
+        .await
+        .is_err());
+    assert!(!bypass_of(&fx, parent).await && !bypass_of(&fx, child).await);
+    assert!(bypass_events(&fx, parent).await.is_empty());
+    assert!(bypass_events(&fx, child).await.is_empty());
+    set_bypass(&fx, parent, true).await;
+    assert!(bypass_of(&fx, parent).await && bypass_of(&fx, child).await);
+    fx.state.close_all().bounded(file!(), line!()).await;
+}
+
+#[tokio::test]
+async fn a_bypass_commit_reports_its_own_append_not_an_earlier_poisoned_write() {
+    let provider = common::sse::spawn_streaming_provider()
+        .bounded(file!(), line!())
+        .await;
+    let fx = fixture_at(&provider.url);
+    let id = fx
+        .state
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    // An earlier fire-and-forget write for an unknown session poisons flush.
+    let stray = ulid::Ulid::new();
+    fx.state.history().append_event(
+        stray,
+        navai::bus::event::EventEnvelope::new(
+            stray,
+            0,
+            navai::bus::event::EventKind::SessionStart,
+            json!({}),
+        ),
+    );
+    assert!(fx.state.history().flush().await.is_err());
+    let first = fx
+        .state
+        .set_bypass(id, true, navai::bus::runtime::bypass::BypassOrigin::Http)
+        .bounded(file!(), line!())
+        .await
+        .expect("its own append committed");
+    let second = fx
+        .state
+        .set_bypass(id, false, navai::bus::runtime::bypass::BypassOrigin::Http)
+        .bounded(file!(), line!())
+        .await
+        .expect("and the next one");
+    assert!(second.bypass_seq > first.bypass_seq, "no seq is reused");
+    fx.state.close_all().bounded(file!(), line!()).await;
+}
+
+#[tokio::test]
+async fn failed_child_bypass_cleanup_does_not_deadlock_a_parent_stop() {
+    let mut provider = common::sse::spawn_streaming_provider()
+        .bounded(file!(), line!())
+        .await;
+    let fx = fixture_at(&provider.url);
+    install_agents(&fx.root, &fx.ws);
+    let service = fx.state.service();
+    let parent = service
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let child_gate = navai::session::ChildPreparationBarrier::default();
+    service.pause_child_bypass_gate(child_gate.clone());
+    let spawning = service.clone();
+    let first_child = tokio::spawn(async move {
+        spawning
+            .create_child_session(parent, "writer", "write")
+            .await
+    });
+    child_gate
+        .reached
+        .notified()
+        .bounded(file!(), line!())
+        .await;
+
+    // Another publication is outstanding before the root's sequencer pauses.
+    let registration = navai::session::ChildPreparationBarrier::default();
+    service.pause_child_registration(registration.clone());
+    let spawning = service.clone();
+    let publication = tokio::spawn(async move {
+        spawning
+            .create_child_session(parent, "writer", "another task")
+            .await
+    });
+    registration
+        .reached
+        .notified()
+        .bounded(file!(), line!())
+        .await;
+
+    // The toggle acquires the gate as soon as the first child releases it.
+    let root_commit = navai::session::ChildPreparationBarrier::default();
+    service.pause_bypass_commit(root_commit.clone());
+    service.fail_bypass_commit_after(1);
+    let toggle = service.set_bypass(
+        parent,
+        true,
+        navai::bus::runtime::bypass::BypassOrigin::Http,
+    );
+    tokio::pin!(toggle);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), &mut toggle)
+            .await
+            .is_err()
+    );
+    child_gate.release.notify_one();
+    tokio::select! {
+        _ = root_commit.reached.notified().bounded(file!(), line!()) => {}
+        result = &mut toggle => panic!("toggle finished before its commit: {result:?}"),
+    }
+    let child = first_child
+        .bounded(file!(), line!())
+        .await
+        .unwrap()
+        .unwrap();
+    let (_, _hold) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+
+    // The outstanding publication now waits for the root's bypass gate.
+    registration.release.notify_one();
+
+    // Hold the lifecycle gate without marking the live child stopping yet.
+    let claim = navai::session::ChildPreparationBarrier::default();
+    service.pause_lifecycle_claim(claim.clone());
+    let stopping = service.clone();
+    let stop = tokio::spawn(async move { stopping.close_session(parent).await });
+    claim.reached.notified().bounded(file!(), line!()).await;
+    let child_commit = navai::session::ChildPreparationBarrier::default();
+    service.pause_bypass_commit(child_commit.clone());
+    root_commit.release.notify_one();
+    tokio::select! {
+        _ = child_commit.reached.notified().bounded(file!(), line!()) => {}
+        result = &mut toggle => panic!("toggle finished before the child's commit: {result:?}"),
+    }
+    child_commit.release.notify_one();
+    // Drive the failed commit through its active-state check and cleanup;
+    // cleanup must wait for the lifecycle gate still held by the parent stop.
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), &mut toggle)
+            .await
+            .is_err()
+    );
+    assert!(
+        service.session_is_cancelled(child),
+        "the failed child is cancelled before lifecycle cleanup can proceed"
+    );
+    claim.release.notify_one();
+
+    let (error, stopped, published) =
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            tokio::join!(&mut toggle, stop, publication)
+        })
+        .await
+        .expect("failed-child cleanup and parent stop must not deadlock");
+    let error = error.unwrap_err().to_string();
+    assert!(
+        error.contains(&child.to_string()) && error.contains("stopped"),
+        "{error}"
+    );
+    stopped.unwrap().unwrap();
+    // Publication may win the race with the lifecycle claim once the gate
+    // is released; the parent stop must still tear down that child.
+    if let Ok(published) = published.unwrap() {
+        assert_eq!(
+            service
+                .session_summary(published)
+                .await
+                .unwrap()
+                .actor_state,
+            "stopped"
+        );
+    }
+    fx.state.close_all().bounded(file!(), line!()).await;
+}
+
+#[tokio::test]
+async fn a_child_that_cannot_follow_the_toggle_is_stopped() {
+    let mut provider = common::sse::spawn_streaming_provider()
+        .bounded(file!(), line!())
+        .await;
+    let fx = fixture_at(&provider.url);
+    let (parent, child, _hold) = parent_with_running_child(&fx, &mut provider, false).await;
+    // The root's own commit succeeds, the child's does not.
+    fx.state.fail_bypass_commit_after(1);
+    let error = fx
+        .state
+        .set_bypass(
+            parent,
+            true,
+            navai::bus::runtime::bypass::BypassOrigin::Http,
+        )
+        .bounded(file!(), line!())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains(&child.to_string()) && error.contains("stopped"),
+        "{error}"
+    );
+    assert!(bypass_of(&fx, parent).await);
+    let summary = fx
+        .state
+        .session_summary(child)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert_eq!(summary.actor_state, "stopped");
+    assert!(!summary.bypass);
+    fx.state.close_all().bounded(file!(), line!()).await;
+}
+
+#[tokio::test]
+async fn parent_enabling_bypass_answers_the_childs_ordinary_pending_request() {
+    let provider = spawn_capturing_provider(vec![
+        http_sse(&sse_body(&[&tool_call_chunk(
+            "child-bash",
+            "bash",
+            &json!({"command":"true"}),
+        )])),
+        http_sse(&sse_body(&[&text_chunk("child done")])),
+    ])
+    .bounded(file!(), line!())
+    .await;
+    let fx = fixture_at(&provider.url);
+    install_agents(&fx.root, &fx.ws);
+    let parent = fx
+        .state
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let child = fx
+        .state
+        .create_child_session(parent, "writer", "run it")
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    for _ in 0..400 {
+        if events(&fx, child)
+            .bounded(file!(), line!())
+            .await
+            .iter()
+            .any(|e| e.kind == "permission.requested")
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    set_bypass(&fx, parent, true).await;
+    let mut resolved = Vec::new();
+    for _ in 0..400 {
+        resolved = events(&fx, child)
+            .bounded(file!(), line!())
+            .await
+            .into_iter()
+            .filter(|e| e.kind == "permission.resolved")
+            .collect();
+        if !resolved.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].payload["approved_by"], "bypass");
+    fx.state.close_all().bounded(file!(), line!()).await;
 }

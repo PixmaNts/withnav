@@ -17,6 +17,15 @@ const identity = new ConversationIdentity(() => {
   for (const button of document.querySelectorAll<HTMLButtonElement>(".control-card button, .control-card textarea")) button.disabled = true;
 });
 const post = (message: WebviewToHost): void => rawPost({ ...message, generation: identity.generation });
+const bypassToggle = document.createElement("button");
+bypassToggle.type = "button"; bypassToggle.className = "bypass-toggle";
+bypassToggle.textContent = "Bypass OFF"; bypassToggle.setAttribute("aria-pressed", "false");
+bypassToggle.title = "Bypass ordinary permission prompts; protected requests still ask";
+const bypassBadge = document.createElement("span");
+bypassBadge.className = "bypass-badge"; bypassBadge.textContent = "⚠ Bypass ON"; bypassBadge.hidden = true;
+bypassBadge.title = bypassToggle.title;
+document.querySelector(".topbar .identity")!.after(bypassToggle, bypassBadge);
+bypassToggle.addEventListener("click", () => post({ type: "toggleBypass" }));
 const transcript = document.querySelector<HTMLElement>("#transcript")!;
 const empty = document.querySelector<HTMLElement>("#empty")!;
 const status = document.querySelector<HTMLElement>("#status")!;
@@ -662,6 +671,7 @@ function renderPause(event: Extract<HostToWebview, { type: "pause" }>): void {
 function receive(event: HostToWebview): void {
   if (!identity.receive(event)) return;
   if (event.type === "conversationOpened") {
+    bypassToggle.textContent = "Bypass OFF"; bypassToggle.setAttribute("aria-pressed", "false"); bypassBadge.hidden = true;
     form.hidden = false;
     archiveReadOnly = false;
     compacting = false; compactionRow = undefined;
@@ -679,6 +689,11 @@ function receive(event: HostToWebview): void {
   }
   if (conversations(event)) return;
   switch (event.type) {
+    case "bypass":
+      bypassToggle.disabled = event.disabled || event.pending;
+      bypassToggle.textContent = event.pending ? "Bypass…" : event.enabled ? "Turn bypass off" : "Bypass OFF";
+      bypassToggle.setAttribute("aria-pressed", String(event.enabled)); bypassBadge.hidden = !event.enabled;
+      break;
     case "compaction": {
       compacting = event.pending;
       if (!compactionRow || !compactionRow.isConnected) { compactionRow = el("article", "message compaction-progress"); add(compactionRow); }

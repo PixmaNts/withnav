@@ -3,7 +3,7 @@ use crate::agent::context::Breakdown;
 use crate::agent::guard::{self, CallFacts, GuardInput, Judged};
 use crate::agent::permissions::{
     exempt_from_guard, is_guarded, needs_permission, still_resolves, Gate, Needed,
-    PermissionDecision, PermissionError, PermissionRequest,
+    PermissionDecision, PermissionError, PermissionRequest, Scope,
 };
 use crate::agent::prompt::{assistant_history_message, build_request};
 use crate::agent::response::{HumanRequest, StepOutcome};
@@ -288,6 +288,48 @@ pub async fn resolve_permission(
     decision: PermissionDecision,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> Result<RunOutcome, ResolveError> {
+    resolve_permission_with_origin(
+        actor,
+        request_id,
+        decision,
+        super::permissions::PermissionOrigin::Driver,
+        observe,
+    )
+    .await
+}
+
+pub fn pending_bypass_eligible(actor: &AgentActor) -> bool {
+    match &actor.pending {
+        Some(PendingInteraction::Permission { call, .. }) => {
+            pending_bypass_eligible_call(actor, call)
+        }
+        _ => false,
+    }
+}
+
+fn pending_bypass_eligible_call(actor: &AgentActor, call: &ToolCall) -> bool {
+    match gate(actor, call) {
+        Gated::Ask(request, destination) => {
+            let needed = Needed {
+                scope: request.scope.clone(),
+                destination,
+            };
+            super::permission_gate::hard_floor(actor, call, &needed).is_none()
+        }
+        Gated::Guarded(needed) | Gated::Reviewed(needed) => {
+            super::permission_gate::hard_floor(actor, call, &needed).is_none()
+        }
+        _ => false,
+    }
+}
+
+pub async fn resolve_permission_with_origin(
+    actor: &mut AgentActor,
+    request_id: ulid::Ulid,
+    decision: PermissionDecision,
+    origin: super::permissions::PermissionOrigin,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+) -> Result<RunOutcome, ResolveError> {
     match &actor.pending {
         Some(PendingInteraction::Permission { request, .. }) if request.id == request_id => {}
         Some(PendingInteraction::Permission { .. }) | Some(PendingInteraction::Ask { .. }) => {
@@ -318,44 +360,57 @@ pub async fn resolve_permission(
     match decision {
         PermissionDecision::AllowOnce | PermissionDecision::AllowFolder => {
             let mut evidence = request.permission_gate.as_deref().cloned().unwrap_or_else(|| serde_json::json!({"policy_version":1,"reason":request.reason,"truncated":false}));
-            evidence["source"] = serde_json::json!("driver");
-            let approval_note = Some(serde_json::json!({"permission_gate":evidence}));
+            let bypass = origin == super::permissions::PermissionOrigin::Bypass;
+            evidence["source"] = serde_json::json!(if bypass { "bypass" } else { "driver" });
+            let mut approval = serde_json::json!({"permission_gate":evidence});
+            if bypass {
+                approval["approved_by"] = serde_json::json!("bypass");
+            }
+            let approval_note = Some(approval);
             // The approval is for the destination the driver reviewed. Resolve
             // it again: a call that now lands elsewhere, or is refused, does
             // not run on this approval, and goes through the gate afresh.
-            let one = match gate(actor, &call) {
-                Gated::Ask(fresh, fresh_destination)
-                    if fresh_destination == destination && fresh.scope == request.scope =>
-                {
-                    if decision == PermissionDecision::AllowFolder && call.name == "fetch" {
-                        actor
-                            .grants
-                            .grant(&request.agent, &request.tool, request.scope.clone());
+            let one = if bypass && !pending_bypass_eligible_call(actor, &call) {
+                run_gated(actor, &call, observe).await
+            } else {
+                match gate(actor, &call) {
+                    Gated::Ask(fresh, fresh_destination)
+                        if fresh_destination == destination && fresh.scope == request.scope =>
+                    {
+                        if decision == PermissionDecision::AllowFolder && call.name == "fetch" {
+                            actor.grants.grant(
+                                &request.agent,
+                                &request.tool,
+                                request.scope.clone(),
+                            );
+                        }
+                        run_reviewed(actor, &call, destination.as_deref(), approval_note, observe)
+                            .await
                     }
-                    run_reviewed(actor, &call, destination.as_deref(), approval_note, observe).await
+                    // An exception of a guarded agent: the driver's approval is
+                    // for this one call and never becomes a grant, whatever the
+                    // decision said.
+                    Gated::Guarded(needed) | Gated::Reviewed(needed)
+                        if needed.destination == destination && needed.scope == request.scope =>
+                    {
+                        run_reviewed(actor, &call, destination.as_deref(), approval_note, observe)
+                            .await
+                    }
+                    _ => run_gated(actor, &call, observe).await,
                 }
-                // An exception of a guarded agent: the driver's approval is
-                // for this one call and never becomes a grant, whatever the
-                // decision said.
-                Gated::Guarded(needed) | Gated::Reviewed(needed)
-                    if needed.destination == destination && needed.scope == request.scope =>
-                {
-                    run_reviewed(actor, &call, destination.as_deref(), approval_note, observe).await
-                }
-                _ => run_gated(actor, &call, observe).await,
             };
             match one {
                 One::Settled => {}
                 One::Ask(fresh, fresh_destination) => {
                     actor.pending = Some(PendingInteraction::Permission {
-                        request: Box::new(fresh.clone()),
+                        request: fresh.clone(),
                         call,
                         remaining_calls,
                         destination: fresh_destination,
                         steps_left,
                     });
                     actor.state = AgentState::Yielded;
-                    return Ok(RunOutcome::PermissionRequired(fresh));
+                    return Ok(RunOutcome::PermissionRequired(*fresh));
                 }
                 One::Interrupted => {
                     append_interrupted(actor, &call.id);
@@ -411,14 +466,14 @@ async fn run_calls(
             One::Settled => {}
             One::Ask(request, destination) => {
                 actor.pending = Some(PendingInteraction::Permission {
-                    request: Box::new(request.clone()),
+                    request: request.clone(),
                     call,
                     remaining_calls: calls.into(),
                     destination,
                     steps_left,
                 });
                 actor.state = AgentState::Yielded;
-                return Calls::Permission(request);
+                return Calls::Permission(*request);
             }
             One::Interrupted => {
                 append_interrupted(actor, &call.id);
@@ -520,7 +575,7 @@ enum One {
     /// Run, or refused: its result is in the transcript.
     Settled,
     /// The driver decides; the path is the canonical file the request is for.
-    Ask(PermissionRequest, Option<PathBuf>),
+    Ask(Box<PermissionRequest>, Option<PathBuf>),
     /// The session was stopped while the call was being checked.
     Interrupted,
 }
@@ -539,15 +594,17 @@ async fn run_gated(
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> One {
     for _ in 0..REGATE_LIMIT {
-        let (destination, note) = match gate(actor, call) {
+        let (destination, mut note, request) = match gate(actor, call) {
             Gated::Rejected(message) => {
                 reject_call(actor, call, message, observe);
                 return One::Settled;
             }
-            Gated::Run(destination) => (destination, None),
+            Gated::Run(destination) => (destination, None, None),
             Gated::Reviewed(needed) => {
                 match super::permission_gate::consult(actor, call, &needed).await {
-                    super::permission_gate::Judged::Run(note) => (needed.destination, Some(note)),
+                    super::permission_gate::Judged::Run(note) => {
+                        (needed.destination, Some(note), None)
+                    }
                     super::permission_gate::Judged::Interrupted => return One::Interrupted,
                     super::permission_gate::Judged::AskWithEvidence(reason, evidence) => {
                         let mut request = PermissionRequest::new(
@@ -561,7 +618,7 @@ async fn run_gated(
                         );
                         request.reason = reason;
                         request.permission_gate = Some(Box::new(evidence));
-                        return One::Ask(request, needed.destination);
+                        (needed.destination, None, Some(request))
                     }
                     super::permission_gate::Judged::Ask(reason) => {
                         let mut request = PermissionRequest::new(
@@ -574,17 +631,82 @@ async fn run_gated(
                                 .unwrap_or("build"),
                         );
                         request.reason = reason;
-                        return One::Ask(request, needed.destination);
+                        (needed.destination, None, Some(request))
                     }
                 }
             }
-            Gated::Ask(request, destination) => return One::Ask(request, destination),
+            Gated::Ask(request, destination) => (destination, None, Some(request)),
             Gated::Guarded(needed) => match guard_step(actor, call, needed).await {
-                GuardStep::Run(note, destination) => (destination, Some(note)),
-                GuardStep::Ask(request, destination) => return One::Ask(request, destination),
+                GuardStep::Run(note, destination) => (destination, Some(note), None),
+                GuardStep::Ask(request, destination) => (destination, None, Some(request)),
                 GuardStep::Interrupted => return One::Interrupted,
             },
         };
+        if actor.cancel.is_cancelled() {
+            return One::Interrupted;
+        }
+        // A call that no driver has approved (an automatic review, an ungated
+        // native call) meets the hard floor here, before dispatch: a hit is an
+        // ordinary request only the driver can answer.
+        let request = match request {
+            None if actor.role.is_some() => {
+                let needed = Needed {
+                    scope: Scope::Folder(
+                        destination
+                            .as_deref()
+                            .and_then(Path::parent)
+                            .map(Path::to_path_buf)
+                            .unwrap_or_else(|| actor.tool_context.workspace.clone()),
+                    ),
+                    destination: destination.clone(),
+                };
+                if super::permission_gate::hard_floor(actor, call, &needed).is_some() {
+                    let mut floor = PermissionRequest::new(
+                        call,
+                        needed.scope,
+                        actor
+                            .role
+                            .as_ref()
+                            .map(|role| role.id.as_str())
+                            .unwrap_or("build"),
+                    );
+                    floor.reason =
+                        "Protected or changed target; approve this call once or deny".into();
+                    Some(floor)
+                } else {
+                    None
+                }
+            }
+            other => other,
+        };
+        if let Some(mut request) = request {
+            let needed = Needed {
+                scope: request.scope.clone(),
+                destination: destination.clone(),
+            };
+            request.requires_driver =
+                super::permission_gate::hard_floor(actor, call, &needed).is_some();
+            if request.requires_driver
+                || !actor
+                    .bypass
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .enabled
+            {
+                return One::Ask(Box::new(request), destination);
+            }
+            let mut evidence = request.permission_gate.as_deref().cloned().unwrap_or_else(|| {
+                serde_json::json!({"policy_version":1,"reason":request.reason,"truncated":false})
+            });
+            evidence["source"] = serde_json::json!("bypass");
+            let guard = evidence.get("guard").cloned();
+            let mut approval =
+                serde_json::json!({"approved_by":"bypass","permission_gate":evidence});
+            if let Some(guard) = guard {
+                approval["guard"] = guard;
+            }
+            note = Some(approval);
+        }
         if let Some(result) = execute_call(actor, call, destination.as_deref(), note, observe).await
         {
             append_tool_result(actor, &call.id, &result);
@@ -733,11 +855,8 @@ async fn execute_call(
                 "destination_changed",
                 format!("{} changed after it was checked; nothing was written, the call is checked again", path.display()),
             );
-            if let Some(evidence) = guard_note
-                .as_ref()
-                .and_then(|note| note.get("permission_gate"))
-            {
-                result.metadata = serde_json::json!({"permission_gate":evidence});
+            if let Some(note) = &guard_note {
+                merge_approval_metadata(&mut result.metadata, note);
             }
             observe(AgentEvent::PostCall {
                 tool_call_id: &call.id,
@@ -751,23 +870,7 @@ async fn execute_call(
     };
     // The role guard let this call run: the durable `tool.post_call` says so.
     if let Some(note) = guard_note {
-        if let Some(guard) = note.get("guard") {
-            if !result.metadata.is_object() {
-                result.metadata = serde_json::json!({});
-            }
-            result.metadata["guard"] = guard.clone();
-        }
-        let (key, note) = if let Some(evidence) = note.get("permission_gate") {
-            ("permission_gate", evidence.clone())
-        } else {
-            ("guard", note)
-        };
-        match &mut result.metadata {
-            serde_json::Value::Object(map) => {
-                map.insert(key.into(), note);
-            }
-            other => *other = serde_json::json!({ key: note }),
-        }
+        merge_approval_metadata(&mut result.metadata, &note);
     }
     observe(AgentEvent::PostCall {
         tool_call_id: &call.id,
@@ -775,6 +878,20 @@ async fn execute_call(
         result: &result,
     });
     Some(result)
+}
+
+fn merge_approval_metadata(metadata: &mut serde_json::Value, note: &serde_json::Value) {
+    if !metadata.is_object() {
+        *metadata = serde_json::json!({});
+    }
+    for key in ["approved_by", "permission_gate", "guard"] {
+        if let Some(value) = note.get(key) {
+            metadata[key] = value.clone();
+        }
+    }
+    if note.get("permission_gate").is_none() && note.get("guard").is_none() {
+        metadata["guard"] = note.clone();
+    }
 }
 
 fn append_tool_result(actor: &mut AgentActor, tool_call_id: &str, result: &ToolResult) {
@@ -2611,6 +2728,7 @@ mod tests {
             std::fs::write(tmp.path().join(name), "secret").unwrap();
         }
         let mut actor = plan_actor(None, "http://unused");
+        actor.bypass.lock().unwrap().enabled = true;
         as_build(&mut actor);
         actor.permission_judge = Some(Arc::new(ReadJudge));
         let meta = Arc::new(Meta {
@@ -2649,6 +2767,7 @@ mod tests {
             else {
                 panic!("driver required");
             };
+            assert!(request.requires_driver);
             assert_eq!(request.permission_gate.unwrap()["source"], "driver");
             assert!(
                 meta.captured.lock().unwrap().is_some(),
@@ -2804,7 +2923,7 @@ mod tests {
         let mut second = call.clone();
         second.id = "second".into();
         actor.pending = Some(PendingInteraction::Permission {
-            request: Box::new(request),
+            request,
             call,
             remaining_calls: vec![second],
             destination,
@@ -3033,7 +3152,7 @@ mod tests {
                 second.id = "second".into();
                 let roots = actor.tool_context.writable_roots.clone();
                 actor.pending = Some(PendingInteraction::Permission {
-                    request: Box::new(request),
+                    request,
                     call,
                     remaining_calls: vec![second],
                     destination,
@@ -3146,8 +3265,10 @@ mod tests {
             };
             let mut observe = |_event: AgentEvent<'_>| {};
             let (outcome, ()) = tokio::join!(run_gated(&mut actor, &call, &mut observe), mutate);
-            assert!(matches!(outcome, One::Ask(..)));
-            assert_eq!(*reviewer.outside.lock().unwrap(), vec![false, true]);
+            // The approving review is not enough once the scratch identity
+            // changed: the floor asks the driver without a second review.
+            assert!(matches!(&outcome, One::Ask(request, _) if request.requires_driver));
+            assert_eq!(*reviewer.outside.lock().unwrap(), vec![false]);
             assert!(!target.exists());
             assert_eq!(
                 root.exists(),
@@ -3194,7 +3315,7 @@ mod tests {
                 ));
                 let id = request.id;
                 actor.pending = Some(PendingInteraction::Permission {
-                    request: Box::new(request),
+                    request,
                     call,
                     remaining_calls: vec![],
                     destination,
@@ -3318,6 +3439,7 @@ mod tests {
     async fn protected_config_always_asks_even_with_approving_models_and_scratch() {
         for workspace_is_config in [false, true] {
             let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+            actor.bypass.lock().unwrap().enabled = true;
             let config = if workspace_is_config {
                 actor.tool_context.workspace.clone()
             } else {
@@ -3603,6 +3725,382 @@ mod tests {
             if decision != Some(ReviewDecision::Approve) {
                 assert!(matches!(outcome, One::Ask(..)));
             }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn bypass_keeps_review_outcomes_and_review_approval_provenance() {
+        use super::super::permission_gate::ReviewDecision;
+        for (decision, hangs) in [
+            (Some(ReviewDecision::Approve), false),
+            (Some(ReviewDecision::Reject), false),
+            (Some(ReviewDecision::Unsure), false),
+            (None, false),
+            (None, true),
+        ] {
+            let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+            actor.bypass.lock().unwrap().enabled = true;
+            actor.permission_reviewer = Some(Arc::new(Meta {
+                decision,
+                captured: Default::default(),
+                hangs,
+            }));
+            let target = actor.tool_context.workspace.join("AGENTS.md");
+            let call = ToolCall {
+                id: "c".into(),
+                name: "write".into(),
+                args: serde_json::json!({"path":target,"content":"x"}),
+                args_valid: true,
+            };
+            let mut metadata = serde_json::Value::Null;
+            assert!(matches!(
+                run_gated(&mut actor, &call, &mut |event| {
+                    if let AgentEvent::PostCall { result, .. } = event {
+                        metadata = result.metadata.clone();
+                    }
+                })
+                .await,
+                One::Settled
+            ));
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
+            if decision == Some(ReviewDecision::Approve) {
+                assert_eq!(metadata["permission_gate"]["source"], "metacognition");
+                assert!(metadata.get("approved_by").is_none());
+            } else {
+                assert_eq!(metadata["approved_by"], "bypass");
+                assert_eq!(metadata["permission_gate"]["source"], "bypass");
+                assert!(metadata["permission_gate"]["verdicts"].is_object());
+                assert!(
+                    metadata.get("guard").is_none(),
+                    "plain Markdown has no role review"
+                );
+                if decision.is_some() {
+                    assert_eq!(
+                        metadata["permission_gate"]["metacognition"]["reason"],
+                        "reviewed"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bypass_disabled_review_executes_once_and_off_asks_again() {
+        let mut actor = plan_actor(None, "http://unused");
+        actor.automatic_permission_review = false;
+        actor.bypass.lock().unwrap().enabled = true;
+        let target = actor.tool_context.workspace.join("a.rs");
+        let call = ToolCall {
+            id: "c".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path":target,"content":"x"}),
+            args_valid: true,
+        };
+        let mut executions = 0;
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut |event| {
+                if let AgentEvent::PostCall { result, .. } = event {
+                    executions += 1;
+                    assert_eq!(result.metadata["approved_by"], "bypass");
+                    assert!(result.metadata["permission_gate"]["reason"]
+                        .as_str()
+                        .unwrap()
+                        .contains("disabled"));
+                }
+            })
+            .await,
+            One::Settled
+        ));
+        assert_eq!(executions, 1);
+        actor.bypass.lock().unwrap().enabled = false;
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut |_| panic!("must ask")).await,
+            One::Ask(..)
+        ));
+    }
+
+    #[tokio::test]
+    async fn bypass_hard_floor_checks_original_and_canonical_sensitive_targets() {
+        let mut actor = plan_actor(None, "http://unused");
+        actor.automatic_permission_review = false;
+        actor.bypass.lock().unwrap().enabled = true;
+        let ordinary = actor.tool_context.workspace.join("ordinary");
+        std::fs::write(&ordinary, "keep").unwrap();
+        let sensitive = actor.tool_context.workspace.join("auth.json");
+        std::os::unix::fs::symlink(&ordinary, &sensitive).unwrap();
+        for (tool, args) in [
+            (
+                "write",
+                serde_json::json!({"path":sensitive,"content":"secret"}),
+            ),
+            (
+                "edit",
+                serde_json::json!({"path":sensitive,"old_string":"keep","new_string":"secret"}),
+            ),
+            ("read", serde_json::json!({"path":sensitive})),
+            ("bash", serde_json::json!({"command":"cat auth.json"})),
+        ] {
+            actor
+                .registry
+                .register(Box::new(crate::tools::native::EditTool));
+            let call = ToolCall {
+                id: "c".into(),
+                name: tool.into(),
+                args,
+                args_valid: true,
+            };
+            let One::Ask(request, _) =
+                run_gated(&mut actor, &call, &mut |_| panic!("must ask")).await
+            else {
+                panic!("sensitive spelling must require driver");
+            };
+            assert!(request.requires_driver);
+        }
+        std::fs::remove_file(&sensitive).unwrap();
+        std::fs::write(&sensitive, "secret").unwrap();
+        let alias = actor.tool_context.workspace.join("alias");
+        std::os::unix::fs::symlink(&sensitive, &alias).unwrap();
+        let call = ToolCall {
+            id: "c".into(),
+            name: "read".into(),
+            args: serde_json::json!({"path":alias}),
+            args_valid: true,
+        };
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut |_| panic!("must ask")).await,
+            One::Ask(request, _) if request.requires_driver
+        ));
+        assert_eq!(std::fs::read_to_string(ordinary).unwrap(), "keep");
+    }
+
+    #[tokio::test]
+    async fn bypass_rechecks_protected_destination_after_symlink_replacement() {
+        let mut actor = plan_actor(None, "http://unused");
+        actor.automatic_permission_review = false;
+        actor.bypass.lock().unwrap().enabled = true;
+        let target = actor.tool_context.workspace.join("a.rs");
+        let config = actor.tool_context.workspace.join("config");
+        std::fs::create_dir(&config).unwrap();
+        actor.protected_config_root = Some(config.clone());
+        let protected = config.join("models.json");
+        std::fs::write(&target, "keep").unwrap();
+        std::fs::write(&protected, "protected").unwrap();
+        let call = ToolCall {
+            id: "c".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path":target,"content":"x"}),
+            args_valid: true,
+        };
+        on_next_dispatch({
+            let target = target.clone();
+            let protected = protected.clone();
+            move || {
+                std::fs::remove_file(&target).unwrap();
+                std::os::unix::fs::symlink(protected, target).unwrap();
+            }
+        });
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut |_| panic!("must not execute")).await,
+            One::Ask(request, _) if request.requires_driver
+        ));
+        assert_eq!(std::fs::read_to_string(protected).unwrap(), "protected");
+    }
+
+    #[tokio::test]
+    async fn bypass_cancellation_and_invalid_scratch_reference_still_block() {
+        let mut actor = plan_actor(None, "http://unused");
+        actor.automatic_permission_review = false;
+        actor.bypass.lock().unwrap().enabled = true;
+        let root = actor.tool_context.workspace.join("scratch");
+        actor
+            .scratch_roots
+            .push(crate::agent::scratch::Identity::capture(&root).unwrap());
+        std::fs::remove_dir(&root).unwrap();
+        let call = ToolCall {
+            id: "c".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command":format!("echo x > {}/x", root.display())}),
+            args_valid: true,
+        };
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut |_| panic!("must ask")).await,
+            One::Ask(request, _) if request.requires_driver
+        ));
+        actor.cancel.cancel();
+        assert!(matches!(
+            run_gated(&mut actor, &call, &mut |_| panic!("cancelled")).await,
+            One::Interrupted
+        ));
+    }
+
+    #[tokio::test]
+    async fn changed_scratch_asks_the_driver_whoever_else_would_authorize() {
+        use super::super::permission_gate::ReviewDecision;
+        for bypass in [true, false] {
+            for tool in ["write", "read"] {
+                let mut actor =
+                    plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+                actor.permission_reviewer = Some(Arc::new(Meta {
+                    decision: Some(ReviewDecision::Approve),
+                    captured: Default::default(),
+                    hangs: false,
+                }));
+                actor.bypass.lock().unwrap().enabled = bypass;
+                let workspace = actor.tool_context.workspace.clone();
+                let root = workspace.join("scratch");
+                actor
+                    .scratch_roots
+                    .push(crate::agent::scratch::Identity::capture(&root).unwrap());
+                actor.tool_context.writable_roots.push(root.clone());
+                let other = workspace.join("other");
+                std::fs::create_dir(&other).unwrap();
+                std::fs::write(other.join("file"), "keep").unwrap();
+                std::fs::remove_dir(&root).unwrap();
+                std::os::unix::fs::symlink(&other, &root).unwrap();
+                let args = if tool == "write" {
+                    serde_json::json!({"path":root.join("file"),"content":"x"})
+                } else {
+                    serde_json::json!({"path":root.join("file")})
+                };
+                let call = ToolCall {
+                    id: "c".into(),
+                    name: tool.into(),
+                    args,
+                    args_valid: true,
+                };
+                let mut dispatched = 0;
+                let outcome = run_gated(&mut actor, &call, &mut |event| {
+                    if matches!(event, AgentEvent::PreCall { .. }) {
+                        dispatched += 1;
+                    }
+                })
+                .await;
+                assert_eq!(dispatched, 0, "{tool} bypass={bypass} must not dispatch");
+                assert!(
+                    matches!(&outcome, One::Ask(request, _) if request.requires_driver),
+                    "{tool} bypass={bypass} must ask the driver"
+                );
+                assert_eq!(std::fs::read_to_string(other.join("file")).unwrap(), "keep");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bash_operands_reach_protected_config_and_changed_scratch_floor() {
+        for case in ["config-is-workspace", "config-through-link", "scratch"] {
+            let mut actor = plan_actor(None, "http://unused");
+            actor.automatic_permission_review = false;
+            actor.bypass.lock().unwrap().enabled = true;
+            let workspace = actor.tool_context.workspace.clone();
+            let command = match case {
+                "config-is-workspace" => {
+                    actor.protected_config_root = Some(workspace.clone());
+                    actor.protected_config_spelling = Some(workspace.clone());
+                    "printf x > models.json"
+                }
+                "config-through-link" => {
+                    let dir = workspace.join("real-config");
+                    std::fs::create_dir(&dir).unwrap();
+                    actor.protected_config_root = Some(dir.clone());
+                    std::os::unix::fs::symlink(&dir, workspace.join("cfg")).unwrap();
+                    "printf x > cfg/models.json"
+                }
+                _ => {
+                    let root = workspace.join("scratch");
+                    actor
+                        .scratch_roots
+                        .push(crate::agent::scratch::Identity::capture(&root).unwrap());
+                    std::fs::remove_dir(&root).unwrap();
+                    std::fs::create_dir(&root).unwrap();
+                    "printf x > scratch/file"
+                }
+            };
+            let call = ToolCall {
+                id: "c".into(),
+                name: "bash".into(),
+                args: serde_json::json!({"command":command}),
+                args_valid: true,
+            };
+            assert!(
+                matches!(
+                    run_gated(&mut actor, &call, &mut |_| panic!("{case} must ask")).await,
+                    One::Ask(request, _) if request.requires_driver
+                ),
+                "{case}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn bypass_off_during_review_prompts_at_authorization_boundary() {
+        let mut actor = plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+        actor.bypass.lock().unwrap().enabled = true;
+        let state = actor.bypass.clone();
+        actor.permission_reviewer = Some(Arc::new(Meta {
+            decision: None,
+            captured: Default::default(),
+            hangs: true,
+        }));
+        let call = ToolCall {
+            id: "c".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path":actor.tool_context.workspace.join("AGENTS.md"),"content":"x"}),
+            args_valid: true,
+        };
+        let mut observe = |_: AgentEvent<'_>| panic!("must ask");
+        let turn = run_gated(&mut actor, &call, &mut observe);
+        let disable = async {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            state.lock().unwrap().enabled = false;
+        };
+        let (outcome, ()) = tokio::join!(turn, disable);
+        assert!(matches!(outcome, One::Ask(request, _) if !request.requires_driver));
+    }
+
+    #[tokio::test]
+    async fn bypass_never_overrides_validation_or_search_denials() {
+        let mut actor = plan_actor(None, "http://unused");
+        as_build(&mut actor);
+        actor.bypass.lock().unwrap().enabled = true;
+        let outside = tempfile::tempdir().unwrap();
+        for call in [
+            ToolCall {
+                id: "bad".into(),
+                name: "bash".into(),
+                args: serde_json::json!({"command":null}),
+                args_valid: true,
+            },
+            ToolCall {
+                id: "bad".into(),
+                name: "write".into(),
+                args: serde_json::json!({}),
+                args_valid: false,
+            },
+            ToolCall {
+                id: "bad".into(),
+                name: "grep".into(),
+                args: serde_json::json!({"path":outside.path(),"pattern":"x"}),
+                args_valid: true,
+            },
+            ToolCall {
+                id: "bad".into(),
+                name: "glob".into(),
+                args: serde_json::json!({"path":outside.path(),"pattern":"*"}),
+                args_valid: true,
+            },
+        ] {
+            let mut denied = false;
+            assert!(matches!(
+                run_gated(&mut actor, &call, &mut |event| {
+                    if let AgentEvent::PostCall { result, .. } = event {
+                        denied = true;
+                        assert!(result.metadata.get("approved_by").is_none());
+                    }
+                })
+                .await,
+                One::Settled
+            ));
+            assert!(denied);
         }
     }
 

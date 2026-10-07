@@ -27,6 +27,11 @@ const RECONNECT_DELAY_MS = 500;
  * networking lives here; the webview never sees HTTP.
  */
 class ConversationState {
+  bypass = false;
+  bypassSeq = -1;
+  bypassEvents: { seq: number; enabled: boolean }[] = [];
+  incarnation: string | null = null;
+  bypassPending = false;
   agentChosen = false;
   modelOverride?: string;
   selection?: Selection;
@@ -79,6 +84,51 @@ class ConversationState {
 }
 
 export class CognitionBackend implements ChatBackend {
+  private bypassConfirmations = new Set<string>();
+  publishBypass(): void {
+    this.emit({ type: "bypass", enabled: this.state.bypass, pending: this.state.bypassPending,
+      disabled: this.state.readOnly || this.state.starting });
+  }
+  private acceptBypassSnapshot(summary: any): void {
+    if (typeof summary?.bypass !== "boolean" || !Number.isSafeInteger(summary.bypass_seq) || summary.bypass_seq < 0 ||
+        !(typeof summary.incarnation === "string" || summary.incarnation === null)) return;
+    if (summary.bypass_seq < this.state.bypassSeq) return;
+    this.state.bypass = summary.bypass;
+    this.state.bypassSeq = summary.bypass_seq;
+    this.state.incarnation = summary.incarnation;
+    for (const event of this.state.bypassEvents) if (event.seq > this.state.bypassSeq) {
+      this.state.bypass = event.enabled; this.state.bypassSeq = event.seq;
+    }
+    this.state.bypassEvents = [];
+    this.publishBypass();
+  }
+  async toggleBypassPermissions(): Promise<void> { await this.setBypassPermissions(!this.state.bypass); }
+  private async setBypassPermissions(enabled: boolean, operation?: ComposerOperation): Promise<void> {
+    const origin = this.state;
+    if (origin.readOnly || origin.starting) throw new Error("Bypass controls are unavailable in this view.");
+    if (origin.bypassPending) throw new Error("Bypass change is already pending.");
+    origin.bypassPending = true; this.publishBypass();
+    try {
+      const { session, generation } = await this.ensureSession(operation);
+      const summary = await this.reconcileSession(session, generation);
+      if (origin !== this.state) throw new Error("Conversation changed.");
+      this.acceptBypassSnapshot(summary);
+      if (!origin.incarnation) throw new Error("The server did not provide a live runtime incarnation.");
+      const key = JSON.stringify([session, origin.incarnation]);
+      if (enabled && !this.bypassConfirmations.has(key)) {
+        const answer = await vscode.window.showWarningMessage("Bypass ordinary permission prompts; protected requests still ask", { modal: true }, "Enable bypass");
+        this.checkGeneration(generation);
+        if (origin !== this.state) throw new Error("Conversation changed.");
+        if (key !== JSON.stringify([session, origin.incarnation])) throw new Error("Runtime changed; try again.");
+        if (answer !== "Enable bypass") throw new Error("Bypass enable cancelled.");
+        this.bypassConfirmations.add(key);
+      }
+      const result = await this.request(`/v1/sessions/${encodeURIComponent(session)}/bypass`, { method: "POST", body: JSON.stringify({ enabled }) }, "operation");
+      if (origin !== this.state || generation !== this.currentGeneration()) return;
+      if (typeof result?.enabled !== "boolean" || !Number.isSafeInteger(result.bypass_seq)) throw new Error("Invalid bypass acknowledgement.");
+      if (result.bypass_seq >= origin.bypassSeq) { origin.bypass = result.enabled; origin.bypassSeq = result.bypass_seq; }
+    } finally { origin.bypassPending = false; if (origin === this.state) this.publishBypass(); }
+  }
   private agents: AgentInfo[] = [];
   private layers: LayerInfo[] = [];
   private defaultAgent = "build";
@@ -165,6 +215,7 @@ export class CognitionBackend implements ChatBackend {
     panel.state.session = childId;
     panel.state.parent = parent;
     panel.state.readOnly = true;
+    panel.acceptBypassSnapshot(metadata);
     panel.state.streamGeneration = generation;
     panel.panelOwner = this;
     panel.terminalChild = this.isTerminal(parent.children.get(childId)!.state);
@@ -262,6 +313,12 @@ export class CognitionBackend implements ChatBackend {
     const routed = routeComposer(draft);
     if (routed.kind !== "command") throw new Error("Not a command");
     const { name, arguments: args } = routed;
+    if (name === "bypass") {
+      if (!["", "on", "off"].includes(args)) throw new Error("Usage: /bypass [on|off]");
+      if (args) await this.setBypassPermissions(args === "on", operation);
+      else this.emit({ type: "notice", text: `Bypass ${this.state.bypass ? "ON" : "OFF"} · Bypass ordinary permission prompts; protected requests still ask` });
+      return true;
+    }
     if (this.state.starting && ["model", "variant", "agent", "skill"].includes(name)) throw new Error("Conversation is starting or opening. Try again when it is ready.");
     if (typeof args !== "string") throw new Error("Command arguments must be text");
     if (!this.commands.length) { await this.refreshCommands(); this.checkGeneration(generation); }
@@ -832,6 +889,7 @@ export class CognitionBackend implements ChatBackend {
         const summary = await this.request(`/v1/sessions/${encodeURIComponent(id)}`, { method: "GET" });
         this.checkGeneration(generation);
         if (!Number.isSafeInteger(summary?.current_seq) || summary.current_seq < 0) throw new Error("Invalid session summary");
+        this.acceptBypassSnapshot(summary);
         return summary;
       } catch (error) {
         this.checkGeneration(generation);
@@ -1366,6 +1424,8 @@ export class CognitionBackend implements ChatBackend {
       }
     }
     if (envelope.kind === "session.end") {
+      if (this.state.bypassSeq < 0) this.state.bypassEvents.push({ seq: envelope.seq, enabled: false });
+      else if (envelope.seq > this.state.bypassSeq) { this.state.bypass = false; this.state.bypassSeq = envelope.seq; this.state.incarnation = null; this.publishBypass(); }
       if (this.state.compaction?.pending) { this.state.compaction = { ...this.state.compaction, pending: false, ok: false, text: "Compaction stopped with the conversation." }; this.publishCompaction(); }
       this.state.pendingModel = undefined;
       this.emit({ type: "modelPending" });
@@ -1376,6 +1436,11 @@ export class CognitionBackend implements ChatBackend {
         text: `/${String(payload.name ?? "command")} · ${payload.ok === false ? String(payload.error ?? "Refused") : payload.data?.applies === "after_turn" ? "Accepted · switches after this turn" : typeof payload.data?.message === "string" ? payload.data.message : JSON.stringify(payload.data ?? "Done", null, 2)}` };
     }
     if (envelope.kind === "session.agent_changed") return undefined; // Secondary notification, not effective identity.
+    if (envelope.kind === "session.bypass" && typeof payload.enabled === "boolean") {
+      if (this.state.bypassSeq < 0) this.state.bypassEvents.push({ seq: envelope.seq, enabled: payload.enabled });
+      else if (envelope.seq > this.state.bypassSeq) { this.state.bypass = payload.enabled; this.state.bypassSeq = envelope.seq; this.publishBypass(); }
+      return { type: "notice", text: `Bypass ${payload.enabled ? "ON" : "OFF"} · Bypass ordinary permission prompts; protected requests still ask` };
+    }
     if (envelope.kind === "context.compacted") {
       const text = `Context compacted: ~${payload.estimate_before ?? "?"} → ~${payload.estimate_after ?? "?"} tokens`;
       return { type: "notice", text };
@@ -1509,6 +1574,7 @@ export class CognitionBackend implements ChatBackend {
     // as transcript (the view caches the last ones for a reopen).
     const ephemeral =
       message.type === "assignments" || message.type === "viewMode" ||
+      message.type === "bypass" ||
       message.type === "compaction" ||
       message.type === "subagents" || message.type === "childView" ||
       message.type === "history" ||
@@ -1522,6 +1588,7 @@ export class CognitionBackend implements ChatBackend {
     }
     if (!ephemeral) this.state.transcript.push(message);
     for (const listener of this.listeners) listener(message);
+    if (message.type === "conversationOpened") this.publishBypass();
   }
 
   private errorText(error: unknown): string {

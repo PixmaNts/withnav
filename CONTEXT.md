@@ -272,6 +272,22 @@ fetch may also offer an origin grant. Chat text never approves a call. A pending
 on restart. Reviewer rejection escalates to the driver rather than finally denying execution.
 _Avoid_: confirmation, approval prompt
 
+**Bypass**:
+A per-session setting, off by default and never saved as a preference, that answers ordinary
+permission requests for the driver. When on, a call that would have asked runs once instead,
+after the usual reviews: their verdicts stay in its evidence and the result is marked
+`approved_by: bypass`. Navai's protected configuration, credential and key targets and a changed
+scratch root still ask the driver (the request says `requires_driver`); validation errors, tool
+policy, read-only agents and outside searches are refused as before, and a question from `ask` is
+never answered. Turning it on also answers an eligible request already waiting. A root session
+sets it (`POST /v1/sessions/{id}/bypass`, `/bypass on|off`, `navai run --yes`) and its live
+subagents follow every change; a new subagent starts with the parent's current value. A resumed
+session starts off, and its history says so. HTTP changes require a configured bearer token and
+an authenticated client, including slash commands; servers without a token allow only state reads.
+The in-process `navai run --yes` path does not require HTTP authentication.
+Not a sandbox: bash keeps its ambient access.
+_Avoid_: auto-approve, yolo, allow all
+
 **Folder grant**:
 Historical bash/file folder approvals remain readable on disk but never authorize execution.
 Only fetch origin grants bypass later requests. Root sessions save those per workspace; children

@@ -7,7 +7,7 @@ fn cli_debug_assert() {
 }
 
 #[tokio::test]
-async fn typed_watchdog_pause_exits_yielded_even_with_yes_and_notice_renders() {
+async fn typed_watchdog_pause_exits_yielded_and_notice_renders() {
     let (tx, rx) = tokio::sync::mpsc::channel(4);
     let pause = kind_envelope(
         EventKind::AgentYield,
@@ -31,30 +31,8 @@ async fn typed_watchdog_pause_exits_yielded_even_with_yes_and_notice_renders() {
         replay: crate::bus::ResumeOutcome::Replay(vec![]),
         live: Some(rx),
     };
-    let tmp = tempfile::tempdir().unwrap();
-    let config_dir = tmp.path().join("cfg");
-    std::fs::create_dir(&config_dir).unwrap();
-    let models_path = tmp.path().join("models.json");
-    std::fs::write(&models_path, r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"default":{"provider":"mock","model":"m","context_window":128000}},"default":"default"}"#).unwrap();
-    let state = crate::server::AppState::new(crate::server::ServerConfig {
-        config_dir,
-        data_dir: tmp.path().join("data"),
-        models_path: Some(models_path),
-        bind: "127.0.0.1:0".parse().unwrap(),
-        allow_non_loopback: false,
-        bearer_token: None,
-        history_db: tmp.path().join("history.db"),
-        rules_roots: Default::default(),
-        web: None,
-    })
-    .unwrap();
     assert_eq!(
-        render_until_terminal(
-            &mut subscription,
-            &mut Renderer::new(false),
-            Some((&state, ulid::Ulid::new()))
-        )
-        .await,
+        render_until_terminal(&mut subscription, &mut Renderer::new(false)).await,
         EXIT_YIELDED
     );
     let notice = kind_envelope(

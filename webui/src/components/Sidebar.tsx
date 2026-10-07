@@ -165,6 +165,7 @@ function SessionRow({ s, kids, ws, route, navigate }: { s: SessionListEntry; kid
         title={sessionTitle(s.title)}
       >
         <span className="title">{sessionTitle(s.title)}</span>
+        {s.bypass && <span className="bypass-badge">⚠ bypass</span>}
         <span className="meta">
           {[dayLabel(s.updated_at), plural(s.message_count, "msg")].filter(Boolean).join(" · ")}
         </span>
@@ -179,6 +180,7 @@ function SessionRow({ s, kids, ws, route, navigate }: { s: SessionListEntry; kid
           title={k.title ?? undefined}
         >
           <span className="agent">└ {k.agent}</span>
+          {k.bypass && <span className="bypass-badge">⚠ bypass</span>}
           <span className="meta">{k.child_status ?? (k.live ? "running" : "")}</span>
         </button>
       ))}

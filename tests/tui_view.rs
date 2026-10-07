@@ -23,6 +23,26 @@ fn message(id: &str, source: &str, text: &str) -> Block {
 }
 
 #[test]
+fn bypass_header_sidebar_and_notice() {
+    let mut s = state();
+    s.bypass = true;
+    s.conversation.blocks.push(Block {
+        id: "bypass:42".into(),
+        kind: BlockKind::Notice(
+            "bypass on: ordinary permission prompts are skipped; protected requests still ask"
+                .into(),
+        ),
+    });
+    render(
+        "bypass-on",
+        (100, 24),
+        &s,
+        &UiState::default(),
+        &Editor::new(),
+    );
+}
+
+#[test]
 fn a_child_permission_preview_never_uses_a_colliding_parent_call() {
     let mut s = state();
     let mut parent = tool_block(None);
@@ -198,6 +218,9 @@ fn state() -> State {
         selected_model_name: Some("cc/claude-opus-5-5".into()),
         context_window: Some(200_000),
         session: Some(SessionMetadata {
+            bypass: false,
+            bypass_seq: 0,
+            incarnation: None,
             source: "config".into(),
             variant_source: "model_default".into(),
             read_only: false,
@@ -238,6 +261,9 @@ fn state() -> State {
             },
         ],
         sessions: vec![SessionListEntry {
+            bypass: false,
+            bypass_seq: 0,
+            incarnation: None,
             read_only: false,
             resume_disabled_reason: None,
             id: "01JABCDEFGH".into(),

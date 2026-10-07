@@ -132,7 +132,8 @@ async fn over_4096_events_replay_completely_across_live_seam() {
     let base = format!("http://{addr}");
 
     let sub = state.subscribe(id, None).await.expect("subscribe");
-    assert_eq!(seqs(&sub.replay), (0..SEEDED).collect::<Vec<_>>());
+    // The resume itself wrote one event: bypass starts off.
+    assert_eq!(seqs(&sub.replay), (0..=SEEDED).collect::<Vec<_>>());
 
     let mut live = sub.live.expect("live receiver");
     post_message_ok(&base, &id.to_string(), "after the replay").await;
@@ -140,7 +141,7 @@ async fn over_4096_events_replay_completely_across_live_seam() {
     let live_seqs: Vec<u64> = events.iter().map(|e| e.seq).collect();
     assert_eq!(
         live_seqs,
-        (SEEDED..SEEDED + live_seqs.len() as u64).collect::<Vec<_>>(),
+        (SEEDED + 1..=SEEDED + live_seqs.len() as u64).collect::<Vec<_>>(),
         "live events continue the replay: each seq once, none missing"
     );
     assert!(events.iter().any(|e| e.kind == "message.received"));

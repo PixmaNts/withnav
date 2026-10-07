@@ -17,9 +17,12 @@ pub struct Host {
     models: Option<PathBuf>,
     workspaces: Mutex<BTreeMap<PathBuf, Workspace>>,
 }
+
 struct Workspace {
     store: Arc<FlowStore>,
     runtime: Option<Arc<FlowRuntime>>,
+    records: Arc<Records>,
+    diagnostic: Option<instinct_flow::Diagnostic>,
 }
 impl std::fmt::Debug for Host {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -40,24 +43,66 @@ impl Host {
     }
     fn entry(&self, workspace: PathBuf) -> Workspace {
         let store = Arc::new(FlowStore::new(workspace.clone(), self.config.clone()));
-        let runtime =
+        let records = Arc::new(Records::new(&self.data, &workspace));
+        let client =
             crate::provider::config::load_models(self.models.as_deref(), &workspace, &self.config)
-                .ok()
+                .map_err(anyhow::Error::from)
                 .and_then(|(models, _)| {
                     NavaiDecisionClient::new(
                         &models,
                         &self.config,
                         Arc::new(crate::provider::openai::ClientCache::new()),
                     )
-                    .ok()
-                })
-                .map(|client| {
-                    Arc::new(
-                        FlowRuntime::new(store.clone(), Arc::new(client), Arc::new(NoEffects))
-                            .with_records(Arc::new(Records::new(&self.data, &workspace))),
-                    )
                 });
-        Workspace { store, runtime }
+        let (client, diagnostic): (Arc<dyn instinct_flow::DecisionClient>, _) = match client {
+            Ok(client) => (Arc::new(client), None),
+            Err(_) => {
+                // Provider errors can contain destinations or credentials; expose a fixed message.
+                tracing::warn!(
+                    "instinct client unavailable; flow decisions use provider-error fallback"
+                );
+                (
+                    Arc::new(super::client::UnavailableClient),
+                    Some(instinct_flow::Diagnostic::new(
+                        "io",
+                        "instinct client unavailable; decisions use provider-error fallback",
+                        "instinct",
+                    )),
+                )
+            }
+        };
+        let runtime = Some(Arc::new(
+            FlowRuntime::new(store.clone(), client, Arc::new(NoEffects))
+                .with_records(records.clone()),
+        ));
+        Workspace {
+            store,
+            runtime,
+            records,
+            diagnostic,
+        }
+    }
+    pub fn diagnostics(&self, path: &Path) -> Vec<instinct_flow::Diagnostic> {
+        let workspace = self.workspace(path);
+        self.workspaces
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(workspace.clone())
+            .or_insert_with(|| self.entry(workspace))
+            .diagnostic
+            .clone()
+            .into_iter()
+            .collect()
+    }
+    pub fn records(&self, path: &Path) -> Arc<Records> {
+        let workspace = self.workspace(path);
+        self.workspaces
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(workspace.clone())
+            .or_insert_with(|| self.entry(workspace))
+            .records
+            .clone()
     }
     pub fn store(&self, path: PathBuf) -> Arc<FlowStore> {
         let workspace = self.workspace(&path);
@@ -87,16 +132,129 @@ impl Host {
     ) {
         let workspace = self.workspace(path);
         let store = self.store(workspace.clone());
+        let records = self.records(&workspace);
         let runtime = Arc::new(
             FlowRuntime::new(store.clone(), client, Arc::new(NoEffects))
-                .with_records(Arc::new(Records::new(&self.data, &workspace))),
+                .with_records(records.clone()),
         );
         self.workspaces.lock().unwrap().insert(
             workspace,
             Workspace {
                 store,
                 runtime: Some(runtime),
+                records,
+                diagnostic: None,
             },
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn editor_adapter_observes_shared_host_reload() {
+        let temp = tempfile::tempdir().unwrap();
+        let host = Host::new(temp.path().join("config"), temp.path().join("data"), None);
+        let runtime = host.runtime(temp.path()).unwrap();
+        let editor = runtime.with_effects_adapter(Arc::new(NoEffects));
+        let store = host.store(temp.path().canonicalize().unwrap());
+        assert!(Arc::ptr_eq(&editor.store, &store));
+        let text = "[flow]\nversion=1\nname='editor'\non='save'\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='log'\n[node.params]\ntext='test'\n";
+        let saved = store
+            .save(
+                "editor",
+                super::super::store::Location::Global,
+                None,
+                super::super::store::Content::Toml {
+                    toml: text.into(),
+                    templates: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        store.reload().unwrap();
+        assert!(
+            editor.store.snapshot()["editor"]
+                .compiled
+                .definition()
+                .flow
+                .enabled
+        );
+        store
+            .save(
+                "editor",
+                super::super::store::Location::Global,
+                Some(&saved.revision),
+                super::super::store::Content::Toml {
+                    toml: text.replace("on='save'", "on='save'\nenabled=false"),
+                    templates: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        store.reload().unwrap();
+        assert!(
+            !editor.store.snapshot()["editor"]
+                .compiled
+                .definition()
+                .flow
+                .enabled
+        );
+    }
+    #[tokio::test]
+    async fn unavailable_client_keeps_deterministic_rules_and_decision_fallbacks() {
+        let temp = tempfile::tempdir().unwrap();
+        let host = Host::new(
+            temp.path().join("config"),
+            temp.path().join("data"),
+            Some(temp.path().join("missing-models.toml")),
+        );
+        let runtime = host.runtime(temp.path()).unwrap();
+        assert!(!host.diagnostics(temp.path()).is_empty());
+        for (name, node) in [
+            (
+                "deterministic",
+                "type='action'\naction='deny'\n[node.params]\nnote='denied'",
+            ),
+            (
+                "decision",
+                "type='noul'\ninstructions='test'\nthreshold=0.5",
+            ),
+        ] {
+            runtime.store.save(name, super::super::store::Location::Global, None, super::super::store::Content::Toml {
+                toml: format!("[flow]\nversion=1\nname='{name}'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\n{node}\n"), templates: BTreeMap::new()
+            }).unwrap();
+        }
+        runtime.store.reload().unwrap();
+        let verdict = runtime
+            .tool_pre_call(
+                super::super::runtime::ToolCallContextLike {
+                    call_id: "x".into(),
+                    tool: "read".into(),
+                    args: serde_json::json!({}),
+                    agent: "build".into(),
+                    workspace: temp.path().into(),
+                },
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await;
+        assert!(matches!(
+            verdict,
+            super::super::runtime::VerdictLike::Deny { .. }
+        ));
+        assert_eq!(
+            runtime
+                .client()
+                .decide(
+                    instinct_flow::protocol::DecisionRequest {
+                        state: "",
+                        questions: &BTreeMap::new()
+                    },
+                    &tokio_util::sync::CancellationToken::new(),
+                    std::time::Instant::now()
+                )
+                .await
+                .unwrap_err(),
+            instinct_flow::DecisionError::ProviderError
         );
     }
 }

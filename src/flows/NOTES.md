@@ -1,9 +1,24 @@
 # Host integration status
 
-The runtime is shared by root sessions and Studio; remaining limitations are listed below.
+The workspace host is shared by root sessions, Studio and editor execution. Event-local editor
+effects share its activation snapshot, provider and captures; Studio reload reaches the next event.
 
-- Empty builtins are intentional in this branch; builtin flows and editor event adapters are
-  delivered by the editor lane. The replaceable `FlowRuntime::set_effects` sink handles remarks.
+- Provider/config/auth initialization failure keeps a runtime with an unavailable decision client:
+  deterministic rules still execute, decisions fail through provider-error fallback, and Studio
+  list/health expose a sanitized diagnostic. Untrusted directories are excluded before reload IO.
+- Captures use a bounded background writer (32 pending records); queue overflow omits capture and
+  increments `capture_drops` in health. This process-local counter is not durable. Capture/health
+  filesystem IO is not part of blocking admission; capture visibility is eventually consistent.
+- Trust/capture writers share canonical-resource mutexes and stable sibling advisory flocks across
+  atomic replacements. External editors not taking those locks are not serialized.
+- Template maps are validated before writes; `.toml` and unsafe sibling names are refused. Existing
+  files outside the checked document revision cannot change; shared templates cannot be modified.
+- Host redaction covers event payloads, selected inputs, batch states and all persisted/returned
+  record text. Selected evidence retains engine redaction markers for missing-capture replay.
+- Migration validates the full conversion before installation and uses no-replace renames. Reads
+  always exclude expired captures. Physical startup pruning and freezing git/intent sources across
+  separate collection frontiers remain follow-ups.
+
 - `ContextSnapshot` accepts a caller session snapshot and collects workspace git and intent inputs.
   Conversation/editor inputs remain absent. Root tool hooks and message/turn adapters pass
   the actual session snapshot; the instinct model is not the session model. Intent collection
@@ -15,7 +30,7 @@ The runtime is shared by root sessions and Studio; remaining limitations are lis
   and files, not system-owned ancestors such as `/home`. Capture workspace directories require
   0700; trust grants use RFC3339 and writes use 0600.
 - Multi-file save errors currently do not enumerate already-written template files. Template deletion
-  is conservative: templates are never deleted. Directory fsync and cross-process write locking remain.
+  is conservative: templates are never deleted. Directory fsync remains.
 - Blocking effects are applied after combination, ordered by flow name; native verdict application
   records do not yet describe the agent's eventual permission-resolution outcome.
 - Redaction conservatively marks entire inputs containing common token prefixes and intent read

@@ -218,8 +218,10 @@ impl FlowStore {
             .unwrap_or(false)
     }
     pub fn set_trust(&self, trusted: bool) -> Result<(), StoreError> {
-        let _guard = self.write.lock().map_err(|_| StoreError::reason("io"))?;
         let dir = Directory::open(&self.config_dir, true)?;
+        let lock = super::fs::resource_lock(&self.config_dir.join("flows-trust.json"));
+        let _guard = lock.lock().map_err(|_| StoreError::reason("io"))?;
+        let _file_lock = dir.lock(".flows-trust.lock")?;
         let mut file = match dir.read("flows-trust.json", 262144, true) {
             Ok(_) => self.trust_file()?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => TrustFile {
@@ -321,14 +323,21 @@ impl FlowStore {
         })
     }
     pub fn list(&self) -> Result<Vec<FlowSummary>, StoreError> {
-        Ok(self.documents()?.iter().map(Document::summary).collect())
+        Ok(self
+            .documents(true)?
+            .iter()
+            .map(Document::summary)
+            .collect())
     }
-    fn documents(&self) -> Result<Vec<Document>, StoreError> {
+    fn documents(&self, include_workspace: bool) -> Result<Vec<Document>, StoreError> {
         let mut documents = super::builtin::definitions()
             .into_iter()
             .map(|(d, _)| self.get(&d.flow.name, Location::Builtin))
             .collect::<Result<Vec<_>, _>>()?;
         for location in [Location::Global, Location::Workspace] {
+            if location == Location::Workspace && !include_workspace {
+                continue;
+            }
             let path = self.directory(location)?;
             let dir = match Directory::open(&path, false) {
                 Ok(d) => d,
@@ -357,8 +366,8 @@ impl FlowStore {
     }
     pub fn reload(&self) -> Result<(), StoreError> {
         let _guard = self.write.lock().map_err(|_| StoreError::reason("io"))?;
-        let documents = self.documents()?;
         let trusted = self.trusted();
+        let documents = self.documents(trusted)?;
         let mut candidate = BTreeMap::new();
         let mut revisions = BTreeMap::new();
         let mut errors = vec![];
@@ -425,6 +434,11 @@ impl FlowStore {
         if location == Location::Builtin {
             return Err(StoreError::reason("read_only"));
         }
+        let directory = self.directory(location)?;
+        let dir = Directory::open(&directory, true)?;
+        let resource = super::fs::resource_lock(&directory.join(".flows.lock"));
+        let _resource_guard = resource.lock().map_err(|_| StoreError::reason("io"))?;
+        let _file_lock = dir.lock(".flows.lock")?;
         match (self.get(name, location), expected) {
             (Ok(_), None) => return Err(StoreError::reason("already_exists")),
             (Ok(d), Some(r)) if d.revision != r => return Err(StoreError::reason("stale")),
@@ -447,7 +461,48 @@ impl FlowStore {
         if text.len() > 262144 || v.templates.values().any(|t| t.len() > 65536) {
             return Err(StoreError::reason("invalid"));
         }
-        let dir = Directory::open(&self.directory(location)?, true)?;
+        // Validate the entire write set before opening or writing any destination.
+        for template in v.templates.keys() {
+            if template.is_empty()
+                || template.len() > 128
+                || template.starts_with('.')
+                || template.ends_with(".toml")
+                || !template
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+            {
+                return Err(StoreError::reason("invalid"));
+            }
+        }
+        let previous = self.get(name, location).ok();
+        for (template, body) in &v.templates {
+            match dir.read(template, 65536, false) {
+                Ok(current) if &current != body => {
+                    // The document revision covers only its original referenced templates.
+                    // Never overwrite an existing file outside that checked write set.
+                    if !previous
+                        .as_ref()
+                        .is_some_and(|d| d.templates.contains_key(template))
+                    {
+                        return Err(StoreError::reason("stale"));
+                    }
+                    for file in dir.names()? {
+                        if let Some(other) = file.strip_suffix(".toml") {
+                            if other == name {
+                                continue;
+                            }
+                            let document = self.get(other, location)?;
+                            if document.templates.contains_key(template) {
+                                return Err(StoreError::reason("stale"));
+                            }
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
         for (template, body) in &v.templates {
             dir.write(template, body.as_bytes())?;
         }
@@ -456,11 +511,16 @@ impl FlowStore {
     }
     pub fn delete(&self, name: &str, location: Location, expected: &str) -> Result<(), StoreError> {
         let _guard = self.write.lock().map_err(|_| StoreError::reason("io"))?;
+        let directory = self.directory(location)?;
+        let dir = Directory::open(&directory, false)?;
+        let resource = super::fs::resource_lock(&directory.join(".flows.lock"));
+        let _resource_guard = resource.lock().map_err(|_| StoreError::reason("io"))?;
+        let _file_lock = dir.lock(".flows.lock")?;
         let document = self.get(name, location)?;
         if document.revision != expected {
             return Err(StoreError::reason("stale"));
         }
-        Directory::open(&self.directory(location)?, false)?.remove(&format!("{name}.toml"))?;
+        dir.remove(&format!("{name}.toml"))?;
         Ok(())
     }
 }
@@ -506,6 +566,129 @@ pub(crate) fn timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn untrusted_files_are_excluded_before_enumeration() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let store = FlowStore::new(temp.path().into(), temp.path().join("config"));
+        store
+            .save(
+                "guard",
+                Location::Global,
+                None,
+                content("guard", "no_objection"),
+            )
+            .unwrap();
+        std::fs::create_dir_all(temp.path().join(".navai")).unwrap();
+        symlink("/not-readable", temp.path().join(".navai/flows")).unwrap();
+        store.reload().unwrap();
+        assert!(store.snapshot().contains_key("guard"));
+        let restarted = FlowStore::new(temp.path().into(), temp.path().join("config"));
+        assert!(restarted.snapshot().contains_key("guard"));
+    }
+    #[test]
+    fn independent_stores_serialize_trust_updates() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("config");
+        let stores: Vec<_> = (0..16)
+            .map(|i| FlowStore::new(temp.path().join(format!("repo-{i}")), config.clone()))
+            .collect();
+        std::thread::scope(|scope| {
+            for store in &stores {
+                scope.spawn(move || {
+                    store.set_trust(true).unwrap();
+                });
+            }
+        });
+        assert!(stores.iter().all(FlowStore::trusted));
+        std::thread::scope(|scope| {
+            for store in &stores {
+                scope.spawn(move || {
+                    store.set_trust(false).unwrap();
+                });
+            }
+        });
+        assert!(stores.iter().all(|s| !s.trusted()));
+        assert_eq!(stores[0].trust_file().unwrap().workspaces.len(), 16);
+    }
+    #[test]
+    fn template_write_set_refuses_definitions_and_unchecked_existing_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = FlowStore::new(temp.path().into(), temp.path().join("config"));
+        let mut draft = content("a", "no_objection");
+        if let Content::Toml { templates, .. } = &mut draft {
+            templates.insert("b.toml".into(), "overwrite".into());
+        }
+        assert_eq!(
+            store
+                .save("a", Location::Global, None, draft)
+                .unwrap_err()
+                .reason,
+            "invalid"
+        );
+        assert!(!temp.path().join("config/flows/b.toml").exists());
+        let dir = Directory::open(&temp.path().join("config/flows"), true).unwrap();
+        dir.write("shared.txt", b"external change").unwrap();
+        let mut draft = content("a", "no_objection");
+        if let Content::Toml { templates, .. } = &mut draft {
+            templates.insert("shared.txt".into(), "old".into());
+        }
+        assert_eq!(
+            store
+                .save("a", Location::Global, None, draft)
+                .unwrap_err()
+                .reason,
+            "stale"
+        );
+        assert_eq!(
+            dir.read("shared.txt", 100, false).unwrap(),
+            "external change"
+        );
+    }
+    #[test]
+    fn shared_template_modification_requires_an_unshared_write_set() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = FlowStore::new(temp.path().into(), temp.path().join("config"));
+        let draft = |name: &str, body: &str| {
+            Content::Toml {
+            toml: format!("[flow]\nversion=1\nname='{name}'\non='save'\nstart=['a']\n[[node]]\nid='a'\ntype='noul'\ninstructions='test'\nthreshold=0.5\nstate_template='shared.txt'\n"),
+            templates: BTreeMap::from([("shared.txt".into(), body.into())]),
+        }
+        };
+        let a = store
+            .save("a", Location::Global, None, draft("a", "original"))
+            .unwrap();
+        store
+            .save("b", Location::Global, None, draft("b", "original"))
+            .unwrap();
+        assert_eq!(
+            store
+                .save(
+                    "a",
+                    Location::Global,
+                    Some(&a.revision),
+                    draft("a", "changed")
+                )
+                .unwrap_err()
+                .reason,
+            "stale"
+        );
+        let dir = Directory::open(&store.directory(Location::Global).unwrap(), false).unwrap();
+        dir.write("shared.txt", b"external").unwrap();
+        assert_eq!(
+            store
+                .save(
+                    "a",
+                    Location::Global,
+                    Some(&a.revision),
+                    draft("a", "original")
+                )
+                .unwrap_err()
+                .reason,
+            "stale"
+        );
+        assert_eq!(dir.read("shared.txt", 100, false).unwrap(), "external");
+    }
     fn content(name: &str, action: &str) -> Content {
         Content::Toml {toml:format!("[flow]\nversion=1\nname='{name}'\non='tool.pre_call'\nblocking=true\nbudget_ms=500\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='{action}'\n[node.params]\n"),templates:BTreeMap::new()}
     }

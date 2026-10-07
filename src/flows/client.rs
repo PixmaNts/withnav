@@ -3,6 +3,28 @@ use instinct_flow::{protocol::DecisionRequest, *};
 use std::{path::Path, sync::Arc, time::Instant};
 use tokio_util::sync::CancellationToken;
 
+/// Initialization failure must not uninstall deterministic rules or their tool hook.
+pub struct UnavailableClient;
+impl DecisionClient for UnavailableClient {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities { images: false }
+    }
+    fn identity(&self) -> ClientIdentity {
+        ClientIdentity {
+            model: "unavailable".into(),
+            variant: None,
+        }
+    }
+    fn decide<'a>(
+        &'a self,
+        _: DecisionRequest<'a>,
+        _: &'a CancellationToken,
+        _: Instant,
+    ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>> {
+        Box::pin(async { Err(DecisionError::ProviderError) })
+    }
+}
+
 pub struct NavaiDecisionClient {
     client: instinct_flow::SystemOneClient,
     identity: ClientIdentity,

@@ -1,7 +1,6 @@
 //! Studio's private JSON adapter. Every operation authorizes an existing workspace.
 use super::AppState;
 use crate::flows::{
-    records::Records,
     runtime::ContextSnapshot,
     store::{validate, Content, FlowStore, Location, StoreError},
 };
@@ -91,7 +90,14 @@ async fn dispatch(
     body: Bytes,
 ) -> Response {
     match handle(&state, &query, &headers, peer, method, &tail, &body).await {
-        Ok((status, value)) => (status, Json(value)).into_response(),
+        Ok((status, mut value)) => {
+            if matches!(tail.as_str(), "sample" | "replay")
+                || tail.split('/').nth(1) == Some("runs")
+            {
+                crate::flows::redaction::response(&mut value);
+            }
+            (status, Json(value)).into_response()
+        }
         Err(e) => error(e),
     }
 }
@@ -184,7 +190,7 @@ async fn handle(
     network(state, headers, peer)?;
     let workspace = workspace(state, query).await?;
     let store = state.flows.store(workspace.clone());
-    let records = Records::new(&state.flows.data, &workspace);
+    let records = state.flows.records(&workspace);
     let data: Value = if body.is_empty() {
         json!({})
     } else {
@@ -195,7 +201,9 @@ async fn handle(
         ("GET", "catalogue") => ok(
             serde_json::to_value(crate::flows::catalogue::catalogue()).map_err(|_| invalid())?
         ),
-        ("GET", "") => ok(json!({"flows":store.list()?})),
+        ("GET", "") => {
+            ok(json!({"flows":store.list()?,"errors":state.flows.diagnostics(&workspace)}))
+        }
         ("POST", "") => {
             let document = store.save(
                 required(&data, "name")?,
@@ -262,6 +270,7 @@ async fn handle(
             )
             .await;
             outcome.trace.mode = "sample".into();
+            crate::flows::redaction::record(&mut outcome.trace);
             records.append(&outcome.trace)?;
             ok(json!(outcome.trace))
         }
@@ -278,7 +287,11 @@ async fn handle(
                 .ok_or_else(|| StoreError::reason("not_found"))?;
             ok(json!(replay(&compiled, &record, &record.identity)))
         }
-        ("GET", "health") => ok(records.health()?),
+        ("GET", "health") => {
+            let mut health = records.health()?;
+            health["errors"] = json!(state.flows.diagnostics(&workspace));
+            ok(health)
+        }
         _ => {
             let parts: Vec<_> = tail.split('/').collect();
             if parts.len() >= 2 && parts[1] == "runs" && method == Method::GET {

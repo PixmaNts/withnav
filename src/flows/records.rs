@@ -6,11 +6,17 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::{
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc::{sync_channel, SyncSender},
+        Arc, Mutex, OnceLock,
+    },
 };
 pub struct Records {
     path: PathBuf,
-    write: Mutex<()>,
+    write: Arc<Mutex<()>>,
+    worker: OnceLock<SyncSender<RunRecord>>,
+    dropped: Arc<AtomicU64>,
 }
 #[derive(Default, Serialize, Deserialize)]
 struct Health {
@@ -26,6 +32,39 @@ struct HealthRow {
     cost_unknown_runs: u64,
 }
 impl Records {
+    /// Nonblocking admission: bounded queue, no private filesystem access on the caller.
+    pub fn enqueue(&self, record: RunRecord) {
+        let sender = self.worker.get_or_init(|| {
+            let (sender, receiver) = sync_channel::<RunRecord>(32);
+            let writer = Self {
+                path: self.path.clone(),
+                write: self.write.clone(),
+                worker: OnceLock::new(),
+                dropped: self.dropped.clone(),
+            };
+            let dropped = self.dropped.clone();
+            let result = std::thread::Builder::new()
+                .name("flow-captures".into())
+                .spawn(move || {
+                    while let Ok(record) = receiver.recv() {
+                        let failed = writer.append(&record).is_err();
+                        if failed {
+                            dropped.fetch_add(1, Ordering::Relaxed);
+                        }
+                        if writer.update_health(&record, failed).is_err() {
+                            tracing::warn!("private flow health update failed");
+                        }
+                    }
+                });
+            if result.is_err() {
+                tracing::warn!("private flow capture worker unavailable");
+            }
+            sender
+        });
+        if sender.try_send(record).is_err() {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
     fn read_health(&self) -> std::io::Result<Health> {
         let dir = match Directory::private(&self.path, false) {
             Ok(dir) => dir,
@@ -47,6 +86,8 @@ impl Records {
             .write
             .lock()
             .map_err(|_| std::io::Error::other("health writer poisoned"))?;
+        let directory = Directory::private(&self.path, true)?;
+        let _file_lock = directory.lock(".records.lock")?;
         let mut health = self.read_health()?;
         let hour = time::OffsetDateTime::now_utc().unix_timestamp() / 3600;
         health.hours.retain(|h, _| *h > hour - 24);
@@ -97,16 +138,19 @@ impl Records {
         let start = time::OffsetDateTime::from_unix_timestamp((hour - 23) * 3600)
             .map_err(std::io::Error::other)?;
         Ok(
-            serde_json::json!({"window_start":start.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),"window_end":end.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),"capture_failures":failures,"flows":flows}),
+            serde_json::json!({"window_start":start.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),"window_end":end.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),"capture_failures":failures,"capture_drops":self.dropped.load(Ordering::Relaxed),"flows":flows}),
         )
     }
     pub fn new(data: &Path, workspace: &Path) -> Self {
+        let path = data.join("flows/runs").join(format!(
+            "{:x}",
+            Sha256::digest(workspace.as_os_str().as_encoded_bytes())
+        ));
         Self {
-            path: data.join("flows/runs").join(format!(
-                "{:x}",
-                Sha256::digest(workspace.as_os_str().as_encoded_bytes())
-            )),
-            write: Mutex::new(()),
+            write: super::fs::resource_lock(&path.join("runs.jsonl")),
+            path,
+            worker: OnceLock::new(),
+            dropped: Arc::new(AtomicU64::new(0)),
         }
     }
     pub fn read(&self) -> std::io::Result<Vec<RunRecord>> {
@@ -118,17 +162,27 @@ impl Records {
         match dir.read("runs.jsonl", 32 * 1024 * 1024, true) {
             Ok(text) => Ok(text
                 .lines()
-                .filter_map(|line| serde_json::from_str(line).ok())
+                .filter_map(|line| serde_json::from_str::<RunRecord>(line).ok())
+                .filter(retained)
+                .map(|mut record| {
+                    super::redaction::record(&mut record);
+                    record
+                })
                 .collect()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
             Err(e) => Err(e),
         }
     }
     pub fn append(&self, record: &RunRecord) -> std::io::Result<()> {
+        let mut record = record.clone();
+        super::redaction::record(&mut record);
+        let record = &record;
         let _guard = self
             .write
             .lock()
             .map_err(|_| std::io::Error::other("capture writer poisoned"))?;
+        let directory = Directory::private(&self.path, true)?;
+        let _file_lock = directory.lock(".records.lock")?;
         let size = serde_json::to_vec(record)
             .map_err(std::io::Error::other)?
             .len();
@@ -137,14 +191,7 @@ impl Records {
         }
         let mut records = self.read()?;
         records.push(record.clone());
-        let cutoff = time::OffsetDateTime::now_utc() - time::Duration::days(7);
-        records.retain(|r| {
-            time::OffsetDateTime::parse(
-                &r.started_at,
-                &time::format_description::well_known::Rfc3339,
-            )
-            .is_ok_and(|t| t >= cutoff)
-        });
+        records.retain(retained);
         let mut lines: Vec<String> = records
             .into_iter()
             .filter_map(|r| serde_json::to_string(&r).ok())
@@ -160,10 +207,68 @@ impl Records {
             .write("runs.jsonl", format!("{}\n", lines.join("\n")).as_bytes())
     }
 }
+fn retained(record: &RunRecord) -> bool {
+    let cutoff = time::OffsetDateTime::now_utc() - time::Duration::days(7);
+    time::OffsetDateTime::parse(
+        &record.started_at,
+        &time::format_description::well_known::Rfc3339,
+    )
+    .is_ok_and(|t| t >= cutoff)
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stalled_capture_writer_never_blocks_admission_and_counts_overflow() {
+        let temp = tempfile::tempdir().unwrap();
+        let records = Records::new(temp.path(), temp.path());
+        let guard = records.write.lock().unwrap();
+        let started = std::time::Instant::now();
+        for _ in 0..100 {
+            records.enqueue(fixture());
+        }
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+        assert!(records.dropped.load(Ordering::Relaxed) >= 67);
+        drop(guard);
+    }
+    pub(crate) fn fixture() -> RunRecord {
+        serde_json::from_value(serde_json::json!({"version":1,"run_id":"test","flow_name":"test","definition_digest":"test","mode":"live","started_at":super::super::store::timestamp(),"duration_ms":0,"budget_ms":100,"event":{"trigger":"save","payload":{}},"identity":{"model":"test","variant":null},"inputs":{},"nodes":[],"batches":[],"status":"success","failure":null,"actions":[],"fallback_actions":[],"usage":null,"cost_usd":null,"application":{"status":"not_applied","actions":[]}})).unwrap()
+    }
+    #[test]
+    fn independent_record_instances_keep_concurrent_appends() {
+        let temp = tempfile::tempdir().unwrap();
+        std::thread::scope(|scope| {
+            for i in 0..24 {
+                let path = temp.path();
+                scope.spawn(move || {
+                    let records = Records::new(path, path);
+                    let mut record = fixture();
+                    record.run_id = i.to_string();
+                    records.append(&record).unwrap();
+                });
+            }
+        });
+        assert_eq!(
+            Records::new(temp.path(), temp.path()).read().unwrap().len(),
+            24
+        );
+    }
+    #[test]
+    fn read_excludes_expired_capture_without_an_append() {
+        let temp = tempfile::tempdir().unwrap();
+        let records = Records::new(temp.path(), temp.path());
+        let mut record = fixture();
+        record.started_at = "2020-01-01T00:00:00Z".into();
+        Directory::private(&records.path, true)
+            .unwrap()
+            .write(
+                "runs.jsonl",
+                serde_json::to_string(&record).unwrap().as_bytes(),
+            )
+            .unwrap();
+        assert!(records.read().unwrap().is_empty());
+    }
     #[test]
     fn health_is_independent_of_retained_captures_and_expires() {
         let temp = tempfile::tempdir().unwrap();

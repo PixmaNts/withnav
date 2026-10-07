@@ -396,29 +396,7 @@ impl ContextSnapshot {
 
 /// Conservative whole-input marking; values stay available for live evaluation,
 /// while the engine replaces marked evidence with its redaction marker in captures.
-fn contains_secret(value: &Value) -> bool {
-    match value {
-        Value::String(text) => text
-            .split(|c: char| c.is_whitespace() || matches!(c, '\"' | '\'' | ',' | ':' | '='))
-            .any(|word| {
-                [
-                    "sk-",
-                    "ghp_",
-                    "github_pat_",
-                    "gho_",
-                    "xoxb-",
-                    "xoxp-",
-                    "AKIA",
-                    "eyJ",
-                ]
-                .iter()
-                .any(|prefix| word.starts_with(prefix) && word.len() >= 20)
-            }),
-        Value::Array(values) => values.iter().any(contains_secret),
-        Value::Object(values) => values.values().any(contains_secret),
-        _ => false,
-    }
-}
+use super::redaction::contains_secret;
 impl InputSource for ContextSnapshot {
     fn collect<'a>(
         &'a self,
@@ -532,6 +510,16 @@ pub struct FlowRuntime {
     records: Option<Arc<super::records::Records>>,
 }
 impl FlowRuntime {
+    /// Event-local editor effects share activation, client, outage and capture ownership.
+    pub fn with_effects_adapter(&self, effects: Arc<dyn FlowEffects>) -> Arc<Self> {
+        Arc::new(Self {
+            store: self.store.clone(),
+            client: self.client.clone(),
+            effects: std::sync::RwLock::new(effects),
+            outage: self.outage.clone(),
+            records: self.records.clone(),
+        })
+    }
     /// Editor hosts can replace the no-op sink without replacing the workspace runtime.
     pub fn set_effects(&self, effects: Arc<dyn FlowEffects>) {
         *self.effects.write().unwrap_or_else(|e| e.into_inner()) = effects;
@@ -705,13 +693,7 @@ impl FlowRuntime {
                     outcome.trace.application = report;
                 }
                 if let Some(records) = records.filter(|_| !is_blocking) {
-                    let failed = records.append(&outcome.trace).is_err();
-                    if records.update_health(&outcome.trace, failed).is_err() {
-                        tracing::warn!("private flow health update failed");
-                    }
-                    if failed {
-                        tracing::warn!("private flow capture failed");
-                    }
+                    records.enqueue(outcome.trace.clone());
                 }
                 outcome
             };
@@ -804,13 +786,7 @@ impl FlowRuntime {
                 outcome.trace.application = report;
             }
             if let Some(records) = &self.records {
-                let failed = records.append(&outcome.trace).is_err();
-                if records.update_health(&outcome.trace, failed).is_err() {
-                    tracing::warn!("private flow health update failed");
-                }
-                if failed {
-                    tracing::warn!("private flow capture failed");
-                }
+                records.enqueue(outcome.trace.clone());
             }
         }
         (verdict, handles)

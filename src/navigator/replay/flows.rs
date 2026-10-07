@@ -137,6 +137,8 @@ pub fn capture(value: &Value, definition: &CompiledDefinition) -> anyhow::Result
                 .map(str::to_owned),
         },
         inputs: BTreeMap::new(),
+        // The legacy decision log never redacted event fields, so no event path is unavailable.
+        redacted_event_paths: Vec::new(),
         nodes,
         batches: vec![BatchRecord {
             id: "legacy".into(),

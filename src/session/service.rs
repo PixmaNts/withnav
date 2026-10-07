@@ -319,6 +319,9 @@ struct PreparedSession {
 /// Frozen `GET /v1/sessions/:id` body.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionSummary {
+    pub bypass: bool,
+    pub bypass_seq: u64,
+    pub incarnation: Option<String>,
     pub editor: bool,
     pub read_only: bool,
     pub resume_disabled_reason: Option<String>,
@@ -1764,7 +1767,15 @@ impl Service {
         let metadata = self.history.meta(id).await.map_err(ServerError::History)?;
         let editor = metadata.as_ref().is_some_and(|meta| meta.editor);
         let resume_disabled_reason = metadata.and_then(|meta| meta.resume_disabled_reason);
+        let bypass = *handle
+            .status
+            .bypass
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         Ok(SessionSummary {
+            bypass: bypass.enabled,
+            bypass_seq: bypass.seq,
+            incarnation: Some(handle.incarnation.to_string()),
             editor,
             read_only: resume_disabled_reason.is_some(),
             session_id: id.to_string(),
@@ -1820,6 +1831,9 @@ impl Service {
             meta.provenance.as_ref(),
         );
         Ok(SessionSummary {
+            bypass: false,
+            bypass_seq: meta.last_seq,
+            incarnation: None,
             editor: meta.editor,
             read_only: meta.resume_disabled_reason.is_some(),
             session_id: id.to_string(),
@@ -1840,6 +1854,33 @@ impl Service {
             promptable: meta.resume_disabled_reason.is_none(),
             resume_disabled_reason: meta.resume_disabled_reason,
         })
+    }
+
+    pub async fn set_bypass(
+        &self,
+        id: SessionId,
+        enabled: bool,
+        origin: runtime::bypass::BypassOrigin,
+    ) -> Result<runtime::bypass::BypassReply, ServerError> {
+        let handle = self.routable_handle(id).await?;
+        if handle.parent_session_id.is_some() {
+            return Err(ServerError::ChildReadOnly);
+        }
+        let history = self.history.clone();
+        handle
+            .status
+            .set_bypass(
+                enabled,
+                origin,
+                Box::new(move |envelope| {
+                    Box::pin(async move {
+                        history.append_event(id, envelope);
+                        history.flush().await
+                    })
+                }),
+            )
+            .await
+            .map_err(ServerError::History)
     }
 
     pub(super) fn lock_sessions(&self) -> MutexGuard<'_, HashMap<SessionId, SessionHandle>> {

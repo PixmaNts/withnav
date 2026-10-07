@@ -9,6 +9,7 @@
 //! inbox wait; `session.end` is sequenced ONLY at teardown via
 //! [`Sequencer::close_session`] — never on a natural turn end.
 
+pub mod bypass;
 mod compact;
 mod deferred;
 mod delivery;
@@ -100,6 +101,7 @@ struct PermissionSlot {
 /// into the actor.
 #[derive(Debug, Default)]
 pub struct RuntimeStatus {
+    pub bypass: Arc<Mutex<crate::agent::actor::BypassState>>,
     #[cfg(debug_assertions)]
     pub(crate) driver_task_probe: Mutex<Option<String>>,
     #[cfg(test)]
@@ -806,6 +808,8 @@ pub fn spawn_with_completion(
     completion: Option<CompletionHook>,
 ) -> tokio::task::JoinHandle<AgentActor> {
     status.init_ask(&actor);
+    let mut actor = actor;
+    actor.bypass = status.bypass.clone();
     tokio::spawn(runtime_loop(
         session_id,
         actor,
@@ -938,6 +942,7 @@ async fn runtime_loop(
                 // Between turns: run it now, publish its result, then answer.
                 match control {
                     Control::Steer => {
+
                         if actor.has_pending() || status.progress_parked()
                             || status.steering.queue.lock().unwrap_or_else(|e| e.into_inner()).is_empty() { continue; }
                         actor.transcript = status.steering.apply(actor.transcript.clone());
@@ -953,6 +958,7 @@ async fn runtime_loop(
                         if status.awaiting_fresh_driver.load(std::sync::atomic::Ordering::Acquire) || status.watchdog.root_hold().is_some() { continue; }
                         Some(Inbound::Continue)
                     },
+                    Control::Bypass(request) => { bypass::apply(&status, &sequencer, request).await; continue; }
                     Control::Delivery => { delivery_waiting = true; continue; }
                     Control::DeliverySteer => { delivery_waiting=true; continue; }
                     Control::DeliveryInterrupt(id) => { if status.notice_pending(id).await { delivery_waiting=true; } continue; }
@@ -1202,6 +1208,7 @@ async fn runtime_loop(
                     Some(control) = recv_control(&mut control) => {
                         // A turn is running: accept now, run it at its end.
                         match control {
+                            Control::Bypass(request) => { bypass::apply(&status, &sequencer, request).await; }
                             Control::Steer => {}
                             Control::Interrupt(id) => {
                                 if !status.steering.has_interrupt(id) { continue; }

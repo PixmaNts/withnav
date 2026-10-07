@@ -27,6 +27,57 @@ fn state(tmp: &std::path::Path) -> AppState {
         .state()
 }
 
+#[tokio::test]
+async fn bypass_is_ephemeral_isolated_and_idempotently_sequenced() {
+    use navai::bus::runtime::bypass::BypassOrigin;
+    let (tmp, ws) = tmp_ws();
+    let state = state(tmp.path());
+    let first = state.create_session(&ws, None, false).await.unwrap();
+    let second = state.create_session(&ws, None, false).await.unwrap();
+    let initial = state.session_summary(first).await.unwrap();
+    assert!(!initial.bypass);
+    assert!(initial.incarnation.is_some());
+    let enabled = state
+        .set_bypass(first, true, BypassOrigin::Http)
+        .await
+        .unwrap();
+    assert!(enabled.enabled && enabled.changed);
+    let repeated = state
+        .set_bypass(first, true, BypassOrigin::Http)
+        .await
+        .unwrap();
+    assert!(!repeated.changed);
+    assert_eq!(repeated.bypass_seq, enabled.bypass_seq);
+    let snapshot = state.session_summary(first).await.unwrap();
+    assert!(snapshot.bypass);
+    assert_eq!(snapshot.bypass_seq, enabled.bypass_seq);
+    assert_eq!(snapshot.incarnation, initial.incarnation);
+    assert!(!state.session_summary(second).await.unwrap().bypass);
+    let disabled = state
+        .set_bypass(first, false, BypassOrigin::Cli)
+        .await
+        .unwrap();
+    assert!(!disabled.enabled && disabled.changed);
+    assert!(disabled.bypass_seq > enabled.bypass_seq);
+    state.history().flush().await.unwrap();
+    let sub = state.subscribe(first, None).await.unwrap();
+    let navai::bus::ResumeOutcome::Replay(events) = sub.replay else {
+        panic!("expected replay");
+    };
+    let toggles: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == "session.bypass")
+        .collect();
+    assert_eq!(toggles.len(), 2);
+    assert_eq!(toggles[0].payload, json!({"enabled":true,"by":"user:http"}));
+    assert_eq!(toggles[1].payload, json!({"enabled":false,"by":"user:cli"}));
+    state.close_session(first).await.unwrap();
+    let stored = state.session_summary(first).await.unwrap();
+    assert!(!stored.bypass);
+    assert_eq!(stored.incarnation, None);
+    assert_eq!(stored.bypass_seq, stored.current_seq);
+}
+
 async fn results(state: &AppState, id: ulid::Ulid) -> Vec<EventEnvelope> {
     state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");

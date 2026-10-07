@@ -558,7 +558,7 @@ pub fn event_to_ui(envelope: &EventEnvelope) -> Option<UiEvent> {
         | EventKind::SubagentDone
         | EventKind::SubagentWatchdog
         | EventKind::ContextCompacted => None,
-        EventKind::ContextUpdated => None,
+        EventKind::ContextUpdated | EventKind::SessionBypass => None,
     }
 }
 

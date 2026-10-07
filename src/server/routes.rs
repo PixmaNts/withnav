@@ -432,6 +432,9 @@ async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> R
 /// registry's liveness.
 #[derive(Debug, Serialize)]
 pub struct SessionListEntry {
+    pub bypass: bool,
+    pub bypass_seq: u64,
+    pub incarnation: Option<String>,
     pub editor: bool,
     pub read_only: bool,
     pub resume_disabled_reason: Option<String>,
@@ -489,6 +492,9 @@ async fn list_sessions(
                     Err(error) => return error_response(error),
                 };
                 sessions.push(SessionListEntry {
+                    bypass: summary.bypass,
+                    bypass_seq: summary.bypass_seq,
+                    incarnation: summary.incarnation,
                     editor: summary.editor,
                     read_only: row.read_only,
                     resume_disabled_reason: row.resume_disabled_reason,

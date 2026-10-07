@@ -66,12 +66,33 @@ impl FlowEffects for EditorEffects {
                         .get(if wake { "note" } else { "text" })
                         .and_then(serde_json::Value::as_str)
                         .ok_or_else(|| ApplyError("missing flow text".into()))?;
-                    runtime
+                    let result = runtime
                         .conversation
                         .as_ref()
                         .ok_or_else(|| ApplyError("no editor conversation".into()))?
-                        .post_flow_note(text.into(), flow.into(), run_id.into(), wake)
-                        .map_err(ApplyError)?;
+                        .post_flow_note(text.into(), flow.into(), run_id.into(), wake);
+                    if let Err(error) = result {
+                        if error == "wake cooldown" {
+                            pending.requested_action = Some(if wake {
+                                "wake_cognition"
+                            } else {
+                                "inject_note"
+                            });
+                            pending.finish(
+                                &runtime.log,
+                                crate::navigator::log::DeliveryOutcome::None {
+                                    reason: "wake cooldown",
+                                },
+                            );
+                        }
+                        return Err(ApplyError(error));
+                    }
+                    if wake {
+                        if let Some(doc) = runtime.documents.lock().await.get_mut(&uri) {
+                            doc.last_wake = Some(tokio::time::Instant::now());
+                            doc.rebase_to(&ctx.text);
+                        }
+                    }
                     pending.requested_action = Some(if wake {
                         "wake_cognition"
                     } else {
@@ -290,6 +311,58 @@ mod tests {
     async fn editor_wake_and_inject_note_use_the_typed_flow_poster_not_message_admission() {
         struct Silent;
         struct Server;
+        struct Stuck;
+        impl instinct_flow::DecisionClient for Stuck {
+            fn capabilities(&self) -> instinct_flow::Capabilities {
+                instinct_flow::Capabilities { images: false }
+            }
+            fn identity(&self) -> instinct_flow::ClientIdentity {
+                instinct_flow::ClientIdentity {
+                    model: "test/stuck".into(),
+                    variant: None,
+                }
+            }
+            fn decide<'a>(
+                &'a self,
+                request: instinct_flow::protocol::DecisionRequest<'a>,
+                _: &'a CancellationToken,
+                _: std::time::Instant,
+            ) -> BoxFuture<
+                'a,
+                Result<instinct_flow::protocol::DecisionResponse, instinct_flow::DecisionError>,
+            > {
+                Box::pin(async move {
+                    use instinct_flow::protocol::{Answer, Question};
+                    Ok(instinct_flow::protocol::DecisionResponse {
+                        answers: request
+                            .questions
+                            .iter()
+                            .map(|(id, question)| {
+                                let answer = match question {
+                                    Question::Noul { .. } => Answer::Noul {
+                                        noul: if id == "stuck" { 1.0 } else { 0.0 },
+                                    },
+                                    Question::Choice { .. } => Answer::Choice {
+                                        choice: "cognition".into(),
+                                        probabilities: BTreeMap::from([
+                                            ("cognition".into(), 1.0),
+                                            ("metacognition".into(), 0.0),
+                                            ("silent".into(), 0.0),
+                                        ]),
+                                        confidence: 1.0,
+                                    },
+                                    Question::Score { .. } => {
+                                        panic!("editor defaults do not score")
+                                    }
+                                };
+                                (id.clone(), answer)
+                            })
+                            .collect(),
+                        usage: None,
+                    })
+                })
+            }
+        }
         impl tower_lsp_server::LanguageServer for Server {
             async fn initialize(
                 &self,
@@ -323,9 +396,14 @@ mod tests {
         );
         let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = observed.clone();
+        let suppress = Arc::new(AtomicBool::new(false));
+        let suppress_post = suppress.clone();
         feed.register_flow_poster(
             id,
             Arc::new(move |text, flow, run_id, wake| {
+                if suppress_post.load(Ordering::SeqCst) {
+                    return Err("wake cooldown".into());
+                }
                 sink.lock().unwrap().push((text, flow, run_id, wake));
                 Ok(())
             }),
@@ -337,6 +415,14 @@ mod tests {
             json!({"source":"user:test", "content":"driver task"}),
         ))
         .await;
+        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        let factory: Arc<crate::navigator::FlowFactory> = Arc::new(move |effects| {
+            Arc::new(crate::flows::runtime::FlowRuntime::new(
+                store.clone(),
+                Arc::new(Stuck),
+                effects,
+            ))
+        });
         let mut runtime = None;
         let (_service, _socket) = tower_lsp_server::LspService::new(|client| {
             let rt = Runtime::new(
@@ -345,7 +431,8 @@ mod tests {
                     Arc::new(Silent),
                     dir.path().join("log.jsonl"),
                 )
-                .with_conversation(feed),
+                .with_conversation(feed)
+                .with_flows(factory),
             );
             runtime = Some(rt);
             Server
@@ -398,6 +485,80 @@ mod tests {
                     false
                 ),
             ]
+        );
+        observed.lock().unwrap().clear();
+        {
+            let mut documents = runtime.documents.lock().await;
+            let doc = documents.get_mut(uri).unwrap();
+            doc.last_wake = None;
+            documents.change(uri, "fn main() { todo!() }".into(), 2);
+        }
+        assert!(runtime.evaluate_flows(uri, TriggerKind::Save).await);
+        assert_eq!(observed.lock().unwrap().len(), 1);
+        assert!(observed.lock().unwrap()[0].3);
+        let idle = runtime
+            .gather(uri, TriggerKind::Idle, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        assert_eq!(idle.changed_lines, 0);
+        assert!(idle.diff.is_empty());
+        assert!(idle.since_last_wake_ms < 1000);
+        assert!(runtime.evaluate_flows(uri, TriggerKind::Idle).await);
+        assert_eq!(observed.lock().unwrap().len(), 1);
+        suppress.store(true, Ordering::SeqCst);
+        runtime
+            .documents
+            .lock()
+            .await
+            .change(uri, "fn main() { panic!() }".into(), 3);
+        let ctx = runtime
+            .gather(uri, TriggerKind::Save, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        let last_wake = runtime
+            .documents
+            .lock()
+            .await
+            .get_mut(uri)
+            .unwrap()
+            .last_wake;
+        let pending = PendingTrigger::new("runtime", None, uri, 3, "save", ctx.prefilter_inputs());
+        let effects = EditorEffects {
+            runtime: Arc::downgrade(&runtime),
+            context: Mutex::new(Some((ctx, pending))),
+            delivered: AtomicBool::new(false),
+        };
+        assert_eq!(
+            effects
+                .effect(
+                    "review",
+                    "suppressed",
+                    &ProposedAction {
+                        node_id: None,
+                        action: "wake".into(),
+                        params: BTreeMap::from([("note".into(), json!("review"))]),
+                    },
+                    &CancellationToken::new()
+                )
+                .await
+                .unwrap_err()
+                .0,
+            "wake cooldown"
+        );
+        let ctx = runtime
+            .gather(uri, TriggerKind::Idle, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        assert!(ctx.changed_lines > 0);
+        assert_eq!(
+            runtime
+                .documents
+                .lock()
+                .await
+                .get_mut(uri)
+                .unwrap()
+                .last_wake,
+            last_wake
         );
     }
 

@@ -9,6 +9,7 @@ pub(crate) struct Effects {
     pub runtime: std::sync::Weak<FlowRuntime>,
     pub status: Arc<crate::bus::runtime::RuntimeStatus>,
     pub sequencer: crate::bus::sequencer::Sequencer,
+    pub turn_end: bool,
 }
 impl FlowEffects for Effects {
     fn effect<'a>(
@@ -39,16 +40,15 @@ impl FlowEffects for Effects {
             }
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| ApplyError("missing flow text".into()))?;
-            if self.status.queue_flow_note(
-                text.to_string(),
-                flow.to_string(),
-                run_id.to_string(),
-                action.action == "wake",
-            ) {
-                Ok(())
-            } else {
-                Err(ApplyError("session stopped".into()))
-            }
+            self.status
+                .queue_flow_note_report(
+                    text.to_string(),
+                    flow.to_string(),
+                    run_id.to_string(),
+                    action.action == "wake",
+                    self.turn_end,
+                )
+                .map_err(ApplyError)
         })
     }
     fn instinct_unavailable(&self) {
@@ -85,6 +85,9 @@ pub(crate) async fn received(
     handle: &super::service::SessionHandle,
     command: &crate::bus::command::Command,
 ) {
+    if command.from_driver() {
+        handle.status.flow_driver_message();
+    }
     let Some(runtime) = &handle.flows else {
         return;
     };
@@ -114,6 +117,7 @@ pub(crate) async fn received(
                 runtime: Arc::downgrade(runtime),
                 status: handle.status.clone(),
                 sequencer: handle.sequencer.clone(),
+                turn_end: false,
             }),
         )
         .await;
@@ -133,6 +137,7 @@ pub(crate) fn hook(
             runtime: Arc::downgrade(runtime),
             status,
             sequencer,
+            turn_end: false,
         }),
     )
 }
@@ -180,6 +185,7 @@ pub(crate) async fn settled(handle: super::service::SessionHandle, session_id: S
                 runtime: Arc::downgrade(&runtime),
                 status: handle.status.clone(),
                 sequencer: handle.sequencer.clone(),
+                turn_end: true,
             });
             tokio::spawn(async move {
                 runtime

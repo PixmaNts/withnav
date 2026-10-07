@@ -3,6 +3,21 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const { JSDOM } = require("jsdom");
 
+test('conversation colour hooks preserve the agent of each turn and tool labels', () => {
+  const { dom, d, receive } = keyboardPage();
+  receive({ type: 'agent', name: 'build' });
+  receive({ type: 'turnStart', id: 'build-turn' });
+  receive({ type: 'agent', name: 'plan' });
+  receive({ type: 'turnStart', id: 'plan-turn' });
+  assert.deepEqual([...d.querySelectorAll('.message.cognition')].map(n => n.dataset.agent), ['build', 'plan']);
+  assert.equal(d.querySelector('.agent-label').dataset.agent, 'plan');
+  receive({ type: 'tool', id: 'build-turn', callId: 'shell', phase: 'start', name: 'bash', summary: 'bash npm test' });
+  assert.equal(d.querySelector('.tool-verb').textContent, 'bash');
+  assert.equal(d.querySelector('.tool-text').textContent, 'bash npm test');
+  assert.equal(d.querySelector('.tool-row').getAttribute('aria-label'), 'Running: bash npm test');
+  dom.window.close();
+});
+
 function keyboardPage(){
   const {chatHtml}=require('../out/tests/chatHtml.js');const dom=new JSDOM(chatHtml('n','chat.js','chat.css','resource:'),{runScripts:'outside-only'});const posts=[];
   dom.window.acquireVsCodeApi=()=>({postMessage:m=>posts.push(m),getState(){},setState(){}});dom.window.eval(fs.readFileSync('out/chat.js','utf8'));

@@ -646,6 +646,29 @@ async fn typed_parameter_overflow_is_a_limit_not_a_string() {
     ));
     assert!(outcome.trace.actions.is_empty());
 }
+#[tokio::test]
+async fn oversized_structured_input_is_cut_for_decisions_and_text_parameters() {
+    for body in [
+        decision("b", "[node.inputs]\nx='workspace.dirty_files'"),
+        action("b", "log", "text='{x}'") + "[node.inputs]\nx='workspace.dirty_files'\n",
+    ] {
+        let c = compile(&(header("['b']") + &body));
+        let outcome = with_values(
+            &c,
+            &Values {
+                value: serde_json::json!(["é".repeat(20000)]),
+                redacted: false,
+            },
+        )
+        .await;
+        assert!(matches!(outcome.result, RunResult::Success { .. }));
+        let input = &outcome.trace.inputs["workspace.dirty_files"];
+        assert!(input.cut);
+        let text = input.value.as_ref().unwrap().as_str().unwrap();
+        assert!(text.starts_with("[\"é"));
+        assert!(text.len() <= 16384);
+    }
+}
 fn five_reference_flow() -> String {
     let mut text = header("['b']")
         + &decision(

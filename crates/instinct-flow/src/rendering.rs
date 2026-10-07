@@ -35,6 +35,42 @@ pub(crate) fn json_text(value: &serde_json::Value, cap: usize) -> Result<String,
     serde_json::to_writer(&mut writer, value).map_err(|_| limit())?;
     String::from_utf8(writer.bytes).map_err(|_| limit())
 }
+pub(crate) fn json_prefix(
+    value: &serde_json::Value,
+    cap: usize,
+) -> Result<(String, bool), Diagnostic> {
+    struct Prefix {
+        bytes: Vec<u8>,
+        cap: usize,
+        cut: bool,
+    }
+    impl std::io::Write for Prefix {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let keep = bytes.len().min(self.cap.saturating_sub(self.bytes.len()));
+            self.bytes.extend_from_slice(&bytes[..keep]);
+            self.cut |= keep < bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut prefix = Prefix {
+        bytes: Vec::new(),
+        cap,
+        cut: false,
+    };
+    serde_json::to_writer(&mut prefix, value).map_err(|_| limit())?;
+    let boundary = match std::str::from_utf8(&prefix.bytes) {
+        Ok(_) => prefix.bytes.len(),
+        Err(error) => error.valid_up_to(),
+    };
+    prefix.bytes.truncate(boundary);
+    Ok((
+        String::from_utf8(prefix.bytes).map_err(|_| limit())?,
+        prefix.cut,
+    ))
+}
 pub fn placeholders(text: &str, state: bool) -> Result<BTreeSet<String>, Diagnostic> {
     render(text, &BTreeMap::new(), state, true, 65536).map(|(_, names)| names)
 }

@@ -432,24 +432,27 @@ impl<'a> Evaluation<'a> {
         };
         let cap = self.compiled.catalogue.limits.input_bytes.min(16384);
         let serialized;
+        let mut structured_cut = false;
         let text = if let Some(s) = v.as_str() {
             s
         } else {
-            serialized = crate::rendering::json_text(v, cap).map_err(render_failure)?;
+            (serialized, structured_cut) =
+                crate::rendering::json_prefix(v, cap).map_err(render_failure)?;
             &serialized
         };
-        let bytes = text.len().min(cap);
-        if text.len() > cap {
+        let mut bytes = text.len().min(cap);
+        if text.len() > cap || structured_cut {
             if expression_reads {
                 return Err((
                     FailureKind::Limit,
                     "expression scalar cannot be truncated".into(),
                 ));
             }
-            let mut boundary = cap;
+            let mut boundary = cap.min(text.len());
             while !text.is_char_boundary(boundary) {
                 boundary -= 1;
             }
+            bytes = boundary;
             value.value = Some(text[..boundary].into());
             value.cut = true;
         }

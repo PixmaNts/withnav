@@ -5,6 +5,15 @@ import { createMockApi } from "./server";
 const WS = "/repo";
 
 describe("mock flows API", () => {
+  it("exposes host diagnostics, health warnings, reload propagation and a suppressed live wake", async () => {
+    const api = createMockApi(WS);
+    expect((await api.list()).errors?.[0]?.message).toContain("Instinct unavailable");
+    const health = await api.health();
+    expect(health.flows.find((row) => row.name === "guard-mutations")).toMatchObject({ unavailable: true, errors: [{ code: "unavailable" }] });
+    expect((await api.reload()).propagation).toContain("next event");
+    const { runs } = await api.runs("turn-digest");
+    expect((await api.run("turn-digest", runs[0]!.run_id)).application.status).toBe("suppressed");
+  });
   it("lists the seed flows sorted by trigger, and opens guard-mutations", async () => {
     const api = createMockApi(WS);
     const { flows } = await api.list();
@@ -41,6 +50,7 @@ describe("mock flows API", () => {
     expect(error).toBeInstanceOf(HttpError);
     expect((error as HttpError).status).toBe(422);
     expect((error as HttpError).body.errors.length).toBeGreaterThan(0);
+    expect((await api.list()).errors?.some((diagnostic) => diagnostic.code === "parse")).toBe(true);
   });
 
   it("refuses sample and replay of workspace flows until trusted", async () => {

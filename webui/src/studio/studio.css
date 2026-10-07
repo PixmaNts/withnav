@@ -50,6 +50,7 @@
 }
 
 /* ---------- trust banner ---------- */
+.sf-host-banners { grid-row: 2; max-height: 25vh; overflow: auto; }
 .sf-trust {
   grid-row: 2;
   display: flex;
@@ -181,6 +182,10 @@ form.sf-const .sf-input { flex: 1; }
 .sf-health { display: flex; gap: 8px; font-size: 11px; color: var(--mu); white-space: nowrap; flex: none; }
 .sf-health b { color: var(--tx); font-weight: 500; font-family: var(--font-mono); }
 .sf-health .warn b { color: var(--or); }
+.sf-health-warning { display: flex; align-items: baseline; gap: 4px; color: var(--mu); font-size: 11px; overflow-wrap: anywhere; margin-top: 3px; }
+.sf-health-warning > svg { flex: none; align-self: center; color: var(--or); }
+.sf-application { color: var(--mu); }
+.sf-application.bad { color: var(--rd); }
 
 .sf-btn {
   background: transparent;

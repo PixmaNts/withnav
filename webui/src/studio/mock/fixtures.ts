@@ -2,7 +2,12 @@
 // example of contracts §1, two smaller flows so the list has more than one group, and one recorded
 // run of `guard-mutations`.
 
-import type { ActionSpec, Catalogue, FieldSpec, InputSpec, RunRecord, TriggerSpec } from "../types";
+import type { ActionSpec, Catalogue, Diagnostic, FieldSpec, InputSpec, RunRecord, TriggerSpec } from "../types";
+
+export const HOST_DIAGNOSTICS: Diagnostic[] = [
+  { code: "unavailable", message: "Instinct unavailable: the mock host has no live model configured. Sample answers are invented.", path: "", node_id: null, line: null, column: null },
+];
+export const RELOAD_PROPAGATION = "Other Navai processes reload on their next event.";
 
 const f = (name: string, value_type: FieldSpec["value_type"], required = true): FieldSpec => ({ name, value_type, required });
 
@@ -380,5 +385,23 @@ export function sampleRunRecord(digest: string): RunRecord {
         { node_id: "audit", action: "log", status: "applied", message: null },
       ],
     },
+  };
+}
+
+/** A live wake that the host held back during its cooldown. */
+export function suppressedRunRecord(): RunRecord {
+  return {
+    ...sampleRunRecord("sha256:mock-turn-digest"),
+    run_id: "01JA7Q3M9ZK4V8R2N6T5W1XHCF",
+    flow_name: "turn-digest",
+    budget_ms: null,
+    event: { trigger: "turn.end", payload: { status: "failed" } },
+    nodes: [
+      { id: "failed", status: "completed", port: "true", duration_ms: 0, answer: null, result: true, variables: {}, batch_id: null, error: null },
+      { id: "wake_cognition", status: "completed", port: null, duration_ms: 0, answer: null, result: null, variables: {}, batch_id: null, error: null },
+    ],
+    batches: [], duration_ms: 1, inputs: {}, usage: null,
+    actions: [{ node_id: "wake_cognition", action: "wake", params: { note: "The last turn failed; look at what went wrong before going on." } }],
+    application: { status: "suppressed", actions: [{ node_id: "wake_cognition", action: "wake", status: "suppressed", message: "Wake cooldown is active." }] },
   };
 }

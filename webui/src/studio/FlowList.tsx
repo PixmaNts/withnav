@@ -3,6 +3,7 @@
 import { ArrowsSplit, Hand, Plus, WarningCircle, X } from "@phosphor-icons/react";
 import { useState } from "react";
 import { ID_PATTERN } from "./graph";
+import { healthWarnings } from "./diagnostics";
 import type { Definition, FlowSummary, HealthRow, Location, Scalar } from "./types";
 
 export const LOCATION_LABEL: Record<Location, string> = { workspace: "workspace", global: "global", builtin: "built-in" };
@@ -72,6 +73,9 @@ export function FlowList({ flows, health, current, onOpen, onToggle, toggling, o
                       </span>
                     )}
                   </span>
+                  {h && healthWarnings(h).map((message) => (
+                    <span className="sf-health-warning" key={message}><WarningCircle size={12} aria-hidden /> {message}</span>
+                  ))}
                 </button>
                 <button
                   type="button"

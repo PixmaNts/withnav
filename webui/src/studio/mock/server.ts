@@ -11,7 +11,7 @@ import type {
   ReplayResult, RunNode, RunRecord, Trust, ValidateResult,
 } from "../types";
 import { evaluate } from "./expr";
-import { BUILTIN_TOML, CATALOGUE, GUARD_MUTATIONS_TOML, REMARK_ON_SAVE_TOML, sampleRunRecord } from "./fixtures";
+import { BUILTIN_TOML, CATALOGUE, GUARD_MUTATIONS_TOML, HOST_DIAGNOSTICS, RELOAD_PROPAGATION, REMARK_ON_SAVE_TOML, sampleRunRecord, suppressedRunRecord } from "./fixtures";
 import { flowToToml, parseFlowToml } from "./toml";
 import { validateDefinition } from "./validate";
 
@@ -54,7 +54,8 @@ export function createMockApi(workspace: string): StudioApi {
   /** What the last successful reload loaded: file key → revision. */
   let loaded = new Map([...files.values()].map((s) => [key(s.name, s.location), revisionOf(s)]));
   let trusted = false;
-  const runs: RunRecord[] = [sampleRunRecord(`sha256:${hash(GUARD_MUTATIONS_TOML)}`)];
+  const runs: RunRecord[] = [sampleRunRecord(`sha256:${hash(GUARD_MUTATIONS_TOML)}`), suppressedRunRecord()];
+  let reloadErrors: Diagnostic[] = [];
 
   const compile = (toml: string) => {
     const parsed = parseFlowToml(toml);
@@ -121,7 +122,7 @@ export function createMockApi(workspace: string): StudioApi {
     mocked: true,
     async list() {
       await pause(40);
-      return { flows: sorted() };
+      return { flows: sorted(), errors: clone([...HOST_DIAGNOSTICS, ...reloadErrors]) };
     },
     async get(name, location) {
       await pause(40);
@@ -209,9 +210,10 @@ export function createMockApi(workspace: string): StudioApi {
         if (s.location === "workspace" && !trusted) continue;
         for (const e of document(s).errors) errors.push({ ...e, path: `${s.location}:${s.name} ${e.path}`.trim() });
       }
+      reloadErrors = errors;
       if (errors.length) fail(422, "reload_invalid", `Nothing reloaded: ${errors.length} error${errors.length === 1 ? "" : "s"}. The previous flows keep running.`, errors);
       loaded = new Map([...files.values()].map((s) => [key(s.name, s.location), revisionOf(s)]));
-      return { reloaded: true, errors: [], flows: sorted() };
+      return { reloaded: true, errors: [], flows: sorted(), propagation: RELOAD_PROPAGATION };
     },
     async health() {
       await pause(40);
@@ -220,7 +222,7 @@ export function createMockApi(workspace: string): StudioApi {
         const seed = parseInt(hash(s.name).slice(0, 4), 16);
         const runsCount = s.location === "builtin" ? 0 : 12 + (seed % 140);
         const failures = Math.floor(runsCount * ((seed % 7) / 100));
-        return { name: s.name, runs: runsCount, failures, fallbacks_applied: failures, cost_usd: null, cost_unknown_runs: runsCount };
+        return { name: s.name, runs: runsCount, failures, fallbacks_applied: failures, cost_usd: null, cost_unknown_runs: runsCount, unavailable: s.location !== "builtin", errors: s.location !== "builtin" ? clone(HOST_DIAGNOSTICS) : [] };
       });
       return { window_start: new Date(end.getTime() - 86_400_000).toISOString(), window_end: end.toISOString(), flows: rows };
     },

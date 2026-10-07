@@ -340,7 +340,7 @@ impl<'a> Evaluation<'a> {
             result=source.collect(&names,cancel,self.deadline)=>result.map_err(|_|(FailureKind::Input,"host input collection failed".into()))?,
         };
         self.check(cancel)?;
-        self.accept_inputs(names, collected)
+        self.accept_inputs(names, collected, false)
     }
     fn needed(&self, map: &BTreeMap<String, String>) -> Vec<String> {
         map.values()
@@ -359,6 +359,7 @@ impl<'a> Evaluation<'a> {
         &mut self,
         names: Vec<String>,
         collected: BTreeMap<String, InputValue>,
+        replay: bool,
     ) -> Result<(), Failure> {
         for name in names {
             if self.cache.contains_key(&name) {
@@ -376,11 +377,11 @@ impl<'a> Evaluation<'a> {
                 .iter()
                 .find(|s| s.name == name)
                 .expect("validated host reference");
-            if value
-                .value
-                .as_ref()
-                .is_some_and(|v| !v.is_null() && !spec.value_type.matches(v))
-            {
+            if value.value.as_ref().is_some_and(|v| {
+                !v.is_null()
+                    && !spec.value_type.matches(v)
+                    && !(replay && value.cut && v.is_string())
+            }) {
                 return Err((FailureKind::Input, "host input has invalid type".into()));
             }
             if value.value.as_ref().is_some_and(|v| v.is_null()) {
@@ -587,7 +588,7 @@ impl<'a> Evaluation<'a> {
     ) -> Result<bool, Failure> {
         self.prepare_local(map)?;
         let names = self.needed(map);
-        self.accept_inputs(names.clone(), record.inputs.clone())?;
+        self.accept_inputs(names.clone(), record.inputs.clone(), true)?;
         Ok(names
             .iter()
             .all(|name| self.cache.get(name) == record.inputs.get(name)))
@@ -1105,7 +1106,7 @@ async fn execute(
                 for name in &names {
                     pending_references.remove(name);
                 }
-                e.accept_inputs(names, result.map_err(|_| (FailureKind::Input, "host input collection failed".into()))?)?;
+                e.accept_inputs(names, result.map_err(|_| (FailureKind::Input, "host input collection failed".into()))?, false)?;
                 collecting.retain(|i| !e.needed(&e.compiled.definition.node[*i].inputs).is_empty());
                 continue;
             },

@@ -667,6 +667,12 @@ async fn oversized_structured_input_is_cut_for_decisions_and_text_parameters() {
         let text = input.value.as_ref().unwrap().as_str().unwrap();
         assert!(text.starts_with("[\"é"));
         assert!(text.len() <= 16384);
+        let replayed = replay(&c, &outcome.trace, &Fake::new().identity());
+        assert!(replayed.comparable);
+        assert!(matches!(
+            replayed.outcome.unwrap().result,
+            RunResult::Success { .. }
+        ));
     }
 }
 fn five_reference_flow() -> String {

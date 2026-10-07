@@ -1,7 +1,6 @@
 //! Studio's private JSON adapter. Every operation authorizes an existing workspace.
 use super::AppState;
 use crate::flows::{
-    records::Records,
     runtime::ContextSnapshot,
     store::{validate, Content, FlowStore, Location, StoreError},
 };
@@ -187,7 +186,7 @@ async fn handle(
     network(state, headers, peer)?;
     let workspace = workspace(state, query).await?;
     let store = state.flows.store(workspace.clone());
-    let records = Records::new(&state.flows.data, &workspace);
+    let records = state.flows.records(&workspace);
     let data: Value = if body.is_empty() {
         json!({})
     } else {

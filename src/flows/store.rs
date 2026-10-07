@@ -218,8 +218,10 @@ impl FlowStore {
             .unwrap_or(false)
     }
     pub fn set_trust(&self, trusted: bool) -> Result<(), StoreError> {
-        let _guard = self.write.lock().map_err(|_| StoreError::reason("io"))?;
         let dir = Directory::open(&self.config_dir, true)?;
+        let lock = super::fs::resource_lock(&self.config_dir.join("flows-trust.json"));
+        let _guard = lock.lock().map_err(|_| StoreError::reason("io"))?;
+        let _file_lock = dir.lock(".flows-trust.lock")?;
         let mut file = match dir.read("flows-trust.json", 262144, true) {
             Ok(_) => self.trust_file()?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => TrustFile {
@@ -425,6 +427,11 @@ impl FlowStore {
         if location == Location::Builtin {
             return Err(StoreError::reason("read_only"));
         }
+        let directory = self.directory(location)?;
+        let dir = Directory::open(&directory, true)?;
+        let resource = super::fs::resource_lock(&directory.join(".flows.lock"));
+        let _resource_guard = resource.lock().map_err(|_| StoreError::reason("io"))?;
+        let _file_lock = dir.lock(".flows.lock")?;
         match (self.get(name, location), expected) {
             (Ok(_), None) => return Err(StoreError::reason("already_exists")),
             (Ok(d), Some(r)) if d.revision != r => return Err(StoreError::reason("stale")),
@@ -460,7 +467,6 @@ impl FlowStore {
                 return Err(StoreError::reason("invalid"));
             }
         }
-        let dir = Directory::open(&self.directory(location)?, true)?;
         let previous = self.get(name, location).ok();
         for (template, body) in &v.templates {
             match dir.read(template, 65536, false) {
@@ -498,11 +504,16 @@ impl FlowStore {
     }
     pub fn delete(&self, name: &str, location: Location, expected: &str) -> Result<(), StoreError> {
         let _guard = self.write.lock().map_err(|_| StoreError::reason("io"))?;
+        let directory = self.directory(location)?;
+        let dir = Directory::open(&directory, false)?;
+        let resource = super::fs::resource_lock(&directory.join(".flows.lock"));
+        let _resource_guard = resource.lock().map_err(|_| StoreError::reason("io"))?;
+        let _file_lock = dir.lock(".flows.lock")?;
         let document = self.get(name, location)?;
         if document.revision != expected {
             return Err(StoreError::reason("stale"));
         }
-        Directory::open(&self.directory(location)?, false)?.remove(&format!("{name}.toml"))?;
+        dir.remove(&format!("{name}.toml"))?;
         Ok(())
     }
 }
@@ -548,6 +559,31 @@ pub(crate) fn timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn independent_stores_serialize_trust_updates() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("config");
+        let stores: Vec<_> = (0..16)
+            .map(|i| FlowStore::new(temp.path().join(format!("repo-{i}")), config.clone()))
+            .collect();
+        std::thread::scope(|scope| {
+            for store in &stores {
+                scope.spawn(move || {
+                    store.set_trust(true).unwrap();
+                });
+            }
+        });
+        assert!(stores.iter().all(FlowStore::trusted));
+        std::thread::scope(|scope| {
+            for store in &stores {
+                scope.spawn(move || {
+                    store.set_trust(false).unwrap();
+                });
+            }
+        });
+        assert!(stores.iter().all(|s| !s.trusted()));
+        assert_eq!(stores[0].trust_file().unwrap().workspaces.len(), 16);
+    }
     #[test]
     fn template_write_set_refuses_definitions_and_unchecked_existing_files() {
         let temp = tempfile::tempdir().unwrap();

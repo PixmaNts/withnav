@@ -6,11 +6,11 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::{
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 pub struct Records {
     path: PathBuf,
-    write: Mutex<()>,
+    write: Arc<Mutex<()>>,
 }
 #[derive(Default, Serialize, Deserialize)]
 struct Health {
@@ -47,6 +47,8 @@ impl Records {
             .write
             .lock()
             .map_err(|_| std::io::Error::other("health writer poisoned"))?;
+        let directory = Directory::private(&self.path, true)?;
+        let _file_lock = directory.lock(".records.lock")?;
         let mut health = self.read_health()?;
         let hour = time::OffsetDateTime::now_utc().unix_timestamp() / 3600;
         health.hours.retain(|h, _| *h > hour - 24);
@@ -101,12 +103,13 @@ impl Records {
         )
     }
     pub fn new(data: &Path, workspace: &Path) -> Self {
+        let path = data.join("flows/runs").join(format!(
+            "{:x}",
+            Sha256::digest(workspace.as_os_str().as_encoded_bytes())
+        ));
         Self {
-            path: data.join("flows/runs").join(format!(
-                "{:x}",
-                Sha256::digest(workspace.as_os_str().as_encoded_bytes())
-            )),
-            write: Mutex::new(()),
+            write: super::fs::resource_lock(&path.join("runs.jsonl")),
+            path,
         }
     }
     pub fn read(&self) -> std::io::Result<Vec<RunRecord>> {
@@ -136,6 +139,8 @@ impl Records {
             .write
             .lock()
             .map_err(|_| std::io::Error::other("capture writer poisoned"))?;
+        let directory = Directory::private(&self.path, true)?;
+        let _file_lock = directory.lock(".records.lock")?;
         let size = serde_json::to_vec(record)
             .map_err(std::io::Error::other)?
             .len();
@@ -171,6 +176,28 @@ impl Records {
 #[cfg(test)]
 mod tests {
     use super::*;
+    pub(crate) fn fixture() -> RunRecord {
+        serde_json::from_value(serde_json::json!({"version":1,"run_id":"test","flow_name":"test","definition_digest":"test","mode":"live","started_at":super::super::store::timestamp(),"duration_ms":0,"budget_ms":100,"event":{"trigger":"save","payload":{}},"identity":{"model":"test","variant":null},"inputs":{},"nodes":[],"batches":[],"status":"success","failure":null,"actions":[],"fallback_actions":[],"usage":null,"cost_usd":null,"application":{"status":"not_applied","actions":[]}})).unwrap()
+    }
+    #[test]
+    fn independent_record_instances_keep_concurrent_appends() {
+        let temp = tempfile::tempdir().unwrap();
+        std::thread::scope(|scope| {
+            for i in 0..24 {
+                let path = temp.path();
+                scope.spawn(move || {
+                    let records = Records::new(path, path);
+                    let mut record = fixture();
+                    record.run_id = i.to_string();
+                    records.append(&record).unwrap();
+                });
+            }
+        });
+        assert_eq!(
+            Records::new(temp.path(), temp.path()).read().unwrap().len(),
+            24
+        );
+    }
     #[test]
     fn health_is_independent_of_retained_captures_and_expires() {
         let temp = tempfile::tempdir().unwrap();

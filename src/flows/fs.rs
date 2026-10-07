@@ -1,6 +1,6 @@
 //! Descriptor-held no-follow filesystem access; paths are never reopened after validation.
 use nix::{
-    fcntl::{open, openat, renameat, OFlag},
+    fcntl::{open, openat, renameat, Flock, FlockArg, OFlag},
     sys::stat::{fstat, mkdirat, Mode, SFlag},
     unistd::{getuid, unlinkat, UnlinkatFlags},
 };
@@ -8,14 +8,51 @@ use std::{
     fs::File,
     io::{Read, Write},
     os::fd::{AsFd, OwnedFd},
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock, Weak},
 };
+
+/// Atomic replacement changes data inodes; lock a stable sibling inode instead.
+pub fn resource_lock(path: &Path) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<std::collections::BTreeMap<PathBuf, Weak<Mutex<()>>>>> =
+        OnceLock::new();
+    let key = path
+        .parent()
+        .and_then(|p| p.canonicalize().ok())
+        .and_then(|p| path.file_name().map(|n| p.join(n)))
+        .unwrap_or_else(|| path.to_path_buf());
+    let mut locks = LOCKS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(key, Arc::downgrade(&lock));
+    lock
+}
 
 pub struct Directory(OwnedFd);
 fn io(error: nix::errno::Errno) -> std::io::Error {
     std::io::Error::from_raw_os_error(error as i32)
 }
 impl Directory {
+    pub fn lock(&self, name: &str) -> std::io::Result<Flock<File>> {
+        valid_name(name)?;
+        let fd = openat(
+            &self.0,
+            name,
+            OFlag::O_RDWR | OFlag::O_CREAT | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+            Mode::from_bits_truncate(0o600),
+        )
+        .map_err(io)?;
+        check(&fd, true)?;
+        if !SFlag::from_bits_truncate(fstat(&fd).map_err(io)?.st_mode).contains(SFlag::S_IFREG) {
+            return Err(std::io::Error::other("lock is not a regular file"));
+        }
+        Flock::lock(File::from(fd), FlockArg::LockExclusive).map_err(|(_, e)| io(e))
+    }
     pub fn private(path: &Path, create: bool) -> std::io::Result<Self> {
         let dir = Self::open(path, create)?;
         let stat = fstat(&dir.0).map_err(io)?;
@@ -48,7 +85,10 @@ impl Directory {
             match openat(&fd, *name, flags, Mode::empty()) {
                 Ok(next) => fd = next,
                 Err(nix::errno::Errno::ENOENT) if create => {
-                    mkdirat(&fd, *name, Mode::from_bits_truncate(0o700)).map_err(io)?;
+                    match mkdirat(&fd, *name, Mode::from_bits_truncate(0o700)) {
+                        Ok(()) | Err(nix::errno::Errno::EEXIST) => {}
+                        Err(e) => return Err(io(e)),
+                    }
                     fd = openat(&fd, *name, flags, Mode::empty()).map_err(io)?;
                 }
                 Err(e) => return Err(io(e)),

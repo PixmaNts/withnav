@@ -20,6 +20,7 @@ pub struct Host {
 struct Workspace {
     store: Arc<FlowStore>,
     runtime: Option<Arc<FlowRuntime>>,
+    records: Arc<Records>,
 }
 impl std::fmt::Debug for Host {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -40,6 +41,7 @@ impl Host {
     }
     fn entry(&self, workspace: PathBuf) -> Workspace {
         let store = Arc::new(FlowStore::new(workspace.clone(), self.config.clone()));
+        let records = Arc::new(Records::new(&self.data, &workspace));
         let runtime =
             crate::provider::config::load_models(self.models.as_deref(), &workspace, &self.config)
                 .ok()
@@ -54,10 +56,24 @@ impl Host {
                 .map(|client| {
                     Arc::new(
                         FlowRuntime::new(store.clone(), Arc::new(client), Arc::new(NoEffects))
-                            .with_records(Arc::new(Records::new(&self.data, &workspace))),
+                            .with_records(records.clone()),
                     )
                 });
-        Workspace { store, runtime }
+        Workspace {
+            store,
+            runtime,
+            records,
+        }
+    }
+    pub fn records(&self, path: &Path) -> Arc<Records> {
+        let workspace = self.workspace(path);
+        self.workspaces
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(workspace.clone())
+            .or_insert_with(|| self.entry(workspace))
+            .records
+            .clone()
     }
     pub fn store(&self, path: PathBuf) -> Arc<FlowStore> {
         let workspace = self.workspace(&path);
@@ -87,15 +103,17 @@ impl Host {
     ) {
         let workspace = self.workspace(path);
         let store = self.store(workspace.clone());
+        let records = self.records(&workspace);
         let runtime = Arc::new(
             FlowRuntime::new(store.clone(), client, Arc::new(NoEffects))
-                .with_records(Arc::new(Records::new(&self.data, &workspace))),
+                .with_records(records.clone()),
         );
         self.workspaces.lock().unwrap().insert(
             workspace,
             Workspace {
                 store,
                 runtime: Some(runtime),
+                records,
             },
         );
     }

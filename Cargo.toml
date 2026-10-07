@@ -48,7 +48,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 ulid = { version = "1", features = ["std", "serde"] }
 clap = { version = "4.6.6", features = ["derive"] }
-nix = { version = "0.31.3", features = ["signal", "fs", "resource", "user"] }
+nix = { version = "0.31.3", features = ["signal", "fs", "resource", "user", "dir"] }
+sha2 = "0.10"
+time = { version = "0.3", features = ["formatting", "parsing"] }
 directories = "6.0.0"
 tempfile = "3"
 regex = "1"

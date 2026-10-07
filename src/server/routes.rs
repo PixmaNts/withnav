@@ -57,6 +57,7 @@
 //!   statuses as `/messages` for a session that cannot take commands)
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use axum::extract::{Path, State};
@@ -153,6 +154,7 @@ pub fn app(state: AppState) -> Router {
     let web = state.http.web.is_some();
     let router = Router::new()
         .route("/v1/health", get(health))
+        .merge(super::flows::router())
         .route("/v1/models", get(list_models))
         .route("/v1/layers", get(list_layers))
         .route("/v1/agents", get(list_agents))
@@ -253,10 +255,15 @@ pub async fn serve_state_on(
     state: AppState,
     listener: tokio::net::TcpListener,
 ) -> Result<(), ServerError> {
+    let mut state = state;
+    Arc::make_mut(&mut state.http).bind = listener.local_addr()?;
     let app = app(state.clone());
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(state))
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal(state))
+    .await?;
     Ok(())
 }
 
@@ -275,10 +282,15 @@ pub async fn serve_until(
         shutdown.await;
         shutdown_state.close_all().await;
     };
+    let mut state = state;
+    Arc::make_mut(&mut state.http).bind = listener.local_addr()?;
     let app = app(state);
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await?;
     Ok(())
 }
 

@@ -31,6 +31,11 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Inspect the host flow schema.
+    Flows {
+        #[command(subcommand)]
+        command: FlowCommand,
+    },
     Run(RunArgs),
     Serve(ServeArgs),
     Auth(AuthArgs),
@@ -41,6 +46,11 @@ pub enum Commands {
     /// a resource-limited child process.
     #[command(name = "internal-html-convert", hide = true)]
     InternalHtmlConvert(HtmlConvertArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum FlowCommand {
+    Catalogue,
 }
 
 #[derive(Args, Debug)]
@@ -165,6 +175,15 @@ pub fn init_tracing() {
 
 pub async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
     match cli.command {
+        Commands::Flows {
+            command: FlowCommand::Catalogue,
+        } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&crate::flows::catalogue::catalogue())?
+            );
+            Ok(EXIT_DONE)
+        }
         Commands::Run(args) => run_command(args).await,
         Commands::Serve(args) => serve_command(args).await,
         Commands::Auth(args) => auth_command(args),

@@ -141,6 +141,9 @@ pub struct TabView {
 /// no other tab.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Tab {
+    pub bypass: bool,
+    pub bypass_seq: u64,
+    pub bypass_pending: bool,
     pub default_agent: Option<String>,
     pub agents: Vec<super::protocol::AgentEntry>,
     pub agents_request: u64,

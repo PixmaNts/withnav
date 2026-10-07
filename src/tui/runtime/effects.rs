@@ -422,6 +422,18 @@ impl Executor {
                     }
                 });
             }
+            Effect::SetBypass {
+                session_id,
+                enabled,
+            } => {
+                let client = self.client.clone();
+                self.spawn_event(async move {
+                    ClientEvent::BypassSet {
+                        generation,
+                        result: client.set_bypass(&session_id, enabled).await,
+                    }
+                });
+            }
             Effect::RunCommand {
                 session_id,
                 request,

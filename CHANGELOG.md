@@ -4,6 +4,12 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- **Bypass in the terminal.** Alt+P (or `/bypass on` / `/bypass off`) turns bypass on or off for the
+  open session. While it is on, `⚠ bypass` stays in the header and next to the tab, and each change
+  appears in the conversation. Protected requests still ask.
+
 ### Changed
 
 - VS Code's Cognition panel uses theme colours to distinguish build and plan, tools, Navigator wakes, subagents and permission outcomes; Settings highlights saved changes in the same style.

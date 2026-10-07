@@ -6,6 +6,8 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) struct Effects {
+    pub runtime: std::sync::Weak<FlowRuntime>,
+    pub wake: bool,
     pub status: Arc<crate::bus::runtime::RuntimeStatus>,
     pub sequencer: crate::bus::sequencer::Sequencer,
 }
@@ -24,16 +26,26 @@ impl FlowEffects for Effects {
             let text = match action.action.as_str() {
                 "wake" => action.params.get("note"),
                 "inject_note" => action.params.get("text"),
-                // Remark delivery belongs to the editor host.
-                "remark" | "log" => return Ok(()),
+                // Remark delivery belongs to the replaceable editor sink.
+                "remark" => {
+                    return match self.runtime.upgrade() {
+                        Some(runtime) => {
+                            runtime.effects().effect(flow, run_id, action, cancel).await
+                        }
+                        None => Err(ApplyError("workspace stopped".into())),
+                    }
+                }
+                "log" => return Ok(()),
                 _ => return Err(ApplyError("unknown flow effect".into())),
             }
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| ApplyError("missing flow text".into()))?;
-            if self
-                .status
-                .flow_note(text.to_string(), flow.to_string(), run_id.to_string())
-            {
+            if self.status.queue_flow_note(
+                text.to_string(),
+                flow.to_string(),
+                run_id.to_string(),
+                self.wake,
+            ) {
                 Ok(())
             } else {
                 Err(ApplyError("session stopped".into()))
@@ -100,6 +112,8 @@ pub(crate) async fn received(
             context(handle, &command.session_id.to_string()),
             handle.session_cancel.clone(),
             Arc::new(Effects {
+                runtime: Arc::downgrade(runtime),
+                wake: false,
                 status: handle.status.clone(),
                 sequencer: handle.sequencer.clone(),
             }),
@@ -117,7 +131,12 @@ pub(crate) fn hook(
     runtime.tool_hook_with_effects(
         session_id,
         selected,
-        Arc::new(Effects { status, sequencer }),
+        Arc::new(Effects {
+            runtime: Arc::downgrade(runtime),
+            wake: true,
+            status,
+            sequencer,
+        }),
     )
 }
 
@@ -161,6 +180,8 @@ pub(crate) async fn settled(handle: super::service::SessionHandle, session_id: S
             let context = context(&handle, &session_id);
             let cancel = handle.session_cancel.clone();
             let effects = Arc::new(Effects {
+                runtime: Arc::downgrade(&runtime),
+                wake: true,
                 status: handle.status.clone(),
                 sequencer: handle.sequencer.clone(),
             });

@@ -79,4 +79,24 @@ impl Host {
             .runtime
             .clone()
     }
+    #[cfg(test)]
+    pub(crate) fn inject_client(
+        &self,
+        path: &Path,
+        client: Arc<dyn instinct_flow::DecisionClient>,
+    ) {
+        let workspace = self.workspace(path);
+        let store = self.store(workspace.clone());
+        let runtime = Arc::new(
+            FlowRuntime::new(store.clone(), client, Arc::new(NoEffects))
+                .with_records(Arc::new(Records::new(&self.data, &workspace))),
+        );
+        self.workspaces.lock().unwrap().insert(
+            workspace,
+            Workspace {
+                store,
+                runtime: Some(runtime),
+            },
+        );
+    }
 }

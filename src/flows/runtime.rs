@@ -49,6 +49,127 @@ mod tests {
             Box::pin(async { Err(DecisionError::ProviderError) })
         }
     }
+    struct Recovering(std::sync::atomic::AtomicUsize);
+    impl DecisionClient for Recovering {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { images: false }
+        }
+        fn identity(&self) -> ClientIdentity {
+            ClientIdentity {
+                model: "fake/recovering".into(),
+                variant: None,
+            }
+        }
+        fn decide<'a>(
+            &'a self,
+            request: instinct_flow::protocol::DecisionRequest<'a>,
+            _: &'a CancellationToken,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
+        {
+            Box::pin(async move {
+                if self.0.fetch_add(1, Ordering::SeqCst) == 2 {
+                    Ok(instinct_flow::protocol::DecisionResponse {
+                        answers: request
+                            .questions
+                            .keys()
+                            .map(|id| {
+                                (
+                                    id.clone(),
+                                    instinct_flow::protocol::Answer::Noul { noul: 1.0 },
+                                )
+                            })
+                            .collect(),
+                        usage: None,
+                    })
+                } else {
+                    Err(DecisionError::ProviderError)
+                }
+            })
+        }
+    }
+    #[tokio::test]
+    async fn outage_notice_resets_only_after_provider_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        let toml = "[flow]\nversion=1\nname='decision'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='noul'\ninstructions='test'\nthreshold=0.5\n";
+        store
+            .save(
+                "decision",
+                Location::Global,
+                None,
+                super::super::store::Content::Toml {
+                    toml: toml.into(),
+                    templates: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        store.reload().unwrap();
+        let effects = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
+        let runtime = FlowRuntime::new(
+            store,
+            Arc::new(Recovering(std::sync::atomic::AtomicUsize::new(0))),
+            effects.clone(),
+        );
+        let ctx = ToolCallContextLike {
+            call_id: "x".into(),
+            tool: "read".into(),
+            args: json!({}),
+            agent: "build".into(),
+            workspace: dir.path().into(),
+        };
+        for _ in 0..4 {
+            runtime
+                .tool_pre_call(ctx.clone(), CancellationToken::new())
+                .await;
+        }
+        assert_eq!(effects.0.load(Ordering::SeqCst), 2);
+    }
+    #[tokio::test]
+    async fn asynchronous_effect_does_not_delay_blocking_verdict() {
+        struct Slow(tokio::sync::Notify);
+        impl FlowEffects for Slow {
+            fn effect<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a str,
+                _: &'a ProposedAction,
+                _: &'a CancellationToken,
+            ) -> BoxFuture<'a, Result<(), ApplyError>> {
+                Box::pin(async move {
+                    self.0.notified().await;
+                    Ok(())
+                })
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        for (name, toml) in [("deny", text("deny", "deny")), ("async", "[flow]\nversion=1\nname='async'\non='tool.pre_call'\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='inject_note'\n[node.params]\ntext='note'\n".into())] {
+            store.save(name, Location::Global, None, super::super::store::Content::Toml { toml, templates: BTreeMap::new() }).unwrap();
+        }
+        store.reload().unwrap();
+        let runtime = FlowRuntime::new(
+            store,
+            Arc::new(Fake),
+            Arc::new(Slow(tokio::sync::Notify::new())),
+        );
+        let (verdict, handles) = tokio::time::timeout(
+            Duration::from_millis(100),
+            runtime.evaluate(
+                Event {
+                    trigger: "tool.pre_call".into(),
+                    payload: json!({"tool":"read","args":{},"call_id":"x"}),
+                },
+                ContextSnapshot::default(),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(verdict, VerdictLike::Deny { .. }));
+        assert_eq!(handles.len(), 1);
+        handles[0].abort();
+    }
     struct Notices(std::sync::atomic::AtomicUsize);
     impl FlowEffects for Notices {
         fn effect<'a>(
@@ -414,6 +535,12 @@ impl FlowRuntime {
     /// Editor hosts can replace the no-op sink without replacing the workspace runtime.
     pub fn set_effects(&self, effects: Arc<dyn FlowEffects>) {
         *self.effects.write().unwrap_or_else(|e| e.into_inner()) = effects;
+    }
+    pub fn effects(&self) -> Arc<dyn FlowEffects> {
+        self.effects
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
     pub fn client(&self) -> Arc<dyn DecisionClient> {
         self.client.clone()

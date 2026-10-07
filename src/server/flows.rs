@@ -35,8 +35,12 @@ async fn root(
     headers: HeaderMap,
     peer: ConnectInfo<SocketAddr>,
     method: Method,
-    body: Bytes,
+    body: Result<Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Response {
+    let body = match body {
+        Ok(body) => body,
+        Err(_) => return too_large(),
+    };
     dispatch(state, query, headers, peer, method, "".into(), body).await
 }
 async fn tail(
@@ -46,9 +50,20 @@ async fn tail(
     headers: HeaderMap,
     peer: ConnectInfo<SocketAddr>,
     method: Method,
-    body: Bytes,
+    body: Result<Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Response {
+    let body = match body {
+        Ok(body) => body,
+        Err(_) => return too_large(),
+    };
     dispatch(state, query, headers, peer, method, tail, body).await
+}
+fn too_large() -> Response {
+    (
+        StatusCode::PAYLOAD_TOO_LARGE,
+        Json(json!({"error":"request body too large","reason":"too_large","errors":[]})),
+    )
+        .into_response()
 }
 fn error(e: StoreError) -> Response {
     let status = match e.reason {
@@ -364,6 +379,109 @@ fn source(store: &FlowStore, source: &Value) -> Result<CompiledDefinition, Store
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct FakeClient;
+    impl DecisionClient for FakeClient {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { images: false }
+        }
+        fn identity(&self) -> ClientIdentity {
+            ClientIdentity {
+                model: "fake/instinct".into(),
+                variant: None,
+            }
+        }
+        fn decide<'a>(
+            &'a self,
+            _: instinct_flow::protocol::DecisionRequest<'a>,
+            _: &'a CancellationToken,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
+        {
+            Box::pin(async { Err(DecisionError::ProviderError) })
+        }
+    }
+    #[tokio::test]
+    async fn router_limits_bodies_and_samples_and_replays_with_shared_client() {
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let state = AppState::new(super::super::ServerConfig {
+            bind: "127.0.0.1:8080".parse().unwrap(),
+            models_path: None,
+            config_dir: dir.path().join("config"),
+            allow_non_loopback: false,
+            bearer_token: None,
+            history_db: dir.path().join("history.db"),
+            data_dir: dir.path().join("data"),
+            rules_roots: Default::default(),
+            web: Some(super::super::WebConfig {
+                launch_workspaces: vec![workspace.clone()],
+            }),
+        })
+        .unwrap();
+        state
+            .flows
+            .inject_client(&workspace, std::sync::Arc::new(FakeClient));
+        state
+            .flows
+            .store(workspace.clone())
+            .set_trust(true)
+            .unwrap();
+        let app = super::super::routes::app(state.clone());
+        async fn post(
+            app: Router,
+            workspace: &std::path::Path,
+            endpoint: &str,
+            body: Vec<u8>,
+        ) -> (StatusCode, Value) {
+            let request = axum::http::Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/v1/flows/{endpoint}?workspace={}",
+                    workspace.display()
+                ))
+                .header("host", "127.0.0.1:8080")
+                .header("content-type", "application/json")
+                .extension(ConnectInfo("127.0.0.1:1234".parse::<SocketAddr>().unwrap()))
+                .body(axum::body::Body::from(body))
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .unwrap();
+            (
+                status,
+                serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            )
+        }
+        assert_eq!(
+            post(
+                app.clone(),
+                &workspace,
+                "sample",
+                vec![b' '; 512 * 1024 + 1]
+            )
+            .await
+            .0,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        let toml = "[flow]\nversion=1\nname='sample-test'\non='save'\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='log'\n[node.params]\ntext='hello'\n";
+        let source = json!({"content":{"format":"toml","toml":toml,"templates":{}}});
+        let (status, record) = post(app.clone(), &workspace, "sample", serde_json::to_vec(&json!({"source":source,"payload":{"uri":"file:///test","language_id":"rust","version":1,"diff":""},"session_id":null})).unwrap()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(record["mode"], "sample");
+        assert_eq!(record["application"]["status"], "not_applied");
+        let (status, replay) = post(
+            app,
+            &workspace,
+            "replay",
+            serde_json::to_vec(&json!({"source":source,"run_id":record["run_id"]})).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(replay["comparable"], true);
+    }
     #[tokio::test]
     async fn studio_documents_revisions_reload_and_network_policy() {
         let dir = tempfile::tempdir().unwrap();

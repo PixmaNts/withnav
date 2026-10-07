@@ -261,6 +261,9 @@ impl RuntimeStatus {
             .is_ok()
     }
     pub fn flow_note(&self, text: String, flow: String, run_id: String) -> bool {
+        self.queue_flow_note(text, flow, run_id, true)
+    }
+    pub fn queue_flow_note(&self, text: String, flow: String, run_id: String, wake: bool) -> bool {
         if !self.steering.admit(steering::Operation {
             id: Ulid::new(),
             content: format!("<untrusted-flow-note>\n{text}\n</untrusted-flow-note>"),
@@ -273,7 +276,7 @@ impl RuntimeStatus {
         }) {
             return false;
         }
-        self.controls.tx.send(Control::Steer).is_ok()
+        !wake || self.controls.tx.send(Control::Steer).is_ok()
     }
     pub fn continue_budget(&self) -> bool {
         if self

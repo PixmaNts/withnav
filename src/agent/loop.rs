@@ -238,7 +238,7 @@ async fn run_steps(
                     Calls::Finished => {}
                     Calls::Interrupted => return Ok(RunOutcome::Interrupted),
                     Calls::Permission(request) => {
-                        return Ok(RunOutcome::PermissionRequired(request))
+                        return Ok(RunOutcome::PermissionRequired(*request))
                     }
                 }
                 if actor.cancel.is_cancelled() {
@@ -449,7 +449,7 @@ pub async fn resolve_permission_with_origin(
     match run_calls(actor, remaining_calls, steps_left, observe).await {
         Calls::Finished => {}
         Calls::Interrupted => return Ok(RunOutcome::Interrupted),
-        Calls::Permission(request) => return Ok(RunOutcome::PermissionRequired(request)),
+        Calls::Permission(request) => return Ok(RunOutcome::PermissionRequired(*request)),
     }
     Ok(run_steps(actor, observe, steps_left).await?)
 }
@@ -460,7 +460,7 @@ enum Calls {
     Interrupted,
     /// The call at hand needs a decision; the actor holds it, and the calls
     /// behind it, as its pending interaction.
-    Permission(PermissionRequest),
+    Permission(Box<PermissionRequest>),
 }
 
 /// Runs `calls` in order. A call that needs approval and has none stops the
@@ -493,7 +493,7 @@ async fn run_calls(
                     steps_left,
                 });
                 actor.state = AgentState::Yielded;
-                return Calls::Permission(*request);
+                return Calls::Permission(request);
             }
             One::Interrupted => {
                 append_interrupted(actor, &call.id);
@@ -520,7 +520,7 @@ enum Gated {
     Rejected(String),
     /// Waits for a decision; the path is the canonical file a `write` or
     /// `edit` was resolved to.
-    Ask(PermissionRequest, Option<PathBuf>),
+    Ask(Box<PermissionRequest>, Option<PathBuf>),
     /// An exception of a guarded agent: the role guard is asked before the
     /// driver is. See [`guard_step`].
     Guarded(Needed),
@@ -569,7 +569,7 @@ fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
         let mut request = PermissionRequest::new(call, needed.scope, agent);
         request.reason =
             "Navai configuration is driver-only; approve this call once or deny".into();
-        return Gated::Ask(request, needed.destination);
+        return Gated::Ask(Box::new(request), needed.destination);
     }
     if matches!(
         call.name.as_str(),
@@ -592,7 +592,7 @@ fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
         return Gated::Run(needed.destination);
     }
     Gated::Ask(
-        PermissionRequest::new(call, needed.scope, agent),
+        Box::new(PermissionRequest::new(call, needed.scope, agent)),
         needed.destination,
     )
 }
@@ -828,10 +828,10 @@ async fn run_gated(
                     }
                 }
             }
-            Gated::Ask(request, destination) => (destination, None, Some(request)),
+            Gated::Ask(request, destination) => (destination, None, Some(*request)),
             Gated::Guarded(needed) => match guard_step(actor, call, needed).await {
                 GuardStep::Run(note, destination) => (destination, Some(note), None),
-                GuardStep::Ask(request, destination) => (destination, None, Some(request)),
+                GuardStep::Ask(request, destination) => (destination, None, Some(*request)),
                 GuardStep::Interrupted => return One::Interrupted,
             },
         };
@@ -937,7 +937,7 @@ enum GuardStep {
     /// on the canonical destination that was judged.
     Run(serde_json::Value, Option<PathBuf>),
     /// The driver decides.
-    Ask(PermissionRequest, Option<PathBuf>),
+    Ask(Box<PermissionRequest>, Option<PathBuf>),
     /// The session was stopped while Jev was asked.
     Interrupted,
 }
@@ -968,7 +968,7 @@ async fn guard_step(actor: &AgentActor, call: &ToolCall, needed: Needed) -> Guar
                 "{why}. {} (approve this call once, or deny)",
                 request.reason
             );
-            GuardStep::Ask(request, needed.destination)
+            GuardStep::Ask(Box::new(request), needed.destination)
         }
     }
 }

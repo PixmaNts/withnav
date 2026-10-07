@@ -57,12 +57,21 @@ async fn admitted_message_routes_flow_effect_before_consumption() {
         created_at: std::time::SystemTime::now(),
     };
     service.send(command).await.unwrap();
-    let records = crate::flows::records::Records::new(&service.config.data_dir, dir.path())
-        .read()
-        .unwrap();
-    assert!(records
-        .iter()
-        .any(|record| record.flow_name == "route" && record.application.status == "applied"));
+    // Captures are persisted by a background writer, off the blocking admission path: wait for
+    // the record instead of expecting it synchronously.
+    let records = crate::flows::records::Records::new(&service.config.data_dir, dir.path());
+    let mut applied = false;
+    for _ in 0..50 {
+        applied =
+            records.read().unwrap().iter().any(|record| {
+                record.flow_name == "route" && record.application.status == "applied"
+            });
+        if applied {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(applied, "the routing flow's applied run was never captured");
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     service.close_all().await;
     let transcript = service.history.load(id).await.unwrap().unwrap().transcript;

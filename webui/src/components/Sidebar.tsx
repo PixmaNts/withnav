@@ -1,17 +1,19 @@
-import { CaretDown, CaretRight, Folder, FolderPlus, Plus } from "@phosphor-icons/react";
+import { CaretDown, CaretRight, Folder, FolderPlus, Plus, ArrowsInLineVertical, ArrowsOutLineVertical } from "@phosphor-icons/react";
 import { useState } from "react";
 import { useSessions, useWorkspaces } from "../api/queries";
 import type { SessionListEntry, WorkspaceEntry } from "../api/types";
 import { sessionTitle } from "../lib/compose";
 import { dayLabel, plural, shortPath } from "../lib/format";
 import type { Route } from "../router";
+import type { useWorkspaceExpansion } from "../lib/workspaceExpansion";
 
 interface Props {
   route: Route;
   navigate: (next: Partial<Route>) => void;
+  expansion: ReturnType<typeof useWorkspaceExpansion>;
 }
 
-export function Sidebar({ route, navigate }: Props) {
+export function Sidebar({ route, navigate, expansion }: Props) {
   const workspaces = useWorkspaces();
   const [adding, setAdding] = useState(false);
   const [path, setPath] = useState("");
@@ -26,9 +28,13 @@ export function Sidebar({ route, navigate }: Props) {
     <nav className="sidebar" aria-label="Workspaces">
       <div className="side-head">
         WORKSPACES
+        <div className="side-actions">
+          <button type="button" className="icon-btn" aria-label="Collapse all workspaces" title="Collapse all workspaces" onClick={expansion.collapseAll}><ArrowsInLineVertical size={14} /></button>
+          <button type="button" className="icon-btn" aria-label="Expand all workspaces" title="Expand all workspaces" onClick={() => expansion.expandAll(all.map((w) => w.path))}><ArrowsOutLineVertical size={14} /></button>
         <button type="button" className="icon-btn" aria-label="Open a folder" title="Open a folder" onClick={() => setAdding(!adding)}>
           <FolderPlus size={14} />
         </button>
+        </div>
       </div>
       {adding && (
         <form
@@ -51,16 +57,14 @@ export function Sidebar({ route, navigate }: Props) {
       {workspaces.isError && <div className="side-empty">The workspace list is not available from this server.</div>}
       {workspaces.isSuccess && !all.length && <div className="side-empty">No workspace yet. Open a folder with the button above.</div>}
       {all.map((w) => (
-        <WorkspaceRow key={w.path} ws={w} route={route} navigate={navigate} />
+        <WorkspaceRow key={w.path} ws={w} route={route} navigate={navigate} expanded={expansion.expanded.has(w.path)} setOpen={(open) => expansion.setOpen(w.path, open)} />
       ))}
     </nav>
   );
 }
 
-function WorkspaceRow({ ws, route, navigate }: { ws: WorkspaceEntry; route: Route; navigate: Props["navigate"] }) {
+export function WorkspaceRow({ ws, route, navigate, expanded, setOpen }: { ws: WorkspaceEntry; route: Route; navigate: Props["navigate"]; expanded: boolean; setOpen: (open: boolean) => void }) {
   const current = route.workspace === ws.path;
-  const [open, setOpen] = useState(current);
-  const expanded = open || current;
   const sessions = useSessions(expanded ? ws.path : null);
   const rows = sessions.data ?? [];
   const roots = rows.filter((s) => !s.parent_session_id && s.promptable !== false);
@@ -68,24 +72,29 @@ function WorkspaceRow({ ws, route, navigate }: { ws: WorkspaceEntry; route: Rout
   const count = sessions.data ? roots.length : ws.session_count;
   return (
     <div className="ws">
-      <button
-        type="button"
+      <div
         className="ws-row"
+        role="group"
+        tabIndex={0}
+        aria-label={ws.name}
         aria-expanded={expanded}
-        onClick={() => {
-          if (current) setOpen(!expanded);
-          else {
-            setOpen(true);
-            navigate({ workspace: ws.path, session: null, subagent: null });
+        onKeyDown={(e) => {
+          if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+            e.preventDefault();
+            setOpen(e.key === "ArrowRight");
           }
         }}
         title={ws.path}
       >
-        {expanded ? <CaretDown className="caret" /> : <CaretRight className="caret" />}
+        <button type="button" className="icon-btn ws-toggle" aria-label={`${expanded ? "Collapse" : "Expand"} ${ws.name}`} aria-expanded={expanded} onClick={() => setOpen(!expanded)}>
+          {expanded ? <CaretDown className="caret" /> : <CaretRight className="caret" />}
+        </button>
+        <button type="button" className="ws-select" aria-current={current ? "page" : undefined} onClick={() => navigate({ workspace: ws.path, session: null, subagent: null })}>
         <Folder size={14} style={{ color: current ? "var(--ac)" : "var(--mu)" }} aria-hidden />
         <span className="name">{ws.name}</span>
         <span className="count">{count}</span>
-      </button>
+        </button>
+      </div>
       {expanded && (
         <>
           <div className="ws-path mono" title={[ws.path, ws.branch, ws.dirty ? `${ws.dirty} changed` : ""].filter(Boolean).join(" · ")}>

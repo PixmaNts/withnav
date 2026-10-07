@@ -6,7 +6,7 @@ requests land in `develop`.
 
 ### Added
 
-- Remove a workspace from the browser list without losing its conversations, or explicitly delete its conversations and subagents. Hidden folders stay hidden after restart and return when reopened or given a new conversation; the WebUI action accompanies this server support.
+- **Remove a workspace from the browser list.** The `…` menu of a workspace (or the command palette, for the open one) offers **Remove from list**, which keeps its sessions, and **Delete workspace sessions…**, which deletes every session of that folder with its subagents after you confirm the count. A removed folder stays out of the list after a restart and comes back when you open it again with "Open a folder" or start a session there. Folders passed to `navai web` on the command line stay in the list while that server runs.
 
 ### Changed
 

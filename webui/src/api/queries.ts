@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, type QueryClient } from "@tanstack/react-query";
 import { api } from "./client";
 
 // Query keys in one place, so mutations invalidate exactly what they change.
@@ -15,6 +15,10 @@ export const keys = {
   settings: (ws: string) => ["settings", ws] as const,
   layers: (ws: string) => ["layers", ws] as const,
 };
+
+/** Everything a workspace removal or reopening changes: the list and every session list. */
+export const workspacesChanged = (qc: QueryClient) =>
+  Promise.all([qc.invalidateQueries({ queryKey: keys.workspaces }), qc.invalidateQueries({ queryKey: ["sessions"] })]);
 
 export const useWorkspaces = () => useQuery({ queryKey: keys.workspaces, queryFn: api.workspaces, refetchInterval: 30_000 });
 

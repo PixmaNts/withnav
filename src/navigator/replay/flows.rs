@@ -253,6 +253,24 @@ mod tests {
             records.push(json!({"kind":"trigger","event":"save","trigger_id":expected,"uri":"file:///repo/main.rs","version":1,"model":"fake/instinct","questions":trigger.questions,"answers":answers,"rendered_state":rendered,"template_inputs":fields,"requested_action":expected,"prefilter":{"inputs":{"changed_lines":1,"since_last_remark_ms":100000,"since_last_wake_ms":200000,"called_for_help":help,"has_errors":false,"has_intent":false,"has_conversation":false}}}).to_string());
         }
         let result = report(&records.join("\n"));
+        let snapshot = crate::navigator::pipeline::PipelineSnapshot::builtin().unwrap();
+        for record in &records {
+            let value: Value = serde_json::from_str(record).unwrap();
+            let answers = serde_json::from_value(value["answers"].clone()).unwrap();
+            let inputs = crate::navigator::TriggerInputs {
+                changed_lines: 1,
+                since_last_remark_ms: 100000,
+                since_last_wake_ms: 200000,
+                called_for_help: value["prefilter"]["inputs"]["called_for_help"]
+                    .as_bool()
+                    .unwrap(),
+                has_errors: false,
+                has_intent: false,
+                has_conversation: false,
+            };
+            let (action, _) = snapshot.triggers()[0].select(inputs, &answers).unwrap();
+            assert_eq!(value["requested_action"], action.as_str());
+        }
         assert_eq!(result["not_comparable"], json!([]), "{result}");
         assert_eq!(result["changed"], json!([]), "{result}");
         assert_eq!(result["compared"], 4);

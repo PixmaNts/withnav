@@ -339,15 +339,18 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
             }
         }
         let store = Arc::new(crate::flows::store::FlowStore::new(
-            root,
+            root.clone(),
             config_dir.clone(),
         ));
+        let records = crate::paths::data_dir()
+            .map(|data| Arc::new(crate::flows::records::Records::new(&data, &root)));
         Arc::new(move |effects| {
-            Arc::new(crate::flows::runtime::FlowRuntime::new(
-                store.clone(),
-                client.clone(),
-                effects,
-            ))
+            let runtime =
+                crate::flows::runtime::FlowRuntime::new(store.clone(), client.clone(), effects);
+            Arc::new(match &records {
+                Some(records) => runtime.with_records(records.clone()),
+                None => runtime,
+            })
         }) as Arc<crate::navigator::FlowFactory>
     });
 

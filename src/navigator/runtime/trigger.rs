@@ -52,6 +52,7 @@ pub(super) struct TriggerContext {
     pub(super) first_changed_line: usize,
     pub(super) context_text: String,
     pub(super) diagnostics_text: String,
+    pub(super) diagnostics_payload: serde_json::Value,
     pub(super) conversation_text: String,
     pub(super) live_state_text: String,
 }
@@ -114,6 +115,7 @@ impl Runtime {
             .map(|d| format!("line {}: [{}] {}", d.line + 1, d.severity, d.message))
             .collect::<Vec<_>>()
             .join("\n");
+        let diagnostics_payload = serde_json::json!(snapshot.diagnostics.iter().map(|d| serde_json::json!({"message":d.message,"severity": match d.severity.as_str() { "error" => 1, "warning" => 2, "information" => 3, _ => 4 }, "range":{"start":{"line":d.line,"character":0},"end":{"line":d.line,"character":0}}})).collect::<Vec<_>>());
         let (intent_text, has_intent) = self.current_intent().await;
         // Reuse the prototype's diff/excerpt builders for the {{diff}} and
         // {{context}} template variables.
@@ -171,6 +173,7 @@ impl Runtime {
             first_changed_line,
             context_text: ctx.text_excerpt,
             diagnostics_text,
+            diagnostics_payload,
             conversation_text,
             live_state_text: snapshot.live_state,
         })

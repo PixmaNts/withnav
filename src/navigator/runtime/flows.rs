@@ -6,13 +6,17 @@ use crate::{
 };
 use instinct_flow::{ApplyError, BoxFuture, Event, ProposedAction};
 use serde_json::json;
-use std::sync::{Arc, Weak};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Weak,
+};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 struct EditorEffects {
     runtime: Weak<Runtime>,
     context: Mutex<Option<(TriggerContext, PendingTrigger)>>,
+    delivered: AtomicBool,
 }
 impl FlowEffects for EditorEffects {
     fn effect<'a>(
@@ -40,7 +44,9 @@ impl FlowEffects for EditorEffects {
                 .clone()
                 .ok_or_else(|| ApplyError("editor event already delivered".into()))?;
             let uri = ctx.uri.clone();
-            self.context.lock().await.take();
+            if self.delivered.swap(true, Ordering::SeqCst) {
+                pending.trigger_id = crate::navigator::new_ulid_string();
+            }
             match action.action.as_str() {
                 "remark" => {
                     let prompt = action
@@ -57,7 +63,17 @@ impl FlowEffects for EditorEffects {
                     pending.requested_action = Some("wake_cognition");
                     runtime.clear_in_flight(&uri).await;
                     runtime
-                        .deliver_wake(uri, ctx, pending, WakeReason::Other(0.0))
+                        .deliver_wake_message(
+                            uri,
+                            ctx,
+                            pending,
+                            WakeReason::Other(0.0),
+                            action
+                                .params
+                                .get("note")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_owned),
+                        )
                         .await;
                 }
                 _ => unreachable!(),
@@ -76,6 +92,7 @@ impl Runtime {
         let effects = Arc::new(EditorEffects {
             runtime: Arc::downgrade(self),
             context: Mutex::new(None),
+            delivered: AtomicBool::new(false),
         });
         let flows = factory(effects.clone());
         let trusted = flows.store.trusted();
@@ -134,7 +151,7 @@ impl Runtime {
                     payload.insert("idle_ms".into(), json!(self.config.lock().await.idle_ms));
                 }
                 if event == TriggerKind::Diagnostics {
-                    payload.insert("diagnostics".into(), json!([]));
+                    payload.insert("diagnostics".into(), ctx.diagnostics_payload.clone());
                 }
             }
         }
@@ -146,16 +163,59 @@ impl Runtime {
         );
         *effects.context.lock().await = Some((ctx, pending));
         self.set_status("thinking", None).await;
+        let mut context = ContextSnapshot {
+            workspace,
+            ..Default::default()
+        };
+        let captured = effects.context.lock().await;
+        if let Some((ctx, _)) = captured.as_ref() {
+            for (name, value) in [
+                ("conversation.digest", json!(ctx.conversation_text)),
+                ("intent.record", json!(ctx.intent_text)),
+                (
+                    "editor.open_files",
+                    json!(self
+                        .documents
+                        .lock()
+                        .await
+                        .open_buffers()
+                        .keys()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()),
+                ),
+            ] {
+                context.values.insert(
+                    name.into(),
+                    instinct_flow::InputValue {
+                        value: Some(value),
+                        cut: false,
+                        redacted: false,
+                    },
+                );
+            }
+        }
+        drop(captured);
+        if let Some(session_id) = self
+            .conversation
+            .as_ref()
+            .and_then(|feed| feed.active_session())
+        {
+            context.values.insert(
+                "session.id".into(),
+                instinct_flow::InputValue {
+                    value: Some(json!(session_id.to_string())),
+                    cut: false,
+                    redacted: false,
+                },
+            );
+        }
         let (_, handles) = flows
             .evaluate(
                 Event {
                     trigger: event.as_str().into(),
                     payload: payload.into(),
                 },
-                ContextSnapshot {
-                    workspace,
-                    ..Default::default()
-                },
+                context,
                 cancel.clone(),
             )
             .await;
@@ -173,7 +233,13 @@ impl Runtime {
                 }
             }
         }
-        if let Some((_, mut pending)) = effects.context.lock().await.take() {
+        if let Some((_, mut pending)) = effects
+            .context
+            .lock()
+            .await
+            .take()
+            .filter(|_| !effects.delivered.load(Ordering::SeqCst))
+        {
             pending.requested_action = if failed || skipped {
                 None
             } else {

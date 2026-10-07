@@ -166,6 +166,25 @@ impl FlowStore {
                 diagnostics = e.errors.len(),
                 "flow startup rejected; builtins only"
             );
+            let builtins = super::builtin::definitions()
+                .into_iter()
+                .filter_map(|(definition, templates)| {
+                    let name = definition.flow.name.clone();
+                    definition
+                        .validate(&catalogue(), &Capabilities { images: false }, &templates)
+                        .ok()
+                        .map(|compiled| {
+                            (
+                                name,
+                                Arc::new(LoadedFlow {
+                                    location: Location::Builtin,
+                                    compiled,
+                                }),
+                            )
+                        })
+                })
+                .collect();
+            *store.loaded.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(builtins);
         }
         store
     }

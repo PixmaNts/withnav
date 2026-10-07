@@ -834,6 +834,34 @@ async fn redacted_inputs_are_live_but_never_retained_or_replayed_as_absent() {
     assert!(!old.redacted);
 }
 #[tokio::test]
+async fn redacted_capture_overflow_omits_state_without_failing_live_run() {
+    let text = header("['b']")
+        + &decision(
+            "b",
+            "state_template='repeat'\n[node.inputs]\nx='session.agent'",
+        );
+    let c = Definition::parse(&text)
+        .unwrap()
+        .validate(
+            &catalogue(),
+            &Capabilities { images: false },
+            &BTreeMap::from([("repeat".into(), "{{x}}".repeat(7000))]),
+        )
+        .unwrap();
+    let outcome = with_values(
+        &c,
+        &Values {
+            value: "a".into(),
+            redacted: true,
+        },
+    )
+    .await;
+    assert!(matches!(outcome.result, RunResult::Success { .. }));
+    assert!(outcome.trace.batches[0].redacted);
+    assert_eq!(outcome.trace.batches[0].state, "<state omitted: redacted>");
+    assert!(!replay(&c, &outcome.trace, &Fake::new().identity()).comparable);
+}
+#[tokio::test]
 async fn captured_absence_remains_comparable() {
     struct Absent;
     impl InputSource for Absent {

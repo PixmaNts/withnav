@@ -1044,19 +1044,22 @@ async fn execute(
                 e.status[*i] = Status::Running;
                 e.trace.nodes[*i].batch_id = Some(id.clone());
             }
+            let stored = e.stored_state(
+                *nodes
+                    .iter()
+                    .find(|i| {
+                        e.aliases(&e.compiled.definition.node[**i].inputs)
+                            .values()
+                            .any(|v| v.redacted)
+                    })
+                    .unwrap_or(&nodes[0]),
+            );
+            let omitted = stored.is_err();
             e.trace.batches.push(BatchRecord {
                 id,
                 node_ids: questions.keys().cloned().collect(),
-                state: e.stored_state(
-                    *nodes
-                        .iter()
-                        .find(|i| {
-                            e.aliases(&e.compiled.definition.node[**i].inputs)
-                                .values()
-                                .any(|v| v.redacted)
-                        })
-                        .unwrap_or(&nodes[0]),
-                )?,
+                state: stored.unwrap_or_else(|_| "<state omitted: redacted>".into()),
+                redacted: omitted,
                 questions: questions.clone(),
                 duration_ms: 0,
                 usage: None,
@@ -1282,6 +1285,7 @@ pub fn replay(
                     .and_then(|n| n.batch_id.as_ref())
                     .and_then(|id| record.batches.iter().find(|b| b.id == *id));
                 let missing = e.missing_capture(&node.inputs, record)
+                    || batch.is_some_and(|b| b.redacted)
                     || capture
                         .and_then(|n| n.selected_inputs.as_ref())
                         .is_some_and(|m| m.values().any(|v| v.captured.redacted));
@@ -1338,6 +1342,7 @@ pub fn replay(
                     id,
                     node_ids: vec![node.id.clone()],
                     state,
+                    redacted: false,
                     questions: Questions::from([(
                         node.id.clone(),
                         node.kind.question().expect("decision"),

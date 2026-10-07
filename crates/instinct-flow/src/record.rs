@@ -49,6 +49,8 @@ pub struct BatchRecord {
     pub id: String,
     pub node_ids: Vec<String>,
     pub state: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub redacted: bool,
     pub questions: Questions,
     pub duration_ms: u64,
     pub usage: Option<DecisionUsage>,

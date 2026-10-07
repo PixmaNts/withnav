@@ -447,7 +447,49 @@ impl FlowStore {
         if text.len() > 262144 || v.templates.values().any(|t| t.len() > 65536) {
             return Err(StoreError::reason("invalid"));
         }
+        // Validate the entire write set before opening or writing any destination.
+        for template in v.templates.keys() {
+            if template.is_empty()
+                || template.len() > 128
+                || template.starts_with('.')
+                || template.ends_with(".toml")
+                || !template
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+            {
+                return Err(StoreError::reason("invalid"));
+            }
+        }
         let dir = Directory::open(&self.directory(location)?, true)?;
+        let previous = self.get(name, location).ok();
+        for (template, body) in &v.templates {
+            match dir.read(template, 65536, false) {
+                Ok(current) if &current != body => {
+                    // The document revision covers only its original referenced templates.
+                    // Never overwrite an existing file outside that checked write set.
+                    if !previous
+                        .as_ref()
+                        .is_some_and(|d| d.templates.contains_key(template))
+                    {
+                        return Err(StoreError::reason("stale"));
+                    }
+                    for file in dir.names()? {
+                        if let Some(other) = file.strip_suffix(".toml") {
+                            if other == name {
+                                continue;
+                            }
+                            let document = self.get(other, location)?;
+                            if document.templates.contains_key(template) {
+                                return Err(StoreError::reason("stale"));
+                            }
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
         for (template, body) in &v.templates {
             dir.write(template, body.as_bytes())?;
         }
@@ -506,6 +548,40 @@ pub(crate) fn timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn template_write_set_refuses_definitions_and_unchecked_existing_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = FlowStore::new(temp.path().into(), temp.path().join("config"));
+        let mut draft = content("a", "no_objection");
+        if let Content::Toml { templates, .. } = &mut draft {
+            templates.insert("b.toml".into(), "overwrite".into());
+        }
+        assert_eq!(
+            store
+                .save("a", Location::Global, None, draft)
+                .unwrap_err()
+                .reason,
+            "invalid"
+        );
+        assert!(!temp.path().join("config/flows/b.toml").exists());
+        let dir = Directory::open(&temp.path().join("config/flows"), true).unwrap();
+        dir.write("shared.txt", b"external change").unwrap();
+        let mut draft = content("a", "no_objection");
+        if let Content::Toml { templates, .. } = &mut draft {
+            templates.insert("shared.txt".into(), "old".into());
+        }
+        assert_eq!(
+            store
+                .save("a", Location::Global, None, draft)
+                .unwrap_err()
+                .reason,
+            "stale"
+        );
+        assert_eq!(
+            dir.read("shared.txt", 100, false).unwrap(),
+            "external change"
+        );
+    }
     fn content(name: &str, action: &str) -> Content {
         Content::Toml {toml:format!("[flow]\nversion=1\nname='{name}'\non='tool.pre_call'\nblocking=true\nbudget_ms=500\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='{action}'\n[node.params]\n"),templates:BTreeMap::new()}
     }

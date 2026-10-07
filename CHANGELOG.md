@@ -17,6 +17,12 @@ requests land in `develop`.
 - Responses no longer stop midway when a model gateway sends `null` instead of an empty list of tool calls or response choices.
 - **Browser transcripts use one column.** Driver messages and cognition replies share the full width, with bylines and a quiet Driver accent instead of right-aligned chat bubbles.
 - **Every workspace can collapse in the browser sidebar.** Carets expand without switching workspaces, names navigate without reopening collapsed rows, and the browser remembers which folders are expanded. Collapse all and Expand all are also available in the command palette.
+- **Network commands always get a review.** A bash call that runs `curl`, `wget`, `ssh`, `scp`,
+  `sftp`, `rsync`, `nc`, `ncat` or `socat` is now treated as reaching outside the project, so it
+  always goes to permission review instead of possibly running unreviewed.
+- **A symlinked folder no longer slips past the Markdown exception.** Writing a `.md` file through
+  a folder that is a link (for example `notes/` pointing elsewhere) now asks like any other write
+  outside its real place; before, only a link on the file itself was caught.
 
 ## [0.6.0] - 2026-10-07
 

@@ -498,7 +498,7 @@ fn gate(actor: &AgentActor, call: &ToolCall) -> Gated {
     // A guarded agent writes its markdown without asking; everything else it
     // does is an exception, and no folder grant covers an exception.
     if is_guarded(role) {
-        if exempt_from_guard(&call.name, &call.args, &needed) {
+        if exempt_from_guard(&call.name, &call.args, &needed, &actor.tool_context) {
             return Gated::Run(needed.destination);
         }
         return Gated::Guarded(needed);

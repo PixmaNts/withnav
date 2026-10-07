@@ -6,6 +6,7 @@ requests land in `develop`.
 
 ### Added
 
+- **Bypass ordinary permission prompts for one session.** Turn it on with `/bypass on`, `navai run --yes`, or `POST /v1/sessions/{id}/bypass`: `write`, `edit`, `bash` and `fetch` calls that would have asked run once instead, after the usual reviews, and the result says `approved_by: bypass`. A request already waiting is answered too. Requests for Navai's own configuration, credentials and keys still ask you, and `navai run --yes` stops with exit code 3 on one. It is off for every new or resumed session, never saved, and a session's subagents follow it. It is not a sandbox: `bash` keeps its access to your machine.
 - **Remove a workspace from the browser list.** The `…` menu of a workspace (or the command palette, for the open one) offers **Remove from list**, which keeps its sessions, and **Delete workspace sessions…**, which deletes every session of that folder with its subagents after you confirm the count. A removed folder stays out of the list after a restart and comes back when you open it again with "Open a folder" or start a session there. Folders passed to `navai web` on the command line stay in the list while that server runs.
 
 ### Changed

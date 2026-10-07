@@ -78,6 +78,55 @@ async fn bypass_is_ephemeral_isolated_and_idempotently_sequenced() {
     assert_eq!(stored.bypass_seq, stored.current_seq);
 }
 
+// Given a session with bypass on that is stopped and resumed
+// Then the resumed runtime starts off, and its history says so before
+//      anything else the resume wrote
+#[tokio::test]
+async fn resume_resets_bypass_off_with_an_event_first() {
+    use navai::bus::runtime::bypass::BypassOrigin;
+    let (tmp, ws) = tmp_ws();
+    let state = state(tmp.path());
+    let id = state.create_session(&ws, None, false).await.unwrap();
+    state
+        .set_bypass(id, true, BypassOrigin::Http)
+        .await
+        .unwrap();
+    state.close_session(id).await.unwrap();
+    let stored = state.session_summary(id).await.unwrap();
+    let (resumed, _) = state
+        .create_or_resume_session(&ws, None, false, Some(id))
+        .await
+        .unwrap();
+    assert_eq!(resumed, id);
+    let summary = state.session_summary(id).await.unwrap();
+    assert!(!summary.bypass);
+    state.history().flush().await.unwrap();
+    let sub = state.subscribe(id, None).await.unwrap();
+    let navai::bus::ResumeOutcome::Replay(events) = sub.replay else {
+        panic!("expected replay");
+    };
+    let resets: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == "session.bypass" && e.payload["by"] == "system:resume")
+        .collect();
+    assert_eq!(resets.len(), 1);
+    assert_eq!(
+        resets[0].payload,
+        json!({"enabled":false,"by":"system:resume"})
+    );
+    assert_eq!(
+        resets[0].seq,
+        stored.current_seq + 1,
+        "the first event of the resume"
+    );
+    assert_eq!(summary.bypass_seq, resets[0].seq);
+    // The earlier ON stays in the history; replay never restores it.
+    assert!(events
+        .iter()
+        .any(|e| e.kind == "session.bypass" && e.payload["enabled"] == true));
+    state.close_session(id).await.unwrap();
+}
+
 async fn results(state: &AppState, id: ulid::Ulid) -> Vec<EventEnvelope> {
     state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");

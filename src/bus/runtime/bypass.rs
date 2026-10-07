@@ -4,20 +4,30 @@ use tokio::sync::oneshot;
 use crate::bus::event::EventKind;
 use crate::bus::sequencer::{AckedCommit, Candidate, Sequencer};
 
+/// Who changed the setting; the server assigns it, a caller never names it.
 #[derive(Debug, Clone, Copy)]
 pub enum BypassOrigin {
     Http,
     Cli,
+    /// The root session this child follows.
+    Parent(ulid::Ulid),
+    /// A resumed session starting over from off.
+    Resume,
 }
 
 impl BypassOrigin {
-    fn as_str(self) -> &'static str {
+    pub fn by(self) -> String {
         match self {
-            Self::Http => "user:http",
-            Self::Cli => "user:cli",
+            Self::Http => "user:http".into(),
+            Self::Cli => "user:cli".into(),
+            Self::Parent(id) => format!("parent:{id}"),
+            Self::Resume => "system:resume".into(),
         }
     }
 }
+
+/// The error of a setter that reached a session already going away.
+pub const STOPPING: &str = "session stopping";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BypassReply {
@@ -64,7 +74,7 @@ pub(super) async fn apply(
                 Candidate::new(
                     EventKind::SessionBypass,
                     serde_json::json!({
-                        "enabled": request.enabled, "by": request.origin.as_str()
+                        "enabled": request.enabled, "by": request.origin.by()
                     }),
                 ),
                 request.commit,
@@ -143,7 +153,7 @@ impl super::RuntimeStatus {
                 commit,
                 reply,
             }))
-            .map_err(|_| "session stopping".to_string())?;
-        received.await.map_err(|_| "session stopping".to_string())?
+            .map_err(|_| STOPPING.to_string())?;
+        received.await.map_err(|_| STOPPING.to_string())?
     }
 }

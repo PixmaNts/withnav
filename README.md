@@ -23,7 +23,7 @@ owned coding-agent core with a terminal client and a local server.
   `/`), a model picker with variants, a session list to resume, and four themes (Ayu Dark and
   Light, Nord Dark and Light; `/theme`). It starts a private server, or connects to one with
   `--url`.
-- `navai run -p "<task>"`: one task in a terminal. It never approves a tool call by itself.
+- `navai run -p "<task>"`: one task in a terminal. It never approves a tool call by itself, unless you pass `--yes`.
 - `navai serve`: the session server alone (HTTP and SSE, loopback by default).
 - `navai auth set|list|remove <provider>`: API keys.
 - **Agents.** `build` (the default: implement, verify, report) and `plan` (research, write markdown
@@ -52,7 +52,7 @@ cognition chat discusses the work with you. See [`vscode-navigator/README.md`](v
 
 | Command | Main flags |
 |---|---|
-| `navai run` | `-m/--model <gateway/id>`, `-p/--prompt <text>` (a `/command` runs it), `--workspace <dir>`, `--models <file>`, `--agent <agent>`, `--variant <name\|off>`, `--show-thinking`, `--yes` (approve every request once; unsafe) |
+| `navai run` | `-m/--model <gateway/id>`, `-p/--prompt <text>` (a `/command` runs it), `--workspace <dir>`, `--models <file>`, `--agent <agent>`, `--variant <name\|off>`, `--show-thinking`, `--yes` (turn on bypass for the run: ordinary permission prompts run once, protected ones still stop it with exit 3; unsafe) |
 | `navai tui` | `--workspace <dir>`, `--model <gateway/id>` or `--session <id>` (resume), `--models <file>` or `--url <server>` (token in `NAVAI_SERVER_TOKEN`) |
 | `navai serve` | `--bind <addr>` (default `127.0.0.1:7310`), `--allow-non-loopback`, `--models <file>` |
 | `navai auth` | `set <provider>`, `list`, `remove <provider>` |

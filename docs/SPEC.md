@@ -612,7 +612,7 @@ A session that runs as an agent asks the driver before it runs `write`, `edit`, 
 - The call does not run. The turn yields and the server publishes a durable `permission.requested`. The scope is the canonical parent folder for `write` and `edit`, the workspace for `bash` (what the driver approves, not a confinement) and the URL origin for `fetch`.
 - The driver answers with `POST /v1/sessions/{id}/permissions/{request_id}`: `allow_once`, `allow_folder` or `deny` with a message. `allow_folder` is remembered in memory, per agent, capability and scope, until the session ends. Chat text never approves a request: a message sent while a request waits cancels it.
 - `permission.resolved` ends every request: `allow_once`, `allow_folder`, `deny`, `cancelled` (a stop, or a message) or `expired` (a restart). A restart never runs a held call.
-- `navai run` never approves by itself: it prints `permission_required: <tool> <scope>` and exits with code 3. `--yes` approves every request once (unsafe).
+- `navai run` never approves by itself: it prints `permission_required: <tool> <scope>` and exits with code 3. `--yes` turns on the session's bypass before the first prompt, so ordinary requests run once without asking; a request that still arrives (protected configuration, credentials or keys, for the session or a subagent) is printed with its tool, scope and reason and exits 3 (unsafe).
 
 ### 9.5 Plan Role Guard
 

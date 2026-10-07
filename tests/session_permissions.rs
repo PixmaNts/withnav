@@ -15,8 +15,8 @@ use navai::server::{app, AppState};
 mod common;
 use common::server::{request_json, TestServerConfig};
 use common::sse::{
-    http_sse, spawn_capturing_provider, spawn_streaming_provider, sse_body, text_chunk,
-    tool_call_chunk, CapturingProvider,
+    http_sse, spawn_capturing_provider, spawn_holding_provider, spawn_streaming_provider, sse_body,
+    text_chunk, tool_call_chunk, CapturingProvider,
 };
 
 struct Env {
@@ -610,7 +610,7 @@ fn run_navai(env: &Env, models: &Path, extra: &[&str]) -> std::process::Output {
 
 // Given `navai run` reaching a gated call
 // Then it stops with `permission_required` and exit 3, never hanging or
-//      approving; with --yes it approves once and finishes
+//      approving; with --yes the session's bypass lets ordinary work finish
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn navai_run_stops_on_a_permission_request_unless_yes() {
     let env = env();
@@ -658,6 +658,98 @@ async fn navai_run_stops_on_a_permission_request_unless_yes() {
     .unwrap();
     assert_eq!(approved.status.code(), Some(0), "{approved:?}");
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "from w2");
+}
+
+// Given `navai run --yes` whose model writes a credentials file
+// Then the hard floor holds: it prints the request with its reason, exits 3
+//      and writes nothing
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn navai_run_yes_stops_at_the_hard_floor_without_side_effects() {
+    let env = env();
+    let target = env.ws.join("auth.json");
+    let provider = provider(vec![one_write("w1", &target), done("never")]).await;
+    let cfg = config(&env, &provider);
+    cfg.config();
+    let models = cfg.models_path();
+    let (root_env, ws) = (env.root.clone(), env.ws.clone());
+    let output = tokio::task::spawn_blocking(move || {
+        let env = Env {
+            _tmp: tempfile::tempdir().unwrap(),
+            root: root_env,
+            ws,
+        };
+        run_navai(&env, &models, &["--yes", "--prompt", "write auth.json"])
+    })
+    .await
+    .unwrap();
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("permission_required: write "), "{stderr}");
+    assert!(
+        stderr.contains(&format!("{}: ", env.ws.display())),
+        "{stderr}"
+    );
+    assert!(!target.exists());
+    assert_eq!(
+        provider.requests().len(),
+        1,
+        "the run stopped at the request"
+    );
+}
+
+// Given `navai run --yes` where a child session reaches the hard floor
+// Then the mirrored request ends the whole run with exit 3, and the child
+//      writes nothing
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn navai_run_yes_stops_when_a_child_reaches_the_hard_floor() {
+    let env = env();
+    let agents = env.ws.join(".navai/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join("writer.md"),
+        "---\nmode: subagent\naccess: full\n---\nWrite the requested change.",
+    )
+    .unwrap();
+    let target = env.ws.join("auth.json");
+    let child_target = target.clone();
+    // The parent's second answer is held open, so the child's request is what
+    // ends the run.
+    let provider = spawn_holding_provider(
+        3,
+        2,
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+        move |_, request| {
+            if request.contains("Write the requested change.") {
+                one_write("child-write", &child_target)
+            } else {
+                http_sse(&sse_body(&[&tool_call_chunk(
+                    "spawn",
+                    "task",
+                    &json!({"agent":"writer","prompt":"write auth.json"}),
+                )]))
+            }
+        },
+    )
+    .await;
+    let cfg = config(&env, &provider);
+    cfg.config();
+    let models = cfg.models_path();
+    let started = std::time::Instant::now();
+    let (root_env, ws) = (env.root.clone(), env.ws.clone());
+    let output = tokio::task::spawn_blocking(move || {
+        let env = Env {
+            _tmp: tempfile::tempdir().unwrap(),
+            root: root_env,
+            ws,
+        };
+        run_navai(&env, &models, &["--yes", "--prompt", "delegate"])
+    })
+    .await
+    .unwrap();
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert!(started.elapsed() < Duration::from_secs(5), "ended promptly");
+    assert!(!target.exists());
 }
 
 // Given a decision already taken in while the resumed turn stalls

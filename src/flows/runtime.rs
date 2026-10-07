@@ -529,7 +529,11 @@ impl FlowRuntime {
                     outcome.trace.application = report;
                 }
                 if let Some(records) = records.filter(|_| !is_blocking) {
-                    if records.append(&outcome.trace).is_err() {
+                    let failed = records.append(&outcome.trace).is_err();
+                    if records.update_health(&outcome.trace, failed).is_err() {
+                        tracing::warn!("private flow health update failed");
+                    }
+                    if failed {
                         tracing::warn!("private flow capture failed");
                     }
                 }
@@ -624,7 +628,11 @@ impl FlowRuntime {
                 outcome.trace.application = report;
             }
             if let Some(records) = &self.records {
-                if records.append(&outcome.trace).is_err() {
+                let failed = records.append(&outcome.trace).is_err();
+                if records.update_health(&outcome.trace, failed).is_err() {
+                    tracing::warn!("private flow health update failed");
+                }
+                if failed {
                     tracing::warn!("private flow capture failed");
                 }
             }

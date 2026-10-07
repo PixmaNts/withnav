@@ -294,35 +294,7 @@ async fn handle(
                 .ok_or_else(|| StoreError::reason("not_found"))?;
             ok(json!(replay(&compiled, &record, &record.identity)))
         }
-        ("GET", "health") => {
-            let end = time::OffsetDateTime::now_utc();
-            let start = end - time::Duration::hours(24);
-            let mut rows: BTreeMap<String, (u64, u64, u64, f64, u64)> = BTreeMap::new();
-            for r in records.read()? {
-                if r.mode != "live"
-                    || !time::OffsetDateTime::parse(
-                        &r.started_at,
-                        &time::format_description::well_known::Rfc3339,
-                    )
-                    .is_ok_and(|t| t >= start && t <= end)
-                {
-                    continue;
-                }
-                let row = rows.entry(r.flow_name).or_default();
-                row.0 += 1;
-                row.1 += u64::from(r.status == "failure");
-                row.2 +=
-                    u64::from(!r.fallback_actions.is_empty() && r.application.status == "applied");
-                if let Some(cost) = r.cost_usd {
-                    row.3 += cost;
-                } else {
-                    row.4 += 1;
-                }
-            }
-            ok(
-                json!({"window_start":start.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),"window_end":end.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),"flows":rows.into_iter().map(|(name,r)|json!({"name":name,"runs":r.0,"failures":r.1,"fallbacks_applied":r.2,"cost_usd":if r.0==r.4 {None} else {Some(r.3)},"cost_unknown_runs":r.4})).collect::<Vec<_>>()}),
-            )
-        }
+        ("GET", "health") => ok(records.health()?),
         _ => {
             let parts: Vec<_> = tail.split('/').collect();
             if parts.len() >= 2 && parts[1] == "runs" && method == Method::GET {

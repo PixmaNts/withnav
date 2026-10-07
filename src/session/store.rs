@@ -1181,6 +1181,17 @@ impl HistoryStore {
         self.enqueue(Write::AppendEvent { id, envelope });
     }
 
+    /// Appends one durable envelope like [`HistoryStore::append_event`] and
+    /// waits for ITS transaction: the result is that append's own outcome,
+    /// not the store's sticky first failure.
+    pub async fn append_event_acked(
+        &self,
+        id: Ulid,
+        envelope: EventEnvelope,
+    ) -> Result<(), String> {
+        self.acked(Write::AppendEvent { id, envelope }).await
+    }
+
     /// Snapshots the actor transcript after a turn end (also bumps
     /// `updated_at`; `last_seq` is owned by `append_event`). Fire-and-forget:
     /// a failure surfaces at the next [`HistoryStore::flush`].
@@ -3027,6 +3038,33 @@ mod tests {
     // Then the first flush names the cause, and every later flush keeps
     //      reporting the same failure: the history has a hole that no later
     //      flush may hide
+    #[tokio::test]
+    async fn acked_append_reports_its_own_outcome_not_the_poison() {
+        let (_dir, store) = temp_store();
+        let id = Ulid::new();
+        store
+            .record_session(id, "/w", "m", false)
+            .await
+            .expect("record");
+        store.append_event(Ulid::new(), envelope(0, EventKind::SessionStart));
+        store
+            .flush()
+            .await
+            .expect_err("poisoned by an unknown session");
+        store
+            .append_event_acked(id, envelope(0, EventKind::SessionStart))
+            .await
+            .expect("its own append committed");
+        store
+            .flush()
+            .await
+            .expect_err("the poison is still reported");
+        store
+            .append_event_acked(Ulid::new(), envelope(1, EventKind::SessionStart))
+            .await
+            .expect_err("its own failure is reported");
+    }
+
     #[tokio::test]
     async fn failed_append_poison_survives_multiple_flushes() {
         let (dir, store) = temp_store();

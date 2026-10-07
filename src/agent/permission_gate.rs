@@ -534,14 +534,13 @@ pub fn protected_call(actor: &super::actor::AgentActor, call: &ToolCall, needed:
         return true;
     }
     call.name == "bash"
-        && call
-            .args
-            .get("command")
-            .and_then(Value::as_str)
-            .is_some_and(|command| {
-                command.contains(root.to_string_lossy().as_ref())
-                    || command.contains("~/.config/navai")
-            })
+        && (bash_command(call).is_some_and(|command| {
+            command.contains(root.to_string_lossy().as_ref()) || command.contains("~/.config/navai")
+        }) || bash_names_root(call, root, &actor.tool_context)
+            || actor
+                .protected_config_spelling
+                .as_deref()
+                .is_some_and(|spelling| bash_names_root(call, spelling, &actor.tool_context)))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -578,11 +577,9 @@ pub fn hard_floor(
                 .as_ref()
                 .is_some_and(|path| path.starts_with(&root.path))
             || (call.name == "bash"
-                && call
-                    .args
-                    .get("command")
-                    .and_then(Value::as_str)
-                    .is_some_and(|command| command.contains(root.path.to_string_lossy().as_ref())));
+                && (bash_command(call).is_some_and(|command| {
+                    command.contains(root.path.to_string_lossy().as_ref())
+                }) || bash_names_root(call, &root.path, &actor.tool_context)));
         (referenced && !root.valid()).then_some(HardFloorReason::ScratchChanged)
     })
 }
@@ -739,24 +736,42 @@ fn sensitive_call(call: &ToolCall, needed: &Needed, cx: &ToolContext) -> bool {
                 })
         }))
         || (call.name == "bash"
-            && call
-                .args
-                .get("command")
-                .and_then(Value::as_str)
-                .is_some_and(|command| {
-                    command
-                        .split(|c: char| c.is_whitespace() || ";|&()'\"=<>".contains(c))
-                        .any(|word| {
-                            let simplified: String =
-                                word.chars().filter(|c| !"[]{}*?\\".contains(*c)).collect();
-                            sensitive_read(std::path::Path::new(&simplified))
-                                || super::permissions::resolve_read_target(
-                                    std::path::Path::new(word),
-                                    cx,
-                                )
-                                .is_ok_and(|path| sensitive_read(&path))
-                        })
-                }))
+            && bash_command(call).is_some_and(|command| {
+                bash_operands(command).any(|word| {
+                    let simplified: String =
+                        word.chars().filter(|c| !"[]{}*?\\".contains(*c)).collect();
+                    sensitive_read(std::path::Path::new(&simplified))
+                        || super::permissions::resolve_read_target(std::path::Path::new(word), cx)
+                            .is_ok_and(|path| sensitive_read(&path))
+                })
+            }))
+}
+
+fn bash_command(call: &ToolCall) -> Option<&str> {
+    call.args.get("command").and_then(Value::as_str)
+}
+
+/// The literal operands of a bash command: its words, split at the shell's
+/// separators, quotes, redirections and `=`.
+fn bash_operands(command: &str) -> impl Iterator<Item = &str> {
+    command
+        .split(|c: char| c.is_whitespace() || ";|&()'\"=<>".contains(c))
+        .filter(|word| !word.is_empty())
+}
+
+/// Whether a literal operand of the bash command names `root`, by the spelling
+/// it was written with (resolved against the workspace) or by where it
+/// resolves.
+fn bash_names_root(call: &ToolCall, root: &std::path::Path, cx: &ToolContext) -> bool {
+    bash_command(call).is_some_and(|command| {
+        bash_operands(command).any(|word| {
+            let word = std::path::Path::new(word);
+            super::permissions::requested_path(word, cx)
+                .is_ok_and(|requested| requested.starts_with(root))
+                || super::permissions::resolve_read_target(word, cx)
+                    .is_ok_and(|resolved| resolved.starts_with(root))
+        })
+    })
 }
 
 fn supported_read_only_bash(call: &ToolCall) -> bool {

@@ -2016,6 +2016,82 @@ async fn failed_durable_toggle_enables_nothing_in_the_tree() {
 }
 
 #[tokio::test]
+async fn a_bypass_commit_reports_its_own_append_not_an_earlier_poisoned_write() {
+    let provider = common::sse::spawn_streaming_provider()
+        .bounded(file!(), line!())
+        .await;
+    let fx = fixture_at(&provider.url);
+    let id = fx
+        .state
+        .create_session(&fx.ws, Some("mock/mock-model"), false)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    // An earlier fire-and-forget write for an unknown session poisons flush.
+    let stray = ulid::Ulid::new();
+    fx.state.history().append_event(
+        stray,
+        navai::bus::event::EventEnvelope::new(
+            stray,
+            0,
+            navai::bus::event::EventKind::SessionStart,
+            json!({}),
+        ),
+    );
+    assert!(fx.state.history().flush().await.is_err());
+    let first = fx
+        .state
+        .set_bypass(id, true, navai::bus::runtime::bypass::BypassOrigin::Http)
+        .bounded(file!(), line!())
+        .await
+        .expect("its own append committed");
+    let second = fx
+        .state
+        .set_bypass(id, false, navai::bus::runtime::bypass::BypassOrigin::Http)
+        .bounded(file!(), line!())
+        .await
+        .expect("and the next one");
+    assert!(second.bypass_seq > first.bypass_seq, "no seq is reused");
+    fx.state.close_all().bounded(file!(), line!()).await;
+}
+
+#[tokio::test]
+async fn a_child_that_cannot_follow_the_toggle_is_stopped() {
+    let mut provider = common::sse::spawn_streaming_provider()
+        .bounded(file!(), line!())
+        .await;
+    let fx = fixture_at(&provider.url);
+    let (parent, child, _hold) = parent_with_running_child(&fx, &mut provider, false).await;
+    // The root's own commit succeeds, the child's does not.
+    fx.state.fail_bypass_commit_after(1);
+    let error = fx
+        .state
+        .set_bypass(
+            parent,
+            true,
+            navai::bus::runtime::bypass::BypassOrigin::Http,
+        )
+        .bounded(file!(), line!())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains(&child.to_string()) && error.contains("stopped"),
+        "{error}"
+    );
+    assert!(bypass_of(&fx, parent).await);
+    let summary = fx
+        .state
+        .session_summary(child)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert_eq!(summary.actor_state, "stopped");
+    assert!(!summary.bypass);
+    fx.state.close_all().bounded(file!(), line!()).await;
+}
+
+#[tokio::test]
 async fn parent_enabling_bypass_answers_the_childs_ordinary_pending_request() {
     let provider = spawn_capturing_provider(vec![
         http_sse(&sse_body(&[&tool_call_chunk(

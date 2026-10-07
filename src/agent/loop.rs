@@ -3,7 +3,7 @@ use crate::agent::context::Breakdown;
 use crate::agent::guard::{self, CallFacts, GuardInput, Judged};
 use crate::agent::permissions::{
     exempt_from_guard, is_guarded, needs_permission, still_resolves, Gate, Needed,
-    PermissionDecision, PermissionError, PermissionRequest,
+    PermissionDecision, PermissionError, PermissionRequest, Scope,
 };
 use crate::agent::prompt::{assistant_history_message, build_request};
 use crate::agent::response::{HumanRequest, StepOutcome};
@@ -645,6 +645,40 @@ async fn run_gated(
         if actor.cancel.is_cancelled() {
             return One::Interrupted;
         }
+        // A call that no driver has approved (an automatic review, an ungated
+        // native call) meets the hard floor here, before dispatch: a hit is an
+        // ordinary request only the driver can answer.
+        let request = match request {
+            None if actor.role.is_some() => {
+                let needed = Needed {
+                    scope: Scope::Folder(
+                        destination
+                            .as_deref()
+                            .and_then(Path::parent)
+                            .map(Path::to_path_buf)
+                            .unwrap_or_else(|| actor.tool_context.workspace.clone()),
+                    ),
+                    destination: destination.clone(),
+                };
+                if super::permission_gate::hard_floor(actor, call, &needed).is_some() {
+                    let mut floor = PermissionRequest::new(
+                        call,
+                        needed.scope,
+                        actor
+                            .role
+                            .as_ref()
+                            .map(|role| role.id.as_str())
+                            .unwrap_or("build"),
+                    );
+                    floor.reason =
+                        "Protected or changed target; approve this call once or deny".into();
+                    Some(floor)
+                } else {
+                    None
+                }
+            }
+            other => other,
+        };
         if let Some(mut request) = request {
             let needed = Needed {
                 scope: request.scope.clone(),
@@ -3231,8 +3265,10 @@ mod tests {
             };
             let mut observe = |_event: AgentEvent<'_>| {};
             let (outcome, ()) = tokio::join!(run_gated(&mut actor, &call, &mut observe), mutate);
-            assert!(matches!(outcome, One::Ask(..)));
-            assert_eq!(*reviewer.outside.lock().unwrap(), vec![false, true]);
+            // The approving review is not enough once the scratch identity
+            // changed: the floor asks the driver without a second review.
+            assert!(matches!(&outcome, One::Ask(request, _) if request.requires_driver));
+            assert_eq!(*reviewer.outside.lock().unwrap(), vec![false]);
             assert!(!target.exists());
             assert_eq!(
                 root.exists(),
@@ -3895,6 +3931,104 @@ mod tests {
             run_gated(&mut actor, &call, &mut |_| panic!("cancelled")).await,
             One::Interrupted
         ));
+    }
+
+    #[tokio::test]
+    async fn changed_scratch_asks_the_driver_whoever_else_would_authorize() {
+        use super::super::permission_gate::ReviewDecision;
+        for bypass in [true, false] {
+            for tool in ["write", "read"] {
+                let mut actor =
+                    plan_actor(Some(FakeJev::new(Ok(Verdict::Conforms))), "http://unused");
+                actor.permission_reviewer = Some(Arc::new(Meta {
+                    decision: Some(ReviewDecision::Approve),
+                    captured: Default::default(),
+                    hangs: false,
+                }));
+                actor.bypass.lock().unwrap().enabled = bypass;
+                let workspace = actor.tool_context.workspace.clone();
+                let root = workspace.join("scratch");
+                actor
+                    .scratch_roots
+                    .push(crate::agent::scratch::Identity::capture(&root).unwrap());
+                actor.tool_context.writable_roots.push(root.clone());
+                let other = workspace.join("other");
+                std::fs::create_dir(&other).unwrap();
+                std::fs::write(other.join("file"), "keep").unwrap();
+                std::fs::remove_dir(&root).unwrap();
+                std::os::unix::fs::symlink(&other, &root).unwrap();
+                let args = if tool == "write" {
+                    serde_json::json!({"path":root.join("file"),"content":"x"})
+                } else {
+                    serde_json::json!({"path":root.join("file")})
+                };
+                let call = ToolCall {
+                    id: "c".into(),
+                    name: tool.into(),
+                    args,
+                    args_valid: true,
+                };
+                let mut dispatched = 0;
+                let outcome = run_gated(&mut actor, &call, &mut |event| {
+                    if matches!(event, AgentEvent::PreCall { .. }) {
+                        dispatched += 1;
+                    }
+                })
+                .await;
+                assert_eq!(dispatched, 0, "{tool} bypass={bypass} must not dispatch");
+                assert!(
+                    matches!(&outcome, One::Ask(request, _) if request.requires_driver),
+                    "{tool} bypass={bypass} must ask the driver"
+                );
+                assert_eq!(std::fs::read_to_string(other.join("file")).unwrap(), "keep");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bash_operands_reach_protected_config_and_changed_scratch_floor() {
+        for case in ["config-is-workspace", "config-through-link", "scratch"] {
+            let mut actor = plan_actor(None, "http://unused");
+            actor.automatic_permission_review = false;
+            actor.bypass.lock().unwrap().enabled = true;
+            let workspace = actor.tool_context.workspace.clone();
+            let command = match case {
+                "config-is-workspace" => {
+                    actor.protected_config_root = Some(workspace.clone());
+                    actor.protected_config_spelling = Some(workspace.clone());
+                    "printf x > models.json"
+                }
+                "config-through-link" => {
+                    let dir = workspace.join("real-config");
+                    std::fs::create_dir(&dir).unwrap();
+                    actor.protected_config_root = Some(dir.clone());
+                    std::os::unix::fs::symlink(&dir, workspace.join("cfg")).unwrap();
+                    "printf x > cfg/models.json"
+                }
+                _ => {
+                    let root = workspace.join("scratch");
+                    actor
+                        .scratch_roots
+                        .push(crate::agent::scratch::Identity::capture(&root).unwrap());
+                    std::fs::remove_dir(&root).unwrap();
+                    std::fs::create_dir(&root).unwrap();
+                    "printf x > scratch/file"
+                }
+            };
+            let call = ToolCall {
+                id: "c".into(),
+                name: "bash".into(),
+                args: serde_json::json!({"command":command}),
+                args_valid: true,
+            };
+            assert!(
+                matches!(
+                    run_gated(&mut actor, &call, &mut |_| panic!("{case} must ask")).await,
+                    One::Ask(request, _) if request.requires_driver
+                ),
+                "{case}"
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]

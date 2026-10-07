@@ -407,7 +407,7 @@ pub struct Service {
     #[cfg(debug_assertions)]
     child_bypass_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
-    bypass_commit_failure: Arc<std::sync::atomic::AtomicBool>,
+    bypass_commit_failure: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(debug_assertions)]
     bypass_commit_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
@@ -574,8 +574,15 @@ impl Service {
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn fail_bypass_commit(&self) {
+        self.fail_bypass_commit_after(0);
+    }
+
+    /// Makes the durable bypass write fail after `skip` successful ones.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn fail_bypass_commit_after(&self, skip: usize) {
         self.bypass_commit_failure
-            .store(true, std::sync::atomic::Ordering::Release);
+            .store(skip + 1, std::sync::atomic::Ordering::Release);
     }
 
     #[cfg(debug_assertions)]
@@ -1976,7 +1983,15 @@ impl Service {
                     if self
                         .handle(child_id)
                         .is_none_or(|now| now.lifecycle != Lifecycle::Active) => {}
-                Err(error) => failures.push(format!("{child_id}: {error}")),
+                Err(error) => {
+                    // A child that cannot follow would run under a policy the
+                    // driver did not choose: stop it before reporting.
+                    let stopped = match self.close_session(child_id).await {
+                        Ok(()) => "stopped".to_string(),
+                        Err(stop) => format!("could not be stopped: {stop}"),
+                    };
+                    failures.push(format!("{child_id}: {error} ({stopped})"));
+                }
             }
         }
         if failures.is_empty() {
@@ -2019,12 +2034,17 @@ impl Service {
                         barrier.reached.notify_one();
                         barrier.release.notified().await;
                     }
-                    if failure.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                    // Test seam: one writer at a time, so load/store is enough.
+                    let left = failure.load(std::sync::atomic::Ordering::Acquire);
+                    if left > 0 {
+                        failure.store(left - 1, std::sync::atomic::Ordering::Release);
+                    }
+                    let fails = left == 1;
+                    if fails {
                         return Err("injected bypass commit failure".into());
                     }
                 }
-                history.append_event(id, envelope);
-                history.flush().await
+                history.append_event_acked(id, envelope).await
             })
         })
     }

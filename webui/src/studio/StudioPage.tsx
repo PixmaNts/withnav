@@ -102,7 +102,7 @@ function Studio({ api, route, navigate }: { api: StudioApi; route: Route } & Pic
   }, [pick, route.flow, route.loc, navigate]);
 
   const docQ = useQuery({ queryKey: k("doc", current?.location, current?.name), queryFn: () => api.get(current!.name, current!.location), enabled: !!current });
-  const editor = useFlowEditor(api, docQ.data);
+  const editor = useFlowEditor(api, docQ.data, current ? { workspace: ws, ...current } : null);
   const { state } = editor;
   const doc = state.doc;
   const def = state.def;
@@ -168,9 +168,10 @@ function Studio({ api, route, navigate }: { api: StudioApi; route: Route } & Pic
 
   const onReopen = async () => {
     if (!current) return;
+    const request = editor.request();
     const fresh = await api.get(current.name, current.location);
     qc.setQueryData(k("doc", current.location, current.name), fresh);
-    editor.adopt(fresh);
+    editor.adopt(fresh, request);
   };
 
   const onReload = async () => {
@@ -186,13 +187,14 @@ function Studio({ api, route, navigate }: { api: StudioApi; route: Route } & Pic
   };
 
   const onToggle = async (f: FlowSummary) => {
+    const request = editor.request();
     const key = `${f.location}:${f.name}`;
     setToggling(key);
     try {
       const d = await api.get(f.name, f.location);
       const saved = await api.save(f.name, { location: f.location, revision: d.revision, content: { format: "toml", toml: setEnabledInToml(d.toml, !f.enabled), templates: d.templates } });
       qc.setQueryData(k("doc", f.location, f.name), saved);
-      if (current?.name === f.name && current.location === f.location && !dirty) editor.adopt(saved);
+      if (current?.name === f.name && current.location === f.location && !dirty) editor.adopt(saved, request);
       setNotice(`${f.name} ${f.enabled ? "disabled" : "enabled"} in its file. Reload to apply.`);
     } catch (e) {
       setNotice(envelopeOf(e)?.error ?? errorMessage(e));

@@ -7,7 +7,6 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) struct Effects {
     pub runtime: std::sync::Weak<FlowRuntime>,
-    pub wake: bool,
     pub status: Arc<crate::bus::runtime::RuntimeStatus>,
     pub sequencer: crate::bus::sequencer::Sequencer,
 }
@@ -44,7 +43,7 @@ impl FlowEffects for Effects {
                 text.to_string(),
                 flow.to_string(),
                 run_id.to_string(),
-                self.wake,
+                action.action == "wake",
             ) {
                 Ok(())
             } else {
@@ -113,7 +112,6 @@ pub(crate) async fn received(
             handle.session_cancel.clone(),
             Arc::new(Effects {
                 runtime: Arc::downgrade(runtime),
-                wake: false,
                 status: handle.status.clone(),
                 sequencer: handle.sequencer.clone(),
             }),
@@ -133,7 +131,6 @@ pub(crate) fn hook(
         selected,
         Arc::new(Effects {
             runtime: Arc::downgrade(runtime),
-            wake: true,
             status,
             sequencer,
         }),
@@ -181,7 +178,6 @@ pub(crate) async fn settled(handle: super::service::SessionHandle, session_id: S
             let cancel = handle.session_cancel.clone();
             let effects = Arc::new(Effects {
                 runtime: Arc::downgrade(&runtime),
-                wake: true,
                 status: handle.status.clone(),
                 sequencer: handle.sequencer.clone(),
             });

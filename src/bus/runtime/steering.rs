@@ -6,10 +6,11 @@ use crate::provider::openai::{ChatMessage, UserProvenance};
 
 #[derive(Debug, Default)]
 pub(super) struct Steering {
-    // Volatile parent guidance: crashes may lose it. Child results instead
+    // Volatile guidance and flow notes: crashes may lose queued input. Child results instead
     // remain in the durable completion outbox until transcript consumption.
     pub queue: Mutex<VecDeque<Operation>>,
     terminal: std::sync::atomic::AtomicBool,
+    flow_wakes: Mutex<std::collections::HashMap<String, std::time::Instant>>,
 }
 
 #[cfg(test)]
@@ -25,6 +26,7 @@ mod tests {
             run_id: "capture".into(),
         };
         steering.admit(Operation {
+            wake: false,
             id: Ulid::new(),
             content: "untrusted note".into(),
             interrupt: false,
@@ -45,11 +47,32 @@ mod tests {
     }
 
     #[test]
+    fn notes_wait_for_another_turn_and_flow_wakes_are_coalesced_for_two_minutes() {
+        let steering = Steering::default();
+        assert!(steering.admit_flow("queued".into(), "review".into(), "a".into(), false));
+        assert!(!steering.has_wake());
+        assert_eq!(steering.apply(vec![]).len(), 1);
+        assert!(steering.admit_flow("wake".into(), "review".into(), "b".into(), true));
+        assert!(steering.has_wake());
+        assert_eq!(steering.apply(vec![]).len(), 1);
+        assert!(steering.admit_flow("loop".into(), "review".into(), "c".into(), true));
+        assert!(!steering.has_wake());
+        assert!(steering.apply(vec![]).is_empty());
+        steering.flow_wakes.lock().unwrap().insert(
+            "review".into(),
+            std::time::Instant::now() - std::time::Duration::from_secs(120),
+        );
+        assert!(steering.admit_flow("later".into(), "review".into(), "d".into(), true));
+        assert!(steering.has_wake());
+    }
+
+    #[test]
     fn interrupt_is_reserved_regardless_of_boundary_control_order() {
         for boundary_first in [true, false] {
             let steering = Steering::default();
             let id = Ulid::new();
             steering.queue.lock().unwrap().push_back(Operation {
+                wake: true,
                 id,
                 content: "replace".into(),
                 provenance: UserProvenance::Parent,
@@ -74,6 +97,7 @@ mod tests {
         let b = Ulid::new();
         for (id, text) in [(a, "first"), (b, "second")] {
             assert!(steering.admit(Operation {
+                wake: true,
                 id,
                 content: text.into(),
                 provenance: UserProvenance::Parent,
@@ -95,6 +119,7 @@ mod tests {
 
 #[derive(Debug)]
 pub(super) struct Operation {
+    pub wake: bool,
     pub provenance: UserProvenance,
     pub id: Ulid,
     pub content: String,
@@ -102,6 +127,39 @@ pub(super) struct Operation {
 }
 
 impl Steering {
+    /// Flow wakes have a 120 s minimum interval per flow and session incarnation.
+    /// This also coalesces action chains and prevents turn.end feedback loops.
+    pub fn admit_flow(&self, text: String, flow: String, run_id: String, wake: bool) -> bool {
+        let mut wakes = self.flow_wakes.lock().unwrap_or_else(|e| e.into_inner());
+        let now = std::time::Instant::now();
+        wakes.retain(|_, last| now.duration_since(*last) < std::time::Duration::from_secs(120));
+        if wake && wakes.contains_key(&flow) {
+            return true;
+        }
+        let admitted = self.admit(Operation {
+            id: Ulid::new(),
+            content: format!("<untrusted-flow-note>\n{text}\n</untrusted-flow-note>"),
+            provenance: UserProvenance::Flow {
+                source: crate::provider::openai::FlowSource::Flow,
+                flow: flow.clone(),
+                run_id,
+            },
+            interrupt: false,
+            wake,
+        });
+        if admitted && wake {
+            wakes.insert(flow, now);
+        }
+        admitted
+    }
+
+    pub fn has_wake(&self) -> bool {
+        self.queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|op| op.wake)
+    }
     pub fn has_interrupt(&self, id: Ulid) -> bool {
         self.queue
             .lock()

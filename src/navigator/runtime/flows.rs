@@ -1,5 +1,5 @@
-//! Document-scoped flow effects reuse the navigator's anchored delivery paths.
-use super::{trigger::TriggerContext, wake::WakeReason, Runtime};
+//! Remarks use anchored metacognition; flow notes use typed safe-boundary steering.
+use super::{trigger::TriggerContext, Runtime};
 use crate::{
     flows::runtime::{ContextSnapshot, FlowEffects},
     navigator::{log::PendingTrigger, TriggerKind},
@@ -21,8 +21,8 @@ struct EditorEffects {
 impl FlowEffects for EditorEffects {
     fn effect<'a>(
         &'a self,
-        _: &'a str,
-        _: &'a str,
+        flow: &'a str,
+        run_id: &'a str,
         action: &'a ProposedAction,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<(), ApplyError>> {
@@ -34,7 +34,7 @@ impl FlowEffects for EditorEffects {
                 .runtime
                 .upgrade()
                 .ok_or_else(|| ApplyError("editor closed".into()))?;
-            if !matches!(action.action.as_str(), "remark" | "wake") {
+            if !matches!(action.action.as_str(), "remark" | "wake" | "inject_note") {
                 return Err(ApplyError("unsupported editor effect".into()));
             }
             let (ctx, mut pending) = self
@@ -59,22 +59,28 @@ impl FlowEffects for EditorEffects {
                         .deliver_remark(uri, ctx, pending, prompt.into(), cancel.clone())
                         .await;
                 }
-                "wake" => {
-                    pending.requested_action = Some("wake_cognition");
-                    runtime.clear_in_flight(&uri).await;
+                "wake" | "inject_note" => {
+                    let wake = action.action == "wake";
+                    let text = action
+                        .params
+                        .get(if wake { "note" } else { "text" })
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| ApplyError("missing flow text".into()))?;
                     runtime
-                        .deliver_wake_message(
-                            uri,
-                            ctx,
-                            pending,
-                            WakeReason::Other(0.0),
-                            action
-                                .params
-                                .get("note")
-                                .and_then(|v| v.as_str())
-                                .map(str::to_owned),
-                        )
-                        .await;
+                        .conversation
+                        .as_ref()
+                        .ok_or_else(|| ApplyError("no editor conversation".into()))?
+                        .post_flow_note(text.into(), flow.into(), run_id.into(), wake)
+                        .map_err(ApplyError)?;
+                    pending.requested_action = Some(if wake {
+                        "wake_cognition"
+                    } else {
+                        "inject_note"
+                    });
+                    pending.finish(
+                        &runtime.log,
+                        crate::navigator::log::DeliveryOutcome::Silent { reason: None },
+                    );
                 }
                 _ => unreachable!(),
             }
@@ -273,11 +279,127 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::flows::{
         builtin,
         store::{Content, FlowStore, Location},
     };
     use std::collections::BTreeMap;
+
+    #[tokio::test]
+    async fn editor_wake_and_inject_note_use_the_typed_flow_poster_not_message_admission() {
+        struct Silent;
+        struct Server;
+        impl tower_lsp_server::LanguageServer for Server {
+            async fn initialize(
+                &self,
+                _: tower_lsp_server::ls_types::InitializeParams,
+            ) -> tower_lsp_server::jsonrpc::Result<tower_lsp_server::ls_types::InitializeResult>
+            {
+                Ok(Default::default())
+            }
+            async fn shutdown(&self) -> tower_lsp_server::jsonrpc::Result<()> {
+                Ok(())
+            }
+        }
+        impl crate::navigator::Metacognition for Silent {
+            fn remark<'a>(
+                &'a self,
+                _: &'a crate::navigator::metacognition::RemarkContext,
+                _: &'a CancellationToken,
+            ) -> futures::future::BoxFuture<
+                'a,
+                Result<Option<crate::navigator::Remark>, crate::navigator::ModelError>,
+            > {
+                Box::pin(async { panic!("flow note must not call metacognition") })
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let feed = crate::navigator::ConversationFeed::new();
+        let id = ulid::Ulid::new();
+        feed.register_session(
+            id,
+            Arc::new(|_| Box::pin(async { panic!("flow note must not enter message admission") })),
+        );
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = observed.clone();
+        feed.register_flow_poster(
+            id,
+            Arc::new(move |text, flow, run_id, wake| {
+                sink.lock().unwrap().push((text, flow, run_id, wake));
+                Ok(())
+            }),
+        );
+        feed.observe(&crate::bus::event::EventEnvelope::new(
+            id,
+            0,
+            crate::bus::event::EventKind::MessageReceived,
+            json!({"source":"user:test", "content":"driver task"}),
+        ))
+        .await;
+        let mut runtime = None;
+        let (_service, _socket) = tower_lsp_server::LspService::new(|client| {
+            let rt = Runtime::new(
+                client,
+                crate::navigator::NavigatorDeps::new(
+                    Arc::new(Silent),
+                    dir.path().join("log.jsonl"),
+                )
+                .with_conversation(feed),
+            );
+            runtime = Some(rt);
+            Server
+        });
+        let runtime = runtime.unwrap();
+        let uri = "file:///workspace/test.rs";
+        runtime
+            .documents
+            .lock()
+            .await
+            .open(uri, "rust".into(), "fn main() {}".into(), 1);
+        let ctx = runtime
+            .gather(uri, TriggerKind::Save, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        let pending = PendingTrigger::new("runtime", None, uri, 1, "save", ctx.prefilter_inputs());
+        let effects = EditorEffects {
+            runtime: Arc::downgrade(&runtime),
+            context: Mutex::new(Some((ctx, pending))),
+            delivered: AtomicBool::new(false),
+        };
+        for (action, param) in [("wake", "note"), ("inject_note", "text")] {
+            effects
+                .effect(
+                    "editor-review",
+                    "capture",
+                    &ProposedAction {
+                        node_id: None,
+                        action: action.into(),
+                        params: BTreeMap::from([(param.into(), json!("observation"))]),
+                    },
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            *observed.lock().unwrap(),
+            vec![
+                (
+                    "observation".into(),
+                    "editor-review".into(),
+                    "capture".into(),
+                    true
+                ),
+                (
+                    "observation".into(),
+                    "editor-review".into(),
+                    "capture".into(),
+                    false
+                ),
+            ]
+        );
+    }
 
     #[test]
     fn disabled_override_and_revoked_workspace_do_not_create_a_second_producer() {

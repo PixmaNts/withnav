@@ -9,9 +9,9 @@
   workspace trust, capture ownership and retention remain the host's filesystem responsibility.
 - Replay never calls a provider or input source. Missing capture fails closed. A failed batch
   can reproduce its recorded failure only when its captured question/state/identity match.
-- The contracted `InputValue { value, cut }` seam has no redaction marker. Unknown capture
-  input fields (including `redacted`) are rejected rather than silently permitting replay;
-  host adapters must withhold redacted captures until that seam gains explicit provenance.
+- `InputValue.redacted` defaults to false for older captures. Hosts supply the real live value
+  with this marker to withhold it from captures. Selected inputs store null with redacted=true;
+  retained states substitute `<redacted>`. Replay readers reject redacted evidence.
 - No provider pricing is inferred. Cost stays null, including replay. SHA-256 was added as
   a direct dependency because no root direct hash dependency existed.
 - Runtime error messages supplied by the included provider transport are fixed/sanitized;

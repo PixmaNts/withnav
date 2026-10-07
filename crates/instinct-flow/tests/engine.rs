@@ -47,6 +47,7 @@ impl InputSource for Inputs {
                         InputValue {
                             value: Some("build".into()),
                             cut: false,
+                            redacted: false,
                         },
                     )
                 })

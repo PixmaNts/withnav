@@ -12,6 +12,8 @@ use tokio_util::sync::CancellationToken;
 pub struct InputValue {
     pub value: Option<serde_json::Value>,
     pub cut: bool,
+    #[serde(default)]
+    pub redacted: bool,
 }
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("input collection failed: {0}")]
@@ -135,6 +137,7 @@ impl<'a> Evaluation<'a> {
                 variables: BTreeMap::new(),
                 batch_id: None,
                 error: None,
+                selected_inputs: None,
             })
             .collect();
         Self {
@@ -236,6 +239,7 @@ impl<'a> Evaluation<'a> {
         let absent = || InputValue {
             value: None,
             cut: false,
+            redacted: false,
         };
         if let Some(name) = reference.strip_prefix("event.") {
             return InputValue {
@@ -247,12 +251,14 @@ impl<'a> Evaluation<'a> {
                     .filter(|v| !v.is_null())
                     .cloned(),
                 cut: false,
+                redacted: false,
             };
         }
         if let Some(name) = reference.strip_prefix("constant.") {
             return InputValue {
                 value: self.compiled.definition.constants.get(name).cloned(),
                 cut: false,
+                redacted: false,
             };
         }
         if let Some(id) = crate::validation::upstream(reference) {
@@ -302,7 +308,14 @@ impl<'a> Evaluation<'a> {
                     }
                 })
             };
-            return InputValue { value, cut: false };
+            return InputValue {
+                value,
+                cut: false,
+                redacted: record
+                    .selected_inputs
+                    .as_ref()
+                    .is_some_and(|m| m.values().any(|v| v.captured.redacted)),
+            };
         }
         self.cache.get(reference).cloned().unwrap_or_else(absent)
     }
@@ -367,6 +380,7 @@ impl<'a> Evaluation<'a> {
             let mut value = collected.get(&name).cloned().unwrap_or(InputValue {
                 value: None,
                 cut: false,
+                redacted: false,
             });
             let spec = self
                 .compiled
@@ -386,7 +400,9 @@ impl<'a> Evaluation<'a> {
                 value.value = None;
             }
             self.bound(&mut value, &name)?;
-            self.trace.inputs.insert(name.clone(), value.clone());
+            self.trace
+                .inputs
+                .insert(name.clone(), stored_input(value.clone()));
             self.cache.insert(name, value);
         }
         Ok(())
@@ -480,6 +496,7 @@ impl<'a> Evaluation<'a> {
         Ok(state)
     }
     fn deterministic(&mut self, i: usize) -> Result<(), Failure> {
+        self.capture_selected(i);
         let node = &self.compiled.definition.node[i];
         let inputs = self.aliases(&node.inputs);
         let start = Instant::now();
@@ -536,6 +553,62 @@ impl<'a> Evaluation<'a> {
         self.status[i] = Status::Completed;
         self.trace.nodes[i].status = "completed".into();
         self.trace.nodes[i].port = Some(port);
+    }
+    fn selected(&self, map: &BTreeMap<String, String>) -> BTreeMap<String, SelectedInput> {
+        map.iter()
+            .map(|(alias, reference)| {
+                (
+                    alias.clone(),
+                    SelectedInput {
+                        reference: reference.clone(),
+                        captured: self.resolve(reference),
+                    },
+                )
+            })
+            .collect()
+    }
+    fn capture_selected(&mut self, i: usize) {
+        self.trace.nodes[i].selected_inputs = Some(
+            self.selected(&self.compiled.definition.node[i].inputs)
+                .into_iter()
+                .map(|(alias, mut input)| {
+                    input.captured = stored_input(input.captured);
+                    (alias, input)
+                })
+                .collect(),
+        );
+    }
+    fn missing_capture(&self, map: &BTreeMap<String, String>, record: &RunRecord) -> bool {
+        map.values().any(|r| {
+            self.resolve(r).redacted
+                || (!r.starts_with("event.")
+                    && !r.starts_with("constant.")
+                    && crate::validation::upstream(r).is_none()
+                    && !record.inputs.contains_key(r))
+        })
+    }
+    fn stored_state(&self, i: usize) -> Result<String, Failure> {
+        let node = &self.compiled.definition.node[i];
+        let values = self
+            .aliases(&node.inputs)
+            .into_iter()
+            .map(|(k, mut v)| {
+                if v.redacted {
+                    v.value = Some("<redacted>".into());
+                    v.cut = false;
+                }
+                (k, v)
+            })
+            .collect();
+        crate::rendering::state_bounded(
+            &values,
+            node.kind
+                .template()
+                .and_then(|n| self.compiled.templates.get(n))
+                .map(String::as_str),
+            self.compiled.catalogue.limits.state_bytes.min(65536),
+        )
+        .map_err(render_failure)
     }
     fn validate_params(
         &self,
@@ -645,6 +718,7 @@ impl<'a> Evaluation<'a> {
             InputValue {
                 value: Some(kind.name().into()),
                 cut: false,
+                redacted: false,
             },
         );
         values.insert(
@@ -652,6 +726,7 @@ impl<'a> Evaluation<'a> {
             InputValue {
                 value: Some(message.into()),
                 cut: false,
+                redacted: false,
             },
         );
         let mut actions = Vec::new();
@@ -724,6 +799,23 @@ impl<'a> Evaluation<'a> {
                 }
             }
         };
+        for node in &mut self.trace.nodes {
+            if node
+                .selected_inputs
+                .as_ref()
+                .is_some_and(|m| m.values().any(|v| v.captured.redacted))
+            {
+                node.answer = None;
+                node.variables.clear();
+                for action in &mut self.trace.actions {
+                    if action.node_id.as_ref() == Some(&node.id) {
+                        for value in action.params.values_mut() {
+                            *value = "<redacted>".into();
+                        }
+                    }
+                }
+            }
+        }
         RunOutcome {
             result,
             trace: self.trace,
@@ -732,6 +824,12 @@ impl<'a> Evaluation<'a> {
 }
 fn elapsed(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+fn stored_input(mut value: InputValue) -> InputValue {
+    if value.redacted {
+        value.value = None;
+    }
+    value
 }
 fn render_failure(d: Diagnostic) -> Failure {
     (
@@ -917,13 +1015,23 @@ async fn execute(
             let batch = e.trace.batches.len();
             let id = format!("b{}", batch + 1);
             for i in &nodes {
+                e.capture_selected(*i);
                 e.status[*i] = Status::Running;
                 e.trace.nodes[*i].batch_id = Some(id.clone());
             }
             e.trace.batches.push(BatchRecord {
                 id,
                 node_ids: questions.keys().cloned().collect(),
-                state: state.clone(),
+                state: e.stored_state(
+                    *nodes
+                        .iter()
+                        .find(|i| {
+                            e.aliases(&e.compiled.definition.node[**i].inputs)
+                                .values()
+                                .any(|v| v.redacted)
+                        })
+                        .unwrap_or(&nodes[0]),
+                )?,
                 questions: questions.clone(),
                 duration_ms: 0,
                 usage: None,
@@ -1056,26 +1164,6 @@ pub fn replay(
             run_id: record.run_id.clone(),
         },
     );
-    let mut captured = Evaluation::new(
-        definition,
-        &record.event,
-        record.identity.clone(),
-        RunOptions {
-            deadline: Instant::now() + Duration::from_secs(5),
-            run_id: record.run_id.clone(),
-        },
-    );
-    captured.cache = record.inputs.clone();
-    for (i, node) in definition.definition.node.iter().enumerate() {
-        if let Some(original) = record.nodes.iter().find(|n| n.id == node.id) {
-            captured.trace.nodes[i] = original.clone();
-            captured.status[i] = if original.status == "completed" {
-                Status::Completed
-            } else {
-                Status::Unreachable
-            };
-        }
-    }
     e.trace.mode = "replay".into();
     e.trace.started_at = record.started_at.clone();
     e.cache = record.inputs.clone();
@@ -1102,8 +1190,11 @@ pub fn replay(
             return Ok(false);
         }
         if let Some(when) = definition.expressions.get("flow.when") {
+            if e.missing_capture(&definition.definition.flow.inputs, record) {
+                comparable = false;
+                return Ok(false);
+            }
             e.prepare_local(&definition.definition.flow.inputs)?;
-            captured.prepare_local(&definition.definition.flow.inputs)?;
             let values = e
                 .aliases(&definition.definition.flow.inputs)
                 .iter()
@@ -1128,8 +1219,14 @@ pub fn replay(
                 .collect();
             if !deterministic.is_empty() {
                 for i in deterministic {
+                    let node = &definition.definition.node[i];
+                    if e.missing_capture(&node.inputs, record) {
+                        nodes.get_mut(&node.id).expect("replay node").status =
+                            "missing_capture".into();
+                        comparable = false;
+                        return Ok(false);
+                    }
                     e.prepare_local(&definition.definition.node[i].inputs)?;
-                    captured.prepare_local(&definition.definition.node[i].inputs)?;
                     e.deterministic(i)?;
                 }
                 continue;
@@ -1137,23 +1234,26 @@ pub fn replay(
             for i in ready {
                 let node = &definition.definition.node[i];
                 e.prepare_local(&node.inputs)?;
-                captured.prepare_local(&node.inputs)?;
                 let state = e.state(i)?;
                 let question = node.kind.question().expect("decision frontier");
                 let capture = record.nodes.iter().find(|n| n.id == node.id);
                 let batch = capture
                     .and_then(|n| n.batch_id.as_ref())
                     .and_then(|id| record.batches.iter().find(|b| b.id == *id));
-                let missing = node.inputs.values().any(|reference| {
-                    !reference.starts_with("event.")
-                        && !reference.starts_with("constant.")
-                        && crate::validation::upstream(reference).is_none()
-                        && !record.inputs.contains_key(reference)
-                });
+                let missing = e.missing_capture(&node.inputs, record)
+                    || capture
+                        .and_then(|n| n.selected_inputs.as_ref())
+                        .is_some_and(|m| m.values().any(|v| v.captured.redacted));
+                let inputs_equal = capture
+                    .and_then(|n| n.selected_inputs.as_ref())
+                    .map_or_else(
+                        || record.definition_digest == definition.digest,
+                        |original| *original == e.selected(&node.inputs),
+                    );
                 let classification = if missing || capture.is_none() || batch.is_none() {
                     "missing_capture"
                 } else if record.identity != *identity
-                    || e.aliases(&node.inputs) != captured.aliases(&node.inputs)
+                    || !inputs_equal
                     || batch.is_some_and(|b| {
                         b.state != state || b.questions.get(&node.id) != Some(&question)
                     })
@@ -1170,6 +1270,8 @@ pub fn replay(
                         && capture.is_some_and(|n| n.status == "failed")
                         && batch.is_some()
                         && record.identity == *identity
+                        && !missing
+                        && inputs_equal
                         && batch.is_some_and(|b| {
                             b.state == state && b.questions.get(&node.id) == Some(&question)
                         })
@@ -1242,6 +1344,7 @@ pub fn replay(
             InputValue {
                 value: Some(kind.name().into()),
                 cut: false,
+                redacted: false,
             },
         );
         values.insert(
@@ -1249,17 +1352,20 @@ pub fn replay(
             InputValue {
                 value: Some(message.clone().into()),
                 cut: false,
+                redacted: false,
             },
         );
         let mut chain = chain;
         while let Some(item) = chain {
             match crate::rendering::params(&item.params, &values) {
-                Ok(params) => e.trace.fallback_actions.push(ProposedAction {
-                    node_id: None,
-                    action: item.action.clone(),
-                    params,
-                }),
-                Err(_) => {
+                Ok(params) if e.validate_params(&item.action, &params).is_ok() => {
+                    e.trace.fallback_actions.push(ProposedAction {
+                        node_id: None,
+                        action: item.action.clone(),
+                        params,
+                    })
+                }
+                _ => {
                     comparable = false;
                     break;
                 }

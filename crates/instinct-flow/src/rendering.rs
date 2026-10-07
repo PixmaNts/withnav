@@ -193,6 +193,7 @@ mod tests {
                 InputValue {
                     value: None,
                     cut: false,
+                    redacted: false,
                 },
             ),
             (
@@ -200,6 +201,7 @@ mod tests {
                 InputValue {
                     value: Some("hello".into()),
                     cut: true,
+                    redacted: false,
                 },
             ),
         ]);

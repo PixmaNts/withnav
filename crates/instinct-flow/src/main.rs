@@ -55,6 +55,7 @@ impl InputSource for AbsentInputs {
                         InputValue {
                             value: None,
                             cut: false,
+                            redacted: false,
                         },
                     )
                 })

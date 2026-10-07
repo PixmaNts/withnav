@@ -11,6 +11,8 @@ It never applies actions, reads Navai settings, resolves credentials or stores c
    a `CompiledDefinition`; templates are already-loaded sibling file contents.
 3. Implement object-safe `InputSource` and `DecisionClient` (or use `SystemOneClient`).
    Input collection must refer to a stable start-of-run snapshot even when lazy.
+   `InputValue { value, cut, redacted }` retains real values for live execution; a redacted
+   value is withheld from the capture and replaced by `<redacted>` in retained states.
 4. `run` takes an absolute deadline and cancellation token and returns `RunOutcome`.
    Failed runs discard all ordinary actions. The host decides whether the event is still
    current before applying fallback proposals.
@@ -18,6 +20,15 @@ It never applies actions, reads Navai settings, resolves credentials or stores c
    through the host's `ActionExecutor`. Capture application results in `RunRecord`.
 6. `replay` uses captured context/questions/answers only and returns no outcome if a newly
    reached decision cannot be compared honestly. It does not invoke any trait callbacks.
+   Version 1 records optionally add `NodeRecord.selected_inputs` (alias → reference and
+   captured value/cut/redacted). Changed references or constants invalidate decision reuse;
+   missing or redacted host evidence invalidates every consumer, including expressions/actions.
+   Legacy records without selected inputs require the original definition digest for reuse.
+
+Input byte ceilings are allocated equally across distinct declared non-upstream references
+(including flow and fallback inputs), independently of completion order. Text may be cut;
+typed parameters and expressions fail with `limit` when truncation would be required.
+State and action rendering enforce ceilings during construction, without cutting templates.
 
 The shared System One wire DTOs live in `instinct_flow::protocol`; the root exports the
 catalogue, definition, client, engine and record DTOs. `Node` contains common fields and

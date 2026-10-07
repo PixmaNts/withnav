@@ -36,6 +36,13 @@ pub struct NodeRecord {
     pub variables: BTreeMap<String, serde_json::Value>,
     pub batch_id: Option<String>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_inputs: Option<BTreeMap<String, SelectedInput>>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SelectedInput {
+    pub reference: String,
+    pub captured: InputValue,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchRecord {

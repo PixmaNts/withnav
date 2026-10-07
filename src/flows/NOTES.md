@@ -47,8 +47,8 @@ including when a propagated reload fails, so revocation still excludes workspace
   message routing effects have regression coverage. A real provider HTTP sample/replay test and
   end-to-end root-versus-child tool-hook/pending-permission isolation tests remain.
 - Flow provenance is persisted as `{source:"flow",flow,run_id}` and safe-boundary delivery never
-  admits a driver command. Historical note provenance in compaction summaries needs explicit
-  preservation in the compaction lane; recent transcript messages retain their typed provenance.
+  admits a driver command. Compaction labels flow notes as untrusted flow data in its summary
+  input, so a compacted conversation never turns one into a driver instruction.
 - Studio and contract definitions agree; the engine record currently emits numeric `budget_ms` and
   node `duration_ms` rather than nullable values described by Studio. No engine files were changed.
 - HTTP peer metadata is installed by server listener wiring; network checks fail closed if the

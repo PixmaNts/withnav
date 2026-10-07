@@ -13,11 +13,12 @@ import type { Route } from "../router";
 import { envelopeOf, errorMessage, studioApi, type StudioApi } from "./api";
 import { Canvas } from "./Canvas";
 import { FlowList, LOCATION_LABEL } from "./FlowList";
+import { diagnosticKey, healthWarnings } from "./diagnostics";
 import { addNode, completeLayout, FLOW_NAME_PATTERN, newNode, TRIGGER_ID } from "./graph";
 import { actionsFor, Inspector } from "./Inspector";
 import { actionLook, TYPE_LOOK } from "./meta";
 import { RunBar } from "./RunBar";
-import type { Definition, Diagnostic, FlowDocument, FlowSummary, Location, NodeType, ReplayResult, RunRecord } from "./types";
+import type { Definition, Diagnostic, FlowDocument, FlowSummary, HealthRow, Location, NodeType, ReplayResult, RunRecord } from "./types";
 import { setEnabledInToml, useFlowEditor } from "./useFlowEditor";
 
 interface Props {
@@ -67,7 +68,7 @@ export function StudioPage({ route, navigate }: Props) {
         <Center title="">Loading the flows…</Center>
       ) : (
         <ReactFlowProvider>
-          <Studio api={apiQ.data} route={route} navigate={navigate} />
+          <Studio key={`${workspace}:${apiQ.data.mocked}`} api={apiQ.data} route={route} navigate={navigate} />
         </ReactFlowProvider>
       )}
     </div>
@@ -88,13 +89,13 @@ function Studio({ api, route, navigate }: { api: StudioApi; route: Route } & Pic
   const ws = route.workspace!;
   const k = (...parts: unknown[]) => ["studio", ws, api.mocked, ...parts];
 
-  const list = useQuery({ queryKey: k("list"), queryFn: () => api.list().then((b) => b.flows) });
+  const list = useQuery({ queryKey: k("list"), queryFn: () => api.list() });
   const catalogue = useQuery({ queryKey: k("catalogue"), queryFn: () => api.catalogue(), staleTime: Infinity });
   const health = useQuery({ queryKey: k("health"), queryFn: () => api.health(), refetchInterval: 60_000 });
   const trust = useQuery({ queryKey: k("trust"), queryFn: () => api.trust() });
 
   // The open flow: the route's, else the first one listed.
-  const flows = list.data ?? [];
+  const flows = list.data?.flows ?? [];
   const pick = flows.find((f) => f.name === route.flow && (!isLocation(route.loc) || f.location === route.loc)) ?? (route.flow ? undefined : flows[0]);
   const current = pick ? { name: pick.name, location: pick.location } : null;
   useEffect(() => {
@@ -113,9 +114,25 @@ function Studio({ api, route, navigate }: { api: StudioApi; route: Route } & Pic
   const [notice, setNotice] = useState<string | null>(null);
   const [run, setRun] = useState<RunRecord | null>(null);
   const [replay, setReplay] = useState<ReplayResult | null>(null);
-  const [busy, setBusy] = useState<"sample" | "replay" | null>(null);
+  const [busy, setBusy] = useState<"sample" | "replay" | "view" | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
-  const [reload, setReload] = useState<{ busy: boolean; ok: boolean | null; message: string; errors: Diagnostic[] }>({ busy: false, ok: null, message: "", errors: [] });
+  const [reload, setReload] = useState<{ busy: boolean; ok: boolean | null; message: string; propagation?: string; errors: Diagnostic[] }>({ busy: false, ok: null, message: "", errors: [] });
+  const dismissalKey = `studio-diagnostics:${ws}:${api.mocked}`;
+  const [dismissedDiagnostics, setDismissedDiagnostics] = useState<Set<string>>(() => {
+    try {
+      const stored: unknown = JSON.parse(sessionStorage.getItem(dismissalKey) ?? "[]");
+      return new Set(Array.isArray(stored) ? stored.filter((value): value is string => typeof value === "string") : []);
+    } catch {
+      return new Set();
+    }
+  });
+  const dismissDiagnostic = (diagnostic: Diagnostic) => {
+    const next = new Set(dismissedDiagnostics).add(diagnosticKey(diagnostic));
+    setDismissedDiagnostics(next);
+    try { sessionStorage.setItem(dismissalKey, JSON.stringify([...next])); } catch { /* Dismissal still works when browser storage is unavailable. */ }
+  };
+  const hostDiagnostics = [...new Map([...(list.data?.errors ?? []), ...(health.data?.errors ?? [])].map((d) => [diagnosticKey(d), d])).values()]
+    .filter((d) => !dismissedDiagnostics.has(diagnosticKey(d)));
   const [creating, setCreating] = useState(false);
   const [toggling, setToggling] = useState<string | null>(null);
 
@@ -178,7 +195,7 @@ function Studio({ api, route, navigate }: { api: StudioApi; route: Route } & Pic
     setReload({ busy: true, ok: null, message: "", errors: [] });
     try {
       const r = await api.reload();
-      setReload({ busy: false, ok: true, message: `Reloaded ${r.flows.length} flow${r.flows.length === 1 ? "" : "s"}. Saved flows run from now on.`, errors: [] });
+      setReload({ busy: false, ok: true, message: `Reloaded ${r.flows.length} flow${r.flows.length === 1 ? "" : "s"}. Saved flows run in this process from now on.`, propagation: r.propagation, errors: [] });
     } catch (e) {
       const env = envelopeOf(e);
       setReload({ busy: false, ok: false, message: env?.error ?? errorMessage(e), errors: env?.errors ?? [] });
@@ -237,6 +254,20 @@ function Studio({ api, route, navigate }: { api: StudioApi; route: Route } & Pic
     }
   };
 
+  const onViewRun = async (runId: string) => {
+    if (!current) return;
+    setBusy("view");
+    setRunError(null);
+    setReplay(null);
+    try {
+      setRun(await api.run(current.name, runId));
+    } catch (e) {
+      setRunError(errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const onAdd = (type: NodeType, action?: string) => {
     if (!def || !edit) return;
     const node = newNode(def, type, catalogue.data, action);
@@ -255,6 +286,7 @@ function Studio({ api, route, navigate }: { api: StudioApi; route: Route } & Pic
 
   return (
     <>
+      <div className="sf-host-banners">
       {untrusted && (
         <div className="sf-trust" role="status">
           <ShieldWarning size={15} aria-hidden />
@@ -266,6 +298,16 @@ function Studio({ api, route, navigate }: { api: StudioApi; route: Route } & Pic
           </button>
         </div>
       )}
+      {hostDiagnostics.map((diagnostic) => (
+        <div className="sf-trust" role="status" key={diagnosticKey(diagnostic)}>
+          <WarningCircle size={15} aria-hidden />
+          <span>{diagnostic.message}{diagnostic.path && <span className="mono muted"> · {diagnostic.path}{diagnostic.line ? `:${diagnostic.line}` : ""}</span>}</span>
+          <button type="button" className="icon-btn" aria-label={`Dismiss: ${diagnostic.message}`} onClick={() => dismissDiagnostic(diagnostic)}>
+            <X size={12} aria-hidden />
+          </button>
+        </div>
+      ))}
+      </div>
       <div className="sf-grid">
         <FlowList
           flows={flows}
@@ -304,6 +346,7 @@ function Studio({ api, route, navigate }: { api: StudioApi; route: Route } & Pic
               {(reload.ok !== null || notice) && (
                 <Banner tone={reload.ok === false ? "bad" : "ok"} onClose={() => { setReload((r) => ({ ...r, ok: null })); setNotice(null); }}>
                   {reload.ok !== null ? reload.message : notice}
+                  {reload.ok === true && reload.propagation && <span className="muted">{reload.propagation}</span>}
                   {reload.ok === false && <DiagList errors={reload.errors} />}
                 </Banner>
               )}
@@ -341,6 +384,7 @@ function Studio({ api, route, navigate }: { api: StudioApi; route: Route } & Pic
                   blockedReason={blockedReason ?? (state.tomlPending ? "Fix the TOML text first." : null)}
                   onSample={onSample}
                   onReplay={onReplay}
+                  onViewRun={onViewRun}
                   onClear={() => { setRun(null); setReplay(null); setRunError(null); }}
                 />
               )}
@@ -394,7 +438,7 @@ function FlowHeader({ doc, def, edit, dirty, state, canBlock, cap, health, onSav
   state: ReturnType<typeof useFlowEditor>["state"];
   canBlock: boolean;
   cap: number;
-  health: { runs: number; failures: number; fallbacks_applied: number; cost_usd: number | null } | undefined;
+  health: HealthRow | undefined;
   onSave: () => void;
   onDiscard: () => void;
   onReload: () => void;
@@ -428,6 +472,9 @@ function FlowHeader({ doc, def, edit, dirty, state, canBlock, cap, health, onSav
             </span>
           )}
         </div>
+        {health && healthWarnings(health).map((message) => (
+          <div className="sf-health-warning" key={message}><WarningCircle size={12} aria-hidden /> {message}</div>
+        ))}
       </div>
       {f && (
         <div className="sf-head-ctl">

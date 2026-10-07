@@ -7,6 +7,7 @@ import { createMockApi } from "./mock/server";
 import type {
   Catalogue,
   Content,
+  Diagnostic,
   ErrorEnvelope,
   FlowDocument,
   FlowSource,
@@ -23,7 +24,7 @@ import type {
 
 export interface StudioApi {
   readonly mocked: boolean;
-  list(): Promise<{ flows: FlowSummary[] }>;
+  list(): Promise<{ flows: FlowSummary[]; errors?: Diagnostic[] }>;
   get(name: string, location: Location): Promise<FlowDocument>;
   create(body: { name: string; location: "workspace" | "global"; content: Content }): Promise<FlowDocument>;
   save(name: string, body: { location: Location; revision: string; content: Content }): Promise<FlowDocument>;

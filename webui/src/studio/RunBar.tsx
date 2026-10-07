@@ -5,6 +5,7 @@ import { ClockCounterClockwise, Play, X } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
 import { actionLook, money, tokens } from "./meta";
 import { TRIGGER_ID } from "./graph";
+import { applicationLabel } from "./diagnostics";
 import type { Definition, ReplayResult, RunRecord, RunSummary } from "./types";
 
 interface Props {
@@ -14,16 +15,17 @@ interface Props {
   payloadError: string | null;
   run: RunRecord | null;
   replay: ReplayResult | null;
-  busy: "sample" | "replay" | null;
+  busy: "sample" | "replay" | "view" | null;
   error: string | null;
   runs: RunSummary[];
   blockedReason: string | null;
   onSample: () => void;
   onReplay: (runId: string) => void;
+  onViewRun: (runId: string) => void;
   onClear: () => void;
 }
 
-export function RunBar({ def, payload, setPayload, payloadError, run, replay, busy, error, runs, blockedReason, onSample, onReplay, onClear }: Props) {
+export function RunBar({ def, payload, setPayload, payloadError, run, replay, busy, error, runs, blockedReason, onSample, onReplay, onViewRun, onClear }: Props) {
   const [editing, setEditing] = useState(false);
   const [replayId, setReplayId] = useState("");
   useEffect(() => {
@@ -57,6 +59,9 @@ export function RunBar({ def, payload, setPayload, payloadError, run, replay, bu
             </option>
           ))}
         </select>
+        <button type="button" className="sf-btn ghost" onClick={() => replayId && onViewRun(replayId)} disabled={!!busy || !replayId} title="Read the recorded run, including what the host applied. Runs nothing.">
+          {busy === "view" ? "Loading…" : "View run"}
+        </button>
         <button type="button" className="sf-btn" onClick={() => replayId && onReplay(replayId)} disabled={!!busy || !replayId || !!blockedReason} title={blockedReason ?? "Runs the recorded answers through this version of the flow. No model call."}>
           <ClockCounterClockwise size={12} aria-hidden /> {busy === "replay" ? "Replaying…" : "Replay"}
         </button>
@@ -135,6 +140,9 @@ function PathLine({ run, def }: { run: RunRecord; def: Definition }) {
         </span>
       ))}
       <span className={`sf-outcome${run.status === "failure" ? " bad" : ""}`}>{outcome}</span>
+      <span className={`sf-application${run.application.status === "failed" ? " bad" : ""}`}>
+        application · {applicationLabel(run.application.status)}
+      </span>
     </div>
   );
 }

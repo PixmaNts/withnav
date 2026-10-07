@@ -203,11 +203,14 @@ export interface HealthRow {
   fallbacks_applied: number;
   cost_usd: number | null;
   cost_unknown_runs: number;
+  errors?: Diagnostic[];
+  unavailable?: boolean;
 }
 export interface Health {
   window_start: string;
   window_end: string;
   flows: HealthRow[];
+  errors?: Diagnostic[];
 }
 
 export interface Trust {
@@ -220,6 +223,7 @@ export interface ReloadResult {
   reloaded: boolean;
   errors: Diagnostic[];
   flows: FlowSummary[];
+  propagation?: string;
 }
 
 /** `{error, reason, errors}` on every non-2xx answer. */
@@ -292,7 +296,7 @@ export interface RunRecord {
   fallback_actions: ProposedAction[];
   usage: Usage | null;
   cost_usd: number | null;
-  application: { status: "not_applied" | "applied" | "failed" | "uncertain"; actions: { node_id: string | null; action: string; status: string; message: string | null }[] };
+  application: { status: "not_applied" | "applied" | "failed" | "uncertain" | "suppressed"; actions: { node_id: string | null; action: string; status: string; message: string | null }[] };
 }
 
 export type ReplayNodeStatus = "comparable" | "question_changed" | "missing_capture" | "not_reached";

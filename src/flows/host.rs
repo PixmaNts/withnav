@@ -21,6 +21,54 @@ pub struct Host {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn editor_adapter_observes_shared_host_reload() {
+        let temp = tempfile::tempdir().unwrap();
+        let host = Host::new(temp.path().join("config"), temp.path().join("data"), None);
+        let runtime = host.runtime(temp.path()).unwrap();
+        let editor = runtime.with_effects_adapter(Arc::new(NoEffects));
+        let store = host.store(temp.path().canonicalize().unwrap());
+        assert!(Arc::ptr_eq(&editor.store, &store));
+        let text = "[flow]\nversion=1\nname='editor'\non='save'\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='log'\n[node.params]\ntext='test'\n";
+        let saved = store
+            .save(
+                "editor",
+                super::super::store::Location::Global,
+                None,
+                super::super::store::Content::Toml {
+                    toml: text.into(),
+                    templates: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        store.reload().unwrap();
+        assert!(
+            editor.store.snapshot()["editor"]
+                .compiled
+                .definition()
+                .flow
+                .enabled
+        );
+        store
+            .save(
+                "editor",
+                super::super::store::Location::Global,
+                Some(&saved.revision),
+                super::super::store::Content::Toml {
+                    toml: text.replace("on='save'", "on='save'\nenabled=false"),
+                    templates: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        store.reload().unwrap();
+        assert!(
+            !editor.store.snapshot()["editor"]
+                .compiled
+                .definition()
+                .flow
+                .enabled
+        );
+    }
     #[tokio::test]
     async fn unavailable_client_keeps_deterministic_rules_and_decision_fallbacks() {
         let temp = tempfile::tempdir().unwrap();

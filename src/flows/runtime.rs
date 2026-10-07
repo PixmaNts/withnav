@@ -510,6 +510,16 @@ pub struct FlowRuntime {
     records: Option<Arc<super::records::Records>>,
 }
 impl FlowRuntime {
+    /// Event-local editor effects share activation, client, outage and capture ownership.
+    pub fn with_effects_adapter(&self, effects: Arc<dyn FlowEffects>) -> Arc<Self> {
+        Arc::new(Self {
+            store: self.store.clone(),
+            client: self.client.clone(),
+            effects: std::sync::RwLock::new(effects),
+            outage: self.outage.clone(),
+            records: self.records.clone(),
+        })
+    }
     /// Editor hosts can replace the no-op sink without replacing the workspace runtime.
     pub fn set_effects(&self, effects: Arc<dyn FlowEffects>) {
         *self.effects.write().unwrap_or_else(|e| e.into_inner()) = effects;

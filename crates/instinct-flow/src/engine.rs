@@ -105,7 +105,7 @@ struct Evaluation<'a> {
     trace: RunRecord,
     status: Vec<Status>,
     cache: BTreeMap<String, InputValue>,
-    allowance: usize,
+    collected_bytes: usize,
     deadline: Instant,
 }
 impl<'a> Evaluation<'a> {
@@ -166,20 +166,7 @@ impl<'a> Evaluation<'a> {
             },
             status: vec![Status::Pending; compiled.definition.node.len()],
             cache: BTreeMap::new(),
-            allowance: {
-                let f = &compiled.definition;
-                let count = f
-                    .flow
-                    .inputs
-                    .values()
-                    .chain(f.node.iter().flat_map(|n| n.inputs.values()))
-                    .chain(f.fallback.iter().flat_map(|f| f.inputs.values()))
-                    .filter(|r| crate::validation::upstream(r).is_none())
-                    .collect::<BTreeSet<_>>()
-                    .len()
-                    .max(1);
-                compiled.catalogue.limits.run_input_bytes.min(65536) / count
-            },
+            collected_bytes: 0,
             deadline,
         }
     }
@@ -443,13 +430,7 @@ impl<'a> Evaluation<'a> {
         let Some(v) = &value.value else {
             return Ok(());
         };
-        let cap = self
-            .compiled
-            .catalogue
-            .limits
-            .input_bytes
-            .min(16384)
-            .min(self.allowance);
+        let cap = self.compiled.catalogue.limits.input_bytes.min(16384);
         let serialized;
         let text = if let Some(s) = v.as_str() {
             s
@@ -457,6 +438,7 @@ impl<'a> Evaluation<'a> {
             serialized = crate::rendering::json_text(v, cap).map_err(render_failure)?;
             &serialized
         };
+        let bytes = text.len().min(cap);
         if text.len() > cap {
             if expression_reads {
                 return Err((
@@ -470,6 +452,13 @@ impl<'a> Evaluation<'a> {
             }
             value.value = Some(text[..boundary].into());
             value.cut = true;
+        }
+        self.collected_bytes = self.collected_bytes.saturating_add(bytes);
+        if self.collected_bytes > self.compiled.catalogue.limits.run_input_bytes.min(65536) {
+            return Err((
+                FailureKind::Limit,
+                "collected inputs exceed run byte limit".into(),
+            ));
         }
         Ok(())
     }
@@ -581,11 +570,24 @@ impl<'a> Evaluation<'a> {
     fn missing_capture(&self, map: &BTreeMap<String, String>, record: &RunRecord) -> bool {
         map.values().any(|r| {
             self.resolve(r).redacted
+                || record.inputs.get(r).is_some_and(|v| v.redacted)
                 || (!r.starts_with("event.")
                     && !r.starts_with("constant.")
                     && crate::validation::upstream(r).is_none()
                     && !record.inputs.contains_key(r))
         })
+    }
+    fn prepare_replay(
+        &mut self,
+        map: &BTreeMap<String, String>,
+        record: &RunRecord,
+    ) -> Result<bool, Failure> {
+        self.prepare_local(map)?;
+        let names = self.needed(map);
+        self.accept_inputs(names.clone(), record.inputs.clone())?;
+        Ok(names
+            .iter()
+            .all(|name| self.cache.get(name) == record.inputs.get(name)))
     }
     fn stored_state(&self, i: usize) -> Result<String, Failure> {
         let node = &self.compiled.definition.node[i];
@@ -1192,8 +1194,6 @@ pub fn replay(
     );
     e.trace.mode = "replay".into();
     e.trace.started_at = record.started_at.clone();
-    e.cache = record.inputs.clone();
-    e.trace.inputs = record.inputs.clone();
     let mut nodes: BTreeMap<String, ReplayNode> = definition
         .definition
         .node
@@ -1215,12 +1215,14 @@ pub fn replay(
         {
             return Ok(false);
         }
+        let flow_inputs = &definition.definition.flow.inputs;
+        if e.missing_capture(flow_inputs, record)
+            || !e.prepare_replay(flow_inputs, record).unwrap_or(false)
+        {
+            comparable = false;
+            return Ok(false);
+        }
         if let Some(when) = definition.expressions.get("flow.when") {
-            if e.missing_capture(&definition.definition.flow.inputs, record) {
-                comparable = false;
-                return Ok(false);
-            }
-            e.prepare_local(&definition.definition.flow.inputs)?;
             let values = e
                 .aliases(&definition.definition.flow.inputs)
                 .iter()
@@ -1252,14 +1254,24 @@ pub fn replay(
                         comparable = false;
                         return Ok(false);
                     }
-                    e.prepare_local(&definition.definition.node[i].inputs)?;
+                    if !e.prepare_replay(&node.inputs, record).unwrap_or(false) {
+                        nodes.get_mut(&node.id).expect("replay node").status =
+                            "question_changed".into();
+                        comparable = false;
+                        return Ok(false);
+                    }
                     e.deterministic(i)?;
                 }
                 continue;
             }
             for i in ready {
                 let node = &definition.definition.node[i];
-                e.prepare_local(&node.inputs)?;
+                if !e.prepare_replay(&node.inputs, record).unwrap_or(false) {
+                    nodes.get_mut(&node.id).expect("replay node").status =
+                        "question_changed".into();
+                    comparable = false;
+                    return Ok(false);
+                }
                 let state = e.state(i)?;
                 let question = node.kind.question().expect("decision frontier");
                 let capture = record.nodes.iter().find(|n| n.id == node.id);
@@ -1370,7 +1382,7 @@ pub fn replay(
             .as_ref()
             .map(|f| f.inputs.clone())
             .unwrap_or_default();
-        if e.prepare_local(&fallback_inputs).is_err() {
+        if !e.prepare_replay(&fallback_inputs, record).unwrap_or(false) {
             comparable = false;
         }
         let mut values = e.aliases(&fallback_inputs);

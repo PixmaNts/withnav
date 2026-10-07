@@ -646,6 +646,103 @@ async fn typed_parameter_overflow_is_a_limit_not_a_string() {
     ));
     assert!(outcome.trace.actions.is_empty());
 }
+fn five_reference_flow() -> String {
+    let mut text = header("['b']")
+        + &decision(
+            "b",
+            "state_template='fixed'\n[node.inputs]\nx='session.agent'\n[node.next]\nno=['c','d','e','f']",
+        );
+    for (id, reference) in [
+        ("c", "conversation.last_driver"),
+        ("d", "intent.record"),
+        ("e", "workspace.root"),
+        ("f", "event.tool"),
+    ] {
+        text += &decision(
+            id,
+            &format!("state_template='fixed'\n[node.inputs]\nx='{reference}'"),
+        );
+    }
+    text
+}
+fn fixed_state(text: &str, cat: &Catalogue) -> CompiledDefinition {
+    Definition::parse(text)
+        .unwrap()
+        .validate(
+            cat,
+            &Capabilities { images: false },
+            &BTreeMap::from([("fixed".into(), "fixed".into())]),
+        )
+        .unwrap()
+}
+#[tokio::test]
+async fn unused_references_do_not_split_input_allowance() {
+    let c = fixed_state(&five_reference_flow(), &catalogue());
+    let outcome = with_values(
+        &c,
+        &Values {
+            value: "x".repeat(15 * 1024).into(),
+            redacted: false,
+        },
+    )
+    .await;
+    assert!(matches!(outcome.result, RunResult::Success { .. }));
+    assert!(!outcome.trace.inputs["session.agent"].cut);
+    assert_eq!(
+        outcome.trace.inputs["session.agent"]
+            .value
+            .as_ref()
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .len(),
+        15 * 1024
+    );
+}
+#[tokio::test]
+async fn collected_total_over_64_kib_fails_independently_of_unused_references() {
+    let text = five_reference_flow().replace("start=['b']", "start=['b','c','d','e','f']");
+    let c = fixed_state(&text, &catalogue());
+    let outcome = with_values(
+        &c,
+        &Values {
+            value: "x".repeat(16384).into(),
+            redacted: false,
+        },
+    )
+    .await;
+    assert!(matches!(
+        outcome.result,
+        RunResult::Failure {
+            kind: FailureKind::Limit,
+            ..
+        }
+    ));
+}
+#[tokio::test]
+async fn replay_rebounds_host_values_and_rejects_changed_cuts() {
+    let text = header("['b']")
+        + &decision(
+            "b",
+            "state_template='fixed'\n[node.inputs]\nx='session.agent'",
+        );
+    let c = fixed_state(&text, &catalogue());
+    let record = with_values(
+        &c,
+        &Values {
+            value: "x".repeat(15000).into(),
+            redacted: false,
+        },
+    )
+    .await
+    .trace;
+    let added = fixed_state(&(text + "y='event.tool'\n"), &catalogue());
+    assert!(!replay(&added, &record, &Fake::new().identity()).comparable);
+    let mut cat = catalogue();
+    cat.limits.input_bytes = 8000;
+    let smaller = fixed_state(&five_reference_flow(), &cat);
+    assert!(!replay(&smaller, &record, &Fake::new().identity()).comparable);
+}
 #[tokio::test]
 async fn replay_compares_original_constants_and_references_even_with_fixed_state() {
     let text = header("['b']")
@@ -960,7 +1057,8 @@ async fn reversed_completion_order_produces_identical_bounded_proposals() {
         + "[node.inputs]\nx='workspace.root'\n"
         + "[constants]\nL='l'\nR='r'\n";
     let mut cat = catalogue();
-    cat.limits.run_input_bytes = 20;
+    cat.limits.run_input_bytes = 24;
+    cat.limits.input_bytes = 5;
     let c = Definition::parse(&text)
         .unwrap()
         .validate(&cat, &Capabilities { images: false }, &BTreeMap::new())

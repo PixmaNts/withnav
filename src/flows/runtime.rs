@@ -644,8 +644,10 @@ impl FlowRuntime {
         ctx: ToolCallContextLike,
         cancel: CancellationToken,
     ) -> VerdictLike {
-        let mut context = ContextSnapshot::default();
-        context.workspace = Some(ctx.workspace.clone());
+        let mut context = ContextSnapshot {
+            workspace: Some(ctx.workspace.clone()),
+            ..Default::default()
+        };
         for (name, value) in [
             ("session.agent", json!(ctx.agent)),
             ("session.workspace", json!(ctx.workspace)),

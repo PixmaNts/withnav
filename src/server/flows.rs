@@ -160,7 +160,9 @@ async fn workspace(
     if !path.is_absolute() {
         return Err(invalid());
     }
-    let path = path.canonicalize().map_err(|_| invalid())?;
+    let path = path
+        .canonicalize()
+        .map_err(|_| StoreError::reason("forbidden"))?;
     if !path.is_dir() {
         return Err(invalid());
     }
@@ -256,7 +258,7 @@ async fn handle(
             if let Some(id) = data["session_id"].as_str() {
                 let id = id.parse().map_err(|_| StoreError::reason("unavailable"))?;
                 if let Ok(session) = state.session_summary(id).await {
-                    if PathBuf::from(&session.workspace) != workspace {
+                    if std::path::Path::new(&session.workspace) != workspace {
                         return Err(StoreError::reason("forbidden"));
                     }
                     context.session(&session);
@@ -431,6 +433,9 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(valid["valid"], true);
+        let (_, roundtrip) = handle(&state, &query, &headers, peer, Method::POST, "validate", &serde_json::to_vec(&json!({"content":{"format":"graph","definition":valid["definition"],"templates":{}}})).unwrap()).await.unwrap();
+        assert_eq!(roundtrip["valid"], true);
+        assert_eq!(roundtrip["definition"], valid["definition"]);
         let (status, document) = handle(
             &state,
             &query,
@@ -444,6 +449,63 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(
+            handle(
+                &state,
+                &query,
+                &headers,
+                peer,
+                Method::POST,
+                "",
+                &serde_json::to_vec(
+                    &json!({"name":"test","location":"workspace","content":content})
+                )
+                .unwrap()
+            )
+            .await
+            .unwrap_err()
+            .reason,
+            "already_exists"
+        );
+        let (_, listed) = handle(&state, &query, &headers, peer, Method::GET, "", b"")
+            .await
+            .unwrap();
+        assert!(listed.to_string().contains("test"));
+        let (_, trust) = handle(&state, &query, &headers, peer, Method::GET, "trust", b"")
+            .await
+            .unwrap();
+        assert_eq!(trust["trusted"], false);
+        assert_eq!(
+            handle(
+                &state,
+                &query,
+                &headers,
+                ConnectInfo("192.0.2.1:1234".parse().unwrap()),
+                Method::GET,
+                "catalogue",
+                b""
+            )
+            .await
+            .unwrap_err()
+            .reason,
+            "forbidden"
+        );
+        let unknown = HashMap::from([("workspace".into(), "/unknown-workspace".into())]);
+        assert_eq!(
+            handle(
+                &state,
+                &unknown,
+                &headers,
+                peer,
+                Method::GET,
+                "catalogue",
+                b""
+            )
+            .await
+            .unwrap_err()
+            .reason,
+            "forbidden"
+        );
         let stale = handle(
             &state,
             &query,
